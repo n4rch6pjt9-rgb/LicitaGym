@@ -76,3 +76,5 @@ comprasgov_resultado.json
 scripts/.sync_state/
 *.sync_state/
 ```
+# saidas locais e pendencias (nao versionar)
+var/

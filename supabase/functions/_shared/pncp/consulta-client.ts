@@ -8,6 +8,7 @@ import {
   PermanentHttpError,
   type RequestBudget,
   RetryableHttpError,
+  type WithRetryOptions,
   withRetry,
 } from "./retry.ts";
 
@@ -48,10 +49,17 @@ export function clampConsultaPageSize(
 
 export class PncpConsultaClient {
   private budget: RequestBudget | undefined;
+  private readonly retryOverrides: Pick<
+    WithRetryOptions,
+    "sleep" | "now" | "random"
+  >;
 
   constructor(
     private baseUrl = Deno.env.get("PNCP_CONSULTA_BASE") ?? DEFAULT_BASE,
-  ) {}
+    retryOverrides: Pick<WithRetryOptions, "sleep" | "now" | "random"> = {},
+  ) {
+    this.retryOverrides = retryOverrides;
+  }
 
   /** Bind a request-scoped Edge deadline for all subsequent calls. */
   withBudget(budget: RequestBudget): this {
@@ -154,6 +162,7 @@ export class PncpConsultaClient {
         maxAttempts: 3,
         maxTimeoutRetries: 1,
         maxEmptyBodyRetries: 1,
+        ...this.retryOverrides,
       },
     );
 

@@ -8,15 +8,21 @@ Todo item (CATMAT ou texto livre de edital/PCA) vira 6 blocos:
   formato        : forma/formato/perfil normalizado
   adicionais     : todo o resto (dimensões, furo, capacidade, garantia, observações)
 
+Quando TIPO_PRODUTO = aparelho_ou_fora, o dicionário de aparelhos v0.3 resolve o nó
+(`no_taxonomia`) via classificar_aparelho (método=regra).
+
 Duas entradas:
   decompor_catmat(caracteristicas, unidades)  -> usa as características estruturadas do CATMAT
                                                  (verdade de referência para treinar/validar)
   decompor_texto(texto)                       -> texto livre de edital/PCA/PNCP
+  calcular_taxonomia(texto, ...)              -> blocos + plano + classificação de aparelho
 """
 from __future__ import annotations
 
 import re
 import unicodedata
+
+from .classificar_aparelho import DICIONARIO_VERSAO, classificar as classificar_aparelho
 
 
 def _n(t: str | None) -> str:
@@ -79,15 +85,17 @@ UNIDADES = [
     (r"\bpar(es)?\b|forma fornecimento: par|\(par\)", "PAR"), (r"\bkit\b", "KIT"), (r"\bjogo\b", "JOGO"),
     (r"\bconjunto\b", "CONJUNTO"), (r"\bund\b|\bun\b|unidade|\(und\)", "UN"),
 ]
-TIPOS = [  # nó de produto (mesma árvore da taxonomia de pesos livres)
+TIPOS = [  # tipo grosso; nó fino (slug) vem do dicionário de aparelhos quando aplicável
     (r"^\W*(suporte|estante|rack|presilha|expositor)|\b(suporte|estante|rack|expositor) (para|de|p/) (halter|dumb|barra|anilha|kettle)|aplicacao: guardar", "acessorio"),
     (r"estofad|sistema (de )?carga|leg press|estacao de musculacao|regulage|aparelho|obras?\b|terraplan", "aparelho_ou_fora"),
-    (r"barra montada|barras? com peso fixo", "barra_montada_fixa"),
-    (r"barra (macica|cromada|olimpica|para anilha|reta|w\b)|diametro da barra", "barra_desmontada"),
-    (r"barra ductil.{0,60}anilha|barra anatomica", "haltere"),
-    (r"\banilhas?\b", "anilha"),
+    # Decisão 26/09: anilha, barra, haltere, colchonete, step = acessório
+    (r"barra montada|barras? com peso fixo|barra (macica|cromada|olimpica|para anilha|reta|w\b)|diametro da barra", "acessorio"),
+    (r"barra ductil.{0,60}anilha|barra anatomica", "acessorio"),
+    (r"\banilhas?\b", "acessorio"),
+    (r"dumb+el+s?|halter", "acessorio"),
+    (r"colchonete|tapete de (yoga|exercicio)|mat de yoga", "acessorio"),
+    (r"\bsteps?\b|plataforma step|step (profissional|ajustavel|aerobico)", "acessorio"),
     (r"kettlebell|chaleira", "kettlebell"),
-    (r"dumb+el+s?|halter", "haltere"),
     (r"presilha", "acessorio"),
 ]
 
@@ -226,11 +234,41 @@ def decompor_texto(texto: str) -> dict:
     return out
 
 
-def achatar(d: dict) -> dict:
+def _tipo_catmat_dos_blocos(blocos: dict) -> str | None:
+    """Valor do campo TIPO estruturado (CATMAT), se presente nos blocos."""
+    car = blocos.get("caracteristica") or {}
+    for k, v in car.items():
+        if _n(k) == "tipo" and v:
+            return str(v).strip()
+    return None
+
+
+def classificar_se_aparelho(
+    blocos: dict,
+    texto: str,
+    *,
+    tipo_catmat: str | None = None,
+    codigo_pdm=None,
+    codigo_item=None,
+) -> dict | None:
+    """Se TIPO_PRODUTO em aparelho_ou_fora|acessorio, classifica o nó; senão None."""
+    tipo_produto = (blocos.get("caracteristica") or {}).get("TIPO_PRODUTO")
+    if tipo_produto not in ("aparelho_ou_fora", "acessorio"):
+        return None
+    tipo = tipo_catmat or _tipo_catmat_dos_blocos(blocos)
+    return classificar_aparelho(
+        texto or "",
+        tipo_catmat=tipo,
+        codigo_pdm=codigo_pdm,
+        codigo_item=codigo_item,
+    )
+
+
+def achatar(d: dict, aparelho: dict | None = None) -> dict:
     """Dict de blocos -> colunas planas para planilha/tabela."""
     car = d["caracteristica"]
     get = lambda *ks: next((car[k] for k in car if _n(k) in ks), None)
-    return {
+    out = {
         "tipo_produto": car.get("TIPO_PRODUTO"),
         "tipo": get("tipo"),
         "material": get("material"),
@@ -245,3 +283,43 @@ def achatar(d: dict) -> dict:
         "formato": d["formato"],
         "adicionais": "; ".join(f"{k}={v}" for k, v in d["adicionais"].items()) or None,
     }
+    if aparelho is not None:
+        out["no_taxonomia"] = aparelho.get("slug")
+        out["metodo"] = "regra"
+        out["confianca"] = aparelho.get("confianca")
+        out["escopo_aparelho"] = aparelho.get("escopo")
+        out["versao_taxonomia"] = DICIONARIO_VERSAO
+    return out
+
+
+VERSAO_PIPELINE = "v1-2026-09-25"
+
+
+def calcular_taxonomia(
+    texto: str,
+    *,
+    tipo_catmat: str | None = None,
+    codigo_pdm=None,
+    codigo_item=None,
+) -> dict:
+    """Decompõe o texto e, se for aparelho, resolve o nó da taxonomia v0.3."""
+    blocos = decompor_texto(texto or "")
+    aparelho = classificar_se_aparelho(
+        blocos,
+        texto or "",
+        tipo_catmat=tipo_catmat,
+        codigo_pdm=codigo_pdm,
+        codigo_item=codigo_item,
+    )
+    out: dict = {
+        "versao": VERSAO_PIPELINE,
+        "blocos": blocos,
+        "plano": achatar(blocos, aparelho),
+    }
+    if aparelho is not None:
+        out["versao_taxonomia"] = DICIONARIO_VERSAO
+        out["aparelho"] = aparelho
+        out["metodo"] = "regra"
+        out["no_taxonomia"] = aparelho.get("slug")
+        out["confianca"] = aparelho.get("confianca")
+    return out

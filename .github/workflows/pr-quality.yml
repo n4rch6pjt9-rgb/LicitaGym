@@ -1,0 +1,83 @@
+# Gate de qualidade em PRs — Deno (Edge) + pytest (collectors).
+# Qualquer erro de typecheck, teste Deno ou pytest falha o job.
+# Nenhum passo é condicional: sem testes descobertos, o job falha.
+
+name: PR Quality
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: pr-quality-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deno-edge:
+    name: Deno check + PNCP tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Typecheck PNCP shared modules and importers
+        run: |
+          set -euo pipefail
+          deno check \
+            supabase/functions/_shared/pncp/pagination-budget.ts \
+            supabase/functions/_shared/pncp/catmat-scope-resolver.ts \
+            supabase/functions/_shared/pncp/lock.ts \
+            supabase/functions/_shared/pncp/licitagym-catmat.ts \
+            supabase/functions/_shared/pncp/licitagym-scope-gate.ts \
+            supabase/functions/_shared/pncp/upsert.ts \
+            supabase/functions/_shared/pncp/retry.ts \
+            supabase/functions/_shared/pncp/consulta-client.ts \
+            supabase/functions/_shared/pncp/search-client.ts \
+            supabase/functions/sync-pncp-pca/index.ts \
+            supabase/functions/sync-pncp-contratacoes-editais/index.ts \
+            supabase/functions/sync-pncp-contratacoes-atas/index.ts \
+            supabase/functions/sync-pncp-contratacoes-contratos/index.ts \
+            supabase/functions/sync-pncp-orgaos/index.ts \
+            supabase/functions/link-catmat-pca/index.ts \
+            supabase/functions/sync-compras-catmat/index.ts
+
+      # deno test descobre *_test.ts / *.test.ts e já faz typecheck dos testes.
+      # Sem --allow-net: teste que tente rede real falha (suíte determinística).
+      - name: Deno tests (tests/supabase)
+        env:
+          NO_COLOR: "1"
+        run: |
+          set -euo pipefail
+          deno test tests/supabase --allow-read --allow-write --allow-env --no-prompt --reporter=dot
+
+  python-tests:
+    name: pytest (collectors)
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ${{ github.workspace }}/services/coletor-externo
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dev deps
+        run: python -m pip install -r services/coletor-externo/requirements.txt -r services/coletor-externo/requirements-dev.txt
+
+      # Exit 5 (nenhum teste coletado) também falha.
+      - name: Run pytest
+        run: pytest tests/ -q --tb=short
+        env:
+          PYTHONPATH: ${{ github.workspace }}/services/coletor-externo

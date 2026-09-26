@@ -1,0 +1,1098 @@
+# Catálogo de tarefas do FORNECEDOR — Lei 14.133/2021 (v1)
+# Fonte de verdade do seed. Gerar SQL: python scripts/gerar_seed_catalogo_tarefas.py
+#
+# Convenções
+#   codigo:  14133-Fxx-Tyy (estável; nunca reaproveitar código de tarefa desativada)
+#   prazo:   {qtd, unidade, sentido, evento}  unidade ∈ dias_uteis|dias_corridos|meses|anos|imediato|definido_no_edital|sem_prazo_legal
+#            sentido ∈ antes_de|apos|ate (antes_de = "até N dias antes do evento")
+#   condicao: chave -> valor | [valores]. Chaves do contexto do certame:
+#     inversao_fases (bool)          objeto (bens|servicos|obra_engenharia)
+#     modo_disputa (aberto|fechado|aberto_fechado)      srp (bool)
+#     garantia_proposta (bool)       garantia_contratual (bool)
+#     vistoria_prevista (bool)       intervalo_minimo_lances (bool)
+#     posicao (vencedor|remanescente) servico_continuo (bool)
+#     mao_de_obra_exclusiva (bool)   me_epp (bool)   estrangeira (bool)
+#     reforma (bool)                 empate (bool)   diferenca_5pct_segundo (bool)
+#     proposta_abaixo_85pct (bool)   classificacao_catalogo_valida
+#   base_legal: [artigo, "dispositivo", papel]  papel ∈ fundamento|prazo|consequencia|referencia
+
+norma: LEI_14133_2021
+
+fases:
+  - {codigo: F01, ordem: 1, macro: certame, nome: Divulgação do edital, artigos: [17, 54, 55, 164],
+     descricao: "Edital publicado no PNCP e prazo de propostas correndo. Fase de leitura, esclarecimento, impugnação e preparo da proposta."}
+  - {codigo: F02, ordem: 2, macro: certame, nome: Propostas e lances, artigos: [17, 56, 57, 58, 60],
+     descricao: "Sessão pública aberta: envio de propostas, disputa de lances e desempate."}
+  - {codigo: F03, ordem: 3, macro: certame, nome: Julgamento, artigos: [17, 59, 61],
+     descricao: "Análise de aceitabilidade e exequibilidade da proposta mais bem classificada e negociação."}
+  - {codigo: F04, ordem: 4, macro: certame, nome: Habilitação, artigos: [17, 62, 63, 64, 67, 69],
+     descricao: "Entrega e análise dos documentos de habilitação (em regra só do vencedor). Com inversão de fases (art. 17 §1º) vem antes da F02."}
+  - {codigo: F05, ordem: 5, macro: certame, nome: Recursal, artigos: [17, 165, 168],
+     descricao: "Fase recursal única: intenção imediata, razões, contrarrazões e decisão."}
+  - {codigo: F06, ordem: 6, macro: certame, nome: Homologação, artigos: [17, 54, 71],
+     descricao: "Autoridade superior sanea, revoga, anula ou adjudica e homologa."}
+  - {codigo: F07, ordem: 7, macro: contrato, nome: Contratação, artigos: [58, 90, 94, 96, 97, 98],
+     descricao: "Convocação para assinar, garantia contratual, remanescentes e eficácia do contrato."}
+  - {codigo: F08, ordem: 8, macro: contrato, nome: Execução, artigos: [115, 117, 119, 120, 121, 123, 140, 141, 143],
+     descricao: "Execução, fiscalização, recebimento e pagamento."}
+  - {codigo: F09, ordem: 9, macro: contrato, nome: Alteração e equilíbrio, artigos: [92, 107, 124, 125, 130, 131, 134, 135],
+     descricao: "Aditivos, reajuste, repactuação, reequilíbrio e prorrogação."}
+  - {codigo: F10, ordem: 10, macro: contrato, nome: Extinção do contrato, artigos: [90, 100, 137, 138],
+     descricao: "Extinção por iniciativa do contratado, unilateral ou consensual, e devolução de garantias."}
+  - {codigo: F11, ordem: null, macro: transversal, nome: Processo sancionatório, artigos: [155, 156, 157, 158, 161, 163, 166, 167],
+     descricao: "Defesa, recurso e reabilitação quando o fornecedor é acusado de infração. Pode abrir em qualquer fase."}
+  - {codigo: F12, ordem: null, macro: transversal, nome: Ata de registro de preços, artigos: [82, 83, 84, 86],
+     descricao: "Compromisso de fornecimento e adesões enquanto a ata estiver vigente."}
+
+eventos:
+  # F01
+  - {codigo: EDITAL_PUBLICADO, fase: F01, origem: orgao, fonte_dado: PNCP, nome: Edital publicado,
+     descricao: "Divulgação do inteiro teor do edital no PNCP (art. 54)."}
+  - {codigo: EDITAL_ALTERADO, fase: F01, origem: orgao, fonte_dado: PNCP, nome: Edital alterado,
+     descricao: "Modificação do edital; reabre prazos se afetar a formulação das propostas (art. 55 §1º)."}
+  - {codigo: DATA_ABERTURA, fase: F02, origem: calendario, fonte_dado: edital, nome: Data de abertura do certame,
+     descricao: "Data/hora da sessão pública informada no edital. Referência dos prazos 'antes de'."}
+  - {codigo: RESPOSTA_ESCLARECIMENTO, fase: F01, origem: orgao, fonte_dado: portal, nome: Resposta a esclarecimento ou impugnação,
+     descricao: "Divulgação da resposta em sítio oficial (art. 164 parágrafo único)."}
+  # F02
+  - {codigo: SESSAO_ABERTA, fase: F02, origem: plataforma, fonte_dado: portal, nome: Sessão pública aberta,
+     descricao: "Início da fase de propostas e lances."}
+  - {codigo: EMPATE_IDENTIFICADO, fase: F02, origem: plataforma, fonte_dado: portal, nome: Empate identificado,
+     descricao: "Propostas empatadas ao fim da disputa (art. 60)."}
+  - {codigo: MELHOR_PROPOSTA_DEFINIDA, fase: F02, origem: plataforma, fonte_dado: portal, nome: Melhor proposta definida,
+     descricao: "Fim da disputa; ordem de classificação conhecida."}
+  # F03
+  - {codigo: CONVOCACAO_NEGOCIACAO, fase: F03, origem: orgao, fonte_dado: portal, nome: Convocação para negociação,
+     descricao: "Agente de contratação abre negociação (art. 61)."}
+  - {codigo: DILIGENCIA_EXEQUIBILIDADE, fase: F03, origem: orgao, fonte_dado: portal, nome: Diligência de exequibilidade,
+     descricao: "Administração pede demonstração de exequibilidade (art. 59 §2º)."}
+  - {codigo: RESULTADO_JULGAMENTO, fase: F03, origem: orgao, fonte_dado: portal, nome: Resultado do julgamento,
+     descricao: "Proposta aceita ou desclassificada; ata de julgamento."}
+  # F04
+  - {codigo: CONVOCACAO_HABILITACAO, fase: F04, origem: orgao, fonte_dado: portal, nome: Convocação para habilitação,
+     descricao: "Pedido de envio dos documentos de habilitação (art. 63 II e III)."}
+  - {codigo: DILIGENCIA_HABILITACAO, fase: F04, origem: orgao, fonte_dado: portal, nome: Diligência de habilitação,
+     descricao: "Pedido de complementação ou atualização de documento (art. 64)."}
+  - {codigo: ATA_HABILITACAO, fase: F04, origem: orgao, fonte_dado: portal, nome: Resultado da habilitação,
+     descricao: "Habilitação ou inabilitação declarada; lavratura da ata. Abre a intenção de recurso (art. 165 §1º I)."}
+  # F05
+  - {codigo: INTENCAO_RECURSO_REGISTRADA, fase: F05, origem: licitante, fonte_dado: portal, nome: Intenção de recurso registrada,
+     descricao: "O próprio fornecedor manifestou a intenção de recorrer."}
+  - {codigo: RECURSO_TERCEIRO_DIVULGADO, fase: F05, origem: orgao, fonte_dado: portal, nome: Recurso de outro licitante divulgado,
+     descricao: "Intimação ou divulgação da interposição de recurso por terceiro (art. 165 §4º)."}
+  - {codigo: DECISAO_RECURSO, fase: F05, origem: orgao, fonte_dado: portal, nome: Decisão do recurso,
+     descricao: "Reconsideração ou decisão da autoridade superior (art. 165 §2º)."}
+  # F06
+  - {codigo: AUTOS_AUTORIDADE_SUPERIOR, fase: F06, origem: orgao, fonte_dado: portal, nome: Processo na autoridade superior,
+     descricao: "Recursos exauridos; autos encaminhados (art. 71)."}
+  - {codigo: AVISO_ANULACAO_REVOGACAO, fase: F06, origem: orgao, fonte_dado: portal, nome: Aviso de anulação ou revogação,
+     descricao: "Intimação para manifestação prévia (art. 71 §3º)."}
+  - {codigo: ANULACAO_REVOGACAO, fase: F06, origem: orgao, fonte_dado: PNCP, nome: Licitação anulada ou revogada,
+     descricao: "Ato de anulação ou revogação intimado (art. 71 II e III)."}
+  - {codigo: HOMOLOGACAO, fase: F06, origem: orgao, fonte_dado: PNCP, nome: Adjudicação e homologação,
+     descricao: "Objeto adjudicado e licitação homologada (art. 71 IV)."}
+  - {codigo: LICITACAO_FRACASSADA, fase: F06, origem: orgao, fonte_dado: PNCP, nome: Licitação fracassada ou deserta,
+     descricao: "Nenhuma proposta válida."}
+  # F07
+  - {codigo: CONVOCACAO_CONTRATO, fase: F07, origem: orgao, fonte_dado: portal, nome: Convocação para assinar o contrato,
+     descricao: "Convocação do vencedor (art. 90 caput)."}
+  - {codigo: CONVOCACAO_REMANESCENTE, fase: F07, origem: orgao, fonte_dado: portal, nome: Convocação de remanescente,
+     descricao: "Convocação do próximo classificado (art. 90 §§2º, 4º e 7º)."}
+  - {codigo: VALIDADE_PROPOSTA_EXPIRADA, fase: F07, origem: calendario, fonte_dado: edital, nome: Validade da proposta expirada,
+     descricao: "Prazo de validade da proposta decorrido sem convocação (art. 90 §3º)."}
+  - {codigo: CONTRATO_ASSINADO, fase: F07, origem: licitante, fonte_dado: PNCP, nome: Contrato assinado, descricao: "Assinatura do contrato."}
+  - {codigo: ATA_SRP_ASSINADA, fase: F12, origem: licitante, fonte_dado: PNCP, nome: Ata de registro de preços assinada,
+     descricao: "Início da vigência da ata (art. 84)."}
+  # F08
+  - {codigo: INICIO_EXECUCAO, fase: F08, origem: orgao, fonte_dado: manual, nome: Início da execução,
+     descricao: "Ordem de serviço, empenho ou início da vigência."}
+  - {codigo: NOTIFICACAO_FISCAL, fase: F08, origem: orgao, fonte_dado: manual, nome: Notificação do fiscal,
+     descricao: "Registro de ocorrência ou determinação do fiscal (art. 117 §1º)."}
+  - {codigo: SUSPENSAO_EXECUCAO, fase: F08, origem: orgao, fonte_dado: manual, nome: Suspensão ou paralisação,
+     descricao: "Impedimento, ordem de paralisação ou suspensão (art. 115 §5º)."}
+  - {codigo: REQUERIMENTO_PROTOCOLADO, fase: F08, origem: licitante, fonte_dado: manual, nome: Requerimento protocolado,
+     descricao: "Pedido do contratado com instrução concluída (art. 123)."}
+  - {codigo: ENTREGA_REALIZADA, fase: F08, origem: licitante, fonte_dado: manual, nome: Entrega ou conclusão, descricao: "Objeto entregue para recebimento (art. 140)."}
+  - {codigo: NOTA_FISCAL_EMITIDA, fase: F08, origem: licitante, fonte_dado: manual, nome: Nota fiscal emitida,
+     descricao: "Marco para atraso de pagamento (art. 137 §2º IV)."}
+  - {codigo: RECEBIMENTO_DEFINITIVO, fase: F08, origem: orgao, fonte_dado: manual, nome: Recebimento definitivo, descricao: "Termo de recebimento definitivo (art. 140)."}
+  # F09
+  - {codigo: ALTERACAO_UNILATERAL, fase: F09, origem: orgao, fonte_dado: manual, nome: Alteração unilateral,
+     descricao: "Acréscimo, supressão ou modificação determinada pela Administração (art. 124 I)."}
+  - {codigo: DATA_BASE_ANIVERSARIO, fase: F09, origem: calendario, fonte_dado: contrato, nome: Aniversário da data-base,
+     descricao: "Data-base do orçamento estimado ou da proposta completa o período contratual (art. 92 §3º, art. 135 §3º)."}
+  - {codigo: FATO_SUPERVENIENTE, fase: F09, origem: calendario, fonte_dado: manual, nome: Fato superveniente,
+     descricao: "Força maior, caso fortuito, fato do príncipe, mudança de tributo (art. 124 II d, art. 134)."}
+  - {codigo: VENCIMENTO_VIGENCIA_PROXIMO, fase: F09, origem: calendario, fonte_dado: contrato, nome: Vigência perto do fim,
+     descricao: "Janela de decisão sobre prorrogação (art. 107)."}
+  # F10
+  - {codigo: EXTINCAO_UNILATERAL_INTIMADA, fase: F10, origem: orgao, fonte_dado: manual, nome: Extinção unilateral intimada,
+     descricao: "Ato unilateral e escrito de extinção (art. 138 I, art. 165 I e)."}
+  - {codigo: HIPOTESE_EXTINCAO_CONTRATADO, fase: F10, origem: calendario, fonte_dado: manual, nome: Hipótese de extinção a favor do contratado,
+     descricao: "Supressão acima do limite, suspensão > 3 meses, suspensões de 90 dias úteis, atraso > 2 meses ou área não liberada (art. 137 §2º)."}
+  - {codigo: CONTRATO_EXTINTO, fase: F10, origem: orgao, fonte_dado: PNCP, nome: Contrato extinto, descricao: "Fim do contrato por execução ou extinção."}
+  # F11
+  - {codigo: NOTIFICACAO_MULTA, fase: F11, origem: orgao, fonte_dado: manual, nome: Intimação para defesa em multa, descricao: "Art. 157."}
+  - {codigo: INSTAURACAO_RESPONSABILIZACAO, fase: F11, origem: orgao, fonte_dado: manual, nome: Processo de responsabilização instaurado,
+     descricao: "Para impedimento ou inidoneidade (art. 158)."}
+  - {codigo: SANCAO_APLICADA, fase: F11, origem: orgao, fonte_dado: "CEIS/CNEP", nome: Sanção aplicada, descricao: "Intimação da decisão sancionatória."}
+  # F12
+  - {codigo: PEDIDO_ADESAO_ATA, fase: F12, origem: orgao, fonte_dado: manual, nome: Pedido de adesão à ata,
+     descricao: "Órgão não participante consulta o fornecedor (art. 86 §2º III)."}
+
+transicoes:
+  - {de: F01, para: F02, evento: SESSAO_ABERTA, condicao: {inversao_fases: false}, artigo: "art. 17 caput"}
+  - {de: F01, para: F04, evento: SESSAO_ABERTA, condicao: {inversao_fases: true}, artigo: "art. 17 §1º"}
+  - {de: F04, para: F02, evento: ATA_HABILITACAO, condicao: {inversao_fases: true}, artigo: "art. 17 §1º"}
+  - {de: F02, para: F03, evento: MELHOR_PROPOSTA_DEFINIDA, condicao: {}, artigo: "art. 17 caput"}
+  - {de: F03, para: F04, evento: RESULTADO_JULGAMENTO, condicao: {inversao_fases: false}, artigo: "art. 17 caput"}
+  - {de: F03, para: F05, evento: RESULTADO_JULGAMENTO, condicao: {inversao_fases: true}, artigo: "art. 17 §1º; art. 165 §1º I"}
+  - {de: F04, para: F05, evento: ATA_HABILITACAO, condicao: {inversao_fases: false}, artigo: "art. 17 caput; art. 165 §1º I"}
+  - {de: F05, para: F06, evento: AUTOS_AUTORIDADE_SUPERIOR, condicao: {}, artigo: "art. 71 caput"}
+  - {de: F06, para: F07, evento: HOMOLOGACAO, condicao: {}, artigo: "art. 71 IV; art. 90"}
+  - {de: F06, para: F12, evento: HOMOLOGACAO, condicao: {srp: true}, artigo: "art. 82; art. 84"}
+  - {de: F07, para: F08, evento: CONTRATO_ASSINADO, condicao: {}, artigo: "art. 90; art. 94"}
+  - {de: F08, para: F09, evento: ALTERACAO_UNILATERAL, condicao: {}, artigo: "art. 124"}
+  - {de: F08, para: F09, evento: DATA_BASE_ANIVERSARIO, condicao: {}, artigo: "art. 92 §3º; art. 135 §3º"}
+  - {de: F08, para: F09, evento: FATO_SUPERVENIENTE, condicao: {}, artigo: "art. 124 II d; art. 134"}
+  - {de: F08, para: F09, evento: VENCIMENTO_VIGENCIA_PROXIMO, condicao: {servico_continuo: true}, artigo: "art. 107"}
+  - {de: F08, para: F10, evento: EXTINCAO_UNILATERAL_INTIMADA, condicao: {}, artigo: "art. 137; art. 138 I"}
+  - {de: F08, para: F10, evento: HIPOTESE_EXTINCAO_CONTRATADO, condicao: {}, artigo: "art. 137 §2º"}
+  - {de: F08, para: F10, evento: RECEBIMENTO_DEFINITIVO, condicao: {}, artigo: "art. 140; art. 100"}
+  - {de: F09, para: F08, evento: INICIO_EXECUCAO, condicao: {}, artigo: "art. 124"}
+
+tarefas:
+  # ============================================================ F01 Divulgação
+  - codigo: 14133-F01-T01
+    fase: F01
+    titulo: Registrar edital e anexos
+    natureza: acompanhamento
+    ator: licitante
+    evento_abertura: EDITAL_PUBLICADO
+    prazo: {unidade: sem_prazo_legal}
+    descricao: "Baixar o inteiro teor do edital e anexos no PNCP, registrar data de divulgação, data de abertura, critério de julgamento, modo de disputa, exigências de garantia, vistoria e SRP. Alimenta o contexto que libera as demais tarefas."
+    saida: Ficha do certame preenchida (contexto)
+    base_legal: [[54, "caput", fundamento], [54, "§ 1º", referencia]]
+  - codigo: 14133-F01-T02
+    fase: F01
+    titulo: Conferir prazo mínimo de propostas
+    natureza: acompanhamento
+    ator: licitante
+    evento_abertura: EDITAL_PUBLICADO
+    prazo: {unidade: sem_prazo_legal}
+    descricao: "Contar os dias úteis entre a divulgação e a abertura. Bens: 8 dias úteis (menor preço/maior desconto) ou 15; serviços comuns 10; especiais 25; integrada 60; semi-integrada 35; maior lance 15; técnica e preço 35. Prazo menor fundamenta impugnação."
+    saida: Registro do prazo apurado vs. mínimo legal
+    base_legal: [[55, "caput, I a IV", fundamento]]
+  - codigo: 14133-F01-T03
+    fase: F01
+    titulo: Pedir esclarecimento
+    natureza: faculdade
+    ator: licitante
+    evento_abertura: EDITAL_PUBLICADO
+    prazo: {qtd: 3, unidade: dias_uteis, sentido: antes_de, evento: DATA_ABERTURA, obs: "Protocolar até 3 dias úteis antes da abertura."}
+    consequencia: "Fora do prazo, o pedido pode não ser conhecido."
+    descricao: "Protocolar pedido de esclarecimento sobre termos do edital (especificação, quantidade, prazo de entrega, habilitação)."
+    saida: Pedido protocolado
+    base_legal: [[164, "caput", fundamento], [164, "caput", prazo]]
+  - codigo: 14133-F01-T04
+    fase: F01
+    titulo: Impugnar o edital
+    natureza: faculdade
+    ator: licitante
+    evento_abertura: EDITAL_PUBLICADO
+    prazo: {qtd: 3, unidade: dias_uteis, sentido: antes_de, evento: DATA_ABERTURA, obs: "Protocolar até 3 dias úteis antes da abertura."}
+    consequencia: "Fora do prazo, a impugnação pode não ser conhecida."
+    descricao: "Impugnar edital por irregularidade na aplicação da Lei 14.133 (ex.: prazo menor que o do art. 55, exigência de atestado acima de 50% da parcela relevante, restrição indevida)."
+    saida: Petição de impugnação protocolada
+    base_legal: [[164, "caput", fundamento], [55, "caput", referencia], [67, "§§ 1º e 2º", referencia]]
+  - codigo: 14133-F01-T05
+    fase: F01
+    titulo: Acompanhar resposta a esclarecimento/impugnação
+    natureza: acompanhamento
+    ator: licitante
+    evento_abertura: RESPOSTA_ESCLARECIMENTO
+    prazo: {unidade: sem_prazo_legal, obs: "Prazo é da Administração: responder em até 3 dias úteis, limitado ao último dia útil antes da abertura. Sem resposta até lá, registrar a omissão."}
+    descricao: "Ler a resposta e ajustar a proposta. Se a resposta alterar o edital de forma que afete propostas, verificar nova divulgação (T06)."
+    depende_de: [[14133-F01-T03, requer]]
+    saida: Resposta arquivada e impacto avaliado
+    base_legal: [[164, "parágrafo único", prazo]]
+  - codigo: 14133-F01-T06
+    fase: F01
+    titulo: Verificar reabertura de prazo após alteração do edital
+    natureza: direito
+    ator: licitante
+    evento_abertura: EDITAL_ALTERADO
+    prazo: {unidade: sem_prazo_legal}
+    descricao: "Alteração que comprometa a formulação das propostas exige nova divulgação e novos prazos. Conferir se o órgão reabriu o prazo; se não, fundamenta impugnação."
+    saida: Nova data de abertura registrada ou impugnação
+    base_legal: [[55, "§ 1º", fundamento]]
+  - codigo: 14133-F01-T07
+    fase: F01
+    titulo: Agendar vistoria ou preparar declaração substitutiva
+    natureza: faculdade
+    ator: licitante
+    evento_abertura: EDITAL_PUBLICADO
+    prazo: {unidade: definido_no_edital, obs: "Data e horário conforme edital; a Administração deve oferecer horários diferentes."}
+    condicao: {vistoria_prevista: true}
+    consequencia: "Sem vistoria nem declaração, inabilitação."
+    descricao: "Agendar vistoria prévia ou assinar declaração formal do responsável técnico de pleno conhecimento das condições do local."
+    saida: Atestado de vistoria ou declaração assinada
+    base_legal: [[63, "§ 2º", fundamento], [63, "§ 3º", fundamento], [63, "§ 4º", referencia]]
+  - codigo: 14133-F01-T08
+    fase: F01
+    titulo: Providenciar garantia de proposta
+    natureza: obrigacao
+    ator: licitante
+    evento_abertura: EDITAL_PUBLICADO
+    prazo: {unidade: definido_no_edital, obs: "Comprovar no momento da apresentação da proposta."}
+    condicao: {garantia_proposta: true}
+    consequencia: "Requisito de pré-habilitação: sem garantia, proposta não segue."
+    descricao: "Recolher garantia de até 1% do valor estimado, em caução, seguro-garantia, fiança bancária ou título de capitalização."
+    saida: Comprovante de garantia de proposta
+    base_legal: [[58, "caput e § 1º", fundamento], [58, "§ 4º", referencia], [96, "§ 1º", referencia]]
+  - codigo: 14133-F01-T09
+    fase: F01
+    titulo: Preparar declarações obrigatórias
+    natureza: obrigacao
+    ator: licitante
+    evento_abertura: EDITAL_PUBLICADO
+    prazo: {unidade: definido_no_edital, obs: "Normalmente junto com a proposta."}
+    consequencia: "Falta da declaração de custos trabalhistas: desclassificação."
+    descricao: "Declarações de atendimento aos requisitos de habilitação, reserva de cargos para PcD e reabilitados, e de que a proposta cobre a integralidade dos custos trabalhistas."
+    saida: Declarações assinadas
+    base_legal: [[63, "I", fundamento], [63, "IV", fundamento], [63, "§ 1º", consequencia]]
+  - codigo: 14133-F01-T10
+    fase: F01
+    titulo: Montar e cadastrar a proposta
+    natureza: obrigacao
+    ator: licitante
+    evento_abertura: EDITAL_PUBLICADO
+    prazo: {unidade: definido_no_edital, obs: "Até a data/hora de abertura fixada no edital."}
+    descricao: "Precificar item a item conforme especificação do edital e cadastrar a proposta na plataforma antes da abertura."
+    depende_de: [[14133-F01-T09, requer]]
+    saida: Proposta cadastrada
+    base_legal: [[17, "§ 2º", referencia], [59, "II", referencia]]
+  - codigo: 14133-F01-T11
+    fase: F01
+    titulo: Preparar habilitação antecipada (inversão de fases)
+    natureza: obrigacao
+    ator: licitante
+    evento_abertura: EDITAL_PUBLICADO
+    prazo: {unidade: definido_no_edital}
+    condicao: {inversao_fases: true}
+    descricao: "Com habilitação antes do julgamento, todos os licitantes entregam os documentos de habilitação no início. Encerrada essa fase, não cabe exclusão por habilitação, salvo fato superveniente."
+    saida: Pacote de habilitação entregue
+    base_legal: [[17, "§ 1º", fundamento], [63, "II", referencia], [64, "§ 2º", referencia]]
+
+  # ============================================================ F02 Propostas e lances
+  - codigo: 14133-F02-T01
+    fase: F02
+    titulo: Participar da disputa de lances
+    natureza: faculdade
+    ator: licitante
+    evento_abertura: SESSAO_ABERTA
+    prazo: {unidade: definido_no_edital, obs: "Durante a sessão pública."}
+    descricao: "Ofertar lances no modo aberto, fechado ou combinado definido no edital, com preço limite interno aprovado."
+    depende_de: [[14133-F01-T10, requer]]
+    saida: Histórico de lances
+    base_legal: [[56, "caput, I e II", fundamento], [56, "§ 1º", referencia]]
+  - codigo: 14133-F02-T02
+    fase: F02
+    parent: 14133-F02-T01
+    titulo: Respeitar intervalo mínimo entre lances
+    natureza: obrigacao
+    ator: licitante
+    evento_abertura: SESSAO_ABERTA
+    prazo: {unidade: definido_no_edital}
+    condicao: {intervalo_minimo_lances: true}
+    descricao: "Lances intermediários e de cobertura devem respeitar o intervalo mínimo de valor fixado no edital."
+    saida: Lances válidos
+    base_legal: [[57, "caput", fundamento], [56, "§ 3º", referencia]]
+  - codigo: 14133-F02-T03
+    fase: F02
+    titulo: Apresentar nova proposta na disputa final (empate)
+    natureza: faculdade
+    ator: licitante
+    evento_abertura: EMPATE_IDENTIFICADO
+    prazo: {unidade: imediato, obs: "Em ato contínuo à classificação."}
+    condicao: {empate: true}
+    descricao: "Em empate, os licitantes empatados podem apresentar nova proposta. Depois: desempenho contratual, equidade de gênero, integridade e preferências do § 1º."
+    saida: Nova proposta
+    base_legal: [[60, "I", fundamento], [60, "§ 1º", referencia]]
+  - codigo: 14133-F02-T04
+    fase: F02
+    titulo: Exercer preferência de ME/EPP
+    natureza: direito
+    ator: licitante
+    evento_abertura: MELHOR_PROPOSTA_DEFINIDA
+    prazo: {unidade: definido_no_edital, obs: "Regra e prazo na LC 123/2006 (fora do v1)."}
+    condicao: {me_epp: true}
+    descricao: "Exercer o direito de preferência de microempresa ou empresa de pequeno porte (empate ficto), preservado pelo art. 60 § 2º."
+    saida: Nova proposta ME/EPP
+    base_legal: [[60, "§ 2º", fundamento]]
+  - codigo: 14133-F02-T05
+    fase: F02
+    titulo: Disputar demais colocações (reinício da disputa)
+    natureza: faculdade
+    ator: licitante
+    evento_abertura: MELHOR_PROPOSTA_DEFINIDA
+    prazo: {unidade: definido_no_edital}
+    condicao: {diferenca_5pct_segundo: true}
+    descricao: "Se a diferença para o 2º lugar for de pelo menos 5% e o edital admitir, participar do reinício da disputa aberta para as demais colocações. Posição melhor aumenta a chance de convocação como remanescente."
+    saida: Colocação atualizada
+    base_legal: [[56, "§ 4º", fundamento], [90, "§ 2º", referencia]]
+
+  # ============================================================ F03 Julgamento
+  - codigo: 14133-F03-T01
+    fase: F03
+    titulo: Responder à negociação
+    natureza: faculdade
+    ator: licitante
+    evento_abertura: CONVOCACAO_NEGOCIACAO
+    prazo: {unidade: definido_no_edital, obs: "Prazo fixado pelo agente de contratação."}
+    descricao: "Negociar condições mais vantajosas quando convocado (1º colocado; demais na ordem se o 1º ficar acima do preço máximo)."
+    saida: Proposta ajustada ou recusa registrada
+    base_legal: [[61, "caput", fundamento], [61, "§ 1º", fundamento], [61, "§ 2º", referencia]]
+  - codigo: 14133-F03-T02
+    fase: F03
+    titulo: Demonstrar exequibilidade da proposta
+    natureza: obrigacao
+    ator: licitante
+    evento_abertura: DILIGENCIA_EXEQUIBILIDADE
+    prazo: {unidade: definido_no_edital, obs: "Prazo da diligência."}
+    consequencia: "Proposta não demonstrada é desclassificada (art. 59 IV)."
+    descricao: "Comprovar que o preço cobre custos: composição, notas de compra, contratos anteriores. Em obras, abaixo de 75% do orçado é inexequível."
+    saida: Memória de cálculo e comprovantes
+    base_legal: [[59, "IV", consequencia], [59, "§ 2º", fundamento], [59, "§ 4º", referencia]]
+  - codigo: 14133-F03-T03
+    fase: F03
+    titulo: Reelaborar planilhas (obras e engenharia)
+    natureza: obrigacao
+    ator: licitante
+    evento_abertura: RESULTADO_JULGAMENTO
+    prazo: {unidade: definido_no_edital}
+    condicao: {objeto: obra_engenharia, posicao: vencedor}
+    descricao: "Enviar planilhas com quantitativos, custos unitários, BDI e encargos sociais ajustados ao valor final da proposta."
+    saida: Planilhas reelaboradas
+    base_legal: [[56, "§ 5º", fundamento]]
+  - codigo: 14133-F03-T04
+    fase: F03
+    titulo: Prestar garantia adicional (proposta < 85%)
+    natureza: obrigacao
+    ator: licitante
+    evento_abertura: RESULTADO_JULGAMENTO
+    prazo: {unidade: definido_no_edital}
+    condicao: {objeto: obra_engenharia, proposta_abaixo_85pct: true}
+    descricao: "Garantia adicional equivalente à diferença entre 85% do orçado e o valor da proposta."
+    saida: Comprovante de garantia adicional
+    base_legal: [[59, "§ 5º", fundamento]]
+  - codigo: 14133-F03-T05
+    fase: F03
+    titulo: Analisar a proposta aceita do concorrente
+    natureza: acompanhamento
+    ator: licitante
+    evento_abertura: RESULTADO_JULGAMENTO
+    prazo: {unidade: imediato, obs: "Antes do fim da sessão, para decidir a intenção de recurso."}
+    descricao: "Checar especificação técnica, preço acima do orçamento, inexequibilidade e vícios insanáveis da proposta aceita. Base para a intenção de recurso (F05-T01)."
+    saida: Nota de análise com pontos de recurso
+    base_legal: [[59, "caput, I a V", fundamento]]
+
+  # ============================================================ F04 Habilitação
+  - codigo: 14133-F04-T01
+    fase: F04
+    titulo: Enviar documentos de habilitação
+    natureza: obrigacao
+    ator: licitante
+    evento_abertura: CONVOCACAO_HABILITACAO
+    prazo: {unidade: definido_no_edital, obs: "Prazo fixado na convocação."}
+    condicao: {posicao: vencedor}
+    consequencia: "Não entregar a documentação é infração (art. 155 IV)."
+    descricao: "Enviar habilitação jurídica, técnica, fiscal/social/trabalhista e econômico-financeira. Em regra só o licitante vencedor entrega."
+    saida: Pacote de habilitação enviado
+    base_legal: [[62, "caput, I a IV", fundamento], [63, "II", fundamento], [155, "IV", consequencia]]
+  - codigo: 14133-F04-T02
+    fase: F04
+    parent: 14133-F04-T01
+    titulo: Regularidade fiscal
+    natureza: obrigacao
+    ator: licitante
+    evento_abertura: CONVOCACAO_HABILITACAO
+    prazo: {unidade: definido_no_edital}
+    condicao: {posicao: vencedor}
+    descricao: "Certidões de regularidade fiscal, exigidas só depois do julgamento e só do mais bem classificado."
+    saida: Certidões válidas
+    base_legal: [[63, "III", fundamento]]
+  - codigo: 14133-F04-T03
+    fase: F04
+    parent: 14133-F04-T01
+    titulo: Qualificação técnica (atestados)
+    natureza: obrigacao
+    ator: licitante
+    evento_abertura: CONVOCACAO_HABILITACAO
+    prazo: {unidade: definido_no_edital}
+    condicao: {posicao: vencedor}
+    descricao: "Atestados de capacidade técnica restritos às parcelas relevantes (≥ 4% do valor), com quantidade mínima de até 50%. Profissionais indicados devem participar da execução."
+    saida: Atestados e CATs
+    base_legal: [[67, "caput", fundamento], [67, "§ 1º", referencia], [67, "§ 2º", referencia], [67, "§ 6º", referencia]]
+  - codigo: 14133-F04-T04
+    fase: F04
+    parent: 14133-F04-T01
+    titulo: Qualificação econômico-financeira
+    natureza: obrigacao
+    ator: licitante
+    evento_abertura: CONVOCACAO_HABILITACAO
+    prazo: {unidade: definido_no_edital}
+    condicao: {posicao: vencedor}
+    descricao: "Balanço e demonstrações dos 2 últimos exercícios e certidão negativa de falência; índices conforme edital."
+    saida: Demonstrações e certidão
+    base_legal: [[69, "I e II", fundamento]]
+  - codigo: 14133-F04-T05
+    fase: F04
+    titulo: Atender diligência de habilitação
+    natureza: obrigacao
+    ator: licitante
+    evento_abertura: DILIGENCIA_HABILITACAO
+    prazo: {unidade: definido_no_edital, obs: "Prazo da diligência."}
+    descricao: "Só é permitido complementar informação sobre documento já entregue (fato existente na abertura) ou atualizar documento que venceu depois do recebimento das propostas. Documento novo fora disso não é aceito."
+    saida: Documento complementado ou atualizado
+    base_legal: [[64, "caput, I e II", fundamento], [64, "§ 1º", referencia]]
+
+  # ============================================================ F05 Recursal
+  - codigo: 14133-F05-T01
+    fase: F05
+    titulo: Manifestar intenção de recorrer
+    natureza: faculdade
+    ator: licitante
+    evento_abertura: ATA_HABILITACAO
+    prazo: {unidade: imediato, obs: "Imediatamente após o resultado da habilitação (sem inversão de fases)."}
+    condicao: {inversao_fases: false}
+    consequencia: "Preclusão: sem intenção imediata, perde-se o direito de recorrer do julgamento e da habilitação."
+    descricao: "Registrar na sessão a intenção de recorrer contra o julgamento das propostas ou a habilitação/inabilitação, com motivação resumida."
+    saida: Intenção registrada em ata
+    base_legal: [[165, "§ 1º, I", fundamento], [165, "I, b e c", referencia]]
+  - codigo: 14133-F05-T02
+    fase: F05
+    titulo: Apresentar razões de recurso
+    natureza: faculdade
+    ator: licitante
+    evento_abertura: INTENCAO_RECURSO_REGISTRADA
+    prazo: {qtd: 3, unidade: dias_uteis, sentido: apos, evento: ATA_HABILITACAO, obs: "Contados da intimação ou da lavratura da ata de habilitação/inabilitação."}
+    condicao: {inversao_fases: false}
+    consequencia: "Fora do prazo, recurso intempestivo."
+    efeito_suspensivo: true
+    descricao: "Protocolar as razões recursais dirigidas à autoridade que praticou o ato."
+    depende_de: [[14133-F05-T01, requer]]
+    saida: Petição de recurso
+    base_legal: [[165, "I", prazo], [165, "§ 1º, I", prazo], [165, "§ 2º", referencia], [168, "caput", referencia]]
+  - codigo: 14133-F05-T03
+    fase: F05
+    titulo: Pedir vista dos autos
+    natureza: direito
+    ator: licitante
+    evento_abertura: ATA_HABILITACAO
+    prazo: {unidade: sem_prazo_legal, obs: "Pedir cedo: o prazo de razões/contrarrazões continua correndo."}
+    descricao: "Acesso aos elementos indispensáveis à defesa (propostas, documentos de habilitação, diligências)."
+    saida: Cópia dos autos
+    base_legal: [[165, "§ 5º", fundamento]]
+  - codigo: 14133-F05-T04
+    fase: F05
+    titulo: Apresentar contrarrazões
+    natureza: faculdade
+    ator: licitante
+    evento_abertura: RECURSO_TERCEIRO_DIVULGADO
+    prazo: {qtd: 3, unidade: dias_uteis, sentido: apos, evento: RECURSO_TERCEIRO_DIVULGADO, obs: "Mesmo prazo do recurso, a partir da intimação ou divulgação da interposição."}
+    descricao: "Defender a própria proposta/habilitação contra recurso de outro licitante."
+    saida: Contrarrazões protocoladas
+    base_legal: [[165, "§ 4º", prazo]]
+  - codigo: 14133-F05-T05
+    fase: F05
+    titulo: Acompanhar decisão do recurso
+    natureza: acompanhamento
+    ator: licitante
+    evento_abertura: DECISAO_RECURSO
+    prazo: {unidade: sem_prazo_legal, obs: "Reconsideração em 3 dias úteis; autoridade superior decide em até 10 dias úteis do recebimento."}
+    descricao: "Registrar reconsideração ou decisão superior. Acolhimento invalida só atos não aproveitáveis."
+    saida: Decisão arquivada
+    base_legal: [[165, "§ 2º", fundamento], [165, "§ 3º", referencia]]
+
+  - codigo: 14133-F05-T06
+    fase: F05
+    titulo: Manifestar intenção de recorrer (inversão de fases)
+    natureza: faculdade
+    ator: licitante
+    evento_abertura: RESULTADO_JULGAMENTO
+    prazo: {unidade: imediato, obs: "Imediatamente após a ata de julgamento, quando a habilitação veio antes (art. 17 § 1º)."}
+    condicao: {inversao_fases: true}
+    consequencia: "Preclusão: sem intenção imediata, perde-se o direito de recorrer do julgamento e da habilitação."
+    descricao: "Com inversão de fases, a fase recursal única abre depois do julgamento. Registrar a intenção com motivação resumida."
+    saida: Intenção registrada em ata
+    base_legal: [[165, "§ 1º, I", fundamento], [17, "§ 1º", referencia]]
+  - codigo: 14133-F05-T07
+    fase: F05
+    titulo: Apresentar razões de recurso (inversão de fases)
+    natureza: faculdade
+    ator: licitante
+    evento_abertura: INTENCAO_RECURSO_REGISTRADA
+    prazo: {qtd: 3, unidade: dias_uteis, sentido: apos, evento: RESULTADO_JULGAMENTO, obs: "Contados da intimação ou da lavratura da ata de julgamento."}
+    condicao: {inversao_fases: true}
+    consequencia: "Fora do prazo, recurso intempestivo."
+    efeito_suspensivo: true
+    descricao: "Protocolar as razões recursais contra o julgamento e a habilitação, na fase recursal única."
+    depende_de: [[14133-F05-T06, requer]]
+    saida: Petição de recurso
+    base_legal: [[165, "§ 1º, I", prazo], [165, "I", prazo], [168, "caput", referencia]]
+
+  # ============================================================ F06 Homologação
+  - codigo: 14133-F06-T01
+    fase: F06
+    titulo: Acompanhar decisão da autoridade superior
+    natureza: acompanhamento
+    ator: licitante
+    evento_abertura: AUTOS_AUTORIDADE_SUPERIOR
+    prazo: {unidade: sem_prazo_legal}
+    descricao: "A autoridade pode devolver para saneamento, revogar, anular ou adjudicar e homologar. Registrar o desfecho."
+    saida: Desfecho registrado
+    base_legal: [[71, "caput, I a IV", fundamento]]
+  - codigo: 14133-F06-T02
+    fase: F06
+    titulo: Manifestar-se antes de anulação ou revogação
+    natureza: direito
+    ator: licitante
+    evento_abertura: AVISO_ANULACAO_REVOGACAO
+    prazo: {unidade: definido_no_edital, obs: "Prazo fixado na intimação."}
+    descricao: "Exercer a manifestação prévia. Revogação exige fato superveniente comprovado; anulação exige ilegalidade insanável indicada."
+    saida: Manifestação protocolada
+    base_legal: [[71, "§ 3º", fundamento], [71, "§ 2º", referencia], [71, "§ 1º", referencia]]
+  - codigo: 14133-F06-T03
+    fase: F06
+    titulo: Recorrer da anulação ou revogação
+    natureza: faculdade
+    ator: licitante
+    evento_abertura: ANULACAO_REVOGACAO
+    prazo: {qtd: 3, unidade: dias_uteis, sentido: apos, evento: ANULACAO_REVOGACAO, obs: "Contados da intimação."}
+    efeito_suspensivo: true
+    descricao: "Recurso contra o ato de anulação ou revogação da licitação."
+    depende_de: [[14133-F06-T02, alternativa_a]]
+    saida: Petição de recurso
+    base_legal: [[165, "I, d", fundamento], [168, "caput", referencia]]
+  - codigo: 14133-F06-T04
+    fase: F06
+    titulo: Registrar resultado homologado (preço e vencedor)
+    natureza: acompanhamento
+    ator: licitante
+    evento_abertura: HOMOLOGACAO
+    prazo: {unidade: sem_prazo_legal}
+    descricao: "Registrar preço homologado, vencedor e classificação. Documentos da fase preparatória passam a ficar disponíveis no PNCP. Classificação LicitaGym: histórico para preço/vencedor, com acompanhamento pós-homologação."
+    saida: Resultado no histórico de preços
+    base_legal: [[71, "IV", fundamento], [54, "§ 3º", referencia]]
+
+  # ============================================================ F07 Contratação
+  - codigo: 14133-F07-T01
+    fase: F07
+    titulo: Assinar o contrato
+    natureza: obrigacao
+    ator: licitante
+    evento_abertura: CONVOCACAO_CONTRATO
+    prazo: {unidade: definido_no_edital, obs: "Prazo da convocação, prorrogável 1 vez (T02)."}
+    condicao: {posicao: vencedor}
+    consequencia: "Recusa injustificada: decai o direito, descumprimento total, sanções e perda da garantia de proposta."
+    descricao: "Assinar o termo de contrato ou aceitar/retirar o instrumento equivalente no prazo e condições do edital."
+    saida: Contrato assinado
+    base_legal: [[90, "caput", fundamento], [90, "§ 5º", consequencia], [155, "VI", consequencia]]
+  - codigo: 14133-F07-T02
+    fase: F07
+    parent: 14133-F07-T01
+    titulo: Pedir prorrogação do prazo de assinatura
+    natureza: faculdade
+    ator: licitante
+    evento_abertura: CONVOCACAO_CONTRATO
+    prazo: {unidade: definido_no_edital, obs: "Durante o transcurso do prazo de convocação; uma única vez, por igual período."}
+    condicao: {posicao: vencedor}
+    descricao: "Solicitar prorrogação justificada; depende de aceitação do motivo pela Administração."
+    saida: Pedido de prorrogação
+    base_legal: [[90, "§ 1º", fundamento]]
+  - codigo: 14133-F07-T03
+    fase: F07
+    titulo: Prestar garantia contratual
+    natureza: obrigacao
+    ator: licitante
+    evento_abertura: HOMOLOGACAO
+    prazo: {unidade: definido_no_edital, obs: "Seguro-garantia: edital deve dar no mínimo 1 mês da homologação, antes da assinatura."}
+    condicao: {garantia_contratual: true}
+    descricao: "Escolher a modalidade (caução, seguro-garantia, fiança, título de capitalização) e prestar até 5% do valor inicial (até 10% se justificado). Contínuos > 1 ano: base é o valor anual."
+    saida: Apólice/carta de fiança/comprovante
+    base_legal: [[96, "§ 1º", fundamento], [96, "§ 3º", prazo], [98, "caput e parágrafo único", referencia], [97, "I", referencia]]
+  - codigo: 14133-F07-T04
+    fase: F07
+    titulo: Responder convocação como remanescente
+    natureza: faculdade
+    ator: licitante
+    evento_abertura: CONVOCACAO_REMANESCENTE
+    prazo: {unidade: definido_no_edital}
+    condicao: {posicao: remanescente}
+    descricao: "Se o vencedor não assinar, aceitar contratar nas condições do vencedor. Se ninguém aceitar, a Administração pode negociar com remanescentes ou contratar nas condições deles, na ordem de classificação. Remanescente em negociação não sofre a sanção do § 5º."
+    saida: Aceite, contraproposta ou recusa
+    base_legal: [[90, "§ 2º", fundamento], [90, "§ 4º", fundamento], [90, "§ 6º", referencia]]
+  - codigo: 14133-F07-T05
+    fase: F07
+    titulo: Controlar validade da proposta
+    natureza: acompanhamento
+    ator: licitante
+    evento_abertura: HOMOLOGACAO
+    prazo: {unidade: definido_no_edital, obs: "Validade da proposta indicada no edital."}
+    descricao: "Decorrida a validade sem convocação, o licitante fica liberado do compromisso."
+    saida: Data de liberação registrada
+    base_legal: [[90, "§ 3º", fundamento], [155, "V", referencia]]
+  - codigo: 14133-F07-T06
+    fase: F07
+    titulo: Pedir devolução da garantia de proposta
+    natureza: direito
+    ator: licitante
+    evento_abertura: CONTRATO_ASSINADO
+    prazo: {qtd: 10, unidade: dias_uteis, sentido: apos, evento: CONTRATO_ASSINADO, obs: "Ou da declaração de fracasso da licitação."}
+    condicao: {garantia_proposta: true}
+    descricao: "A garantia de proposta deve ser devolvida em 10 dias úteis; cobrar se não ocorrer."
+    saida: Garantia devolvida
+    base_legal: [[58, "§ 2º", prazo]]
+  - codigo: 14133-F07-T07
+    fase: F07
+    titulo: Confirmar publicação do contrato no PNCP
+    natureza: acompanhamento
+    ator: contratado
+    evento_abertura: CONTRATO_ASSINADO
+    prazo: {qtd: 20, unidade: dias_uteis, sentido: apos, evento: CONTRATO_ASSINADO, obs: "Prazo da Administração; condição de eficácia do contrato e aditivos."}
+    descricao: "Verificar a divulgação no PNCP; sem ela o contrato não tem eficácia."
+    saida: Link do contrato no PNCP
+    base_legal: [[94, "caput e I", fundamento]]
+  - codigo: 14133-F07-T08
+    fase: F07
+    titulo: Registro em entidade profissional (empresa estrangeira)
+    natureza: obrigacao
+    ator: licitante
+    evento_abertura: CONVOCACAO_CONTRATO
+    prazo: {unidade: definido_no_edital, obs: "No momento da assinatura."}
+    condicao: {estrangeira: true}
+    descricao: "Apresentar a solicitação de registro perante a entidade profissional competente no Brasil."
+    saida: Protocolo de registro
+    base_legal: [[67, "§ 7º", fundamento]]
+
+  # ============================================================ F08 Execução
+  - codigo: 14133-F08-T01
+    fase: F08
+    titulo: Executar conforme contrato
+    natureza: obrigacao
+    ator: contratado
+    evento_abertura: INICIO_EXECUCAO
+    prazo: {unidade: definido_no_edital, obs: "Cronograma contratual."}
+    consequencia: "Inexecução parcial/total e retardamento são infrações (art. 155 I a III e VII)."
+    descricao: "Cumprir cláusulas, especificações e prazos; responder pelas consequências da inexecução."
+    saida: Entregas no cronograma
+    base_legal: [[115, "caput", fundamento], [155, "I, II, III e VII", consequencia]]
+  - codigo: 14133-F08-T02
+    fase: F08
+    titulo: Atender determinações do fiscal
+    natureza: obrigacao
+    ator: contratado
+    evento_abertura: NOTIFICACAO_FISCAL
+    prazo: {unidade: definido_no_edital, obs: "Prazo da notificação."}
+    consequencia: "Desatender determinações é motivo de extinção (art. 137 II)."
+    descricao: "Regularizar faltas ou defeitos anotados pelo fiscal e registrar a resposta."
+    saida: Resposta ao registro de ocorrência
+    base_legal: [[117, "§ 1º", fundamento], [137, "II", consequencia]]
+  - codigo: 14133-F08-T03
+    fase: F08
+    titulo: Corrigir vícios às próprias custas
+    natureza: obrigacao
+    ator: contratado
+    evento_abertura: NOTIFICACAO_FISCAL
+    prazo: {unidade: definido_no_edital}
+    descricao: "Reparar, corrigir, remover, reconstruir ou substituir objeto com vício, defeito ou incorreção."
+    saida: Objeto corrigido
+    base_legal: [[119, "caput", fundamento], [120, "caput", referencia]]
+  - codigo: 14133-F08-T04
+    fase: F08
+    titulo: Manter encargos em dia
+    natureza: obrigacao
+    ator: contratado
+    evento_abertura: INICIO_EXECUCAO
+    prazo: {unidade: sem_prazo_legal, obs: "Contínuo durante a execução."}
+    descricao: "Encargos trabalhistas, previdenciários, fiscais e comerciais são do contratado."
+    saida: Comprovantes mensais
+    base_legal: [[121, "caput e § 1º", fundamento]]
+  - codigo: 14133-F08-T05
+    fase: F08
+    parent: 14133-F08-T04
+    titulo: Comprovar quitação trabalhista (mão de obra exclusiva)
+    natureza: obrigacao
+    ator: contratado
+    evento_abertura: INICIO_EXECUCAO
+    prazo: {unidade: definido_no_edital}
+    condicao: {mao_de_obra_exclusiva: true}
+    descricao: "Atender às medidas previstas no edital/contrato: caução ou seguro para verbas rescisórias, comprovação de quitação para pagamento, conta vinculada."
+    saida: Comprovação de quitação
+    base_legal: [[121, "§ 3º", fundamento]]
+  - codigo: 14133-F08-T06
+    fase: F08
+    titulo: Protocolar requerimento e cobrar decisão
+    natureza: direito
+    ator: contratado
+    evento_abertura: REQUERIMENTO_PROTOCOLADO
+    prazo: {qtd: 1, unidade: meses, sentido: apos, evento: REQUERIMENTO_PROTOCOLADO, obs: "Prazo da Administração após concluída a instrução, prorrogável por igual período; salvo prazo específico."}
+    descricao: "A Administração tem o dever de decidir explicitamente solicitações e reclamações. Controlar o prazo e cobrar."
+    saida: Decisão ou cobrança formal
+    base_legal: [[123, "caput", fundamento], [123, "parágrafo único", prazo]]
+  - codigo: 14133-F08-T07
+    fase: F08
+    titulo: Registrar suspensão e prorrogar cronograma
+    natureza: direito
+    ator: contratado
+    evento_abertura: SUSPENSAO_EXECUCAO
+    prazo: {unidade: sem_prazo_legal}
+    descricao: "Impedimento, paralisação ou suspensão prorroga o cronograma pelo tempo correspondente (apostila). Contar a duração: > 3 meses ou 90 dias úteis somados abre F10-T01. Na suspensão por culpa da Administração, fica desobrigado de renovar a garantia."
+    saida: Apostila e contagem da suspensão
+    base_legal: [[115, "§ 5º", fundamento], [96, "§ 2º", referencia], [137, "§ 2º, II e III", referencia]]
+  - codigo: 14133-F08-T08
+    fase: F08
+    titulo: Acompanhar recebimento provisório e definitivo
+    natureza: acompanhamento
+    ator: contratado
+    evento_abertura: ENTREGA_REALIZADA
+    prazo: {unidade: definido_no_edital, obs: "Prazos e métodos no regulamento ou contrato."}
+    descricao: "Obter termo de recebimento provisório e definitivo; custear ensaios e testes exigidos, salvo previsão contrária. Objeto em desacordo pode ser rejeitado."
+    saida: Termos de recebimento
+    base_legal: [[140, "I e II", fundamento], [140, "§ 1º", referencia], [140, "§ 4º", referencia]]
+  - codigo: 14133-F08-T09
+    fase: F08
+    titulo: Faturar e acompanhar pagamento
+    natureza: direito
+    ator: contratado
+    evento_abertura: NOTA_FISCAL_EMITIDA
+    prazo: {unidade: definido_no_edital, obs: "Prazo de pagamento do contrato. Atraso > 2 meses da NF abre F10-T01."}
+    descricao: "Acompanhar a ordem cronológica de pagamentos publicada mensalmente pelo órgão; em controvérsia, exigir a liberação da parcela incontroversa no prazo de pagamento."
+    saida: Pagamento recebido ou cobrança
+    base_legal: [[141, "caput", fundamento], [141, "§ 3º", referencia], [143, "caput", fundamento], [137, "§ 2º, IV", referencia]]
+  - codigo: 14133-F08-T10
+    fase: F08
+    titulo: Manter apólice de seguro-garantia vigente
+    natureza: obrigacao
+    ator: contratado
+    evento_abertura: INICIO_EXECUCAO
+    prazo: {unidade: sem_prazo_legal, obs: "Endossar a cada alteração de vigência."}
+    condicao: {garantia_contratual: true}
+    descricao: "A vigência da apólice acompanha o contrato, com endosso a cada alteração; substituição permitida no aniversário, sem período descoberto."
+    saida: Endosso da apólice
+    base_legal: [[97, "I", fundamento], [97, "parágrafo único", referencia]]
+  - codigo: 14133-F08-T11
+    fase: F08
+    titulo: Substituir profissional indicado (com aprovação)
+    natureza: faculdade
+    ator: contratado
+    evento_abertura: INICIO_EXECUCAO
+    prazo: {unidade: sem_prazo_legal}
+    descricao: "Profissionais indicados na habilitação devem participar; substituição só por experiência equivalente ou superior aprovada pela Administração."
+    saida: Pedido de substituição aprovado
+    base_legal: [[67, "§ 6º", fundamento]]
+  - codigo: 14133-F08-T12
+    fase: F08
+    titulo: Garantia de solidez da obra (5 anos)
+    natureza: obrigacao
+    ator: contratado
+    evento_abertura: RECEBIMENTO_DEFINITIVO
+    prazo: {qtd: 5, unidade: anos, sentido: apos, evento: RECEBIMENTO_DEFINITIVO, obs: "Prazo mínimo; edital/contrato pode prever mais."}
+    condicao: {objeto: obra_engenharia}
+    descricao: "Responsabilidade objetiva pela solidez, segurança e funcionalidade; reparar vícios identificados."
+    saida: Atendimento de chamados de garantia
+    base_legal: [[140, "§ 6º", fundamento]]
+
+  # ============================================================ F09 Alteração e equilíbrio
+  - codigo: 14133-F09-T01
+    fase: F09
+    titulo: Avaliar alteração unilateral (limite 25%/50%)
+    natureza: obrigacao
+    ator: contratado
+    evento_abertura: ALTERACAO_UNILATERAL
+    prazo: {unidade: definido_no_edital, obs: "Prazo do termo aditivo."}
+    descricao: "Aceitar acréscimos ou supressões até 25% do valor inicial atualizado (50% para acréscimos em reforma). Supressão acima do limite dá direito à extinção (F10-T01)."
+    saida: Parecer sobre o aditivo
+    base_legal: [[124, "I", fundamento], [125, "caput", fundamento], [137, "§ 2º, I", referencia]]
+  - codigo: 14133-F09-T02
+    fase: F09
+    parent: 14133-F09-T01
+    titulo: Exigir reequilíbrio no mesmo aditivo
+    natureza: direito
+    ator: contratado
+    evento_abertura: ALTERACAO_UNILATERAL
+    prazo: {unidade: definido_no_edital, obs: "No mesmo termo aditivo da alteração."}
+    descricao: "Alteração unilateral que aumente ou diminua encargos deve vir com o reequilíbrio no mesmo termo."
+    saida: Planilha de impacto
+    base_legal: [[130, "caput", fundamento]]
+  - codigo: 14133-F09-T03
+    fase: F09
+    titulo: Pedir reequilíbrio econômico-financeiro
+    natureza: direito
+    ator: contratado
+    evento_abertura: FATO_SUPERVENIENTE
+    prazo: {unidade: definido_no_edital, obs: "Durante a vigência e antes de eventual prorrogação (art. 131 parágrafo único)."}
+    consequencia: "Pedido após a prorrogação pode não ser conhecido; após a extinção, só por termo indenizatório (T09)."
+    descricao: "Força maior, caso fortuito, fato do príncipe ou fato imprevisível que inviabilize a execução, respeitada a matriz de riscos."
+    saida: Pedido instruído com memória de cálculo
+    base_legal: [[124, "II, d", fundamento], [131, "parágrafo único", prazo], [92, "XI", referencia]]
+  - codigo: 14133-F09-T04
+    fase: F09
+    titulo: Pedir reajuste pelo índice contratual
+    natureza: direito
+    ator: contratado
+    evento_abertura: DATA_BASE_ANIVERSARIO
+    prazo: {unidade: definido_no_edital, obs: "Periodicidade e data-base do contrato, vinculada à data do orçamento estimado."}
+    descricao: "Aplicar o índice de reajuste previsto em cláusula obrigatória."
+    saida: Pedido de apostilamento de reajuste
+    base_legal: [[92, "V", fundamento], [92, "§ 3º", fundamento]]
+  - codigo: 14133-F09-T05
+    fase: F09
+    titulo: Pedir repactuação (serviços com mão de obra)
+    natureza: direito
+    ator: contratado
+    evento_abertura: DATA_BASE_ANIVERSARIO
+    prazo: {qtd: 1, unidade: anos, sentido: apos, evento: DATA_BASE_ANIVERSARIO, obs: "Interregno mínimo de 1 ano da proposta ou da última repactuação."}
+    condicao: {servico_continuo: true, mao_de_obra_exclusiva: true}
+    descricao: "Demonstração analítica da variação de custos; mão de obra vinculada à convenção/acordo coletivo da proposta."
+    saida: Planilha de repactuação
+    base_legal: [[135, "caput", fundamento], [135, "§ 3º", prazo], [92, "X", referencia]]
+  - codigo: 14133-F09-T06
+    fase: F09
+    titulo: Pedir revisão por mudança de tributo ou encargo legal
+    natureza: direito
+    ator: contratado
+    evento_abertura: FATO_SUPERVENIENTE
+    prazo: {unidade: sem_prazo_legal}
+    descricao: "Criação, alteração ou extinção de tributo ou encargo legal após a proposta, com repercussão comprovada no preço (para mais ou para menos)."
+    saida: Pedido de revisão
+    base_legal: [[134, "caput", fundamento]]
+  - codigo: 14133-F09-T07
+    fase: F09
+    titulo: Decidir e negociar prorrogação
+    natureza: faculdade
+    ator: contratado
+    evento_abertura: VENCIMENTO_VIGENCIA_PROXIMO
+    prazo: {unidade: definido_no_edital, obs: "Antes do fim da vigência; limite de 10 anos."}
+    condicao: {servico_continuo: true}
+    descricao: "Prorrogação exige previsão no edital e vantajosidade atestada; permite negociação ou extinção sem ônus. Antes, protocolar reequilíbrio pendente (T03)."
+    depende_de: [[14133-F09-T03, requer]]
+    saida: Aceite ou recusa da prorrogação
+    base_legal: [[107, "caput", fundamento], [131, "parágrafo único", referencia]]
+  - codigo: 14133-F09-T08
+    fase: F09
+    titulo: Propor alteração consensual
+    natureza: faculdade
+    ator: contratado
+    evento_abertura: INICIO_EXECUCAO
+    prazo: {unidade: sem_prazo_legal}
+    descricao: "Substituir garantia, mudar regime de execução ou modo de fornecimento, ou forma de pagamento por circunstância superveniente."
+    saida: Proposta de aditivo
+    base_legal: [[124, "II, a, b e c", fundamento]]
+  - codigo: 14133-F09-T09
+    fase: F09
+    titulo: Pedir indenização por desequilíbrio após extinção
+    natureza: direito
+    ator: contratado
+    evento_abertura: CONTRATO_EXTINTO
+    prazo: {unidade: sem_prazo_legal}
+    descricao: "A extinção não impede reconhecer desequilíbrio; indenização por termo indenizatório."
+    saida: Pedido de indenização
+    base_legal: [[131, "caput", fundamento]]
+
+  # ============================================================ F10 Extinção
+  - codigo: 14133-F10-T01
+    fase: F10
+    titulo: Pedir extinção do contrato (direito do contratado)
+    natureza: direito
+    ator: contratado
+    evento_abertura: HIPOTESE_EXTINCAO_CONTRATADO
+    prazo: {unidade: sem_prazo_legal}
+    descricao: "Hipóteses: supressão além do limite; suspensão por ordem escrita > 3 meses; suspensões somando 90 dias úteis; atraso de pagamento > 2 meses da NF; área/local/objeto não liberado. Não cabe em calamidade, perturbação da ordem ou guerra, nem se o contratado contribuiu."
+    saida: Pedido de extinção
+    base_legal: [[137, "§ 2º, I a V", fundamento], [137, "§ 3º, I", referencia]]
+  - codigo: 14133-F10-T02
+    fase: F10
+    titulo: Optar pela suspensão do cumprimento
+    natureza: direito
+    ator: contratado
+    evento_abertura: HIPOTESE_EXTINCAO_CONTRATADO
+    prazo: {unidade: sem_prazo_legal}
+    descricao: "Nas hipóteses de suspensão prolongada ou atraso de pagamento (§ 2º II a IV), suspender as obrigações até a normalização, com direito a reequilíbrio."
+    depende_de: [[14133-F10-T01, alternativa_a]]
+    saida: Comunicação de suspensão
+    base_legal: [[137, "§ 3º, II", fundamento]]
+  - codigo: 14133-F10-T03
+    fase: F10
+    titulo: Defender-se na extinção unilateral
+    natureza: direito
+    ator: contratado
+    evento_abertura: EXTINCAO_UNILATERAL_INTIMADA
+    prazo: {unidade: definido_no_edital, obs: "Prazo da intimação (contraditório e ampla defesa)."}
+    descricao: "Apresentar defesa no processo que apura motivo de extinção."
+    saida: Defesa protocolada
+    base_legal: [[137, "caput", fundamento], [138, "I e § 1º", referencia]]
+  - codigo: 14133-F10-T04
+    fase: F10
+    titulo: Recorrer da extinção unilateral
+    natureza: faculdade
+    ator: contratado
+    evento_abertura: EXTINCAO_UNILATERAL_INTIMADA
+    prazo: {qtd: 3, unidade: dias_uteis, sentido: apos, evento: EXTINCAO_UNILATERAL_INTIMADA, obs: "Contados da intimação."}
+    efeito_suspensivo: true
+    descricao: "Recurso contra extinção determinada por ato unilateral e escrito da Administração."
+    depende_de: [[14133-F10-T03, requer]]
+    saida: Petição de recurso
+    base_legal: [[165, "I, e", fundamento], [168, "caput", referencia]]
+  - codigo: 14133-F10-T05
+    fase: F10
+    titulo: Cobrar ressarcimento (culpa da Administração)
+    natureza: direito
+    ator: contratado
+    evento_abertura: CONTRATO_EXTINTO
+    prazo: {unidade: sem_prazo_legal}
+    descricao: "Extinção por culpa exclusiva da Administração: prejuízos comprovados, devolução da garantia, pagamentos até a extinção e custo de desmobilização."
+    saida: Pedido de ressarcimento
+    base_legal: [[138, "§ 2º", fundamento]]
+  - codigo: 14133-F10-T06
+    fase: F10
+    titulo: Pedir liberação da garantia contratual
+    natureza: direito
+    ator: contratado
+    evento_abertura: CONTRATO_EXTINTO
+    prazo: {unidade: sem_prazo_legal}
+    condicao: {garantia_contratual: true}
+    descricao: "Liberação após a fiel execução ou extinção por culpa exclusiva da Administração; em dinheiro, atualizada monetariamente."
+    saida: Garantia liberada
+    base_legal: [[100, "caput", fundamento]]
+  - codigo: 14133-F10-T07
+    fase: F10
+    titulo: Propor extinção consensual ou mediação
+    natureza: faculdade
+    ator: contratado
+    evento_abertura: INICIO_EXECUCAO
+    prazo: {unidade: sem_prazo_legal}
+    descricao: "Acordo, conciliação, mediação ou comitê de resolução de disputas, se houver interesse da Administração."
+    saida: Proposta de acordo
+    base_legal: [[138, "II", fundamento]]
+  - codigo: 14133-F10-T08
+    fase: F10
+    titulo: Responder convocação para remanescente de contrato rescindido
+    natureza: faculdade
+    ator: licitante
+    evento_abertura: CONVOCACAO_REMANESCENTE
+    prazo: {unidade: definido_no_edital}
+    condicao: {posicao: remanescente}
+    descricao: "Após rescisão do contrato do vencedor, a Administração pode convocar os demais classificados para o remanescente da obra, serviço ou fornecimento."
+    saida: Aceite ou recusa
+    base_legal: [[90, "§ 7º", fundamento]]
+
+  # ============================================================ F11 Sancionatório
+  - codigo: 14133-F11-T01
+    fase: F11
+    titulo: Prevenir infrações (checklist)
+    natureza: preparacao
+    ator: licitante_ou_contratado
+    prazo: {unidade: sem_prazo_legal}
+    descricao: "Checklist das infrações: não entregar documentação, não manter proposta, não assinar contrato, retardar execução, declaração falsa, fraude etc."
+    saida: Checklist revisado por certame
+    base_legal: [[155, "I a XII", fundamento]]
+  - codigo: 14133-F11-T02
+    fase: F11
+    titulo: Apresentar defesa em processo de multa
+    natureza: direito
+    ator: licitante_ou_contratado
+    evento_abertura: NOTIFICACAO_MULTA
+    prazo: {qtd: 15, unidade: dias_uteis, sentido: apos, evento: NOTIFICACAO_MULTA, obs: "Contados da intimação."}
+    descricao: "Multa de 0,5% a 30% do valor do contrato; defesa com fatos, atenuantes e integridade."
+    saida: Defesa protocolada
+    base_legal: [[157, "caput", prazo], [156, "§ 3º", referencia], [156, "§ 1º", referencia]]
+  - codigo: 14133-F11-T03
+    fase: F11
+    titulo: Defesa em processo de responsabilização
+    natureza: direito
+    ator: licitante_ou_contratado
+    evento_abertura: INSTAURACAO_RESPONSABILIZACAO
+    prazo: {qtd: 15, unidade: dias_uteis, sentido: apos, evento: INSTAURACAO_RESPONSABILIZACAO, obs: "Defesa escrita e especificação de provas."}
+    descricao: "Processo para impedimento de licitar (até 3 anos) ou inidoneidade (3 a 6 anos), conduzido por comissão."
+    saida: Defesa e rol de provas
+    base_legal: [[158, "caput", prazo], [156, "§§ 4º e 5º", referencia]]
+  - codigo: 14133-F11-T04
+    fase: F11
+    titulo: Recorrer de advertência, multa ou impedimento
+    natureza: faculdade
+    ator: licitante_ou_contratado
+    evento_abertura: SANCAO_APLICADA
+    prazo: {qtd: 15, unidade: dias_uteis, sentido: apos, evento: SANCAO_APLICADA, obs: "Reconsideração em 5 dias úteis; decisão superior em até 20 dias úteis."}
+    efeito_suspensivo: true
+    descricao: "Recurso contra sanções dos incisos I, II e III do art. 156."
+    saida: Petição de recurso
+    base_legal: [[166, "caput", prazo], [166, "parágrafo único", referencia], [168, "caput", referencia]]
+  - codigo: 14133-F11-T05
+    fase: F11
+    titulo: Pedir reconsideração da inidoneidade
+    natureza: faculdade
+    ator: licitante_ou_contratado
+    evento_abertura: SANCAO_APLICADA
+    prazo: {qtd: 15, unidade: dias_uteis, sentido: apos, evento: SANCAO_APLICADA, obs: "Decisão em até 20 dias úteis."}
+    efeito_suspensivo: true
+    descricao: "Contra declaração de inidoneidade cabe apenas pedido de reconsideração."
+    depende_de: [[14133-F11-T04, alternativa_a]]
+    saida: Pedido de reconsideração
+    base_legal: [[167, "caput", prazo], [168, "caput", referencia]]
+  - codigo: 14133-F11-T06
+    fase: F11
+    titulo: Monitorar registro no CEIS/CNEP e prescrição
+    natureza: acompanhamento
+    ator: licitante_ou_contratado
+    evento_abertura: SANCAO_APLICADA
+    prazo: {qtd: 15, unidade: dias_uteis, sentido: apos, evento: SANCAO_APLICADA, obs: "Prazo do órgão para informar. Prescrição: 5 anos da ciência da infração."}
+    descricao: "Conferir o registro da sanção nos cadastros nacionais e controlar prescrição, interrupções e suspensões."
+    saida: Situação cadastral registrada
+    base_legal: [[161, "caput", prazo], [158, "§ 4º", referencia]]
+  - codigo: 14133-F11-T07
+    fase: F11
+    titulo: Pedir reabilitação
+    natureza: direito
+    ator: licitante_ou_contratado
+    evento_abertura: SANCAO_APLICADA
+    prazo: {qtd: 1, unidade: anos, sentido: apos, evento: SANCAO_APLICADA, obs: "Mínimo de 1 ano (impedimento) ou 3 anos (inidoneidade)."}
+    descricao: "Requisitos cumulativos: reparação integral do dano, pagamento da multa, prazo mínimo, condições do ato punitivo e análise jurídica; programa de integridade para os incisos VIII e XII."
+    saida: Pedido de reabilitação
+    base_legal: [[163, "caput, I a V", fundamento], [163, "parágrafo único", referencia]]
+
+  # ============================================================ F12 Ata de registro de preços
+  - codigo: 14133-F12-T01
+    fase: F12
+    titulo: Cumprir compromisso de fornecimento da ata
+    natureza: obrigacao
+    ator: contratado
+    evento_abertura: ATA_SRP_ASSINADA
+    prazo: {qtd: 1, unidade: anos, sentido: apos, evento: ATA_SRP_ASSINADA, obs: "Vigência de 1 ano, prorrogável por igual período se o preço for vantajoso."}
+    condicao: {srp: true}
+    descricao: "Preço registrado gera compromisso de fornecimento; a Administração não é obrigada a contratar."
+    saida: Controle de saldo e vigência da ata
+    base_legal: [[83, "caput", fundamento], [84, "caput", prazo]]
+  - codigo: 14133-F12-T02
+    fase: F12
+    titulo: Avaliar pedido de adesão à ata
+    natureza: faculdade
+    ator: contratado
+    evento_abertura: PEDIDO_ADESAO_ATA
+    prazo: {unidade: sem_prazo_legal}
+    condicao: {srp: true}
+    descricao: "A adesão de não participante depende da aceitação do fornecedor. Checar limites: 50% por órgão aderente e o dobro do quantitativo no total; órgão federal não adere a ata estadual/municipal."
+    saida: Aceite ou recusa da adesão
+    base_legal: [[86, "§ 2º, III", fundamento], [86, "§§ 4º e 5º", referencia], [86, "§ 8º", referencia]]
+  - codigo: 14133-F12-T03
+    fase: F12
+    titulo: Prospectar órgãos para adesão
+    natureza: faculdade
+    ator: contratado
+    evento_abertura: ATA_SRP_ASSINADA
+    prazo: {unidade: sem_prazo_legal, obs: "Enquanto a ata estiver vigente."}
+    condicao: {srp: true}
+    descricao: "Identificar órgãos que podem aderir (regras do § 3º) e apresentar a ata com justificativa de vantagem e preço compatível com o mercado."
+    saida: Lista de órgãos prospectados
+    base_legal: [[86, "§ 2º, I e II", fundamento], [86, "§ 3º", referencia]]

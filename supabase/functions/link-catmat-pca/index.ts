@@ -1,5 +1,9 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { corsHeaders, jsonResponse, validateCronAuth } from "../_shared/http.ts";
+import {
+  corsHeaders,
+  jsonResponse,
+  validateCronAuth,
+} from "../_shared/http.ts";
 import { linkTargetClasses } from "../_shared/pncp/catmat-scope-resolver.ts";
 import { createServiceClient } from "../_shared/pncp/supabase-admin.ts";
 
@@ -49,7 +53,9 @@ async function linkOneClass(
 
   const { data: pcaItens, error: pcaError } = await client
     .from("pca_itens")
-    .select("id, descricao, classe_material_servico, codigo_classe_catmat, ativo")
+    .select(
+      "id, descricao, classe_material_servico, codigo_classe_catmat, ativo",
+    )
     .eq("ativo", true)
     .eq("classe_material_servico", classeCatmat)
     .order("id", { ascending: true })
@@ -86,7 +92,8 @@ async function linkOneClass(
       continue;
     }
 
-    let best: { id: string; codigo_pdm: string | null; score: number } | null = null;
+    let best: { id: string; codigo_pdm: string | null; score: number } | null =
+      null;
     for (const cat of catalogoIndex) {
       const score = jaccard(pcaTokens, cat.tokens);
       if (!best || score > best.score) {
@@ -99,7 +106,11 @@ async function linkOneClass(
       continue;
     }
 
-    const tipo = best.score >= 0.85 ? "exata" : best.score >= 0.7 ? "provavel" : "incerta";
+    const tipo = best.score >= 0.85
+      ? "exata"
+      : best.score >= 0.7
+      ? "provavel"
+      : "incerta";
     const evidencia = `jaccard=${best.score.toFixed(3)};classe=${classeCatmat}`;
 
     const { data: ponteExistente } = await client
@@ -157,16 +168,49 @@ async function linkOneClass(
   };
 }
 
-Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
-  if (req.method !== "POST") return jsonResponse({ error: "Use POST" }, 405);
-  if (!validateCronAuth(req)) return jsonResponse({ error: "Unauthorized" }, 401);
-
-  const parsedBody: unknown = await req.json().catch(() => null);
-  if (!parsedBody || typeof parsedBody !== "object" || Array.isArray(parsedBody)) {
-    return jsonResponse({ error: "Corpo JSON inválido" }, 400);
+export function parseLinkCatmatPcaBody(
+  parsedBody: unknown,
+): { ok: true; body: LinkBody } | { ok: false; response: Response } {
+  if (
+    !parsedBody || typeof parsedBody !== "object" || Array.isArray(parsedBody)
+  ) {
+    return {
+      ok: false,
+      response: jsonResponse({ error: "Corpo JSON inválido" }, 400),
+    };
   }
-  const body = parsedBody as LinkBody;
+
+  const rawClasse = (parsedBody as Record<string, unknown>).classe_catmat;
+  if (
+    rawClasse !== undefined && rawClasse !== null &&
+    typeof rawClasse !== "string"
+  ) {
+    return {
+      ok: false,
+      response: jsonResponse({ error: "classe_catmat deve ser texto" }, 400),
+    };
+  }
+
+  return { ok: true, body: parsedBody as LinkBody };
+}
+
+export async function handleLinkCatmatPcaRequest(
+  req: Request,
+): Promise<Response> {
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
+  if (req.method !== "POST") return jsonResponse({ error: "Use POST" }, 405);
+  if (!validateCronAuth(req)) {
+    return jsonResponse({ error: "Unauthorized" }, 401);
+  }
+
+  const parsed = parseLinkCatmatPcaBody(await req.json().catch(() => null));
+  if (!parsed.ok) {
+    return parsed.response;
+  }
+  const body = parsed.body;
+  const targets = linkTargetClasses(body);
   if (!targets.ok) {
     return jsonResponse({ status: "blocked", reason: targets.reason }, 423);
   }
@@ -178,7 +222,9 @@ Deno.serve(async (req) => {
   const resultados = [];
   try {
     for (const classe of targets.classes) {
-      resultados.push(await linkOneClass(client, classe, limite, offset, limiar));
+      resultados.push(
+        await linkOneClass(client, classe, limite, offset, limiar),
+      );
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -193,4 +239,8 @@ Deno.serve(async (req) => {
     classes: targets.classes,
     resultados,
   });
-});
+}
+
+if (import.meta.main) {
+  Deno.serve(handleLinkCatmatPcaRequest);
+}

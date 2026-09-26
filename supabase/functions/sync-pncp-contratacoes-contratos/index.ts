@@ -132,7 +132,7 @@ Deno.serve(async (req) => {
             "contratacoes_contratos",
             { orgao_cnpj: row.orgao_cnpj, ano: row.ano, sequencial: row.sequencial },
             row,
-            { syncRunId: runId, lastSeenSyncId: chainId },
+            { syncRunId: runId, lastSeenSyncId: chainId, reactivateOnUnchanged: true },
           );
           if (upsert === "novo") stats.novos++;
           else if (upsert === "alterado") stats.alterados++;

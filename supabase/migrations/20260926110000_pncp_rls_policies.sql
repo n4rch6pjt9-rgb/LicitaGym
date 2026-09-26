@@ -55,6 +55,11 @@ alter table public.taxonomia_mapa_caracteristica enable row level security;
 drop policy if exists licitacao_documentos_select on public.licitacao_documentos;
 drop policy if exists licitacao_chunks_select on public.licitacao_chunks;
 
+revoke all on function public.match_licitacao_chunks(vector, integer, text, text)
+  from public, anon, authenticated;
+grant execute on function public.match_licitacao_chunks(vector, integer, text, text)
+  to service_role;
+
 drop policy if exists taxonomia_mapa_admin_insert on public.taxonomia_mapa_caracteristica;
 create policy taxonomia_mapa_admin_insert on public.taxonomia_mapa_caracteristica
   for insert to authenticated

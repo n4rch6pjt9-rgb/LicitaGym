@@ -400,3 +400,25 @@ def test_compra_levanta_erro_se_json_status_3xx_com_message(monkeypatch):
         assert False, "deveria falhar"
     except RuntimeError as e:
         assert "301" in str(e) and "Moved Permanently" in str(e)
+
+
+def test_busca_rejeita_envelope_sem_items(monkeypatch):
+    cli = P.PNCP(delay=0, tentativas=1)
+    cli._get = lambda *a, **k: {"total": 0}
+    try:
+        cli.buscar("equipamentos")
+        assert False, "envelope sem items não é uma busca vazia válida"
+    except P.RespostaInvalida:
+        pass
+
+
+def test_itens_rejeita_pagina_repetida():
+    cli = P.PNCP(delay=0, tentativas=1)
+    pagina = [{"numeroItem": i} for i in range(100)]
+    cli._lista = MagicMock(side_effect=[pagina, list(pagina)])
+    try:
+        cli.itens(COMPRA)
+        assert False, "página repetida não deve causar loop de paginação"
+    except P.RespostaInvalida as e:
+        assert "página repetida" in str(e)
+    assert cli._lista.call_count == 2

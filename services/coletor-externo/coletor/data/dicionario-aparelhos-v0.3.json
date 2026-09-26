@@ -1,0 +1,3874 @@
+{
+ "versao": "0.3",
+ "data": "2026-09-25",
+ "descricao": "Dicionário de aparelhos LicitaGym: texto de edital -> nó da taxonomia (+ PDM CATMAT candidato e atributos).",
+ "eixos": {
+  "modalidade": [
+   "musculacao",
+   "peso_livre",
+   "cardio",
+   "funcional",
+   "pilates",
+   "acessorio",
+   "suporte",
+   "ar_livre",
+   "solo_lutas",
+   "ginastica",
+   "fora"
+  ],
+  "regiao": [
+   "superiores",
+   "inferiores",
+   "core",
+   "corpo_inteiro",
+   "nao_se_aplica"
+  ],
+  "fonte_carga": [
+   "placas",
+   "anilhas",
+   "carga_propria",
+   "peso_corporal",
+   "contrapeso",
+   "mola",
+   "elastico",
+   "motor",
+   "resistencia_cardio",
+   "nenhuma"
+  ],
+  "cinematica": [
+   "guiada",
+   "articulada",
+   "polia",
+   "livre",
+   "nao_se_aplica"
+  ],
+  "uso": [
+   "profissional",
+   "residencial",
+   "ar_livre",
+   "desconhecido"
+  ]
+ },
+ "pistas": {
+  "fonte_carga": {
+   "placas": "bateria|bloco de pesos?|torre de pesos?|coluna de pesos?|placas? de (aco|ferro|peso)|pesos? em placas|pino seletor|carga (em|de) placas|estack|stack",
+   "anilhas": "carga (livre|por anilhas?|com anilhas?|em anilhas?)|pinos? (para|de|porta) anilhas?|suporte (para|de) anilhas?|plate ?load|carregamento (de|por) anilhas?|anilhas? nao inclusa",
+   "contrapeso": "contrapeso|assistid",
+   "mola": "\\bmolas?\\b",
+   "elastico": "elastic|tubing",
+   "motor": "motor|eletric[oa]|\\bhp\\b"
+  },
+  "cinematica": {
+   "articulada": "articulad|alavanca|braco(s)? independentes?|movimento convergente|iso ?lateral",
+   "polia": "polias?|roldana|cabo de aco|\\bcabos?\\b",
+   "guiada": "guiad|trilho|rolamentos? linear"
+  },
+  "uso": {
+   "profissional": "uso profissional|linha profissional|uso (intenso|comercial|continuo|coletivo)|academias?\\b|alto fluxo",
+   "residencial": "uso (residencial|domestico|leve)|linha home|residencial",
+   "ar_livre": "\\bape\\b|ao ar livre|ar livre|intemperie|academia da terceira idade|\\bati\\b|academia popular|praca"
+  },
+  "dupla_funcao": "dupla funcao|\\bdual\\b|conjugad|combinad|2 em 1|duas funcoes|multifuncao",
+  "angulo": {
+   "reto": "\\breto\\b|horizontal|plano",
+   "inclinado": "inclinad",
+   "declinado": "declinad",
+   "90": "\\b90 ?(o|graus|°)?",
+   "45": "\\b45 ?(o|graus|°)?",
+   "regulavel": "regulave|ajustave|multi ?posic"
+  },
+  "resistencia_cardio": {
+   "eletromagnetica": "eletromagnetic",
+   "magnetica": "magnetic",
+   "ar": "\\bar\\b|ventoinha|\\bfan\\b|\\bair\\b",
+   "agua": "\\bagua\\b|water",
+   "mecanica": "mecanic|friccao|cinta",
+   "eletrica": "eletric|motor"
+  }
+ },
+ "ambiguos": {
+  "biceps": [
+   "rosca_biceps_maquina",
+   "banco_scott",
+   "dual_biceps_triceps"
+  ],
+  "esteira": [
+   "esteira_eletrica",
+   "esteira_nao_eletrica",
+   "fora_escopo"
+  ],
+  "flexora": [
+   "mesa_flexora",
+   "cadeira_flexora",
+   "flexora_em_pe"
+  ],
+  "supino": [
+   "supino_maquina",
+   "banco_supino"
+  ],
+  "ombros": [
+   "elevacao_lateral_maquina",
+   "desenvolvimento_maquina"
+  ],
+  "ombro": [
+   "elevacao_lateral_maquina",
+   "desenvolvimento_maquina"
+  ],
+  "remada": [
+   "remada_sentada",
+   "remada_maquina",
+   "remada_cavalinho"
+  ],
+  "puxador": [
+   "puxada_alta",
+   "pegador_polia"
+  ],
+  "abdominal": [
+   "abdominal_maquina",
+   "banco_abdominal",
+   "roda_abdominal"
+  ],
+  "panturrilha": [
+   "panturrilha_sentado",
+   "panturrilha_em_pe"
+  ],
+  "bicicleta": [
+   "bicicleta_vertical",
+   "bicicleta_horizontal",
+   "bike_spinning",
+   "air_bike"
+  ],
+  "escada": [
+   "simulador_escada",
+   "escada_agilidade",
+   "ginastica_artistica_ritmica"
+  ],
+  "banco": [
+   "banco_livre",
+   "banco_supino",
+   "banco_scott",
+   "banco_abdominal",
+   "banco_sissy",
+   "banco_lombar_45"
+  ],
+  "barra": [
+   "barra_livre",
+   "paralela_barra_fixa",
+   "smith"
+  ],
+  "lombar": [
+   "lombar_maquina",
+   "banco_lombar_45"
+  ]
+ },
+ "refinos": [
+  {
+   "de": "bicicleta_vertical",
+   "se": "horizontal|reclinad|recumbent",
+   "para": "bicicleta_horizontal"
+  },
+  {
+   "de": "bicicleta_vertical",
+   "se": "spinning|indoor",
+   "para": "bike_spinning"
+  },
+  {
+   "de": "esteira_eletrica",
+   "se": "curva|nao eletric|sem motor|manual",
+   "para": "esteira_nao_eletrica"
+  },
+  {
+   "de": "*musculacao",
+   "se": "\\bape\\b|academia (ao |a )?ar livre|terceira idade|\\bati\\b|academia popular|academia de praca",
+   "para": "academia_ar_livre"
+  },
+  {
+   "de": "*cardio",
+   "se": "\\bape\\b|academia (ao |a )?ar livre|terceira idade|\\bati\\b|academia popular|academia de praca",
+   "para": "academia_ar_livre"
+  },
+  {
+   "de": "ambiguo:supino",
+   "se": "articulad|maquina|bateria|placas|sentado|estofad",
+   "para": "supino_maquina"
+  },
+  {
+   "de": "ambiguo:supino",
+   "se": "\\bbanco\\b|suporte (para|de) barra",
+   "para": "banco_supino"
+  },
+  {
+   "de": "ambiguo:banco",
+   "se": "regulave|inclinad|declinad|multiexercicio|\\breto\\b",
+   "para": "banco_livre"
+  },
+  {
+   "de": "ambiguo:flexora",
+   "se": "deitad|prona|mesa",
+   "para": "mesa_flexora"
+  },
+  {
+   "de": "ambiguo:flexora",
+   "se": "sentad|cadeira",
+   "para": "cadeira_flexora"
+  },
+  {
+   "de": "ambiguo:esteira",
+   "se": "motor|velocidade|inclinacao|programas? de treino|km/h|\\bhp\\b",
+   "para": "esteira_eletrica"
+  },
+  {
+   "de": "ambiguo:puxador",
+   "se": "uso:? equipamentos de academia|pegada|triceps|formato (curvo|reto|triangulo)|\\bw\\b",
+   "para": "pegador_polia"
+  },
+  {
+   "de": "ambiguo:escada",
+   "se": "degraus?|agilidade|coordenacao|nylon",
+   "para": "escada_agilidade"
+  },
+  {
+   "de": "ambiguo:escada",
+   "se": ".",
+   "para": "simulador_escada"
+  }
+ ],
+ "catmat_item": {
+  "225083": "esteira_eletrica",
+  "225085": "esteira_eletrica",
+  "225087": "esteira_nao_eletrica",
+  "225088": "esteira_nao_eletrica",
+  "250339": "simulador_escada",
+  "250341": "mini_trampolim",
+  "250349": "aparelho_musculacao_indefinido",
+  "356908": "plataforma_vibratoria",
+  "390896": "cadeira_extensora",
+  "450160": "roda_abdominal"
+ },
+ "nos": [
+  {
+   "slug": "supino_maquina",
+   "nome": "Supino máquina",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "superiores",
+   "grupo_muscular": "peitoral",
+   "sinonimos": [
+    "supino maquina",
+    "supino sentado",
+    "supino vertical",
+    "supino articulado",
+    "chest press",
+    "supino reto maquina",
+    "supino inclinado maquina",
+    "supino declinado maquina",
+    "peitoral articulado",
+    "peitoral reto",
+    "peitoral declinado",
+    "peitoral inclinado"
+   ],
+   "fonte_carga": [
+    "placas",
+    "anilhas"
+   ],
+   "cinematica": [
+    "guiada",
+    "articulada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [
+    "angulo"
+   ],
+   "obs": "Reto/inclinado/declinado é o atributo 'angulo', não um nó. Sem 'maquina/articulado/sentado', 'supino' sozinho é ambíguo com banco_supino."
+  },
+  {
+   "slug": "voador_peck_deck",
+   "nome": "Voador (peck deck)",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "superiores",
+   "grupo_muscular": "peitoral",
+   "sinonimos": [
+    "peck deck",
+    "pec deck",
+    "voador peitoral",
+    "voador frontal",
+    "crucifixo maquina",
+    "crucifixo articulado",
+    "pec fly",
+    "chest fly",
+    "fly maquina",
+    "voador"
+   ],
+   "fonte_carga": [
+    "placas",
+    "anilhas"
+   ],
+   "cinematica": [
+    "guiada",
+    "articulada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [
+    "PECK DECK"
+   ],
+   "catmat_exemplo": [
+    "636436"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "voador_inverso",
+   "nome": "Voador inverso (deltoide posterior)",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "superiores",
+   "grupo_muscular": "deltoide_posterior",
+   "sinonimos": [
+    "voador inverso",
+    "crucifixo inverso",
+    "crucifixo invertido",
+    "rear delt",
+    "reverse fly",
+    "deltoide posterior"
+   ],
+   "fonte_carga": [
+    "placas",
+    "anilhas"
+   ],
+   "cinematica": [
+    "guiada",
+    "articulada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "desenvolvimento_maquina",
+   "nome": "Desenvolvimento (shoulder press)",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "superiores",
+   "grupo_muscular": "deltoide",
+   "sinonimos": [
+    "desenvolvimento maquina",
+    "desenvolvimento articulado",
+    "desenvolvimento sentado",
+    "shoulder press",
+    "ombro articulado",
+    "ombro articulada",
+    "press de ombro",
+    "desenvolvimento de ombros"
+   ],
+   "fonte_carga": [
+    "placas",
+    "anilhas"
+   ],
+   "cinematica": [
+    "guiada",
+    "articulada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": "Decisão 25/09: 'Ombros' do arquivo original = elevação lateral. Em texto de edital, 'ombros' sozinho continua ambíguo."
+  },
+  {
+   "slug": "elevacao_lateral_maquina",
+   "nome": "Elevação lateral máquina",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "superiores",
+   "grupo_muscular": "deltoide_lateral",
+   "sinonimos": [
+    "elevacao lateral",
+    "lateral raise",
+    "abducao de ombro",
+    "deltoide lateral",
+    "elevacao lateral maquina",
+    "maquina de ombros",
+    "maquina de ombro"
+   ],
+   "fonte_carga": [
+    "placas",
+    "anilhas"
+   ],
+   "cinematica": [
+    "guiada",
+    "articulada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "puxada_alta",
+   "nome": "Puxada alta (puxador)",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "superiores",
+   "grupo_muscular": "dorsal",
+   "sinonimos": [
+    "puxada alta",
+    "puxada frontal",
+    "puxador alto",
+    "pulley alto",
+    "lat pulldown",
+    "pulldown",
+    "puxada articulada",
+    "puxada alta articulada",
+    "puxada alta multi pegada",
+    "puxador costas"
+   ],
+   "fonte_carga": [
+    "placas",
+    "anilhas"
+   ],
+   "cinematica": [
+    "polia",
+    "articulada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [
+    "PUXADOR"
+   ],
+   "catmat_exemplo": [
+    "382427"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": "17574 TIPO PUXADOR (382427, ferro, cabo giratório) = puxada. 2638 TIPO PUXADOR é pegador de polia (ver pegador_polia). 'Multi pegada' é atributo."
+  },
+  {
+   "slug": "remada_sentada",
+   "nome": "Remada sentada / baixa (polia)",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "superiores",
+   "grupo_muscular": "dorsal",
+   "sinonimos": [
+    "remada baixa",
+    "remada sentada",
+    "remada polia baixa",
+    "seated row",
+    "puxada baixa",
+    "remada horizontal"
+   ],
+   "fonte_carga": [
+    "placas"
+   ],
+   "cinematica": [
+    "polia"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [
+    "REMADA SENTADA"
+   ],
+   "catmat_exemplo": [
+    "473444"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "remada_maquina",
+   "nome": "Remada máquina (apoio no peito)",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "superiores",
+   "grupo_muscular": "dorsal",
+   "sinonimos": [
+    "remada articulada",
+    "remada maquina",
+    "remada com apoio",
+    "remada unilateral articulada",
+    "remada fechada articulada",
+    "row machine",
+    "remada aberta articulada",
+    "remada vertical",
+    "remada pegada neutra",
+    "remada multi pegada",
+    "remada multipegada"
+   ],
+   "fonte_carga": [
+    "placas",
+    "anilhas"
+   ],
+   "cinematica": [
+    "articulada",
+    "guiada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [
+    "pegada"
+   ],
+   "obs": "Decisão 25/09: 'Remada Vertical' = remada máquina com pegada neutra ou multi pegada (atributo 'pegada': neutra | multi)."
+  },
+  {
+   "slug": "remada_cavalinho",
+   "nome": "Remada cavalinho (T-bar)",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "superiores",
+   "grupo_muscular": "dorsal",
+   "sinonimos": [
+    "remada cavalinho",
+    "t bar",
+    "remada curvada apoiada",
+    "cavalinho"
+   ],
+   "fonte_carga": [
+    "anilhas"
+   ],
+   "cinematica": [
+    "articulada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "graviton",
+   "nome": "Graviton (barra/paralela assistida)",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "superiores",
+   "grupo_muscular": "dorsal_triceps",
+   "sinonimos": [
+    "graviton",
+    "gravitron",
+    "barra fixa assistida",
+    "paralela assistida",
+    "chin dip assistido",
+    "assisted chin"
+   ],
+   "fonte_carga": [
+    "contrapeso",
+    "placas"
+   ],
+   "cinematica": [
+    "guiada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [
+    "GRAVITON"
+   ],
+   "catmat_exemplo": [
+    "480146"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "rosca_biceps_maquina",
+   "nome": "Rosca bíceps máquina",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "superiores",
+   "grupo_muscular": "biceps",
+   "sinonimos": [
+    "rosca biceps maquina",
+    "biceps maquina",
+    "biceps curl",
+    "biceps articulado",
+    "rosca scott maquina",
+    "rosca articulada",
+    "rosca biceps",
+    "biceps extensao",
+    "maquina de biceps"
+   ],
+   "fonte_carga": [
+    "placas",
+    "anilhas"
+   ],
+   "cinematica": [
+    "guiada",
+    "articulada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [
+    "BÍCEPS"
+   ],
+   "catmat_exemplo": [
+    "480141"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": "Decisão 25/09: 'Bíceps Extensão' do arquivo original = máquina de bíceps."
+  },
+  {
+   "slug": "triceps_maquina",
+   "nome": "Tríceps máquina (extensão)",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "superiores",
+   "grupo_muscular": "triceps",
+   "sinonimos": [
+    "triceps maquina",
+    "triceps extensao",
+    "triceps extension",
+    "triceps frances maquina",
+    "triceps articulado",
+    "extensao de triceps",
+    "triceps testa maquina"
+   ],
+   "fonte_carga": [
+    "placas",
+    "anilhas"
+   ],
+   "cinematica": [
+    "guiada",
+    "articulada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "triceps_paralela_maquina",
+   "nome": "Tríceps paralela sentado (dip)",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "superiores",
+   "grupo_muscular": "triceps",
+   "sinonimos": [
+    "triceps dip",
+    "triceps paralela",
+    "mergulho sentado",
+    "seated dip",
+    "dip machine",
+    "paralela sentada"
+   ],
+   "fonte_carga": [
+    "placas",
+    "anilhas"
+   ],
+   "cinematica": [
+    "guiada",
+    "articulada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "polia",
+   "nome": "Estação de polia (alta/baixa)",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "corpo_inteiro",
+   "grupo_muscular": "multiplo",
+   "sinonimos": [
+    "polia conjugada",
+    "polia alta e baixa",
+    "estacao de polia",
+    "pulley",
+    "polia regulavel",
+    "fit pulley",
+    "polia de parede",
+    "cable column"
+   ],
+   "fonte_carga": [
+    "placas"
+   ],
+   "cinematica": [
+    "polia"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574,
+    2638
+   ],
+   "catmat_tipo": [
+    "POLIA CONJUGADA",
+    "FIT PULLEY HFIT"
+   ],
+   "catmat_exemplo": [
+    "460640",
+    "640848"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": "FIT PULLEY (2638) é linha de reabilitação/fisioterapia: mesmo nó, uso=profissional/clinico."
+  },
+  {
+   "slug": "crossover",
+   "nome": "Crossover",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "corpo_inteiro",
+   "grupo_muscular": "multiplo",
+   "sinonimos": [
+    "cross over",
+    "crossover",
+    "estacao crossover",
+    "cross over paralelo",
+    "cross over angular",
+    "cross over angulado",
+    "crossover reto",
+    "crossover angular",
+    "cross over reto"
+   ],
+   "fonte_carga": [
+    "placas"
+   ],
+   "cinematica": [
+    "polia"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [
+    "CROSS OVER",
+    "CROSS OVER PARALELO"
+   ],
+   "catmat_exemplo": [
+    "480144",
+    "460206"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [
+    "formato_crossover"
+   ],
+   "obs": "Reto/paralelo × angular é atributo. Região corpo_inteiro: os cabos servem para membros superiores e inferiores (o rótulo original estava certo)."
+  },
+  {
+   "slug": "crossover_com_smith",
+   "nome": "Crossover com Smith integrado",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "corpo_inteiro",
+   "grupo_muscular": "multiplo",
+   "sinonimos": [
+    "cross over com barra smith",
+    "crossover com smith",
+    "cross over angulado com barra smith",
+    "crossover smith"
+   ],
+   "fonte_carga": [
+    "placas",
+    "anilhas"
+   ],
+   "cinematica": [
+    "polia",
+    "guiada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [
+    "CROSS OVER ANGULADO COM BARRA SMITH"
+   ],
+   "catmat_exemplo": [
+    "486808"
+   ],
+   "escopo": "IN",
+   "componentes": [
+    "crossover",
+    "smith"
+   ],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "smith",
+   "nome": "Smith machine (barra guiada)",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "corpo_inteiro",
+   "grupo_muscular": "multiplo",
+   "sinonimos": [
+    "smith machine",
+    "smith",
+    "barra guiada",
+    "multipower",
+    "agachamento guiado smith"
+   ],
+   "fonte_carga": [
+    "anilhas",
+    "contrapeso"
+   ],
+   "cinematica": [
+    "guiada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [
+    "BARRA GUIADA SMITH COM CONTRAPESO"
+   ],
+   "catmat_exemplo": [
+    "620480"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "estacao_musculacao",
+   "nome": "Estação de musculação (multiestação)",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "corpo_inteiro",
+   "grupo_muscular": "multiplo",
+   "sinonimos": [
+    "estacao de musculacao",
+    "multiestacao",
+    "multi estacao",
+    "estacao multifuncional",
+    "home gym",
+    "estacao de ginastica",
+    "aparelho multifuncional",
+    "jungle"
+   ],
+   "fonte_carga": [
+    "placas"
+   ],
+   "cinematica": [
+    "polia",
+    "guiada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574,
+    6827
+   ],
+   "catmat_tipo": [
+    "ESTAÇÃO DE MUSCULAÇÃO"
+   ],
+   "catmat_exemplo": [
+    "628785",
+    "634813"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": "Costuma ser linha residencial/leve; extrair 'uso'. Multi estação AO AR LIVRE vai para academia_ar_livre."
+  },
+  {
+   "slug": "rack_gaiola",
+   "nome": "Rack / gaiola (power rack, cross training)",
+   "familia": "equipamentos_fitness.peso_livre",
+   "modalidade": "peso_livre",
+   "regiao": "corpo_inteiro",
+   "grupo_muscular": "multiplo",
+   "sinonimos": [
+    "power rack",
+    "gaiola",
+    "rack de agachamento",
+    "gaiola de agachamento",
+    "rack cross training",
+    "gaiola cross training",
+    "gaiola exercicios funcionais",
+    "estrutura crossfit",
+    "rig",
+    "half rack",
+    "squat rack"
+   ],
+   "fonte_carga": [
+    "anilhas",
+    "peso_corporal"
+   ],
+   "cinematica": [
+    "livre"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [
+    "GAIOLA/RACK DE CROSS TRAINING",
+    "GAIOLA EXERCÍCIOS FUNCIONAIS"
+   ],
+   "catmat_exemplo": [
+    "615042",
+    "480145"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "leg_press_45",
+   "nome": "Leg press 45°",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "inferiores",
+   "grupo_muscular": "quadriceps_gluteos",
+   "sinonimos": [
+    "leg press 45",
+    "leg 45",
+    "leg press inclinado",
+    "leg press angular"
+   ],
+   "fonte_carga": [
+    "anilhas",
+    "placas"
+   ],
+   "cinematica": [
+    "guiada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "leg_press_horizontal",
+   "nome": "Leg press horizontal (sentado)",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "inferiores",
+   "grupo_muscular": "quadriceps_gluteos",
+   "sinonimos": [
+    "leg press horizontal",
+    "leg horizontal",
+    "leg press sentado",
+    "seated leg press",
+    "leg press articulado"
+   ],
+   "fonte_carga": [
+    "placas",
+    "anilhas"
+   ],
+   "cinematica": [
+    "guiada",
+    "articulada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "leg_press_vertical",
+   "nome": "Leg press vertical (90°)",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "inferiores",
+   "grupo_muscular": "quadriceps_gluteos",
+   "sinonimos": [
+    "leg press vertical",
+    "leg vertical",
+    "leg press 90",
+    "leg 90"
+   ],
+   "fonte_carga": [
+    "anilhas"
+   ],
+   "cinematica": [
+    "guiada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": "Decisão 25/09: 'Leg Press 90°' = leg press vertical (com placas ou anilhas, via fonte_carga)."
+  },
+  {
+   "slug": "leg_press_indefinido",
+   "nome": "Leg press (tipo não informado)",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "inferiores",
+   "grupo_muscular": "quadriceps_gluteos",
+   "sinonimos": [
+    "leg press",
+    "pressao de pernas"
+   ],
+   "fonte_carga": [
+    "anilhas",
+    "placas"
+   ],
+   "cinematica": [
+    "guiada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [
+    "LEG PRESS"
+   ],
+   "catmat_exemplo": [
+    "390821"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": "Rótulo de fallback: o texto diz 'leg press' sem ângulo/posição."
+  },
+  {
+   "slug": "hack",
+   "nome": "Hack (hack machine / hack squat)",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "inferiores",
+   "grupo_muscular": "quadriceps_gluteos",
+   "sinonimos": [
+    "hack machine",
+    "hack squat",
+    "agachamento hack",
+    "hack de agachamento",
+    "hack articulado",
+    "hack squat articulado",
+    "hack"
+   ],
+   "fonte_carga": [
+    "anilhas"
+   ],
+   "cinematica": [
+    "guiada",
+    "articulada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [
+    "HACK MACHINE"
+   ],
+   "catmat_exemplo": [
+    "480147"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "agachamento_maquina",
+   "nome": "Agachamento máquina (multi squat, pêndulo, belt)",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "inferiores",
+   "grupo_muscular": "quadriceps_gluteos",
+   "sinonimos": [
+    "multi squat",
+    "agachamento maquina",
+    "agachamento articulado",
+    "pendulum squat",
+    "agachamento pendulo",
+    "belt squat",
+    "agachamento sumo maquina",
+    "v squat"
+   ],
+   "fonte_carga": [
+    "anilhas",
+    "placas"
+   ],
+   "cinematica": [
+    "guiada",
+    "articulada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "cadeira_extensora",
+   "nome": "Cadeira extensora",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "inferiores",
+   "grupo_muscular": "quadriceps",
+   "sinonimos": [
+    "cadeira extensora",
+    "extensora",
+    "leg extension",
+    "extensao de pernas",
+    "cadeira de extensao"
+   ],
+   "fonte_carga": [
+    "placas",
+    "anilhas"
+   ],
+   "cinematica": [
+    "guiada",
+    "articulada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [
+    "CADEIRA EXTENSORA",
+    "17574:EXTENSOR"
+   ],
+   "catmat_exemplo": [
+    "480143",
+    "390896"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": "Decisão 25/09: 17574 TIPO EXTENSOR (390896) = cadeira extensora. Evidência: estrutura metálica + banco retangular + couro sintético, e o item faz parte de uma série cadastrada junto (390819 peitoral/dorsal, 390821 leg press, 390897 abdutor, 390898 vita glúteo), toda de musculação. Não confundir com PDM 7253 EXTENSOR DE BRAÇO (elástico). Nenhum edital no banco usa o código 390896 ainda."
+  },
+  {
+   "slug": "mesa_flexora",
+   "nome": "Mesa flexora (deitada)",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "inferiores",
+   "grupo_muscular": "posterior_coxa",
+   "sinonimos": [
+    "mesa flexora",
+    "flexora deitada",
+    "prone leg curl",
+    "lying leg curl",
+    "flexora horizontal"
+   ],
+   "fonte_carga": [
+    "placas",
+    "anilhas"
+   ],
+   "cinematica": [
+    "guiada",
+    "articulada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [
+    "MESA FLEXORA",
+    "FLEXORA DEITADA"
+   ],
+   "catmat_exemplo": [
+    "480148",
+    "460540"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "cadeira_flexora",
+   "nome": "Cadeira flexora (sentada)",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "inferiores",
+   "grupo_muscular": "posterior_coxa",
+   "sinonimos": [
+    "cadeira flexora",
+    "flexora sentada",
+    "leg curl sentado",
+    "seated leg curl"
+   ],
+   "fonte_carga": [
+    "placas",
+    "anilhas"
+   ],
+   "cinematica": [
+    "guiada",
+    "articulada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [
+    "CADEIRA FLEXORA"
+   ],
+   "catmat_exemplo": [
+    "479577"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "flexora_em_pe",
+   "nome": "Flexora em pé (unilateral)",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "inferiores",
+   "grupo_muscular": "posterior_coxa",
+   "sinonimos": [
+    "flexora em pe",
+    "flexora unilateral",
+    "standing leg curl",
+    "flexora vertical"
+   ],
+   "fonte_carga": [
+    "placas",
+    "anilhas"
+   ],
+   "cinematica": [
+    "guiada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "cadeira_abdutora",
+   "nome": "Cadeira abdutora",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "inferiores",
+   "grupo_muscular": "gluteo_medio",
+   "sinonimos": [
+    "cadeira abdutora",
+    "abdutora",
+    "abducao de quadril",
+    "abdutor",
+    "hip abduction"
+   ],
+   "fonte_carga": [
+    "placas"
+   ],
+   "cinematica": [
+    "guiada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [
+    "CADEIRA ABDUTORA",
+    "ABDUTOR"
+   ],
+   "catmat_exemplo": [
+    "480056",
+    "390897"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "cadeira_adutora",
+   "nome": "Cadeira adutora",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "inferiores",
+   "grupo_muscular": "adutores",
+   "sinonimos": [
+    "cadeira adutora",
+    "adutora",
+    "aducao de quadril",
+    "adducao de quadril",
+    "adutor",
+    "hip adduction"
+   ],
+   "fonte_carga": [
+    "placas"
+   ],
+   "cinematica": [
+    "guiada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "gluteo_maquina",
+   "nome": "Glúteo máquina (coice / extensão de quadril)",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "inferiores",
+   "grupo_muscular": "gluteos",
+   "sinonimos": [
+    "gluteo maquina",
+    "maquina de gluteo",
+    "extensao de gluteo",
+    "extensao de quadril",
+    "gluteo em pe",
+    "gluteo 4 apoios",
+    "coice maquina",
+    "glute machine",
+    "vita gluteo",
+    "gluteo articulado",
+    "gluteos",
+    "gluteo"
+   ],
+   "fonte_carga": [
+    "placas",
+    "anilhas"
+   ],
+   "cinematica": [
+    "guiada",
+    "articulada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [
+    "VITA GLUTEO"
+   ],
+   "catmat_exemplo": [
+    "390898"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "elevacao_pelvica",
+   "nome": "Elevação pélvica (hip thrust)",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "inferiores",
+   "grupo_muscular": "gluteos",
+   "sinonimos": [
+    "hip thrust",
+    "elevacao pelvica",
+    "glute bridge maquina",
+    "banco hip thrust"
+   ],
+   "fonte_carga": [
+    "anilhas",
+    "placas"
+   ],
+   "cinematica": [
+    "guiada",
+    "articulada",
+    "livre"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "panturrilha_sentado",
+   "nome": "Panturrilha sentado (solear)",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "inferiores",
+   "grupo_muscular": "panturrilha",
+   "sinonimos": [
+    "panturrilha sentado",
+    "panturrilha sentada",
+    "gemeos sentado",
+    "solear",
+    "banco de panturrilha",
+    "banco panturrilha solear",
+    "seated calf"
+   ],
+   "fonte_carga": [
+    "anilhas",
+    "placas"
+   ],
+   "cinematica": [
+    "guiada",
+    "articulada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [
+    "BANCO PANTURRILHA SOLEAR"
+   ],
+   "catmat_exemplo": [
+    "480149"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "panturrilha_em_pe",
+   "nome": "Panturrilha em pé",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "inferiores",
+   "grupo_muscular": "panturrilha",
+   "sinonimos": [
+    "panturrilha em pe",
+    "gemeos em pe",
+    "standing calf",
+    "panturrilha vertical"
+   ],
+   "fonte_carga": [
+    "placas",
+    "anilhas"
+   ],
+   "cinematica": [
+    "guiada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "abdominal_maquina",
+   "nome": "Abdominal máquina",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "core",
+   "grupo_muscular": "abdomen",
+   "sinonimos": [
+    "abdominal maquina",
+    "abdominal reto",
+    "abdominal articulado",
+    "crunch machine",
+    "abdominal sentado",
+    "abdominal"
+   ],
+   "fonte_carga": [
+    "placas"
+   ],
+   "cinematica": [
+    "guiada",
+    "articulada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [
+    "ABDOMINAL"
+   ],
+   "catmat_exemplo": [
+    "480138"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": "'Abdominal' sozinho pode ser banco/prancha: preferir banco_abdominal se o texto falar em banco, prancha ou encosto."
+  },
+  {
+   "slug": "abdominal_obliquo_maquina",
+   "nome": "Rotação de tronco / oblíquo",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "core",
+   "grupo_muscular": "obliquos",
+   "sinonimos": [
+    "abdominal obliquo",
+    "rotacao de tronco",
+    "torso rotation",
+    "rotary torso",
+    "obliquo maquina"
+   ],
+   "fonte_carga": [
+    "placas"
+   ],
+   "cinematica": [
+    "guiada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "lombar_maquina",
+   "nome": "Extensão lombar máquina",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "core",
+   "grupo_muscular": "lombar",
+   "sinonimos": [
+    "extensao lombar",
+    "lombar maquina",
+    "lombar sentado",
+    "lower back",
+    "back extension maquina"
+   ],
+   "fonte_carga": [
+    "placas"
+   ],
+   "cinematica": [
+    "guiada",
+    "articulada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "banco_lombar_45",
+   "nome": "Banco lombar 45° / romano",
+   "familia": "equipamentos_fitness.peso_livre",
+   "modalidade": "peso_livre",
+   "regiao": "core",
+   "grupo_muscular": "lombar",
+   "sinonimos": [
+    "banco lombar",
+    "banco romano",
+    "hiperextensao",
+    "lombar 45",
+    "roman chair",
+    "banco de hiperextensao"
+   ],
+   "fonte_carga": [
+    "peso_corporal"
+   ],
+   "cinematica": [
+    "livre"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "dual_puxada_remada",
+   "nome": "Dual puxada alta + remada baixa",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "superiores",
+   "grupo_muscular": "dorsal",
+   "sinonimos": [
+    "puxada alta e remada baixa",
+    "puxada e remada",
+    "puxador e remada",
+    "pulley alto e baixo"
+   ],
+   "fonte_carga": [
+    "placas"
+   ],
+   "cinematica": [
+    "polia"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [
+    "puxada_alta",
+    "remada_sentada"
+   ],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "dual_voador_inverso",
+   "nome": "Dual voador + voador inverso (peitoral/dorsal)",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "superiores",
+   "grupo_muscular": "peitoral_deltoide_post",
+   "sinonimos": [
+    "peitoral e dorsal",
+    "peitoral/dorsal",
+    "peitoral dorsal",
+    "voador e voador inverso",
+    "peck deck e crucifixo inverso",
+    "voador reversivel",
+    "pec fly rear delt"
+   ],
+   "fonte_carga": [
+    "placas",
+    "anilhas"
+   ],
+   "cinematica": [
+    "guiada",
+    "articulada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [
+    "PEITORAL/DORSAL"
+   ],
+   "catmat_exemplo": [
+    "390819"
+   ],
+   "escopo": "IN",
+   "componentes": [
+    "voador_peck_deck",
+    "voador_inverso"
+   ],
+   "atributos": [],
+   "obs": "Decisão 25/09: 'Peitoral e Dorsal' / 'Peitoral Dorsal' / TIPO CATMAT PEITORAL/DORSAL = voador + voador inverso (dual)."
+  },
+  {
+   "slug": "dual_supino_desenvolvimento",
+   "nome": "Dual supino + desenvolvimento",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "superiores",
+   "grupo_muscular": "peitoral_deltoide",
+   "sinonimos": [
+    "peitoral e ombros",
+    "supino e desenvolvimento",
+    "chest shoulder press",
+    "supino/desenvolvimento"
+   ],
+   "fonte_carga": [
+    "placas"
+   ],
+   "cinematica": [
+    "guiada",
+    "articulada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [
+    "supino_maquina",
+    "desenvolvimento_maquina"
+   ],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "dual_biceps_triceps",
+   "nome": "Dual bíceps + tríceps",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "superiores",
+   "grupo_muscular": "biceps_triceps",
+   "sinonimos": [
+    "braco e triceps",
+    "biceps e triceps",
+    "biceps/triceps",
+    "rosca e triceps"
+   ],
+   "fonte_carga": [
+    "placas"
+   ],
+   "cinematica": [
+    "guiada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [
+    "rosca_biceps_maquina",
+    "triceps_maquina"
+   ],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "dual_extensora_flexora",
+   "nome": "Dual extensora + flexora",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "inferiores",
+   "grupo_muscular": "quadriceps_posterior",
+   "sinonimos": [
+    "legcurl/extension",
+    "extensora e flexora",
+    "extensora/flexora",
+    "cadeira extensora e flexora",
+    "leg extension leg curl",
+    "extensora flexora conjugada",
+    "flexo extensor",
+    "flexo extensora"
+   ],
+   "fonte_carga": [
+    "placas"
+   ],
+   "cinematica": [
+    "guiada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [
+    "cadeira_extensora",
+    "cadeira_flexora"
+   ],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "dual_abdutora_adutora",
+   "nome": "Dual abdutora + adutora",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "inferiores",
+   "grupo_muscular": "quadril",
+   "sinonimos": [
+    "abdutora e adutora",
+    "abdutora/adutora",
+    "adutora e abdutora",
+    "abdutor/adutor",
+    "abducao e aducao"
+   ],
+   "fonte_carga": [
+    "placas"
+   ],
+   "cinematica": [
+    "guiada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [
+    "cadeira_abdutora",
+    "cadeira_adutora"
+   ],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "dual_lombar_abdominal",
+   "nome": "Dual lombar + abdominal",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "core",
+   "grupo_muscular": "abdomen_lombar",
+   "sinonimos": [
+    "lombar abdominal",
+    "abdominal e lombar",
+    "abdominal/lombar",
+    "lombar/abdominal"
+   ],
+   "fonte_carga": [
+    "placas"
+   ],
+   "cinematica": [
+    "guiada"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [
+    "abdominal_maquina",
+    "lombar_maquina"
+   ],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "aparelho_musculacao_indefinido",
+   "nome": "Aparelho de musculação (tipo não informado)",
+   "familia": "equipamentos_fitness.musculacao",
+   "modalidade": "musculacao",
+   "regiao": "nao_se_aplica",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "aparelho de musculacao",
+    "equipamento de musculacao",
+    "aparelho articulado",
+    "conjugado",
+    "articulado"
+   ],
+   "fonte_carga": [],
+   "cinematica": [],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [
+    "ARTICULADO",
+    "CONJUGADO"
+   ],
+   "catmat_exemplo": [
+    "251309",
+    "251307"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": "Fallback. 2640 TIPO ARTICULADO (6 itens) e CONJUGADO não dizem qual exercício."
+  },
+  {
+   "slug": "haltere",
+   "nome": "Haltere (ver sub-nós v0.3)",
+   "familia": "equipamentos_fitness.acessorios",
+   "modalidade": "acessorio",
+   "regiao": "nao_se_aplica",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "haltere",
+    "halter",
+    "halteres",
+    "dumbbell",
+    "dumbell",
+    "dumbel",
+    "tipo macico"
+   ],
+   "fonte_carga": [
+    "carga_propria"
+   ],
+   "cinematica": [
+    "livre"
+   ],
+   "pdm_catmat": [
+    8166
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": "Decisão 26/09: Tipo = acessório. Nó-pai. Sub-nós em taxonomia-pesos-livres-ml v0.3: haltere_bola, haltere_disco, haltere_sextavado, haltere_barra_anilhas_fixas, haltere_montavel, haltere_hidro, haltere_indefinido."
+  },
+  {
+   "slug": "kettlebell",
+   "nome": "Kettlebell",
+   "familia": "equipamentos_fitness.peso_livre",
+   "modalidade": "peso_livre",
+   "regiao": "nao_se_aplica",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "kettlebell",
+    "kettle bell",
+    "girya",
+    "chaleira"
+   ],
+   "fonte_carga": [
+    "carga_propria"
+   ],
+   "cinematica": [
+    "livre"
+   ],
+   "pdm_catmat": [
+    8166
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "anilha",
+   "nome": "Anilha (ver sub-nós v0.3)",
+   "familia": "equipamentos_fitness.acessorios",
+   "modalidade": "acessorio",
+   "regiao": "nao_se_aplica",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "anilha",
+    "anilhas",
+    "disco de peso",
+    "bumper plate",
+    "anilha olimpica"
+   ],
+   "fonte_carga": [
+    "carga_propria"
+   ],
+   "cinematica": [
+    "livre"
+   ],
+   "pdm_catmat": [],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": "Decisão 26/09: Tipo = acessório. Sub-nós: anilha_olimpica_emborrachada/ferro, anilha_padrao_revestida/ferro."
+  },
+  {
+   "slug": "barra_livre",
+   "nome": "Barra (ver sub-nós v0.3)",
+   "familia": "equipamentos_fitness.acessorios",
+   "modalidade": "acessorio",
+   "regiao": "nao_se_aplica",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "barra olimpica",
+    "barra reta",
+    "barra w",
+    "barra romana",
+    "barra montada",
+    "barra macica",
+    "barra cromada",
+    "barra para anilhas",
+    "barra ez",
+    "barra de musculacao"
+   ],
+   "fonte_carga": [
+    "anilhas",
+    "carga_propria"
+   ],
+   "cinematica": [
+    "livre"
+   ],
+   "pdm_catmat": [
+    2640
+   ],
+   "catmat_tipo": [
+    "2640:BARRA"
+   ],
+   "catmat_exemplo": [
+    "614866",
+    "603143",
+    "600223",
+    "461980",
+    "399598"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": "Decisão 25/09+26/09: barra = acessório. Sub-nós: barra_montada_fixa, barra_desmontada (atributo perfil_barra RETA|W)."
+  },
+  {
+   "slug": "banco_livre",
+   "nome": "Banco livre (reto/inclinado/declinado/regulável)",
+   "familia": "equipamentos_fitness.peso_livre",
+   "modalidade": "peso_livre",
+   "regiao": "nao_se_aplica",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "banco livre",
+    "banco reto",
+    "banco plano",
+    "banco inclinado",
+    "banco declinado",
+    "banco regulavel",
+    "banco ajustavel",
+    "banco multi posicao",
+    "flat bench",
+    "banco 90",
+    "banco de desenvolvimento",
+    "multiexercicio regulavel",
+    "banco multiexercicio"
+   ],
+   "fonte_carga": [
+    "peso_corporal"
+   ],
+   "cinematica": [
+    "livre"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [
+    "BANCO REGULÁVEL"
+   ],
+   "catmat_exemplo": [
+    "465065"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [
+    "angulo",
+    "ajuste"
+   ],
+   "obs": "Reto/inclinado/declinado/90°/regulável são atributos. Modalidade peso_livre, e não 'Acessórios'."
+  },
+  {
+   "slug": "banco_supino",
+   "nome": "Banco de supino (com suporte para barra)",
+   "familia": "equipamentos_fitness.peso_livre",
+   "modalidade": "peso_livre",
+   "regiao": "superiores",
+   "grupo_muscular": "peitoral",
+   "sinonimos": [
+    "banco de supino",
+    "banco supino",
+    "banco para supino",
+    "supino reto com suporte",
+    "supino inclinado com suporte",
+    "supino declinado com suporte",
+    "banco supino olimpico"
+   ],
+   "fonte_carga": [
+    "anilhas"
+   ],
+   "cinematica": [
+    "livre"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [
+    "angulo"
+   ],
+   "obs": ""
+  },
+  {
+   "slug": "banco_scott",
+   "nome": "Banco Scott",
+   "familia": "equipamentos_fitness.peso_livre",
+   "modalidade": "peso_livre",
+   "regiao": "superiores",
+   "grupo_muscular": "biceps",
+   "sinonimos": [
+    "banco scott",
+    "rosca scott",
+    "banco rosca scott",
+    "preacher curl"
+   ],
+   "fonte_carga": [
+    "anilhas"
+   ],
+   "cinematica": [
+    "livre"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [
+    "BANCO ROSCA SCOTT"
+   ],
+   "catmat_exemplo": [
+    "465068"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "banco_abdominal",
+   "nome": "Banco / prancha abdominal",
+   "familia": "equipamentos_fitness.peso_livre",
+   "modalidade": "peso_livre",
+   "regiao": "core",
+   "grupo_muscular": "abdomen",
+   "sinonimos": [
+    "banco abdominal",
+    "banco de abdominal",
+    "prancha abdominal",
+    "prancha para abdominal",
+    "abdominal declinado",
+    "sit up bench"
+   ],
+   "fonte_carga": [
+    "peso_corporal"
+   ],
+   "cinematica": [
+    "livre"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574,
+    11131
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [
+    "74497"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "banco_sissy",
+   "nome": "Banco sissy",
+   "familia": "equipamentos_fitness.peso_livre",
+   "modalidade": "peso_livre",
+   "regiao": "inferiores",
+   "grupo_muscular": "quadriceps",
+   "sinonimos": [
+    "banco sissy",
+    "sissy squat",
+    "sissy"
+   ],
+   "fonte_carga": [
+    "peso_corporal"
+   ],
+   "cinematica": [
+    "livre"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "paralela_barra_fixa",
+   "nome": "Paralela / barra fixa (power tower)",
+   "familia": "equipamentos_fitness.peso_livre",
+   "modalidade": "peso_livre",
+   "regiao": "superiores",
+   "grupo_muscular": "dorsal_triceps",
+   "sinonimos": [
+    "paralela",
+    "paralelas",
+    "barra fixa",
+    "power tower",
+    "estacao de barra fixa",
+    "barra fixa e paralela",
+    "dip station"
+   ],
+   "fonte_carga": [
+    "peso_corporal"
+   ],
+   "cinematica": [
+    "livre"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [
+    "BARRA FIXA"
+   ],
+   "catmat_exemplo": [
+    "483755"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "esteira_eletrica",
+   "nome": "Esteira elétrica",
+   "familia": "equipamentos_fitness.cardio",
+   "modalidade": "cardio",
+   "regiao": "inferiores",
+   "grupo_muscular": "cardio",
+   "sinonimos": [
+    "esteira eletrica",
+    "esteira ergometrica",
+    "esteira motorizada",
+    "esteira profissional",
+    "treadmill",
+    "esteira rolante eletrica",
+    "esteira ergonomica",
+    "esteira de corrida"
+   ],
+   "fonte_carga": [
+    "motor"
+   ],
+   "cinematica": [
+    "nao_se_aplica"
+   ],
+   "pdm_catmat": [
+    7115,
+    7113,
+    2640
+   ],
+   "catmat_tipo": [
+    "2640:ELÉTRICA"
+   ],
+   "catmat_exemplo": [
+    "296935",
+    "623760",
+    "225083",
+    "225085"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": "PDM 7113 ESTEIRA ERGONÔMICA: nos textos reais tem inclinação e programas de treino, então é esteira motorizada. 'Esteira' sozinha é ambígua (trator de esteiras, esteira de praia)."
+  },
+  {
+   "slug": "esteira_nao_eletrica",
+   "nome": "Esteira não elétrica (curva/mecânica)",
+   "familia": "equipamentos_fitness.cardio",
+   "modalidade": "cardio",
+   "regiao": "inferiores",
+   "grupo_muscular": "cardio",
+   "sinonimos": [
+    "esteira curva",
+    "curved treadmill",
+    "esteira nao eletrica",
+    "esteira mecanica",
+    "esteira magnetica",
+    "esteira manual"
+   ],
+   "fonte_carga": [
+    "resistencia_cardio"
+   ],
+   "cinematica": [
+    "nao_se_aplica"
+   ],
+   "pdm_catmat": [
+    7116,
+    2640
+   ],
+   "catmat_tipo": [
+    "2640:MECÂNICA"
+   ],
+   "catmat_exemplo": [
+    "74470",
+    "225087",
+    "225088"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": "7111 ESTEIRA DE PRAIA é tapete: fora."
+  },
+  {
+   "slug": "bicicleta_vertical",
+   "nome": "Bicicleta ergométrica vertical",
+   "familia": "equipamentos_fitness.cardio",
+   "modalidade": "cardio",
+   "regiao": "inferiores",
+   "grupo_muscular": "cardio",
+   "sinonimos": [
+    "bicicleta ergometrica vertical",
+    "bike vertical",
+    "upright bike",
+    "bicicleta ergometrica",
+    "cicloergometro",
+    "bicicleta vertical"
+   ],
+   "fonte_carga": [
+    "resistencia_cardio"
+   ],
+   "cinematica": [
+    "nao_se_aplica"
+   ],
+   "pdm_catmat": [
+    3522
+   ],
+   "catmat_tipo": [
+    "3522:ELÉTRICA",
+    "3522:MECÂNICA",
+    "3522:MAGNÉTICA",
+    "CICLOERGÔMETRO COMPUTADORIZADO"
+   ],
+   "catmat_exemplo": [
+    "224671",
+    "224669",
+    "615456",
+    "381572"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [
+    "resistencia_cardio"
+   ],
+   "obs": "No PDM 3522 o TIPO é a resistência (elétrica/mecânica/magnética), não a posição: vertical é o default quando não diz 'horizontal'."
+  },
+  {
+   "slug": "bicicleta_horizontal",
+   "nome": "Bicicleta ergométrica horizontal",
+   "familia": "equipamentos_fitness.cardio",
+   "modalidade": "cardio",
+   "regiao": "inferiores",
+   "grupo_muscular": "cardio",
+   "sinonimos": [
+    "bicicleta ergometrica horizontal",
+    "bike horizontal",
+    "recumbent",
+    "bicicleta horizontal",
+    "bicicleta reclinada"
+   ],
+   "fonte_carga": [
+    "resistencia_cardio"
+   ],
+   "cinematica": [
+    "nao_se_aplica"
+   ],
+   "pdm_catmat": [
+    3522
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [
+    "resistencia_cardio"
+   ],
+   "obs": ""
+  },
+  {
+   "slug": "bike_spinning",
+   "nome": "Bike indoor (spinning)",
+   "familia": "equipamentos_fitness.cardio",
+   "modalidade": "cardio",
+   "regiao": "inferiores",
+   "grupo_muscular": "cardio",
+   "sinonimos": [
+    "spinning",
+    "bike indoor",
+    "bicicleta indoor",
+    "bicicleta de spinning",
+    "ciclismo indoor",
+    "bike spinning"
+   ],
+   "fonte_carga": [
+    "resistencia_cardio"
+   ],
+   "cinematica": [
+    "nao_se_aplica"
+   ],
+   "pdm_catmat": [
+    3522,
+    2640
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [
+    "resistencia_cardio"
+   ],
+   "obs": ""
+  },
+  {
+   "slug": "air_bike",
+   "nome": "Air bike",
+   "familia": "equipamentos_fitness.cardio",
+   "modalidade": "cardio",
+   "regiao": "corpo_inteiro",
+   "grupo_muscular": "cardio",
+   "sinonimos": [
+    "air bike",
+    "assault bike",
+    "fan bike",
+    "bicicleta de ar",
+    "airbike"
+   ],
+   "fonte_carga": [
+    "resistencia_cardio"
+   ],
+   "cinematica": [
+    "nao_se_aplica"
+   ],
+   "pdm_catmat": [
+    3522,
+    2640
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "eliptico",
+   "nome": "Elíptico / transport",
+   "familia": "equipamentos_fitness.cardio",
+   "modalidade": "cardio",
+   "regiao": "corpo_inteiro",
+   "grupo_muscular": "cardio",
+   "sinonimos": [
+    "eliptico",
+    "transport",
+    "cross trainer",
+    "elliptical",
+    "simulador de caminhada eliptico"
+   ],
+   "fonte_carga": [
+    "resistencia_cardio"
+   ],
+   "cinematica": [
+    "nao_se_aplica"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [
+    "TRANSPORT",
+    "ELIPTICO PROFISSIONAL ELETROMAGNÉTICO"
+   ],
+   "catmat_exemplo": [
+    "319332",
+    "486564"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [
+    "resistencia_cardio"
+   ],
+   "obs": ""
+  },
+  {
+   "slug": "simulador_escada",
+   "nome": "Simulador de escada (stair climber)",
+   "familia": "equipamentos_fitness.cardio",
+   "modalidade": "cardio",
+   "regiao": "inferiores",
+   "grupo_muscular": "cardio",
+   "sinonimos": [
+    "simulador de escada",
+    "escada ergometrica",
+    "stair climber",
+    "stepmill",
+    "escada rolante ergometrica",
+    "climber"
+   ],
+   "fonte_carga": [
+    "motor",
+    "resistencia_cardio"
+   ],
+   "cinematica": [
+    "nao_se_aplica"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [
+    "2640:ESCADA"
+   ],
+   "catmat_exemplo": [
+    "250339",
+    "471245",
+    "486249"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": "Decisão 25/09: 2640 TIPO ESCADA = simulador de escada. ATENÇÃO: os 2 itens com esse TIPO não parecem máquinas: 471245 = 'escada de plástico com ajuste de altura' e 486249 = 'escada de nylon, 450 cm, 10 degraus' (escada de agilidade). 250339 (TIPO ELÉTRICA, stepper) é simulador de verdade."
+  },
+  {
+   "slug": "remo_ergometro",
+   "nome": "Remo ergômetro",
+   "familia": "equipamentos_fitness.cardio",
+   "modalidade": "cardio",
+   "regiao": "corpo_inteiro",
+   "grupo_muscular": "cardio",
+   "sinonimos": [
+    "simulador de remo",
+    "remo ergometro",
+    "remo seco",
+    "rowing",
+    "remo indoor",
+    "remo ar",
+    "remo agua",
+    "remador"
+   ],
+   "fonte_carga": [
+    "resistencia_cardio"
+   ],
+   "cinematica": [
+    "nao_se_aplica"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [
+    "resistencia_cardio"
+   ],
+   "obs": "Ar/água/magnético é atributo resistencia_cardio. Região corpo_inteiro (corrige 'Membros Inferiores')."
+  },
+  {
+   "slug": "simulador_esqui",
+   "nome": "Simulador de esqui (ski erg)",
+   "familia": "equipamentos_fitness.cardio",
+   "modalidade": "cardio",
+   "regiao": "corpo_inteiro",
+   "grupo_muscular": "cardio",
+   "sinonimos": [
+    "simulador de esqui",
+    "simulador de ski",
+    "ski erg",
+    "skierg",
+    "ergometro de esqui"
+   ],
+   "fonte_carga": [
+    "resistencia_cardio"
+   ],
+   "cinematica": [
+    "nao_se_aplica"
+   ],
+   "pdm_catmat": [
+    2640,
+    17574
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": "Junta 'Esqui' e 'Ski' do arquivo original."
+  },
+  {
+   "slug": "rolo_treino_bicicleta",
+   "nome": "Rolo de treino para bicicleta",
+   "familia": "equipamentos_fitness.cardio",
+   "modalidade": "cardio",
+   "regiao": "inferiores",
+   "grupo_muscular": "cardio",
+   "sinonimos": [
+    "rolo de treinamento para bicicleta",
+    "rolo de treino",
+    "trainer de bicicleta",
+    "rolo para bicicleta"
+   ],
+   "fonte_carga": [
+    "resistencia_cardio"
+   ],
+   "cinematica": [
+    "nao_se_aplica"
+   ],
+   "pdm_catmat": [
+    2640
+   ],
+   "catmat_tipo": [
+    "ROLO DE TREINAMENTO PARA BICICLETA"
+   ],
+   "catmat_exemplo": [
+    "631193"
+   ],
+   "escopo": "OUT",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "cardio_indefinido",
+   "nome": "Cardio (tipo não informado)",
+   "familia": "equipamentos_fitness.cardio",
+   "modalidade": "cardio",
+   "regiao": "nao_se_aplica",
+   "grupo_muscular": "cardio",
+   "sinonimos": [
+    "aparelho aerobico",
+    "equipamento cardiovascular",
+    "ergometro"
+   ],
+   "fonte_carga": [],
+   "cinematica": [],
+   "pdm_catmat": [
+    2640
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": "Fallback. O TIPO ELÉTRICA/MECÂNICA do PDM 2640 agora vai para esteira (ver esteira_eletrica/esteira_nao_eletrica e CATMAT_ITEM)."
+  },
+  {
+   "slug": "academia_ar_livre",
+   "nome": "Aparelho de academia ao ar livre (ATI)",
+   "familia": "equipamentos_fitness.ar_livre",
+   "modalidade": "ar_livre",
+   "regiao": "nao_se_aplica",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "academia ao ar livre",
+    "academia ar livre",
+    "academia da terceira idade",
+    "ape",
+    "equipamento de ginastica para academia",
+    "alongador",
+    "academia popular",
+    "multi estacao de academia ao ar livre",
+    "esqui duplo",
+    "simulador de caminhada duplo",
+    "simulador de cavalgada duplo",
+    "pressao de pernas duplo",
+    "multiexercitador",
+    "puxada alta dupla",
+    "rotacao vertical duplo",
+    "surf duplo",
+    "remada sentada dupla"
+   ],
+   "fonte_carga": [
+    "peso_corporal"
+   ],
+   "cinematica": [],
+   "pdm_catmat": [
+    6827,
+    2640
+   ],
+   "catmat_tipo": [
+    "MULTI ESTAÇÃO DE ACADEMIA AO AR LIVRE",
+    "ESQUI DUPLO CONJUGADO",
+    "SIMULADOR DE CAMINHADA DUPLO",
+    "SIMULADOR DE CAVALGADA DUPLO",
+    "PRESSÃO DE PERNAS DUPLO",
+    "MULTIEXERCITADOR CONJULGADO SEIS FUNÇÕES",
+    "PUXADA ALTA DUPLA"
+   ],
+   "catmat_exemplo": [
+    "623742",
+    "480979",
+    "480982",
+    "480983",
+    "480981",
+    "480980",
+    "478756"
+   ],
+   "escopo": "OUT",
+   "componentes": [],
+   "atributos": [
+    "aparelho_ati"
+   ],
+   "obs": "Proposta v1.1: 'academia ao ar livre — a decidir'. Pista forte: 'duplo/dupla' + galvanizado/tubo/praça. 'Puxada alta dupla' fica aqui, não em puxada_alta."
+  },
+  {
+   "slug": "caixa_salto",
+   "nome": "Caixa de salto (plyo box)",
+   "familia": "equipamentos_fitness.funcional",
+   "modalidade": "funcional",
+   "regiao": "inferiores",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "caixa de salto",
+    "plyo box",
+    "caixa pliometrica",
+    "box jump",
+    "caixa de pliometria"
+   ],
+   "fonte_carga": [],
+   "cinematica": [],
+   "pdm_catmat": [
+    2640
+   ],
+   "catmat_tipo": [
+    "CAIXA DE SALTO"
+   ],
+   "catmat_exemplo": [
+    "613981"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "fita_suspensao",
+   "nome": "Fita de suspensão (TRX)",
+   "familia": "equipamentos_fitness.funcional",
+   "modalidade": "funcional",
+   "regiao": "corpo_inteiro",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "fita de suspensao",
+    "trx",
+    "fita trx",
+    "treinamento suspenso",
+    "suspension trainer"
+   ],
+   "fonte_carga": [
+    "peso_corporal"
+   ],
+   "cinematica": [],
+   "pdm_catmat": [
+    2640,
+    2638
+   ],
+   "catmat_tipo": [
+    "FITA DE SUSPENSÃO",
+    "FITA TRX"
+   ],
+   "catmat_exemplo": [
+    "460541",
+    "636440"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "corda_naval",
+   "nome": "Corda naval (battle rope)",
+   "familia": "equipamentos_fitness.funcional",
+   "modalidade": "funcional",
+   "regiao": "corpo_inteiro",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "corda naval",
+    "battle rope",
+    "corda de batalha",
+    "corda naval hope"
+   ],
+   "fonte_carga": [],
+   "cinematica": [],
+   "pdm_catmat": [
+    2640
+   ],
+   "catmat_tipo": [
+    "CORDA NAVAL HOPE"
+   ],
+   "catmat_exemplo": [
+    "471747"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "saco_areia",
+   "nome": "Power bag / sand bag",
+   "familia": "equipamentos_fitness.funcional",
+   "modalidade": "funcional",
+   "regiao": "corpo_inteiro",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "power bag",
+    "sand bag",
+    "sandbag",
+    "saco de areia",
+    "bolsa de peso"
+   ],
+   "fonte_carga": [
+    "carga_propria"
+   ],
+   "cinematica": [],
+   "pdm_catmat": [
+    2638
+   ],
+   "catmat_tipo": [
+    "BOLSA (POWER BAG/SAND BAG)"
+   ],
+   "catmat_exemplo": [
+    "601574"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "colete_peso",
+   "nome": "Colete com pesos",
+   "familia": "equipamentos_fitness.funcional",
+   "modalidade": "funcional",
+   "regiao": "corpo_inteiro",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "colete com pesos",
+    "colete de peso",
+    "colete lastrado",
+    "weighted vest"
+   ],
+   "fonte_carga": [
+    "carga_propria"
+   ],
+   "cinematica": [],
+   "pdm_catmat": [
+    2638
+   ],
+   "catmat_tipo": [
+    "COLETE COM PESOS"
+   ],
+   "catmat_exemplo": [
+    "601930"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "bola_medicinal",
+   "nome": "Bola medicinal / wall ball / slam ball",
+   "familia": "equipamentos_fitness.funcional",
+   "modalidade": "funcional",
+   "regiao": "corpo_inteiro",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "bola medicinal",
+    "medicine ball",
+    "medicine boll",
+    "medicine bol",
+    "wall ball",
+    "slam ball",
+    "medball"
+   ],
+   "fonte_carga": [
+    "carga_propria"
+   ],
+   "cinematica": [],
+   "pdm_catmat": [
+    2640,
+    2638
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "equilibrio",
+   "nome": "Equilíbrio / propriocepção (bosu, disco)",
+   "familia": "equipamentos_fitness.funcional",
+   "modalidade": "funcional",
+   "regiao": "corpo_inteiro",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "bosu",
+    "meia bola",
+    "disco de equilibrio",
+    "disco inflavel",
+    "prancha de equilibrio",
+    "disco proprioceptivo",
+    "disco de rotacao",
+    "balance board"
+   ],
+   "fonte_carga": [],
+   "cinematica": [],
+   "pdm_catmat": [
+    2640
+   ],
+   "catmat_tipo": [
+    "BOSU",
+    "DISCO DE EQUILÍBRIO INFLÁVEL",
+    "DISCO DE ROTAÇÃO"
+   ],
+   "catmat_exemplo": [
+    "399772",
+    "631192",
+    "465044"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "step",
+   "nome": "Step / plataforma de step",
+   "familia": "equipamentos_fitness.acessorios",
+   "modalidade": "acessorio",
+   "regiao": "inferiores",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "step",
+    "plataforma step",
+    "step profissional",
+    "step ajustavel",
+    "step aerobico"
+   ],
+   "fonte_carga": [],
+   "cinematica": [],
+   "pdm_catmat": [
+    2640,
+    10897
+   ],
+   "catmat_tipo": [
+    "STEP",
+    "STEP PROFISSIONAL AJUSTÁVEL"
+   ],
+   "catmat_exemplo": [
+    "399741",
+    "639204",
+    "636531"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": "Decisão 26/09: Tipo = acessório (antes funcional)."
+  },
+  {
+   "slug": "escada_agilidade",
+   "nome": "Escada de agilidade / cones / barreiras",
+   "familia": "equipamentos_fitness.funcional",
+   "modalidade": "funcional",
+   "regiao": "inferiores",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "escada de agilidade",
+    "escada de coordenacao",
+    "agility ladder",
+    "barreira de salto",
+    "mini barreira",
+    "cones de treino"
+   ],
+   "fonte_carga": [],
+   "cinematica": [],
+   "pdm_catmat": [
+    2640
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "OUT",
+   "componentes": [],
+   "atributos": [],
+   "obs": "Continua no dicionário só para reconhecer e descartar."
+  },
+  {
+   "slug": "mini_trampolim",
+   "nome": "Mini trampolim (jump)",
+   "familia": "equipamentos_fitness.funcional",
+   "modalidade": "funcional",
+   "regiao": "inferiores",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "mini trampolim",
+    "jump",
+    "trampolim de jump",
+    "cama elastica de jump"
+   ],
+   "fonte_carga": [],
+   "cinematica": [],
+   "pdm_catmat": [
+    2640
+   ],
+   "catmat_tipo": [
+    "MINI TRAMPOLIM"
+   ],
+   "catmat_exemplo": [
+    "462018"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": "Cama elástica recreativa (PDM 4308) é fora."
+  },
+  {
+   "slug": "roda_abdominal",
+   "nome": "Roda abdominal (roda de exercício)",
+   "familia": "equipamentos_fitness.acessorios",
+   "modalidade": "acessorio",
+   "regiao": "core",
+   "grupo_muscular": "abdomen",
+   "sinonimos": [
+    "roda de exercicio",
+    "roda abdominal",
+    "rolo abdominal",
+    "ab wheel",
+    "roda de exercicios"
+   ],
+   "fonte_carga": [],
+   "cinematica": [],
+   "pdm_catmat": [
+    2640
+   ],
+   "catmat_tipo": [
+    "RODA DE EXERCÍCIO",
+    "RODA"
+   ],
+   "catmat_exemplo": [
+    "467354",
+    "450160"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": "Decisão 25/09: acessório. 450160 = roda dupla com pegada anatômica (roda abdominal). Região core."
+  },
+  {
+   "slug": "corda_pular",
+   "nome": "Corda de pular",
+   "familia": "equipamentos_fitness.acessorios",
+   "modalidade": "acessorio",
+   "regiao": "nao_se_aplica",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "corda de pular",
+    "corda de saltar",
+    "jump rope",
+    "corda speed",
+    "pula corda"
+   ],
+   "fonte_carga": [],
+   "cinematica": [],
+   "pdm_catmat": [
+    1400
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": "Modalidade acessório/cardio, não musculação."
+  },
+  {
+   "slug": "faixa_elastica",
+   "nome": "Faixa / tubo elástico",
+   "familia": "equipamentos_fitness.acessorios",
+   "modalidade": "acessorio",
+   "regiao": "nao_se_aplica",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "faixa elastica",
+    "mini band",
+    "super band",
+    "tubo elastico",
+    "extensor elastico",
+    "elastico de resistencia",
+    "theraband",
+    "extensor de braco"
+   ],
+   "fonte_carga": [
+    "elastico"
+   ],
+   "cinematica": [],
+   "pdm_catmat": [
+    2638,
+    7253
+   ],
+   "catmat_tipo": [
+    "FAIXA ELÁSTICA"
+   ],
+   "catmat_exemplo": [
+    "627320",
+    "191"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "bola_suica",
+   "nome": "Bola suíça / bola de pilates",
+   "familia": "equipamentos_fitness.acessorios",
+   "modalidade": "pilates",
+   "regiao": "nao_se_aplica",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "bola suica",
+    "bola de pilates",
+    "bola para pilates",
+    "bola pilates",
+    "bola feijao",
+    "bola tipo feijao",
+    "bola de ginastica",
+    "gym ball",
+    "fit ball",
+    "bola de exercicio",
+    "bolas de exercicio",
+    "overball"
+   ],
+   "fonte_carga": [],
+   "cinematica": [],
+   "pdm_catmat": [
+    2640
+   ],
+   "catmat_tipo": [
+    "BOLA PARA PILATES"
+   ],
+   "catmat_exemplo": [
+    "411183"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "rolo_liberacao",
+   "nome": "Rolo de liberação miofascial",
+   "familia": "equipamentos_fitness.acessorios",
+   "modalidade": "acessorio",
+   "regiao": "nao_se_aplica",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "rolo de espuma",
+    "foam roller",
+    "rolo massagem",
+    "rolo miofascial",
+    "rolo para pilates",
+    "rolo de liberacao"
+   ],
+   "fonte_carga": [],
+   "cinematica": [],
+   "pdm_catmat": [
+    17733,
+    2640
+   ],
+   "catmat_tipo": [
+    "ROLO MASSAGEM",
+    "ROLO PARA PILATES"
+   ],
+   "catmat_exemplo": [
+    "444279",
+    "465858"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "pegador_polia",
+   "nome": "Pegador / puxador para polia",
+   "familia": "equipamentos_fitness.acessorios",
+   "modalidade": "acessorio",
+   "regiao": "nao_se_aplica",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "puxador triceps corda",
+    "corda para triceps",
+    "puxador triangulo",
+    "triangulo",
+    "barra para puxador",
+    "puxador de polia",
+    "pegador",
+    "puxador romano",
+    "puxador reto",
+    "tornozeleira para polia"
+   ],
+   "fonte_carga": [],
+   "cinematica": [],
+   "pdm_catmat": [
+    2638,
+    2640
+   ],
+   "catmat_tipo": [
+    "PUXADOR",
+    "PUXADOR TRÍCEPS CORDA"
+   ],
+   "catmat_exemplo": [
+    "480249",
+    "465043"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": "2638 TIPO PUXADOR (5 itens, 'uso: equipamentos de academia', aço/termoplástico) = pegador."
+  },
+  {
+   "slug": "tornozeleira_caneleira",
+   "nome": "Caneleira / tornozeleira de peso",
+   "familia": "equipamentos_fitness.acessorios",
+   "modalidade": "acessorio",
+   "regiao": "nao_se_aplica",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "caneleira",
+    "tornozeleira",
+    "ankle weight",
+    "peso de tornozelo"
+   ],
+   "fonte_carga": [
+    "carga_propria"
+   ],
+   "cinematica": [],
+   "pdm_catmat": [],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "plataforma_vibratoria",
+   "nome": "Plataforma vibratória",
+   "familia": "equipamentos_fitness.acessorios",
+   "modalidade": "acessorio",
+   "regiao": "corpo_inteiro",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "plataforma vibratoria",
+    "vibration plate",
+    "plataforma de vibracao"
+   ],
+   "fonte_carga": [
+    "motor"
+   ],
+   "cinematica": [],
+   "pdm_catmat": [
+    2640
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [
+    "356908"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": "Novo em 25/09: item 2640 356908 (TIPO ELÉTRICA, modelo plataforma vibratória)."
+  },
+  {
+   "slug": "suporte_armazenamento",
+   "nome": "Suporte / estante (halteres, anilhas, barras, kettlebells, bolas)",
+   "familia": "equipamentos_fitness.suportes",
+   "modalidade": "suporte",
+   "regiao": "nao_se_aplica",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "suporte para halteres",
+    "suporte de halteres",
+    "suporte para anilhas",
+    "suporte de anilhas",
+    "arvore de anilhas",
+    "suporte para barras",
+    "suporte de barras",
+    "suporte para kettlebell",
+    "suporte para bolas",
+    "rack de halteres",
+    "estante para halteres",
+    "expositor de halteres",
+    "estante material esportivo",
+    "suporte vertical"
+   ],
+   "fonte_carga": [],
+   "cinematica": [],
+   "pdm_catmat": [
+    7100
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [
+    "para"
+   ],
+   "obs": "Mesmo nó 'acessorio' do taxonomia.py; atributo 'para' diz o que guarda. PDM 7100 genérico: decidir por item."
+  },
+  {
+   "slug": "reformer",
+   "nome": "Reformer",
+   "familia": "equipamentos_fitness.pilates",
+   "modalidade": "pilates",
+   "regiao": "corpo_inteiro",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "reformer",
+    "studio reformer",
+    "cross pilates reformer",
+    "aparelho de cross pilates reformer",
+    "reformer com torre"
+   ],
+   "fonte_carga": [
+    "mola"
+   ],
+   "cinematica": [],
+   "pdm_catmat": [
+    17574
+   ],
+   "catmat_tipo": [
+    "STUDIO REFORMER",
+    "APARELHO DE CROSS PILATES REFORMER"
+   ],
+   "catmat_exemplo": [
+    "311258",
+    "627388"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "cadillac",
+   "nome": "Cadillac / trapézio",
+   "familia": "equipamentos_fitness.pilates",
+   "modalidade": "pilates",
+   "regiao": "corpo_inteiro",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "cadillac",
+    "trapezio",
+    "trapezio estendido",
+    "trap table",
+    "trapeze table"
+   ],
+   "fonte_carga": [
+    "mola"
+   ],
+   "cinematica": [],
+   "pdm_catmat": [
+    17574
+   ],
+   "catmat_tipo": [
+    "CADILLAC",
+    "TRAPÉZIO",
+    "TRAPÉZIO ESTENDIDO"
+   ],
+   "catmat_exemplo": [
+    "382246",
+    "319330",
+    "486320"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "cadeira_combo",
+   "nome": "Chair (cadeira combo / wunda / step chair)",
+   "familia": "equipamentos_fitness.pilates",
+   "modalidade": "pilates",
+   "regiao": "corpo_inteiro",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "cadeira combo",
+    "wunda chair",
+    "wunda",
+    "step chair",
+    "chair pilates",
+    "cadeira de pilates",
+    "aparelho de cross pilates cadeira combo"
+   ],
+   "fonte_carga": [
+    "mola"
+   ],
+   "cinematica": [],
+   "pdm_catmat": [
+    17574,
+    2640
+   ],
+   "catmat_tipo": [
+    "CADEIRA COMBO",
+    "WUNDA",
+    "STEP CHAIR",
+    "APARELHO DE CROSS PILATES CADEIRA COMBO"
+   ],
+   "catmat_exemplo": [
+    "319328",
+    "323106",
+    "465864",
+    "627387"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "barrel",
+   "nome": "Barrel (ladder, step, meia lua)",
+   "familia": "equipamentos_fitness.pilates",
+   "modalidade": "pilates",
+   "regiao": "corpo_inteiro",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "ladder barrel",
+    "step barrel",
+    "meia lua",
+    "spine corrector",
+    "barril",
+    "flymoon",
+    "arc barrel"
+   ],
+   "fonte_carga": [],
+   "cinematica": [],
+   "pdm_catmat": [
+    17574,
+    2640
+   ],
+   "catmat_tipo": [
+    "LADDER BARREL",
+    "STEP BARREL",
+    "MEIA LUA",
+    "FLYMOON - MEIA LUA"
+   ],
+   "catmat_exemplo": [
+    "319329",
+    "382106",
+    "627384",
+    "460561"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "wall_unit",
+   "nome": "Wall unit / springboard",
+   "familia": "equipamentos_fitness.pilates",
+   "modalidade": "pilates",
+   "regiao": "corpo_inteiro",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "studio wall unit",
+    "wall unit",
+    "springboard",
+    "parede de pilates"
+   ],
+   "fonte_carga": [
+    "mola"
+   ],
+   "cinematica": [],
+   "pdm_catmat": [
+    17574
+   ],
+   "catmat_tipo": [
+    "STUDIO WALL UNIT"
+   ],
+   "catmat_exemplo": [
+    "640847"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "caixa_pilates",
+   "nome": "Caixa (box) de pilates",
+   "familia": "equipamentos_fitness.pilates",
+   "modalidade": "pilates",
+   "regiao": "nao_se_aplica",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "caixa para reformer",
+    "caixa para cadillac",
+    "caixa de pilates",
+    "sitting box",
+    "box pilates",
+    "caixa pequena para pilates"
+   ],
+   "fonte_carga": [],
+   "cinematica": [],
+   "pdm_catmat": [
+    17574
+   ],
+   "catmat_tipo": [
+    "CAIXA",
+    "CAIXA GRANDE PARA CADILLAC PILATES CLASSIC E CROSS",
+    "CAIXA MÉDIA PARA REFORMER PILATES CLASSIC E CROSS",
+    "CAIXA PEQUENA PARA PILATES CLASSIC E CROSS"
+   ],
+   "catmat_exemplo": [
+    "382086",
+    "627385",
+    "627383",
+    "627382"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "acessorio_pilates",
+   "nome": "Acessório de pilates (anel, mola, alça)",
+   "familia": "equipamentos_fitness.pilates",
+   "modalidade": "pilates",
+   "regiao": "nao_se_aplica",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "magic circle",
+    "magicle circle",
+    "anel de pilates",
+    "anel pilates",
+    "anel tonificador",
+    "arco flexivel",
+    "mola para pilates",
+    "alca de mao",
+    "alca de pe",
+    "alca para pilates"
+   ],
+   "fonte_carga": [],
+   "cinematica": [],
+   "pdm_catmat": [
+    17574,
+    2640
+   ],
+   "catmat_tipo": [
+    "MAGICLE CIRCLE",
+    "MOLA PARA PILATES",
+    "ALÇA DE MÃO",
+    "ALÇA DE PÉ"
+   ],
+   "catmat_exemplo": [
+    "382256",
+    "460567",
+    "382083",
+    "382084"
+   ],
+   "escopo": "IN",
+   "componentes": [],
+   "atributos": [
+    "tipo_acessorio"
+   ],
+   "obs": ""
+  },
+  {
+   "slug": "colchonete",
+   "nome": "Colchonete / tapete de exercício",
+   "familia": "equipamentos_fitness.acessorios",
+   "modalidade": "acessorio",
+   "regiao": "nao_se_aplica",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "colchonete",
+    "tapete de yoga",
+    "tapete yoga",
+    "mat de yoga",
+    "tapete de exercicio",
+    "esteira de yoga"
+   ],
+   "fonte_carga": [],
+   "cinematica": [],
+   "pdm_catmat": [
+    5341
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "OUT",
+   "componentes": [],
+   "atributos": [],
+   "obs": "Decisão 26/09: Tipo = acessório (antes solo_lutas). Continua OUT da produção."
+  },
+  {
+   "slug": "tatame",
+   "nome": "Tatame",
+   "familia": "equipamentos_fitness.solo_lutas",
+   "modalidade": "solo_lutas",
+   "regiao": "nao_se_aplica",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "tatame",
+    "tatami",
+    "placa eva encaixe",
+    "tatame eva"
+   ],
+   "fonte_carga": [],
+   "cinematica": [],
+   "pdm_catmat": [
+    18452
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "OUT",
+   "componentes": [],
+   "atributos": [],
+   "obs": "Fronteira com pisos (7220): tatame de academia de lutas × piso de área de peso livre."
+  },
+  {
+   "slug": "saco_pancada",
+   "nome": "Saco de pancada",
+   "familia": "equipamentos_fitness.solo_lutas",
+   "modalidade": "solo_lutas",
+   "regiao": "nao_se_aplica",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "saco de pancada",
+    "saco de boxe",
+    "punching bag",
+    "saco pancada"
+   ],
+   "fonte_carga": [],
+   "cinematica": [],
+   "pdm_catmat": [
+    18453
+   ],
+   "catmat_tipo": [],
+   "catmat_exemplo": [],
+   "escopo": "OUT",
+   "componentes": [],
+   "atributos": [],
+   "obs": ""
+  },
+  {
+   "slug": "ginastica_artistica_ritmica",
+   "nome": "Ginástica artística/rítmica/escolar",
+   "familia": "equipamentos_fitness.ginastica",
+   "modalidade": "ginastica",
+   "regiao": "nao_se_aplica",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "trave de equilibrio",
+    "cavalo com alca",
+    "mesa de salto",
+    "plinto",
+    "portico de argolas",
+    "argolas",
+    "banco sueco",
+    "tablado",
+    "ginastica artistica",
+    "colchao sarneige",
+    "arco de ginastica",
+    "bambole",
+    "bastao de ginastica",
+    "maca de ginastica",
+    "fita de ginastica ritmica"
+   ],
+   "fonte_carga": [],
+   "cinematica": [],
+   "pdm_catmat": [
+    2640,
+    16229,
+    10897,
+    2976,
+    3431,
+    15285,
+    15172,
+    6886
+   ],
+   "catmat_tipo": [
+    "TRAVE DE EQUILÍBRIO",
+    "CAVALO COM ALÇA DE CHÃO",
+    "MESA DE SALTO",
+    "PLINTO",
+    "PÓRTICO DE ARGOLAS",
+    "ARGOLA",
+    "TABLADO GINÁSTICA ARTÍSTICA ALTO RENDIMENTO"
+   ],
+   "catmat_exemplo": [
+    "460558",
+    "461915",
+    "460560",
+    "460559",
+    "461978",
+    "461768",
+    "636458"
+   ],
+   "escopo": "OUT",
+   "componentes": [],
+   "atributos": [],
+   "obs": "Proposta v1.1: ginástica rítmica/escolar — a decidir."
+  },
+  {
+   "slug": "fora_escopo",
+   "nome": "Fora do escopo fitness",
+   "familia": "fora",
+   "modalidade": "fora",
+   "regiao": "nao_se_aplica",
+   "grupo_muscular": "",
+   "sinonimos": [
+    "rede de volei",
+    "rede de futebol",
+    "apito",
+    "cartao de arbitro",
+    "cartao de arbito",
+    "bandeirola",
+    "marcador de linhas",
+    "aro de basquete",
+    "brinquedo inflavel",
+    "balanco infantil",
+    "escorregador",
+    "gangorra",
+    "parque infantil",
+    "mesa de sinuca",
+    "pebolim",
+    "tenis de mesa",
+    "prancha de natacao",
+    "raia",
+    "colete piscina",
+    "cinto natacao",
+    "boquilha",
+    "regulador de mergulho",
+    "cama elastica",
+    "esteira de praia",
+    "trator de esteira",
+    "esteira transportadora",
+    "pista de esgrima",
+    "pelota"
+   ],
+   "fonte_carga": [],
+   "cinematica": [],
+   "pdm_catmat": [
+    11503,
+    1199,
+    3869,
+    3233,
+    4308,
+    6820,
+    10462,
+    9629,
+    6929,
+    7921,
+    6930,
+    9632,
+    9634,
+    11132,
+    1386,
+    5026,
+    5349,
+    15677,
+    15681,
+    15679,
+    15625,
+    5028,
+    15243,
+    7111
+   ],
+   "catmat_tipo": [
+    "CARTÃO DE ARBITO",
+    "KIT BANDEIROLA",
+    "BANDEIROLA ONDULADA",
+    "MARCADOR DE LINHAS",
+    "ARO BASQUETE",
+    "BOQUILHA",
+    "TRAQUEIA CORRUGADA",
+    "PEDESTAL",
+    "MARCADOR DE PISADA",
+    "PISTA DE ESGRIMA",
+    "PELOTA",
+    "GANGORRA"
+   ],
+   "catmat_exemplo": [],
+   "escopo": "OUT",
+   "componentes": [],
+   "atributos": [],
+   "obs": "Classe 7830 ≠ fitness. Inclui também itens soltos dos PDMs 2638/2640 (árbitro, mergulho, basquete). GANGORRA em 2640 (353216): conferir se é ATI."
+  }
+ ]
+}

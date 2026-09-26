@@ -12,6 +12,7 @@ export {
   PermanentHttpError,
   RetryableHttpError,
   retryDelayMs,
+  retryDelayWithJitter,
   withRetry,
 } from "../../../../../supabase/functions/_shared/pncp/retry.ts";
 export {

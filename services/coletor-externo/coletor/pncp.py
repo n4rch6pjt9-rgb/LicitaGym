@@ -19,7 +19,9 @@ compra passa pelo classificador de escopo (coletor/escopo.py) usando objeto + it
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import os
 import re
 import sys
 import threading
@@ -54,6 +56,10 @@ def _retry_after_s(r) -> float | None:
         return None
     return max(0.0, min(v, MAX_RETRY_AFTER_S))
 
+# Detalhe da compra e atalho (o edital e a fonte principal): nao gastar 10 min nele.
+DETALHE_TIMEOUT = int(os.environ.get("PNCP_DETALHE_TIMEOUT", "20"))
+DETALHE_TENTATIVAS = int(os.environ.get("PNCP_DETALHE_TENTATIVAS", "2"))
+
 # Termos padrão: prioriza o interesse comercial (grama/borracha) e o núcleo fitness
 TERMOS_PADRAO = [
     "borracha granulada", "raspa de borracha", "granulado de borracha", "grama sintética",
@@ -77,12 +83,12 @@ class PNCP:
             self._local.s.headers["User-Agent"] = "LicitaGym-Coletor/1.0 (pesquisa de licitações públicas)"
         return self._local.s
 
-    def _get(self, caminho: str, **params):
+    def _get(self, caminho: str, *, _timeout=None, _tentativas=None, **params):
         url = caminho if caminho.startswith("http") else BASE + caminho
         ultimo = None
-        for tentativa in range(self.tentativas):
+        for tentativa in range(_tentativas or self.tentativas):
             try:
-                r = self.s.get(url, params=params or None, timeout=self.timeout)
+                r = self.s.get(url, params=params or None, timeout=_timeout or self.timeout)
                 time.sleep(self.delay)
                 if r.status_code == 204:
                     return []
@@ -115,7 +121,7 @@ class PNCP:
                       pagina=pagina, tam_pagina=tam, status=status)
         if r == []:
             return {"items": [], "total": 0}
-        if not isinstance(r, dict) or not isinstance(r.get("items", []), list):
+        if not isinstance(r, dict) or not isinstance(r.get("items"), list):
             raise RespostaInvalida(f"PNCP busca: envelope inesperado ({type(r).__name__})")
         return r
 
@@ -132,7 +138,7 @@ class PNCP:
     def compra(self, c: dict) -> dict:
         """Detalhe da compra: traz o número do PROCESSO ADMINISTRATIVO ('processo'),
         que a busca não devolve. É ele (com o CNPJ do órgão) que identifica o certame fora do PNCP."""
-        r = self._get(self.detalhe_compra(c))
+        r = self._get(self.detalhe_compra(c), _timeout=DETALHE_TIMEOUT, _tentativas=DETALHE_TENTATIVAS)
         # PNCP devolve erro de rota como JSON {status, message} com HTTP 200.
         if isinstance(r, dict) and str(r.get("status", "")).startswith(("3", "4", "5")) and "message" in r:
             raise RuntimeError(f"PNCP detalhe: {r.get('status')} {r.get('message')}")
@@ -141,9 +147,15 @@ class PNCP:
         return r
 
     def itens(self, c: dict) -> list[dict]:
-        out, pagina = [], 1
+        out, pagina, paginas_vistas = [], 1, set()
         while True:
             lote = self._lista(self.base_compra(c) + "/itens", pagina=pagina, tamanhoPagina=100)
+            fingerprint = sha256(json.dumps(
+                lote, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8"))
+            if fingerprint in paginas_vistas:
+                raise RespostaInvalida(f"PNCP itens: página repetida durante paginação (página {pagina})")
+            paginas_vistas.add(fingerprint)
             out += lote
             if len(lote) < 100:
                 return out

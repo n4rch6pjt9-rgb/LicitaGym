@@ -260,6 +260,14 @@ function parseCodigoClasseCatmat(value: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+function parseClassificacaoCatalogoId(value: unknown): string | null {
+  // Official PCA Material/Serviço axis (Manual §8.3–§8.4): 1=Material, 2=Serviço.
+  // Wire name is classificacaoCatalogoId — do not invent from categoriaItemPcaNome.
+  if (value == null || value === "") return null;
+  const s = String(value).trim();
+  return s.length > 0 ? s : null;
+}
+
 export function normalizePcaItem(
   item: Record<string, unknown>,
   _plan: Record<string, unknown>,
@@ -274,6 +282,7 @@ export function normalizePcaItem(
     categoria: item.categoriaItemPcaNome ? String(item.categoriaItemPcaNome) : null,
     classe_material_servico: classeRaw,
     codigo_classe_catmat: parseCodigoClasseCatmat(classeRaw),
+    classificacao_catalogo_id: parseClassificacaoCatalogoId(item.classificacaoCatalogoId),
     quantidade: item.quantidadeEstimada != null ? Number(item.quantidadeEstimada) : null,
     unidade_medida: item.unidadeFornecimento ? String(item.unidadeFornecimento) : null,
     valor_unitario_estimado: item.valorUnitario != null ? Number(item.valorUnitario) : null,
@@ -283,6 +292,52 @@ export function normalizePcaItem(
     pdm_codigo_origem: item.pdmCodigo != null ? String(item.pdmCodigo).trim() || null : null,
     codigo_item_origem: item.codigoItem != null ? String(item.codigoItem).trim() || null : null,
   };
+}
+
+/**
+ * Mapper histórico 18/09→19/09 ~15h UTC (pré-3a2766e): sem
+ * codigo_classe_catmat / pdm_codigo_origem / codigo_item_origem /
+ * classificacao_catalogo_id. Só para guarda de hash na reprojeção.
+ */
+export function normalizePcaItemLegacyV1(
+  item: Record<string, unknown>,
+  _plan: Record<string, unknown>,
+) {
+  const numeroItem = Number(item.numeroItem ?? item.numero_item ?? 0);
+  return {
+    numero_item: numeroItem,
+    descricao: item.descricaoItem ? String(item.descricaoItem) : null,
+    categoria: item.categoriaItemPcaNome ? String(item.categoriaItemPcaNome) : null,
+    classe_material_servico: item.classificacaoSuperiorCodigo != null
+      ? String(item.classificacaoSuperiorCodigo)
+      : null,
+    quantidade: item.quantidadeEstimada != null ? Number(item.quantidadeEstimada) : null,
+    unidade_medida: item.unidadeFornecimento ? String(item.unidadeFornecimento) : null,
+    valor_unitario_estimado: item.valorUnitario != null ? Number(item.valorUnitario) : null,
+    valor_total_estimado: item.valorTotal != null ? Number(item.valorTotal) : null,
+    data_prevista_contratacao: item.dataDesejada ?? null,
+    status: item.status ? String(item.status) : null,
+  };
+}
+
+/**
+ * Mapper pós-3a2766e até P0 classificacao: inclui origem/classe numérica,
+ * sem `classificacao_catalogo_id`. Só para guarda de hash na reprojeção.
+ */
+export function normalizePcaItemLegacyV2(
+  item: Record<string, unknown>,
+  plan: Record<string, unknown>,
+): Omit<ReturnType<typeof normalizePcaItem>, "classificacao_catalogo_id"> {
+  const { classificacao_catalogo_id: _omit, ...legacy } = normalizePcaItem(item, plan);
+  return legacy;
+}
+
+/** @deprecated Use normalizePcaItemLegacyV2 — mantido como alias. */
+export function normalizePcaItemLegacy(
+  item: Record<string, unknown>,
+  plan: Record<string, unknown>,
+): Omit<ReturnType<typeof normalizePcaItem>, "classificacao_catalogo_id"> {
+  return normalizePcaItemLegacyV2(item, plan);
 }
 
 export function normalizeEdital(item: Record<string, unknown>) {

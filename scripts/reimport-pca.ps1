@@ -3,7 +3,7 @@ param(
   [int]$Ano = 2026,
   [int]$PaginaInicial = 1,
   [int]$PaginaFinal = 313,
-  [int]$TamanhoPagina = 500,
+  [int]$TamanhoPagina = 100,
   [string[]]$CodigosClassificacao = @("7830"),
   [int]$MaxTentativas = 6,
   [int]$PausaSegundos = 5,

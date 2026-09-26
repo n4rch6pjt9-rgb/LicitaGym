@@ -67,7 +67,7 @@ Deno.test("fetchAllByRange 2500 ordered rows: no skip no duplicate", async () =>
   const TOTAL = 2500;
   const store = Array.from({ length: TOTAL }, (_, i) => ({ id: i + 1 }));
   const { rows, pages } = await fetchAllByRange<{ id: number }>(
-    (from, to) => {
+    async (from, to) => {
       // Stable order by id — same contract callers must apply via .order().
       const ordered = [...store].sort((a, b) => a.id - b.id);
       return Promise.resolve({ data: ordered.slice(from, to + 1), error: null });

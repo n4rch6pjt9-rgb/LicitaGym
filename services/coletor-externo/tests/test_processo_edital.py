@@ -140,6 +140,22 @@ def test_falha_no_detalhe_segue_para_os_arquivos_e_fica_contada():
     pncp.arquivos.assert_called_once()
 
 
+def test_falha_de_consulta_nao_e_nao_encontrado():
+    pncp = MagicMock()
+    pncp.compra.side_effect = RuntimeError("503 do PNCP")
+    pncp.arquivos.side_effect = RuntimeError("timeout")
+    achado = P.processo_do_edital(pncp, {"title": "Edital nº 4/2026"}, "4", Counter())
+    assert achado.status == "falha"
+
+
+def test_consultas_ok_sem_processo_e_nao_encontrado():
+    pncp = MagicMock()
+    pncp.compra.return_value = {"objetoCompra": "material"}
+    pncp.arquivos.return_value = []
+    achado = P.processo_do_edital(pncp, {"title": "Edital nº 4/2026"}, "4", Counter())
+    assert achado.status == "nao_encontrado"
+
+
 def _rodar_main(linhas, achado, argv):
     sb = MagicMock()
     sb.selecionar.return_value = linhas
@@ -192,3 +208,21 @@ def test_main_codigo_invalido_e_contado():
     codigo, sb = _rodar_main([ruim], P.Achado("encontrado", "1/2026"), [])
     assert codigo == 0
     sb.atualizar.assert_not_called()
+
+
+def test_main_conta_falha_consulta_separado_e_nao_grava(monkeypatch):
+    sb = MagicMock()
+    sb.selecionar.return_value = [
+        {"id": 1, "codigo_externo": "44892693000140-1-000157/2026", "numero_processo": "4", "numero_edital": "PE 4/2026"},
+        {"id": 2, "codigo_externo": "44892693000140-1-000158/2026", "numero_processo": "5", "numero_edital": "PE 5/2026"},
+    ]
+    monkeypatch.setattr(P, "Supabase", lambda *a, **k: sb)
+    monkeypatch.setattr(P, "env", lambda *a, **k: "0")
+    monkeypatch.setattr(P, "PNCP", lambda *a, **k: MagicMock())
+    desfechos = iter([P.Achado("falha", motivo="timeout"), P.Achado("nao_encontrado")])
+    monkeypatch.setattr(P, "processo_do_edital", lambda *a, **k: next(desfechos))
+    resumos = []
+    monkeypatch.setattr(P.log, "info", lambda msg, *a: resumos.append(a[-1]) if msg.startswith("RESUMO") else None)
+    assert P.main([]) == 2
+    assert not sb.atualizar.called
+    assert resumos[-1]["falha"] == 1 and resumos[-1]["nao_encontrado"] == 1

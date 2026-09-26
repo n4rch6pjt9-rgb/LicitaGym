@@ -75,7 +75,6 @@ Deno.test("link-catmat-pca retorna 400 para JSON malformado", async () => {
     assertEquals(await response.json(), { error: "Corpo JSON inválido" });
   });
 });
-
 /** Cliente mínimo: listas vazias — exercita linkTargetClasses sem rede/Supabase. */
 function fakeEmptyLinkClient() {
   const empty = { data: [] as unknown[], error: null };

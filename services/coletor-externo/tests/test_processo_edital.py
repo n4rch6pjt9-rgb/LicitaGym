@@ -110,36 +110,6 @@ def test_escolher_descarta_numero_do_edital_com_peso_baixo():
     assert P.escolher([("004/2026", 1), ("137/2026", 1)], "4", "PE 4/2026") == "137/2026"
 
 
-def test_falha_na_lista_de_arquivos_nao_vira_nao_encontrado():
-    pncp = MagicMock()
-    pncp.compra.return_value = {"objetoCompra": "material esportivo"}
-    pncp.arquivos.side_effect = RuntimeError("503")
-    r = Counter()
-    ach = P.processo_do_edital(pncp, {"title": ""}, "4", r)
-    assert ach.status == "falha" and r["falha_arquivos"] == 1
-
-
-def test_todos_os_downloads_falhando_e_falha():
-    pncp = MagicMock()
-    pncp.compra.return_value = {}
-    pncp.arquivos.return_value = [{"titulo": "edital.pdf", "tipoDocumentoNome": "Edital", "url": "u1"}]
-    pncp.baixar.side_effect = RuntimeError("timeout")
-    r = Counter()
-    ach = P.processo_do_edital(pncp, {"title": ""}, "4", r)
-    assert ach.status == "falha" and r["falha_download"] == 1
-
-
-def test_falha_no_detalhe_segue_para_os_arquivos_e_fica_contada():
-    pncp = MagicMock()
-    pncp.compra.side_effect = RuntimeError("PNCP detalhe: 500")
-    pncp.arquivos.return_value = []
-    r = Counter()
-    ach = P.processo_do_edital(pncp, {"title": ""}, "4", r)
-    assert r["falha_detalhe"] == 1
-    assert ach.status == "nao_encontrado"   # consultou os arquivos: a compra não tem nenhum
-    pncp.arquivos.assert_called_once()
-
-
 def test_falha_de_consulta_nao_e_nao_encontrado():
     pncp = MagicMock()
     pncp.compra.side_effect = RuntimeError("503 do PNCP")
@@ -148,12 +118,43 @@ def test_falha_de_consulta_nao_e_nao_encontrado():
     assert achado.status == "falha"
 
 
+def test_download_falho_sem_achado_e_falha():
+    pncp = MagicMock()
+    pncp.compra.return_value = {"objetoCompra": "material"}
+    pncp.arquivos.return_value = [{"titulo": "edital.pdf", "tipoDocumentoNome": "Edital", "url": "u1"}]
+    pncp.baixar.side_effect = RuntimeError("502")
+    resumo = Counter()
+    achado = P.processo_do_edital(pncp, {"title": "Edital nº 4/2026"}, "4", resumo)
+    assert achado.status == "falha"
+    assert resumo["falha_download"] == 1
+
+
 def test_consultas_ok_sem_processo_e_nao_encontrado():
     pncp = MagicMock()
     pncp.compra.return_value = {"objetoCompra": "material"}
     pncp.arquivos.return_value = []
     achado = P.processo_do_edital(pncp, {"title": "Edital nº 4/2026"}, "4", Counter())
     assert achado.status == "nao_encontrado"
+
+
+def test_falha_na_lista_de_arquivos_nao_vira_nao_encontrado():
+    pncp = MagicMock()
+    pncp.compra.return_value = {"objetoCompra": "material esportivo"}
+    pncp.arquivos.side_effect = RuntimeError("503")
+    resumo = Counter()
+    achado = P.processo_do_edital(pncp, {"title": ""}, "4", resumo)
+    assert achado.status == "falha" and resumo["falha_arquivos"] == 1
+
+
+def test_falha_no_detalhe_segue_para_os_arquivos_e_fica_contada():
+    pncp = MagicMock()
+    pncp.compra.side_effect = RuntimeError("PNCP detalhe: 500")
+    pncp.arquivos.return_value = []
+    resumo = Counter()
+    achado = P.processo_do_edital(pncp, {"title": ""}, "4", resumo)
+    assert resumo["falha_detalhe"] == 1
+    assert achado.status == "nao_encontrado"
+    pncp.arquivos.assert_called_once()
 
 
 def _rodar_main(linhas, achado, argv):

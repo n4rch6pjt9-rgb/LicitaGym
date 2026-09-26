@@ -160,6 +160,7 @@ async function syncClassificacao(params: {
           historyFields: ({ rowId }) => ({ pca_plano_id: rowId }),
           syncRunId: runId,
           lastSeenSyncId: runId,
+          reactivateOnUnchanged: true,
         },
       );
       if (planoResult === "novo") stats.novos++;
@@ -199,6 +200,7 @@ async function syncClassificacao(params: {
             }),
             syncRunId: runId,
             lastSeenSyncId: runId,
+            reactivateOnUnchanged: true,
           },
         );
         if (itemResult === "novo") stats.novos++;
@@ -540,7 +542,11 @@ Deno.serve(async (req) => {
     }
     currentCodigoIndex = codigosClassificacao.length;
 
-    if (body.modo === "completo") {
+    if (
+      body.modo === "completo" &&
+      stats.erros === 0 &&
+      Object.values(porCodigo).every((codigo) => codigo.paginas_restantes <= 0)
+    ) {
       await inactivateNotSeen(client, "pca_planos", runId, {
         ano_exercicio: ano,
       });

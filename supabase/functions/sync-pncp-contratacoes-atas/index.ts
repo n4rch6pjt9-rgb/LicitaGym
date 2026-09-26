@@ -132,7 +132,7 @@ Deno.serve(async (req) => {
             "contratacoes_atas",
             { numero_controle_pncp: row.numero_controle_pncp },
             row,
-            { syncRunId: runId, lastSeenSyncId: chainId },
+            { syncRunId: runId, lastSeenSyncId: chainId, reactivateOnUnchanged: true },
           );
           if (upsert === "novo") stats.novos++;
           else if (upsert === "alterado") stats.alterados++;

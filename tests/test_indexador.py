@@ -100,3 +100,16 @@ def test_mascara_cpf_mas_mantem_cnpj():
     t = limpar_texto("Sócio João, CPF 123.456.789-01; CPF: 12345678901. Empresa CNPJ 07.486.108/0001-85")
     assert "123.456.789-01" not in t and "12345678901" not in t
     assert "07.486.108/0001-85" in t
+
+
+def test_extracao_recebe_texto_com_cpf_mascarado(tmp_path):
+    arq = tmp_path / "habilitacao.pdf"
+    arq.write_bytes(_pdf(["CPF 123.456.789-01\nEmpresa CNPJ 07.486.108/0001-85\n" + RECURSO]))
+    docs = [{"id": 1, "licitacao_id": 1, "secao": "habilitacao", "nome_original": "habilitacao.pdf",
+             "arquivo_origem": "habilitacao.pdf", "fornecedor_nome": None, "sha256": "h", "storage_uri": str(arq)}]
+    ia = MagicMock()
+    ia.extrair_campos.return_value = {"tipo_documento": "habilitacao"}
+    ia.embed.side_effect = lambda ts, **k: [[0.1] * 768 for _ in ts]
+    IX.indexar_grupo(MagicMock(), ia, docs, {"numero_processo": "1/2026", "numero_edital": None}, True)
+    texto_enviado = ia.extrair_campos.call_args.args[0]
+    assert "123.456.789-01" not in texto_enviado and "07.486.108/0001-85" in texto_enviado

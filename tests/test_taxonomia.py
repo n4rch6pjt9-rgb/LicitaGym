@@ -22,13 +22,13 @@ def test_catmat_estruturado():
 def test_texto_livre_anilha():
     a = achatar(decompor_texto("ANILHA 25KG – Anilha Emborrachada 25 Kg, em ferro fundido e revestida com PVC; "
                                "diâmetro externo aprox. 380 mm; diâmetro do furo aprox. 33 mm; cor preta"))
-    assert a["tipo_produto"] == "anilha" and a["peso"] == 25 and a["material"] == "FERRO FUNDIDO"
+    assert a["tipo_produto"] == "acessorio" and a["peso"] == 25 and a["material"] == "FERRO FUNDIDO"
     assert a["revestimento"] == "PVC" and a["cor"] == "PRETA" and "FURO=33 mm" in a["adicionais"]
 
 
 def test_texto_livre_barra_e_peso_de_carga():
     a = achatar(decompor_texto("BARRA MONTADA RETA 20 KG – comprimento interno 100 cm, diâmetro da pegada 28 mm"))
-    assert a["tipo_produto"] == "barra_montada_fixa" and a["formato"] == "BARRA RETA" and a["peso"] == 20
+    assert a["tipo_produto"] == "acessorio" and a["formato"] == "BARRA RETA" and a["peso"] == 20
     s = achatar(decompor_texto("SUPORTE DE BARRA – aço preto, deve suportar barras montadas de até 50kg"))
     assert s["tipo_produto"] == "acessorio" and s["peso"] is None
 

@@ -2,14 +2,14 @@
 
 Data: 2026-09-26. Parent: `.audit/30-pncp-l6g-p0-pca-scope-resolvable.md` §1b + `.audit/34-pca-source-projection-reconciliation.md`.
 
-Adendo pós dry-run: paginação PostgREST, legacy_v1/v2, UPDATE completo do mapper, snapshot JSON.
+Adendo pós dry-run: paginação PostgREST, legacy_v0/v1/v2, UPDATE completo do mapper, snapshot JSON.
 
 ## Decisões (EXEC 02 + adendo 26/09)
 
 - Sem UPDATE SQL derivado do dry-run (hash é TypeScript).
 - Sem `upsertByHash` (evita `pca_alteracoes`).
 - Snapshot obrigatório **em arquivo JSON** (`var/p0/`, fora do git) — **não** DDL/SQL Editor.
-- Guarda de hash: bate se `payload_hash` = hash de **qualquer** mapper histórico (`legacy_v1` pré-15h 19/09 **ou** `legacy_v2` pós-origem sem classificação).
+- Guarda de hash: bate se `payload_hash` = hash de **qualquer** mapper histórico (`legacy_v0` = 3a2766e com origem; `legacy_v1` pré-15h 19/09 sem origem; `legacy_v2` pós-origem sem classificação).
 - UPDATE grava **todas** as colunas do `normalizePcaItem` atual + `payload_hash` novo.
 - Stream B (98 `SOURCE_DISCOVERED_BUT_NOT_PERSISTED`) **fora** deste job — só contado como `fonte_sem_projecao`.
 - `classificacao_catalogo_id` é **text**: gravar `'1'` / `'2'`.
@@ -68,7 +68,7 @@ deno run --allow-net --allow-env --allow-read --allow-write \
 | campo | valor |
 |---|---|
 | `lidos_pca_itens` | 3331 |
-| `match_v1 + match_v2` | ≈ 3331 |
+| `match_v0 + match_v1 + match_v2` | ≈ 3331 |
 | `STALE_SOURCE_MISMATCH` | ≈ 0 |
 | `fonte_sem_projecao` | 98 |
 | `diff_classificacao_catalogo_id` | 3331 |
@@ -124,4 +124,4 @@ Restaura colunas do mapper + `payload_hash` a partir do JSON. Verifica SHA-256. 
 
 ## Relatório
 
-JSON stdout: `alvo`, `lidos_pca_itens`, `lidos_source_record`, `atualizados`, `ja_atualizado`, `match_v1`, `match_v2`, `STALE_SOURCE_MISMATCH`, `sem_fonte`, `fonte_sem_projecao`, `valor_1`, `valor_2`, `outros`, `diff_*`, `erros`, `duracao_s`, `snapshot_path`, `snapshot_sha256`, `sync_run_id`.
+JSON stdout: `alvo`, `lidos_pca_itens`, `lidos_source_record`, `atualizados`, `ja_atualizado`, `match_v0`, `match_v1`, `match_v2`, `STALE_SOURCE_MISMATCH`, `sem_fonte`, `fonte_sem_projecao`, `valor_1`, `valor_2`, `outros`, `diff_*`, `erros`, `duracao_s`, `snapshot_path`, `snapshot_sha256`, `sync_run_id`.

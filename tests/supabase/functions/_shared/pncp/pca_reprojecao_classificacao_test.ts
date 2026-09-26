@@ -5,6 +5,7 @@ import { assertEquals, assertRejects } from "jsr:@std/assert@1";
 import { hashPayload } from "../../../../../supabase/functions/_shared/pncp/hash.ts";
 import {
   normalizePcaItem,
+  normalizePcaItemLegacyV0,
   normalizePcaItemLegacyV1,
   normalizePcaItemLegacyV2,
 } from "../../../../../supabase/functions/_shared/pncp/normalize.ts";
@@ -116,7 +117,33 @@ Deno.test("1b: hash legacy_v1 igual → match_v1 e preenche pdm/item origem", as
   }
 });
 
-Deno.test("2: hash divergente de v1 e v2 → STALE_SOURCE_MISMATCH", async () => {
+Deno.test("1c: hash legacy_v0 igual → match_v2 (v0 ≡ v2 sob stableStringify)", async () => {
+  const v0 = {
+    ...normalizePcaItemLegacyV0(ITEM, PLAN),
+    pca_plano_id: "plano-1",
+  };
+  const hashV0 = await hashPayload(v0);
+  const decision = await decideReprojection(
+    baseTarget({
+      payload_hash: hashV0,
+      pdm_codigo_origem: "18481",
+      codigo_item_origem: "123456",
+      codigo_classe_catmat: 7830,
+    }),
+    sourceOcc(),
+  );
+  assertEquals(decision.kind, "atualizar");
+  if (decision.kind === "atualizar") {
+    // v0 row ≡ v2 row after key sort; report prefers v2 label
+    assertEquals(decision.matchVersion, "v2");
+    assertEquals(decision.patch.classificacao_catalogo_id, "1");
+    assertEquals(decision.diffs.classificacao_catalogo_id, 1);
+    assertEquals(decision.diffs.pdm_codigo_origem, 0);
+    assertEquals(decision.diffs.outros, 0);
+  }
+});
+
+Deno.test("2: hash divergente de v0/v1/v2 → STALE_SOURCE_MISMATCH", async () => {
   const decision = await decideReprojection(
     baseTarget({ payload_hash: "hash-que-nao-bate" }),
     sourceOcc(),

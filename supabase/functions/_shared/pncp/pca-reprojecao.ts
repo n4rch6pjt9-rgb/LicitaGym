@@ -9,6 +9,7 @@ import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { hashPayload, sha256Hex } from "./hash.ts";
 import {
   normalizePcaItem,
+  normalizePcaItemLegacyV0,
   normalizePcaItemLegacyV1,
   normalizePcaItemLegacyV2,
 } from "./normalize.ts";
@@ -42,12 +43,14 @@ export type MapperColumn = (typeof PCA_ITEM_MAPPER_COLUMNS)[number];
  * Diferenças esperadas no P0 (mapper antigo → atual). Não entram em `diff_outros`.
  * `codigo_classe_catmat` entra no v1 (coluna existia no DB via backfill SQL, mas
  * o hash v1 não a incluía — o UPDATE completo a preenche a partir da fonte).
+ * `unidade_medida` diverge em alguns itens — normalizador atualizado.
  */
 const EXPECTED_DIFF_COLUMNS = new Set<MapperColumn>([
   "classificacao_catalogo_id",
   "pdm_codigo_origem",
   "codigo_item_origem",
   "codigo_classe_catmat",
+  "unidade_medida",
 ]);
 
 export type SourceItemOccurrence = {
@@ -84,13 +87,13 @@ export type PcaItemTarget = {
 export type ReprojDecision =
   | {
     kind: "atualizar";
-    matchVersion: "v1" | "v2";
+    matchVersion: "v0" | "v1" | "v2";
     hashNovo: string;
     patch: Record<string, unknown>;
     diffs: ColumnDiffCounts;
   }
   | { kind: "ja_atualizado" }
-  | { kind: "STALE_SOURCE_MISMATCH"; hashV1: string; hashV2: string; hashNovo: string }
+  | { kind: "STALE_SOURCE_MISMATCH"; hashV0: string; hashV1: string; hashV2: string; hashNovo: string }
   | { kind: "sem_fonte" };
 
 export type ColumnDiffCounts = {
@@ -139,6 +142,7 @@ export type ReprojReport = {
   STALE_SOURCE_MISMATCH: number;
   sem_fonte: number;
   fonte_sem_projecao: number;
+  match_v0: number;
   match_v1: number;
   match_v2: number;
   valor_1: number;
@@ -151,6 +155,15 @@ export type ReprojReport = {
   diff_outros_cols: string[];
   erros: Array<{ id?: string; motivo: string }>;
   stale_ids: string[];
+  stale_debug?: Array<{
+    id: string;
+    numero_item: number;
+    stored_hash: string;
+    calc_v0: string;
+    calc_v1: string;
+    calc_v2: string;
+    calc_novo: string;
+  }>;
   duracao_s: number;
   dry_run: boolean;
   snapshot_path: string | null;
@@ -280,6 +293,10 @@ export async function decideReprojection(
 ): Promise<ReprojDecision> {
   if (!source) return { kind: "sem_fonte" };
 
+  const v0Row = {
+    ...normalizePcaItemLegacyV0(source.item, source.plan),
+    pca_plano_id: target.pca_plano_id,
+  };
   const v1Row = {
     ...normalizePcaItemLegacyV1(source.item, source.plan),
     pca_plano_id: target.pca_plano_id,
@@ -292,6 +309,7 @@ export async function decideReprojection(
     ...normalizePcaItem(source.item, source.plan),
     pca_plano_id: target.pca_plano_id,
   };
+  const hashV0 = await hashPayload(v0Row);
   const hashV1 = await hashPayload(v1Row);
   const hashV2 = await hashPayload(v2Row);
   const hashNovo = await hashPayload(newRow);
@@ -300,13 +318,29 @@ export async function decideReprojection(
     return { kind: "ja_atualizado" };
   }
 
-  let matchVersion: "v1" | "v2" | null = null;
+  let matchVersion: "v0" | "v1" | "v2" | null = null;
+  // Prefer A2 labels: v1 (pré-origem) then v2 (pós-origem). v0 is alias of v2
+  // shape (stableStringify) kept for explicit git-era naming / debug.
   if (target.payload_hash === hashV1) matchVersion = "v1";
   else if (target.payload_hash === hashV2) matchVersion = "v2";
+  else if (target.payload_hash === hashV0) matchVersion = "v0";
 
   if (!matchVersion) {
+    // DEBUG: first STALE found
+    if (Deno.env.get("DEBUG_STALE")) {
+      console.error("🔴 STALE ITEM DEBUG:", {
+        id: target.id,
+        numero_item: target.numero_item,
+        stored_hash: target.payload_hash,
+        calc_v0: hashV0,
+        calc_v1: hashV1,
+        calc_v2: hashV2,
+        calc_novo: hashNovo,
+      });
+    }
     return {
       kind: "STALE_SOURCE_MISMATCH",
+      hashV0,
       hashV1,
       hashV2,
       hashNovo,
@@ -334,6 +368,7 @@ function emptyReport(dryRun: boolean): ReprojReport {
     STALE_SOURCE_MISMATCH: 0,
     sem_fonte: 0,
     fonte_sem_projecao: 0,
+    match_v0: 0,
     match_v1: 0,
     match_v2: 0,
     valor_1: 0,
@@ -627,6 +662,8 @@ export async function runPcaReprojecaoClassificacao(
   const lockKey = options.lockKey ?? DEFAULT_PCA_REPROJECTION_LOCK_KEY;
   const nowIso = options.nowIso?.() ?? new Date().toISOString();
   const snapshotPath = options.snapshotPath ?? defaultSnapshotPath(nowIso);
+  // Default abort: A3 — diff_outros > 0 must stop before --confirmar writes.
+  // Expected cols (classificacao/pdm/item/classe/unidade_medida) stay out of diff_outros.
   const abortOnDiffOutros = options.abortOnDiffOutros !== false;
 
   const { runId, alreadyRunning } = await acquireSyncLock(
@@ -741,7 +778,8 @@ export async function runPcaReprojecaoClassificacao(
             report.stale_ids.push(target.id);
             break;
           case "atualizar": {
-            if (decision.matchVersion === "v1") report.match_v1 += 1;
+            if (decision.matchVersion === "v0") report.match_v0 += 1;
+            else if (decision.matchVersion === "v1") report.match_v1 += 1;
             else report.match_v2 += 1;
             report.diff_classificacao_catalogo_id +=
               decision.diffs.classificacao_catalogo_id;

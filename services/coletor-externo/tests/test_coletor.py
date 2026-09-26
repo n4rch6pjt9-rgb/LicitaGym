@@ -55,6 +55,7 @@ def test_deduplica_por_arquivo_e_agrega_lotes():
     assert a.fornecedor_cnpj == "07486108000185"
     assert "sDsParametroCriptografado" not in a.raw and "sCdUsuario" not in a.raw
     assert arqs[1].fornecedor_cnpj is None  # CPF descartado
+    assert arqs[1].fornecedor_nome is None and "sNmEmpresa" not in arqs[1].raw
 
 
 def test_processo_para_linha():
@@ -122,6 +123,92 @@ def test_arquivo_grande_vira_ignorado(tmp_path):
     r = M.coletar_processo(portal, sb, Armazenamento(None, str(tmp_path)), 1, 59, {"processo"}, 10**8, True, False)
     assert r["erros"] == 0 and sb.atualizar.call_args.args[2]["status_processamento"] == "ignorado"
     sb.remover_pendentes_exceto.assert_called_once()
+
+
+def test_falha_em_secao_pula_limpeza_de_pendentes(tmp_path):
+    portal = _portal_fake()
+    portal.anexos_secao.side_effect = lambda s, *a, **k: (_deduplicar(s, LINHAS_LANCE) if s == "lance"
+                                                         else (_ for _ in ()).throw(RuntimeError("timeout")))
+    sb = MagicMock()
+    sb.upsert.side_effect = lambda t, l, c: [{"id": 7}] if t == "licitacoes_externas" else [
+        {"id": i + 1, "secao": x["secao"], "arquivo_origem": x["arquivo_origem"], "status_processamento": "pendente"}
+        for i, x in enumerate(l)]
+    from coletor.destino import Armazenamento
+    r = M.coletar_processo(portal, sb, Armazenamento(None, str(tmp_path)), 1, 59, {"processo"}, 10**8, True, False)
+    assert r["coleta_incompleta"] is True
+    sb.remover_pendentes_exceto.assert_not_called()
+
+
+def test_main_retorna_nao_zero_quando_ha_falha_operacional(monkeypatch):
+    monkeypatch.setattr(M, "PortalSestSenat", lambda **k: object())
+    monkeypatch.setattr(M, "Supabase", lambda *a, **k: object())
+    monkeypatch.setattr(M, "Armazenamento", lambda *a, **k: object())
+    monkeypatch.setattr(M, "env", lambda nome, padrao=None, obrigatorio=False: padrao)
+    monkeypatch.setattr(M, "coletar_processo", lambda *a, **k: {"status": "ok", "erros": 1, "coleta_incompleta": False})
+    assert M.main(["--ids", "1"]) == 1
+
+
+def test_portal_invalida_envelope_sem_d(monkeypatch):
+    import coletor.portal as Portal
+    from coletor.portal import PortalSestSenat, RespostaInvalida
+    portal = PortalSestSenat.__new__(PortalSestSenat)
+    portal.delay = 0
+    portal.timeout = 1
+    portal.s = MagicMock()
+    monkeypatch.setattr(Portal.time, "sleep", lambda *_: None)
+    resp = MagicMock(status_code=200)
+    resp.json.return_value = {"x": []}
+    portal.s.post.return_value = resp
+    try:
+        portal._ws("PesquisarAnexos", {})
+        assert False
+    except RespostaInvalida as e:
+        assert "envelope" in str(e)
+
+
+def test_portal_nao_repete_404(monkeypatch):
+    import requests
+    import coletor.portal as Portal
+    from coletor.portal import PortalSestSenat
+    portal = PortalSestSenat.__new__(PortalSestSenat)
+    portal.delay = 0
+    portal.timeout = 1
+    portal.s = MagicMock()
+    monkeypatch.setattr(Portal.time, "sleep", lambda *_: None)
+    resp = MagicMock(status_code=404)
+    resp.raise_for_status.side_effect = requests.HTTPError("404")
+    portal.s.post.return_value = resp
+    try:
+        portal._ws("PesquisarAnexos", {})
+        assert False
+    except requests.HTTPError:
+        assert portal.s.post.call_count == 1
+
+
+def test_supabase_selecionar_pagina_automaticamente(monkeypatch):
+    import coletor.destino as Destino
+    from coletor.destino import Supabase
+    chamadas = []
+
+    class Resp:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, params, headers, timeout):
+        chamadas.append(params.copy())
+        return Resp([{"id": 1}, {"id": 2}] if params["offset"] == "0" else [{"id": 3}])
+
+    monkeypatch.setattr(Destino, "POSTGREST_MAX_ROWS", 2)
+    monkeypatch.setattr("coletor.destino.requests.get", fake_get)
+    sb = Supabase("https://example.supabase.co", "token")
+    assert sb.selecionar("licitacoes_externas", order="id") == [{"id": 1}, {"id": 2}, {"id": 3}]
+    assert [c["offset"] for c in chamadas] == ["0", "2"]
 
 
 def test_filtro_fitness():

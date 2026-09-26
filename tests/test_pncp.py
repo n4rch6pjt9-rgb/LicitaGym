@@ -421,4 +421,5 @@ def test_itens_rejeita_pagina_repetida():
         assert False, "página repetida não deve causar loop de paginação"
     except P.RespostaInvalida as e:
         assert "página repetida" in str(e)
+        assert "página 2" in str(e)
     assert cli._lista.call_count == 2

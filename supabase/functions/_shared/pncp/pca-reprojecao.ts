@@ -934,8 +934,9 @@ export async function runPcaReprojecaoClassificacao(
     }
 
     report.duracao_s = (Date.now() - started) / 1000;
-    const status = report.erros.length > 0
-      ? "concluida_com_erros"
+    const status =
+      report.erros.length > 0 || report.STALE_SOURCE_MISMATCH > 0
+        ? "concluida_com_erros"
       : "concluida";
     await finishSyncRun(client, runId, {
       status,

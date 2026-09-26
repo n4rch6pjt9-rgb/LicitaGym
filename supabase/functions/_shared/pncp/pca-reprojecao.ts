@@ -428,6 +428,36 @@ function targetToSnapshotRow(t: PcaItemTarget): SnapshotRow {
   };
 }
 
+function validateBaselineSnapshotAgainstTargets(
+  baseline: SnapshotFile,
+  targets: PcaItemTarget[],
+) {
+  const targetIds = new Set(targets.map((t) => t.id));
+  const baselineIds = new Set<string>();
+
+  if (baseline.rows.length !== targetIds.size) {
+    throw new Error(
+      `Baseline snapshot diverge dos targets: baseline=${baseline.rows.length} targets=${targetIds.size}`,
+    );
+  }
+
+  for (const row of baseline.rows) {
+    if (baselineIds.has(row.id)) {
+      throw new Error(`Baseline snapshot contém id duplicado: ${row.id}`);
+    }
+    baselineIds.add(row.id);
+    if (!targetIds.has(row.id)) {
+      throw new Error(`Baseline snapshot contém id fora do alvo: ${row.id}`);
+    }
+  }
+
+  for (const id of targetIds) {
+    if (!baselineIds.has(id)) {
+      throw new Error(`Baseline snapshot sem id do alvo: ${id}`);
+    }
+  }
+}
+
 export async function writePcaItensSnapshotFile(
   path: string,
   snapshotId: string,
@@ -742,6 +772,7 @@ export async function runPcaReprojecaoClassificacao(
 
     if (options.baselineSnapshotPath) {
       const baseline = await readPcaItensSnapshotFile(options.baselineSnapshotPath);
+      validateBaselineSnapshotAgainstTargets(baseline, targets);
       report.baseline_snapshot_path = options.baselineSnapshotPath;
       report.baseline_snapshot_sha256 = baseline.content_sha256;
     }

@@ -528,6 +528,24 @@ Deno.test("baseline inválida (sem SHA) → aborta sem UPDATE", async () => {
   assertEquals(state.updates.length, 0);
 });
 
+Deno.test("baseline de outro conjunto de IDs é rejeitada antes de UPDATE", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "pca-base-mismatch-" });
+  const baseline = `${tmpDir}/baseline.json`;
+  await writePcaItensSnapshotFile(baseline, "baseline", [snapshotRow({ id: "item-outro" })]);
+  const state = await liveState();
+  await assertRejects(
+    () =>
+      runPcaReprojecaoClassificacao(fakeClient(state), {
+        dryRun: false,
+        takeSnapshot: false,
+        baselineSnapshotPath: baseline,
+      }),
+    Error,
+    "id fora do alvo",
+  );
+  assertEquals(state.updates.length, 0);
+});
+
 Deno.test("readPcaItensSnapshotFile rejeita row_count ausente ou divergente", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "pca-rc-" });
   const good = `${tmpDir}/good.json`;

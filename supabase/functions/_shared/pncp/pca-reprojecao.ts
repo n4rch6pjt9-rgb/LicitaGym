@@ -41,7 +41,9 @@ export type MapperColumn = (typeof PCA_ITEM_MAPPER_COLUMNS)[number];
 /**
  * Diferenças esperadas no P0 (mapper antigo → atual). Não entram em `diff_outros`.
  * `codigo_classe_catmat` entra no v1 (coluna existia no DB via backfill SQL, mas
- * o hash v1 não a incluía — o UPDATE completo a preenche a partir da fonte).
+ * o hash v1 puro não a incluía — o UPDATE completo a preenche a partir da fonte).
+ * Exceção: o deploy de 2026-09-19 (pré-3a2766e) hasheou v1 + codigo_classe_catmat;
+ * decideReprojection aceita esse hash como `hashV1c` (match_v1).
  */
 const EXPECTED_DIFF_COLUMNS = new Set<MapperColumn>([
   "classificacao_catalogo_id",
@@ -93,6 +95,7 @@ export type ReprojDecision =
   | {
     kind: "STALE_SOURCE_MISMATCH";
     hashV1: string;
+    hashV1c: string;
     hashV2: string;
     hashNovo: string;
   }
@@ -156,6 +159,15 @@ export type ReprojReport = {
   diff_outros_cols: string[];
   erros: Array<{ id?: string; motivo: string }>;
   stale_ids: string[];
+  stale_debug: Array<{
+    id: string;
+    key: string;
+    hash_stored: string | null;
+    hash_v1: string;
+    hash_v1c: string;
+    hash_v2: string;
+    hash_novo: string;
+  }>;
   duracao_s: number;
   dry_run: boolean;
   snapshot_path: string | null;
@@ -300,6 +312,12 @@ export async function decideReprojection(
   };
   const hashV1 = await hashPayload(v1Row);
   const hashV2 = await hashPayload(v2Row);
+  // Deploy de 2026-09-19 (pré-3a2766e) hasheava v1 + codigo_classe_catmat numérico.
+  const classeRaw = source.item.classificacaoSuperiorCodigo;
+  const classeNum = classeRaw == null || classeRaw === ""
+    ? null
+    : (Number.isFinite(Number(String(classeRaw).trim())) ? Number(String(classeRaw).trim()) : null);
+  const hashV1c = await hashPayload({ ...v1Row, codigo_classe_catmat: classeNum });
   const hashNovo = await hashPayload(newRow);
 
   const diffs = diffMapperColumns(target, newRow);
@@ -323,13 +341,14 @@ export async function decideReprojection(
   }
 
   let matchVersion: "v1" | "v2" | null = null;
-  if (target.payload_hash === hashV1) matchVersion = "v1";
+  if (target.payload_hash === hashV1 || target.payload_hash === hashV1c) matchVersion = "v1";
   else if (target.payload_hash === hashV2) matchVersion = "v2";
 
   if (!matchVersion) {
     return {
       kind: "STALE_SOURCE_MISMATCH",
       hashV1,
+      hashV1c,
       hashV2,
       hashNovo,
     };
@@ -366,6 +385,7 @@ function emptyReport(dryRun: boolean): ReprojReport {
     diff_outros_cols: [],
     erros: [],
     stale_ids: [],
+    stale_debug: [],
     duracao_s: 0,
     dry_run: dryRun,
     snapshot_path: null,
@@ -826,6 +846,17 @@ export async function runPcaReprojecaoClassificacao(
           case "STALE_SOURCE_MISMATCH":
             report.STALE_SOURCE_MISMATCH += 1;
             report.stale_ids.push(target.id);
+            if (Deno.env.get("DEBUG_STALE") && report.stale_debug.length < 20) {
+              report.stale_debug.push({
+                id: target.id,
+                key,
+                hash_stored: target.payload_hash ?? null,
+                hash_v1: decision.hashV1,
+                hash_v1c: decision.hashV1c,
+                hash_v2: decision.hashV2,
+                hash_novo: decision.hashNovo,
+              });
+            }
             break;
           case "atualizar": {
             if (decision.matchVersion === "v1") report.match_v1 += 1;

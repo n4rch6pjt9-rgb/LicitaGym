@@ -52,10 +52,12 @@ def coletar_processo(portal: PortalSestSenat, sb: Supabase | None, arm: Armazena
 
     anexo_raiz = d.get("nCdAnexo")
     arquivos = portal.anexos_processo(anexo_raiz) if anexo_raiz else []
+    coleta_incompleta = False
     for secao in SECOES_CONTRATACAO:
         try:
             arquivos += portal.anexos_secao(secao, anexo_raiz, id_proc, modulo)
         except Exception as e:  # uma seção com erro não derruba o processo
+            coleta_incompleta = True
             log.warning("proc %s seção %s: %s", id_proc, secao, e)
 
     resumo["docs"] = len(arquivos)
@@ -82,7 +84,10 @@ def coletar_processo(portal: PortalSestSenat, sb: Supabase | None, arm: Armazena
         salvos += sb.upsert("licitacao_documentos", linhas_docs[i:i + 200], "licitacao_id,secao,arquivo_origem")
     ids = {(s["secao"], s["arquivo_origem"]): s for s in salvos}
     # Remove linhas pendentes de execuções antigas que não correspondem mais a nenhum documento
-    sb.remover_pendentes_exceto(lic_id, [s["id"] for s in salvos])
+    if coleta_incompleta:
+        log.warning("proc %s: coleta incompleta; limpeza de pendentes ignorada", id_proc)
+    else:
+        sb.remover_pendentes_exceto(lic_id, [s["id"] for s in salvos])
 
     fila = [a for a in arquivos if a.secao in secoes_download and a.parametro_download
             and ids.get((a.secao, a.arquivo_origem), {}).get("status_processamento") in ("pendente", "erro")]
@@ -117,6 +122,7 @@ def coletar_processo(portal: PortalSestSenat, sb: Supabase | None, arm: Armazena
             log.warning("proc %s arquivo %s: %s", id_proc, a.nome_original, e)
             sb.atualizar("licitacao_documentos", doc["id"], {
                 "status_processamento": "erro", "erro": str(e)[:500]})
+    resumo["coleta_incompleta"] = coleta_incompleta
     return resumo
 
 
@@ -147,19 +153,23 @@ def main(argv: list[str] | None = None) -> int:
 
     ids = [int(x) for x in args.ids.split(",")] if args.ids else list(range(args.de, args.ate + 1))
     vazios = 0
+    falhas_operacionais = 0
     for id_proc in ids:
         try:
             r = coletar_processo(portal, sb, arm, id_proc, args.modulo, secoes, max_bytes,
                                  somente_encerrados=not args.todos, dry_run=args.dry_run, escopo=args.escopo)
         except Exception as e:
             log.error("proc %s falhou: %s", id_proc, e)
+            falhas_operacionais += 1
             continue
         log.info("proc %s -> %s", id_proc, r)
+        if r.get("coleta_incompleta") or r.get("erros"):
+            falhas_operacionais += 1
         vazios = vazios + 1 if r["status"] == "inexistente" else 0
         if not args.ids and vazios >= args.parar_apos_vazios:
             log.info("%s IDs vazios seguidos; fim da varredura.", vazios)
             break
-    return 0
+    return 1 if falhas_operacionais else 0
 
 
 if __name__ == "__main__":

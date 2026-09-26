@@ -34,7 +34,7 @@ def main(argv: list[str] | None = None) -> None:
         try:
             linhas = sb.selecionar(tabela, select=campos, **filtros)
         except Exception as e:
-            raise SystemExit(f"{tabela}: {e}\nRodou migrations/20260926_processo_administrativo.sql?")
+            raise SystemExit(f"{tabela}: {e}\nAplicou supabase/migrations/20260926100000_processo_administrativo.sql?")
         for ln in linhas:
             achou += 1
             print(f"[{tabela}] processo {ln.get('numero_processo')} | órgão {ln.get('orgao_cnpj')} "

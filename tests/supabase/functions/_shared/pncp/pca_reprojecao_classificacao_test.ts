@@ -331,31 +331,28 @@ function fakeClient(state: FakeState) {
             return rangeChain(state.itens, state.itemRangeCalls);
           },
           update(patch: Record<string, unknown>) {
+            let id: string | undefined;
             return {
-              async eq(_k: string, id: string) {
-                state.updates.push({ table, id: String(id), patch });
-                const failure = state.updateFailuresById?.[String(id)];
+              eq(_k: string, value: string) {
+                id = String(value);
+                return this;
+              },
+              async select(_cols: string) {
+                if (id === undefined) {
+                  throw new Error("update sem filtro por id");
+                }
+                state.updates.push({ table, id, patch });
+                const failure = state.updateFailuresById?.[id];
                 if (failure) {
-                  return {
-                    select(_cols: string) {
-                      return Promise.resolve({
-                        data: null,
-                        error: { message: failure },
-                      });
-                    },
-                  };
+                  return { data: null, error: { message: failure } };
                 }
                 const row = state.itens.find((r) =>
                   String(r.id) === String(id)
                 );
                 if (row) Object.assign(row, patch);
                 return {
-                  select(_cols: string) {
-                    return Promise.resolve({
-                      data: row ? [{ id: String(id) }] : [],
-                      error: null,
-                    });
-                  },
+                  data: row ? [{ id }] : [],
+                  error: null,
                 };
               },
             };
@@ -751,15 +748,17 @@ Deno.test("A1b: aborta quando count(*) diverge das linhas paginadas", async () =
     itemRangeCalls: [],
     sourceRangeCalls: [],
   };
-  await assertRejects(
-    () =>
-      runPcaReprojecaoClassificacao(fakeClient(state), {
-        dryRun: true,
-        takeSnapshot: false,
-      }),
-    Error,
-    "Paginação pca_itens incompleta",
+  const report = await runPcaReprojecaoClassificacao(
+    fakeClient(state),
+    { dryRun: true, takeSnapshot: false },
   );
+  assertEquals(
+    report.erros.some((erro) =>
+      erro.motivo?.includes("Paginação pca_itens incompleta")
+    ),
+    true,
+  );
+  assertEquals(report.atualizados, 0);
 });
 
 Deno.test("A2: confirmar conta apenas writes bem-sucedidos", async () => {

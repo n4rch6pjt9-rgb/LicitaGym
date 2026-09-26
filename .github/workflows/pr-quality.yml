@@ -57,7 +57,7 @@ jobs:
           NO_COLOR: "1"
         run: |
           set -euo pipefail
-          deno test tests/supabase --allow-read --allow-env --no-prompt --reporter=dot
+          deno test tests/supabase --allow-read --allow-write --allow-env --no-prompt --reporter=dot
 
   python-tests:
     name: pytest (collectors)

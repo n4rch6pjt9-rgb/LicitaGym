@@ -20,6 +20,15 @@ Adendo pós dry-run: paginação PostgREST, legacy_v0/v1/v2, UPDATE completo do 
 
 **Por quê:** DDL de snapshot exigiria migration + PR antes de operar; regra do projeto proíbe DDL pelo SQL Editor. ~3331 linhas cabem em JSON local; rollback lê o arquivo.
 
+**Regras do arquivo:**
+
+- Snapshot **nunca** é sobrescrito (`createNew`); caminho já existente → job aborta antes de qualquer UPDATE.
+- O snapshot do passo 0 é a **baseline de rollback**. `--snapshot-file` no `--confirmar` só **valida** esse arquivo (SHA-256 + `row_count`), nunca grava nele. `--confirmar` sem `--snapshot-file` é recusado.
+- Cada execução com `--confirmar` grava **também** um snapshot próprio em `var/p0/` (estado imediatamente antes daquele lote), útil para desfazer só o último lote.
+- Leitura exige `content_sha256` e `row_count` presentes e coerentes.
+
+**Tabela `private.pca_itens_snapshot_p0`:** a migration `20260926120000_pca_itens_snapshot_p0.sql` já entrou na `main` via #58 e **permanece** no histórico (migrations são imutáveis). A tabela fica sem uso por este job. Remoção, se desejada, vai em migration nova (`DROP TABLE IF EXISTS`) em PR próprio, depois de conferir que está vazia.
+
 ## `updated_at`
 
 Não há trigger que o job force. O UPDATE **não** envia `updated_at`.
@@ -68,6 +77,7 @@ deno run --allow-net --allow-env --allow-read --allow-write \
 | campo | valor |
 |---|---|
 | `lidos_pca_itens` | 3331 |
+| `candidatos` | ≈ 3331 (`atualizados` = 0 no dry-run) |
 | `match_v0 + match_v1 + match_v2` | ≈ 3331 |
 | `STALE_SOURCE_MISMATCH` | ≈ 0 |
 | `fonte_sem_projecao` | 98 |
@@ -120,8 +130,12 @@ deno run --allow-net --allow-env --allow-read --allow-write \
   --snapshot-file var/p0/<arquivo>.json
 ```
 
-Restaura colunas do mapper + `payload_hash` a partir do JSON. Verifica SHA-256. **Não** grava `pca_alteracoes`.
+Restaura colunas do mapper + `payload_hash` a partir do JSON. Verifica SHA-256 e `row_count`. **Não** grava `pca_alteracoes`.
+
+Tenta **todas** as linhas e lista as que falharam (`failed`); exit 2 se houver falha. Restauração é idempotente: rerodar o mesmo comando completa um rollback parcial.
 
 ## Relatório
 
-JSON stdout: `alvo`, `lidos_pca_itens`, `lidos_source_record`, `atualizados`, `ja_atualizado`, `match_v0`, `match_v1`, `match_v2`, `STALE_SOURCE_MISMATCH`, `sem_fonte`, `fonte_sem_projecao`, `valor_1`, `valor_2`, `outros`, `diff_*`, `erros`, `duracao_s`, `snapshot_path`, `snapshot_sha256`, `sync_run_id`.
+`candidatos` = linhas que passaram na guarda de hash; `atualizados` = UPDATEs confirmados pelo banco (0 no dry-run; falhas vão para `erros`, não para `atualizados`).
+
+JSON stdout: `alvo`, `lidos_pca_itens`, `lidos_source_record`, `candidatos`, `atualizados`, `ja_atualizado`, `match_v0`, `match_v1`, `match_v2`, `STALE_SOURCE_MISMATCH`, `sem_fonte`, `fonte_sem_projecao`, `valor_1`, `valor_2`, `outros`, `diff_*`, `erros`, `duracao_s`, `snapshot_path`, `snapshot_sha256`, `baseline_snapshot_path`, `baseline_snapshot_sha256`, `sync_run_id`.

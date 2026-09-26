@@ -137,6 +137,9 @@ export type ReprojReport = {
   alvo: number;
   lidos_pca_itens: number;
   lidos_source_record: number;
+  /** Rows whose hash guard passed (would be / were sent to UPDATE). */
+  candidatos: number;
+  /** UPDATEs confirmed by the database. Always 0 in dry-run. */
   atualizados: number;
   ja_atualizado: number;
   STALE_SOURCE_MISMATCH: number;
@@ -168,6 +171,8 @@ export type ReprojReport = {
   dry_run: boolean;
   snapshot_path: string | null;
   snapshot_sha256: string | null;
+  baseline_snapshot_path: string | null;
+  baseline_snapshot_sha256: string | null;
   sync_run_id: string | null;
 };
 
@@ -175,8 +180,11 @@ export type ReprojOptions = {
   dryRun: boolean;
   limite?: number;
   lockKey?: string;
+  /** Per-run pre-write snapshot output. Must not exist yet (never overwritten). */
   snapshotPath?: string;
   takeSnapshot?: boolean;
+  /** Step-0 snapshot used for rollback. Read-only: validated (SHA/row_count), never written. */
+  baselineSnapshotPath?: string;
   /** Abort --confirmar when unexpected column diffs exist. Default true. */
   abortOnDiffOutros?: boolean;
   nowIso?: () => string;
@@ -363,6 +371,7 @@ function emptyReport(dryRun: boolean): ReprojReport {
     alvo: 0,
     lidos_pca_itens: 0,
     lidos_source_record: 0,
+    candidatos: 0,
     atualizados: 0,
     ja_atualizado: 0,
     STALE_SOURCE_MISMATCH: 0,
@@ -385,6 +394,8 @@ function emptyReport(dryRun: boolean): ReprojReport {
     dry_run: dryRun,
     snapshot_path: null,
     snapshot_sha256: null,
+    baseline_snapshot_path: null,
+    baseline_snapshot_sha256: null,
     sync_run_id: null,
   };
 }
@@ -433,8 +444,12 @@ export async function writePcaItensSnapshotFile(
     content_sha256: contentSha,
     rows: bodyRows,
   };
-  await Deno.mkdir(path.replace(/[/\\][^/\\]+$/, ""), { recursive: true });
-  await Deno.writeTextFile(path, JSON.stringify(file, null, 2));
+  const sepIdx = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  if (sepIdx > 0) {
+    await Deno.mkdir(path.slice(0, sepIdx), { recursive: true });
+  }
+  // createNew: a snapshot is a rollback baseline and must never be overwritten.
+  await Deno.writeTextFile(path, JSON.stringify(file, null, 2), { createNew: true });
   return file;
 }
 
@@ -444,8 +459,16 @@ export async function readPcaItensSnapshotFile(path: string): Promise<SnapshotFi
   if (!parsed?.rows || !Array.isArray(parsed.rows)) {
     throw new Error(`Snapshot inválido: ${path}`);
   }
+  if (typeof parsed.content_sha256 !== "string" || parsed.content_sha256.length === 0) {
+    throw new Error(`Snapshot sem content_sha256: ${path}`);
+  }
+  if (typeof parsed.row_count !== "number" || parsed.row_count !== parsed.rows.length) {
+    throw new Error(
+      `Snapshot row_count inválido: row_count=${parsed.row_count} rows=${parsed.rows.length}`,
+    );
+  }
   const recomputed = await sha256Hex(JSON.stringify(parsed.rows));
-  if (parsed.content_sha256 && parsed.content_sha256 !== recomputed) {
+  if (parsed.content_sha256 !== recomputed) {
     throw new Error(
       `Snapshot SHA-256 diverge: file=${parsed.content_sha256} recomputed=${recomputed}`,
     );
@@ -453,13 +476,22 @@ export async function readPcaItensSnapshotFile(path: string): Promise<SnapshotFi
   return parsed;
 }
 
-/** Rollback from JSON snapshot — restores mapper columns + payload_hash. */
+export type RestoreResult = {
+  restored: number;
+  failed: Array<{ id: string; motivo: string }>;
+};
+
+/**
+ * Rollback from JSON snapshot — restores mapper columns + payload_hash.
+ * Tries every row and reports failures instead of stopping at the first one;
+ * restoring is idempotent, so a rerun completes a partial rollback.
+ */
 export async function restorePcaItensSnapshotFromFile(
   client: SupabaseClient,
   path: string,
-): Promise<number> {
+): Promise<RestoreResult> {
   const snap = await readPcaItensSnapshotFile(path);
-  let restored = 0;
+  const result: RestoreResult = { restored: 0, failed: [] };
   for (const row of snap.rows) {
     const patch: Record<string, unknown> = {
       classificacao_catalogo_id: row.classificacao_catalogo_id,
@@ -477,38 +509,18 @@ export async function restorePcaItensSnapshotFromFile(
       pdm_codigo_origem: row.pdm_codigo_origem,
       codigo_item_origem: row.codigo_item_origem,
     };
-    const { error: upErr } = await client
-      .from("pca_itens")
-      .update(patch)
-      .eq("id", row.id);
-    if (upErr) throw upErr;
-    restored += 1;
+    try {
+      const { error: upErr } = await client
+        .from("pca_itens")
+        .update(patch)
+        .eq("id", row.id);
+      if (upErr) result.failed.push({ id: row.id, motivo: upErr.message });
+      else result.restored += 1;
+    } catch (e) {
+      result.failed.push({ id: row.id, motivo: e instanceof Error ? e.message : String(e) });
+    }
   }
-  return restored;
-}
-
-/** @deprecated Prefer restorePcaItensSnapshotFromFile (JSON). */
-export async function restorePcaItensSnapshot(
-  client: SupabaseClient,
-  snapshotIdOrPath: string,
-): Promise<number> {
-  if (snapshotIdOrPath.endsWith(".json") || snapshotIdOrPath.includes("/") ||
-    snapshotIdOrPath.includes("\\")) {
-    return restorePcaItensSnapshotFromFile(client, snapshotIdOrPath);
-  }
-  throw new Error(
-    "Snapshot em tabela private.pca_itens_snapshot_p0 removido (A4). Use --snapshot-file path.json",
-  );
-}
-
-/** @deprecated Prefer writePcaItensSnapshotFile. */
-export async function takePcaItensSnapshot(
-  _client: SupabaseClient,
-  _snapshotId: string,
-): Promise<number> {
-  throw new Error(
-    "Snapshot em tabela removido (A4). Use writePcaItensSnapshotFile / --snapshot-only",
-  );
+  return result;
 }
 
 const ITEM_SELECT_COLS = [
@@ -728,6 +740,12 @@ export async function runPcaReprojecaoClassificacao(
       return report;
     }
 
+    if (options.baselineSnapshotPath) {
+      const baseline = await readPcaItensSnapshotFile(options.baselineSnapshotPath);
+      report.baseline_snapshot_path = options.baselineSnapshotPath;
+      report.baseline_snapshot_sha256 = baseline.content_sha256;
+    }
+
     if (options.takeSnapshot !== false && !options.dryRun) {
       const snapId = `pca-pre-p0-${nowIso.replace(/[:.]/g, "-")}`;
       const snapRows = targets.map(targetToSnapshotRow);
@@ -790,7 +808,7 @@ export async function runPcaReprojecaoClassificacao(
 
             const classif = decision.patch.classificacao_catalogo_id as string | null;
             countClassificacao(report, classif);
-            report.atualizados += 1;
+            report.candidatos += 1;
             pendingWrites.push({ id: target.id, patch: decision.patch });
             break;
           }
@@ -829,9 +847,12 @@ export async function runPcaReprojecaoClassificacao(
 
     if (!options.dryRun) {
       for (const w of pendingWrites) {
-        const { error: upErr } = await writer.updateItem(w.id, w.patch);
-        if (upErr) {
-          report.erros.push({ id: w.id, motivo: upErr.message });
+        try {
+          const { error: upErr } = await writer.updateItem(w.id, w.patch);
+          if (upErr) report.erros.push({ id: w.id, motivo: upErr.message });
+          else report.atualizados += 1;
+        } catch (e) {
+          report.erros.push({ id: w.id, motivo: e instanceof Error ? e.message : String(e) });
         }
       }
     }
@@ -841,7 +862,7 @@ export async function runPcaReprojecaoClassificacao(
     await finishSyncRun(client, runId, {
       status,
       totalRecebidos: report.alvo,
-      totalAtualizados: options.dryRun ? 0 : report.atualizados,
+      totalAtualizados: report.atualizados,
       totalInalterados: report.ja_atualizado,
       totalErros: report.erros.length + report.STALE_SOURCE_MISMATCH,
       erroPrincipal: report.erros[0]?.motivo,

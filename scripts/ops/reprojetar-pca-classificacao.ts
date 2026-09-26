@@ -9,7 +9,9 @@
  *   deno run -A scripts/ops/reprojetar-pca-classificacao.ts --rollback --snapshot-file var/p0/….json
  *
  * Padrão: --dry-run (não grava). Exige SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY.
- * Snapshot: JSON em var/p0/ (fora do git) + SHA-256 no log.
+ * Snapshot: JSON em var/p0/ (fora do git) + SHA-256 no log. Nunca sobrescrito.
+ * --confirmar exige --snapshot-file (baseline do passo 0, só validado); cada
+ * execução gravando cria também um snapshot próprio em var/p0/.
  */
 import { createServiceClient } from "../../supabase/functions/_shared/pncp/supabase-admin.ts";
 import {
@@ -63,13 +65,25 @@ if (args.rollback) {
     console.error("--rollback exige --snapshot-file path.json");
     Deno.exit(2);
   }
-  const n = await restorePcaItensSnapshotFromFile(client, args.snapshotFile);
+  const result = await restorePcaItensSnapshotFromFile(client, args.snapshotFile);
   console.log(JSON.stringify({
     rollback: true,
     snapshot_file: args.snapshotFile,
-    restored: n,
+    restored: result.restored,
+    failed: result.failed,
   }, null, 2));
+  if (result.failed.length > 0) {
+    console.error(
+      `Rollback parcial: ${result.failed.length} falhas — rerodar --rollback (idempotente)`,
+    );
+    Deno.exit(2);
+  }
   Deno.exit(0);
+}
+
+if (args.confirmar && !args.snapshotOnly && !args.snapshotFile) {
+  console.error("--confirmar exige --snapshot-file <snapshot do passo 0> (baseline de rollback)");
+  Deno.exit(2);
 }
 
 if (args.snapshotOnly) {
@@ -111,7 +125,8 @@ try {
     dryRun: args.dryRun,
     limite: args.limite,
     lockKey: args.lockKey,
-    snapshotPath: args.snapshotFile,
+    // Per-run snapshot goes to a fresh default path; the step-0 file is only validated.
+    baselineSnapshotPath: args.snapshotFile,
     takeSnapshot: !args.dryRun,
   });
   console.log(JSON.stringify(report, null, 2));

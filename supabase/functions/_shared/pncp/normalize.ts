@@ -295,16 +295,49 @@ export function normalizePcaItem(
 }
 
 /**
- * Mapper pré-P0: mesmo contrato de `normalizePcaItem`, sem a chave
- * `classificacao_catalogo_id` (hash antigo da projeção). Só para STALE guard /
- * reprojeção — sync de produção continua usando `normalizePcaItem`.
+ * Mapper histórico 18/09→19/09 ~15h UTC (pré-3a2766e): sem
+ * codigo_classe_catmat / pdm_codigo_origem / codigo_item_origem /
+ * classificacao_catalogo_id. Só para guarda de hash na reprojeção.
  */
-export function normalizePcaItemLegacy(
+export function normalizePcaItemLegacyV1(
+  item: Record<string, unknown>,
+  _plan: Record<string, unknown>,
+) {
+  const numeroItem = Number(item.numeroItem ?? item.numero_item ?? 0);
+  return {
+    numero_item: numeroItem,
+    descricao: item.descricaoItem ? String(item.descricaoItem) : null,
+    categoria: item.categoriaItemPcaNome ? String(item.categoriaItemPcaNome) : null,
+    classe_material_servico: item.classificacaoSuperiorCodigo != null
+      ? String(item.classificacaoSuperiorCodigo)
+      : null,
+    quantidade: item.quantidadeEstimada != null ? Number(item.quantidadeEstimada) : null,
+    unidade_medida: item.unidadeFornecimento ? String(item.unidadeFornecimento) : null,
+    valor_unitario_estimado: item.valorUnitario != null ? Number(item.valorUnitario) : null,
+    valor_total_estimado: item.valorTotal != null ? Number(item.valorTotal) : null,
+    data_prevista_contratacao: item.dataDesejada ?? null,
+    status: item.status ? String(item.status) : null,
+  };
+}
+
+/**
+ * Mapper pós-3a2766e até P0 classificacao: inclui origem/classe numérica,
+ * sem `classificacao_catalogo_id`. Só para guarda de hash na reprojeção.
+ */
+export function normalizePcaItemLegacyV2(
   item: Record<string, unknown>,
   plan: Record<string, unknown>,
 ): Omit<ReturnType<typeof normalizePcaItem>, "classificacao_catalogo_id"> {
   const { classificacao_catalogo_id: _omit, ...legacy } = normalizePcaItem(item, plan);
   return legacy;
+}
+
+/** @deprecated Use normalizePcaItemLegacyV2 — mantido como alias. */
+export function normalizePcaItemLegacy(
+  item: Record<string, unknown>,
+  plan: Record<string, unknown>,
+): Omit<ReturnType<typeof normalizePcaItem>, "classificacao_catalogo_id"> {
+  return normalizePcaItemLegacyV2(item, plan);
 }
 
 export function normalizeEdital(item: Record<string, unknown>) {

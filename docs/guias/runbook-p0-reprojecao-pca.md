@@ -1,23 +1,28 @@
-# Runbook P0 — reprojeção `classificacao_catalogo_id` (PCA)
+# Runbook P0 — reprojeção PCA (classificação + origem)
 
 Data: 2026-09-26. Parent: `.audit/30-pncp-l6g-p0-pca-scope-resolvable.md` §1b + `.audit/34-pca-source-projection-reconciliation.md`.
 
-## Decisões (EXEC 02 / revisão)
+Adendo pós dry-run: paginação PostgREST, legacy_v1/v2, UPDATE completo do mapper, snapshot JSON.
+
+## Decisões (EXEC 02 + adendo 26/09)
 
 - Sem UPDATE SQL derivado do dry-run (hash é TypeScript).
 - Sem `upsertByHash` (evita `pca_alteracoes`).
-- Snapshot obrigatório antes de gravar.
+- Snapshot obrigatório **em arquivo JSON** (`var/p0/`, fora do git) — **não** DDL/SQL Editor.
+- Guarda de hash: bate se `payload_hash` = hash de **qualquer** mapper histórico (`legacy_v1` pré-15h 19/09 **ou** `legacy_v2` pós-origem sem classificação).
+- UPDATE grava **todas** as colunas do `normalizePcaItem` atual + `payload_hash` novo.
 - Stream B (98 `SOURCE_DISCOVERED_BUT_NOT_PERSISTED`) **fora** deste job — só contado como `fonte_sem_projecao`.
+- `classificacao_catalogo_id` é **text**: gravar `'1'` / `'2'`.
 
-## Snapshot: tabela `private.pca_itens_snapshot_p0`
+## Snapshot: JSON em `var/p0/`
 
-**Escolha:** migration `20260926120000_pca_itens_snapshot_p0.sql` (não JSON no git).
+**Escolha:** `var/p0/pca_itens_snapshot_<ISO>.json` + `content_sha256` no arquivo/log.
 
-**Por quê:** rollback SQL atômico; sem CSV versionado; sobrevive wipe do Cloud Shell; só `service_role`.
+**Por quê:** DDL de snapshot exigiria migration + PR antes de operar; regra do projeto proíbe DDL pelo SQL Editor. ~3331 linhas cabem em JSON local; rollback lê o arquivo.
 
 ## `updated_at`
 
-Não há trigger em `pca_itens.updated_at`. O job **não** altera `updated_at` — só `classificacao_catalogo_id` e `payload_hash`.
+Não há trigger que o job force. O UPDATE **não** envia `updated_at`.
 
 ## Lock
 
@@ -28,12 +33,9 @@ Mesmo padrão de `sync-pncp-pca`: `lock_key` default `pca-sync:2026:7830`. Se oc
 ### 0. Snapshot
 
 ```bash
-# aplicar migration (local/remoto)
-supabase db push   # ou sql editor com 20260926120000_pca_itens_snapshot_p0.sql
-
-deno run --allow-net --allow-env --allow-read \
+deno run --allow-net --allow-env --allow-read --allow-write \
   scripts/ops/reprojetar-pca-classificacao.ts --snapshot-only
-# anotar snapshot_id do JSON
+# anotar snapshot_file + content_sha256 do JSON
 ```
 
 ### 1. Conferir workflows agendados
@@ -42,7 +44,7 @@ deno run --allow-net --allow-env --allow-read \
 rg -n "sync-pncp-pca" .github/workflows
 ```
 
-Deploy em push `main` **existe** (`.github/workflows/deploy-supabase-functions.yml`) — isso é desejável para publicar o mapper. **Não** há cron GitHub para sync PCA; o cron é Supabase (`pg_cron`). Confirmar que nenhum job PCA está ativo antes do passo 6:
+Deploy em push `main` **existe** (`.github/workflows/deploy-supabase-functions.yml`) — desejável para publicar o mapper. **Não** há cron GitHub para sync PCA. Confirmar `pg_cron`:
 
 ```sql
 select jobid, schedule, command from cron.job where command ilike '%pca%';
@@ -52,23 +54,33 @@ Desativar se houver.
 
 ### 2. Merge
 
-Merge do PR P0 (normalize + job) em `main`. Aguardar deploy Edge Functions.
+Merge do PR (job + testes) em `main`. Aguardar deploy Edge Functions.
 
 ### 3. Dry-run
 
 ```bash
-deno run --allow-net --allow-env --allow-read \
+deno run --allow-net --allow-env --allow-read --allow-write \
   scripts/ops/reprojetar-pca-classificacao.ts --dry-run
 ```
 
-Esperado: `atualizados` ≈ 3331 (planejados), `STALE`/`erros` baixos, **zero** writes.
+**Esperado (adendo):**
+
+| campo | valor |
+|---|---|
+| `lidos_pca_itens` | 3331 |
+| `match_v1 + match_v2` | ≈ 3331 |
+| `STALE_SOURCE_MISMATCH` | ≈ 0 |
+| `fonte_sem_projecao` | 98 |
+| `diff_classificacao_catalogo_id` | 3331 |
+| `diff_pdm_codigo_origem` / `diff_codigo_item_origem` | ≈ linhas v1 com PDM na fonte |
+| `diff_outros` | **0** (se >0: **não** confirmar) |
 
 ### 4. Lote de teste
 
 ```bash
-deno run --allow-net --allow-env --allow-read \
+deno run --allow-net --allow-env --allow-read --allow-write \
   scripts/ops/reprojetar-pca-classificacao.ts --limite 50 --confirmar \
-  --snapshot-id <id-do-passo-0>
+  --snapshot-file var/p0/<arquivo-do-passo-0>.json
 ```
 
 ### 5. Validação (leitura)
@@ -85,10 +97,12 @@ from public.pca_itens;
 ### 6. Confirmar todos
 
 ```bash
-deno run --allow-net --allow-env --allow-read \
+deno run --allow-net --allow-env --allow-read --allow-write \
   scripts/ops/reprojetar-pca-classificacao.ts --confirmar \
-  --snapshot-id <id-do-passo-0>
+  --snapshot-file var/p0/<arquivo-do-passo-0>.json
 ```
+
+Se `diff_outros > 0`, o job **aborta sem gravar**.
 
 ### 7. Validação final
 
@@ -101,12 +115,13 @@ Reativar cron / jobs PCA pausados no passo 1.
 ## Rollback
 
 ```bash
-deno run --allow-net --allow-env --allow-read \
-  scripts/ops/reprojetar-pca-classificacao.ts --rollback --snapshot-id <id>
+deno run --allow-net --allow-env --allow-read --allow-write \
+  scripts/ops/reprojetar-pca-classificacao.ts --rollback \
+  --snapshot-file var/p0/<arquivo>.json
 ```
 
-Restaura `classificacao_catalogo_id` + `payload_hash`. **Não** grava `pca_alteracoes`.
+Restaura colunas do mapper + `payload_hash` a partir do JSON. Verifica SHA-256. **Não** grava `pca_alteracoes`.
 
 ## Relatório
 
-JSON stdout: `alvo`, `atualizados`, `ja_atualizado`, `STALE_SOURCE_MISMATCH`, `sem_fonte`, `fonte_sem_projecao`, `valor_1`, `valor_2`, `outros`, `erros`, `duracao_s`, `snapshot_id`, `sync_run_id`.
+JSON stdout: `alvo`, `lidos_pca_itens`, `lidos_source_record`, `atualizados`, `ja_atualizado`, `match_v1`, `match_v2`, `STALE_SOURCE_MISMATCH`, `sem_fonte`, `fonte_sem_projecao`, `valor_1`, `valor_2`, `outros`, `diff_*`, `erros`, `duracao_s`, `snapshot_path`, `snapshot_sha256`, `sync_run_id`.

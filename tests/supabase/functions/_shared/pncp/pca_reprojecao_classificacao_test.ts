@@ -1,18 +1,20 @@
 /**
- * P0 reprojeção classificacao_catalogo_id — testes de contrato.
+ * P0 reprojeção — testes pós dry-run fix (paginação, legacy v1/v2, UPDATE completo, JSON snapshot).
  */
 import { assertEquals, assertRejects } from "jsr:@std/assert@1";
 import { hashPayload } from "../../../../../supabase/functions/_shared/pncp/hash.ts";
 import {
   normalizePcaItem,
-  normalizePcaItemLegacy,
+  normalizePcaItemLegacyV1,
+  normalizePcaItemLegacyV2,
 } from "../../../../../supabase/functions/_shared/pncp/normalize.ts";
 import {
   decideReprojection,
-  restorePcaItensSnapshot,
+  defaultSnapshotPath,
+  restorePcaItensSnapshotFromFile,
   runPcaReprojecaoClassificacao,
   selectLatestSourceItems,
-  takePcaItensSnapshot,
+  writePcaItensSnapshotFile,
   type PcaItemTarget,
 } from "../../../../../supabase/functions/_shared/pncp/pca-reprojecao.ts";
 
@@ -22,63 +24,102 @@ const ITEM = {
   classificacaoCatalogoId: 1,
   descricaoItem: "Aparelho",
   classificacaoSuperiorCodigo: "7830",
+  pdmCodigo: "18481",
+  codigoItem: "123456",
 };
 
-function targetWithHash(
-  hash: string,
-  overrides: Partial<PcaItemTarget> = {},
-): PcaItemTarget {
+function baseTarget(overrides: Partial<PcaItemTarget> = {}): PcaItemTarget {
   return {
     id: "item-1",
     pca_plano_id: "plano-1",
     numero_item: 10,
     id_pca_pncp: String(PLAN.idPcaPncp),
-    payload_hash: hash,
+    payload_hash: "x",
     classificacao_catalogo_id: null,
+    descricao: "Aparelho",
+    categoria: null,
+    classe_material_servico: "7830",
+    codigo_classe_catmat: null,
+    quantidade: null,
+    unidade_medida: null,
+    valor_unitario_estimado: null,
+    valor_total_estimado: null,
+    data_prevista_contratacao: null,
+    status: null,
+    pdm_codigo_origem: null,
+    codigo_item_origem: null,
+    updated_at: "2026-09-18T12:00:00Z",
     ...overrides,
   };
 }
 
-Deno.test("1: hash antigo igual → decide atualizar com hash novo e classificacao", async () => {
-  const legacy = {
-    ...normalizePcaItemLegacy(ITEM, PLAN),
+function sourceOcc(item: Record<string, unknown> = ITEM) {
+  return {
+    idPcaPncp: String(PLAN.idPcaPncp),
+    numeroItem: 10,
+    plan: PLAN,
+    item,
+    fetchedAt: "2026-09-19T00:00:00Z",
+    sourceRecordId: "src-1",
+  };
+}
+
+Deno.test("1: hash legacy_v2 igual → atualizar com patch completo + match_v2", async () => {
+  const v2 = {
+    ...normalizePcaItemLegacyV2(ITEM, PLAN),
     pca_plano_id: "plano-1",
   };
   const novo = {
     ...normalizePcaItem(ITEM, PLAN),
     pca_plano_id: "plano-1",
   };
-  const hashAntigo = await hashPayload(legacy);
+  const hashV2 = await hashPayload(v2);
   const hashNovo = await hashPayload(novo);
   const decision = await decideReprojection(
-    targetWithHash(hashAntigo),
-    {
-      idPcaPncp: String(PLAN.idPcaPncp),
-      numeroItem: 10,
-      plan: PLAN,
-      item: ITEM,
-      fetchedAt: "2026-09-19T00:00:00Z",
-      sourceRecordId: "src-1",
-    },
+    baseTarget({
+      payload_hash: hashV2,
+      codigo_classe_catmat: 7830,
+      pdm_codigo_origem: "18481",
+      codigo_item_origem: "123456",
+    }),
+    sourceOcc(),
   );
   assertEquals(decision.kind, "atualizar");
   if (decision.kind === "atualizar") {
-    assertEquals(decision.classificacaoCatalogoId, "1");
+    assertEquals(decision.matchVersion, "v2");
     assertEquals(decision.hashNovo, hashNovo);
+    assertEquals(decision.patch.classificacao_catalogo_id, "1");
+    assertEquals(decision.patch.pdm_codigo_origem, "18481");
+    assertEquals(decision.patch.payload_hash, hashNovo);
   }
 });
 
-Deno.test("2: hash divergente → STALE_SOURCE_MISMATCH", async () => {
+Deno.test("1b: hash legacy_v1 igual → match_v1 e preenche pdm/item origem", async () => {
+  const v1 = {
+    ...normalizePcaItemLegacyV1(ITEM, PLAN),
+    pca_plano_id: "plano-1",
+  };
+  const hashV1 = await hashPayload(v1);
   const decision = await decideReprojection(
-    targetWithHash("hash-que-nao-bate"),
-    {
-      idPcaPncp: String(PLAN.idPcaPncp),
-      numeroItem: 10,
-      plan: PLAN,
-      item: ITEM,
-      fetchedAt: "2026-09-19T00:00:00Z",
-      sourceRecordId: "src-1",
-    },
+    baseTarget({ payload_hash: hashV1 }),
+    sourceOcc(),
+  );
+  assertEquals(decision.kind, "atualizar");
+  if (decision.kind === "atualizar") {
+    assertEquals(decision.matchVersion, "v1");
+    assertEquals(decision.patch.pdm_codigo_origem, "18481");
+    assertEquals(decision.patch.codigo_item_origem, "123456");
+    assertEquals(decision.patch.codigo_classe_catmat, 7830);
+    assertEquals(decision.diffs.pdm_codigo_origem, 1);
+    assertEquals(decision.diffs.classificacao_catalogo_id, 1);
+    assertEquals(decision.diffs.outros, 0);
+  }
+});
+
+Deno.test("2: hash divergente de v1 e v2 → STALE_SOURCE_MISMATCH", async () => {
+  const decision = await decideReprojection(
+    baseTarget({ payload_hash: "hash-que-nao-bate" }),
+    sourceOcc(),
   );
   assertEquals(decision.kind, "STALE_SOURCE_MISMATCH");
 });
@@ -90,15 +131,14 @@ Deno.test("3: 2ª execução (hash já novo) → ja_atualizado", async () => {
   };
   const hashNovo = await hashPayload(novo);
   const decision = await decideReprojection(
-    targetWithHash(hashNovo, { classificacao_catalogo_id: "1" }),
-    {
-      idPcaPncp: String(PLAN.idPcaPncp),
-      numeroItem: 10,
-      plan: PLAN,
-      item: ITEM,
-      fetchedAt: "2026-09-19T00:00:00Z",
-      sourceRecordId: "src-1",
-    },
+    baseTarget({
+      payload_hash: hashNovo,
+      classificacao_catalogo_id: "1",
+      codigo_classe_catmat: 7830,
+      pdm_codigo_origem: "18481",
+      codigo_item_origem: "123456",
+    }),
+    sourceOcc(),
   );
   assertEquals(decision.kind, "ja_atualizado");
 });
@@ -135,13 +175,40 @@ type FakeState = {
   lockBusy: boolean;
   source: Array<{ id: string; fetched_at: string; payload: unknown }>;
   itens: Array<Record<string, unknown>>;
-  snapshots: Array<Record<string, unknown>>;
   updates: Array<{ table: string; id: string; patch: Record<string, unknown> }>;
   alteracoesInserts: number;
   syncRuns: Array<Record<string, unknown>>;
 };
 
 function fakeClient(state: FakeState) {
+  function headCount(n: number) {
+    const result = Promise.resolve({ count: n, error: null, data: null });
+    const chain = Object.assign(result, {
+      eq(_k: string, _v: unknown) {
+        return chain;
+      },
+    });
+    return chain;
+  }
+
+  function rangeChain(rows: Record<string, unknown>[]) {
+    const api = {
+      eq(_k: string, _v: unknown) {
+        return api;
+      },
+      order(_c: string, _o: unknown) {
+        return api;
+      },
+      range(from: number, to: number) {
+        return Promise.resolve({
+          data: rows.slice(from, to + 1),
+          error: null,
+        });
+      },
+    };
+    return api;
+  }
+
   const client = {
     schema(name: string) {
       return {
@@ -193,40 +260,11 @@ function fakeClient(state: FakeState) {
           }
           if (name === "private" && table === "source_record") {
             return {
-              select(_cols: string) {
-                const result = Promise.resolve({
-                  data: state.source,
-                  error: null,
-                });
-                const chain = {
-                  eq(_k: string, _v: unknown) {
-                    return chain;
-                  },
-                  order(_c: string, _o: unknown) {
-                    return result;
-                  },
-                };
-                return chain;
-              },
-            };
-          }
-          if (name === "private" && table === "pca_itens_snapshot_p0") {
-            return {
-              upsert(rows: Record<string, unknown>[]) {
-                state.snapshots.push(...rows);
-                return Promise.resolve({ error: null });
-              },
-              select(_cols: string) {
-                return {
-                  eq(_k: string, snapshotId: string) {
-                    return Promise.resolve({
-                      data: state.snapshots.filter((s) =>
-                        s.snapshot_id === snapshotId
-                      ),
-                      error: null,
-                    });
-                  },
-                };
+              select(_cols: string, opts?: { count?: string; head?: boolean }) {
+                if (opts?.head) return headCount(state.source.length);
+                return rangeChain(
+                  state.source as unknown as Record<string, unknown>[],
+                );
               },
             };
           }
@@ -245,11 +283,9 @@ function fakeClient(state: FakeState) {
       }
       if (table === "pca_itens") {
         return {
-          select(_cols: string) {
-            return Promise.resolve({
-              data: state.itens,
-              error: null,
-            });
+          select(_cols: string, opts?: { count?: string; head?: boolean }) {
+            if (opts?.head) return headCount(state.itens.length);
+            return rangeChain(state.itens);
           },
           update(patch: Record<string, unknown>) {
             return {
@@ -269,12 +305,37 @@ function fakeClient(state: FakeState) {
   return client as never;
 }
 
-Deno.test("4+5: confirmar grava só classificacao+hash; dry-run não grava; zero pca_alteracoes", async () => {
-  const legacy = {
-    ...normalizePcaItemLegacy(ITEM, PLAN),
+function itemRow(hash: string, extras: Record<string, unknown> = {}) {
+  return {
+    id: "item-1",
+    pca_plano_id: "plano-1",
+    numero_item: 10,
+    payload_hash: hash,
+    classificacao_catalogo_id: null,
+    descricao: "Aparelho",
+    categoria: null,
+    classe_material_servico: "7830",
+    codigo_classe_catmat: null,
+    quantidade: null,
+    unidade_medida: null,
+    valor_unitario_estimado: null,
+    valor_total_estimado: null,
+    data_prevista_contratacao: null,
+    status: null,
+    pdm_codigo_origem: null,
+    codigo_item_origem: null,
+    updated_at: "2026-09-18T12:00:00Z",
+    pca_planos: { id_pca_pncp: PLAN.idPcaPncp },
+    ...extras,
+  };
+}
+
+Deno.test("4+5: confirmar grava patch completo; dry-run não grava; zero pca_alteracoes", async () => {
+  const v1 = {
+    ...normalizePcaItemLegacyV1(ITEM, PLAN),
     pca_plano_id: "plano-1",
   };
-  const hashAntigo = await hashPayload(legacy);
+  const hashV1 = await hashPayload(v1);
 
   const baseState = (): FakeState => ({
     lockBusy: false,
@@ -283,15 +344,7 @@ Deno.test("4+5: confirmar grava só classificacao+hash; dry-run não grava; zero
       fetched_at: "2026-09-19T00:00:00Z",
       payload: { data: [{ idPcaPncp: PLAN.idPcaPncp, itens: [ITEM] }] },
     }],
-    itens: [{
-      id: "item-1",
-      pca_plano_id: "plano-1",
-      numero_item: 10,
-      payload_hash: hashAntigo,
-      classificacao_catalogo_id: null,
-      pca_planos: { id_pca_pncp: PLAN.idPcaPncp },
-    }],
-    snapshots: [],
+    itens: [itemRow(hashV1)],
     updates: [],
     alteracoesInserts: 0,
     syncRuns: [],
@@ -303,21 +356,32 @@ Deno.test("4+5: confirmar grava só classificacao+hash; dry-run não grava; zero
     { dryRun: true, takeSnapshot: false },
   );
   assertEquals(dryReport.atualizados, 1);
+  assertEquals(dryReport.lidos_pca_itens, 1);
+  assertEquals(dryReport.match_v1, 1);
   assertEquals(dry.updates.length, 0);
   assertEquals(dry.alteracoesInserts, 0);
 
+  const tmpDir = await Deno.makeTempDir({ prefix: "pca-p0-" });
+  const snapPath = `${tmpDir}/snap.json`;
   const live = baseState();
   const liveReport = await runPcaReprojecaoClassificacao(
     fakeClient(live),
-    { dryRun: false, takeSnapshot: true, snapshotId: "snap-test" },
+    {
+      dryRun: false,
+      takeSnapshot: true,
+      snapshotPath: snapPath,
+      abortOnDiffOutros: true,
+    },
   );
   assertEquals(liveReport.atualizados, 1);
   assertEquals(live.updates.length, 1);
   assertEquals(live.updates[0].patch.classificacao_catalogo_id, "1");
+  assertEquals(live.updates[0].patch.pdm_codigo_origem, "18481");
+  assertEquals(live.updates[0].patch.codigo_item_origem, "123456");
   assertEquals(typeof live.updates[0].patch.payload_hash, "string");
   assertEquals(live.updates[0].patch.updated_at, undefined);
   assertEquals(live.alteracoesInserts, 0);
-  assertEquals(live.snapshots.length, 1);
+  assertEquals(liveReport.snapshot_sha256 != null, true);
 
   // 2ª execução sobre estado já atualizado
   const again = await runPcaReprojecaoClassificacao(
@@ -333,7 +397,6 @@ Deno.test("6: lock ocupado → erro explícito", async () => {
     lockBusy: true,
     source: [],
     itens: [],
-    snapshots: [],
     updates: [],
     alteracoesInserts: 0,
     syncRuns: [],
@@ -349,58 +412,98 @@ Deno.test("6: lock ocupado → erro explícito", async () => {
   );
 });
 
-Deno.test("8: rollback restaura exatamente o snapshot", async () => {
+Deno.test("8: rollback JSON restaura exatamente o snapshot", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "pca-rb-" });
+  const path = `${tmpDir}/snap.json`;
+  await writePcaItensSnapshotFile(path, "snap-1", [{
+    id: "item-1",
+    classificacao_catalogo_id: null,
+    payload_hash: "hash-antigo",
+    updated_at: "2026-09-18T00:00:00Z",
+    descricao: "Aparelho",
+    categoria: null,
+    classe_material_servico: "7830",
+    codigo_classe_catmat: null,
+    quantidade: null,
+    unidade_medida: null,
+    valor_unitario_estimado: null,
+    valor_total_estimado: null,
+    data_prevista_contratacao: null,
+    status: null,
+    pdm_codigo_origem: null,
+    codigo_item_origem: null,
+    numero_item: 10,
+  }]);
+
   const state: FakeState = {
     lockBusy: false,
     source: [],
-    itens: [{
-      id: "item-1",
+    itens: [itemRow("hash-novo", {
       classificacao_catalogo_id: "1",
-      payload_hash: "hash-novo",
-      updated_at: "2026-09-26T00:00:00Z",
-    }],
-    snapshots: [{
-      snapshot_id: "snap-1",
-      pca_item_id: "item-1",
-      classificacao_catalogo_id: null,
-      payload_hash: "hash-antigo",
-    }],
+      pdm_codigo_origem: "18481",
+    })],
     updates: [],
     alteracoesInserts: 0,
     syncRuns: [],
   };
-  const client = fakeClient(state);
-  const n = await restorePcaItensSnapshot(client, "snap-1");
+  const n = await restorePcaItensSnapshotFromFile(fakeClient(state), path);
   assertEquals(n, 1);
   assertEquals(state.itens[0].classificacao_catalogo_id, null);
   assertEquals(state.itens[0].payload_hash, "hash-antigo");
+  assertEquals(state.itens[0].pdm_codigo_origem, null);
   assertEquals(state.alteracoesInserts, 0);
 });
 
-Deno.test("snapshot take grava id+hash+classificacao", async () => {
+Deno.test("A1: lidos_pca_itens espelha count e pagina via range", async () => {
+  const itensPayload = [10, 11, 12].map((n) => ({ ...ITEM, numeroItem: n }));
+  const many: Record<string, unknown>[] = [];
+  for (const raw of itensPayload) {
+    const hash = await hashPayload({
+      ...normalizePcaItemLegacyV1(raw, PLAN),
+      pca_plano_id: "plano-1",
+    });
+    many.push(itemRow(hash, {
+      id: `item-${raw.numeroItem}`,
+      numero_item: raw.numeroItem,
+    }));
+  }
   const state: FakeState = {
     lockBusy: false,
-    source: [],
-    itens: [{
-      id: "item-1",
-      classificacao_catalogo_id: null,
-      payload_hash: "h1",
-      updated_at: "2026-09-19T00:00:00Z",
+    source: [{
+      id: "src",
+      fetched_at: "2026-09-19T00:00:00Z",
+      payload: {
+        data: [{ idPcaPncp: PLAN.idPcaPncp, itens: itensPayload }],
+      },
     }],
-    snapshots: [],
+    itens: many,
     updates: [],
     alteracoesInserts: 0,
     syncRuns: [],
   };
-  const n = await takePcaItensSnapshot(fakeClient(state), "snap-x");
-  assertEquals(n, 1);
-  assertEquals(state.snapshots[0].snapshot_id, "snap-x");
-  assertEquals(state.snapshots[0].payload_hash, "h1");
+  const report = await runPcaReprojecaoClassificacao(
+    fakeClient(state),
+    { dryRun: true, takeSnapshot: false },
+  );
+  assertEquals(report.erros, []);
+  assertEquals(report.lidos_pca_itens, 3);
+  assertEquals(report.alvo, 3);
+  assertEquals(report.atualizados, 3);
 });
 
-Deno.test("normalizePcaItemLegacy omite classificacao_catalogo_id (hash antigo)", () => {
-  const full = normalizePcaItem(ITEM, PLAN);
-  const legacy = normalizePcaItemLegacy(ITEM, PLAN);
-  assertEquals(full.classificacao_catalogo_id, "1");
-  assertEquals("classificacao_catalogo_id" in legacy, false);
+Deno.test("normalizePcaItemLegacyV1 omite origem e classificacao", () => {
+  const v1 = normalizePcaItemLegacyV1(ITEM, PLAN);
+  assertEquals("classificacao_catalogo_id" in v1, false);
+  assertEquals("pdm_codigo_origem" in v1, false);
+  assertEquals("codigo_item_origem" in v1, false);
+  assertEquals("codigo_classe_catmat" in v1, false);
+  const v2 = normalizePcaItemLegacyV2(ITEM, PLAN);
+  assertEquals("classificacao_catalogo_id" in v2, false);
+  assertEquals(v2.pdm_codigo_origem, "18481");
+});
+
+Deno.test("defaultSnapshotPath fica sob var/p0/", () => {
+  const p = defaultSnapshotPath("2026-09-26T12:00:00.000Z");
+  assertEquals(p.startsWith("var/p0/pca_itens_snapshot_"), true);
+  assertEquals(p.endsWith(".json"), true);
 });

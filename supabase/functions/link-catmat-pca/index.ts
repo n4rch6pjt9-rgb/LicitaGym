@@ -248,5 +248,5 @@ export async function handleLinkCatmatPcaRequest(
 }
 
 if (import.meta.main) {
-  Deno.serve((req) => handleLinkCatmatPcaRequest(req));
+  Deno.serve(handleLinkCatmatPcaRequest);
 }

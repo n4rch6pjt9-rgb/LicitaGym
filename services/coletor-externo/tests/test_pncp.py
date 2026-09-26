@@ -88,6 +88,7 @@ def test_pessoa_fisica_nao_tem_nome_nem_cpf_gravado():
     P.coletar(p, sb, None, ["x"], "todos", 1, 50, True, False, 10**8, False)
     res = {c.args[0]: c.args[1] for c in sb.upsert.call_args_list}["licitacao_resultados"][0]
     assert res["fornecedor_nome"] is None and res["fornecedor_cnpj"] is None
+    assert "niFornecedor" not in res["raw"] and "nomeRazaoSocialFornecedor" not in res["raw"]
 
 
 from datetime import datetime, timezone
@@ -197,7 +198,177 @@ def test_numero_processo_e_o_processo_administrativo_nao_o_codigo_pncp():
 
 def test_sem_detalhe_nao_inventa_processo():
     p = _pncp([COMPRA]); p.compra.side_effect = RuntimeError("503")
-    assert P.identificacao(p, COMPRA) == {"numero_processo": None, "numero_edital": COMPRA["title"]}
+    try:
+        P.identificacao(p, COMPRA)
+        assert False, "falha de consulta não pode virar processo NULL"
+    except P.ConsultaFalhou as e:
+        assert "503" in str(e)
+
+
+def test_detalhe_valido_sem_processo_e_none():
+    p = _pncp([COMPRA]); p.compra.return_value = {"numeroCompra": "41", "anoCompra": 2026}
+    assert P.identificacao(p, COMPRA)["numero_processo"] is None
+
+
+def test_coleta_com_detalhe_falho_nao_sobrescreve_identificacao():
+    sb = _sb()
+    p = _pncp([COMPRA]); p.compra.side_effect = RuntimeError("timeout")
+    r = P.coletar(p, sb, None, ["x"], "todos", 1, 50, True, False, 10**8, False)
+    lic = next(c.args[1] for c in sb.upsert.call_args_list if c.args[0] == "licitacoes_externas")
+    assert "numero_processo" not in lic and "numero_edital" not in lic
+    assert r["gravadas"] == 1 and r["falha_detalhe"] == 1
+
+
+class _FakeSbCorrigir:
+    def __init__(self, linhas):
+        self.linhas, self.atualizacoes = linhas, []
+
+    def selecionar(self, tabela, **kw):
+        return self.linhas
+
+    def atualizar(self, tabela, id_, dados):
+        self.atualizacoes.append((id_, dados))
+
+
+def test_corrigir_processos_distingue_encontrado_sem_processo_e_falha():
+    linhas = [
+        {"id": 1, "codigo_externo": "44892693000140-1-000157/2026", "numero_edital": "PE 41/2026"},
+        {"id": 2, "codigo_externo": "44892693000140-1-000158/2026", "numero_edital": "PE 42/2026"},
+        {"id": 3, "codigo_externo": "44892693000140-1-000159/2026", "numero_edital": "PE 43/2026"},
+    ]
+    respostas = {
+        157: {"processo": "3789/2026", "numeroCompra": "41", "anoCompra": 2026},
+        158: {"numeroCompra": "42", "anoCompra": 2026},
+        159: RuntimeError("429 do PNCP"),
+    }
+    p = MagicMock()
+
+    def compra(c):
+        v = respostas[c["numero_sequencial"]]
+        if isinstance(v, Exception):
+            raise v
+        return v
+
+    p.compra.side_effect = compra
+    sb = _FakeSbCorrigir(linhas)
+    r = P.corrigir_processos(p, sb)
+    assert r == {"lidas": 3, "corrigidas": 1, "sem_processo": 1, "falha_consulta": 1}
+    assert [i for i, _ in sb.atualizacoes] == [1, 2]
+    assert sb.atualizacoes[1][1]["numero_processo"] is None
+
+
+class _FakeSbIdempotente:
+    """Emula upsert do PostgREST: identidade = colunas de on_conflict."""
+
+    def __init__(self):
+        self.tabelas, self._seq = {}, 0
+
+    def upsert(self, tabela, linhas, conflito):
+        unico = isinstance(linhas, dict)
+        linhas = [linhas] if unico else linhas
+        cols = conflito.split(",")
+        store = self.tabelas.setdefault(tabela, {})
+        out = []
+        for ln in linhas:
+            chave = tuple(ln[c] for c in cols)
+            atual = store.get(chave)
+            if atual is None:
+                self._seq += 1
+                atual = {"id": self._seq, "status_processamento": "pendente"}
+            atual.update(ln)
+            store[chave] = atual
+            out.append(dict(atual))
+        return out
+
+    def atualizar(self, *a, **k):
+        pass
+
+
+def test_reprocessar_mesma_compra_nao_duplica():
+    sb = _FakeSbIdempotente()
+    for _ in range(2):
+        P.coletar(_pncp([COMPRA]), sb, None, ["borracha granulada"], "todos", 1, 50,
+                  com_resultados=True, baixar_arquivos=False, max_bytes=10**8, dry_run=False)
+    contagem = {t: len(v) for t, v in sb.tabelas.items()}
+    assert contagem == {"licitacoes_externas": 1, "licitacao_itens": 2,
+                        "licitacao_resultados": 2, "licitacao_documentos": 1}
+
+
+def _cliente(monkeypatch, respostas, tentativas=3):
+    cli = P.PNCP(delay=0, tentativas=tentativas)
+    esperas = []
+    monkeypatch.setattr(P.time, "sleep", lambda s: esperas.append(s))
+    sess = MagicMock()
+    sess.get.side_effect = respostas
+    cli._local.s = sess
+    return cli, sess, esperas
+
+
+def _resp(status, json_body=None, ctype="application/json", headers=None, json_exc=None):
+    r = MagicMock(status_code=status, headers={"content-type": ctype, **(headers or {})})
+    if json_exc:
+        r.json.side_effect = json_exc
+    else:
+        r.json.return_value = json_body
+    return r
+
+
+def test_cliente_timeout_esgotado_levanta(monkeypatch):
+    import requests
+    cli, sess, _ = _cliente(monkeypatch, requests.Timeout("lento"))
+    try:
+        cli._get("/x")
+        assert False
+    except requests.Timeout:
+        assert sess.get.call_count == 3
+
+
+def test_cliente_5xx_esgotado_levanta(monkeypatch):
+    import requests
+    cli, sess, _ = _cliente(monkeypatch, [_resp(502), _resp(503), _resp(504)])
+    try:
+        cli._get("/x")
+        assert False
+    except requests.HTTPError as e:
+        assert "504" in str(e) and sess.get.call_count == 3
+
+
+def test_cliente_429_respeita_retry_after(monkeypatch):
+    cli, _, esperas = _cliente(monkeypatch, [_resp(429, headers={"Retry-After": "7"}), _resp(200, [{"ok": 1}])])
+    assert cli._get("/x") == [{"ok": 1}]
+    assert 7.0 in esperas
+
+
+def test_cliente_json_invalido_levanta(monkeypatch):
+    cli, _, _ = _cliente(monkeypatch, [_resp(200, json_exc=ValueError("Expecting value"))])
+    try:
+        cli._get("/x")
+        assert False
+    except P.RespostaInvalida as e:
+        assert "JSON inválido" in str(e)
+
+
+def test_cliente_html_com_200_levanta(monkeypatch):
+    cli, _, _ = _cliente(monkeypatch, [_resp(200, ctype="text/html")])
+    try:
+        cli.arquivos(COMPRA)
+        assert False
+    except P.RespostaInvalida:
+        pass
+
+
+def test_cliente_204_e_lista_vazia_valida(monkeypatch):
+    cli, _, _ = _cliente(monkeypatch, [_resp(204)])
+    assert cli.arquivos(COMPRA) == []
+
+
+def test_detalhe_nao_objeto_levanta(monkeypatch):
+    cli, _, _ = _cliente(monkeypatch, [_resp(204)])
+    try:
+        cli.compra(COMPRA)
+        assert False
+    except P.RespostaInvalida:
+        pass
 
 def test_compra_usa_consulta_v1_e_nao_pncp_v1(monkeypatch):
     """Detalhe da compra: /api/consulta/v1; itens/arquivos permanecem em /api/pncp/v1."""
@@ -228,3 +399,26 @@ def test_compra_levanta_erro_se_json_status_3xx_com_message(monkeypatch):
         assert False, "deveria falhar"
     except RuntimeError as e:
         assert "301" in str(e) and "Moved Permanently" in str(e)
+
+
+def test_busca_rejeita_envelope_sem_items(monkeypatch):
+    cli = P.PNCP(delay=0, tentativas=1)
+    cli._get = lambda *a, **k: {"total": 0}
+    try:
+        cli.buscar("equipamentos")
+        assert False, "envelope sem items não é uma busca vazia válida"
+    except P.RespostaInvalida:
+        pass
+
+
+def test_itens_rejeita_pagina_repetida():
+    cli = P.PNCP(delay=0, tentativas=1)
+    pagina = [{"numeroItem": i} for i in range(100)]
+    cli._lista = MagicMock(side_effect=[pagina, list(pagina)])
+    try:
+        cli.itens(COMPRA)
+        assert False, "página repetida não deve causar loop de paginação"
+    except P.RespostaInvalida as e:
+        assert "página repetida" in str(e)
+        assert "página 2" in str(e)
+    assert cli._lista.call_count == 2

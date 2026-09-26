@@ -1,3 +1,15 @@
+// Evita pop-up "EPIPE: broken pipe" quando o terminal que abriu o app é fechado
+for (const stream of [process.stdout, process.stderr]) {
+  stream?.on?.('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EPIPE') return // saída fechada: ignora
+    throw err
+  })
+}
+process.on('uncaughtException', (err: NodeJS.ErrnoException) => {
+  if (err.code === 'EPIPE') return
+  throw err
+})
+
 import './load-env'
 import { join } from 'node:path'
 import { app, BrowserWindow, shell } from 'electron'

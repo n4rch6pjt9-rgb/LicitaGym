@@ -8,7 +8,11 @@ Responda e comente reviews **em português**. Regras detalhadas: `AGENTS.md` e `
 Precisão > rastreabilidade > dados oficiais > auditabilidade > segurança. Não sugira atalhos que troquem precisão por conveniência.
 
 ## Como revisar um PR
+Siga `.github/skills/code-review/SKILL.md` em toda revisão de pull request.
+
 Classifique cada comentário: **[BLOQUEANTE]**, **[IMPORTANTE]** ou **[SUGESTÃO]**. Não comente estilo que um linter resolveria. Seja específico: aponte a linha e proponha a correção.
+
+Se a descrição citar issue (`#123`), check do Actions ou outro pull request, consulte o GitHub MCP (somente leitura) antes de comentar. Se a ferramenta falhar, declare o contexto como não verificado. Não use o MCP do Supabase nesta revisão: o servidor em `.cursor/mcp.json` exige OAuth, e o Copilot code review não suporta MCP remoto com OAuth.
 
 Sempre **[BLOQUEANTE]**:
 1. **Dado inventado** — valor, preço, quantidade, CATMAT/PDM, UASG, número da compra, data, BDI, imposto ou margem hardcoded/fabricado em fluxo de produção, ou default que mascara ausência (`0`, `""`, `"N/A"`). Ausência deve ser representada como ausente/não verificada.

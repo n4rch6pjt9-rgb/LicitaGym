@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 import time
 from typing import Any, Dict, List, Optional
+from scripts.lib.catmat_pdm_source import extract_resultado, resolve_pdms
 from scripts.lib.http_fetch import fetch_json, HttpFetchError
 from scripts.lib.sync_state import SyncStateManager, is_sync_resume_enabled
 
@@ -25,13 +26,16 @@ CLASSES_PERMITIDAS = {72: 7220, 78: 7830}
 def fetch_unidades(
     codigo_grupo: Optional[int] = None,
     codigo_classe: Optional[int] = None,
+    codigo_pdm: Optional[int] = None,
     codigo_item: Optional[int] = None,
     codigo_unidade: Optional[int] = None,
     pagina: int = 1,
     tamanho_pagina: int = 500,
     max_retries: int = 3
 ) -> Dict[str, Any]:
-    """Consulta Unidades de Fornecimento com retry exponencial"""
+    """Consulta Unidades de Fornecimento com retry exponencial.
+    Conforme schema Compras.gov (schemas-consultas.md §1.6), E6 aceita codigoPdm.
+    """
     url = f"{BASE_URL}{ENDPOINT}"
 
     params = {
@@ -43,6 +47,8 @@ def fetch_unidades(
         params["codigoGrupo"] = codigo_grupo
     if codigo_classe is not None:
         params["codigoClasse"] = codigo_classe
+    if codigo_pdm is not None:
+        params["codigoPdm"] = codigo_pdm
     if codigo_item is not None:
         params["codigoItem"] = codigo_item
     if codigo_unidade is not None:
@@ -57,8 +63,81 @@ def fetch_unidades(
         max_retries=max_retries,
         user_agent="LicitaGym/Collector",
         raise_for_status=True,
-        legacy_empty_envelope_key="resultado",
     )
+
+def collect_unidades_por_pdm(
+    codigo_pdm: int,
+    max_pages: Optional[int] = None,
+    resume: Optional[bool] = None,
+    sync_manager: Optional[SyncStateManager] = None,
+) -> List[Dict]:
+    """Coleta unidades de fornecimento associadas a um PDM específico."""
+    logger.info(f"  Coletando unidades para PDM {codigo_pdm}...")
+    if sync_manager is None:
+        endpoint_key = f"6_consultarMaterialUnidadeFornecimento_pdm_{codigo_pdm}"
+        sync_manager = SyncStateManager(endpoint_key)
+
+    should_resume = is_sync_resume_enabled() if resume is None else resume
+    state = sync_manager.start_run(
+        resume=should_resume,
+        metadata={"codigo_pdm": codigo_pdm},
+    )
+
+    todas_unidades: List[Dict] = []
+    if should_resume and state.last_page > 0:
+        if isinstance(state.cursor, dict) and "unidades" in state.cursor:
+            todas_unidades = list(state.cursor["unidades"])
+        else:
+            acc = sync_manager.load_accumulated_data()
+            if isinstance(acc, list):
+                todas_unidades = list(acc)
+
+    pagina = (state.last_page + 1) if (should_resume and state.last_page > 0) else 1
+    pages_coletadas = 0
+
+    while True:
+        try:
+            resp = fetch_unidades(
+                codigo_pdm=codigo_pdm,
+                pagina=pagina,
+                tamanho_pagina=500,
+            )
+        except Exception as e:
+            sync_manager.record_partial_failure(
+                e,
+                page=pagina,
+                error_details={"codigo_pdm": codigo_pdm},
+                cursor={"unidades": todas_unidades},
+            )
+            sync_manager.save_accumulated_data(todas_unidades)
+            raise
+
+        unidades = extract_resultado(resp, f"E6 pdm={codigo_pdm} pagina={pagina}")
+        if not unidades:
+            break
+
+        todas_unidades.extend(unidades)
+        pages_coletadas += 1
+        sync_manager.record_page_success(
+            page=pagina,
+            records_in_page=len(unidades),
+            cursor={"unidades": todas_unidades},
+        )
+        sync_manager.save_accumulated_data(todas_unidades)
+
+        if max_pages and pages_coletadas >= max_pages:
+            break
+
+        if resp.get("paginasRestantes", 0) == 0:
+            break
+
+        pagina += 1
+        time.sleep(0.5)
+
+    total_records = len(todas_unidades)
+    sync_manager.record_completed(total_records=total_records, metadata_update={"total_records": total_records})
+    return todas_unidades
+
 
 def collect_unidades_por_grupo_classe(
     codigo_grupo: int,
@@ -66,9 +145,33 @@ def collect_unidades_por_grupo_classe(
     max_pages: Optional[int] = None,
     resume: Optional[bool] = None,
     sync_manager: Optional[SyncStateManager] = None,
+    codigo_pdm: Optional[int] = None,
+    pdms: Optional[List[int]] = None,
+    use_pdm_iteration: Optional[bool] = None,
 ) -> List[Dict]:
-    """Coleta todas unidades de fornecimento de um grupo/classe específico com suporte a checkpoint e resume."""
+    """Coleta unidades de fornecimento de um grupo/classe específico.
+    Se use_pdm_iteration=True ou (use_pdm_iteration is None e sync_manager is None e codigo_pdm/pdms fornecidos ou encontrados),
+    itera por PDM conforme padrão Compras.gov Dados Abertos (schemas-consultas.md §1.6).
+    Se sync_manager for explicitamente passado sem codigo_pdm/pdms, opera em modo endpoint direto grupo/classe com esse sync_manager.
+    """
     logger.info(f"\nColetando Unidades Fornecimento: G{codigo_grupo} classe {codigo_classe}...")
+
+    # Se sync_manager foi fornecido explicitamente sem PDMs, manter modo clássico grupo/classe usando o sync_manager
+    should_iterate_pdm = use_pdm_iteration
+    if should_iterate_pdm is None:
+        if sync_manager is not None and codigo_pdm is None and pdms is None:
+            should_iterate_pdm = False
+        else:
+            should_iterate_pdm = True
+
+    if should_iterate_pdm:
+        lista_pdms = resolve_pdms(codigo_grupo, codigo_pdm=codigo_pdm, pdms=pdms)
+        logger.info(f"Iterando {len(lista_pdms)} PDM(s) para G{codigo_grupo}/C{codigo_classe}...")
+        todas: List[Dict] = []
+        for pdm in lista_pdms:
+            unis = collect_unidades_por_pdm(pdm, max_pages=max_pages, resume=resume, sync_manager=sync_manager if len(lista_pdms) == 1 else None)
+            todas.extend(unis)
+        return todas
 
     if sync_manager is None:
         endpoint_key = f"6_consultarMaterialUnidadeFornecimento_G{codigo_grupo}_C{codigo_classe}"
@@ -123,7 +226,7 @@ def collect_unidades_por_grupo_classe(
             sync_manager.save_accumulated_data(todas_unidades)
             raise
 
-        unidades = resp.get("resultado", [])
+        unidades = extract_resultado(resp, f"E6 G{codigo_grupo}/C{codigo_classe} pagina={pagina}")
 
         if not unidades:
             logger.info(f"  Página {pagina}: vazio")

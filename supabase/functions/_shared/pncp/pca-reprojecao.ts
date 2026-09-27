@@ -879,9 +879,17 @@ export async function runPcaReprojecaoClassificacao(
       report.baseline_snapshot_sha256 = baseline.content_sha256;
     }
 
+    let work = targets;
+    if (options.limite != null && options.limite >= 0) {
+      work = targets.slice(0, options.limite);
+    }
+    report.alvo = work.length;
+
     if (options.takeSnapshot !== false && !options.dryRun) {
       const snapId = `pca-pre-p0-${nowIso.replace(/[:.]/g, "-")}`;
-      const snapRows = targets.map(targetToSnapshotRow);
+      // Snapshot do lote: só as linhas que esta execução pode gravar
+      // (--limite). A baseline completa é a do passo 0 (--snapshot-only).
+      const snapRows = work.map(targetToSnapshotRow);
       const file = await writePcaItensSnapshotFile(snapshotPath, snapId, snapRows, nowIso);
       report.snapshot_path = snapshotPath;
       report.snapshot_sha256 = file.content_sha256;
@@ -896,11 +904,6 @@ export async function runPcaReprojecaoClassificacao(
       if (!projectedKeys.has(key)) report.fonte_sem_projecao += 1;
     }
 
-    let work = targets;
-    if (options.limite != null && options.limite >= 0) {
-      work = targets.slice(0, options.limite);
-    }
-    report.alvo = work.length;
 
     const writer: Writer = deps?.writer ?? {
       updateItem: async (id, patch) => {

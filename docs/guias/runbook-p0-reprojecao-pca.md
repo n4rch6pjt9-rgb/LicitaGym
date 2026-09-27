@@ -27,7 +27,7 @@ Adendo pós dry-run: paginação PostgREST, legacy_v0/v1/v2, UPDATE completo do 
 
 - Snapshot **nunca** é sobrescrito (`createNew`); caminho já existente → job aborta antes de qualquer UPDATE.
 - O snapshot do passo 0 é a **baseline de rollback**. `--snapshot-file` no `--confirmar` só **valida** esse arquivo (SHA-256 + `row_count`), nunca grava nele. `--confirmar` sem `--snapshot-file` é recusado.
-- Cada execução com `--confirmar` grava **também** um snapshot próprio em `var/p0/` (estado imediatamente antes daquele lote), útil para desfazer só o último lote.
+- Cada execução com `--confirmar` grava **também** um snapshot próprio em `var/p0/` (só as linhas daquele lote, no estado imediatamente anterior), útil para desfazer só o último lote.
 - Leitura exige `content_sha256` e `row_count` presentes e coerentes.
 
 **Tabela `private.pca_itens_snapshot_p0`:** a migration `20260926120000_pca_itens_snapshot_p0.sql` já entrou na `main` via #58 e **permanece** no histórico (migrations são imutáveis). A tabela fica sem uso por este job. Remoção, se desejada, vai em migration nova (`DROP TABLE IF EXISTS`) em PR próprio, depois de conferir que está vazia.

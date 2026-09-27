@@ -984,3 +984,17 @@ Deno.test("sync PCA concorrente stale é ignorado", async () => {
   );
   assertEquals(report.erros, []);
 });
+
+Deno.test("--limite: snapshot do lote contém só as linhas do lote", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "pca-lim-" });
+  const path = `${tmpDir}/lote.json`;
+  const state = await manyItensState(5);
+  const report = await runPcaReprojecaoClassificacao(
+    fakeClient(state),
+    { dryRun: false, limite: 2, snapshotPath: path },
+  );
+  assertEquals(report.alvo, 2);
+  assertEquals(report.atualizados, 2);
+  const snap = await readPcaItensSnapshotFile(path);
+  assertEquals(snap.rows.map((r) => r.id), state.updates.map((u) => u.id));
+});

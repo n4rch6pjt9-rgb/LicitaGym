@@ -49,9 +49,13 @@ function parseArgs(argv: string[]) {
       out.limite = Number(argv[++i]);
     } else if (a === "--lock-key") {
       out.lockKey = argv[++i];
-    } else if (a === "--snapshot-file" || a === "--snapshot-id") {
-      // --snapshot-id aceito como alias legado → path
+    } else if (a === "--snapshot-file") {
       out.snapshotFile = argv[++i];
+    } else if (a === "--snapshot-id") {
+      console.error(
+        "--snapshot-id removido (snapshot em tabela saiu no A4). Use --snapshot-file var/p0/<arquivo>.json",
+      );
+      Deno.exit(2);
     } else if (a === "--rollback") {
       out.rollback = true;
     } else if (a === "--snapshot-only") {
@@ -160,6 +164,15 @@ try {
   if (report.diff_outros > 0 && args.dryRun) {
     console.error(
       `ATENÇÃO: diff_outros=${report.diff_outros} — não rode --confirmar sem investigar`,
+    );
+    Deno.exit(3);
+  }
+  if (
+    (report.baseline_sem_cobertura > 0 || report.baseline_fora_do_alvo > 0) && args.dryRun
+  ) {
+    console.error(
+      `ATENÇÃO: baseline diverge dos alvos (sem cobertura=${report.baseline_sem_cobertura}, ` +
+        `fora do alvo=${report.baseline_fora_do_alvo}) — --confirmar vai abortar`,
     );
     Deno.exit(3);
   }

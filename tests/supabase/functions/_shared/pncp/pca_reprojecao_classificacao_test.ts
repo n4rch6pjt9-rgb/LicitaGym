@@ -545,6 +545,37 @@ async function liveState(): Promise<FakeState> {
   };
 }
 
+Deno.test("A3: diff_outros > 0 → confirmar não grava nada e fecha o run uma vez", async () => {
+  const drifted = async () => {
+    const s = await liveState();
+    s.itens[0].descricao = "Descrição editada fora da fonte";
+    return s;
+  };
+
+  const dryReport = await runPcaReprojecaoClassificacao(fakeClient(await drifted()), {
+    dryRun: true,
+    takeSnapshot: false,
+  });
+  assertEquals(dryReport.diff_outros > 0, true);
+  assertEquals(dryReport.diff_outros_cols.includes("descricao"), true);
+
+  const state = await drifted();
+  const report = await runPcaReprojecaoClassificacao(fakeClient(state), {
+    dryRun: false,
+    takeSnapshot: false,
+  });
+  assertEquals(report.diff_outros > 0, true);
+  assertEquals(report.atualizados, 0);
+  assertEquals(state.updates.length, 0);
+  assertEquals(state.alteracoesInserts, 0);
+  assertEquals(state.syncRuns.length, 1);
+  assertEquals(state.syncRuns[0].status, "concluida_com_erros");
+  assertEquals(
+    report.erros.some((e) => e.motivo.includes("abortar antes de confirmar")),
+    true,
+  );
+});
+
 Deno.test("snapshot existente não é sobrescrito; aborta antes de qualquer UPDATE", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "pca-ow-" });
   const path = `${tmpDir}/baseline.json`;
@@ -581,6 +612,38 @@ Deno.test("baseline --snapshot-file é só validada e fica intacta entre lotes",
   assertEquals(report.baseline_snapshot_sha256, file.content_sha256);
   assertEquals(report.snapshot_path, `${tmpDir}/run-1.json`);
   assertEquals(await Deno.readTextFile(baseline), before);
+});
+
+Deno.test("baseline válida que não cobre os alvos: dry-run conta, confirmar aborta sem UPDATE", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "pca-cov-" });
+  const baseline = `${tmpDir}/outro-dia.json`;
+  await writePcaItensSnapshotFile(baseline, "outro-dia", [snapshotRow({ id: "item-99" })]);
+
+  const dry = await liveState();
+  const dryReport = await runPcaReprojecaoClassificacao(fakeClient(dry), {
+    dryRun: true,
+    takeSnapshot: false,
+    baselineSnapshotPath: baseline,
+  });
+  assertEquals(dryReport.baseline_sem_cobertura, 1);
+  assertEquals(dryReport.baseline_sem_cobertura_ids, ["item-1"]);
+  assertEquals(dryReport.baseline_fora_do_alvo_ids, ["item-99"]);
+
+  const live = await liveState();
+  const runSnap = `${tmpDir}/run.json`;
+  await assertRejects(
+    () =>
+      runPcaReprojecaoClassificacao(fakeClient(live), {
+        dryRun: false,
+        takeSnapshot: true,
+        snapshotPath: runSnap,
+        baselineSnapshotPath: baseline,
+      }),
+    Error,
+    "sem cobertura=1 de 1, id fora do alvo=1",
+  );
+  assertEquals(live.updates.length, 0);
+  assertEquals(await Deno.stat(runSnap).then(() => true, () => false), false);
 });
 
 Deno.test("baseline inválida (sem SHA) → aborta sem UPDATE", async () => {

@@ -245,6 +245,12 @@ export type ReprojReport = {
   snapshot_sha256: string | null;
   baseline_snapshot_path: string | null;
   baseline_snapshot_sha256: string | null;
+  /** Targets without a row in the baseline snapshot (blocks --confirmar). */
+  baseline_sem_cobertura: number;
+  baseline_sem_cobertura_ids: string[];
+  /** Baseline ids no longer in pca_itens (blocks --confirmar). */
+  baseline_fora_do_alvo: number;
+  baseline_fora_do_alvo_ids: string[];
   sync_run_id: string | null;
 };
 
@@ -431,19 +437,6 @@ export async function decideReprojection(
   else if (target.payload_hash === hashV0) matchVersion = "v0";
 
   if (!matchVersion) {
-    // DEBUG: first STALE found
-    if (Deno.env.get("DEBUG_STALE")) {
-      console.error("🔴 STALE ITEM DEBUG:", {
-        id: target.id,
-        numero_item: target.numero_item,
-        stored_hash: target.payload_hash,
-        calc_v0: hashV0,
-        calc_v1: hashV1,
-        calc_v1c: hashV1c,
-        calc_v2: hashV2,
-        calc_novo: hashNovo,
-      });
-    }
     return {
       kind: "STALE_SOURCE_MISMATCH",
       hashV0,
@@ -495,6 +488,10 @@ function emptyReport(dryRun: boolean): ReprojReport {
     snapshot_sha256: null,
     baseline_snapshot_path: null,
     baseline_snapshot_sha256: null,
+    baseline_sem_cobertura: 0,
+    baseline_sem_cobertura_ids: [],
+    baseline_fora_do_alvo: 0,
+    baseline_fora_do_alvo_ids: [],
     sync_run_id: null,
   };
 }
@@ -527,34 +524,29 @@ function targetToSnapshotRow(t: PcaItemTarget): SnapshotRow {
   };
 }
 
-function validateBaselineSnapshotAgainstTargets(
+/**
+ * Compares the step-0 baseline with every current pca_itens row (not only the
+ * --limite slice: the baseline comes from --snapshot-only, always full).
+ * Duplicate ids mean a corrupt file and always throw; coverage gaps are
+ * returned so dry-run can report them and --confirmar can refuse to write.
+ */
+export function compareBaselineWithTargets(
   baseline: SnapshotFile,
   targets: PcaItemTarget[],
-) {
-  const targetIds = new Set(targets.map((t) => t.id));
+): { semCoberturaIds: string[]; foraDoAlvoIds: string[] } {
+  const targetIds = new Set(targets.map((t) => String(t.id)));
   const baselineIds = new Set<string>();
-
-  if (baseline.rows.length !== targetIds.size) {
-    throw new Error(
-      `Baseline snapshot diverge dos targets: baseline=${baseline.rows.length} targets=${targetIds.size}`,
-    );
-  }
-
+  const foraDoAlvoIds: string[] = [];
   for (const row of baseline.rows) {
-    if (baselineIds.has(row.id)) {
-      throw new Error(`Baseline snapshot contém id duplicado: ${row.id}`);
+    const id = String(row.id);
+    if (baselineIds.has(id)) {
+      throw new Error(`Baseline snapshot contém id duplicado: ${id}`);
     }
-    baselineIds.add(row.id);
-    if (!targetIds.has(row.id)) {
-      throw new Error(`Baseline snapshot contém id fora do alvo: ${row.id}`);
-    }
+    baselineIds.add(id);
+    if (!targetIds.has(id)) foraDoAlvoIds.push(id);
   }
-
-  for (const id of targetIds) {
-    if (!baselineIds.has(id)) {
-      throw new Error(`Baseline snapshot sem id do alvo: ${id}`);
-    }
-  }
+  const semCoberturaIds = [...targetIds].filter((id) => !baselineIds.has(id));
+  return { semCoberturaIds, foraDoAlvoIds };
 }
 
 export async function writePcaItensSnapshotFile(
@@ -872,18 +864,34 @@ export async function runPcaReprojecaoClassificacao(
       return report;
     }
 
-    if (options.baselineSnapshotPath) {
-      const baseline = await readPcaItensSnapshotFile(options.baselineSnapshotPath);
-      validateBaselineSnapshotAgainstTargets(baseline, targets);
-      report.baseline_snapshot_path = options.baselineSnapshotPath;
-      report.baseline_snapshot_sha256 = baseline.content_sha256;
-    }
-
     let work = targets;
     if (options.limite != null && options.limite >= 0) {
       work = targets.slice(0, options.limite);
     }
     report.alvo = work.length;
+
+    if (options.baselineSnapshotPath) {
+      const baseline = await readPcaItensSnapshotFile(options.baselineSnapshotPath);
+      report.baseline_snapshot_path = options.baselineSnapshotPath;
+      report.baseline_snapshot_sha256 = baseline.content_sha256;
+      // A valid file from another day or a --limite run would pass the SHA check;
+      // rollback is only guaranteed when the baseline matches the current rows.
+      const cmp = compareBaselineWithTargets(baseline, targets);
+      report.baseline_sem_cobertura_ids = cmp.semCoberturaIds;
+      report.baseline_sem_cobertura = cmp.semCoberturaIds.length;
+      report.baseline_fora_do_alvo_ids = cmp.foraDoAlvoIds;
+      report.baseline_fora_do_alvo = cmp.foraDoAlvoIds.length;
+      if (
+        !options.dryRun &&
+        (report.baseline_sem_cobertura > 0 || report.baseline_fora_do_alvo > 0)
+      ) {
+        throw new Error(
+          `Baseline diverge dos alvos: sem cobertura=${report.baseline_sem_cobertura} ` +
+            `de ${targets.length}, id fora do alvo=${report.baseline_fora_do_alvo} ` +
+            `(${options.baselineSnapshotPath}) — gere novo --snapshot-only antes de --confirmar`,
+        );
+      }
+    }
 
     if (options.takeSnapshot !== false && !options.dryRun) {
       const snapId = `pca-pre-p0-${nowIso.replace(/[:.]/g, "-")}`;
@@ -903,7 +911,6 @@ export async function runPcaReprojecaoClassificacao(
     for (const key of latestSource.keys()) {
       if (!projectedKeys.has(key)) report.fonte_sem_projecao += 1;
     }
-
 
     const writer: Writer = deps?.writer ?? {
       updateItem: async (id, patch) => {
@@ -994,17 +1001,12 @@ export async function runPcaReprojecaoClassificacao(
       const msg =
         `diff_outros=${report.diff_outros} cols=[${report.diff_outros_cols.join(",")}] — abortar antes de confirmar`;
       report.erros.push({ motivo: msg });
-      report.duracao_s = (Date.now() - started) / 1000;
-      await finishSyncRun(client, runId, {
-        status: "concluida_com_erros",
-        totalErros: report.erros.length,
-        erroPrincipal: msg,
-        parametros: { report },
-      });
-      throw new Error(msg);
     }
+    // Abort = skip every write; the run is finished once below (no throw, so the
+    // catch block does not call finishSyncRun a second time).
+    const abortedDiffOutros = !options.dryRun && abortOnDiffOutros && report.diff_outros > 0;
 
-    if (!options.dryRun) {
+    if (!options.dryRun && !abortedDiffOutros) {
       for (const w of pendingWrites) {
         try {
           const { error: upErr, affectedCount } = await writer.updateItem(

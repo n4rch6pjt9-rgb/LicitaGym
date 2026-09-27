@@ -29,6 +29,8 @@ Adendo pós dry-run: paginação PostgREST, legacy_v0/v1/v2, UPDATE completo do 
 - O snapshot do passo 0 é a **baseline de rollback**. `--snapshot-file` no `--confirmar` só **valida** esse arquivo (SHA-256 + `row_count`), nunca grava nele. `--confirmar` sem `--snapshot-file` é recusado.
 - Cada execução com `--confirmar` grava **também** um snapshot próprio em `var/p0/` (só as linhas daquele lote, no estado imediatamente anterior), útil para desfazer só o último lote.
 - Leitura exige `content_sha256` e `row_count` presentes e coerentes.
+- Cobertura: o conjunto de `id` da baseline precisa ser **igual** ao de `pca_itens` atual (todas as linhas, não só o `--limite`). Dry-run reporta `baseline_sem_cobertura` e `baseline_fora_do_alvo` (+ ids, exit 3); id duplicado na baseline aborta sempre; `--confirmar` **aborta** antes do snapshot da execução e de qualquer UPDATE. Baseline de outro dia ou gerada com `--limite` não passa.
+- `--snapshot-id` foi removido: use `--snapshot-file var/p0/<arquivo>.json`.
 
 **Tabela `private.pca_itens_snapshot_p0`:** a migration `20260926120000_pca_itens_snapshot_p0.sql` (#58) saiu do repositório no #59 e neste PR. Ela nunca foi aplicada em produção (ausente de `supabase_migrations`, conferido em 2026-09-27), então não há tabela a remover nem divergência de histórico.
 
@@ -115,7 +117,7 @@ deno run --allow-net --allow-env --allow-read --allow-write \
   --snapshot-file var/p0/<arquivo-do-passo-0>.json
 ```
 
-Se `diff_outros > 0`, o job **aborta sem gravar**.
+Se `diff_outros > 0`, o job **aborta sem gravar**: nenhum UPDATE, run fechado uma vez como `concluida_com_erros`, CLI sai com código 2. O snapshot da execução já foi gravado (inofensivo).
 
 ### 7. Validação final
 

@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 from .destino import Supabase, env
-from .textos import Pagina, dividir, extrair
+from .textos import Pagina, dividir, extrair, limpar_texto
 
 log = logging.getLogger("indexador")
 
@@ -93,8 +93,8 @@ def indexar_grupo(sb: Supabase, ia, docs: list[dict], lic: dict, com_extracao: b
                 p.numero = (p.numero or 1) + inicio
                 paginas.append(p)
 
-    texto_total = "\n".join(p.texto for p in paginas)
-    if len(texto_total.strip()) < 50:
+    texto_total = limpar_texto("\n".join(p.texto for p in paginas))
+    if len(texto_total) < 50:
         return {"status": "ignorado", "erro": f"sem texto aproveitável; ignorados: {res.ignorados[:5]}"}
 
     extracao = {}

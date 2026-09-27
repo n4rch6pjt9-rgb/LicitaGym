@@ -194,8 +194,14 @@ export function parseLinkCatmatPcaBody(
   return { ok: true, body: parsedBody as LinkBody };
 }
 
+export type LinkCatmatPcaDeps = {
+  /** Injeta cliente em testes; produção usa createServiceClient. */
+  createClient?: () => LinkClient;
+};
+
 export async function handleLinkCatmatPcaRequest(
   req: Request,
+  deps: LinkCatmatPcaDeps = {},
 ): Promise<Response> {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -217,7 +223,7 @@ export async function handleLinkCatmatPcaRequest(
   const limite = Math.min(Math.max(body.limite ?? 500, 1), 1000);
   const offset = Math.max(body.offset ?? 0, 0);
   const limiar = body.limiar_similaridade ?? 0.55;
-  const client = createServiceClient();
+  const client = (deps.createClient ?? createServiceClient)();
 
   const resultados = [];
   try {

@@ -107,8 +107,8 @@ class Gemini:
             config=self.types.GenerateContentConfig(response_mime_type="application/json", temperature=0)))
         try:
             return json.loads(r.text)
-        except (json.JSONDecodeError, TypeError):
-            return {"erro_extracao": (r.text or "")[:500]}
+        except (json.JSONDecodeError, TypeError) as e:
+            raise RuntimeError(f"Gemini retornou JSON inválido na extração: {(r.text or '')[:500]}") from e
 
     def ocr_pdf(self, pdf: bytes) -> str:
         """Transcreve PDF escaneado. Limite prático de ~20 MB por chamada."""

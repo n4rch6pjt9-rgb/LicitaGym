@@ -9,6 +9,8 @@ from pathlib import Path
 
 import requests
 
+POSTGREST_MAX_ROWS = int(os.environ.get("SUPABASE_PAGE_SIZE", "1000"))
+
 
 class Supabase:
     """Cliente mínimo do PostgREST usando a service_role key (ignora RLS; só no backend!)."""
@@ -66,10 +68,35 @@ class Supabase:
             raise RuntimeError(f"Supabase rpc {funcao}: {r.status_code} {r.text[:300]}")
         return r.json()
 
+    @staticmethod
+    def _int_param(valor) -> int | None:
+        if valor in (None, ""):
+            return None
+        return int(valor)
+
     def selecionar(self, tabela: str, **filtros: str) -> list[dict]:
-        r = requests.get(f"{self.base}/{tabela}", params=filtros, headers=self.h, timeout=60)
-        r.raise_for_status()
-        return r.json()
+        params_base = dict(filtros)
+        limite_total = self._int_param(params_base.pop("limit", None))
+        offset_inicial = self._int_param(params_base.pop("offset", None)) or 0
+        linhas: list[dict] = []
+        while True:
+            restante = None if limite_total is None else limite_total - len(linhas)
+            if restante is not None and restante <= 0:
+                return linhas
+            limite_pagina = POSTGREST_MAX_ROWS if restante is None else min(POSTGREST_MAX_ROWS, restante)
+            params = {
+                **params_base,
+                "limit": str(limite_pagina),
+                "offset": str(offset_inicial + len(linhas)),
+            }
+            r = requests.get(f"{self.base}/{tabela}", params=params, headers=self.h, timeout=60)
+            r.raise_for_status()
+            lote = r.json()
+            if not isinstance(lote, list):
+                raise RuntimeError(f"Supabase {tabela}: resposta inesperada ao selecionar")
+            linhas.extend(lote)
+            if len(lote) < limite_pagina:
+                return linhas
 
 
 class Armazenamento:

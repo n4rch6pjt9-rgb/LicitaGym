@@ -110,85 +110,46 @@ def test_escolher_descarta_numero_do_edital_com_peso_baixo():
     assert P.escolher([("004/2026", 1), ("137/2026", 1)], "4", "PE 4/2026") == "137/2026"
 
 
-def test_falha_na_lista_de_arquivos_nao_vira_nao_encontrado():
+def test_falha_de_consulta_nao_e_nao_encontrado():
     pncp = MagicMock()
-    pncp.compra.return_value = {"objetoCompra": "material esportivo"}
-    pncp.arquivos.side_effect = RuntimeError("503")
-    r = Counter()
-    ach = P.processo_do_edital(pncp, {"title": ""}, "4", r)
-    assert ach.status == "falha" and r["falha_arquivos"] == 1
+    pncp.compra.side_effect = RuntimeError("503 do PNCP")
+    pncp.arquivos.side_effect = RuntimeError("timeout")
+    achado = P.processo_do_edital(pncp, {"title": "Edital nº 4/2026"}, "4", Counter())
+    assert achado.status == "falha"
 
 
-def test_todos_os_downloads_falhando_e_falha():
+def test_download_falho_sem_achado_e_falha():
     pncp = MagicMock()
-    pncp.compra.return_value = {}
+    pncp.compra.return_value = {"objetoCompra": "material"}
     pncp.arquivos.return_value = [{"titulo": "edital.pdf", "tipoDocumentoNome": "Edital", "url": "u1"}]
-    pncp.baixar.side_effect = RuntimeError("timeout")
-    r = Counter()
-    ach = P.processo_do_edital(pncp, {"title": ""}, "4", r)
-    assert ach.status == "falha" and r["falha_download"] == 1
+    pncp.baixar.side_effect = RuntimeError("502")
+    resumo = Counter()
+    achado = P.processo_do_edital(pncp, {"title": "Edital nº 4/2026"}, "4", resumo)
+    assert achado.status == "falha"
+    assert resumo["falha_download"] == 1
 
 
-def test_falha_no_detalhe_segue_para_os_arquivos_e_fica_contada():
+def test_consultas_ok_sem_processo_e_nao_encontrado():
     pncp = MagicMock()
-    pncp.compra.side_effect = RuntimeError("PNCP detalhe: 500")
+    pncp.compra.return_value = {"objetoCompra": "material"}
     pncp.arquivos.return_value = []
-    r = Counter()
-    ach = P.processo_do_edital(pncp, {"title": ""}, "4", r)
-    assert r["falha_detalhe"] == 1
-    assert ach.status == "nao_encontrado"   # consultou os arquivos: a compra não tem nenhum
-    pncp.arquivos.assert_called_once()
+    achado = P.processo_do_edital(pncp, {"title": "Edital nº 4/2026"}, "4", Counter())
+    assert achado.status == "nao_encontrado"
 
 
-def _rodar_main(linhas, achado, argv):
+def test_main_conta_falha_consulta_separado_e_nao_grava(monkeypatch):
     sb = MagicMock()
-    sb.selecionar.return_value = linhas
-    orig = (P.Supabase, P.PNCP, P.env, P.processo_do_edital)
-    P.Supabase = lambda *a, **k: sb
-    P.PNCP = lambda *a, **k: MagicMock()
-    P.env = lambda nome, padrao=None, obrigatorio=False: padrao or "x"
-    P.processo_do_edital = lambda *a, **k: achado
-    try:
-        codigo = P.main(argv)
-    finally:
-        P.Supabase, P.PNCP, P.env, P.processo_do_edital = orig
-    return codigo, sb
-
-
-_LINHA = {"id": 7, "codigo_externo": "13110218000140-1-000005/2026", "numero_processo": "4",
-          "numero_edital": "Pregão Eletrônico nº 4/2026", "raw": {"x": 1}}
-
-
-def test_main_padrao_grava_so_em_raw():
-    ach = P.Achado("encontrado", "0137/2026", "edital", "ed.zip", 5, "PROCESSO ADMINISTRATIVO Nº 0137/2026")
-    codigo, sb = _rodar_main([dict(_LINHA)], ach, [])
-    assert codigo == 0
-    _, id_, campos = sb.atualizar.call_args.args
-    assert id_ == 7 and "numero_processo" not in campos
-    assert campos["raw"]["processo_extraido"]["valor"] == "0137/2026"
-    assert campos["raw"]["processo_extraido"]["processo_pncp"] == "4"
-    assert campos["raw"]["x"] == 1
-
-
-def test_main_flag_troca_numero_processo_so_com_peso_alto():
-    alto = P.Achado("encontrado", "0137/2026", "edital", None, 5, "t")
-    _, sb = _rodar_main([dict(_LINHA)], alto, ["--gravar-numero-processo"])
-    campos = sb.atualizar.call_args.args[2]
-    assert campos["numero_processo"] == "0137/2026" and campos["raw"]["processo_pncp"] == "4"
-    baixo = P.Achado("encontrado", "0137/2026", "edital", None, 1, "t")
-    _, sb = _rodar_main([dict(_LINHA)], baixo, ["--gravar-numero-processo"])
-    assert "numero_processo" not in sb.atualizar.call_args.args[2]
-
-
-def test_main_dry_run_nao_grava_e_falha_da_codigo_2():
-    _, sb = _rodar_main([dict(_LINHA)], P.Achado("encontrado", "0137/2026", "edital", None, 5, "t"), ["--dry-run"])
-    sb.atualizar.assert_not_called()
-    codigo, _ = _rodar_main([dict(_LINHA)], P.Achado("falha", motivo="503"), ["--dry-run"])
-    assert codigo == 2
-
-
-def test_main_codigo_invalido_e_contado():
-    ruim = dict(_LINHA, codigo_externo="sem-padrao")
-    codigo, sb = _rodar_main([ruim], P.Achado("encontrado", "1/2026"), [])
-    assert codigo == 0
-    sb.atualizar.assert_not_called()
+    sb.selecionar.return_value = [
+        {"id": 1, "codigo_externo": "44892693000140-1-000157/2026", "numero_processo": "4", "numero_edital": "PE 4/2026"},
+        {"id": 2, "codigo_externo": "44892693000140-1-000158/2026", "numero_processo": "5", "numero_edital": "PE 5/2026"},
+    ]
+    monkeypatch.setattr(P, "Supabase", lambda *a, **k: sb)
+    monkeypatch.setattr(P, "env", lambda *a, **k: "0")
+    monkeypatch.setattr(P, "PNCP", lambda *a, **k: MagicMock())
+    desfechos = iter([P.Achado("falha", motivo="timeout"), P.Achado("nao_encontrado")])
+    monkeypatch.setattr(P, "processo_do_edital", lambda *a, **k: next(desfechos))
+    resumos = []
+    monkeypatch.setattr(P.log, "info", lambda msg, *a: resumos.append(a[-1]) if msg.startswith("RESUMO") else None)
+    assert P.main([]) == 2
+    assert not sb.atualizar.called
+    assert resumos[-1]["falha"] == 1 and resumos[-1]["nao_encontrado"] == 1

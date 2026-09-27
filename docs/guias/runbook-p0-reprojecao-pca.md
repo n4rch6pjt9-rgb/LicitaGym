@@ -9,7 +9,8 @@ Adendo pós dry-run: paginação PostgREST, legacy_v0/v1/v2, UPDATE completo do 
 - Sem UPDATE SQL derivado do dry-run (hash é TypeScript).
 - Sem `upsertByHash` (evita `pca_alteracoes`).
 - Snapshot obrigatório **em arquivo JSON** (`var/p0/`, fora do git) — **não** DDL/SQL Editor.
-- Guarda de hash: bate se `payload_hash` = hash de **qualquer** mapper histórico (`legacy_v0` = 3a2766e com origem; `legacy_v1` pré-15h 19/09 sem origem; `legacy_v2` pós-origem sem classificação).
+- Guarda de hash: bate se `payload_hash` = hash de **qualquer** mapper histórico (`legacy_v0` = 3a2766e com origem; `legacy_v1` pré-15h 19/09 sem origem, aceitando também o hash `v1 + codigo_classe_catmat` do deploy de 2026-09-19; `legacy_v2` pós-origem sem classificação). Hash já no mapper atual com colunas divergentes vira `match_current` (UPDATE sem troca de hash).
+- `STALE_SOURCE_MISMATCH > 0` marca o `pncp_sync_run` como `concluida_com_erros`. Com `DEBUG_STALE=1`, até 20 casos saem em `stale_debug` com os hashes calculados.
 - UPDATE grava **todas** as colunas do `normalizePcaItem` atual + `payload_hash` novo.
 - Stream B (98 `SOURCE_DISCOVERED_BUT_NOT_PERSISTED`) **fora** deste job — só contado como `fonte_sem_projecao`.
 - `classificacao_catalogo_id` é **text**: gravar `'1'` / `'2'`.
@@ -138,4 +139,4 @@ Tenta **todas** as linhas e lista as que falharam (`failed`); exit 2 se houver f
 
 `candidatos` = linhas que passaram na guarda de hash; `atualizados` = UPDATEs confirmados pelo banco (0 no dry-run; falhas vão para `erros`, não para `atualizados`).
 
-JSON stdout: `alvo`, `lidos_pca_itens`, `lidos_source_record`, `candidatos`, `atualizados`, `ja_atualizado`, `match_v0`, `match_v1`, `match_v2`, `STALE_SOURCE_MISMATCH`, `sem_fonte`, `fonte_sem_projecao`, `valor_1`, `valor_2`, `outros`, `diff_*`, `erros`, `duracao_s`, `snapshot_path`, `snapshot_sha256`, `baseline_snapshot_path`, `baseline_snapshot_sha256`, `sync_run_id`.
+JSON stdout: `alvo`, `lidos_pca_itens`, `lidos_source_record`, `candidatos`, `atualizados`, `ja_atualizado`, `match_v0`, `match_v1`, `match_v2`, `match_current`, `STALE_SOURCE_MISMATCH`, `sem_fonte`, `fonte_sem_projecao`, `valor_1`, `valor_2`, `outros`, `diff_*`, `erros`, `duracao_s`, `snapshot_path`, `snapshot_sha256`, `baseline_snapshot_path`, `baseline_snapshot_sha256`, `sync_run_id`.

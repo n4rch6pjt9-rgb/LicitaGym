@@ -1,7 +1,7 @@
 # Coletores LicitaGym (PNCP + SEST SENAT) → Supabase + RAG
 
 **Versão no git: v15.** A partir desta versão o coletor **não é mais distribuído por ZIP**.
-Código canônico: este repositório (`coletor/`, `tests/`, `migrations/`, `monitor.sh`).
+Código canônico: este repositório (`coletor/`, `tests/`, `supabase/migrations/`, `monitor.sh`).
 
 ## Cloud Shell / atualização (git pull)
 
@@ -72,7 +72,7 @@ O filtro de `leads` usa a **data de resultado de cada item** (`dataResultado` do
 para quando os editais foram publicados há mais de `dias + margem_publicacao` (240) dias.
 
 ```bash
-# 1x: rodar migrations/20260924_pncp_itens_resultados.sql no SQL Editor
+# schema: supabase/migrations/20260924100000_pncp_itens_resultados.sql (via supabase db push)
 python3 -m coletor.pncp --dry-run --termos "borracha granulada" --tam 20   # teste rápido
 python3 -m coletor.pncp                                   # leads: homologados nos últimos 120 dias
 python3 -m coletor.pncp --dias 60                         # só os últimos 60 dias
@@ -129,8 +129,8 @@ O coletor usa `--escopo fitness` por padrão (`--escopo tudo` desliga o filtro).
 
 ## 1. Criar as tabelas (uma vez)
 
-Rode `migrations/20260923_licitacoes_externas.sql` no **SQL Editor** do Supabase
-(o conector usado aqui é somente leitura). Cria:
+O schema vem de `supabase/migrations/20260923100000_licitacoes_externas.sql` (aplicado por `supabase db push`;
+em produção já existe e está registrado via `supabase migration repair`). Cria:
 
 | Tabela | Conteúdo |
 |---|---|

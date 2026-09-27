@@ -382,5 +382,3 @@ def test_enrich_e5_e6_flexible_field_mapping():
     assert e6_res[0]["sigla_unidade"] == "UN"
     assert e6_res[0]["codigo_unidade"] == 1
     assert e6_res[0]["descricao_unidade"] == "UNIDADE"
-
-

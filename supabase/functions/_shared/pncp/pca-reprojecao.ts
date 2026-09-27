@@ -42,7 +42,9 @@ export type MapperColumn = (typeof PCA_ITEM_MAPPER_COLUMNS)[number];
 /**
  * Diferenças esperadas no P0 (mapper antigo → atual). Não entram em `diff_outros`.
  * `codigo_classe_catmat` entra no v1 (coluna existia no DB via backfill SQL, mas
- * o hash v1 não a incluía — o UPDATE completo a preenche a partir da fonte).
+ * o hash v1 puro não a incluía — o UPDATE completo a preenche a partir da fonte).
+ * Exceção: o deploy de 2026-09-19 (pré-3a2766e) hasheou v1 + codigo_classe_catmat;
+ * decideReprojection aceita esse hash como `hashV1c` (match_v1).
  * `unidade_medida` diverge em alguns itens — normalizador atualizado.
  */
 const EXPECTED_DIFF_COLUMNS = new Set<MapperColumn>([
@@ -87,13 +89,20 @@ export type PcaItemTarget = {
 export type ReprojDecision =
   | {
     kind: "atualizar";
-    matchVersion: "v0" | "v1" | "v2";
+    matchVersion: "v0" | "v1" | "v2" | "current";
     hashNovo: string;
     patch: Record<string, unknown>;
     diffs: ColumnDiffCounts;
   }
   | { kind: "ja_atualizado" }
-  | { kind: "STALE_SOURCE_MISMATCH"; hashV0: string; hashV1: string; hashV2: string; hashNovo: string }
+  | {
+    kind: "STALE_SOURCE_MISMATCH";
+    hashV0: string;
+    hashV1: string;
+    hashV1c: string;
+    hashV2: string;
+    hashNovo: string;
+  }
   | { kind: "sem_fonte" };
 
 export type ColumnDiffCounts = {
@@ -148,6 +157,8 @@ export type ReprojReport = {
   match_v0: number;
   match_v1: number;
   match_v2: number;
+  /** Hash já no mapper atual, mas colunas divergentes (UPDATE sem troca de hash). */
+  match_current: number;
   valor_1: number;
   valor_2: number;
   outros: number;
@@ -164,6 +175,7 @@ export type ReprojReport = {
     stored_hash: string;
     calc_v0: string;
     calc_v1: string;
+    calc_v1c: string;
     calc_v2: string;
     calc_novo: string;
   }>;
@@ -320,17 +332,42 @@ export async function decideReprojection(
   const hashV0 = await hashPayload(v0Row);
   const hashV1 = await hashPayload(v1Row);
   const hashV2 = await hashPayload(v2Row);
+  // Deploy de 2026-09-19 (pré-3a2766e) hasheava v1 + codigo_classe_catmat numérico.
+  const classeRaw = source.item.classificacaoSuperiorCodigo;
+  const classeNum = classeRaw == null || classeRaw === ""
+    ? null
+    : (Number.isFinite(Number(String(classeRaw).trim()))
+      ? Number(String(classeRaw).trim())
+      : null);
+  const hashV1c = await hashPayload({
+    ...v1Row,
+    codigo_classe_catmat: classeNum,
+  });
   const hashNovo = await hashPayload(newRow);
 
+  const diffs = diffMapperColumns(target, newRow);
   if (target.payload_hash === hashNovo) {
-    return { kind: "ja_atualizado" };
+    const hasColumnDiffs = diffs.classificacao_catalogo_id > 0 ||
+      diffs.pdm_codigo_origem > 0 ||
+      diffs.codigo_item_origem > 0 ||
+      diffs.outros > 0;
+    if (!hasColumnDiffs) return { kind: "ja_atualizado" };
+    // Hash já é o atual, mas colunas divergem (ex.: backfill SQL parcial).
+    return {
+      kind: "atualizar",
+      matchVersion: "current",
+      hashNovo,
+      patch: buildMapperPatch(newRow, hashNovo),
+      diffs,
+    };
   }
 
   let matchVersion: "v0" | "v1" | "v2" | null = null;
   // Prefer A2 labels: v1 (pré-origem) then v2 (pós-origem). v0 is alias of v2
   // shape (stableStringify) kept for explicit git-era naming / debug.
-  if (target.payload_hash === hashV1) matchVersion = "v1";
-  else if (target.payload_hash === hashV2) matchVersion = "v2";
+  if (target.payload_hash === hashV1 || target.payload_hash === hashV1c) {
+    matchVersion = "v1";
+  } else if (target.payload_hash === hashV2) matchVersion = "v2";
   else if (target.payload_hash === hashV0) matchVersion = "v0";
 
   if (!matchVersion) {
@@ -342,6 +379,7 @@ export async function decideReprojection(
         stored_hash: target.payload_hash,
         calc_v0: hashV0,
         calc_v1: hashV1,
+        calc_v1c: hashV1c,
         calc_v2: hashV2,
         calc_novo: hashNovo,
       });
@@ -350,13 +388,13 @@ export async function decideReprojection(
       kind: "STALE_SOURCE_MISMATCH",
       hashV0,
       hashV1,
+      hashV1c,
       hashV2,
       hashNovo,
     };
   }
 
   const patch = buildMapperPatch(newRow, hashNovo);
-  const diffs = diffMapperColumns(target, newRow);
   return {
     kind: "atualizar",
     matchVersion,
@@ -380,6 +418,7 @@ function emptyReport(dryRun: boolean): ReprojReport {
     match_v0: 0,
     match_v1: 0,
     match_v2: 0,
+    match_current: 0,
     valor_1: 0,
     valor_2: 0,
     outros: 0,
@@ -825,11 +864,27 @@ export async function runPcaReprojecaoClassificacao(
           case "STALE_SOURCE_MISMATCH":
             report.STALE_SOURCE_MISMATCH += 1;
             report.stale_ids.push(target.id);
+            if (Deno.env.get("DEBUG_STALE")) {
+              report.stale_debug ??= [];
+              if (report.stale_debug.length < 20) {
+                report.stale_debug.push({
+                  id: target.id,
+                  numero_item: target.numero_item,
+                  stored_hash: target.payload_hash,
+                  calc_v0: decision.hashV0,
+                  calc_v1: decision.hashV1,
+                  calc_v1c: decision.hashV1c,
+                  calc_v2: decision.hashV2,
+                  calc_novo: decision.hashNovo,
+                });
+              }
+            }
             break;
           case "atualizar": {
             if (decision.matchVersion === "v0") report.match_v0 += 1;
             else if (decision.matchVersion === "v1") report.match_v1 += 1;
-            else report.match_v2 += 1;
+            else if (decision.matchVersion === "v2") report.match_v2 += 1;
+            else report.match_current += 1;
             report.diff_classificacao_catalogo_id +=
               decision.diffs.classificacao_catalogo_id;
             report.diff_pdm_codigo_origem += decision.diffs.pdm_codigo_origem;
@@ -889,7 +944,9 @@ export async function runPcaReprojecaoClassificacao(
     }
 
     report.duracao_s = (Date.now() - started) / 1000;
-    const status = report.erros.length > 0 ? "concluida_com_erros" : "concluida";
+    const status = report.erros.length > 0 || report.STALE_SOURCE_MISMATCH > 0
+      ? "concluida_com_erros"
+      : "concluida";
     await finishSyncRun(client, runId, {
       status,
       totalRecebidos: report.alvo,

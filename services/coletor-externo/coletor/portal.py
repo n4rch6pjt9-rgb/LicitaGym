@@ -87,6 +87,10 @@ class Arquivo:
     raw: dict
 
 
+class RespostaInvalida(RuntimeError):
+    """HTTP 200 cujo JSON não corresponde ao envelope esperado do portal."""
+
+
 class PortalSestSenat:
     def __init__(self, delay: float = 1.0, user_agent: str | None = None, timeout: int = 60):
         self.delay = delay
@@ -111,42 +115,58 @@ class PortalSestSenat:
                     timeout=self.timeout,
                 )
                 time.sleep(self.delay)
-                if r.status_code == 200:
-                    return limpar(r.json().get("d"))
-                if r.status_code >= 500 and tentativa < 3:
-                    time.sleep(2 ** tentativa * 2)
-                    continue
-                r.raise_for_status()
-            except requests.RequestException:
+            except (requests.ConnectionError, requests.Timeout):
                 if tentativa == 3:
                     raise
                 time.sleep(2 ** tentativa * 2)
-        return None
+                continue
+            if r.status_code == 200:
+                try:
+                    corpo = r.json()
+                except ValueError as e:
+                    raise RespostaInvalida(f"{metodo}: JSON inválido") from e
+                if not isinstance(corpo, dict) or "d" not in corpo:
+                    raise RespostaInvalida(f"{metodo}: envelope ASMX inválido")
+                return limpar(corpo["d"])
+            if r.status_code in (429, 500, 502, 503, 504) and tentativa < 3:
+                time.sleep(2 ** tentativa * 2)
+                continue
+            r.raise_for_status()
+        raise RuntimeError(f"{metodo}: sem resposta válida do portal")
 
     # ---------------- processo ----------------
     def detalhes(self, id_processo: int, modulo: int = 59) -> dict | None:
-        return self._ws("PesquisarProcessoDetalhes", {"dtoProcesso": {
+        r = self._ws("PesquisarProcessoDetalhes", {"dtoProcesso": {
             "nCdProcesso": id_processo, "nCdModulo": modulo,
             "tmpTipoMuralProcesso": 0, "dtoIdioma": {"nCdIdioma": 1}}})
+        if r is not None and not isinstance(r, dict):
+            raise RespostaInvalida("PesquisarProcessoDetalhes: payload não é objeto")
+        return r
 
     def esclarecimentos(self, id_processo: int, modulo: int = 59) -> list[dict]:
         r = self._ws("PesquisarProcessoDetalheForum", {"dtoForum": {
             "dtoProcesso": {"nCdProcesso": id_processo, "nCdModulo": modulo},
             "dtoIdioma": {"nCdIdioma": 1}}})
-        return [_msg_forum(m) for m in (r or [])]
+        if not isinstance(r, list):
+            raise RespostaInvalida("PesquisarProcessoDetalheForum: payload não é lista")
+        return [_msg_forum(m) for m in r]
 
     def notas(self, id_processo: int, id_edital: int | None, modulo: int = 59) -> list[dict]:
         r = self._ws("PesquisarNota", {"dtoProcesso": {
             "bFlMuralEdital": False, "nCdProcesso": id_processo, "nCdEdital": id_edital or 0,
             "nCdModulo": modulo, "dtoIdioma": {"nCdIdioma": 1}}})
+        if not isinstance(r, list):
+            raise RespostaInvalida("PesquisarNota: payload não é lista")
         return [{
             "titulo": n.get("sDsTitulo"), "descricao": n.get("sDsDescricao"),
             "situacao": n.get("sDsSituacao"), "data": parse_data(n.get("tDtNota")),
-        } for n in (r or [])]
+        } for n in r]
 
     # ---------------- anexos ----------------
     def anexos_processo(self, anexo_raiz: int) -> list[Arquivo]:
-        r = self._ws("PesquisarAnexos", {"dtoAnexo": {"nCdAnexo": anexo_raiz}}) or []
+        r = self._ws("PesquisarAnexos", {"dtoAnexo": {"nCdAnexo": anexo_raiz}})
+        if not isinstance(r, list):
+            raise RespostaInvalida("PesquisarAnexos: payload não é lista")
         return _deduplicar("processo", r)
 
     def anexos_secao(self, secao: str, anexo_raiz: int, id_processo: int, modulo: int = 59) -> list[Arquivo]:
@@ -154,7 +174,9 @@ class PortalSestSenat:
         r = self._ws("PesquisarAnexosProcessoContratacao", {
             "dtoAnexo": {"nCdAnexo": anexo_raiz, "sNmLocalAnexo": local,
                          "nCdModulo": modulo, "nCdOrigem": id_processo},
-            "sTipoPesquisa": tipo, "sParam": ""}) or []
+            "sTipoPesquisa": tipo, "sParam": ""})
+        if not isinstance(r, list):
+            raise RespostaInvalida("PesquisarAnexosProcessoContratacao: payload não é lista")
         return _deduplicar(secao, r)
 
     def baixar(self, parametro: str, max_bytes: int | None = None) -> tuple[bytes, str | None]:
@@ -212,16 +234,21 @@ def _deduplicar(secao: str, itens: Iterable[dict]) -> list[Arquivo]:
             if lote and lote not in por_arquivo[chave].itens_lote:
                 por_arquivo[chave].itens_lote.append(lote)
             continue
+        fornecedor_cnpj = cnpj_ou_none(it.get("sCdUsuario"))
+        fornecedor_nome = it.get("sNmEmpresa") if fornecedor_cnpj else None
+        campos_raw = {"sDsParametroCriptografado", "sCdUsuario"}
+        if not fornecedor_cnpj:
+            campos_raw.add("sNmEmpresa")
         por_arquivo[chave] = Arquivo(
             secao=secao,
             nome_original=it.get("sDsAnexo") or chave,
             arquivo_origem=it.get("sNmArquivo") or f"{it.get('nCdAnexo')}-{it.get('nSqAnexo')}",
             parametro_download=it.get("sDsParametroCriptografado"),
             data_documento=parse_data(it.get("tDtAnexo")),
-            fornecedor_nome=it.get("sNmEmpresa"),
-            fornecedor_cnpj=cnpj_ou_none(it.get("sCdUsuario")),
+            fornecedor_nome=fornecedor_nome,
+            fornecedor_cnpj=fornecedor_cnpj,
             itens_lote=[lote] if lote else [],
-            raw={k: v for k, v in it.items() if k not in ("sDsParametroCriptografado", "sCdUsuario")},
+            raw={k: v for k, v in it.items() if k not in campos_raw},
         )
     return list(por_arquivo.values())
 

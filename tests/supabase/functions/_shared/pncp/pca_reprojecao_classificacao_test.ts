@@ -172,6 +172,49 @@ Deno.test("3: 2ª execução (hash já novo) → ja_atualizado", async () => {
   assertEquals(decision.kind, "ja_atualizado");
 });
 
+Deno.test("3b: hash novo com colunas persistidas divergentes → atualizar patch completo", async () => {
+  const novo = {
+    ...normalizePcaItem(ITEM, PLAN),
+    pca_plano_id: "plano-1",
+  };
+  const hashNovo = await hashPayload(novo);
+  const decision = await decideReprojection(
+    baseTarget({
+      payload_hash: hashNovo,
+      classificacao_catalogo_id: null,
+      descricao: "Descrição antiga",
+      codigo_classe_catmat: null,
+      pdm_codigo_origem: null,
+      codigo_item_origem: null,
+    }),
+    sourceOcc(),
+  );
+  assertEquals(decision.kind, "atualizar");
+  if (decision.kind === "atualizar") {
+    assertEquals(decision.matchVersion, "current");
+    assertEquals(decision.patch.classificacao_catalogo_id, "1");
+    assertEquals(decision.patch.descricao, "Aparelho");
+    assertEquals(decision.patch.codigo_classe_catmat, 7830);
+    assertEquals(decision.diffs.classificacao_catalogo_id, 1);
+  }
+});
+
+Deno.test("1d: hash legacy_v1 + codigo_classe_catmat (deploy 19/09) → match_v1", async () => {
+  const v1c = {
+    ...normalizePcaItemLegacyV1(ITEM, PLAN),
+    pca_plano_id: "plano-1",
+    codigo_classe_catmat: 7830,
+  };
+  const decision = await decideReprojection(
+    baseTarget({ payload_hash: await hashPayload(v1c) }),
+    sourceOcc(),
+  );
+  assertEquals(decision.kind, "atualizar");
+  if (decision.kind === "atualizar") {
+    assertEquals(decision.matchVersion, "v1");
+  }
+});
+
 Deno.test("7: duas versões na fonte → selectLatestSourceItems fica com a mais recente", () => {
   const latest = selectLatestSourceItems([
     {
@@ -734,4 +777,26 @@ Deno.test("defaultSnapshotPath fica sob var/p0/", () => {
   const p = defaultSnapshotPath("2026-09-26T12:00:00.000Z");
   assertEquals(p.startsWith("var/p0/pca_itens_snapshot_"), true);
   assertEquals(p.endsWith(".json"), true);
+});
+
+Deno.test("STALE_SOURCE_MISMATCH > 0 marca sync_run concluida_com_erros", async () => {
+  const state: FakeState = {
+    lockBusy: false,
+    source: [{
+      id: "src",
+      fetched_at: "2026-09-19T00:00:00Z",
+      payload: { data: [{ idPcaPncp: PLAN.idPcaPncp, itens: [ITEM] }] },
+    }],
+    itens: [itemRow("hash-que-nao-bate")],
+    updates: [],
+    alteracoesInserts: 0,
+    syncRuns: [],
+  };
+  const report = await runPcaReprojecaoClassificacao(
+    fakeClient(state),
+    { dryRun: true, takeSnapshot: false },
+  );
+  assertEquals(report.erros, []);
+  assertEquals(report.STALE_SOURCE_MISMATCH, 1);
+  assertEquals(state.syncRuns[0].status, "concluida_com_erros");
 });

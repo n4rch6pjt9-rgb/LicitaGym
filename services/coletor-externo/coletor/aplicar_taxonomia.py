@@ -51,7 +51,7 @@ def main(argv: list[str] | None = None) -> None:
             linhas = sb.selecionar(a.tabela, **filtros)
         except Exception as e:  # coluna ainda não existe -> migration não rodou
             raise SystemExit(f"Falha ao ler {a.tabela}: {e}\n"
-                             "Rodou migrations/20260925_catmat_itens_taxonomia.sql no SQL Editor?")
+                             "Aplicou supabase/migrations/20260925100000_catmat_itens_taxonomia.sql?")
         if not linhas:
             break
         for ln in linhas:

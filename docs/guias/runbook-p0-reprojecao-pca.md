@@ -30,7 +30,7 @@ Adendo pós dry-run: paginação PostgREST, legacy_v0/v1/v2, UPDATE completo do 
 - Cada execução com `--confirmar` grava **também** um snapshot próprio em `var/p0/` (só as linhas daquele lote, no estado imediatamente anterior), útil para desfazer só o último lote.
 - Leitura exige `content_sha256` e `row_count` presentes e coerentes.
 
-**Tabela `private.pca_itens_snapshot_p0`:** a migration `20260926120000_pca_itens_snapshot_p0.sql` já entrou na `main` via #58 e **permanece** no histórico (migrations são imutáveis). A tabela fica sem uso por este job. Remoção, se desejada, vai em migration nova (`DROP TABLE IF EXISTS`) em PR próprio, depois de conferir que está vazia.
+**Tabela `private.pca_itens_snapshot_p0`:** a migration `20260926120000_pca_itens_snapshot_p0.sql` (#58) saiu do repositório no #59 e neste PR. Ela nunca foi aplicada em produção (ausente de `supabase_migrations`, conferido em 2026-09-27), então não há tabela a remover nem divergência de histórico.
 
 ## `updated_at`
 

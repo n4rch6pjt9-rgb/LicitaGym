@@ -10,6 +10,8 @@ Adendo pós dry-run: paginação PostgREST, legacy_v0/v1/v2, UPDATE completo do 
 - Sem `upsertByHash` (evita `pca_alteracoes`).
 - Snapshot obrigatório **em arquivo JSON** (`var/p0/`, fora do git) — **não** DDL/SQL Editor.
 - Guarda de hash: bate se `payload_hash` = hash de **qualquer** mapper histórico (`legacy_v0` = 3a2766e com origem; `legacy_v1` pré-15h 19/09 sem origem, aceitando também o hash `v1 + codigo_classe_catmat` do deploy de 2026-09-19; `legacy_v2` pós-origem sem classificação). Hash já no mapper atual com colunas divergentes vira `match_current` (UPDATE sem troca de hash).
+- Lock: a reprojeção e o `--rollback` usam o mesmo `lock_key` e recusam iniciar se qualquer outro `pncp_sync_run` PCA estiver `executando` (ex.: `pca-sync:2026:7220`). Rodar com o cron de sync PCA pausado.
+- UPDATE (job e rollback) só conta quando o banco devolve exatamente 1 linha; `count(*)` ausente aborta em vez de virar zero.
 - `STALE_SOURCE_MISMATCH > 0` marca o `pncp_sync_run` como `concluida_com_erros`. Com `DEBUG_STALE=1`, até 20 casos saem em `stale_debug` com os hashes calculados.
 - UPDATE grava **todas** as colunas do `normalizePcaItem` atual + `payload_hash` novo.
 - Stream B (98 `SOURCE_DISCOVERED_BUT_NOT_PERSISTED`) **fora** deste job — só contado como `fonte_sem_projecao`.

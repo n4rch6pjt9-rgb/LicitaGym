@@ -251,10 +251,15 @@ type FakeState = {
   alteracoesInserts: number;
   syncRuns: Array<Record<string, unknown>>;
   failUpdateIds?: Set<string>;
+  /** Sobrescreve count(*) de pca_itens (null = PostgREST sem count). */
+  itensCountOverride?: number | null;
+  /** Outros pncp_sync_run PCA "executando" (lock_key diferente). */
+  otherRuns?: Array<Record<string, unknown>>;
+  rangeCalls?: Array<[number, number]>;
 };
 
 function fakeClient(state: FakeState) {
-  function headCount(n: number) {
+  function headCount(n: number | null) {
     const result = Promise.resolve({ count: n, error: null, data: null });
     const chain = Object.assign(result, {
       eq(_k: string, _v: unknown) {
@@ -273,6 +278,7 @@ function fakeClient(state: FakeState) {
         return api;
       },
       range(from: number, to: number) {
+        state.rangeCalls?.push([from, to]);
         return Promise.resolve({
           data: rows.slice(from, to + 1),
           error: null,
@@ -292,6 +298,18 @@ function fakeClient(state: FakeState) {
                 return {
                   eq(_k: string, _v: unknown) {
                     return this;
+                  },
+                  neq(_k: string, _v: unknown) {
+                    return this;
+                  },
+                  then(
+                    resolve: (v: unknown) => unknown,
+                    reject?: (e: unknown) => unknown,
+                  ) {
+                    return Promise.resolve({
+                      data: state.otherRuns ?? [],
+                      error: null,
+                    }).then(resolve, reject);
                   },
                   async maybeSingle() {
                     if (state.lockBusy) {
@@ -357,19 +375,34 @@ function fakeClient(state: FakeState) {
       if (table === "pca_itens") {
         return {
           select(_cols: string, opts?: { count?: string; head?: boolean }) {
-            if (opts?.head) return headCount(state.itens.length);
+            if (opts?.head) {
+              return headCount(
+                state.itensCountOverride !== undefined
+                  ? state.itensCountOverride
+                  : state.itens.length,
+              );
+            }
             return rangeChain(state.itens);
           },
           update(patch: Record<string, unknown>) {
             return {
-              async eq(_k: string, id: string) {
-                if (state.failUpdateIds?.has(String(id))) {
-                  return { error: { message: `update falhou ${id}` } };
-                }
-                state.updates.push({ table, id: String(id), patch });
-                const row = state.itens.find((r) => String(r.id) === String(id));
-                if (row) Object.assign(row, patch);
-                return { error: null };
+              eq(_k: string, id: string) {
+                return {
+                  async select(_cols: string) {
+                    if (state.failUpdateIds?.has(String(id))) {
+                      return {
+                        data: null,
+                        error: { message: `update falhou ${id}` },
+                      };
+                    }
+                    state.updates.push({ table, id: String(id), patch });
+                    const row = state.itens.find((r) =>
+                      String(r.id) === String(id)
+                    );
+                    if (row) Object.assign(row, patch);
+                    return { data: row ? [{ id: String(id) }] : [], error: null };
+                  },
+                };
               },
             };
           },
@@ -620,7 +653,12 @@ Deno.test("UPDATE que falha não conta em atualizados", async () => {
   const report = await runPcaReprojecaoClassificacao(
     fakeClient(state),
     { dryRun: false, takeSnapshot: false },
-    { writer: { updateItem: () => Promise.resolve({ error: { message: "boom" } }) } },
+    {
+      writer: {
+        updateItem: () =>
+          Promise.resolve({ error: { message: "boom" }, affectedCount: 0 }),
+      },
+    },
   );
   assertEquals(report.candidatos, 1);
   assertEquals(report.atualizados, 0);
@@ -799,4 +837,150 @@ Deno.test("STALE_SOURCE_MISMATCH > 0 marca sync_run concluida_com_erros", async 
   assertEquals(report.erros, []);
   assertEquals(report.STALE_SOURCE_MISMATCH, 1);
   assertEquals(state.syncRuns[0].status, "concluida_com_erros");
+});
+
+async function manyItensState(n: number): Promise<FakeState> {
+  const itensPayload = Array.from(
+    { length: n },
+    (_, i) => ({ ...ITEM, numeroItem: 10 + i }),
+  );
+  const itens: Record<string, unknown>[] = [];
+  for (const raw of itensPayload) {
+    const hash = await hashPayload({
+      ...normalizePcaItemLegacyV1(raw, PLAN),
+      pca_plano_id: "plano-1",
+    });
+    itens.push(itemRow(hash, {
+      id: `item-${String(raw.numeroItem).padStart(5, "0")}`,
+      numero_item: raw.numeroItem,
+    }));
+  }
+  return {
+    lockBusy: false,
+    source: [{
+      id: "src",
+      fetched_at: "2026-09-19T00:00:00Z",
+      payload: { data: [{ idPcaPncp: PLAN.idPcaPncp, itens: itensPayload }] },
+    }],
+    itens,
+    updates: [],
+    alteracoesInserts: 0,
+    syncRuns: [],
+    rangeCalls: [],
+  };
+}
+
+Deno.test("A1: 1003 linhas percorrem mais de uma página via range", async () => {
+  const state = await manyItensState(1003);
+  const report = await runPcaReprojecaoClassificacao(
+    fakeClient(state),
+    { dryRun: true, takeSnapshot: false },
+  );
+  assertEquals(report.erros, []);
+  assertEquals(report.lidos_pca_itens, 1003);
+  assertEquals(report.alvo, 1003);
+  assertEquals(report.candidatos, 1003);
+  // pca_itens e source_record: pelo menos 2 páginas para os 1003 itens.
+  assertEquals((state.rangeCalls ?? []).length >= 3, true);
+});
+
+Deno.test("A1b: count(*) divergente das linhas paginadas → erro, sem UPDATE", async () => {
+  const state = await liveState();
+  state.itensCountOverride = 2;
+  const report = await runPcaReprojecaoClassificacao(
+    fakeClient(state),
+    { dryRun: false, takeSnapshot: false },
+  );
+  assertEquals(
+    report.erros.some((e) =>
+      e.motivo.includes("Paginação pca_itens incompleta")
+    ),
+    true,
+  );
+  assertEquals(state.updates, []);
+  assertEquals(report.atualizados, 0);
+});
+
+Deno.test("A1c: count(*) ausente (null) não vira zero → erro, sem UPDATE", async () => {
+  const state = await liveState();
+  state.itensCountOverride = null;
+  const report = await runPcaReprojecaoClassificacao(
+    fakeClient(state),
+    { dryRun: false, takeSnapshot: false },
+  );
+  assertEquals(
+    report.erros.some((e) => e.motivo.includes("count(*) exato ausente")),
+    true,
+  );
+  assertEquals(state.updates, []);
+});
+
+Deno.test("UPDATE que não afeta linha não conta em atualizados", async () => {
+  const state = await liveState();
+  const report = await runPcaReprojecaoClassificacao(
+    fakeClient(state),
+    { dryRun: false, takeSnapshot: false },
+    {
+      writer: {
+        updateItem: () => Promise.resolve({ error: null, affectedCount: 0 }),
+      },
+    },
+  );
+  assertEquals(report.atualizados, 0);
+  assertEquals(report.erros.map((e) => e.motivo), ["update afetou 0 linhas"]);
+});
+
+Deno.test("rollback: linha ausente no banco vai para failed, não restored", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "pca-rb0-" });
+  const path = `${tmpDir}/snap.json`;
+  await writePcaItensSnapshotFile(path, "snap", [
+    snapshotRow({ id: "item-sumiu" }),
+  ]);
+  const state: FakeState = {
+    lockBusy: false,
+    source: [],
+    itens: [],
+    updates: [],
+    alteracoesInserts: 0,
+    syncRuns: [],
+  };
+  const result = await restorePcaItensSnapshotFromFile(fakeClient(state), path);
+  assertEquals(result.restored, 0);
+  assertEquals(result.failed, [
+    { id: "item-sumiu", motivo: "update afetou 0 linhas" },
+  ]);
+});
+
+Deno.test("sync PCA de outra classificação em execução → aborta sem UPDATE", async () => {
+  const state = await liveState();
+  state.otherRuns = [{
+    id: "run-7220",
+    lock_key: "pca-sync:2026:7220",
+    iniciada_em: new Date().toISOString(),
+  }];
+  await assertRejects(
+    () =>
+      runPcaReprojecaoClassificacao(fakeClient(state), {
+        dryRun: false,
+        takeSnapshot: false,
+      }),
+    Error,
+    "Sync PCA concorrente",
+  );
+  assertEquals(state.updates, []);
+  assertEquals(state.syncRuns[0].status, "falhou");
+});
+
+Deno.test("sync PCA concorrente stale é ignorado", async () => {
+  const state = await liveState();
+  state.otherRuns = [{
+    id: "run-velho",
+    lock_key: "pca-sync:2026:7220",
+    iniciada_em: "2026-01-01T00:00:00Z",
+  }];
+  const report = await runPcaReprojecaoClassificacao(
+    fakeClient(state),
+    { dryRun: true, takeSnapshot: false },
+  );
+  assertEquals(report.erros, []);
 });

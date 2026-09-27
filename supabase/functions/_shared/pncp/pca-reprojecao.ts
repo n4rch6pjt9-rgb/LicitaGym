@@ -13,11 +13,71 @@ import {
   normalizePcaItemLegacyV1,
   normalizePcaItemLegacyV2,
 } from "./normalize.ts";
-import { acquireSyncLock } from "./lock.ts";
+import { acquireSyncLock, STALE_LOCK_MS } from "./lock.ts";
 import { fetchAllByRange } from "./postgrest-paginate.ts";
 import { finishSyncRun } from "./supabase-admin.ts";
 
 export const DEFAULT_PCA_REPROJECTION_LOCK_KEY = "pca-sync:2026:7830";
+
+/**
+ * Outro `pncp_sync_run` PCA em execução (qualquer lock_key ≠ `lockKey`, não
+ * stale). O job lê e grava todos os `pca_itens`, então um sync de outra
+ * classificação (ex.: pca-sync:2026:7220) não pode rodar ao mesmo tempo.
+ */
+export async function findConcurrentPcaRun(
+  client: SupabaseClient,
+  lockKey: string,
+): Promise<{ id: string; lock_key: string } | null> {
+  const { data, error } = await client.schema("private")
+    .from("pncp_sync_run")
+    .select("id, lock_key, iniciada_em")
+    .eq("resource_type", "pca")
+    .eq("status", "executando")
+    .neq("lock_key", lockKey);
+  if (error) throw error;
+  const now = Date.now();
+  for (const r of (data as Array<Record<string, unknown>> | null) ?? []) {
+    const started = Date.parse(String(r.iniciada_em ?? ""));
+    if (Number.isFinite(started) && now - started < STALE_LOCK_MS) {
+      return { id: String(r.id), lock_key: String(r.lock_key) };
+    }
+  }
+  return null;
+}
+
+/**
+ * Lock da reprojeção/rollback: `lockKey` + recusa se qualquer outro sync PCA
+ * estiver executando. Lança se ocupado; o run próprio é encerrado como falhou.
+ */
+export async function acquirePcaReprojectionLock(
+  client: SupabaseClient,
+  lockKey: string,
+  parametros: Record<string, unknown>,
+): Promise<string> {
+  const { runId, alreadyRunning } = await acquireSyncLock(
+    client,
+    lockKey,
+    "pca",
+    parametros,
+  );
+  if (alreadyRunning) {
+    throw new Error(
+      `Lock ocupado: sync PCA já em execução (run_id=${runId}, lock_key=${lockKey})`,
+    );
+  }
+  const other = await findConcurrentPcaRun(client, lockKey);
+  if (other) {
+    const msg =
+      `Sync PCA concorrente em execução (run_id=${other.id}, lock_key=${other.lock_key})`;
+    await finishSyncRun(client, runId, {
+      status: "falhou",
+      totalErros: 1,
+      erroPrincipal: msg,
+    });
+    throw new Error(msg);
+  }
+  return runId;
+}
 
 /** Colunas produzidas por normalizePcaItem — o UPDATE grava todas. */
 export const PCA_ITEM_MAPPER_COLUMNS = [
@@ -579,12 +639,19 @@ export async function restorePcaItensSnapshotFromFile(
       codigo_item_origem: row.codigo_item_origem,
     };
     try {
-      const { error: upErr } = await client
+      const { data, error: upErr } = await client
         .from("pca_itens")
         .update(patch)
-        .eq("id", row.id);
+        .eq("id", row.id)
+        .select("id");
+      const affected = Array.isArray(data) ? data.length : 0;
       if (upErr) result.failed.push({ id: row.id, motivo: upErr.message });
-      else result.restored += 1;
+      else if (affected !== 1) {
+        result.failed.push({
+          id: row.id,
+          motivo: `update afetou ${affected} linhas`,
+        });
+      } else result.restored += 1;
     } catch (e) {
       result.failed.push({ id: row.id, motivo: e instanceof Error ? e.message : String(e) });
     }
@@ -649,7 +716,7 @@ type Writer = {
   updateItem: (
     id: string,
     patch: Record<string, unknown>,
-  ) => Promise<{ error: { message: string } | null }>;
+  ) => Promise<{ error: { message: string } | null; affectedCount: number }>;
 };
 
 export async function loadAllPcaItens(
@@ -659,7 +726,10 @@ export async function loadAllPcaItens(
     .from("pca_itens")
     .select("id", { count: "exact", head: true });
   if (countErr) throw countErr;
-  const countExact = count ?? 0;
+  if (count == null) {
+    throw new Error("count(*) exato ausente para pca_itens — abortar");
+  }
+  const countExact = count;
 
   const { rows } = await fetchAllByRange<Record<string, unknown>>(
     async (from, to) => {
@@ -693,7 +763,10 @@ export async function loadAllSourceRecords(
     .select("id", { count: "exact", head: true })
     .eq("resource_type", "pca");
   if (countErr) throw countErr;
-  const countExact = count ?? 0;
+  if (count == null) {
+    throw new Error("count(*) exato ausente para source_record — abortar");
+  }
+  const countExact = count;
 
   const { rows } = await fetchAllByRange<{
     id: string;
@@ -747,23 +820,13 @@ export async function runPcaReprojecaoClassificacao(
   // Expected cols (classificacao/pdm/item/classe/unidade_medida) stay out of diff_outros.
   const abortOnDiffOutros = options.abortOnDiffOutros !== false;
 
-  const { runId, alreadyRunning } = await acquireSyncLock(
-    client,
-    lockKey,
-    "pca",
-    {
-      modo: "reprocessamento",
-      job: "pca-reprojecao-classificacao",
-      dry_run: options.dryRun,
-      limite: options.limite ?? null,
-      snapshot_path: snapshotPath,
-    },
-  );
-  if (alreadyRunning) {
-    throw new Error(
-      `Lock ocupado: sync PCA já em execução (run_id=${runId}, lock_key=${lockKey})`,
-    );
-  }
+  const runId = await acquirePcaReprojectionLock(client, lockKey, {
+    modo: "reprocessamento",
+    job: "pca-reprojecao-classificacao",
+    dry_run: options.dryRun,
+    limite: options.limite ?? null,
+    snapshot_path: snapshotPath,
+  });
   report.sync_run_id = runId;
 
   await client.schema("private").from("pncp_sync_run").update({
@@ -841,8 +904,15 @@ export async function runPcaReprojecaoClassificacao(
 
     const writer: Writer = deps?.writer ?? {
       updateItem: async (id, patch) => {
-        const { error } = await client.from("pca_itens").update(patch).eq("id", id);
-        return { error };
+        const { data, error } = await client
+          .from("pca_itens")
+          .update(patch)
+          .eq("id", id)
+          .select("id");
+        return {
+          error,
+          affectedCount: Array.isArray(data) ? data.length : 0,
+        };
       },
     };
 
@@ -934,9 +1004,17 @@ export async function runPcaReprojecaoClassificacao(
     if (!options.dryRun) {
       for (const w of pendingWrites) {
         try {
-          const { error: upErr } = await writer.updateItem(w.id, w.patch);
+          const { error: upErr, affectedCount } = await writer.updateItem(
+            w.id,
+            w.patch,
+          );
           if (upErr) report.erros.push({ id: w.id, motivo: upErr.message });
-          else report.atualizados += 1;
+          else if (affectedCount !== 1) {
+            report.erros.push({
+              id: w.id,
+              motivo: `update afetou ${affectedCount} linhas`,
+            });
+          } else report.atualizados += 1;
         } catch (e) {
           report.erros.push({ id: w.id, motivo: e instanceof Error ? e.message : String(e) });
         }

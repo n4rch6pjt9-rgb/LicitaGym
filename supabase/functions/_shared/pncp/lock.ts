@@ -6,7 +6,7 @@ import {
 } from "./pagination-budget.ts";
 
 /** Edge timeout / cliente cancelado — libera lock preso em `executando`. */
-const STALE_LOCK_MS = 3 * 60 * 1000;
+export const STALE_LOCK_MS = 3 * 60 * 1000;
 
 export type PendingContinuation = {
   slices: DateSlice[];

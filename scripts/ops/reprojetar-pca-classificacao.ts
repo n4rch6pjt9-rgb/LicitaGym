@@ -13,8 +13,12 @@
  * --confirmar exige --snapshot-file (baseline do passo 0, só validado); cada
  * execução gravando cria também um snapshot próprio em var/p0/.
  */
-import { createServiceClient } from "../../supabase/functions/_shared/pncp/supabase-admin.ts";
 import {
+  createServiceClient,
+  finishSyncRun,
+} from "../../supabase/functions/_shared/pncp/supabase-admin.ts";
+import {
+  acquirePcaReprojectionLock,
   DEFAULT_PCA_REPROJECTION_LOCK_KEY,
   defaultSnapshotPath,
   loadAllPcaItens,
@@ -65,7 +69,29 @@ if (args.rollback) {
     console.error("--rollback exige --snapshot-file path.json");
     Deno.exit(2);
   }
-  const result = await restorePcaItensSnapshotFromFile(client, args.snapshotFile);
+  // Mesmo lock da reprojeção: rollback não intercala com sync/reprojeção PCA.
+  const runId = await acquirePcaReprojectionLock(client, args.lockKey, {
+    modo: "reprocessamento",
+    job: "pca-reprojecao-rollback",
+    snapshot_file: args.snapshotFile,
+  });
+  let result;
+  try {
+    result = await restorePcaItensSnapshotFromFile(client, args.snapshotFile);
+  } catch (e) {
+    await finishSyncRun(client, runId, {
+      status: "falhou",
+      totalErros: 1,
+      erroPrincipal: e instanceof Error ? e.message : String(e),
+    });
+    throw e;
+  }
+  await finishSyncRun(client, runId, {
+    status: result.failed.length > 0 ? "concluida_com_erros" : "concluida",
+    totalAtualizados: result.restored,
+    totalErros: result.failed.length,
+    erroPrincipal: result.failed[0]?.motivo,
+  });
   console.log(JSON.stringify({
     rollback: true,
     snapshot_file: args.snapshotFile,

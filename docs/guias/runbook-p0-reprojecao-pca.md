@@ -2,14 +2,17 @@
 
 Data: 2026-09-26. Parent: `.audit/30-pncp-l6g-p0-pca-scope-resolvable.md` §1b + `.audit/34-pca-source-projection-reconciliation.md`.
 
-Adendo pós dry-run: paginação PostgREST, legacy_v1/v2, UPDATE completo do mapper, snapshot JSON.
+Adendo pós dry-run: paginação PostgREST, legacy_v0/v1/v2, UPDATE completo do mapper, snapshot JSON.
 
 ## Decisões (EXEC 02 + adendo 26/09)
 
 - Sem UPDATE SQL derivado do dry-run (hash é TypeScript).
 - Sem `upsertByHash` (evita `pca_alteracoes`).
 - Snapshot obrigatório **em arquivo JSON** (`var/p0/`, fora do git) — **não** DDL/SQL Editor.
-- Guarda de hash: bate se `payload_hash` = hash de **qualquer** mapper histórico (`legacy_v1` pré-15h 19/09 **ou** `legacy_v2` pós-origem sem classificação).
+- Guarda de hash: bate se `payload_hash` = hash de **qualquer** mapper histórico (`legacy_v0` = 3a2766e com origem; `legacy_v1` pré-15h 19/09 sem origem, aceitando também o hash `v1 + codigo_classe_catmat` do deploy de 2026-09-19; `legacy_v2` pós-origem sem classificação). Hash já no mapper atual com colunas divergentes vira `match_current` (UPDATE sem troca de hash).
+- Lock: a reprojeção e o `--rollback` usam o mesmo `lock_key` e recusam iniciar se qualquer outro `pncp_sync_run` PCA estiver `executando` (ex.: `pca-sync:2026:7220`). Rodar com o cron de sync PCA pausado.
+- UPDATE (job e rollback) só conta quando o banco devolve exatamente 1 linha; `count(*)` ausente aborta em vez de virar zero.
+- `STALE_SOURCE_MISMATCH > 0` marca o `pncp_sync_run` como `concluida_com_erros`. Com `DEBUG_STALE=1`, até 20 casos saem em `stale_debug` com os hashes calculados.
 - UPDATE grava **todas** as colunas do `normalizePcaItem` atual + `payload_hash` novo.
 - Stream B (98 `SOURCE_DISCOVERED_BUT_NOT_PERSISTED`) **fora** deste job — só contado como `fonte_sem_projecao`.
 - `classificacao_catalogo_id` é **text**: gravar `'1'` / `'2'`.
@@ -19,6 +22,15 @@ Adendo pós dry-run: paginação PostgREST, legacy_v1/v2, UPDATE completo do map
 **Escolha:** `var/p0/pca_itens_snapshot_<ISO>.json` + `content_sha256` no arquivo/log.
 
 **Por quê:** DDL de snapshot exigiria migration + PR antes de operar; regra do projeto proíbe DDL pelo SQL Editor. ~3331 linhas cabem em JSON local; rollback lê o arquivo.
+
+**Regras do arquivo:**
+
+- Snapshot **nunca** é sobrescrito (`createNew`); caminho já existente → job aborta antes de qualquer UPDATE.
+- O snapshot do passo 0 é a **baseline de rollback**. `--snapshot-file` no `--confirmar` só **valida** esse arquivo (SHA-256 + `row_count`), nunca grava nele. `--confirmar` sem `--snapshot-file` é recusado.
+- Cada execução com `--confirmar` grava **também** um snapshot próprio em `var/p0/` (só as linhas daquele lote, no estado imediatamente anterior), útil para desfazer só o último lote.
+- Leitura exige `content_sha256` e `row_count` presentes e coerentes.
+
+**Tabela `private.pca_itens_snapshot_p0`:** a migration `20260926120000_pca_itens_snapshot_p0.sql` (#58) saiu do repositório no #59 e neste PR. Ela nunca foi aplicada em produção (ausente de `supabase_migrations`, conferido em 2026-09-27), então não há tabela a remover nem divergência de histórico.
 
 ## `updated_at`
 
@@ -68,7 +80,8 @@ deno run --allow-net --allow-env --allow-read --allow-write \
 | campo | valor |
 |---|---|
 | `lidos_pca_itens` | 3331 |
-| `match_v1 + match_v2` | ≈ 3331 |
+| `candidatos` | ≈ 3331 (`atualizados` = 0 no dry-run) |
+| `match_v0 + match_v1 + match_v2` | ≈ 3331 |
 | `STALE_SOURCE_MISMATCH` | ≈ 0 |
 | `fonte_sem_projecao` | 98 |
 | `diff_classificacao_catalogo_id` | 3331 |
@@ -120,8 +133,12 @@ deno run --allow-net --allow-env --allow-read --allow-write \
   --snapshot-file var/p0/<arquivo>.json
 ```
 
-Restaura colunas do mapper + `payload_hash` a partir do JSON. Verifica SHA-256. **Não** grava `pca_alteracoes`.
+Restaura colunas do mapper + `payload_hash` a partir do JSON. Verifica SHA-256 e `row_count`. **Não** grava `pca_alteracoes`.
+
+Tenta **todas** as linhas e lista as que falharam (`failed`); exit 2 se houver falha. Restauração é idempotente: rerodar o mesmo comando completa um rollback parcial.
 
 ## Relatório
 
-JSON stdout: `alvo`, `lidos_pca_itens`, `lidos_source_record`, `atualizados`, `ja_atualizado`, `match_v1`, `match_v2`, `STALE_SOURCE_MISMATCH`, `sem_fonte`, `fonte_sem_projecao`, `valor_1`, `valor_2`, `outros`, `diff_*`, `erros`, `duracao_s`, `snapshot_path`, `snapshot_sha256`, `sync_run_id`.
+`candidatos` = linhas que passaram na guarda de hash; `atualizados` = UPDATEs confirmados pelo banco (0 no dry-run; falhas vão para `erros`, não para `atualizados`).
+
+JSON stdout: `alvo`, `lidos_pca_itens`, `lidos_source_record`, `candidatos`, `atualizados`, `ja_atualizado`, `match_v0`, `match_v1`, `match_v2`, `match_current`, `STALE_SOURCE_MISMATCH`, `sem_fonte`, `fonte_sem_projecao`, `valor_1`, `valor_2`, `outros`, `diff_*`, `erros`, `duracao_s`, `snapshot_path`, `snapshot_sha256`, `baseline_snapshot_path`, `baseline_snapshot_sha256`, `sync_run_id`.

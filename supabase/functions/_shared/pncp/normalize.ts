@@ -295,6 +295,35 @@ export function normalizePcaItem(
 }
 
 /**
+ * V0: Original (commit 3a2766e) — 13 campos, sem classificacao_catalogo_id.
+ * Hash banco foi gerado com essa versão.
+ */
+export function normalizePcaItemLegacyV0(
+  item: Record<string, unknown>,
+  _plan: Record<string, unknown>,
+) {
+  const numeroItem = Number(item.numeroItem ?? item.numero_item ?? 0);
+  const classeRaw = item.classificacaoSuperiorCodigo != null
+    ? String(item.classificacaoSuperiorCodigo)
+    : null;
+  return {
+    numero_item: numeroItem,
+    descricao: item.descricaoItem ? String(item.descricaoItem) : null,
+    categoria: item.categoriaItemPcaNome ? String(item.categoriaItemPcaNome) : null,
+    classe_material_servico: classeRaw,
+    codigo_classe_catmat: parseCodigoClasseCatmat(classeRaw),
+    quantidade: item.quantidadeEstimada != null ? Number(item.quantidadeEstimada) : null,
+    unidade_medida: item.unidadeFornecimento ? String(item.unidadeFornecimento) : null,
+    valor_unitario_estimado: item.valorUnitario != null ? Number(item.valorUnitario) : null,
+    valor_total_estimado: item.valorTotal != null ? Number(item.valorTotal) : null,
+    data_prevista_contratacao: item.dataDesejada ?? null,
+    status: item.status ? String(item.status) : null,
+    pdm_codigo_origem: item.pdmCodigo != null ? String(item.pdmCodigo).trim() || null : null,
+    codigo_item_origem: item.codigoItem != null ? String(item.codigoItem).trim() || null : null,
+  };
+}
+
+/**
  * Mapper histórico 18/09→19/09 ~15h UTC (pré-3a2766e): sem
  * codigo_classe_catmat / pdm_codigo_origem / codigo_item_origem /
  * classificacao_catalogo_id. Só para guarda de hash na reprojeção.

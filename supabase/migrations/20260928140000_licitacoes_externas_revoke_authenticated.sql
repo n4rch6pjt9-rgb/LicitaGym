@@ -21,3 +21,7 @@ drop policy if exists licitacoes_externas_select_anon on public.licitacoes_exter
 revoke all on table public.licitacoes_externas from authenticated, anon, PUBLIC;
 
 alter table public.licitacoes_externas enable row level security;
+
+comment on table public.licitacoes_externas is
+  'Licitações de portais públicos (PNCP, Paradigma). Leitura exclusiva via Edge Function api-dashboard-oportunidades (service_role); escrita só service_role.';
+

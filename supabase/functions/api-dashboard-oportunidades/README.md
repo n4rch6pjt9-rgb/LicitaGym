@@ -254,3 +254,21 @@ As respostas de erro utilizam códigos de status HTTP apropriados e formato JSON
     "error": "Falha ao verificar disponibilidade da base de dados"
   }
   ```
+
+---
+
+## Verificação de ACL e RLS (Banco de Dados)
+
+Após a aplicação das migrations em ambiente com banco de dados configurado, a restrição de acesso e a política de RLS em `public.licitacoes_externas` podem ser conferidas executando o script SQL:
+
+```bash
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/tests/licitacoes_externas_acl_check.sql
+```
+
+Esse script assevera deterministicamente:
+1. `has_table_privilege('anon', 'public.licitacoes_externas', 'SELECT') = false`
+2. `has_table_privilege('authenticated', 'public.licitacoes_externas', 'SELECT') = false`
+3. Zero policies permitindo acesso a `anon`, `authenticated` ou `PUBLIC` em `pg_policies`
+4. RLS habilitado (`pg_class.relrowsecurity = true`)
+5. Comentário da tabela atualizado documentando o acesso exclusivo via Edge Function `api-dashboard-oportunidades`.
+

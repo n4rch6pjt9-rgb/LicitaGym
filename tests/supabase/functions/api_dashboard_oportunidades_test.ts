@@ -1028,9 +1028,19 @@ Deno.test("index.ts possui bloco if (import.meta.main) que envolve Deno.serve", 
   assertEquals(content.includes("if (import.meta.main) {\n  Deno.serve((req) => handleRequest(req));\n}"), true);
 });
 
-Deno.test("migration D1.2 revoga SELECT de authenticated em licitacoes_externas", async () => {
+Deno.test("migration D1.2 revoga SELECT de authenticated em licitacoes_externas e atualiza comment", async () => {
   const sql = await Deno.readTextFile("./supabase/migrations/20260928140000_licitacoes_externas_revoke_authenticated.sql");
   assertEquals(sql.includes("drop policy if exists licitacoes_externas_select on public.licitacoes_externas;"), true);
   assertEquals(sql.includes("revoke all on table public.licitacoes_externas from authenticated, anon, PUBLIC;"), true);
   assertEquals(sql.includes("alter table public.licitacoes_externas enable row level security;"), true);
+  assertEquals(sql.includes("comment on table public.licitacoes_externas is"), true);
+  assertEquals(sql.includes("api-dashboard-oportunidades"), true);
+});
+
+Deno.test("script de verificacao de ACL efetiva supabase/tests/licitacoes_externas_acl_check.sql existe e contem assercoes", async () => {
+  const sql = await Deno.readTextFile("./supabase/tests/licitacoes_externas_acl_check.sql");
+  assertEquals(sql.includes("has_table_privilege('anon', 'public.licitacoes_externas', 'SELECT')"), true);
+  assertEquals(sql.includes("has_table_privilege('authenticated', 'public.licitacoes_externas', 'SELECT')"), true);
+  assertEquals(sql.includes("pg_policies"), true);
+  assertEquals(sql.includes("relrowsecurity"), true);
 });

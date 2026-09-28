@@ -23,3 +23,4 @@ O contrato completo de requisições, respostas, parâmetros e tratamento de err
   - A Edge Function executa server-side via `SUPABASE_SERVICE_ROLE_KEY` projetando exclusivamente colunas públicas seguras (`PUBLIC_LICITACAO_COLUMNS`, incluindo `modulo` e `id_externo` para SEST SENAT), sem expor payload bruto (`raw`), fóruns (`esclarecimentos`, `notas`) nem colunas de controle interno (`anexo_raiz_id`, `edital_id`).
   - O navegador invoca a função com token de usuário autenticado; a chave `service_role` nunca é entregue ao cliente.
   - Mensagens de erro de banco não expõem detalhes crus do PostgREST e retornam HTTP 500 para falhas de banco.
+  - Script SQL de verificação de ACL e RLS efetivo disponível em `supabase/tests/licitacoes_externas_acl_check.sql`.

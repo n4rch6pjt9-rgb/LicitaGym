@@ -116,13 +116,14 @@ Quando uma Edge Function excede o limite de parede do container (150 s no plano 
 Conforme as migrations `202609180001_pncp_foundation.sql` e `20260923203037_pncp_sync_run_status_incompleta.sql`:
 
 #### Valores permitidos em `private.pncp_sync_run.status`:
-1. `'pendente'`
-2. `'executando'`
-3. `'concluida'`
-4. `'concluida_com_erros'`
-5. `'falhou'`
-6. `'cancelada'`
-7. `'incompleta'` (adicionado pela migration `20260923203037`)
+1. `'pendente'` (legado DDL da migration 001; nunca produzido pelos fluxos de ingestão)
+2. `'executando'` (marcado no início pela RPC `acquire_sync_lock`)
+3. `'concluida'` (sucesso total sem erros)
+4. `'concluida_com_erros'` (concluída com `total_erros > 0`)
+5. `'falhou'` (erro não retentável ou lock stale sem fatias pendentes)
+6. `'cancelada'` (cancelamento administrativo manual)
+7. `'incompleta'` (adicionado pela migration `20260923203037` para suspensão de budget/429 com fatias salvas)
+8. `'retomada'` (proposto para a Fase 2: marca na mesma transação que a execução anterior foi continuada por um novo run)
 
 #### Valores permitidos em `private.idempotency_key.status`:
 1. `'executando'`, `'concluida'`, `'falhou'`.
@@ -202,7 +203,7 @@ ON CONFLICT (host) DO NOTHING;
 ```
 
 #### 3.2.2 RPC Atômica com Correção de Milissegundos: `private.acquire_http_slot`
-*Correção de cálculo de tempo:* `EXTRACT(EPOCH FROM ...) * 1000` em vez de `EXTRACT(MILLISECONDS FROM ...)`, garantindo o cálculo integral de intervalos superiores a 60 segundos.
+*Correção de cálculo de tempo e segurança:* `EXTRACT(EPOCH FROM ...) * 1000` em vez de `EXTRACT(MILLISECONDS FROM ...)`, com `SET search_path = ''` e identificadores totalmente qualificados.
 
 ```sql
 CREATE OR REPLACE FUNCTION private.acquire_http_slot(
@@ -212,7 +213,7 @@ CREATE OR REPLACE FUNCTION private.acquire_http_slot(
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = private
+SET search_path = ''
 AS $$
 DECLARE
   v_rec record;
@@ -282,7 +283,7 @@ CREATE OR REPLACE FUNCTION private.report_http_rate_limit(
 RETURNS void
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = private
+SET search_path = ''
 AS $$
 BEGIN
   UPDATE private.http_host_lease
@@ -362,6 +363,9 @@ Hoje, `sync-pncp-contratacoes-editais` gera `lockKey = contratacoes-editais:${da
 #### 3.4.2 SQL da RPC de Aquisição, Retomada e Tratamento de Stale (`private.acquire_sync_lock`)
 
 Esta RPC atômica substitui a antiga lógica fragmentada no TypeScript, garantindo integridade transacional absoluta no Postgres:
+- **Proteção Concorrente via Advisory Lock:** `PERFORM pg_advisory_xact_lock(hashtext(p_lock_key))` serializa chamadas simultâneas antes de qualquer leitura ou inserção, eliminando race conditions onde duas instâncias chegassem sem linha `'executando'` existente.
+- **Tratamento de Conflito Único:** Bloco `EXCEPTION WHEN unique_violation` como proteção em profundidade contra o índice único proposto para `lock_key WHERE status = 'executando'`.
+- **Segurança de Search Path:** `SET search_path = ''` com referências totalmente qualificadas (`private.pncp_sync_run`).
 
 ```sql
 CREATE OR REPLACE FUNCTION private.acquire_sync_lock(
@@ -374,7 +378,7 @@ CREATE OR REPLACE FUNCTION private.acquire_sync_lock(
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = private
+SET search_path = ''
 AS $$
 DECLARE
   v_now timestamptz := clock_timestamp();
@@ -386,6 +390,9 @@ DECLARE
   v_initial_parametros jsonb;
   v_has_pending boolean;
 BEGIN
+  -- 0. Serialização estrita por chave: impede race condition em invocações simultâneas
+  PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtext(p_lock_key));
+
   -- 1. Verifica se já existe execução com lock ativo
   SELECT id, iniciada_em, last_heartbeat_at, parametros INTO v_running_rec
   FROM private.pncp_sync_run
@@ -456,23 +463,37 @@ BEGIN
   END IF;
 
   -- 4. Cria a nova execução com status 'executando'
-  INSERT INTO private.pncp_sync_run (
-    resource_type,
-    lock_key,
-    parametros,
-    status,
-    iniciada_em,
-    last_heartbeat_at
-  )
-  VALUES (
-    p_resource_type,
-    p_lock_key,
-    v_initial_parametros,
-    'executando',
-    v_now,
-    v_now
-  )
-  RETURNING id INTO v_new_run_id;
+  BEGIN
+    INSERT INTO private.pncp_sync_run (
+      resource_type,
+      lock_key,
+      parametros,
+      status,
+      iniciada_em,
+      last_heartbeat_at
+    )
+    VALUES (
+      p_resource_type,
+      p_lock_key,
+      v_initial_parametros,
+      'executando',
+      v_now,
+      v_now
+    )
+    RETURNING id INTO v_new_run_id;
+  EXCEPTION
+    WHEN unique_violation THEN
+      -- Defesa em profundidade caso haja colisão de índice único parcial
+      SELECT id INTO v_new_run_id
+      FROM private.pncp_sync_run
+      WHERE lock_key = p_lock_key AND status = 'executando'
+      LIMIT 1;
+
+      RETURN jsonb_build_object(
+        'already_running', true,
+        'run_id', v_new_run_id
+      );
+  END;
 
   -- 5. ATÔMICO NA MESMA TRANSAÇÃO: marca a execução anterior como 'retomada'
   IF v_prior_id IS NOT NULL THEN
@@ -501,37 +522,36 @@ GRANT EXECUTE ON FUNCTION private.acquire_sync_lock(text, text, jsonb, interval,
 
 #### 3.4.3 Máquina de Estados Completa de `private.pncp_sync_run`
 
-A tabela `private.pncp_sync_run` passa a operar sob uma máquina de estados finita e determinística:
+A tabela `private.pncp_sync_run` passa a operar sob uma máquina de estados finita e determinística.
+
+> **Nota sobre o estado `pendente`:** O valor `'pendente'` existia como default DDL na migration de fundação (`202609180001_pncp_foundation.sql:13`), mas é **estritamente legado e nunca é produzido** na arquitetura atual: a RPC `acquire_sync_lock` insere o registro diretamente no estado `'executando'`. A máquina de estados ativa opera a partir de `'executando'`.
 
 ```
-               [ Início / Invocação ]
-                         │
-                         ▼
-                    ( pendente )
-                         │
-                         │ (acquire_sync_lock)
-                         ▼
-                   [ executando ] ◄────────────┐
-                         │                     │ (heartbeat a cada pág / retry)
-                         │                     └─ (atualiza last_heartbeat_at)
-         ┌───────────────┼───────────────┬─────────────────┐
-         │               │               │                 │
- (todas págs ok)  (erros pontuais) (budget/429/stale) (erro fatal 4xx)
-         │               │               │                 │
-         ▼               ▼               ▼                 ▼
-   ( concluida ) (concluida_com_erros) ( incompleta )   ( falhou )
-                                         │       │
-             ┌───────────────────────────┘       └──────────────┐
-             │ (nova run assume na RPC)                         │ (TTL > 7 dias)
-             ▼                                                  ▼
-        ( retomada )                                        ( falhou )
+                    [ Invocação / RPC ]
+                             │
+                             │ (acquire_sync_lock)
+                             ▼
+                       [ executando ] ◄────────────┐
+                             │                     │ (heartbeat a cada pág / retry)
+                             │                     └─ (atualiza last_heartbeat_at)
+             ┌───────────────┼───────────────┬─────────────────┐
+             │               │               │                 │
+     (todas págs ok)  (erros pontuais) (budget/429/stale) (erro fatal 4xx)
+             │               │               │                 │
+             ▼               ▼               ▼                 ▼
+       ( concluida ) (concluida_com_erros) ( incompleta )   ( falhou )
+                                             │       │
+                 ┌───────────────────────────┘       └──────────────┐
+                 │ (nova run assume na RPC)                         │ (TTL > 7 dias)
+                 ▼                                                  ▼
+            ( retomada )                                        ( falhou )
 ```
 
 #### Tabela de Transições e Regras de Negócio:
 
 | Estado Origem | Evento / Gatilho | Condição de Guarda | Estado Destino | Ação / Efeito Colateral | Terminal? |
 |---|---|---|---|---|---|
-| `pendente` | Invocação inicial | Job criado para processamento | `executando` | Inserido pela RPC `acquire_sync_lock` com timestamp e heartbeat inicial | Não |
+| *(Novo)* | Invocação via RPC `acquire_sync_lock` | Lock disponível e adquirido | `executando` | Inserido pela RPC `acquire_sync_lock` já com timestamp e heartbeat inicial | Não |
 | `executando` | Fim regular do lote | `pending.length == 0` e `total_erros == 0` | `concluida` | `finishSyncRun()` registra encerramento com sucesso total | **Sim** |
 | `executando` | Fim regular do lote com falhas de negócio | `pending.length == 0` e `total_erros > 0` | `concluida_com_erros` | `finishSyncRun()` registra encerramento indicando linhas com falha de parse/upsert | **Sim** |
 | `executando` | Budget esgotado ou Pausa por 429 longo | `pending.length > 0` e tempo restante < margem de encerramento | `incompleta` | `finishSyncRun()` grava fatias pendentes e `pagina_atual` para retomada | Não (Transicional) |
@@ -541,6 +561,7 @@ A tabela `private.pncp_sync_run` passa a operar sob uma máquina de estados fini
 | `executando` | Interrupção administrativa | Ação de operador | `cancelada` | Update manual via console/admin | **Sim** |
 | `incompleta` | Nova execução inicia para o mesmo `lock_key` | Nova execução adquire lock atômico via `acquire_sync_lock` | `retomada` | RPC `acquire_sync_lock` marca `retomada_por_id = new_run_id` na mesma transação | **Sim** (desta run) |
 | `incompleta` | Expiração do TTL de fatias | `now() - iniciada_em > 7 dias` | `falhou` | RPC `acquire_sync_lock` descarta pendências obsoletas | **Sim** |
+| `pendente` | *(Legado DDL)* | Nunca produzido pelos fluxos de ingestão | — | Mantido apenas para compatibilidade de constraint histórica | — |
 
 ---
 
@@ -592,7 +613,7 @@ O parâmetro `timeout_milliseconds` do `pg_net` mede o tempo **total** da requis
 1. **Desativação de Verificação de JWT (`verify_jwt = false`):**
    - Todas as Edge Functions de sincronização e APIs públicas/cron operam com `verify_jwt = false`.
    - Atualmente isso é feito via flag `--no-verify-jwt` em `scripts/deploy-functions.ps1:45` e no workflow `.github/workflows/deploy-supabase-functions.yml`.
-   - **Fixação Proposta em `supabase/config.toml` (Lista idêntica a `$functions` de `deploy-functions.ps1` + `sync-comprasgov-consulta`):**
+   - **Fixação Proposta em `supabase/config.toml`:** Hoje não há nenhuma entrada `verify_jwt` no `config.toml`. Propor fixar formalmente por função para evitar descompassos em deploys via CLI:
      ```toml
      [functions.sync-pncp-pca]
      verify_jwt = false
@@ -614,10 +635,6 @@ O parâmetro `timeout_milliseconds` do `pg_net` mede o tempo **total** da requis
      verify_jwt = false
      [functions.sync-pncp-irp]
      verify_jwt = false
-     [functions.sync-pncp-orgaos]
-     verify_jwt = false
-     [functions.sync-comprasgov-consulta]
-     verify_jwt = false
      [functions.api-pncp-pca]
      verify_jwt = false
      [functions.api-pncp-legislacao]
@@ -628,7 +645,14 @@ O parâmetro `timeout_milliseconds` do `pg_net` mede o tempo **total** da requis
      verify_jwt = false
      [functions.calculate-distance-webrouter]
      verify_jwt = false
+     [functions.sync-comprasgov-consulta]
+     verify_jwt = false
+     [functions.api-dashboard-oportunidades]
+     verify_jwt = false
      ```
+   - **Notas Especiais de Deployment:**
+     - `sync-pncp-orgaos`: **Fora do deploy atual.** Não consta em `$functions` de `scripts/deploy-functions.ps1`. Foi implantada pontualmente no passado via GitHub Actions (`.github/workflows/deploy-supabase-functions.yml:56`). Como está fora do ciclo ativo de deploy via script local, não é incluída no `config.toml` imediato de sincronização.
+     - `api-dashboard-oportunidades`: **Deve ter `verify_jwt = false` no gateway.** A função implementa autenticação interna no código TypeScript (`requireUserAuth` em `handleList`/`handleGet`), enquanto a ação de saúde do sistema (`handleReadiness`) é intencionalmente pública (permite que load balancers e probes chequem conectividade da base sem token de usuário). Se `verify_jwt = true` fosse ativado no gateway, o endpoint `/readiness` seria bloqueado com 401 antes de atingir a lógica da Edge Function.
 2. **Autenticação Padrão via `Authorization: Bearer <secret>` (Sem Headers Duplicados):**
    - O `cron.schedule` envia exclusivamente o header padrão `Authorization: Bearer <secret>` lido do Vault. Não se introduz `x-cron-secret` nem headers customizados adicionais.
    - Os scripts PowerShell continuam enviando `Authorization: Bearer $Secret` normalmente (via `_load-sync-env.ps1`), sem qualquer necessidade de alteração ou migração de headers.
@@ -779,6 +803,25 @@ ORDER BY 2 DESC;
          'incompleta',
          'retomada'
        ));
+     ```
+   - **Correção de Concorrência de Lock (Índice Único Parcial):**
+     - O índice antigo `pncp_sync_run_lock_key_idx` (criado em `202609180001_pncp_foundation.sql:39`) era **NÃO único**, permitindo colisões.
+     - **Nota de Pré-Checagem Obrigatória:** Antes de aplicar a migration, a seguinte consulta deve ser executada no banco para assegurar que não há duplicatas ativas no momento da criação do índice único:
+       ```sql
+       SELECT lock_key, count(*) 
+       FROM private.pncp_sync_run 
+       WHERE status = 'executando' 
+       GROUP BY lock_key 
+       HAVING count(*) > 1;
+       ```
+       *(Esta consulta deve retornar 0 linhas / conjunto vazio antes de prosseguir com a criação do índice).*
+     - Substituição pelo índice único parcial que garante atomicidade física no Postgres:
+     ```sql
+     DROP INDEX IF EXISTS private.pncp_sync_run_lock_key_idx;
+
+     CREATE UNIQUE INDEX pncp_sync_run_lock_key_executando_uidx
+       ON private.pncp_sync_run (lock_key)
+       WHERE status = 'executando';
      ```
 3. `supabase/migrations/20260929000002_activate_pg_cron_jobs.sql` **(Aplicação Manual Separada no Fim do Rollout):**
    - Contém os comandos `SELECT cron.schedule(...)` para ligar as coletas agendadas.

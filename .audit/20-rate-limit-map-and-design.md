@@ -395,11 +395,10 @@ O parâmetro `timeout_milliseconds` do `pg_net` mede o tempo **total** da requis
    - Se `shouldWait === true`, executa sincronamente e retorna o JSON completo com status 200 ao final.
    - Se `shouldWait === false` (padrão usado pelo pg_cron), responde 202 na hora e processa via `waitUntil`.
 
-#### 3.4.3 Autenticação via `x-cron-secret`, Configuração de JWT e Transição Segura
+#### 3.4.3 Autenticação via Authorization: Bearer, Configuração de JWT e Comparação em Tempo Constante
 1. **Desativação de Verificação de JWT (`verify_jwt = false`):**
-   - Todas as Edge Functions de sincronização operam com `verify_jwt = false`.
-   - Atualmente isso é feito via flag `--no-verify-jwt` em `scripts/deploy-functions.ps1` e no workflow `.github/workflows/deploy-supabase-functions.yml`.
-   - **Fixação Proposta em `supabase/config.toml`:**
+   - Todas as Edge Functions de sincronização já são implantadas com `--no-verify-jwt` (conforme `scripts/deploy-functions.ps1:45` e `.github/workflows/deploy-supabase-functions.yml`).
+   - **Fixação Proposta em `supabase/config.toml`:** Hoje não há nenhuma entrada `verify_jwt` no `config.toml`. Propor fixar formalmente por função para evitar descompassos em deploys via CLI:
      ```toml
      [functions.sync-pncp-contratacoes-editais]
      verify_jwt = false
@@ -424,21 +423,37 @@ O parâmetro `timeout_milliseconds` do `pg_net` mede o tempo **total** da requis
      [functions.link-catmat-pca]
      verify_jwt = false
      ```
-2. **Autenticação Única via Header `x-cron-secret` (Tempo Constante):**
-   - A autenticação passa a ser exclusivamente via header `x-cron-secret`, eliminando o cabeçalho `Authorization: Bearer` duplicado.
-   - Na Edge Function (`_shared/http.ts`), a comparação é feita estritamente em tempo constante (`timingSafeEqual`) contra `SYNC_CRON_SECRET`.
-3. **Plano de Transição sem Quebra dos Scripts PowerShell:**
-   - Como `_shared/http.ts:authenticateCron` hoje lê `Authorization: Bearer`:
-     - **Fase 1 (Compatibilidade):** `authenticateCron` passa a aceitar o header `x-cron-secret` OU `Authorization: Bearer` (ambos validados com `timingSafeEqual`). O cron passa a mandar `x-cron-secret`.
-     - **Fase 2 (Migração dos Scripts):** Os scripts PowerShell são atualizados para enviar `x-cron-secret: $Secret` sem `Authorization: Bearer`.
-       - *Scripts que mudam:* `scripts/invoke-sync-licitagym-scope.ps1`, `scripts/invoke-sync-compras-catmat.ps1`, `scripts/invoke-sync-pca.ps1`, `scripts/reimport-pca.ps1`, `scripts/import-catmat-curadoria.ps1`, `scripts/invoke-link-catmat-pca.ps1`, `scripts/invoke-link-catmat-pca-all.ps1`.
-     - **Fase 3 (Depreciação):** O suporte a `Bearer` em `authenticateCron` é descontinuado.
-4. **Segredo no Vault e Rotação Zero-Downtime:**
+2. **Autenticação Padrão via `Authorization: Bearer <secret>` (Sem Headers Duplicados):**
+   - O `cron.schedule` envia exclusivamente o header padrão `Authorization: Bearer <secret>` lido do Vault. Não se introduz `x-cron-secret` nem headers customizados adicionais.
+   - Os scripts PowerShell continuam enviando `Authorization: Bearer $Secret` normalmente (via `_load-sync-env.ps1`), sem qualquer necessidade de alteração ou migração de headers.
+   - Na Edge Function (`_shared/http.ts:53-58`), a função `authenticateCron` já extrai o token do Bearer (`extractBearerToken(req)`). A mudança necessária é substituir o operador `===` por comparação em tempo constante (`timingSafeEqual` sobre os bytes codificados em UTF-8 com checagem prévia de tamanho):
+     ```typescript
+     import { timingSafeEqual } from "node:crypto";
+
+     export function authenticateCron(req: Request): AuthDecision {
+       const secret = Deno.env.get("SYNC_CRON_SECRET")?.trim();
+       if (!secret) return "REJECTED";
+       const token = extractBearerToken(req);
+       if (!token) return "REJECTED";
+
+       const validSecrets = secret.split(",").map(s => s.trim()).filter(Boolean);
+       const tokenBuf = new TextEncoder().encode(token);
+
+       const matches = validSecrets.some(sec => {
+         const secBuf = new TextEncoder().encode(sec);
+         if (tokenBuf.byteLength !== secBuf.byteLength) return false;
+         return timingSafeEqual(tokenBuf, secBuf);
+       });
+
+       return matches ? "CRON_AUTHENTICATED" : "REJECTED";
+     }
+     ```
+3. **Segredo no Vault e Rotação Zero-Downtime:**
    - O segredo reside em dois locais:
      - Supabase Vault (`vault.decrypted_secrets` com `name = 'sync_cron_secret'`) para leitura do `pg_cron`.
      - Supabase Edge Functions Secret (`SYNC_CRON_SECRET`) para leitura do Deno.
    - **URLs do Cron:** URLs de Edge Functions não são secretas e ficam fixadas no SQL do `cron.schedule`. Apenas o segredo é lido dinamicamente do Vault.
-   - **Rotação:** O env `SYNC_CRON_SECRET` aceita múltiplos segredos separados por vírgula (`"segredo_antigo,segredo_novo"`). Atualiza-se o Vault (`vault.update_secret`), valida-se a execução e, em seguida, remove-se o segredo antigo da Edge Function.
+   - **Procedimento de Rotação:** O env `SYNC_CRON_SECRET` aceita múltiplos segredos separados por vírgula (`"segredo_antigo,segredo_novo"`). Atualiza-se o Vault (`vault.update_secret`), valida-se a execução e, em seguida, remove-se o segredo antigo da Edge Function.
    - **SQL do `cron.schedule`:**
      ```sql
      SELECT cron.schedule(
@@ -448,7 +463,7 @@ O parâmetro `timeout_milliseconds` do `pg_net` mede o tempo **total** da requis
        SELECT net.http_post(
          url := 'https://ifaiagegyicjzlpskafh.supabase.co/functions/v1/sync-pncp-contratacoes-editais',
          headers := jsonb_build_object(
-           'x-cron-secret', (SELECT decrypted_secret FROM vault.decrypted_secrets WHERE name = 'sync_cron_secret'),
+           'Authorization', 'Bearer ' || (SELECT decrypted_secret FROM vault.decrypted_secrets WHERE name = 'sync_cron_secret'),
            'Content-Type', 'application/json'
          ),
          body := '{}'::jsonb,

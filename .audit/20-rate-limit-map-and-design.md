@@ -1,7 +1,7 @@
 # Auditoria e Proposta de Arquitetura: Rate Limiting, Concorrência e Resiliência HTTP
 
 **Documento:** `.audit/20-rate-limit-map-and-design.md`  
-**Data:** 28 de setembro de 2026 (Revisão pós-checagem de produção + Decisões de Deploy)  
+**Data:** 28 de setembro de 2026 (Revisão pós-checagem de produção + Decisões de Deploy + Complemento Arquitetural)  
 **Fase:** 1 de 2 — Mapeamento e Desenho de Arquitetura (Sem implementação de código, sem migrations em banco, sem PR)  
 **Autor:** Cloud Agent — LicitaGym SaaS  
 **Branch:** `cursor/rate-limit-design-943c`
@@ -147,7 +147,7 @@ Conforme as migrations `202609180001_pncp_foundation.sql` e `20260923203037_pncp
 | **`catalogo_itens` (Compras.gov)** | `supabase/functions/_shared/compras-gov/catalogo-upsert.ts:6-64` via `sync-compras-catmat/index.ts:289` | `upsertCatalogoItemFromCompras()` | `{ codigo_catmat }` (UNIQUE index em `catalogo_itens_codigo_catmat_idx`) | Preserva curadoria manual (`fonte_curadoria = 'manual'`), compara hash e atualiza. | **Idempotente.** Não duplica. |
 | **`catmat_pdm_naturezas_despesa`** | `supabase/functions/_shared/pncp/upsert.ts:31-160` via `sync-compras-catmat/index.ts:302` | `upsertByHash()` | `{ codigo_pdm, codigo_natureza_despesa }` (UNIQUE em `catmat_pdm_naturezas_despesa:56`) | Busca por chave composta, compara hash. | **Idempotente.** Não duplica. |
 | **`catmat_pdm_unidades`** | `supabase/functions/_shared/pncp/upsert.ts:31-160` via `sync-compras-catmat/index.ts:321` | `upsertByHash()` | `{ codigo_pdm, sigla_unidade_fornecimento, numero_sequencial }` (UNIQUE em `catmat_pdm_unidades:71`) | Busca por chave composta de 3 colunas, compara hash. | **Idempotente.** Não duplica. |
-| **`catmat_item_caracteristicas`** | `supabase/functions/_shared/pncp/upsert.ts:31-160` via `sync-compras-catmat/index.ts:395` | `upsertByHash()` | `{ codigo_item, codigo_caracteristica, codigo_valor_caracteristica }` | Busca por chave composta de 3 colunas. | **Idempotente no estado atual (0 duplicados em produção).** (Ver observação técnica no item 3.8). |
+| **`catmat_item_caracteristicas`** | `supabase/functions/_shared/pncp/upsert.ts:31-160` via `sync-compras-catmat/index.ts:395` | `upsertByHash()` | `{ codigo_item, codigo_caracteristica, codigo_valor_caracteristica }` | Busca por chave composta de 3 colunas. | **Idempotente no estado atual (0 duplicados em produção).** (Ver observação técnica no item 3.7). |
 | **`source_record`** | `supabase/functions/_shared/pncp/supabase-admin.ts:25-36` | Supabase PostgREST `upsert()` | `onConflict: "endpoint,request_hash,content_hash", ignoreDuplicates: true` | UNIQUE constraint em `private.source_record(endpoint, request_hash, content_hash)`. | **Idempotente.** Não duplica. |
 | **`icatmat_*` (Staging Python)** | `scripts/upsert_icatmat_consolidado.py:151` | Supabase PostgREST `upsert()` | `TABLE_ON_CONFLICT[table]` | Mapeado explicitamente para chaves naturais de E1 a E7. | **Idempotente.** Não duplica. |
 | **`licitacoes_externas` (Python)** | `services/coletor-externo/coletor/destino.py:26` via `coletor/pncp.py:402` | Supabase PostgREST `upsert()` | `conflito="fonte,codigo_externo"` (UNIQUE index `uq_licext_fonte_codigo`) | Atualiza linha existente. | **Idempotente.** Não duplica. |
@@ -165,10 +165,11 @@ Conforme as migrations `202609180001_pncp_foundation.sql` e `20260923203037_pncp
    - O parsing de `Retry-After` (segundos e data HTTP RFC 7231 / RFC 2822) validado no PR #37 (Python) e PR #42 (Deno) é mantido.
    - O tratamento de status `'incompleta'` da migration `20260923203037` é a base da suspensão e retomada graciosa.
 2. **Novo Cliente Unificado Deno (`supabase/functions/_shared/http-client/unified-client.ts`):**
-   - **Timeout por tentativa configurável:** Reduzido de 45 s para **20 s** (configurável via `HTTP_ATTEMPT_TIMEOUT_MS = 20_000`).
+   - **Timeout por tentativa configurável:** Reduzido de 45 s para **20 s** (configurável via `HTTP_ATTEMPT_TIMEOUT_MS = 20_000`, ajustável até 25 s).
    - **Retentativas em Timeout:** Máximo de **1 retentativa** em caso de timeout (total de 2 tentativas). Evita desperdiçar o tempo de execução com endpoints travados.
    - **Throttling e Cooldown Distribuídos:** Consulta atômica ao Postgres antes de cada chamada externa.
-   - **Orçamento de Tempo (`EDGE_TIME_BUDGET_MS`):** Configurável (default 100 s no plano gratuito, ou até 300 s no plano pago). **Nunca dorme além do tempo restante:** se o `Retry-After` ou o cooldown do host exceder o tempo disponível antes do encerramento seguro, a função **não dorme**; ela interrompe o processamento imediatamente, salva `pagina_atual`, marca `'incompleta'` e encerra graciosamente com código 200/202.
+   - **Orçamento de Tempo (`EDGE_TIME_BUDGET_MS`):** Configurável (default 100 s no plano gratuito de 150 s, ou até 300 s no plano pago de 400 s).
+   - **Regra de Suspensão Imediata (Nunca dormir além do tempo restante):** Se o `Retry-After` ou o cooldown do host lease exceder o tempo disponível antes da margem de encerramento seguro (10 s), a função **não dorme**; ela interrompe o processamento imediatamente, salva `pagina_atual`, marca `'incompleta'` e encerra graciosamente com código 200/202.
 
 ---
 
@@ -201,7 +202,7 @@ ON CONFLICT (host) DO NOTHING;
 ```
 
 #### 3.2.2 RPC Atômica com Correção de Milissegundos: `private.acquire_http_slot`
-*Correção crítica aplicada:* `EXTRACT(EPOCH FROM ...) * 1000` em vez de `EXTRACT(MILLISECONDS FROM ...)`, garantindo o cálculo integral de intervalos superiores a 60 segundos.
+*Correção de cálculo de tempo:* `EXTRACT(EPOCH FROM ...) * 1000` em vez de `EXTRACT(MILLISECONDS FROM ...)`, garantindo o cálculo integral de intervalos superiores a 60 segundos.
 
 ```sql
 CREATE OR REPLACE FUNCTION private.acquire_http_slot(
@@ -296,14 +297,12 @@ REVOKE EXECUTE ON FUNCTION private.report_http_rate_limit(text, int) FROM public
 GRANT EXECUTE ON FUNCTION private.report_http_rate_limit(text, int) TO service_role;
 ```
 
-*Nota sobre simplificação arquitetural:* Foram eliminados o contador `active_holders`, `max_concurrency` e a função `release_http_slot`. Como a reserva atômica de `next_allowed_at` já agenda temporalmente cada requisição em fila estrita de concorrência 1, nenhuma Edge Function precisa notificar quando termina a requisição, eliminando completamente qualquer risco de vazamento de contador em caso de falha de container.
-
 ---
 
 ### 3.3 Política de Retry, Timeouts e Telemetria
 
 1. **Tentativas e Timeouts:**
-   - **Timeout por tentativa:** configurado em **20 segundos** (`DEFAULT_FETCH_TIMEOUT_MS = 20_000`).
+   - **Timeout por tentativa:** configurado em **20 segundos** (`HTTP_ATTEMPT_TIMEOUT_MS = 20_000`), no máximo 25 s.
    - **Tentativas em timeout:** máximo de **1 retentativa** (2 tentativas no total).
    - **429 (Rate Limit):** respeita `Retry-After`. Se ausente, backoff exponencial (2 s, 4 s, 8 s com jitter).
    - **500, 502, 503, 504:** retenta até 3 tentativas com backoff.
@@ -323,135 +322,120 @@ GRANT EXECUTE ON FUNCTION private.report_http_rate_limit(text, int) TO service_r
 
 Decisão arquitetural: **pg_cron (v1.6.4) + pg_net (v0.20.4) com segredos via Supabase Vault (v0.3.1)** chamando as Edge Functions. Não há worker em `job_queue`.
 
-#### 3.4.1 Comportamento Assíncrono do `pg_net` e Desacoplamento de Timeout
-O `pg_net` opera de modo assíncrono não-bloqueante: a chamada `net.http_post()` envia a requisição HTTP em background e retorna imediatamente um `request_id` (bigint).
-- **Timeout do pg_net (`timeout_milliseconds`):** Deve ser configurado em **10.000 ms (10 s)**. Esse timeout refere-se apenas ao handshake inicial de conexão e despacho para a Edge Function.
-- **Não Espera Término da Função:** O `pg_net` não fica esperando os 100–150 s de processamento da Edge Function. Caso ocorra timeout no `pg_net` (tabela `net._http_response`), a Edge Function **continua rodando normalmente** no cluster Deno.
-- **Fonte da Verdade:** O status e o progresso da coleta são auditados **exclusivamente via `private.pncp_sync_run`**, nunca pelo retorno ou logs do `pg_net`.
+#### 3.4.1 Resolução da Retomada Entre Dias (Separação entre Lock de Exclusão e Chave de Retomada)
+**O Problema Identificado:**
+Hoje, `sync-pncp-contratacoes-editais` gera `lockKey = contratacoes-editais:${dataInicial}:${dataFinal}`. Como as datas mudam a cada dia (ex.: `hoje - 7 dias`), a função `loadPendingSlices` busca por `lock_key = lockKey` e **nunca encontra** a execução `incompleta` de ontem. As fatias pendentes ficam abandonadas no banco.
 
-#### 3.4.2 Autenticação Segura com Supabase Vault (Sem Segredos em Migrations)
-O `cron.job` armazena o comando em texto puro no banco. Para evitar expor secrets em plain text:
-1. **Criação do Segredo no Vault (Fora de Migrations / Via Dashboard ou psql com variáveis de sessão):**
-   ```sql
-   -- Executado pelo DBA/Admin via Dashboard do Supabase (Project Settings -> Vault):
-   SELECT vault.create_secret('sua-chave-secreta-longa-e-aleatoria', 'sync_cron_secret', 'Chave de disparo do pg_cron');
-   SELECT vault.create_secret('https://ifaiagegyicjzlpskafh.supabase.co/functions/v1/sync-pncp-contratacoes-editais', 'sync_pncp_contratacoes_editais_url', 'URL Editais');
-   SELECT vault.create_secret('https://ifaiagegyicjzlpskafh.supabase.co/functions/v1/sync-pncp-contratacoes-atas', 'sync_pncp_contratacoes_atas_url', 'URL Atas');
-   SELECT vault.create_secret('https://ifaiagegyicjzlpskafh.supabase.co/functions/v1/sync-pncp-contratacoes-contratos', 'sync_pncp_contratacoes_contratos_url', 'URL Contratos');
-   SELECT vault.create_secret('https://ifaiagegyicjzlpskafh.supabase.co/functions/v1/sync-compras-catmat', 'sync_compras_catmat_url', 'URL CATMAT');
-   SELECT vault.create_secret('https://ifaiagegyicjzlpskafh.supabase.co/functions/v1/sync-pncp-pca', 'sync_pncp_pca_url', 'URL PCA');
-   ```
-2. **Disparo no `cron.schedule` Lendo de `vault.decrypted_secrets` em Tempo de Execução:**
-   ```sql
-   SELECT cron.schedule(
-     'pncp-contratacoes-editais',
-     '0 */6 * * *',
-     $$ 
-     SELECT net.http_post(
-       url := (SELECT decrypted_secret FROM vault.decrypted_secrets WHERE name = 'sync_pncp_contratacoes_editais_url'),
-       headers := jsonb_build_object(
-         'Authorization', 'Bearer ' || (SELECT decrypted_secret FROM vault.decrypted_secrets WHERE name = 'sync_cron_secret'),
-         'x-cron-secret', (SELECT decrypted_secret FROM vault.decrypted_secrets WHERE name = 'sync_cron_secret'),
-         'Content-Type', 'application/json'
-       ),
-       body := '{}'::jsonb,
-       timeout_milliseconds := 10000
-     ) AS request_id; 
-     $$
-   );
-   ```
-3. **Validação na Edge Function em Tempo Constante:**
-   A Edge Function valida o header `x-cron-secret` (ou Bearer) usando comparação em tempo constante contra `Deno.env.get("SYNC_CRON_SECRET")`:
-   ```typescript
-   import { timingSafeEqual } from "node:crypto";
+**Solução Proposta:**
+1. **Separação Conceitual:**
+   - **Chave de Exclusão Mútua (`lock_key`):** Quando disparado pelo cron, a exclusão mútua é por **recurso inteiro**, ou seja:
+     - `contratacoes-editais:cron` (para editais)
+     - `contratacoes-atas:cron` (para atas)
+     - `contratacoes-contratos:cron` (para contratos)
+     Isso impede que dois crons do mesmo recurso rodem em paralelo, independentemente de parâmetros de data.
+   - **Chave de Retomada (`continuation_scope`):** A busca por pendências em `loadPendingSlices` passa a buscar pela combinação:
+     ```sql
+     SELECT id, status, parametros, iniciada_em 
+     FROM private.pncp_sync_run
+     WHERE resource_type = $1 -- ex.: 'contratacoes_editais'
+       AND status = 'incompleta'
+     ORDER BY iniciada_em DESC
+     LIMIT 1;
+     ```
+2. **Ciclo de Vida das Fatias Pendentes:**
+   - **Prioridade Absoluta:** O cron sempre prioriza retomar a coleta `incompleta` mais recente antes de abrir uma nova janela.
+   - **Descarte Seguro por Idade (TTL de Fatias):** Se uma execução `incompleta` tiver mais de **7 dias** (`now() - iniciada_em > interval '7 days'`), suas fatias são consideradas obsoletas. Ela é marcada como `'falhou'` com `erro_principal = 'fatias descartadas por obsolescencia (> 7 dias)'` e uma janela nova é aberta.
 
-   export function validateCronAuthConstantTime(req: Request): boolean {
-     const secret = Deno.env.get("SYNC_CRON_SECRET")?.trim();
-     if (!secret) return false;
-     const headerSecret = req.headers.get("x-cron-secret")?.trim() || 
-       extractBearerToken(req);
-     if (!headerSecret) return false;
+#### 3.4.2 Padrão Assíncrono com `EdgeRuntime.waitUntil` e Desacoplamento do `pg_net`
+**O Problema do Timeout no pg_net:**
+O parâmetro `timeout_milliseconds` do `pg_net` mede o tempo **total** da requisição HTTP (não apenas o handshake). Se a Edge Function demorar 100 s para executar, qualquer timeout de 10 s no `pg_net` gerará erro na tabela `net._http_response`. Além disso, depender de o Deno continuar processando após o cliente HTTP desconectar não é garantido em todos os ambientes.
 
-     const a = new TextEncoder().encode(secret);
-     const b = new TextEncoder().encode(headerSecret);
-     if (a.byteLength !== b.byteLength) return false;
-     return timingSafeEqual(a, b);
-   }
-   ```
+**Solução: Resposta 202 com `EdgeRuntime.waitUntil`:**
+1. **Disparo pelo pg_net (Modo Padrão):**
+   - A Edge Function recebe a requisição do cron.
+   - Valida a autenticação e adquire o lock em `private.pncp_sync_run`.
+   - Se o lock foi adquirido, agenda o processamento pesado dentro de `EdgeRuntime.waitUntil(processarSync(...))` e responde **HTTP 202 Accepted** imediatamente com `{ status: "accepted", sync_id: runId }` (em < 200 ms).
+   - O `pg_net` completa a chamada em milissegundos com sucesso absoluto (`timeout_milliseconds := 15000` é mais que suficiente).
+   - O runtime do Supabase mantém o isolate ativo até a Promise do `waitUntil` finalizar.
+2. **Modo Síncrono para Scripts PowerShell (`?wait=1` ou Header `x-wait-result: true`):**
+   - Para não quebrar os scripts existentes (`invoke-sync-*.ps1`) que leem o resumo JSON diretamente na resposta HTTP, as Edge Functions verificam:
+     ```typescript
+     const shouldWait = url.searchParams.get("wait") === "1" || 
+                        req.headers.get("x-wait-result") === "true";
+     ```
+   - Se `shouldWait === true`, a função executa sincronamente e retorna o JSON completo com status 200 ao final (sujeito ao timeout do PowerShell configurado no script).
+   - Se `shouldWait === false` (padrão usado pelo pg_cron), responde 202 na hora e processa via `waitUntil`.
 
-#### 3.4.3 Escalonamento de Minutos e Vazão (Taxa de 1 req/s)
-Com `min_interval_ms = 1000` (1 req/s) e `EDGE_TIME_BUDGET_MS = 100_000` (100 s), cada invocação da Edge Function consome no máximo ~90 páginas úteis (reservando 10 s de margem para encerramento e persistência).
+#### 3.4.3 Autenticação Bearer via Vault e Rotação sem Janela de Falha
+1. **Padrão HTTP Limpo (Sem Headers Duplicados):**
+   - Mantém-se o padrão HTTP padrão: `Authorization: Bearer <secret>`. Não se adiciona `x-cron-secret`.
+   - Na Edge Function (`_shared/http.ts`), a função `authenticateCron` passa a comparar o token extraído usando tempo constante contra `SYNC_CRON_SECRET`:
+     ```typescript
+     import { timingSafeEqual } from "node:crypto";
 
-**Cálculo de Vazão por Recurso:**
-- **`contratacoes_editais` (50 itens/pág):** Janela de 7 dias gera ~100 a 300 páginas por semana (~20 a 50 páginas por modalidade relevante).
-  - Capacidade por execução: 90 páginas = 4.500 contratações.
-  - Com 4 execuções diárias (a cada 6 h): capacidade diária de **360 páginas (18.000 contratações)**. Escoa com folga o volume diário nacional do escopo fitness.
-- **`contratacoes_atas` e `contratos` (500 itens/pág):** Volume muito menor; 1 a 2 páginas por dia escoam 100% dos registros.
-- **`compras_catmat` (500 itens/pág):** Total de itens ativos da classe 7830 é 594 itens (2 páginas) e classe 7220 é ~1133 itens (3 páginas). 5 páginas no total (5 segundos de rede) escoam o catálogo inteiro em uma única execução diária.
-- **`pca` (500 itens/pág):** Carga anual (1x ao ano) totaliza ~3.331 itens (~7 páginas por classe).
+     export function validateCronAuth(req: Request): boolean {
+       const secret = Deno.env.get("SYNC_CRON_SECRET")?.trim();
+       if (!secret) return false;
+       const token = extractBearerToken(req);
+       if (!token) return false;
 
-**Escalonamento Concreto sem Sobreposição:**
-- `0 */6 * * *` (minuto `00`): `sync-pncp-contratacoes-editais` (00:00, 06:00, 12:00, 18:00 UTC)
-- `15 */6 * * *` (minuto `15`): `sync-pncp-contratacoes-atas` (00:15, 06:15, 12:15, 18:15 UTC)
-- `30 */6 * * *` (minuto `30`): `sync-pncp-contratacoes-contratos` (00:30, 06:30, 12:30, 18:30 UTC)
-- `45 4 * * *` (minuto `45`, diário às 04:45 UTC): `sync-compras-catmat`
-- `0 2 1 * *` (dia 1 do mês, 02:00 UTC): `sync-pncp-pca` (probe mensal)
+       // Suporte a rotação sem downtime: aceita lista separada por vírgula no env
+       const validSecrets = secret.split(",").map(s => s.trim()).filter(Boolean);
+       const tokenBuf = new TextEncoder().encode(token);
 
-#### 3.4.4 Como o Job Decide entre Retomar `incompleta` ou Nova Janela
-Na inicialização da Edge Function, antes de montar a janela padrão de 7 dias:
-1. Executa `loadPendingSlices(client, lockKey, runId)`.
-2. Se houver um registro imediatamente anterior para a mesma `lock_key` com `status = 'incompleta'`:
-   - Extrai as fatias remanescentes de `parametros.continuation.pending`.
-   - Herda o `chain_id` da execução original para manter a rastreabilidade do lote.
-   - Retoma a paginação exatamente de `nextPage`.
-3. Se a última execução estiver com `status = 'concluida'` ou não existir:
-   - Gera as fatias completas para o intervalo de datas padrão (últimos 7 dias).
+       return validSecrets.some(sec => {
+         const secBuf = new TextEncoder().encode(sec);
+         if (tokenBuf.byteLength !== secBuf.byteLength) return false;
+         return timingSafeEqual(tokenBuf, secBuf);
+       });
+     }
+     ```
+2. **URLs Fixas e Segredo no Vault:**
+   - URLs de Edge Functions não são segredos e ficam declaradas diretamente no comando SQL do cron.
+   - Apenas o segredo é lido dinamicamente da tabela `vault.decrypted_secrets`.
+3. **Procedimento de Rotação Zero-Downtime:**
+   - **Passo 1:** Configurar na Edge Function (Supabase Dashboard -> Secrets): `SYNC_CRON_SECRET = "segredo_antigo,segredo_novo"`.
+   - **Passo 2:** Atualizar o segredo no Vault:
+     ```sql
+     SELECT vault.update_secret((SELECT id FROM vault.decrypted_secrets WHERE name = 'sync_cron_secret'), 'segredo_novo');
+     ```
+   - **Passo 3:** Após validar os disparos, remover o `segredo_antigo` do secret da Edge Function (`SYNC_CRON_SECRET = "segredo_novo"`).
 
-#### 3.4.5 Monitoramento de Acúmulo de Fatias / Páginas Pendentes
-Consulta SQL para monitoramento operacional no Dashboard/Grafana:
+#### 3.4.4 Medição Real de Vazão e Modelo de Janela Curta + Reconciliação
+Para calibrar a frequência sem achismos, a vazão histórica real deve ser levantada no banco de produção.
+
+**Consulta SQL para Medição Real de Páginas por Janela e Modalidade:**
 ```sql
 SELECT 
-  resource_type,
-  lock_key,
-  status,
-  pagina_atual,
-  total_paginas,
-  (parametros->'continuation'->'pending') AS fatias_pendentes,
-  jsonb_array_length(COALESCE(parametros->'continuation'->'pending', '[]'::jsonb)) AS qtd_fatias_pendentes,
-  iniciada_em,
-  finalizada_em,
-  erro_principal
-FROM private.pncp_sync_run
-WHERE status = 'incompleta'
-ORDER BY iniciada_em DESC;
+  parametros->>'modalidade' AS modalidade,
+  COUNT(*) AS total_requisicoes,
+  MAX(pagina) AS max_paginas,
+  AVG(tempo_resposta_ms)::int AS media_tempo_ms,
+  COUNT(*) FILTER (WHERE status_http = 429) AS total_429,
+  COUNT(*) FILTER (WHERE status_http >= 500) AS total_5xx
+FROM private.pncp_sync_request
+WHERE created_at >= now() - interval '30 days'
+GROUP BY 1
+ORDER BY 2 DESC;
 ```
-*Alerta operacional:* Se `qtd_fatias_pendentes > 0` persistir por mais de 2 ciclos consecutivos (12 horas), dispara alerta de acúmulo anormal.
 
-#### 3.4.6 Heartbeat e Resolução de Conflito com `STALE_LOCK_MS`
-**O Problema:** Se `STALE_LOCK_MS` for de 3 minutos (180 s) fixos a partir de `iniciada_em`, uma função legítima que rode por 2,5 minutos (ou em plano Pro por até 6 minutos) será falsamente considerada morta pelo próximo processo após 180 s.
-**Solução: Heartbeat em `private.pncp_sync_run`:**
-1. Adicionar a coluna `last_heartbeat_at timestamptz NOT NULL DEFAULT now()` em `private.pncp_sync_run`.
-2. A cada página processada com sucesso no loop da Edge Function (`onPage`), executa-se um update leve de heartbeat:
-   ```typescript
-   await client.schema("private").from("pncp_sync_run")
-     .update({ last_heartbeat_at: new Date().toISOString() })
-     .eq("id", runId);
-   ```
-3. A verificação de stale lock em `acquireSyncLock` passa a ser calculada sobre o `last_heartbeat_at`:
-   ```sql
-   -- Lock só é stale se não houver batimento cardíaco por mais de 3 minutos
-   WHERE lock_key = $1 
-     AND status = 'executando' 
-     AND clock_timestamp() - last_heartbeat_at > interval '3 minutes';
-   ```
-4. Desta forma, uma execução viva e lenta (que avança a cada 1–2 segundos por página) mantém seu heartbeat renovado e **nunca é tomada como morta**.
+**Estratégia de Janela Curta (Diária) + Reconciliação Semanal:**
+- *Problema da Janela Fixa de 7 Dias:* Rebaixar 7 dias a cada 6 horas faz o sistema reprocessar repetidamente ~85% de editais inalterados.
+- *Desenho Otimizado:*
+  1. **Sync Incremental Regular (Cron Diário):** Janela de **2 dias** (`hoje - 2 dias` até `hoje`). Com 1 req/s, consome pouquíssimas páginas, escoa em menos de 1 minuto e mantém o SaaS perfeitamente atualizado com os novos editais e retificações recentes.
+  2. **Reconciliação Semanal (Domingo de Madrugada):** Janela de **7 dias** executada uma vez por semana (ex.: domingo às 03:00 UTC) para capturar eventuais publicações retroativas ou órgãos com sincronização defasada no PNCP.
 
-#### 3.4.7 Coexistência com Disparos Manuais (Scripts PowerShell)
-Os scripts PowerShell (`invoke-sync-licitagym-scope.ps1`, etc.) continuam válidos para cargas pontuais e reprocessamentos:
-1. **Header Obrigatório:** Os scripts já utilizam a função `Get-SyncCronSecret` (`_load-sync-env.ps1`). Eles devem enviar o header `x-cron-secret` além do `Authorization: Bearer <secret>`.
-2. **Proteção Contra Sobrecarga:** Se um script for disparado manualmente no exato instante em que o cron roda:
-   - Se o script enviar os mesmos parâmetros (mesmo escopo de data), o `acquireSyncLock` detecta que já existe uma execução em andamento (`alreadyRunning: true`) e recusa a execução duplicada imediatamente com HTTP 200 `{ status: "already_running" }`.
-   - Se o script enviar parâmetros diferentes (outro escopo/data), ambas as Edge Functions rodarão, **mas a tabela `private.http_host_lease` serializará todas as requisições de rede a 1 req/s**, eliminando o risco de disparo concorrente ao PNCP e prevenindo o erro HTTP 429.
+#### 3.4.5 Heartbeat Durante Retries e Análise do Pior Caso
+1. **Onde Atualizar o Heartbeat:**
+   - No loop principal após cada página (`onPage`).
+   - Imediatamente antes de entrar em `sleep` de retry no cliente HTTP.
+   - Imediatamente antes e depois de aguardar o slot no `acquire_http_slot`.
+2. **Análise do Pior Caso entre Heartbeats:**
+   - Timeout individual de tentativa: **20 s** (máx 25 s).
+   - 1 nova tentativa em timeout: **20 s**.
+   - Espera máxima de slot no host lease: **10 s** (`p_max_wait_ms`).
+   - **Pior caso acumulado entre heartbeats:** \(25\text{ s} + 25\text{ s} + 10\text{ s} = 60\text{ segundos}\).
+   - Como o `STALE_LOCK_MS` é de **180 segundos (3 minutos)**, o intervalo máximo de 60 segundos fica **3 vezes abaixo** do teto de stale, eliminando categoricamente qualquer falso positivo de processo morto.
 
 ---
 
@@ -499,8 +483,19 @@ Os scripts PowerShell (`invoke-sync-licitagym-scope.ps1`, etc.) continuam válid
      ALTER TABLE private.pncp_sync_run
        ADD COLUMN IF NOT EXISTS last_heartbeat_at timestamptz NOT NULL DEFAULT now();
      ```
-3. `supabase/migrations/20260929000002_activate_pg_cron_jobs.sql`:
-   - Cria os agendamentos no `pg_cron` via `cron.schedule()` com leitura dinâmica de segredos no Supabase Vault (`vault.decrypted_secrets`), timeout de 10 s no `pg_net` e escalonamento dos minutos (00, 15, 30, 45).
+3. `supabase/migrations/20260929000002_activate_pg_cron_jobs.sql` **(Aplicação Manual Separada no Fim do Rollout):**
+   - Contém os comandos `SELECT cron.schedule(...)` para ligar as coletas agendadas.
+   - **Nota Operacional Crítica:** Esta migration deve ser mantida estritamente separada e aplicada **apenas após** testar um disparo pontual em produção.
+   - **Gate Nacional (`isNationalPncpSyncEnabled`):** O código de `sync-pncp-contratacoes-*` verifica a variável `PNCP_NATIONAL_SYNC_ENABLED === "true"`. Se essa variável estiver desligada ou ausente no ambiente, a invocação do cron é imediatamente interceptada pelo gate (`nationalPncpSyncGate`), respondendo HTTP 423 e tornando a execução um no-op seguro.
+
+#### Horários do Cron (UTC vs Horário de Brasília - BRT / UTC-3):
+| Job Name | Expressão Cron | Horário UTC | Horário de Brasília (BRT) | Recurso / Frequência |
+|----------|----------------|-------------|----------------------------|-----------------------|
+| `pncp-contratacoes-editais` | `0 */6 * * *` | 00:00, 06:00, 12:00, 18:00 UTC | 21:00, 03:00, 09:00, 15:00 BRT | Editais (a cada 6 h) |
+| `pncp-contratacoes-atas` | `15 */6 * * *` | 00:15, 06:15, 12:15, 18:15 UTC | 21:15, 03:15, 09:15, 15:15 BRT | Atas (a cada 6 h) |
+| `pncp-contratacoes-contratos` | `30 */6 * * *` | 00:30, 06:30, 12:30, 18:30 UTC | 21:30, 03:30, 09:30, 15:30 BRT | Contratos (a cada 6 h) |
+| `sync-compras-catmat` | `45 4 * * *` | 04:45 UTC | 01:45 BRT | Catálogo CATMAT (Diário) |
+| `sync-pncp-pca-mensal` | `0 2 1 * *` | 02:00 UTC (dia 1) | 23:00 BRT (dia anterior) | PCA Probe (Mensal) |
 
 #### Novas Variáveis de Ambiente e Valores Iniciais Sugeridos:
 | Variável | Valor Padrão Inicial | Descrição |

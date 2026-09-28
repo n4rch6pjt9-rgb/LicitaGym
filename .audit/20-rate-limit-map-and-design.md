@@ -344,39 +344,207 @@ Hoje, `sync-pncp-contratacoes-editais` gera `lockKey = contratacoes-editais:${da
      - `pca:7830`
    - Essa chave estável atua de forma unificada:
      - **Exclusão Mútua:** Garante que duas execuções do mesmo recurso/escopo nunca rodem simultaneamente no cron.
-     - **Chave de Retomada:** Permite que `loadPendingSlices` encontre de forma determinística a última execução com `status = 'incompleta'` daquele recurso e escopo:
-       ```sql
-       SELECT id, status, parametros, iniciada_em 
-       FROM private.pncp_sync_run
-       WHERE lock_key = $1 -- ex.: 'contratacoes-editais:padrao'
-         AND status = 'incompleta'
-       ORDER BY iniciada_em DESC
-       LIMIT 1;
-       ```
+     - **Chave de Retomada:** Permite que `loadPendingSlices` encontre de forma determinística a última execução com `status = 'incompleta'` daquele recurso e escopo.
 3. **Origem da Janela de Retomada:**
    - **A janela da execução retomada vem exclusivamente de `parametros.continuation`**, que preserva as `slices` originais (com `dataInicial`, `dataFinal`, `modalidade` e `nextPage`), **NÃO da data atual**. A data atual (`hoje - 2 dias` até `hoje`) só é gerada quando NÃO houver execução `incompleta` pendente válida.
-4. **Transição de Status de Retomada e Prevenção de Loop Infinito:**
-   - **Novo status `'retomada'`:** Quando uma execução `incompleta` (Run A) é continuada por uma nova execução (Run B), o status de Run A **deve mudar imediatamente de `'incompleta'` para `'retomada'`**, registrando `retomada_por_id = Run_B.id`.
-   - Se isso não fosse feito, a query `WHERE status = 'incompleta' ORDER BY iniciada_em DESC LIMIT 1` reencontraria a mesma Run A a cada ciclo do cron, ignorando o avanço.
-   - **Transição Atômica:**
-     ```sql
-     UPDATE private.pncp_sync_run
-     SET status = 'retomada',
-         retomada_por_id = v_run_b_id,
-         finalizada_em = now()
-     WHERE id = v_run_a_id;
-     ```
-   - **E se a Execução B Morrer Antes de Marcar a Anterior?**
-     - O update de Run A para `'retomada'` ocorre logo no início de Run B (assim que Run B adquire seu lock e copia as fatias pendentes para o seu contexto).
-     - Se Run B sofrer um crash fatal antes desse update, Run A permanece `'incompleta'` e será tentada no próximo ciclo (sem perda de dados).
-     - Se Run B morrer durante o processamento das páginas:
-       - Se morrer por timeout gracioso (budget ou rate limit), Run B marca a si mesma como `'incompleta'` com as fatias remanescentes. No ciclo seguinte, Run C encontrará Run B como a `incompleta` mais recente e marcará Run B como `'retomada'`.
-       - Se Run B morrer por SIGKILL da infraestrutura, seu heartbeat para. O `STALE_LOCK_MS` marca Run B como `falhou`. Run A já está como `'retomada'`, evitando que páginas já salvas por B sejam reprocessadas do zero.
-5. **Ciclo de Vida e Descarte Seguro de Fatias (TTL):**
+4. **Transição Atômica de Status na Mesma Transação/RPC da Nova Execução:**
+   - A marcação da execução anterior como `'retomada'` ocorre **NO MESMO PASSO E NA MESMA TRANSAÇÃO/RPC** em que a nova execução é criada (`acquire_sync_lock`), registrando `retomada_por_id = v_new_run_id`.
+   - **Inexistência de Janela de Inconsistência:** Não existe intervalo de tempo em que a nova execução já foi criada e a anterior ainda apareça como `'incompleta'`.
+5. **Preservação de Fatias se a Nova Execução Morrer:**
+   - A nova execução grava a `continuation` herdada em `parametros` **logo ao começar (no INSERT inicial da RPC)** e atualiza a cada página processada junto com o heartbeat.
+   - O tratamento de lock stale na RPC verifica a existência de fatias pendentes:
+     - Se o processo que morreu possuía `parametros->'continuation'->'pending'` com fatias restantes, a RPC marca o processo morto como `status = 'incompleta'`, preservando as fatias para a próxima retomada!
+     - Marca como `status = 'falhou'` **apenas e tão somente quando não há fatias a continuar**.
+6. **Ciclo de Vida e Descarte Seguro de Fatias (TTL):**
    - O cron sempre prioriza retomar a coleta `incompleta` mais recente antes de abrir uma nova janela.
    - Se uma execução `incompleta` tiver mais de **7 dias** (`now() - iniciada_em > interval '7 days'`), suas fatias são consideradas obsoletas. Ela é marcada como `'falhou'` com `erro_principal = 'fatias descartadas por obsolescencia (> 7 dias)'` e uma janela nova é aberta.
 
-#### 3.4.2 Padrão Assíncrono com `EdgeRuntime.waitUntil`, Modo Síncrono Padrão e Desacoplamento do `pg_net`
+#### 3.4.2 SQL da RPC de Aquisição, Retomada e Tratamento de Stale (`private.acquire_sync_lock`)
+
+Esta RPC atômica substitui a antiga lógica fragmentada no TypeScript, garantindo integridade transacional absoluta no Postgres:
+
+```sql
+CREATE OR REPLACE FUNCTION private.acquire_sync_lock(
+  p_lock_key text,
+  p_resource_type text,
+  p_parametros jsonb DEFAULT '{}'::jsonb,
+  p_stale_interval interval DEFAULT interval '3 minutes',
+  p_max_ttl interval DEFAULT interval '7 days'
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = private
+AS $$
+DECLARE
+  v_now timestamptz := clock_timestamp();
+  v_running_rec record;
+  v_prior_incompleta record;
+  v_new_run_id uuid;
+  v_continuation jsonb := NULL;
+  v_prior_id uuid := NULL;
+  v_initial_parametros jsonb;
+  v_has_pending boolean;
+BEGIN
+  -- 1. Verifica se já existe execução com lock ativo
+  SELECT id, iniciada_em, last_heartbeat_at, parametros INTO v_running_rec
+  FROM private.pncp_sync_run
+  WHERE lock_key = p_lock_key AND status = 'executando'
+  FOR UPDATE;
+
+  IF FOUND THEN
+    -- Avalia se o lock está vivo pelo último heartbeat
+    IF (v_now - COALESCE(v_running_rec.last_heartbeat_at, v_running_rec.iniciada_em)) <= p_stale_interval THEN
+      RETURN jsonb_build_object(
+        'already_running', true,
+        'run_id', v_running_rec.id
+      );
+    END IF;
+
+    -- STALE DETECTADO: Processo anterior morreu ou travou sem heartbeat há mais de 3 min.
+    -- Preservação de fatias: se havia continuation com fatias pendentes, marca 'incompleta'; senão 'falhou'.
+    v_has_pending := (
+      v_running_rec.parametros->'continuation'->'pending' IS NOT NULL
+      AND jsonb_typeof(v_running_rec.parametros->'continuation'->'pending') = 'array'
+      AND jsonb_array_length(v_running_rec.parametros->'continuation'->'pending') > 0
+    );
+
+    IF v_has_pending THEN
+      UPDATE private.pncp_sync_run
+      SET status = 'incompleta',
+          erro_principal = 'lock expirado (stale) - fatias pendentes preservadas para retomada',
+          finalizada_em = v_now
+      WHERE id = v_running_rec.id;
+    ELSE
+      UPDATE private.pncp_sync_run
+      SET status = 'falhou',
+          erro_principal = 'lock expirado (stale / worker morto sem fatias)',
+          finalizada_em = v_now
+      WHERE id = v_running_rec.id;
+    END IF;
+  END IF;
+
+  -- 2. Busca execução 'incompleta' anterior para o mesmo lock_key (se não for disparo manual com datas)
+  IF NOT (p_parametros ? 'data_inicial' AND p_parametros ? 'data_final') THEN
+    SELECT id, parametros, iniciada_em INTO v_prior_incompleta
+    FROM private.pncp_sync_run
+    WHERE lock_key = p_lock_key AND status = 'incompleta'
+    ORDER BY iniciada_em DESC
+    LIMIT 1
+    FOR UPDATE;
+
+    IF FOUND THEN
+      -- Se tiver mais de 7 dias (TTL), descarta por obsolescência
+      IF (v_now - v_prior_incompleta.iniciada_em) > p_max_ttl THEN
+        UPDATE private.pncp_sync_run
+        SET status = 'falhou',
+            erro_principal = 'fatias descartadas por obsolescencia (> 7 dias)',
+            finalizada_em = v_now
+        WHERE id = v_prior_incompleta.id;
+      ELSE
+        -- Herda a continuação para a nova execução
+        v_continuation := v_prior_incompleta.parametros->'continuation';
+        v_prior_id := v_prior_incompleta.id;
+      END IF;
+    END IF;
+  END IF;
+
+  -- 3. Prepara parâmetros iniciais gravando continuation herdada logo na largada
+  v_initial_parametros := p_parametros;
+  IF v_continuation IS NOT NULL THEN
+    v_initial_parametros := v_initial_parametros || jsonb_build_object('continuation', v_continuation);
+  END IF;
+
+  -- 4. Cria a nova execução com status 'executando'
+  INSERT INTO private.pncp_sync_run (
+    resource_type,
+    lock_key,
+    parametros,
+    status,
+    iniciada_em,
+    last_heartbeat_at
+  )
+  VALUES (
+    p_resource_type,
+    p_lock_key,
+    v_initial_parametros,
+    'executando',
+    v_now,
+    v_now
+  )
+  RETURNING id INTO v_new_run_id;
+
+  -- 5. ATÔMICO NA MESMA TRANSAÇÃO: marca a execução anterior como 'retomada'
+  IF v_prior_id IS NOT NULL THEN
+    UPDATE private.pncp_sync_run
+    SET status = 'retomada',
+        retomada_por_id = v_new_run_id,
+        finalizada_em = v_now
+    WHERE id = v_prior_id;
+  END IF;
+
+  RETURN jsonb_build_object(
+    'already_running', false,
+    'run_id', v_new_run_id,
+    'continuation', v_continuation,
+    'retomada_de_id', v_prior_id
+  );
+END;
+$$;
+
+-- Permissões estritas no schema private
+REVOKE EXECUTE ON FUNCTION private.acquire_sync_lock(text, text, jsonb, interval, interval) FROM public, anon, authenticated;
+GRANT EXECUTE ON FUNCTION private.acquire_sync_lock(text, text, jsonb, interval, interval) TO service_role;
+```
+
+---
+
+#### 3.4.3 Máquina de Estados Completa de `private.pncp_sync_run`
+
+A tabela `private.pncp_sync_run` passa a operar sob uma máquina de estados finita e determinística:
+
+```
+               [ Início / Invocação ]
+                         │
+                         ▼
+                    ( pendente )
+                         │
+                         │ (acquire_sync_lock)
+                         ▼
+                   [ executando ] ◄────────────┐
+                         │                     │ (heartbeat a cada pág / retry)
+                         │                     └─ (atualiza last_heartbeat_at)
+         ┌───────────────┼───────────────┬─────────────────┐
+         │               │               │                 │
+ (todas págs ok)  (erros pontuais) (budget/429/stale) (erro fatal 4xx)
+         │               │               │                 │
+         ▼               ▼               ▼                 ▼
+   ( concluida ) (concluida_com_erros) ( incompleta )   ( falhou )
+                                         │       │
+             ┌───────────────────────────┘       └──────────────┐
+             │ (nova run assume na RPC)                         │ (TTL > 7 dias)
+             ▼                                                  ▼
+        ( retomada )                                        ( falhou )
+```
+
+#### Tabela de Transições e Regras de Negócio:
+
+| Estado Origem | Evento / Gatilho | Condição de Guarda | Estado Destino | Ação / Efeito Colateral | Terminal? |
+|---|---|---|---|---|---|
+| `pendente` | Invocação inicial | Job criado para processamento | `executando` | Inserido pela RPC `acquire_sync_lock` com timestamp e heartbeat inicial | Não |
+| `executando` | Fim regular do lote | `pending.length == 0` e `total_erros == 0` | `concluida` | `finishSyncRun()` registra encerramento com sucesso total | **Sim** |
+| `executando` | Fim regular do lote com falhas de negócio | `pending.length == 0` e `total_erros > 0` | `concluida_com_erros` | `finishSyncRun()` registra encerramento indicando linhas com falha de parse/upsert | **Sim** |
+| `executando` | Budget esgotado ou Pausa por 429 longo | `pending.length > 0` e tempo restante < margem de encerramento | `incompleta` | `finishSyncRun()` grava fatias pendentes e `pagina_atual` para retomada | Não (Transicional) |
+| `executando` | Timeout da infraestrutura / Crash (Stale) | `clock_timestamp() - last_heartbeat_at > 3 min` e `has_pending == true` | `incompleta` | RPC `acquire_sync_lock` detecta o processo abandonado, preserva fatias e libera o lock | Não (Transicional) |
+| `executando` | Timeout da infraestrutura / Crash sem fatias | `clock_timestamp() - last_heartbeat_at > 3 min` e `has_pending == false` | `falhou` | RPC `acquire_sync_lock` encerra o processo como falha definitiva | **Sim** |
+| `executando` | Erro HTTP permanente (ex.: 400, 401, 403, 404) | Erro não retentável | `falhou` | `finishSyncRun()` grava `erro_principal` | **Sim** |
+| `executando` | Interrupção administrativa | Ação de operador | `cancelada` | Update manual via console/admin | **Sim** |
+| `incompleta` | Nova execução inicia para o mesmo `lock_key` | Nova execução adquire lock atômico via `acquire_sync_lock` | `retomada` | RPC `acquire_sync_lock` marca `retomada_por_id = new_run_id` na mesma transação | **Sim** (desta run) |
+| `incompleta` | Expiração do TTL de fatias | `now() - iniciada_em > 7 dias` | `falhou` | RPC `acquire_sync_lock` descarta pendências obsoletas | **Sim** |
+
+---
+
+#### 3.4.4 Padrão Assíncrono com `EdgeRuntime.waitUntil`, Modo Síncrono Padrão e Desacoplamento do `pg_net`
 **O Problema do Timeout no pg_net:**
 O parâmetro `timeout_milliseconds` do `pg_net` mede o tempo **total** da requisição HTTP (não apenas o handshake). Se a Edge Function demorar 100 s para executar, qualquer timeout de 10 s no `pg_net` gerará erro na tabela `net._http_response`. Além disso, depender de o Deno continuar processando após o cliente HTTP desconectar não é garantido em todos os ambientes.
 
@@ -420,7 +588,7 @@ O parâmetro `timeout_milliseconds` do `pg_net` mede o tempo **total** da requis
    - Porém, a coluna `last_heartbeat_at` congela no timestamp da última página processada.
    - No ciclo seguinte, a verificação `clock_timestamp() - last_heartbeat_at > interval '3 minutes'` identifica o processo abandonado como morto, atualiza a linha para `status = 'falhou'` (`erro_principal = 'lock expirado (executando stale / worker morto)'`) e permite a liberação segura do lock.
 
-#### 3.4.3 Autenticação via Authorization: Bearer, Configuração de JWT e Comparação em Tempo Constante
+#### 3.4.5 Autenticação via Authorization: Bearer, Configuração de JWT e Comparação em Tempo Constante
 1. **Desativação de Verificação de JWT (`verify_jwt = false`):**
    - Todas as Edge Functions de sincronização e APIs públicas/cron operam com `verify_jwt = false`.
    - Atualmente isso é feito via flag `--no-verify-jwt` em `scripts/deploy-functions.ps1:45` e no workflow `.github/workflows/deploy-supabase-functions.yml`.
@@ -511,8 +679,10 @@ O parâmetro `timeout_milliseconds` do `pg_net` mede o tempo **total** da requis
      );
      ```
 
-#### 3.4.4 Medição Real de Vazão e Modelo de Janela Curta + Reconciliação
+#### 3.4.6 Medição Real de Vazão e Modelo de Janela Curta + Reconciliação
 Para calibrar a frequência sem achismos, a vazão histórica real deve ser levantada no banco de produção.
+
+> **Nota Operacional sobre `private.pncp_sync_request`:** A tabela `pncp_sync_request` está sem novos dados desde 2026-09-20 e historicamente nunca gravou tentativas com erro (429/5xx). Portanto, a consulta abaixo serve como base analítica que só produzirá métricas completas de vazão e erros após o deploy da migration de telemetria e o reinício das coletas.
 
 **Consulta SQL para Medição Real de Páginas por Janela e Modalidade:**
 ```sql
@@ -529,13 +699,13 @@ GROUP BY 1
 ORDER BY 2 DESC;
 ```
 
-**Estratégia de Janela Curta (Diária) + Reconciliação Semanal:**
+**Estratégia Consistente de Janela Curta (Diária) + Reconciliação Semanal:**
 - *Problema da Janela Fixa de 7 Dias:* Rebaixar 7 dias a cada 6 horas faz o sistema reprocessar repetidamente ~85% de editais inalterados.
 - *Desenho Otimizado:*
-  1. **Sync Incremental Regular (Cron Diário):** Janela de **2 dias** (`hoje - 2 dias` até `hoje`). Com 1 req/s, consome pouquíssimas páginas, escoa em menos de 1 minuto e mantém o SaaS perfeitamente atualizado com os novos editais e retificações recentes.
-  2. **Reconciliação Semanal (Domingo de Madrugada):** Janela de **7 dias** executada uma vez por semana (ex.: domingo às 03:00 UTC) para capturar eventuais publicações retroativas ou órgãos com sincronização defasada no PNCP.
+  1. **Sync Incremental Regular (Cron Diário a cada 6 h):** Janela curta de **2 dias** (`hoje - 2 dias` até `hoje`). Chave estável: `contratacoes-editais:padrao`. Com 1 req/s, consome pouquíssimas páginas, escoa em menos de 1 minuto e mantém o SaaS perfeitamente atualizado com os novos editais e retificações recentes.
+  2. **Reconciliação Semanal (Domingo de Madrugada):** Janela de **7 dias** executada uma vez por semana (domingo às 03:00 UTC / 00:00 BRT). Chave estável própria: `contratacoes-editais:reconciliacao`. Captura eventuais publicações retroativas ou órgãos com sincronização defasada no PNCP sem interferir no checkpoint da chave diária.
 
-#### 3.4.5 Heartbeat Durante Retries e Análise do Pior Caso
+#### 3.4.7 Heartbeat Durante Retries e Análise do Pior Caso
 1. **Onde Atualizar o Heartbeat:**
    - No loop principal após cada página (`onPage`).
    - Imediatamente antes de entrar em `sleep` de retry no cliente HTTP.

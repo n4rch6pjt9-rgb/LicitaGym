@@ -56,7 +56,7 @@ def test_table_on_conflict_mapping_completeness():
         assert TABLE_ON_CONFLICT.get(table) == conflict_cols
 
 
-MIGRATION_E7 = "supabase/migrations/20260922110000_icatmat_additive_alignment.sql"
+MIGRATION_E7 = "supabase/migrations_archive/20260922110000_icatmat_additive_alignment.sql"
 
 
 def test_e7_on_conflict_matches_nulls_not_distinct_constraint():

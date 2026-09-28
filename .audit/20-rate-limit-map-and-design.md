@@ -322,84 +322,141 @@ GRANT EXECUTE ON FUNCTION private.report_http_rate_limit(text, int) TO service_r
 
 Decisão arquitetural: **pg_cron (v1.6.4) + pg_net (v0.20.4) com segredos via Supabase Vault (v0.3.1)** chamando as Edge Functions. Não há worker em `job_queue`.
 
-#### 3.4.1 Resolução da Retomada Entre Dias (Separação entre Lock de Exclusão e Chave de Retomada)
+#### 3.4.1 Resolução da Retomada Entre Dias e Chave Estável por Recurso/Escopo
 **O Problema Identificado:**
 Hoje, `sync-pncp-contratacoes-editais` gera `lockKey = contratacoes-editais:${dataInicial}:${dataFinal}`. Como as datas mudam a cada dia (ex.: `hoje - 7 dias`), a função `loadPendingSlices` busca por `lock_key = lockKey` e **nunca encontra** a execução `incompleta` de ontem. As fatias pendentes ficam abandonadas no banco.
 
-**Solução Proposta:**
-1. **Separação Conceitual:**
-   - **Chave de Exclusão Mútua (`lock_key`):** Quando disparado pelo cron, a exclusão mútua é por **recurso inteiro**, ou seja:
-     - `contratacoes-editais:cron` (para editais)
-     - `contratacoes-atas:cron` (para atas)
-     - `contratacoes-contratos:cron` (para contratos)
-     Isso impede que dois crons do mesmo recurso rodem em paralelo, independentemente de parâmetros de data.
-   - **Chave de Retomada (`continuation_scope`):** A busca por pendências em `loadPendingSlices` passa a buscar pela combinação:
-     ```sql
-     SELECT id, status, parametros, iniciada_em 
-     FROM private.pncp_sync_run
-     WHERE resource_type = $1 -- ex.: 'contratacoes_editais'
-       AND status = 'incompleta'
-     ORDER BY iniciada_em DESC
-     LIMIT 1;
-     ```
-2. **Ciclo de Vida das Fatias Pendentes:**
-   - **Prioridade Absoluta:** O cron sempre prioriza retomar a coleta `incompleta` mais recente antes de abrir uma nova janela.
-   - **Descarte Seguro por Idade (TTL de Fatias):** Se uma execução `incompleta` tiver mais de **7 dias** (`now() - iniciada_em > interval '7 days'`), suas fatias são consideradas obsoletas. Ela é marcada como `'falhou'` com `erro_principal = 'fatias descartadas por obsolescencia (> 7 dias)'` e uma janela nova é aberta.
+**Solução Proposta (Chave Estável sem Datas):**
+1. **Padronização da Chave Estável (`lock_key` / `scope_key`):**
+   - As execuções utilizam uma chave estável no formato `<resource_type>:<scope_family>` (sem datas variáveis):
+     - `contratacoes-editais:padrao` (ou `contratacoes-editais:orgaos_conhecidos`, `contratacoes-editais:todas`)
+     - `contratacoes-atas:padrao`
+     - `contratacoes-contratos:padrao`
+     - `compras-catmat:78:7830`
+     - `pca:7830`
+   - Essa chave estável atua de forma unificada:
+     - **Exclusão Mútua:** Garante que duas execuções do mesmo recurso/escopo nunca rodem simultaneamente no cron (`acquireSyncLock` bloqueia por chave estável).
+     - **Chave de Retomada:** Permite que `loadPendingSlices` encontre de forma determinística a última execução com `status = 'incompleta'` daquele mesmo recurso:
+       ```sql
+       SELECT id, status, parametros, iniciada_em 
+       FROM private.pncp_sync_run
+       WHERE lock_key = $1 -- ex.: 'contratacoes-editais:padrao'
+         AND status = 'incompleta'
+       ORDER BY iniciada_em DESC
+       LIMIT 1;
+       ```
+2. **Origem da Janela de Retomada:**
+   - **A janela da execução retomada vem exclusivamente de `parametros.continuation`**, que preserva as `slices` originais (com `dataInicial`, `dataFinal`, `modalidade` e `nextPage`), **NÃO da data atual**. A data atual (`hoje - 2 dias` até `hoje`) só é gerada quando NÃO houver execução `incompleta` pendente válida.
+3. **Ciclo de Vida e Descarte Seguro de Fatias (TTL):**
+   - O cron sempre prioriza retomar a coleta `incompleta` mais recente antes de abrir uma nova janela.
+   - Se uma execução `incompleta` tiver mais de **7 dias** (`now() - iniciada_em > interval '7 days'`), suas fatias são consideradas obsoletas. Ela é marcada como `'falhou'` com `erro_principal = 'fatias descartadas por obsolescencia (> 7 dias)'` e uma janela nova é aberta.
 
 #### 3.4.2 Padrão Assíncrono com `EdgeRuntime.waitUntil` e Desacoplamento do `pg_net`
 **O Problema do Timeout no pg_net:**
 O parâmetro `timeout_milliseconds` do `pg_net` mede o tempo **total** da requisição HTTP (não apenas o handshake). Se a Edge Function demorar 100 s para executar, qualquer timeout de 10 s no `pg_net` gerará erro na tabela `net._http_response`. Além disso, depender de o Deno continuar processando após o cliente HTTP desconectar não é garantido em todos os ambientes.
 
 **Solução: Resposta 202 com `EdgeRuntime.waitUntil`:**
-1. **Disparo pelo pg_net (Modo Padrão):**
+1. **Disparo pelo pg_net (Modo Padrão Assíncrono):**
    - A Edge Function recebe a requisição do cron.
-   - Valida a autenticação e adquire o lock em `private.pncp_sync_run`.
-   - Se o lock foi adquirido, agenda o processamento pesado dentro de `EdgeRuntime.waitUntil(processarSync(...))` e responde **HTTP 202 Accepted** imediatamente com `{ status: "accepted", sync_id: runId }` (em < 200 ms).
-   - O `pg_net` completa a chamada em milissegundos com sucesso absoluto (`timeout_milliseconds := 15000` é mais que suficiente).
+   - Valida a autenticação e adquire o lock estável em `private.pncp_sync_run`.
+   - Se o lock foi adquirido, agenda o processamento pesado dentro de `EdgeRuntime.waitUntil((async () => { ... })())` e responde **HTTP 202 Accepted** imediatamente com `{ status: "accepted", sync_id: runId }` (em < 200 ms).
+   - O `pg_net` completa a chamada em milissegundos com sucesso absoluto (`timeout_milliseconds := 15000`).
    - O runtime do Supabase mantém o isolate ativo até a Promise do `waitUntil` finalizar.
-2. **Modo Síncrono para Scripts PowerShell (`?wait=1` ou Header `x-wait-result: true`):**
-   - Para não quebrar os scripts existentes (`invoke-sync-*.ps1`) que leem o resumo JSON diretamente na resposta HTTP, as Edge Functions verificam:
+2. **Como o Erro em Segundo Plano Chega a `pncp_sync_run`:**
+   - O bloco dentro de `EdgeRuntime.waitUntil(...)` envelopa todo o processamento em um `try / catch / finally`:
+     ```typescript
+     EdgeRuntime.waitUntil((async () => {
+       try {
+         await executarSync(...);
+         await finishSyncRun(client, runId, { status: "concluida", ... });
+       } catch (error) {
+         const isBudget = error instanceof BudgetExhaustedError;
+         const status = isBudget ? "incompleta" : "falhou";
+         await finishSyncRun(client, runId, {
+           status,
+           erroPrincipal: error instanceof Error ? error.message : String(error),
+           paginaAtual: pendingSlices?.[0]?.nextPage,
+           parametros: { ...body, continuation: { pending: pendingSlices, chain_id: chainId } },
+         });
+       }
+     })());
+     ```
+   - Assim, qualquer erro de rede, rate limit ou esgotamento de budget grava o status correto diretamente em `private.pncp_sync_run`.
+3. **Comportamento do Heartbeat em Caso de Morte Abrupta do Worker (Crash / SIGKILL 546):**
+   - Se o worker atingir o teto de isolamento (150 s / 400 s) e for morto pela infraestrutura, o bloco `catch` não roda.
+   - Porém, a coluna `last_heartbeat_at` congela no timestamp da última página processada.
+   - No ciclo seguinte, a verificação `clock_timestamp() - last_heartbeat_at > interval '3 minutes'` identifica o processo abandonado como morto, atualiza a linha para `status = 'falhou'` (`erro_principal = 'lock expirado (executando stale / worker morto)'`) e permite a liberação segura do lock.
+4. **Modo Síncrono para Scripts PowerShell (`?wait=1` ou Header `x-wait-result: true`):**
+   - Para não quebrar os scripts existentes (`invoke-sync-*.ps1`) que esperam ler o resumo JSON diretamente na resposta HTTP:
      ```typescript
      const shouldWait = url.searchParams.get("wait") === "1" || 
                         req.headers.get("x-wait-result") === "true";
      ```
-   - Se `shouldWait === true`, a função executa sincronamente e retorna o JSON completo com status 200 ao final (sujeito ao timeout do PowerShell configurado no script).
+   - Se `shouldWait === true`, executa sincronamente e retorna o JSON completo com status 200 ao final.
    - Se `shouldWait === false` (padrão usado pelo pg_cron), responde 202 na hora e processa via `waitUntil`.
 
-#### 3.4.3 Autenticação Bearer via Vault e Rotação sem Janela de Falha
-1. **Padrão HTTP Limpo (Sem Headers Duplicados):**
-   - Mantém-se o padrão HTTP padrão: `Authorization: Bearer <secret>`. Não se adiciona `x-cron-secret`.
-   - Na Edge Function (`_shared/http.ts`), a função `authenticateCron` passa a comparar o token extraído usando tempo constante contra `SYNC_CRON_SECRET`:
-     ```typescript
-     import { timingSafeEqual } from "node:crypto";
-
-     export function validateCronAuth(req: Request): boolean {
-       const secret = Deno.env.get("SYNC_CRON_SECRET")?.trim();
-       if (!secret) return false;
-       const token = extractBearerToken(req);
-       if (!token) return false;
-
-       // Suporte a rotação sem downtime: aceita lista separada por vírgula no env
-       const validSecrets = secret.split(",").map(s => s.trim()).filter(Boolean);
-       const tokenBuf = new TextEncoder().encode(token);
-
-       return validSecrets.some(sec => {
-         const secBuf = new TextEncoder().encode(sec);
-         if (tokenBuf.byteLength !== secBuf.byteLength) return false;
-         return timingSafeEqual(tokenBuf, secBuf);
-       });
-     }
+#### 3.4.3 Autenticação via `x-cron-secret`, Configuração de JWT e Transição Segura
+1. **Desativação de Verificação de JWT (`verify_jwt = false`):**
+   - Todas as Edge Functions de sincronização operam com `verify_jwt = false`.
+   - Atualmente isso é feito via flag `--no-verify-jwt` em `scripts/deploy-functions.ps1` e no workflow `.github/workflows/deploy-supabase-functions.yml`.
+   - **Fixação Proposta em `supabase/config.toml`:**
+     ```toml
+     [functions.sync-pncp-contratacoes-editais]
+     verify_jwt = false
+     [functions.sync-pncp-contratacoes-atas]
+     verify_jwt = false
+     [functions.sync-pncp-contratacoes-contratos]
+     verify_jwt = false
+     [functions.sync-compras-catmat]
+     verify_jwt = false
+     [functions.sync-pncp-pca]
+     verify_jwt = false
+     [functions.sync-pncp-legislation]
+     verify_jwt = false
+     [functions.sync-pncp-catalogo]
+     verify_jwt = false
+     [functions.sync-pncp-irp]
+     verify_jwt = false
+     [functions.sync-pncp-orgaos]
+     verify_jwt = false
+     [functions.import-catmat-curadoria]
+     verify_jwt = false
+     [functions.link-catmat-pca]
+     verify_jwt = false
      ```
-2. **URLs Fixas e Segredo no Vault:**
-   - URLs de Edge Functions não são segredos e ficam declaradas diretamente no comando SQL do cron.
-   - Apenas o segredo é lido dinamicamente da tabela `vault.decrypted_secrets`.
-3. **Procedimento de Rotação Zero-Downtime:**
-   - **Passo 1:** Configurar na Edge Function (Supabase Dashboard -> Secrets): `SYNC_CRON_SECRET = "segredo_antigo,segredo_novo"`.
-   - **Passo 2:** Atualizar o segredo no Vault:
+2. **Autenticação Única via Header `x-cron-secret` (Tempo Constante):**
+   - A autenticação passa a ser exclusivamente via header `x-cron-secret`, eliminando o cabeçalho `Authorization: Bearer` duplicado.
+   - Na Edge Function (`_shared/http.ts`), a comparação é feita estritamente em tempo constante (`timingSafeEqual`) contra `SYNC_CRON_SECRET`.
+3. **Plano de Transição sem Quebra dos Scripts PowerShell:**
+   - Como `_shared/http.ts:authenticateCron` hoje lê `Authorization: Bearer`:
+     - **Fase 1 (Compatibilidade):** `authenticateCron` passa a aceitar o header `x-cron-secret` OU `Authorization: Bearer` (ambos validados com `timingSafeEqual`). O cron passa a mandar `x-cron-secret`.
+     - **Fase 2 (Migração dos Scripts):** Os scripts PowerShell são atualizados para enviar `x-cron-secret: $Secret` sem `Authorization: Bearer`.
+       - *Scripts que mudam:* `scripts/invoke-sync-licitagym-scope.ps1`, `scripts/invoke-sync-compras-catmat.ps1`, `scripts/invoke-sync-pca.ps1`, `scripts/reimport-pca.ps1`, `scripts/import-catmat-curadoria.ps1`, `scripts/invoke-link-catmat-pca.ps1`, `scripts/invoke-link-catmat-pca-all.ps1`.
+     - **Fase 3 (Depreciação):** O suporte a `Bearer` em `authenticateCron` é descontinuado.
+4. **Segredo no Vault e Rotação Zero-Downtime:**
+   - O segredo reside em dois locais:
+     - Supabase Vault (`vault.decrypted_secrets` com `name = 'sync_cron_secret'`) para leitura do `pg_cron`.
+     - Supabase Edge Functions Secret (`SYNC_CRON_SECRET`) para leitura do Deno.
+   - **URLs do Cron:** URLs de Edge Functions não são secretas e ficam fixadas no SQL do `cron.schedule`. Apenas o segredo é lido dinamicamente do Vault.
+   - **Rotação:** O env `SYNC_CRON_SECRET` aceita múltiplos segredos separados por vírgula (`"segredo_antigo,segredo_novo"`). Atualiza-se o Vault (`vault.update_secret`), valida-se a execução e, em seguida, remove-se o segredo antigo da Edge Function.
+   - **SQL do `cron.schedule`:**
      ```sql
-     SELECT vault.update_secret((SELECT id FROM vault.decrypted_secrets WHERE name = 'sync_cron_secret'), 'segredo_novo');
+     SELECT cron.schedule(
+       'pncp-contratacoes-editais',
+       '0 */6 * * *',
+       $$ 
+       SELECT net.http_post(
+         url := 'https://ifaiagegyicjzlpskafh.supabase.co/functions/v1/sync-pncp-contratacoes-editais',
+         headers := jsonb_build_object(
+           'x-cron-secret', (SELECT decrypted_secret FROM vault.decrypted_secrets WHERE name = 'sync_cron_secret'),
+           'Content-Type', 'application/json'
+         ),
+         body := '{}'::jsonb,
+         timeout_milliseconds := 15000
+       ) AS request_id; 
+       $$
+     );
      ```
-   - **Passo 3:** Após validar os disparos, remover o `segredo_antigo` do secret da Edge Function (`SYNC_CRON_SECRET = "segredo_novo"`).
 
 #### 3.4.4 Medição Real de Vazão e Modelo de Janela Curta + Reconciliação
 Para calibrar a frequência sem achismos, a vazão histórica real deve ser levantada no banco de produção.
@@ -520,3 +577,9 @@ ORDER BY 2 DESC;
 1. **Duração Total da Paginação vs Wall-Clock:** Com 1 req/s, carregar 50 páginas consome ~50 segundos. O orçamento configurável `EDGE_TIME_BUDGET_MS` garante que a função suspenda o processamento como `incompleta` antes de atingir o limite da plataforma (150 s / 400 s).
 2. **Instabilidade do PNCP:** Períodos de lentidão severa do PNCP são contidos reduzindo o timeout individual para 20 s e limitando novas tentativas em timeout a no máximo 1, evitando retenção desnecessária da função.
 3. **Segurança de Schema:** Como o schema `private` está exposto no PostgREST (`pgrst.db_schemas`), a tabela `http_host_lease` e suas RPCs possuem RLS ativo e revogação explícita de `anon` e `authenticated`, garantindo acesso exclusivo via `service_role`.
+4. **Chamadas Diretas Fora do Limitador (`coletor-externo/pncp.py` e `scripts/`):**
+   - **Risco:** O `services/coletor-externo/coletor/pncp.py` e os scripts Python em `scripts/` (ex.: `collector_pncp_contratacoes.py`, `collector_*_material.py`) chamam a API do PNCP e do Compras.gov diretamente via `requests` / `urllib`, sem passar pela RPC `private.acquire_http_slot`. Se um operador rodar um script manual pesado enquanto o cron ou outro script estiver rodando, haverá concorrência direta no mesmo IP de saída contra os servidores governamentais, podendo disparar o HTTP 429.
+   - **Propostas de Cobertura e Mitigação:**
+     - **Abordagem A (Integração na Camada Python `HttpClient`):** Atualizar `scripts/lib/http_client.py` e `services/coletor-externo/coletor/pncp.py` para consultar a RPC `private.acquire_http_slot` via PostgREST (`POST /rest/v1/rpc/acquire_http_slot`) usando a `SUPABASE_SERVICE_ROLE_KEY` (já presente nas variáveis de ambiente). Assim, as requisições Python entram na mesma fila coordenada do Postgres que as Edge Functions.
+     - **Abordagem B (Canalização e Aposentadoria de Chamadas Diretas - Recomendada):** Descontinuar a raspagem HTTP direta feita por scripts standalone de catálogo/contratações, substituindo-a por chamadas às Edge Functions correspondentes (ex.: invocar `/sync-pncp-contratacoes-editais?wait=1`), que já encapsulam auditoria, proveniência, controle de rate limit e heartbeat.
+     - **Abordagem C (Throttling Local Severo de Fallback):** Para execuções locais de desenvolvimento ou offline (onde não há conexão com o Supabase), reforçar nos scripts Python um delay mínimo forçado de 1,5 s a 2,0 s entre requisições consecutivas, diminuindo significativamente a probabilidade de colisão com as cotas dos órgãos públicos.

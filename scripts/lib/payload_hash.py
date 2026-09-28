@@ -10,7 +10,7 @@ Aligned with Edge Functions `supabase/functions/_shared/pncp/hash.ts`:
 - Emits lowercase SHA-256 hex digest.
 
 Note on SQL comments:
-Legacy schema comments (such as in `supabase/migrations/20260921_fase3_precos_praticados.sql`
+Legacy schema comments (such as in `supabase/migrations_archive/20260921_fase3_precos_praticados.sql`
 or `SCHEMA_STANDARDS.md`) historically referenced 'MD5(serialized_row)'.
 Python ingestion and Edge Functions have standardized on SHA-256 for collision resistance
 and parity with Edge Functions (`_shared/pncp/hash.ts`). Production columns are

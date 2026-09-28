@@ -61,7 +61,7 @@ Conforme `schemas-consultas.md §1.7` e o modelo relacional de produção `catma
 - Em Dados Abertos, determinadas características podem omitir ou retornar nulo para `codigoValorCaracteristica`.
 - No enriquecimento `enrich_e7`:
   - `NULL` continua `NULL`. Nenhum sentinel (`'0'`, `''`, `'N/A'`) é gravado. String só de espaços vira `NULL`.
-  - A migração `20260922110000_icatmat_additive_alignment.sql` cria `codigo_valor_caracteristica` sem `DEFAULT` e a constraint `unique_caracteristica_valor UNIQUE NULLS NOT DISTINCT (codigo_item, codigo_caracteristica, codigo_valor_caracteristica)`.
+  - A migração `20260922110000_icatmat_additive_alignment.sql` (arquivada em `supabase/migrations_archive/`, nunca aplicada no remoto) cria `codigo_valor_caracteristica` sem `DEFAULT` e a constraint `unique_caracteristica_valor UNIQUE NULLS NOT DISTINCT (codigo_item, codigo_caracteristica, codigo_valor_caracteristica)`.
   - O upsert usa `on_conflict=codigo_item,codigo_caracteristica,codigo_valor_caracteristica`: reprocessar o mesmo item com valor `NULL` atualiza a mesma linha.
 
 ### Erro ≠ vazio

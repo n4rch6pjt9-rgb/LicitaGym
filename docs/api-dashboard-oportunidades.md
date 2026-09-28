@@ -10,15 +10,15 @@ O contrato completo de requisições, respostas, parâmetros e tratamento de err
 - **Caminho**: `/functions/v1/api-dashboard-oportunidades`
 - **Tabela Fonte**: `public.licitacoes_externas`
 - **Ações**:
-  - `readiness`: Retorna prontidão da tabela e data do último sync sem vazar segredos.
-  - `get`:
+  - `readiness`: Retorna prontidão da tabela e data do último sync sem vazar segredos (pública).
+  - `get`: Requer autenticação JWT do usuário.
     - Lookup por `id` único (retorna `{ item }` ou 404).
     - Lookup por `codigo_externo` único com `fonte` obrigatório (retorna `{ item }`, 400 se faltar `fonte`, ou 404).
     - Lookup por `orgao_cnpj` + `processo_norm` paginado com `page` e `limit` (retorna coleção `{ orgao_cnpj, processo_norm, page, limit, total, items: [...] }`, ou 404).
-  - `list`: Lista com paginação (`page`, `limit`), ordenação (`order_by`, `order_direction`) e múltiplos filtros (UF, órgão, prioridade, escopo, borracha, datas com limites inclusivos de dia inteiro `< dia seguinte`, valores e busca textual).
+  - `list`: Requer autenticação JWT do usuário. Lista com paginação (`page`, `limit`), ordenação com desempate determinístico por `id` e múltiplos filtros (UF, órgão, prioridade, escopo, borracha, datas com limites inclusivos em America/Sao_Paulo UTC-3, valores e busca textual literal com allowlist).
 - **Segurança & RLS**:
-  - `licitacoes_externas` possui `anon` explicitamente revogado (`revoke all on public.licitacoes_externas from anon`).
-  - Chamadas à Edge Function exigem autenticação de usuário via `requireUserAuth` (JWT de usuário Supabase), mantendo `OPTIONS` público para CORS.
+  - `licitacoes_externas` possui `anon` explicitamente revogado (`REVOKE ALL ON TABLE public.licitacoes_externas FROM PUBLIC, anon;`).
+  - Chamadas à Edge Function para `list` e `get` exigem autenticação de usuário via `requireUserAuth` (JWT de usuário Supabase), mantendo `OPTIONS` e `readiness` públicos.
   - A Edge Function executa server-side via `SUPABASE_SERVICE_ROLE_KEY` projetando exclusivamente colunas públicas seguras (`PUBLIC_LICITACAO_COLUMNS`, incluindo `modulo` e `id_externo` para SEST SENAT), sem expor payload bruto (`raw`), fóruns (`esclarecimentos`, `notas`) nem colunas de controle interno (`anexo_raiz_id`, `edital_id`).
   - O navegador invoca a função com token de usuário autenticado; a chave `service_role` nunca é entregue ao cliente.
-  - Mensagens de erro de banco não expõem detalhes crus do PostgREST.
+  - Mensagens de erro de banco não expõem detalhes crus do PostgREST e retornam HTTP 500 para falhas de banco.

@@ -85,11 +85,15 @@ Deno.test("sanitizeDate valida formato de data ISO e rejeita datas impossíveis 
   assertEquals(sanitizeDate("2026-01-00"), undefined);
   assertEquals(sanitizeDate("2026-01-32"), undefined);
 
-  // Timestamps completos válidos e inválidos
-  assertEquals(sanitizeDate("2026-09-28T12:00:00Z"), "2026-09-28T12:00:00Z");
-  assertEquals(sanitizeDate("2026-09-28T12:00:00.000Z"), "2026-09-28T12:00:00.000Z");
-  assertEquals(sanitizeDate("2026-09-28 12:00:00"), "2026-09-28 12:00:00");
-  assertEquals(sanitizeDate("2026-02-30T12:00:00Z"), undefined);
+    // Timestamps completos válidos e inválidos
+    assertEquals(sanitizeDate("2026-09-28T12:00:00Z"), "2026-09-28T12:00:00Z");
+    assertEquals(sanitizeDate("2026-09-28T12:00:00.000Z"), "2026-09-28T12:00:00.000Z");
+    assertEquals(sanitizeDate("2026-09-28T12:00:00-03:00"), "2026-09-28T12:00:00-03:00");
+    assertEquals(sanitizeDate("2026-09-28T12:00:00+02:00"), "2026-09-28T12:00:00+02:00");
+    // Sem Z ou offset deve ser rejeitado (dá undefined)
+    assertEquals(sanitizeDate("2026-09-28 12:00:00"), undefined);
+    assertEquals(sanitizeDate("2026-09-28T12:00:00"), undefined);
+    assertEquals(sanitizeDate("2026-02-30T12:00:00Z"), undefined);
 
   // Outros inválidos
   assertEquals(sanitizeDate("data-invalida"), undefined);
@@ -160,21 +164,30 @@ Deno.test("parseListParams aplica paginação padrão e sanitização de campos"
     busca: "halteres musculacao",
   });
 
-  assertEquals(result.action, "list");
-  assertEquals(result.page, 2);
-  assertEquals(result.limit, 50);
-  assertEquals(result.order_by, "data_publicacao");
-  assertEquals(result.order_direction, "asc");
-  assertEquals(result.filtros.uf, "RJ");
-  assertEquals(result.filtros.prioridade, "leads");
-  assertEquals(result.filtros.valor_min, 1000);
-  assertEquals(result.filtros.valor_max, 50000);
-  assertEquals(result.filtros.busca, "halteres musculacao");
+  assertEquals("error" in result, false);
+  if (!("error" in result)) {
+    assertEquals(result.action, "list");
+    assertEquals(result.page, 2);
+    assertEquals(result.limit, 50);
+    assertEquals(result.order_by, "data_publicacao");
+    assertEquals(result.order_direction, "asc");
+    assertEquals(result.filtros.uf, "RJ");
+    assertEquals(result.filtros.prioridade, "leads");
+    assertEquals(result.filtros.valor_min, 1000);
+    assertEquals(result.filtros.valor_max, 50000);
+    assertEquals(result.filtros.busca, "halteres musculacao");
+  }
 });
 
-Deno.test("parseListParams respeita MAX_LIMIT de 100", () => {
-  const result = parseListParams({ limit: "500" });
-  assertEquals(result.limit, 100);
+Deno.test("parseListParams respeita MAX_LIMIT de 100 e rejeita maior", () => {
+  const resultOk = parseListParams({ limit: "100" });
+  assertEquals("error" in resultOk, false);
+  if (!("error" in resultOk)) {
+    assertEquals(resultOk.limit, 100);
+  }
+
+  const resultErr = parseListParams({ limit: "500" });
+  assertEquals("error" in resultErr, true);
 });
 
 Deno.test("parseGetParams valida ID, codigo_externo ou par orgao_cnpj + processo_norm", () => {
@@ -329,7 +342,7 @@ Deno.test("applyLicitacaoFilters asserte coluna e valor de TODOS os filtros", ()
     busca: "anilhas crossfit",
   });
 
-  // Asserção exata de cada chamada individual
+  // Asserção exata de cada chamada individual com UTC-3
   assertEquals(mock.calls, [
     { method: "eq", args: ["prioridade", "leads"] },
     { method: "eq", args: ["uf", "RJ"] },
@@ -339,18 +352,17 @@ Deno.test("applyLicitacaoFilters asserte coluna e valor de TODOS os filtros", ()
     { method: "in", args: ["modalidade", ["Pregão", "Dispensa"]] },
     { method: "eq", args: ["situacao", "Aberta"] },
     { method: "eq", args: ["fase", "Julgamento"] },
-    { method: "categoria_escopo", args: [] }, // não entra aqui, confere abaixo
     { method: "eq", args: ["categoria_escopo", "catmat"] },
     { method: "eq", args: ["interesse_borracha", true] },
     { method: "eq", args: ["fonte", "pncp"] },
-    { method: "gte", args: ["data_publicacao", "2026-01-01"] },
-    { method: "lt", args: ["data_publicacao", "2026-04-01"] }, // só-data -> lt dia seguinte
-    { method: "gte", args: ["data_inicio", "2026-02-01"] },
-    { method: "lt", args: ["data_inicio", "2026-03-01"] }, // 2026-02-28 -> lt 2026-03-01
-    { method: "gte", args: ["data_fim", "2026-03-01"] },
-    { method: "lt", args: ["data_fim", "2026-03-16"] },
-    { method: "gte", args: ["data_homologacao", "2026-04-01"] },
-    { method: "lt", args: ["data_homologacao", "2026-05-01"] },
+    { method: "gte", args: ["data_publicacao", "2026-01-01T00:00:00-03:00"] },
+    { method: "lt", args: ["data_publicacao", "2026-04-01T00:00:00-03:00"] },
+    { method: "gte", args: ["data_inicio", "2026-02-01T00:00:00-03:00"] },
+    { method: "lt", args: ["data_inicio", "2026-03-01T00:00:00-03:00"] },
+    { method: "gte", args: ["data_fim", "2026-03-01T00:00:00-03:00"] },
+    { method: "lt", args: ["data_fim", "2026-03-16T00:00:00-03:00"] },
+    { method: "gte", args: ["data_homologacao", "2026-04-01T00:00:00-03:00"] },
+    { method: "lt", args: ["data_homologacao", "2026-05-01T00:00:00-03:00"] },
     { method: "gte", args: ["valor_total", 1000] },
     { method: "lte", args: ["valor_total", 50000] },
     {
@@ -359,7 +371,7 @@ Deno.test("applyLicitacaoFilters asserte coluna e valor de TODOS os filtros", ()
         "objeto.ilike.*anilhas crossfit*,numero_processo.ilike.*anilhas crossfit*,numero_edital.ilike.*anilhas crossfit*",
       ],
     },
-  ].filter((c) => c.method !== "categoria_escopo"));
+  ]);
 });
 
 Deno.test("applyLicitacaoFilters modalidade única usa eq em vez de in", () => {
@@ -382,25 +394,60 @@ Deno.test("applyLicitacaoFilters usa lte para datas com timestamp completo", () 
   ]);
 });
 
-Deno.test("sanitizeSearchTerm remove caracteres que quebram sintaxe PostgREST", () => {
+Deno.test("sanitizeSearchTerm usa allowlist [^\\p{L}\\p{N}\\s-], NFC, colapsa espaços e trunca em 200", () => {
   assertEquals(sanitizeSearchTerm("teste, (123) \"algo\""), "teste 123 algo");
+  // Curingas %, _, *, barras invertidas \ e pontos devem virar espaço
+  assertEquals(sanitizeSearchTerm("busca%com_underline*asterisco\\barra.ponto"), "busca com underline asterisco barra ponto");
+  // Hífen e caracteres acentuados são preservados
+  assertEquals(sanitizeSearchTerm("pré-moldado de concreto"), "pré-moldado de concreto");
+  // String com apenas caracteres inválidos vira undefined (ignora filtro)
+  assertEquals(sanitizeSearchTerm("%_*\\,.()"), undefined);
+  assertEquals(sanitizeSearchTerm("   "), undefined);
+  // Truncamento em 200 caracteres
+  const longo = "a".repeat(250);
+  const sanitizadoLongo = sanitizeSearchTerm(longo);
+  assertEquals(sanitizadoLongo?.length, 200);
 });
 
 // --------------------------------------------------------------------------
 // Contrato HTTP (OPTIONS, CORS, Autenticação, Método não permitido, Erros de Validação e JSON)
 // --------------------------------------------------------------------------
 
-Deno.test("handleRequest responde 200 para OPTIONS com CORS headers (OPTIONS permanece público)", async () => {
+Deno.test("handleRequest com OPTIONS responde 200 com Access-Control-Allow-Methods exato", async () => {
   const req = new Request("http://localhost/api-dashboard-oportunidades", {
     method: "OPTIONS",
   });
   const res = await handleRequest(req);
   assertEquals(res.status, 200);
   assertEquals(res.headers.get("Access-Control-Allow-Origin"), "*");
+  assertEquals(
+    res.headers.get("Access-Control-Allow-Methods"),
+    "GET, POST, OPTIONS",
+  );
 });
 
-Deno.test("handleRequest sem Authorization retorna 401 via requireUserAuth padrão", async () => {
+Deno.test("handleRequest readiness permanece público e responde 200 sem auth", async () => {
+  const mockClient = createRecordingMockClient({
+    headCountResult: { count: 15, error: null },
+    singleResult: {
+      data: { updated_at: "2026-09-28T10:00:00Z", last_synced_at: null },
+      error: null,
+    },
+  });
+
   const req = new Request("http://localhost/api-dashboard-oportunidades?action=readiness", {
+    method: "GET",
+  });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => mockClient as any });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.ready, true);
+  assertEquals(body.total_registros, 15);
+});
+
+Deno.test("handleRequest list sem Authorization retorna 401 via requireUserAuth padrão", async () => {
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list", {
     method: "GET",
   });
   const res = await handleRequest(req);
@@ -409,8 +456,18 @@ Deno.test("handleRequest sem Authorization retorna 401 via requireUserAuth padr�
   assertEquals(body.error, "Unauthorized");
 });
 
-Deno.test("handleRequest com Bearer inválido retorna 401", async () => {
-  const req = new Request("http://localhost/api-dashboard-oportunidades?action=readiness", {
+Deno.test("handleRequest get sem Authorization retorna 401 via requireUserAuth padrão", async () => {
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=get&id=1", {
+    method: "GET",
+  });
+  const res = await handleRequest(req);
+  assertEquals(res.status, 401);
+  const body = await res.json();
+  assertEquals(body.error, "Unauthorized");
+});
+
+Deno.test("handleRequest list com Bearer inválido retorna 401", async () => {
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list", {
     method: "GET",
     headers: { Authorization: "Bearer invalid-token" },
   });
@@ -486,6 +543,35 @@ Deno.test("handleRequest get com codigo_externo sem fonte retorna 400 claro", as
     body.error,
     "Parâmetro 'fonte' é obrigatório ao consultar por 'codigo_externo'",
   );
+});
+
+Deno.test("validatePagination e parseListParams rejeitam paginação inválida com 400", () => {
+  // Fração
+  const fracRes = parseListParams({ page: "1.5" });
+  assertEquals("error" in fracRes, true);
+
+  // Zero
+  const zeroRes = parseListParams({ page: "0" });
+  assertEquals("error" in zeroRes, true);
+
+  // Negativo
+  const negRes = parseListParams({ page: "-1" });
+  assertEquals("error" in negRes, true);
+
+  // Limit > 100
+  const limitBigRes = parseListParams({ limit: "101" });
+  assertEquals("error" in limitBigRes, true);
+
+  // Offset > 10000: page = 102, limit = 100 -> offset = 10100
+  const offsetBigRes = parseListParams({ page: "102", limit: "100" });
+  assertEquals("error" in offsetBigRes, true);
+  if ("error" in offsetBigRes) {
+    assertEquals(offsetBigRes.error.includes("excede o limite máximo permitido de 10000"), true);
+  }
+
+  // Offset dentro do limite: page = 101, limit = 100 -> offset = 10000
+  const offsetOkRes = parseListParams({ page: "101", limit: "100" });
+  assertEquals("error" in offsetOkRes, false);
 });
 
 // --------------------------------------------------------------------------
@@ -606,16 +692,49 @@ Deno.test("handleRequest list com filtro uf asserte eq('uf', 'AC') e PUBLIC_LICI
 
   const selectCall = mockClient.calls.find((c) => c.method === "select");
   assertEquals(selectCall?.args[0], PUBLIC_LICITACAO_COLUMNS);
-  assertEquals((selectCall?.args[0] as string).includes("raw"), false);
-  assertEquals((selectCall?.args[0] as string).includes("esclarecimentos"), false);
-  assertEquals((selectCall?.args[0] as string).includes("notas"), false);
-  assertEquals((selectCall?.args[0] as string).includes("anexo_raiz_id"), false);
-  assertEquals((selectCall?.args[0] as string).includes("edital_id"), false);
-  assertEquals((selectCall?.args[0] as string).includes("modulo"), true);
-  assertEquals((selectCall?.args[0] as string).includes("id_externo"), true);
+  // Asserção exata da allowlist esperada
+  const EXPECTED_PROJECTION = [
+    "id",
+    "fonte",
+    "modulo",
+    "id_externo",
+    "codigo_externo",
+    "numero_processo",
+    "processo_norm",
+    "numero_edital",
+    "objeto",
+    "unidade_compradora",
+    "modalidade",
+    "fase",
+    "situacao",
+    "data_inicio",
+    "data_fim",
+    "valor_total",
+    "orgao_cnpj",
+    "orgao_nome",
+    "municipio",
+    "uf",
+    "data_publicacao",
+    "data_homologacao",
+    "categoria_escopo",
+    "interesse_borracha",
+    "prioridade",
+    "termos_busca",
+    "created_at",
+    "updated_at",
+    "last_synced_at",
+  ].join(",");
+  assertEquals(selectCall?.args[0], EXPECTED_PROJECTION);
 
   const eqUfCall = mockClient.calls.find((c) => c.method === "eq" && c.args[0] === "uf");
   assertEquals(eqUfCall, { method: "eq", args: ["uf", "AC"] });
+
+  // Asserção de desempate determinístico por id
+  const orderCalls = mockClient.calls.filter((c) => c.method === "order");
+  assertEquals(orderCalls, [
+    { method: "order", args: ["data_fim", { ascending: false, nullsFirst: false }] },
+    { method: "order", args: ["id", { ascending: true }] },
+  ]);
 });
 
 Deno.test("handleRequest get por id asserte eq('id', 101) e maybeSingle", async () => {
@@ -640,12 +759,38 @@ Deno.test("handleRequest get por id asserte eq('id', 101) e maybeSingle", async 
 
   const selectCall = mockClient.calls.find((c) => c.method === "select");
   assertEquals(selectCall?.args[0], PUBLIC_LICITACAO_COLUMNS);
+  assertEquals((selectCall?.args[0] as string).includes("modulo"), true);
+  assertEquals((selectCall?.args[0] as string).includes("id_externo"), true);
+  assertEquals((selectCall?.args[0] as string).includes("raw"), false);
 
   const eqIdCall = mockClient.calls.find((c) => c.method === "eq");
   assertEquals(eqIdCall, { method: "eq", args: ["id", "101"] });
 
   const maybeSingleCall = mockClient.calls.find((c) => c.method === "maybeSingle");
   assertEquals(Boolean(maybeSingleCall), true);
+});
+
+Deno.test("handleRequest list e get em erro de banco retornam status 500 com mensagem genérica", async () => {
+  const mockClient = createRecordingMockClient({
+    listResult: {
+      data: [],
+      count: null,
+      error: { message: "database timeout or connection refused (leak check)" },
+    },
+  });
+
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list", {
+    method: "GET",
+  });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, {
+    getClient: () => mockClient as any,
+    requireAuth: () => null,
+  });
+  assertEquals(res.status, 500);
+  const body = await res.json();
+  assertEquals(body.error, "Falha ao consultar lista de oportunidades");
+  assertEquals(JSON.stringify(body).includes("leak check"), false);
 });
 
 Deno.test("handleRequest get por codigo_externo sem fonte retorna 400", async () => {
@@ -726,6 +871,13 @@ Deno.test("handleRequest get por orgao_cnpj + processo_norm asserte eq nos dois 
   const rangeCall = mockClient.calls.find((c) => c.method === "range");
   assertEquals(rangeCall, { method: "range", args: [0, 9] });
 
+  // Asserção de desempate determinístico por id no get por processo
+  const orderCalls = mockClient.calls.filter((c) => c.method === "order");
+  assertEquals(orderCalls, [
+    { method: "order", args: ["data_publicacao", { ascending: false, nullsFirst: false }] },
+    { method: "order", args: ["id", { ascending: true }] },
+  ]);
+
   const eqCalls = mockClient.calls.filter((c) => c.method === "eq");
   assertEquals(eqCalls, [
     { method: "eq", args: ["orgao_cnpj", "07486108000185"] },
@@ -780,7 +932,7 @@ Deno.test("handleRequest mock com count nulo em readiness retorna total_registro
   assertEquals(body.ultima_atualizacao, "2026-09-28T10:00:00Z");
 });
 
-Deno.test("handleRequest em erro de banco retorna mensagem genérica (não vaza PostgREST)", async () => {
+Deno.test("handleRequest em erro de banco retorna mensagem genérica com status 500 (não vaza PostgREST)", async () => {
   const mockClient = createRecordingMockClient({
     singleResult: {
       data: null,
@@ -796,22 +948,18 @@ Deno.test("handleRequest em erro de banco retorna mensagem genérica (não vaza 
     getClient: () => mockClient as any,
     requireAuth: () => null,
   });
-  assertEquals(res.status, 400);
+  assertEquals(res.status, 500);
   const body = await res.json();
   assertEquals(body.error, "Falha ao consultar licitação");
   assertEquals(JSON.stringify(body).includes("internals leaked"), false);
 });
 
-Deno.test("handleRequest com requireUserAuth simulado autenticado avança com sucesso", async () => {
+Deno.test("handleRequest com requireUserAuth simulado autenticado em list avança com sucesso", async () => {
   const mockClient = createRecordingMockClient({
-    headCountResult: { count: 10, error: null },
-    singleResult: {
-      data: { updated_at: "2026-09-28T10:00:00Z", last_synced_at: null },
-      error: null,
-    },
+    listResult: { data: [{ id: 1, objeto: "Licitação Teste" }], count: 1, error: null },
   });
 
-  const req = new Request("http://localhost/api-dashboard-oportunidades?action=readiness", {
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list", {
     method: "GET",
     headers: { Authorization: "Bearer valid-user-token" },
   });
@@ -827,13 +975,19 @@ Deno.test("handleRequest com requireUserAuth simulado autenticado avança com su
 
   assertEquals(res.status, 200);
   const body = await res.json();
-  assertEquals(body.ready, true);
+  assertEquals(body.action, "list");
+  assertEquals(body.total, 1);
 });
 
-Deno.test("importar index.ts não inicia servidor de fundo (sanitizer de recursos livre)", async () => {
-  // Verifica que handleRequest é uma função exportada e que o import do módulo é limpo
-  const mod = await import("../../../supabase/functions/api-dashboard-oportunidades/index.ts");
-  assertEquals(typeof mod.handleRequest, "function");
-  assertEquals(typeof mod.getDefaultServiceClient, "function");
-  assertEquals(typeof mod.PUBLIC_LICITACAO_COLUMNS, "string");
+Deno.test("importar index.ts em subprocesso termina com código 0 sem escutar servidor", async () => {
+  const command = new Deno.Command(Deno.execPath(), {
+    args: [
+      "eval",
+      "import './supabase/functions/api-dashboard-oportunidades/index.ts';",
+    ],
+    stdout: "piped",
+    stderr: "piped",
+  });
+  const output = await command.output();
+  assertEquals(output.code, 0);
 });

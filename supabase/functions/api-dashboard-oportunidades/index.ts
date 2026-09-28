@@ -1,6 +1,13 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, SupabaseClient } from "npm:@supabase/supabase-js@2";
-import { corsHeaders, jsonResponse, requireUserAuth } from "../_shared/http.ts";
+import { jsonResponse, requireUserAuth } from "../_shared/http.ts";
+
+export const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type, idempotency-key",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+};
 import type { ActionParams, GetActionParams, ListActionParams } from "./types.ts";
 import { parseActionFromBody, parseActionFromUrl } from "./validation.ts";
 import { applyLicitacaoFilters, calculateRange } from "./query.ts";
@@ -153,7 +160,7 @@ async function handleGet(
 
       if (error) {
         console.error("[api-dashboard-oportunidades] Erro ao buscar por ID:", error);
-        return jsonResponse({ error: "Falha ao consultar licitação" }, 400);
+        return jsonResponse({ error: "Falha ao consultar licitação" }, 500);
       }
 
       if (!data) {
@@ -185,7 +192,7 @@ async function handleGet(
 
       if (error) {
         console.error("[api-dashboard-oportunidades] Erro ao buscar por codigo_externo:", error);
-        return jsonResponse({ error: "Falha ao consultar licitação" }, 400);
+        return jsonResponse({ error: "Falha ao consultar licitação" }, 500);
       }
 
       if (!data) {
@@ -210,11 +217,12 @@ async function handleGet(
         .eq("orgao_cnpj", params.orgao_cnpj)
         .eq("processo_norm", params.processo_norm)
         .order("data_publicacao", { ascending: false, nullsFirst: false })
+        .order("id", { ascending: true })
         .range(from, to);
 
       if (error) {
         console.error("[api-dashboard-oportunidades] Erro ao buscar por processo:", error);
-        return jsonResponse({ error: "Falha ao consultar compras do processo" }, 400);
+        return jsonResponse({ error: "Falha ao consultar compras do processo" }, 500);
       }
 
       const items = data ?? [];
@@ -269,13 +277,14 @@ async function handleList(
     const isAscending = order_direction === "asc";
     baseQuery = baseQuery
       .order(order_by, { ascending: isAscending, nullsFirst: false })
+      .order("id", { ascending: true })
       .range(from, to);
 
     const { data, error, count } = await baseQuery;
 
     if (error) {
       console.error("[api-dashboard-oportunidades] Erro ao listar oportunidades:", error);
-      return jsonResponse({ error: "Falha ao consultar lista de oportunidades" }, 400);
+      return jsonResponse({ error: "Falha ao consultar lista de oportunidades" }, 500);
     }
 
     return jsonResponse({
@@ -299,13 +308,6 @@ export async function handleRequest(
 ): Promise<Response> {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
-  }
-
-  // Autenticação obrigatória para leitura de dados da Edge Function
-  const authChecker = ctx?.requireAuth ?? requireUserAuth;
-  const authError = await authChecker(req);
-  if (authError) {
-    return authError;
   }
 
   let actionParams: ActionParams | { error: string };
@@ -333,9 +335,19 @@ export async function handleRequest(
     return jsonResponse({ error: actionParams.error }, 400);
   }
 
+  // readiness pode ser público (sem dados de linhas, apenas status e contagem de saúde)
+  if (actionParams.action === "readiness") {
+    return await handleReadiness(ctx);
+  }
+
+  // Autenticação obrigatória para leitura de dados (list e get)
+  const authChecker = ctx?.requireAuth ?? requireUserAuth;
+  const authError = await authChecker(req);
+  if (authError) {
+    return authError;
+  }
+
   switch (actionParams.action) {
-    case "readiness":
-      return await handleReadiness(ctx);
     case "get":
       return await handleGet(actionParams, ctx);
     case "list":

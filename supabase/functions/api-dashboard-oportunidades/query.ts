@@ -2,11 +2,23 @@ import type { LicitacaoFiltros } from "./types.ts";
 import { getNextDayIso, isDateOnly } from "./validation.ts";
 
 /**
- * Sanitiza texto para uso em operadores PostgREST .or() e .ilike()
- * Remove caracteres de controle ou vírgulas/parênteses que quebram o parsing do PostgREST.
+ * Sanitiza termo para busca literal.
+ * Regras:
+ * - Normaliza para Unicode NFC.
+ * - Usa allowlist: caracteres que não sejam letras (\p{L}), números (\p{N}), espaços (\s) ou hífen (-) viram espaço.
+ *   (remove curingas %, _, *, barras invertidas \, aspas, vírgulas, parênteses, etc).
+ * - Colapsa espaços consecutivos.
+ * - Trunca em no máximo 200 caracteres.
+ * - Se ficar vazio, retorna undefined (ignora o filtro).
  */
-export function sanitizeSearchTerm(term: string): string {
-  return term.replace(/[,()"]/g, " ").replace(/\s+/g, " ").trim();
+export function sanitizeSearchTerm(val: unknown): string | undefined {
+  if (typeof val !== "string") return undefined;
+  const nfc = val.normalize("NFC");
+  const filtered = nfc.replace(/[^\p{L}\p{N}\s-]/gu, " ");
+  const collapsed = filtered.replace(/\s+/g, " ").trim();
+  if (collapsed.length === 0) return undefined;
+  const truncated = collapsed.slice(0, 200).trim();
+  return truncated.length > 0 ? truncated : undefined;
 }
 
 /**
@@ -21,6 +33,17 @@ export interface FilterableQuery {
   lt(column: string, value: unknown): this;
   ilike(column: string, pattern: string): this;
   or(filters: string): this;
+}
+
+export function toUtc3DateBoundary(
+  dateOnlyStr: string,
+  boundary: "start" | "next_day_start",
+): string {
+  if (boundary === "start") {
+    return `${dateOnlyStr}T00:00:00-03:00`;
+  }
+  const nextDay = getNextDayIso(dateOnlyStr);
+  return `${nextDay}T00:00:00-03:00`;
 }
 
 /**
@@ -39,7 +62,7 @@ export function applyLicitacaoFilters<T extends FilterableQuery>(
   }
 
   if (filtros.municipio) {
-    query.ilike("municipio", `%${sanitizeSearchTerm(filtros.municipio)}%`);
+    query.ilike("municipio", `%${filtros.municipio}%`);
   }
 
   if (filtros.orgao_cnpj) {
@@ -47,7 +70,7 @@ export function applyLicitacaoFilters<T extends FilterableQuery>(
   }
 
   if (filtros.orgao_nome) {
-    query.ilike("orgao_nome", `%${sanitizeSearchTerm(filtros.orgao_nome)}%`);
+    query.ilike("orgao_nome", `%${filtros.orgao_nome}%`);
   }
 
   if (filtros.modalidade && filtros.modalidade.length > 0) {
@@ -78,13 +101,17 @@ export function applyLicitacaoFilters<T extends FilterableQuery>(
     query.eq("fonte", filtros.fonte);
   }
 
-  // Intervalo de data_publicacao
+  // Intervalo de data_publicacao (America/Sao_Paulo UTC-3 para só-data)
   if (filtros.data_publicacao_inicio) {
-    query.gte("data_publicacao", filtros.data_publicacao_inicio);
+    if (isDateOnly(filtros.data_publicacao_inicio)) {
+      query.gte("data_publicacao", toUtc3DateBoundary(filtros.data_publicacao_inicio, "start"));
+    } else {
+      query.gte("data_publicacao", filtros.data_publicacao_inicio);
+    }
   }
   if (filtros.data_publicacao_fim) {
     if (isDateOnly(filtros.data_publicacao_fim)) {
-      query.lt("data_publicacao", getNextDayIso(filtros.data_publicacao_fim));
+      query.lt("data_publicacao", toUtc3DateBoundary(filtros.data_publicacao_fim, "next_day_start"));
     } else {
       query.lte("data_publicacao", filtros.data_publicacao_fim);
     }
@@ -92,11 +119,15 @@ export function applyLicitacaoFilters<T extends FilterableQuery>(
 
   // Intervalo de data_inicio
   if (filtros.data_inicio_min) {
-    query.gte("data_inicio", filtros.data_inicio_min);
+    if (isDateOnly(filtros.data_inicio_min)) {
+      query.gte("data_inicio", toUtc3DateBoundary(filtros.data_inicio_min, "start"));
+    } else {
+      query.gte("data_inicio", filtros.data_inicio_min);
+    }
   }
   if (filtros.data_inicio_max) {
     if (isDateOnly(filtros.data_inicio_max)) {
-      query.lt("data_inicio", getNextDayIso(filtros.data_inicio_max));
+      query.lt("data_inicio", toUtc3DateBoundary(filtros.data_inicio_max, "next_day_start"));
     } else {
       query.lte("data_inicio", filtros.data_inicio_max);
     }
@@ -104,11 +135,15 @@ export function applyLicitacaoFilters<T extends FilterableQuery>(
 
   // Intervalo de data_fim
   if (filtros.data_fim_min) {
-    query.gte("data_fim", filtros.data_fim_min);
+    if (isDateOnly(filtros.data_fim_min)) {
+      query.gte("data_fim", toUtc3DateBoundary(filtros.data_fim_min, "start"));
+    } else {
+      query.gte("data_fim", filtros.data_fim_min);
+    }
   }
   if (filtros.data_fim_max) {
     if (isDateOnly(filtros.data_fim_max)) {
-      query.lt("data_fim", getNextDayIso(filtros.data_fim_max));
+      query.lt("data_fim", toUtc3DateBoundary(filtros.data_fim_max, "next_day_start"));
     } else {
       query.lte("data_fim", filtros.data_fim_max);
     }
@@ -116,11 +151,15 @@ export function applyLicitacaoFilters<T extends FilterableQuery>(
 
   // Intervalo de data_homologacao
   if (filtros.data_homologacao_min) {
-    query.gte("data_homologacao", filtros.data_homologacao_min);
+    if (isDateOnly(filtros.data_homologacao_min)) {
+      query.gte("data_homologacao", toUtc3DateBoundary(filtros.data_homologacao_min, "start"));
+    } else {
+      query.gte("data_homologacao", filtros.data_homologacao_min);
+    }
   }
   if (filtros.data_homologacao_max) {
     if (isDateOnly(filtros.data_homologacao_max)) {
-      query.lt("data_homologacao", getNextDayIso(filtros.data_homologacao_max));
+      query.lt("data_homologacao", toUtc3DateBoundary(filtros.data_homologacao_max, "next_day_start"));
     } else {
       query.lte("data_homologacao", filtros.data_homologacao_max);
     }
@@ -136,13 +175,10 @@ export function applyLicitacaoFilters<T extends FilterableQuery>(
 
   // Termo livre em objeto / numero_processo / numero_edital
   if (filtros.busca) {
-    const cleanTerm = sanitizeSearchTerm(filtros.busca);
-    if (cleanTerm.length > 0) {
-      // No PostgREST .or(): coluna.ilike.*termo*
-      query.or(
-        `objeto.ilike.*${cleanTerm}*,numero_processo.ilike.*${cleanTerm}*,numero_edital.ilike.*${cleanTerm}*`,
-      );
-    }
+    // No PostgREST .or(): coluna.ilike.*termo*
+    query.or(
+      `objeto.ilike.*${filtros.busca}*,numero_processo.ilike.*${filtros.busca}*,numero_edital.ilike.*${filtros.busca}*`,
+    );
   }
 
   return query;

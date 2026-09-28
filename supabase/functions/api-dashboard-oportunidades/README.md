@@ -17,11 +17,14 @@ Função Supabase Edge Function responsável por atender o frontend do Dashboard
 ## Arquitetura & Segurança RLS
 
 - **RLS em `public.licitacoes_externas`**: A tabela possui `SELECT` restrito exclusivamente para `authenticated`, com todo acesso de `anon` explicitamente revogado (conforme migrations `20260926110000_pncp_rls_policies.sql` e `20260928130000_licitacoes_externas_revoke_anon.sql`). A tabela não fica exposta diretamente à REST API pública do PostgREST.
-- **Leitura Server-Side Controlada & Autenticação**: A Edge Function requer um usuário autenticado via JWT Supabase (`Authorization: Bearer <token>`), verificado por `requireUserAuth`. No servidor (Edge Function), as consultas a `licitacoes_externas` utilizam `SUPABASE_SERVICE_ROLE_KEY`. A chave de service_role **nunca** é devolvida nem exposta ao cliente.
+- **Leitura Server-Side Controlada & Autenticação**: A Edge Function requer um usuário autenticado via JWT Supabase (`Authorization: Bearer <token>`) para as ações `list` e `get`, verificado por `requireUserAuth`. A ação `readiness` permanece pública para verificação de saúde e contagem sem expor dados de linhas. No servidor (Edge Function), as consultas a `licitacoes_externas` utilizam `SUPABASE_SERVICE_ROLE_KEY`. A chave de service_role **nunca** é devolvida nem exposta ao cliente.
 - **Projeção Estrita de Colunas Públicas**: As consultas **não** usam `select("*")`. Apenas um conjunto explícito de colunas seguras para consumo do dashboard é projetado (`PUBLIC_LICITACAO_COLUMNS`), incluindo identificadores de fonte não-secretos (`modulo`, `id_externo`) necessários para fontes como SEST SENAT (onde `codigo_externo` é nulo), e omitindo estritamente colunas internas, payloads brutos (`raw`), fóruns (`esclarecimentos`, `notas`) e anexos técnicos (`anexo_raiz_id`, `edital_id`).
 - **Isolamento de Credenciais**: O header `Authorization` do usuário não é repassado ao cliente service_role interno.
-- **Mensagens de Erro Seguras**: Detalhes crus de erros do PostgREST não são expostos na resposta HTTP; os erros são logados internamente via `console.error` e o cliente recebe mensagens de erro limpas e genéricas.
-- **Prevenção de Injeção SQL**: Todas as consultas são parametrizadas e estruturadas usando o query builder do `supabase-js`.
+- **Mensagens de Erro Seguras**: Detalhes crus de erros do PostgREST não são expostos na resposta HTTP; falhas de banco retornam status HTTP 500 com mensagem limpa, e erros de parâmetro inválido retornam status HTTP 400.
+- **Prevenção de Injeção SQL & Sanitização**: Todas as consultas são parametrizadas e estruturadas usando o query builder do `supabase-js`. Termos de busca textual livre (`busca`, `q`, `municipio`, `orgao_nome`) são normalizados em Unicode NFC, filtrados via allowlist (`[^\p{L}\p{N}\s-]`), sem curingas `%`, `_`, `*`, `\\`, colapsados e limitados a 200 caracteres.
+- **Ordenação Determinística**: As consultas usam desempate estável via `.order("id", { ascending: true })` após o campo primário de ordenação.
+- **Fuso Horário & Limites de Datas**: O contrato opera no fuso horário de `America/Sao_Paulo` (UTC-3 fixo). Para limites em formato só-data (`YYYY-MM-DD`), os valores são ancorados em `${data}T00:00:00-03:00` (mínimo via `>=`) e no início do dia seguinte `${nextDay}T00:00:00-03:00` (máximo via `<`), cobrindo o dia completo. Timestamps com hora exigem obrigatoriamente designador `Z` ou offset de fuso (ex: `-03:00`). Timestamps sem offset são rejeitados com HTTP 400.
+- **Limites de Paginação**: `page` e `limit` devem ser inteiros seguros ≥ 1; `limit` máximo de 100; offset máximo `(page - 1) * limit` não pode exceder 10.000 (valores superiores retornam HTTP 400).
 
 ---
 
@@ -29,7 +32,7 @@ Função Supabase Edge Function responsável por atender o frontend do Dashboard
 
 - Aceita requisições **`GET`** (parâmetros via query string) e **`POST`** (corpo em JSON `{ "action": "...", ... }`).
 - POST com JSON malformado ou não-objeto retorna explicitamente **HTTP 400**.
-- Suporta requisições `OPTIONS` com headers CORS liberados para `Access-Control-Allow-Origin: *`.
+- Suporta requisições `OPTIONS` com headers CORS liberados para `Access-Control-Allow-Origin: *` e `Access-Control-Allow-Methods: GET, POST, OPTIONS`.
 - Responde com cabeçalho `Content-Type: application/json; charset=utf-8`.
 
 ---

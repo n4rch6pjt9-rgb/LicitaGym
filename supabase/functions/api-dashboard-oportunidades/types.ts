@@ -41,8 +41,12 @@ export interface ListActionParams extends PaginationParams {
 export interface GetActionParams {
   action: "get";
   id?: number | string;
+  codigo_externo?: string;
+  fonte?: string;
   orgao_cnpj?: string;
   processo_norm?: string;
+  page?: number;
+  limit?: number;
 }
 
 export interface ReadinessActionParams {

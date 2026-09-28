@@ -3,7 +3,7 @@
 Função Supabase Edge Function responsável por atender o frontend do Dashboard do LicitaGym com operações de **leitura** de oportunidades a partir da tabela `licitacoes_externas`.
 
 ## Sumário
-- [Arquitetura & Segurança](#arquitetura--segurança)
+- [Arquitetura & Segurança RLS](#arquitetura--segurança-rls)
 - [Protocolo & CORS](#protocolo--cors)
 - [Ações Disponíveis](#ações-disponíveis)
   - [1. `readiness`](#1-readiness)
@@ -14,18 +14,25 @@ Função Supabase Edge Function responsável por atender o frontend do Dashboard
 
 ---
 
-## Arquitetura & Segurança
+## Arquitetura & Segurança RLS
 
-- **Chave pública (`anon`)**: A função usa apenas as credenciais de leitura com RLS no Supabase. O service_role **nunca** é exposto ao cliente.
-- **RLS (Row Level Security)**: A tabela `public.licitacoes_externas` possui policy de `SELECT` para `anon` e `authenticated`. Escrita (`INSERT`, `UPDATE`, `DELETE`) permanece bloqueada para `anon`/`authenticated`, restrita exclusivamente ao coletor via `service_role`.
-- **Prevenção de Injeção SQL**: Todas as consultas são estruturadas via PostgREST Query Builder (`supabase-js`), sem concatenação direta de SQL.
+- **RLS em `public.licitacoes_externas`**: A tabela possui `SELECT` restrito exclusivamente para `authenticated`, com todo acesso de `anon` explicitamente revogado (conforme migrations `20260926110000_pncp_rls_policies.sql` e `20260928130000_licitacoes_externas_revoke_anon.sql`). A tabela não fica exposta diretamente à REST API pública do PostgREST.
+- **Leitura Server-Side Controlada & Autenticação**: A Edge Function requer um usuário autenticado via JWT Supabase (`Authorization: Bearer <token>`) para as ações `list` e `get`, verificado por `requireUserAuth`. A ação `readiness` permanece pública para verificação de saúde e contagem sem expor dados de linhas. No servidor (Edge Function), as consultas a `licitacoes_externas` utilizam `SUPABASE_SERVICE_ROLE_KEY`. A chave de service_role **nunca** é devolvida nem exposta ao cliente.
+- **Projeção Estrita de Colunas Públicas**: As consultas **não** usam `select("*")`. Apenas um conjunto explícito de colunas seguras para consumo do dashboard é projetado (`PUBLIC_LICITACAO_COLUMNS`), incluindo identificadores de fonte não-secretos (`modulo`, `id_externo`) necessários para fontes como SEST SENAT (onde `codigo_externo` é nulo), e omitindo estritamente colunas internas, payloads brutos (`raw`), fóruns (`esclarecimentos`, `notas`) e anexos técnicos (`anexo_raiz_id`, `edital_id`).
+- **Isolamento de Credenciais**: O header `Authorization` do usuário não é repassado ao cliente service_role interno.
+- **Mensagens de Erro Seguras**: Detalhes crus de erros do PostgREST não são expostos na resposta HTTP; falhas de banco retornam status HTTP 500 com mensagem limpa, e erros de parâmetro inválido retornam status HTTP 400.
+- **Prevenção de Injeção SQL & Sanitização**: Todas as consultas são parametrizadas e estruturadas usando o query builder do `supabase-js`. Termos de busca textual livre (`busca`, `q`, `municipio`, `orgao_nome`) são normalizados em Unicode NFC, filtrados via allowlist (`[^\p{L}\p{N}\s-]`), sem curingas `%`, `_`, `*`, `\\`, colapsados e limitados a 200 caracteres.
+- **Ordenação Determinística**: As consultas usam desempate estável via `.order("id", { ascending: true })` após o campo primário de ordenação.
+- **Fuso Horário & Limites de Datas**: O contrato opera no fuso horário de `America/Sao_Paulo` (UTC-3 fixo). Para limites em formato só-data (`YYYY-MM-DD`), os valores são ancorados em `${data}T00:00:00-03:00` (mínimo via `>=`) e no início do dia seguinte `${nextDay}T00:00:00-03:00` (máximo via `<`), cobrindo o dia completo. Timestamps com hora exigem obrigatoriamente o literal `T` como separador e designador `Z` ou offset de fuso (ex: `-03:00`). Timestamps com espaço ou sem offset são rejeitados com HTTP 400.
+- **Limites de Paginação**: `page` e `limit` devem ser inteiros seguros ≥ 1; `limit` máximo de 100; offset máximo `(page - 1) * limit` não pode exceder 10.000 (valores superiores retornam HTTP 400).
 
 ---
 
 ## Protocolo & CORS
 
 - Aceita requisições **`GET`** (parâmetros via query string) e **`POST`** (corpo em JSON `{ "action": "...", ... }`).
-- Suporta requisições `OPTIONS` com headers CORS liberados para `Access-Control-Allow-Origin: *`.
+- POST com JSON malformado ou não-objeto retorna explicitamente **HTTP 400**.
+- Suporta requisições `OPTIONS` com headers CORS liberados para `Access-Control-Allow-Origin: *` e `Access-Control-Allow-Methods: GET, POST, OPTIONS`.
 - Responde com cabeçalho `Content-Type: application/json; charset=utf-8`.
 
 ---
@@ -61,37 +68,35 @@ Verifica a conectividade e disponibilidade da base de licitações externas sem 
 {
   "status": "unhealthy",
   "ready": false,
-  "error": "Descrição do erro de conexão"
+  "error": "Falha ao verificar disponibilidade da base de dados"
 }
 ```
 
 ---
 
 ### 2. `get`
-Obtém uma licitação específica por seu ID único numérico ou pela identidade do certame: CNPJ do órgão (`orgao_cnpj`) + número normalizado do processo (`processo_norm`).
+Obtém certames ou compras específicas.
 
-#### Requisição por ID
-- **GET**: `/functions/v1/api-dashboard-oportunidades?action=get&id=123`
-- **POST**:
+#### Modos de Consulta:
+1. **Por ID único da tabela (`id`)**: Retorna `{ item: ... }` ou 404.
+2. **Por Código Externo único (`codigo_externo` + `fonte` obrigatório)**: Como a unicidade no banco é composta por `(fonte, codigo_externo)`, o parâmetro `fonte` é obrigatório quando `codigo_externo` for informado (retorna 400 se `fonte` for omitida). Retorna `{ item: ... }` ou 404.
+3. **Por Identidade do Certame/Processo (`orgao_cnpj` + `processo_norm`)**:
+   Como um processo administrativo pode conter múltiplas compras (relação 1..N compras por processo), retorna uma coleção paginada `{ orgao_cnpj, processo_norm, page, limit, total, items: [...] }`, sem `maybeSingle()`. Aceita parâmetros opcionais `page` e `limit`. Retorna 404 claro com `{ error: "Nenhuma licitação encontrada para este processo", items: [] }` se não houver registros.
+
+#### Exemplos de Requisição:
+- **GET por ID**: `/functions/v1/api-dashboard-oportunidades?action=get&id=123`
+- **GET por Código Externo**: `/functions/v1/api-dashboard-oportunidades?action=get&codigo_externo=07486108000185-1-000001/2026&fonte=pncp`
+- **GET por Processo Administrativo**: `/functions/v1/api-dashboard-oportunidades?action=get&orgao_cnpj=07.486.108/0001-85&processo_norm=00007.20260204/0002-28&page=1&limit=20`
+- **POST equivalente**:
   ```json
   {
     "action": "get",
-    "id": 123
+    "codigo_externo": "07486108000185-1-000001/2026",
+    "fonte": "pncp"
   }
   ```
 
-#### Requisição por Identidade do Certame
-- **GET**: `/functions/v1/api-dashboard-oportunidades?action=get&orgao_cnpj=07.486.108/0001-85&processo_norm=00007.20260204/0002-28`
-- **POST**:
-  ```json
-  {
-    "action": "get",
-    "orgao_cnpj": "07486108000185",
-    "processo_norm": "0000720260204000228"
-  }
-  ```
-
-#### Resposta de Sucesso (HTTP 200)
+#### Resposta de Sucesso por ID ou Código Externo (HTTP 200)
 ```json
 {
   "item": {
@@ -116,16 +121,35 @@ Obtém uma licitação específica por seu ID único numérico ou pela identidad
     "categoria_escopo": "catmat",
     "interesse_borracha": false,
     "prioridade": "leads",
-    "updated_at": "2026-09-28T09:00:00Z"
+    "created_at": "2026-09-20T08:05:00Z",
+    "updated_at": "2026-09-28T09:00:00Z",
+    "last_synced_at": "2026-09-28T09:00:00Z"
   }
 }
 ```
 
-#### Resposta quando não encontrado (HTTP 404)
+#### Resposta de Sucesso por Processo Administrativo (HTTP 200)
 ```json
 {
-  "error": "Licitação não encontrada",
-  "item": null
+  "orgao_cnpj": "07486108000185",
+  "processo_norm": "0000720260204000228",
+  "page": 1,
+  "limit": 20,
+  "total": 2,
+  "items": [
+    {
+      "id": 123,
+      "codigo_externo": "07486108000185-1-000001/2026",
+      "objeto": "Lote 1 - Esteiras Ergométricas",
+      "valor_total": 120000.00
+    },
+    {
+      "id": 124,
+      "codigo_externo": "07486108000185-1-000002/2026",
+      "objeto": "Lote 2 - Anilhas e Barras",
+      "valor_total": 85000.00
+    }
+  ]
 }
 ```
 
@@ -147,23 +171,23 @@ Lista oportunidades com suporte a paginação, ordenação configurável e múlt
 |---|---|---|
 | `prioridade` | string | Prioridade do certame (`leads`, `monitorar`, `historico`) |
 | `uf` | string | Sigla da UF com 2 letras (ex: `SP`, `RJ`) |
-| `municipio` | string | Busca parcial (ilike) no nome do município |
+| `municipio` | string | Busca parcial (`ilike`) no nome do município |
 | `orgao_cnpj` | string | CNPJ do órgão (apenas dígitos são considerados) |
-| `orgao_nome` | string | Busca parcial (ilike) no nome do órgão |
+| `orgao_nome` | string | Busca parcial (`ilike`) no nome do órgão |
 | `modalidade` | string / string[] | Modalidade única ou lista separada por vírgula / array |
 | `situacao` | string | Situação da licitação |
 | `fase` | string | Fase da licitação |
 | `categoria_escopo` | string | Categoria (`catmat`, `borracha`, `piso`, `obra_piso`, `forte`, `fraco`) |
 | `interesse_borracha` | boolean | Filtrar oportunidades de interesse em borracha (`true`/`false`) |
 | `fonte` | string | Fonte dos dados (`pncp`, `sestsenat`, etc.) |
-| `data_publicacao_inicio` | string (ISO) | `data_publicacao >= data_publicacao_inicio` |
-| `data_publicacao_fim` | string (ISO) | `data_publicacao <= data_publicacao_fim` |
-| `data_inicio_min` | string (ISO) | `data_inicio >= data_inicio_min` |
-| `data_inicio_max` | string (ISO) | `data_inicio <= data_inicio_max` |
-| `data_fim_min` | string (ISO) | `data_fim >= data_fim_min` |
-| `data_fim_max` | string (ISO) | `data_fim <= data_fim_max` |
-| `data_homologacao_min` | string (ISO) | `data_homologacao >= data_homologacao_min` |
-| `data_homologacao_max` | string (ISO) | `data_homologacao <= data_homologacao_max` |
+| `data_publicacao_inicio` | string | Início da publicação (`>= data_publicacao_inicio`) |
+| `data_publicacao_fim` | string | Fim da publicação. Se formato só-data (`YYYY-MM-DD`), inclui o dia inteiro (`< dia seguinte`) |
+| `data_inicio_min` | string | Início do certame (`>= data_inicio_min`) |
+| `data_inicio_max` | string | Início do certame. Se formato só-data, inclui o dia inteiro (`< dia seguinte`) |
+| `data_fim_min` | string | Encerramento do certame (`>= data_fim_min`) |
+| `data_fim_max` | string | Encerramento do certame. Se formato só-data, inclui o dia inteiro (`< dia seguinte`) |
+| `data_homologacao_min` | string | Homologação (`>= data_homologacao_min`) |
+| `data_homologacao_max` | string | Homologação. Se formato só-data, inclui o dia inteiro (`< dia seguinte`) |
 | `valor_min` | number | `valor_total >= valor_min` |
 | `valor_max` | number | `valor_total <= valor_max` |
 | `busca` (ou `q`) | string | Busca textual livre em `objeto`, `numero_processo` e `numero_edital` |
@@ -195,15 +219,15 @@ Lista oportunidades com suporte a paginação, ordenação configurável e múlt
 
 ## Tratamento de Erros
 
-As respostas de erro utilizam os seguintes códigos de status HTTP e formato JSON padrão:
+As respostas de erro utilizam códigos de status HTTP apropriados e formato JSON com mensagens padronizadas:
 
 - **HTTP 400 Bad Request**: Parâmetro inválido, JSON malformado ou ação não reconhecida.
   ```json
   {
-    "error": "Identificador ausente: informe 'id' ou o par ('orgao_cnpj' e 'processo_norm')"
+    "error": "Corpo JSON inválido. Verifique a sintaxe da requisição."
   }
   ```
-- **HTTP 404 Not Found**: Certame não localizado na ação `get`.
+- **HTTP 404 Not Found**: Certame ou compra não encontrada.
   ```json
   {
     "error": "Licitação não encontrada",
@@ -216,17 +240,17 @@ As respostas de erro utilizam os seguintes códigos de status HTTP e formato JSO
     "error": "Método não permitido. Utilize GET ou POST."
   }
   ```
-- **HTTP 500 Internal Server Error**: Erro inesperado interno.
+- **HTTP 500 Internal Server Error**: Erro inesperado interno ou falha na consulta de dados ao banco (detalhes sensíveis são omitidos e logados no console).
   ```json
   {
-    "error": "Mensagem descritiva do erro"
+    "error": "Falha ao consultar lista de oportunidades"
   }
   ```
-- **HTTP 503 Service Unavailable**: Erro ao conectar ao banco de dados durante checagem de readiness.
+- **HTTP 503 Service Unavailable**: Erro ou indisponibilidade na verificação de readiness (conexão ao banco ou contagem nula).
   ```json
   {
     "status": "unhealthy",
     "ready": false,
-    "error": "Falha na conexão com o banco"
+    "error": "Falha ao verificar disponibilidade da base de dados"
   }
   ```

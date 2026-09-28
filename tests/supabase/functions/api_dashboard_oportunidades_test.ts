@@ -1,5 +1,7 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import {
+  getNextDayIso,
+  isDateOnly,
   parseActionFromBody,
   parseActionFromUrl,
   parseGetParams,
@@ -16,9 +18,12 @@ import {
   sanitizeSearchTerm,
   type FilterableQuery,
 } from "../../../supabase/functions/api-dashboard-oportunidades/query.ts";
-import { handleRequest } from "../../../supabase/functions/api-dashboard-oportunidades/index.ts";
+import {
+  handleRequest,
+  PUBLIC_LICITACAO_COLUMNS,
+} from "../../../supabase/functions/api-dashboard-oportunidades/index.ts";
 
-// Helper mock para testar montagem de query
+// Helper mock para testar montagem de query em applyLicitacaoFilters
 class MockQueryBuilder implements FilterableQuery {
   calls: Array<{ method: string; args: unknown[] }> = [];
 
@@ -38,6 +43,10 @@ class MockQueryBuilder implements FilterableQuery {
     this.calls.push({ method: "lte", args: [column, value] });
     return this;
   }
+  lt(column: string, value: unknown): this {
+    this.calls.push({ method: "lt", args: [column, value] });
+    return this;
+  }
   ilike(column: string, pattern: string): this {
     this.calls.push({ method: "ilike", args: [column, pattern] });
     return this;
@@ -49,7 +58,7 @@ class MockQueryBuilder implements FilterableQuery {
 }
 
 // --------------------------------------------------------------------------
-// Sanitizers
+// Sanitizers e Utilitários de Data & Número
 // --------------------------------------------------------------------------
 
 Deno.test("sanitizeString lida com tipos variados e vazios", () => {
@@ -61,21 +70,65 @@ Deno.test("sanitizeString lida com tipos variados e vazios", () => {
   assertEquals(sanitizeString(undefined), undefined);
 });
 
-Deno.test("sanitizeDate valida formato de data ISO", () => {
+Deno.test("sanitizeDate valida formato de data ISO e rejeita datas impossíveis por rolagem", () => {
+  // Datas válidas só-dia
   assertEquals(sanitizeDate("2026-09-28"), "2026-09-28");
-  assertEquals(sanitizeDate("2026-09-28T12:00:00Z"), "2026-09-28T12:00:00Z");
+  assertEquals(sanitizeDate("2024-02-29"), "2024-02-29"); // ano bissexto válido
+  assertEquals(sanitizeDate("2026-02-28"), "2026-02-28");
+
+  // Rejeição de datas impossíveis por rolagem
+  assertEquals(sanitizeDate("2026-02-29"), undefined); // 2026 não é bissexto
+  assertEquals(sanitizeDate("2026-02-30"), undefined);
+  assertEquals(sanitizeDate("2026-04-31"), undefined);
+  assertEquals(sanitizeDate("2026-13-01"), undefined);
+  assertEquals(sanitizeDate("2026-00-10"), undefined);
+  assertEquals(sanitizeDate("2026-01-00"), undefined);
+  assertEquals(sanitizeDate("2026-01-32"), undefined);
+
+    // Timestamps completos válidos e inválidos
+    assertEquals(sanitizeDate("2026-09-28T12:00:00Z"), "2026-09-28T12:00:00Z");
+    assertEquals(sanitizeDate("2026-09-28T12:00:00.000Z"), "2026-09-28T12:00:00.000Z");
+    assertEquals(sanitizeDate("2026-09-28T12:00:00-03:00"), "2026-09-28T12:00:00-03:00");
+    assertEquals(sanitizeDate("2026-09-28T12:00:00+02:00"), "2026-09-28T12:00:00+02:00");
+    // Espaço como separador deve ser rejeitado (só literal 'T' é aceito)
+    assertEquals(sanitizeDate("2026-09-28 12:00:00Z"), undefined);
+    assertEquals(sanitizeDate("2026-09-28 12:00:00-03:00"), undefined);
+    // Sem Z ou offset deve ser rejeitado (dá undefined)
+    assertEquals(sanitizeDate("2026-09-28 12:00:00"), undefined);
+    assertEquals(sanitizeDate("2026-09-28T12:00:00"), undefined);
+    assertEquals(sanitizeDate("2026-02-30T12:00:00Z"), undefined);
+
+  // Outros inválidos
   assertEquals(sanitizeDate("data-invalida"), undefined);
   assertEquals(sanitizeDate(""), undefined);
   assertEquals(sanitizeDate(null), undefined);
 });
 
-Deno.test("sanitizeNumber valida e converte números e strings numéricas", () => {
+Deno.test("isDateOnly e getNextDayIso para limites superiores de data cheia", () => {
+  assertEquals(isDateOnly("2026-09-28"), true);
+  assertEquals(isDateOnly("2026-09-28T10:00:00Z"), false);
+  assertEquals(isDateOnly("2026-02-28"), true);
+  assertEquals(getNextDayIso("2026-09-28"), "2026-09-29");
+  assertEquals(getNextDayIso("2026-12-31"), "2027-01-01");
+});
+
+Deno.test("sanitizeNumber usa Number() estrito, rejeitando alfanuméricos parciais e espaços", () => {
   assertEquals(sanitizeNumber(42), 42);
   assertEquals(sanitizeNumber(0), 0);
+  assertEquals(sanitizeNumber(-15.5), -15.5);
   assertEquals(sanitizeNumber("123.45"), 123.45);
+  assertEquals(sanitizeNumber("  42 "), 42);
+  assertEquals(sanitizeNumber("1e3"), 1000);
+
+  // Casos estritos: rejeitar strings parciais e vazios
+  assertEquals(sanitizeNumber("   "), undefined);
+  assertEquals(sanitizeNumber(""), undefined);
+  assertEquals(sanitizeNumber("12abc"), undefined);
+  assertEquals(sanitizeNumber("abc12"), undefined);
   assertEquals(sanitizeNumber("abc"), undefined);
   assertEquals(sanitizeNumber(NaN), undefined);
   assertEquals(sanitizeNumber(Infinity), undefined);
+  assertEquals(sanitizeNumber(-Infinity), undefined);
 });
 
 Deno.test("sanitizeBoolean converte valores booleanos e strings conhecidas", () => {
@@ -114,28 +167,47 @@ Deno.test("parseListParams aplica paginação padrão e sanitização de campos"
     busca: "halteres musculacao",
   });
 
-  assertEquals(result.action, "list");
-  assertEquals(result.page, 2);
-  assertEquals(result.limit, 50);
-  assertEquals(result.order_by, "data_publicacao");
-  assertEquals(result.order_direction, "asc");
-  assertEquals(result.filtros.uf, "RJ");
-  assertEquals(result.filtros.prioridade, "leads");
-  assertEquals(result.filtros.valor_min, 1000);
-  assertEquals(result.filtros.valor_max, 50000);
-  assertEquals(result.filtros.busca, "halteres musculacao");
+  assertEquals("error" in result, false);
+  if (!("error" in result)) {
+    assertEquals(result.action, "list");
+    assertEquals(result.page, 2);
+    assertEquals(result.limit, 50);
+    assertEquals(result.order_by, "data_publicacao");
+    assertEquals(result.order_direction, "asc");
+    assertEquals(result.filtros.uf, "RJ");
+    assertEquals(result.filtros.prioridade, "leads");
+    assertEquals(result.filtros.valor_min, 1000);
+    assertEquals(result.filtros.valor_max, 50000);
+    assertEquals(result.filtros.busca, "halteres musculacao");
+  }
 });
 
-Deno.test("parseListParams respeita MAX_LIMIT de 100", () => {
-  const result = parseListParams({ limit: "500" });
-  assertEquals(result.limit, 100);
+Deno.test("parseListParams respeita MAX_LIMIT de 100 e rejeita maior", () => {
+  const resultOk = parseListParams({ limit: "100" });
+  assertEquals("error" in resultOk, false);
+  if (!("error" in resultOk)) {
+    assertEquals(resultOk.limit, 100);
+  }
+
+  const resultErr = parseListParams({ limit: "500" });
+  assertEquals("error" in resultErr, true);
 });
 
-Deno.test("parseGetParams valida ID ou par orgao_cnpj + processo_norm", () => {
+Deno.test("parseGetParams valida ID, codigo_externo ou par orgao_cnpj + processo_norm", () => {
   const byId = parseGetParams({ id: 123 });
   assertEquals(byId.ok, true);
   if (byId.ok) {
     assertEquals(byId.params.id, "123");
+  }
+
+  const byCodigo = parseGetParams({
+    codigo_externo: "07486108000185-1-000001/2026",
+    fonte: "pncp",
+  });
+  assertEquals(byCodigo.ok, true);
+  if (byCodigo.ok) {
+    assertEquals(byCodigo.params.codigo_externo, "07486108000185-1-000001/2026");
+    assertEquals(byCodigo.params.fonte, "pncp");
   }
 
   const byCertame = parseGetParams({
@@ -174,6 +246,19 @@ Deno.test("parseActionFromUrl roteia list, get e readiness", () => {
     }
   }
 
+  const getCodigoUrl = new URL(
+    "http://localhost/api?action=get&codigo_externo=07486108000185-1-000001/2026&fonte=pncp",
+  );
+  const getCodigoRes = parseActionFromUrl(getCodigoUrl);
+  assertEquals("error" in getCodigoRes, false);
+  if (!("error" in getCodigoRes)) {
+    assertEquals(getCodigoRes.action, "get");
+    if (getCodigoRes.action === "get") {
+      assertEquals(getCodigoRes.codigo_externo, "07486108000185-1-000001/2026");
+      assertEquals(getCodigoRes.fonte, "pncp");
+    }
+  }
+
   const readinessUrl = new URL("http://localhost/api?action=readiness");
   const readRes = parseActionFromUrl(readinessUrl);
   assertEquals("error" in readRes, false);
@@ -203,15 +288,15 @@ Deno.test("parseActionFromBody aceita JSON {action, ...}", () => {
 
   const getBody = parseActionFromBody({
     action: "get",
-    orgao_cnpj: "12345678000199",
-    processo_norm: "2026001",
+    codigo_externo: "12345678000199-1-000001/2026",
+    fonte: "pncp",
   });
   assertEquals("error" in getBody, false);
   if (!("error" in getBody)) {
     assertEquals(getBody.action, "get");
     if (getBody.action === "get") {
-      assertEquals(getBody.orgao_cnpj, "12345678000199");
-      assertEquals(getBody.processo_norm, "2026001");
+      assertEquals(getBody.codigo_externo, "12345678000199-1-000001/2026");
+      assertEquals(getBody.fonte, "pncp");
     }
   }
 
@@ -223,7 +308,7 @@ Deno.test("parseActionFromBody aceita JSON {action, ...}", () => {
 });
 
 // --------------------------------------------------------------------------
-// Montagem de Query
+// Montagem de Query e Assertividade Completa de TODOS os Filtros
 // --------------------------------------------------------------------------
 
 Deno.test("calculateRange calcula limites PostgREST corretos", () => {
@@ -232,7 +317,7 @@ Deno.test("calculateRange calcula limites PostgREST corretos", () => {
   assertEquals(calculateRange(3, 10), { from: 20, to: 29 });
 });
 
-Deno.test("applyLicitacaoFilters constrói chamadas no builder", () => {
+Deno.test("applyLicitacaoFilters asserte coluna e valor de TODOS os filtros", () => {
   const mock = new MockQueryBuilder();
 
   applyLicitacaoFilters(mock, {
@@ -260,122 +345,316 @@ Deno.test("applyLicitacaoFilters constrói chamadas no builder", () => {
     busca: "anilhas crossfit",
   });
 
-  const methodNames = mock.calls.map((c) => c.method);
-  assertEquals(methodNames.includes("eq"), true);
-  assertEquals(methodNames.includes("in"), true);
-  assertEquals(methodNames.includes("ilike"), true);
-  assertEquals(methodNames.includes("gte"), true);
-  assertEquals(methodNames.includes("lte"), true);
-  assertEquals(methodNames.includes("or"), true);
-
-  // Verificar filtro or de busca textual
-  const orCall = mock.calls.find((c) => c.method === "or");
-  assertEquals(
-    orCall?.args[0],
-    "objeto.ilike.*anilhas crossfit*,numero_processo.ilike.*anilhas crossfit*,numero_edital.ilike.*anilhas crossfit*",
-  );
+  // Asserção exata de cada chamada individual com UTC-3
+  assertEquals(mock.calls, [
+    { method: "eq", args: ["prioridade", "leads"] },
+    { method: "eq", args: ["uf", "RJ"] },
+    { method: "ilike", args: ["municipio", "%Niteroi%"] },
+    { method: "eq", args: ["orgao_cnpj", "12345678000199"] },
+    { method: "ilike", args: ["orgao_nome", "%Prefeitura%"] },
+    { method: "in", args: ["modalidade", ["Pregão", "Dispensa"]] },
+    { method: "eq", args: ["situacao", "Aberta"] },
+    { method: "eq", args: ["fase", "Julgamento"] },
+    { method: "eq", args: ["categoria_escopo", "catmat"] },
+    { method: "eq", args: ["interesse_borracha", true] },
+    { method: "eq", args: ["fonte", "pncp"] },
+    { method: "gte", args: ["data_publicacao", "2026-01-01T00:00:00-03:00"] },
+    { method: "lt", args: ["data_publicacao", "2026-04-01T00:00:00-03:00"] },
+    { method: "gte", args: ["data_inicio", "2026-02-01T00:00:00-03:00"] },
+    { method: "lt", args: ["data_inicio", "2026-03-01T00:00:00-03:00"] },
+    { method: "gte", args: ["data_fim", "2026-03-01T00:00:00-03:00"] },
+    { method: "lt", args: ["data_fim", "2026-03-16T00:00:00-03:00"] },
+    { method: "gte", args: ["data_homologacao", "2026-04-01T00:00:00-03:00"] },
+    { method: "lt", args: ["data_homologacao", "2026-05-01T00:00:00-03:00"] },
+    { method: "gte", args: ["valor_total", 1000] },
+    { method: "lte", args: ["valor_total", 50000] },
+    {
+      method: "or",
+      args: [
+        "objeto.ilike.*anilhas crossfit*,numero_processo.ilike.*anilhas crossfit*,numero_edital.ilike.*anilhas crossfit*",
+      ],
+    },
+  ]);
 });
 
-Deno.test("sanitizeSearchTerm remove caracteres que quebram sintaxe PostgREST", () => {
+Deno.test("applyLicitacaoFilters modalidade única usa eq em vez de in", () => {
+  const mock = new MockQueryBuilder();
+  applyLicitacaoFilters(mock, { modalidade: ["Pregão Eletrônico"] });
+  assertEquals(mock.calls, [{ method: "eq", args: ["modalidade", "Pregão Eletrônico"] }]);
+});
+
+Deno.test("applyLicitacaoFilters usa lte para datas com timestamp completo", () => {
+  const mock = new MockQueryBuilder();
+
+  applyLicitacaoFilters(mock, {
+    data_publicacao_fim: "2026-03-31T23:59:59Z",
+    data_fim_max: "2026-04-15T18:00:00-03:00",
+  });
+
+  assertEquals(mock.calls, [
+    { method: "lte", args: ["data_publicacao", "2026-03-31T23:59:59Z"] },
+    { method: "lte", args: ["data_fim", "2026-04-15T18:00:00-03:00"] },
+  ]);
+});
+
+Deno.test("sanitizeSearchTerm usa allowlist [^\\p{L}\\p{N}\\s-], NFC, colapsa espaços e trunca em 200", () => {
   assertEquals(sanitizeSearchTerm("teste, (123) \"algo\""), "teste 123 algo");
+  // Curingas %, _, *, barras invertidas \ e pontos devem virar espaço
+  assertEquals(sanitizeSearchTerm("busca%com_underline*asterisco\\barra.ponto"), "busca com underline asterisco barra ponto");
+  // Hífen e caracteres acentuados são preservados
+  assertEquals(sanitizeSearchTerm("pré-moldado de concreto"), "pré-moldado de concreto");
+  // String com apenas caracteres inválidos vira undefined (ignora filtro)
+  assertEquals(sanitizeSearchTerm("%_*\\,.()"), undefined);
+  assertEquals(sanitizeSearchTerm("   "), undefined);
+  // Truncamento em 200 caracteres
+  const longo = "a".repeat(250);
+  const sanitizadoLongo = sanitizeSearchTerm(longo);
+  assertEquals(sanitizadoLongo?.length, 200);
 });
 
 // --------------------------------------------------------------------------
-// Contrato HTTP (OPTIONS, CORS, Método não permitido, Erros de Validação)
+// Contrato HTTP (OPTIONS, CORS, Autenticação, Método não permitido, Erros de Validação e JSON)
 // --------------------------------------------------------------------------
 
-Deno.test("handleRequest responde 200 para OPTIONS com CORS headers", async () => {
+Deno.test("handleRequest com OPTIONS responde 200 com Access-Control-Allow-Methods exato", async () => {
   const req = new Request("http://localhost/api-dashboard-oportunidades", {
     method: "OPTIONS",
   });
   const res = await handleRequest(req);
   assertEquals(res.status, 200);
   assertEquals(res.headers.get("Access-Control-Allow-Origin"), "*");
+  assertEquals(
+    res.headers.get("Access-Control-Allow-Methods"),
+    "GET, POST, OPTIONS",
+  );
 });
 
-Deno.test("handleRequest rejeita métodos não permitidos com 405", async () => {
+Deno.test("handleRequest readiness permanece público e responde 200 sem auth retornando contagem exata", async () => {
+  const mockClient = createRecordingMockClient({
+    headCountResult: { count: 15, error: null },
+    singleResult: {
+      data: { updated_at: "2026-09-28T10:00:00Z", last_synced_at: null },
+      error: null,
+    },
+  });
+
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=readiness", {
+    method: "GET",
+  });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => mockClient as any });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.ready, true);
+  assertEquals(body.total_registros, 15);
+});
+
+Deno.test("handleRequest list sem Authorization retorna 401 via requireUserAuth padrão", async () => {
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list", {
+    method: "GET",
+  });
+  const res = await handleRequest(req);
+  assertEquals(res.status, 401);
+  const body = await res.json();
+  assertEquals(body.error, "Unauthorized");
+});
+
+Deno.test("handleRequest get sem Authorization retorna 401 via requireUserAuth padrão", async () => {
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=get&id=1", {
+    method: "GET",
+  });
+  const res = await handleRequest(req);
+  assertEquals(res.status, 401);
+  const body = await res.json();
+  assertEquals(body.error, "Unauthorized");
+});
+
+Deno.test("handleRequest list com Bearer inválido retorna 401", async () => {
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list", {
+    method: "GET",
+    headers: { Authorization: "Bearer invalid-token" },
+  });
+  const res = await handleRequest(req);
+  assertEquals(res.status, 401);
+  const body = await res.json();
+  assertEquals(body.error, "Unauthorized");
+});
+
+Deno.test("handleRequest rejeita métodos não permitidos com 405 (com auth bypass)", async () => {
   const req = new Request("http://localhost/api-dashboard-oportunidades", {
     method: "DELETE",
   });
-  const res = await handleRequest(req);
+  const res = await handleRequest(req, { requireAuth: () => null });
   assertEquals(res.status, 405);
   const body = await res.json();
   assertEquals(body.error, "Método não permitido. Utilize GET ou POST.");
 });
 
-Deno.test("handleRequest rejeita ação inválida com 400", async () => {
+Deno.test("handleRequest rejeita ação inválida com 400 (com auth bypass)", async () => {
   const req = new Request("http://localhost/api-dashboard-oportunidades?action=invalid", {
     method: "GET",
   });
-  const res = await handleRequest(req);
+  const res = await handleRequest(req, { requireAuth: () => null });
   assertEquals(res.status, 400);
   const body = await res.json();
   assertEquals(body.error.includes("Ação inválida"), true);
+});
+
+Deno.test("handleRequest POST com JSON malformado retorna 400 e não cai em list", async () => {
+  const req = new Request("http://localhost/api-dashboard-oportunidades", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{ malformed json",
+  });
+  const res = await handleRequest(req, { requireAuth: () => null });
+  assertEquals(res.status, 400);
+  const body = await res.json();
+  assertEquals(body.error.includes("Corpo JSON inválido"), true);
+});
+
+Deno.test("handleRequest POST com JSON array retorna 400", async () => {
+  const req = new Request("http://localhost/api-dashboard-oportunidades", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "[]",
+  });
+  const res = await handleRequest(req, { requireAuth: () => null });
+  assertEquals(res.status, 400);
+  const body = await res.json();
+  assertEquals(body.error.includes("Esperado objeto JSON"), true);
 });
 
 Deno.test("handleRequest get sem parâmetros retorna 400 claro", async () => {
   const req = new Request("http://localhost/api-dashboard-oportunidades?action=get", {
     method: "GET",
   });
-  const res = await handleRequest(req);
+  const res = await handleRequest(req, { requireAuth: () => null });
   assertEquals(res.status, 400);
   const body = await res.json();
   assertEquals(body.error.includes("Identificador ausente"), true);
 });
 
+Deno.test("handleRequest get com codigo_externo sem fonte retorna 400 claro", async () => {
+  const req = new Request(
+    "http://localhost/api-dashboard-oportunidades?action=get&codigo_externo=07486108000185-1-000001/2026",
+    { method: "GET" },
+  );
+  const res = await handleRequest(req, { requireAuth: () => null });
+  assertEquals(res.status, 400);
+  const body = await res.json();
+  assertEquals(
+    body.error,
+    "Parâmetro 'fonte' é obrigatório ao consultar por 'codigo_externo'",
+  );
+});
+
+Deno.test("validatePagination e parseListParams rejeitam paginação inválida com 400", () => {
+  // Fração
+  const fracRes = parseListParams({ page: "1.5" });
+  assertEquals("error" in fracRes, true);
+
+  // Zero
+  const zeroRes = parseListParams({ page: "0" });
+  assertEquals("error" in zeroRes, true);
+
+  // Negativo
+  const negRes = parseListParams({ page: "-1" });
+  assertEquals("error" in negRes, true);
+
+  // Limit > 100
+  const limitBigRes = parseListParams({ limit: "101" });
+  assertEquals("error" in limitBigRes, true);
+
+  // Offset > 10000: page = 102, limit = 100 -> offset = 10100
+  const offsetBigRes = parseListParams({ page: "102", limit: "100" });
+  assertEquals("error" in offsetBigRes, true);
+  if ("error" in offsetBigRes) {
+    assertEquals(offsetBigRes.error.includes("excede o limite máximo permitido de 10000"), true);
+  }
+
+  // Offset dentro do limite: page = 101, limit = 100 -> offset = 10000
+  const offsetOkRes = parseListParams({ page: "101", limit: "100" });
+  assertEquals("error" in offsetOkRes, false);
+});
+
 // --------------------------------------------------------------------------
-// Testes com Mock Client Supabase (list, get, readiness)
+// Mock Estruturado do Cliente Supabase com Gravação Completa de Chamadas
 // --------------------------------------------------------------------------
 
-function createMockSupabaseClient(config: {
-  listResult?: { data: unknown[]; count: number; error: unknown };
+interface RecordedCall {
+  method: string;
+  args: unknown[];
+}
+
+function createRecordingMockClient(config: {
+  listResult?: { data: unknown[]; count: number | null; error: unknown };
   singleResult?: { data: unknown; error: unknown };
-  headCountResult?: { count: number; error: unknown };
+  headCountResult?: { count: number | null; error: unknown };
 }) {
+  const calls: RecordedCall[] = [];
+
   const thenable = {
     then(onfulfilled?: (v: unknown) => unknown, onrejected?: (e: unknown) => unknown) {
       const res = config.listResult ?? { data: [], count: 0, error: null };
       return Promise.resolve(res).then(onfulfilled, onrejected);
     },
-    select() {
+    select(cols?: string, opts?: { count?: string; head?: boolean }) {
+      calls.push({ method: "select", args: [cols, opts] });
       return thenable;
     },
-    eq() {
+    eq(col: string, val: unknown) {
+      calls.push({ method: "eq", args: [col, val] });
       return thenable;
     },
-    in() {
+    in(col: string, vals: unknown[]) {
+      calls.push({ method: "in", args: [col, vals] });
       return thenable;
     },
-    gte() {
+    gte(col: string, val: unknown) {
+      calls.push({ method: "gte", args: [col, val] });
       return thenable;
     },
-    lte() {
+    lte(col: string, val: unknown) {
+      calls.push({ method: "lte", args: [col, val] });
       return thenable;
     },
-    ilike() {
+    lt(col: string, val: unknown) {
+      calls.push({ method: "lt", args: [col, val] });
       return thenable;
     },
-    or() {
+    ilike(col: string, pat: string) {
+      calls.push({ method: "ilike", args: [col, pat] });
       return thenable;
     },
-    order() {
+    or(filters: string) {
+      calls.push({ method: "or", args: [filters] });
       return thenable;
     },
-    range() {
+    order(col: string, opts: unknown) {
+      calls.push({ method: "order", args: [col, opts] });
       return thenable;
     },
-    limit() {
+    range(from: number, to: number) {
+      calls.push({ method: "range", args: [from, to] });
+      return thenable;
+    },
+    limit(limit: number) {
+      calls.push({ method: "limit", args: [limit] });
       return thenable;
     },
     maybeSingle() {
+      calls.push({ method: "maybeSingle", args: [] });
       return Promise.resolve(config.singleResult ?? { data: null, error: null });
     },
   };
 
-  return {
-    from(_table: string) {
+  const client = {
+    calls,
+    from(table: string) {
+      calls.push({ method: "from", args: [table] });
       return {
-        select(_cols?: string, opts?: { count?: string; head?: boolean }) {
+        select(cols?: string, opts?: { count?: string; head?: boolean }) {
+          calls.push({ method: "select", args: [cols, opts] });
           if (opts?.head) {
             return Promise.resolve(config.headCountResult ?? { count: 10, error: null });
           }
@@ -384,137 +663,367 @@ function createMockSupabaseClient(config: {
       };
     },
   };
+
+  return client;
 }
 
-Deno.test("handleRequest readiness retorna status saudável e contagem", async () => {
-  // deno-lint-ignore no-explicit-any
-  const mockClient = createMockSupabaseClient({
-    headCountResult: { count: 42, error: null },
-    singleResult: {
-      data: {
-        updated_at: "2026-09-28T10:00:00Z",
-        last_synced_at: "2026-09-28T09:30:00Z",
-      },
-      error: null,
-    },
-  }) as any;
+// --------------------------------------------------------------------------
+// Testes com Asserção de Chamadas do Mock, Filtros e Projeções
+// --------------------------------------------------------------------------
 
-  const req = new Request("http://localhost/api-dashboard-oportunidades?action=readiness", {
+Deno.test("handleRequest list com filtro uf asserte eq('uf', 'AC') e PUBLIC_LICITACAO_COLUMNS", async () => {
+  const mockClient = createRecordingMockClient({
+    listResult: { data: [], count: 0, error: null },
+  });
+
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list&uf=AC", {
     method: "GET",
   });
-  const res = await handleRequest(req, { getClient: () => mockClient });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, {
+    getClient: () => mockClient as any,
+    requireAuth: () => null,
+  });
   assertEquals(res.status, 200);
   const body = await res.json();
-  assertEquals(body.ready, true);
-  assertEquals(body.total_registros, 42);
-  assertEquals(body.ultima_atualizacao, "2026-09-28T10:00:00Z");
+  assertEquals(body.action, "list");
+  assertEquals(body.items, []);
+
+  // Asserção das chamadas ao mock
+  const fromCall = mockClient.calls.find((c) => c.method === "from");
+  assertEquals(fromCall, { method: "from", args: ["licitacoes_externas"] });
+
+  const selectCall = mockClient.calls.find((c) => c.method === "select");
+  assertEquals(selectCall?.args[0], PUBLIC_LICITACAO_COLUMNS);
+  // Asserção exata da allowlist esperada
+  const EXPECTED_PROJECTION = [
+    "id",
+    "fonte",
+    "modulo",
+    "id_externo",
+    "codigo_externo",
+    "numero_processo",
+    "processo_norm",
+    "numero_edital",
+    "objeto",
+    "unidade_compradora",
+    "modalidade",
+    "fase",
+    "situacao",
+    "data_inicio",
+    "data_fim",
+    "valor_total",
+    "orgao_cnpj",
+    "orgao_nome",
+    "municipio",
+    "uf",
+    "data_publicacao",
+    "data_homologacao",
+    "categoria_escopo",
+    "interesse_borracha",
+    "prioridade",
+    "termos_busca",
+    "created_at",
+    "updated_at",
+    "last_synced_at",
+  ].join(",");
+  assertEquals(selectCall?.args[0], EXPECTED_PROJECTION);
+
+  const eqUfCall = mockClient.calls.find((c) => c.method === "eq" && c.args[0] === "uf");
+  assertEquals(eqUfCall, { method: "eq", args: ["uf", "AC"] });
+
+  // Asserção de desempate determinístico por id
+  const orderCalls = mockClient.calls.filter((c) => c.method === "order");
+  assertEquals(orderCalls, [
+    { method: "order", args: ["data_fim", { ascending: false, nullsFirst: false }] },
+    { method: "order", args: ["id", { ascending: true }] },
+  ]);
 });
 
-Deno.test("handleRequest get retorna 404 claro para licitação inexistente", async () => {
-  // deno-lint-ignore no-explicit-any
-  const mockClient = createMockSupabaseClient({
-    singleResult: { data: null, error: null },
-  }) as any;
-
-  const req = new Request("http://localhost/api-dashboard-oportunidades?action=get&id=9999", {
-    method: "GET",
-  });
-  const res = await handleRequest(req, { getClient: () => mockClient });
-  assertEquals(res.status, 404);
-  const body = await res.json();
-  assertEquals(body.error, "Licitação não encontrada");
-  assertEquals(body.item, null);
-});
-
-Deno.test("handleRequest get por id retorna 200 com item quando existente", async () => {
-  // deno-lint-ignore no-explicit-any
-  const mockClient = createMockSupabaseClient({
+Deno.test("handleRequest get por id asserte eq('id', 101) e maybeSingle", async () => {
+  const mockClient = createRecordingMockClient({
     singleResult: {
-      data: {
-        id: 101,
-        orgao_nome: "Prefeitura Municipal",
-        objeto: "Aquisição de Esteiras",
-      },
+      data: { id: 101, objeto: "Equipamento Teste" },
       error: null,
     },
-  }) as any;
+  });
 
   const req = new Request("http://localhost/api-dashboard-oportunidades?action=get&id=101", {
     method: "GET",
   });
-  const res = await handleRequest(req, { getClient: () => mockClient });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, {
+    getClient: () => mockClient as any,
+    requireAuth: () => null,
+  });
   assertEquals(res.status, 200);
   const body = await res.json();
   assertEquals(body.item.id, 101);
-  assertEquals(body.item.objeto, "Aquisição de Esteiras");
+
+  const selectCall = mockClient.calls.find((c) => c.method === "select");
+  assertEquals(selectCall?.args[0], PUBLIC_LICITACAO_COLUMNS);
+  assertEquals((selectCall?.args[0] as string).includes("modulo"), true);
+  assertEquals((selectCall?.args[0] as string).includes("id_externo"), true);
+  assertEquals((selectCall?.args[0] as string).includes("raw"), false);
+
+  const eqIdCall = mockClient.calls.find((c) => c.method === "eq");
+  assertEquals(eqIdCall, { method: "eq", args: ["id", "101"] });
+
+  const maybeSingleCall = mockClient.calls.find((c) => c.method === "maybeSingle");
+  assertEquals(Boolean(maybeSingleCall), true);
 });
 
-Deno.test("handleRequest get por orgao_cnpj e processo_norm retorna 200", async () => {
+Deno.test("handleRequest list e get em erro de banco retornam status 500 com mensagem genérica", async () => {
+  const mockClient = createRecordingMockClient({
+    listResult: {
+      data: [],
+      count: null,
+      error: { message: "database timeout or connection refused (leak check)" },
+    },
+  });
+
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list", {
+    method: "GET",
+  });
   // deno-lint-ignore no-explicit-any
-  const mockClient = createMockSupabaseClient({
+  const res = await handleRequest(req, {
+    getClient: () => mockClient as any,
+    requireAuth: () => null,
+  });
+  assertEquals(res.status, 500);
+  const body = await res.json();
+  assertEquals(body.error, "Falha ao consultar lista de oportunidades");
+  assertEquals(JSON.stringify(body).includes("leak check"), false);
+});
+
+Deno.test("handleRequest get por codigo_externo sem fonte retorna 400", async () => {
+  const req = new Request(
+    "http://localhost/api-dashboard-oportunidades?action=get&codigo_externo=07486108000185-1-000001/2026",
+    { method: "GET" },
+  );
+  const res = await handleRequest(req, { requireAuth: () => null });
+  assertEquals(res.status, 400);
+  const body = await res.json();
+  assertEquals(
+    body.error,
+    "Parâmetro 'fonte' é obrigatório ao consultar por 'codigo_externo'",
+  );
+});
+
+Deno.test("handleRequest get por codigo_externo com fonte asserte eq('codigo_externo') e eq('fonte')", async () => {
+  const mockClient = createRecordingMockClient({
     singleResult: {
-      data: {
-        id: 202,
-        orgao_cnpj: "07486108000185",
-        processo_norm: "2026001",
-        objeto: "Equipamentos de Musculação",
-      },
+      data: { id: 103, codigo_externo: "07486108000185-1-000001/2026", fonte: "pncp" },
       error: null,
     },
-  }) as any;
+  });
+
+  const req = new Request(
+    "http://localhost/api-dashboard-oportunidades?action=get&codigo_externo=07486108000185-1-000001/2026&fonte=pncp",
+    { method: "GET" },
+  );
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, {
+    getClient: () => mockClient as any,
+    requireAuth: () => null,
+  });
+  assertEquals(res.status, 200);
+
+  const eqCalls = mockClient.calls.filter((c) => c.method === "eq");
+  assertEquals(eqCalls, [
+    { method: "eq", args: ["codigo_externo", "07486108000185-1-000001/2026"] },
+    { method: "eq", args: ["fonte", "pncp"] },
+  ]);
+
+  const maybeSingleCall = mockClient.calls.find((c) => c.method === "maybeSingle");
+  assertEquals(Boolean(maybeSingleCall), true);
+});
+
+Deno.test("handleRequest get por orgao_cnpj + processo_norm asserte eq nos dois campos, paginacao e SEM maybeSingle", async () => {
+  const mockClient = createRecordingMockClient({
+    listResult: {
+      data: [
+        { id: 201, objeto: "Lote 1" },
+        { id: 202, objeto: "Lote 2" },
+      ],
+      count: 2,
+      error: null,
+    },
+  });
+
+  const req = new Request(
+    "http://localhost/api-dashboard-oportunidades?action=get&orgao_cnpj=07.486.108/0001-85&processo_norm=2026/001&page=1&limit=10",
+    { method: "GET" },
+  );
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, {
+    getClient: () => mockClient as any,
+    requireAuth: () => null,
+  });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.page, 1);
+  assertEquals(body.limit, 10);
+  assertEquals(body.total, 2);
+  assertEquals(body.items.length, 2);
+
+  const selectCall = mockClient.calls.find((c) => c.method === "select");
+  assertEquals(selectCall?.args[0], PUBLIC_LICITACAO_COLUMNS);
+  assertEquals(selectCall?.args[1], { count: "exact" });
+
+  const rangeCall = mockClient.calls.find((c) => c.method === "range");
+  assertEquals(rangeCall, { method: "range", args: [0, 9] });
+
+  // Asserção de desempate determinístico por id no get por processo
+  const orderCalls = mockClient.calls.filter((c) => c.method === "order");
+  assertEquals(orderCalls, [
+    { method: "order", args: ["data_publicacao", { ascending: false, nullsFirst: false }] },
+    { method: "order", args: ["id", { ascending: true }] },
+  ]);
+
+  const eqCalls = mockClient.calls.filter((c) => c.method === "eq");
+  assertEquals(eqCalls, [
+    { method: "eq", args: ["orgao_cnpj", "07486108000185"] },
+    { method: "eq", args: ["processo_norm", "2026001"] },
+  ]);
+
+  // NÃO deve conter chamada a maybeSingle
+  const maybeSingleCall = mockClient.calls.find((c) => c.method === "maybeSingle");
+  assertEquals(maybeSingleCall, undefined);
+});
+
+Deno.test("handleRequest mock com count nulo em list retorna status 500 por indisponibilidade", async () => {
+  const mockClient = createRecordingMockClient({
+    listResult: { data: [{ id: 1 }], count: null, error: null },
+  });
+
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list", {
+    method: "GET",
+  });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, {
+    getClient: () => mockClient as any,
+    requireAuth: () => null,
+  });
+  assertEquals(res.status, 500);
+  const body = await res.json();
+  assertEquals(body.error, "Falha ao consultar lista de oportunidades");
+});
+
+Deno.test("handleRequest mock com count nulo em get por processo retorna status 500 por indisponibilidade", async () => {
+  const mockClient = createRecordingMockClient({
+    listResult: { data: [{ id: 1 }], count: null, error: null },
+  });
 
   const req = new Request(
     "http://localhost/api-dashboard-oportunidades?action=get&orgao_cnpj=07.486.108/0001-85&processo_norm=2026/001",
     { method: "GET" },
   );
-  const res = await handleRequest(req, { getClient: () => mockClient });
-  assertEquals(res.status, 200);
-  const body = await res.json();
-  assertEquals(body.item.id, 202);
-});
-
-Deno.test("handleRequest list retorna 200 com items e total (inclusive lista vazia)", async () => {
   // deno-lint-ignore no-explicit-any
-  const mockClient = createMockSupabaseClient({
-    listResult: { data: [], count: 0, error: null },
-  }) as any;
-
-  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list&uf=AC", {
-    method: "GET",
+  const res = await handleRequest(req, {
+    getClient: () => mockClient as any,
+    requireAuth: () => null,
   });
-  const res = await handleRequest(req, { getClient: () => mockClient });
-  assertEquals(res.status, 200);
+  assertEquals(res.status, 500);
   const body = await res.json();
-  assertEquals(body.action, "list");
-  assertEquals(body.total, 0);
-  assertEquals(Array.isArray(body.items), true);
-  assertEquals(body.items.length, 0);
+  assertEquals(body.error, "Falha ao consultar compras do processo");
 });
 
-Deno.test("handleRequest list via POST JSON {action: 'list'}", async () => {
-  // deno-lint-ignore no-explicit-any
-  const mockClient = createMockSupabaseClient({
-    listResult: {
-      data: [{ id: 1, objeto: "Piso emborrachado" }],
-      count: 1,
+Deno.test("handleRequest mock com count nulo em readiness retorna unhealthy e ready:false (status 503)", async () => {
+  const mockClient = createRecordingMockClient({
+    headCountResult: { count: null, error: null },
+    singleResult: {
+      data: { updated_at: "2026-09-28T10:00:00Z", last_synced_at: null },
       error: null,
     },
-  }) as any;
-
-  const req = new Request("http://localhost/api-dashboard-oportunidades", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      action: "list",
-      uf: "SP",
-      interesse_borracha: true,
-      limit: 10,
-    }),
   });
-  const res = await handleRequest(req, { getClient: () => mockClient });
+
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=readiness", {
+    method: "GET",
+  });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, {
+    getClient: () => mockClient as any,
+    requireAuth: () => null,
+  });
+  assertEquals(res.status, 503);
+  const body = await res.json();
+  assertEquals(body.ready, false);
+  assertEquals(body.status, "unhealthy");
+});
+
+Deno.test("handleRequest em erro de banco retorna mensagem genérica com status 500 (não vaza PostgREST)", async () => {
+  const mockClient = createRecordingMockClient({
+    singleResult: {
+      data: null,
+      error: { message: "relation licitacoes_externas does not exist (internals leaked)" },
+    },
+  });
+
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=get&id=1", {
+    method: "GET",
+  });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, {
+    getClient: () => mockClient as any,
+    requireAuth: () => null,
+  });
+  assertEquals(res.status, 500);
+  const body = await res.json();
+  assertEquals(body.error, "Falha ao consultar licitação");
+  assertEquals(JSON.stringify(body).includes("internals leaked"), false);
+});
+
+Deno.test("handleRequest com requireUserAuth simulado autenticado em list avança com sucesso", async () => {
+  const mockClient = createRecordingMockClient({
+    listResult: { data: [{ id: 1, objeto: "Licitação Teste" }], count: 1, error: null },
+  });
+
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list", {
+    method: "GET",
+    headers: { Authorization: "Bearer valid-user-token" },
+  });
+
+  const res = await handleRequest(req, {
+    getClient: () => mockClient as any,
+    requireAuth: (r) => {
+      // Simula requireUserAuth aceitando token de teste
+      if (r.headers.get("Authorization") === "Bearer valid-user-token") return null;
+      return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 });
+    },
+  });
+
   assertEquals(res.status, 200);
   const body = await res.json();
   assertEquals(body.action, "list");
   assertEquals(body.total, 1);
-  assertEquals(body.items[0].objeto, "Piso emborrachado");
+});
+
+Deno.test("requireUserAuth rejeita token inválido com 401 via mock determinístico e seguro offline", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = () =>
+      Promise.resolve(
+        new Response(JSON.stringify({ message: "Invalid JWT" }), {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+
+    const req = new Request("http://localhost/api?action=list", {
+      headers: { Authorization: "Bearer some-token" },
+    });
+    // Invoca handleRequest sem bypass para exercitar o fluxo real de requireUserAuth
+    const res = await handleRequest(req);
+    assertEquals(res.status, 401);
+    const body = await res.json();
+    assertEquals(body.error, "Unauthorized");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("index.ts possui bloco if (import.meta.main) que envolve Deno.serve", async () => {
+  const content = await Deno.readTextFile("./supabase/functions/api-dashboard-oportunidades/index.ts");
+  assertEquals(content.includes("if (import.meta.main) {\n  Deno.serve((req) => handleRequest(req));\n}"), true);
 });

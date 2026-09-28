@@ -87,7 +87,9 @@ export async function authenticateUserJwt(req: Request): Promise<AuthDecision> {
   }
 
   const url = Deno.env.get("SUPABASE_URL")?.trim();
-  const anon = Deno.env.get("SUPABASE_ANON_KEY")?.trim();
+  const anonKey = Deno.env.get("SUPABASE_ANON_KEY")?.trim();
+  const publishableKey = Deno.env.get("SUPABASE_PUBLISHABLE_KEY")?.trim();
+  const anon = (anonKey && anonKey.length > 0) ? anonKey : ((publishableKey && publishableKey.length > 0) ? publishableKey : undefined);
   if (!url || !anon) return "REJECTED";
 
   try {

@@ -14,13 +14,6 @@
 -- Idempotencia:
 -- Pode ser aplicada mesmo que a revogacao/remocao ja tenha sido feita manualmente.
 
--- 1. Revoga execucao explicitamente caso a funcao ainda exista de forma estritamente idempotente
-DO $$
-BEGIN
-  IF to_regprocedure('private.try_acquire_sync_lock(text,text,jsonb)') IS NOT NULL THEN
-    REVOKE EXECUTE ON FUNCTION private.try_acquire_sync_lock(text, text, jsonb) FROM PUBLIC, anon, authenticated;
-  END IF;
-END $$;
-
--- 2. Remove a funcao obsoleta/insegura
+-- Remove a funcao obsoleta/insegura de forma idempotente
+-- O DROP FUNCTION IF EXISTS dispensa REVOKE previo e nao falha se a funcao ja nao existir.
 DROP FUNCTION IF EXISTS private.try_acquire_sync_lock(text, text, jsonb);

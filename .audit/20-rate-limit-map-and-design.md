@@ -844,12 +844,12 @@ ORDER BY iniciada_em DESC;
 ### 3.6 Lista de Migrations e Variáveis de Ambiente Propostas
 
 #### Migrations Previstas para a Fase 2:
-1. `supabase/migrations/20260928235900_revoke_try_acquire_sync_lock.sql` (Novo - Hardening Imediato):
-   - Revoga permissão de execução de `private.try_acquire_sync_lock` para `PUBLIC, anon, authenticated` e remove a função obsoleta (`DROP FUNCTION IF EXISTS private.try_acquire_sync_lock`).
+1. `supabase/migrations/20260928235900_revoke_try_acquire_sync_lock.sql` (Hardening Imediato):
+   - Remove a função obsoleta `private.try_acquire_sync_lock` via `DROP FUNCTION IF EXISTS private.try_acquire_sync_lock(text, text, jsonb)` de forma diretamente idempotente (dispensando `REVOKE` prévio que falharia com "function does not exist" se já removida).
    - Elimina brecha de segurança onde qualquer portador da anon key poderia invocar a RPC antiga via PostgREST exposto e inserir locks falsos.
 2. `supabase/migrations/20260929000000_http_host_lease.sql`:
    - Cria tabela `private.http_host_lease` com RLS habilitado e sem grants para anon/authenticated.
-   - Cria funções PL/pgSQL `private.acquire_http_slot` (com cálculo de milissegundos via epoch) e `private.report_http_rate_limit` com `SECURITY DEFINER`, `SET search_path = ''`, revoke de public/anon/authenticated e grant exclusivo para `service_role`.
+   - Cria funções PL/pgSQL `private.acquire_http_slot` (com cálculo de milissegundos via epoch e proteção contra corrida via `INSERT ... ON CONFLICT DO NOTHING`) e `private.report_http_rate_limit` (com `INSERT ... ON CONFLICT DO UPDATE`, proteção contra encurtamento de cooldown ativo e validação com teto de 3600 s), ambas com `SECURITY DEFINER`, `SET search_path = ''`, revoke de public/anon/authenticated e grant exclusivo para `service_role`.
 3. `supabase/migrations/20260929000001_pncp_sync_request_telemetry.sql`:
    - Adiciona colunas de auditoria em `private.pncp_sync_request`:
      ```sql

@@ -118,17 +118,13 @@ BEGIN
   v_secs := GREATEST(1, LEAST(COALESCE(p_cooldown_seconds, 1), 3600));
   v_new_target := clock_timestamp() + (v_secs || ' seconds')::interval;
 
-  -- Garante que o host exista
-  INSERT INTO private.http_host_lease (host, min_interval_ms)
-  VALUES (p_host, 1000)
-  ON CONFLICT (host) DO NOTHING;
-
-  -- Atualiza sem encurtar cooldown já ativo maior
-  UPDATE private.http_host_lease
-  SET cooldown_until = GREATEST(cooldown_until, v_new_target),
-      next_allowed_at = GREATEST(next_allowed_at, v_new_target),
-      updated_at = clock_timestamp()
-  WHERE host = p_host;
+  -- Insere host novo com o cooldown diretamente, ou atualiza host existente sem encurtar cooldown já ativo
+  INSERT INTO private.http_host_lease (host, min_interval_ms, cooldown_until, next_allowed_at, updated_at)
+  VALUES (p_host, 1000, v_new_target, v_new_target, clock_timestamp())
+  ON CONFLICT (host) DO UPDATE
+  SET cooldown_until = GREATEST(private.http_host_lease.cooldown_until, EXCLUDED.cooldown_until),
+      next_allowed_at = GREATEST(private.http_host_lease.next_allowed_at, EXCLUDED.next_allowed_at),
+      updated_at = clock_timestamp();
 END;
 $$;
 

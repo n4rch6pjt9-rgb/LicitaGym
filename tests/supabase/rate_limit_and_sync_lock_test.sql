@@ -141,16 +141,31 @@ BEGIN
 
   v_res := private.acquire_sync_lock('test-stale-fatias', 'teste', '{}'::jsonb);
   
-  -- O novo run deve receber continuation e ter retomada_de_id = id do stale
-  IF (v_res->>'continuation') IS NULL OR (v_res->>'retomada_de_id')::uuid <> v_stale_fatias_id THEN
-    RAISE EXCEPTION 'TESTE 3.1 FALHOU: Novo run deveria ter herdado fatias e retomada_de_id=%, obteve %', v_stale_fatias_id, v_res;
+  -- 1. Verifica que a nova execução retornou continuation com as fatias esperadas
+  IF (v_res->>'continuation') IS NULL 
+     OR (v_res->'continuation'->'pending') <> '[{"pagina":2}]'::jsonb THEN
+    RAISE EXCEPTION 'TESTE 3.1 FALHOU: Nova execução não retornou continuation com fatias pendentes! res=%', v_res;
   END IF;
 
-  -- A execução anterior que era stale vira 'retomada' (pois foi herdada imediatamente pelo novo run)
+  -- 2. Verifica que a nova execução registrou retomada_de_id igual ao id da execução stale
+  IF (v_res->>'retomada_de_id')::uuid <> v_stale_fatias_id THEN
+    RAISE EXCEPTION 'TESTE 3.1 FALHOU: Nova execução deveria ter retomada_de_id=%, obteve %', v_stale_fatias_id, v_res;
+  END IF;
+
+  -- 3. Verifica que a execução stale anterior ficou 'retomada' com retomada_por_id = novo run
   SELECT status INTO v_status FROM private.pncp_sync_run WHERE id = v_stale_fatias_id;
   IF v_status <> 'retomada' THEN
-    RAISE EXCEPTION 'TESTE 3.1 FALHOU: Execução stale com fatias deveria virar retomada pelo novo run, virou %', v_status;
+    RAISE EXCEPTION 'TESTE 3.1 FALHOU: Execução stale anterior deveria ter status=retomada, virou %', v_status;
   END IF;
+
+  DECLARE
+    v_stale_retomada_por uuid;
+  BEGIN
+    SELECT retomada_por_id INTO v_stale_retomada_por FROM private.pncp_sync_run WHERE id = v_stale_fatias_id;
+    IF v_stale_retomada_por <> (v_res->>'run_id')::uuid THEN
+      RAISE EXCEPTION 'TESTE 3.1 FALHOU: Execução stale anterior deveria ter retomada_por_id=%, obteve %', (v_res->>'run_id')::uuid, v_stale_retomada_por;
+    END IF;
+  END;
 
   -- Caso 3.2: Stale regular sem fatias -> deve virar 'falhou' e novo run NÃO herda nada
   DELETE FROM private.pncp_sync_run WHERE lock_key = 'test-stale-sem-fatias';
@@ -308,20 +323,31 @@ BEGIN
   -- Reseta o cooldown para liberar o host nos testes seguintes
   UPDATE private.http_host_lease SET cooldown_until = now() - interval '1 second', next_allowed_at = now() - interval '1 second' WHERE host = v_host;
 
-  -- 6.2 Testa que report_http_rate_limit não encurta cooldown ativo maior
-  PERFORM private.report_http_rate_limit(v_host, 60);
-  -- Chamada com 10s não deve baixar os 60s
-  PERFORM private.report_http_rate_limit(v_host, 10);
-  v_res := private.acquire_http_slot(v_host, 100000);
+  -- 6.2 Testa que chamada com 120 s seguida de 3 s mantém ~120 s (não encurta cooldown ativo maior)
+  PERFORM private.report_http_rate_limit(v_host, 120);
+  PERFORM private.report_http_rate_limit(v_host, 3);
+  v_res := private.acquire_http_slot(v_host, 150000);
   v_wait_ms := (v_res->>'wait_ms')::int;
-  IF v_wait_ms < 50000 THEN
-    RAISE EXCEPTION 'TESTE 6.2 FALHOU: report_http_rate_limit encurtou cooldown ativo! wait_ms=%', v_wait_ms;
+  IF v_wait_ms < 100000 THEN
+    RAISE EXCEPTION 'TESTE 6.2 FALHOU: report_http_rate_limit de 3s encurtou cooldown de 120s! wait_ms=%', v_wait_ms;
+  END IF;
+
+  -- 6.3 Testa host novo recebendo cooldown diretamente sem acquire prévio
+  PERFORM private.report_http_rate_limit('host-novo-desconhecido.gov.br', 45);
+  v_res := private.acquire_http_slot('host-novo-desconhecido.gov.br', 60000);
+  IF (v_res->>'allowed')::boolean IS NOT FALSE OR v_res->>'reason' <> 'cooldown' THEN
+    RAISE EXCEPTION 'TESTE 6.3 FALHOU: Host novo não reteve cooldown aplicado! res=%', v_res;
+  END IF;
+  v_wait_ms := (v_res->>'wait_ms')::int;
+  IF v_wait_ms < 35000 THEN
+    RAISE EXCEPTION 'TESTE 6.3 FALHOU: Host novo com cooldown de 45s retornou wait_ms=%', v_wait_ms;
   END IF;
 
   -- Limpa para os testes seguintes
   UPDATE private.http_host_lease SET cooldown_until = now() - interval '1 second', next_allowed_at = now() - interval '1 second' WHERE host = v_host;
+  DELETE FROM private.http_host_lease WHERE host = 'host-novo-desconhecido.gov.br';
 
-  RAISE NOTICE '✓ TESTE 6 PASSOU: Cálculo de wait_ms com EPOCH * 1000 validado para esperas longas (% ms) e não encurtamento', v_wait_ms;
+  RAISE NOTICE '✓ TESTE 6 PASSOU: Cálculo de wait_ms com EPOCH * 1000, 120s mantido após 3s e host novo com cooldown';
 END $$;
 
 -- -----------------------------------------------------------------------------

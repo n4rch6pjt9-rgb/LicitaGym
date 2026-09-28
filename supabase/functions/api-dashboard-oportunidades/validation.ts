@@ -26,14 +26,62 @@ export function sanitizeString(val: unknown): string | undefined {
 
 /**
  * Valida formato de data ISO 8601 (YYYY-MM-DD ou com hora).
+ * Para formato só-data YYYY-MM-DD, valida estritamente round-trip via Date.UTC
+ * para evitar rolagem de mês/dia (ex: 2026-02-30, 2026-13-01, 2026-00-10).
  */
 export function sanitizeDate(val: unknown): string | undefined {
   if (typeof val !== "string") return undefined;
   const trimmed = val.trim();
   if (!trimmed) return undefined;
-  const d = new Date(trimmed);
-  if (isNaN(d.getTime())) return undefined;
-  return trimmed;
+
+  const dateOnlyMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
+  if (dateOnlyMatch) {
+    const year = Number(dateOnlyMatch[1]);
+    const month = Number(dateOnlyMatch[2]);
+    const day = Number(dateOnlyMatch[3]);
+
+    if (month < 1 || month > 12 || day < 1 || day > 31) {
+      return undefined;
+    }
+
+    const d = new Date(Date.UTC(year, month - 1, day));
+    if (
+      d.getUTCFullYear() !== year ||
+      d.getUTCMonth() !== month - 1 ||
+      d.getUTCDate() !== day
+    ) {
+      return undefined;
+    }
+
+    return trimmed;
+  }
+
+  // Para timestamps com hora (ex: 2026-09-28T12:00:00Z ou com fuso)
+  const isoDateTimeMatch = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}(?:\.\d+)?))?(?:Z|[-+]\d{2}:?\d{2})?$/i.exec(trimmed);
+  if (isoDateTimeMatch) {
+    const year = Number(isoDateTimeMatch[1]);
+    const month = Number(isoDateTimeMatch[2]);
+    const day = Number(isoDateTimeMatch[3]);
+
+    if (month < 1 || month > 12 || day < 1 || day > 31) {
+      return undefined;
+    }
+
+    const dUtc = new Date(Date.UTC(year, month - 1, day));
+    if (
+      dUtc.getUTCFullYear() !== year ||
+      dUtc.getUTCMonth() !== month - 1 ||
+      dUtc.getUTCDate() !== day
+    ) {
+      return undefined;
+    }
+
+    const d = new Date(trimmed);
+    if (isNaN(d.getTime())) return undefined;
+    return trimmed;
+  }
+
+  return undefined;
 }
 
 /**
@@ -56,8 +104,10 @@ export function getNextDayIso(dateStr: string): string {
 export function sanitizeNumber(val: unknown): number | undefined {
   if (typeof val === "number" && Number.isFinite(val)) return val;
   if (typeof val === "string") {
-    const parsed = Number.parseFloat(val);
-    if (Number.isFinite(parsed)) return parsed;
+    const trimmed = val.trim();
+    if (trimmed.length === 0) return undefined;
+    const num = Number(trimmed);
+    if (Number.isFinite(num)) return num;
   }
   return undefined;
 }

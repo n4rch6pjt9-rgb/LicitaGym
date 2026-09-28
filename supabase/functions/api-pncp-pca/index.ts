@@ -16,7 +16,7 @@ import {
   parseDataIso,
   parseUnidade,
   type PcaItemLeading,
-} from "../../../Dashboard/src/data/pcaLeading.ts";
+} from "../_shared/pcaLeading.ts";
 
 function getUserClient(req: Request) {
   const url = Deno.env.get("SUPABASE_URL");

@@ -426,7 +426,7 @@ Deno.test("handleRequest com OPTIONS responde 200 com Access-Control-Allow-Metho
   );
 });
 
-Deno.test("handleRequest readiness permanece público e responde 200 sem auth", async () => {
+Deno.test("handleRequest readiness permanece público e responde 200 sem auth retornando contagem exata", async () => {
   const mockClient = createRecordingMockClient({
     headCountResult: { count: 15, error: null },
     singleResult: {

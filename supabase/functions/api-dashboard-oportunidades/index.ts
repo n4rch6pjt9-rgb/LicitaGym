@@ -124,7 +124,7 @@ async function handleReadiness(
       status: "ready",
       ready: true,
       table: "licitacoes_externas",
-      total_registros: count ?? 0,
+      total_registros: count,
       ultima_atualizacao: latest?.updated_at ?? null,
       ultimo_sync: latest?.last_synced_at ?? null,
     });

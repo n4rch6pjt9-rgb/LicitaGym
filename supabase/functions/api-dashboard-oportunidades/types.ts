@@ -45,6 +45,8 @@ export interface GetActionParams {
   fonte?: string;
   orgao_cnpj?: string;
   processo_norm?: string;
+  page?: number;
+  limit?: number;
 }
 
 export interface ReadinessActionParams {

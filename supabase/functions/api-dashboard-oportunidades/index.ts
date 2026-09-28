@@ -1,18 +1,22 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, SupabaseClient } from "npm:@supabase/supabase-js@2";
-import { corsHeaders, jsonResponse } from "../_shared/http.ts";
+import { corsHeaders, jsonResponse, requireUserAuth } from "../_shared/http.ts";
 import type { ActionParams, GetActionParams, ListActionParams } from "./types.ts";
 import { parseActionFromBody, parseActionFromUrl } from "./validation.ts";
 import { applyLicitacaoFilters, calculateRange } from "./query.ts";
 
 /**
  * Colunas públicas explícitas da tabela licitacoes_externas expostas para o dashboard.
- * Projeção seletiva: exclui colunas técnicas e internas (raw, esclarecimentos, notas,
- * anexo_raiz_id, edital_id, modulo, id_externo).
+ * Projeção seletiva: inclui identificadores de fonte não-secretos (modulo, id_externo)
+ * necessários para fontes como SEST SENAT onde codigo_externo é nulo.
+ * Exclui estritamente colunas técnicas e internas (raw, esclarecimentos, notas,
+ * anexo_raiz_id, edital_id).
  */
 export const PUBLIC_LICITACAO_COLUMNS = [
   "id",
   "fonte",
+  "modulo",
+  "id_externo",
   "codigo_externo",
   "numero_processo",
   "processo_norm",
@@ -42,6 +46,7 @@ export const PUBLIC_LICITACAO_COLUMNS = [
 
 export interface DashboardOportunidadesClientContext {
   getClient?: () => SupabaseClient;
+  requireAuth?: (req: Request) => Promise<Response | null> | Response | null;
 }
 
 /**
@@ -161,16 +166,20 @@ async function handleGet(
       return jsonResponse({ item: data });
     }
 
-    // Caso 2: Busca única por codigo_externo (+ fonte opcional)
+    // Caso 2: Busca única por codigo_externo + fonte
     if (params.codigo_externo) {
-      let query = client
+      if (!params.fonte) {
+        return jsonResponse(
+          { error: "Parâmetro 'fonte' é obrigatório ao consultar por 'codigo_externo'" },
+          400,
+        );
+      }
+
+      const query = client
         .from("licitacoes_externas")
         .select(PUBLIC_LICITACAO_COLUMNS)
-        .eq("codigo_externo", params.codigo_externo);
-
-      if (params.fonte) {
-        query = query.eq("fonte", params.fonte);
-      }
+        .eq("codigo_externo", params.codigo_externo)
+        .eq("fonte", params.fonte);
 
       const { data, error } = await query.maybeSingle();
 
@@ -189,14 +198,19 @@ async function handleGet(
       return jsonResponse({ item: data });
     }
 
-    // Caso 3: Busca por par órgão + processo (1..N compras/certames do mesmo processo administrativo)
+    // Caso 3: Busca por par órgão + processo (1..N compras/certames do mesmo processo administrativo) paginada
     if (params.orgao_cnpj && params.processo_norm) {
-      const { data, error } = await client
+      const page = params.page && params.page > 0 ? params.page : 1;
+      const limit = params.limit && params.limit > 0 ? params.limit : 20;
+      const { from, to } = calculateRange(page, limit);
+
+      const { data, error, count } = await client
         .from("licitacoes_externas")
-        .select(PUBLIC_LICITACAO_COLUMNS)
+        .select(PUBLIC_LICITACAO_COLUMNS, { count: "exact" })
         .eq("orgao_cnpj", params.orgao_cnpj)
         .eq("processo_norm", params.processo_norm)
-        .order("data_publicacao", { ascending: false, nullsFirst: false });
+        .order("data_publicacao", { ascending: false, nullsFirst: false })
+        .range(from, to);
 
       if (error) {
         console.error("[api-dashboard-oportunidades] Erro ao buscar por processo:", error);
@@ -204,7 +218,8 @@ async function handleGet(
       }
 
       const items = data ?? [];
-      if (items.length === 0) {
+      const total = count ?? 0;
+      if (total === 0 && items.length === 0) {
         return jsonResponse(
           { error: "Nenhuma licitação encontrada para este processo", items: [] },
           404,
@@ -214,13 +229,15 @@ async function handleGet(
       return jsonResponse({
         orgao_cnpj: params.orgao_cnpj,
         processo_norm: params.processo_norm,
-        total: items.length,
+        page,
+        limit,
+        total,
         items,
       });
     }
 
     return jsonResponse(
-      { error: "Identificador ausente: informe 'id', 'codigo_externo' ou o par ('orgao_cnpj' e 'processo_norm')" },
+      { error: "Identificador ausente: informe 'id', ('codigo_externo' e 'fonte') ou o par ('orgao_cnpj' e 'processo_norm')" },
       400,
     );
   } catch (err: unknown) {
@@ -282,6 +299,13 @@ export async function handleRequest(
 ): Promise<Response> {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
+  }
+
+  // Autenticação obrigatória para leitura de dados da Edge Function
+  const authChecker = ctx?.requireAuth ?? requireUserAuth;
+  const authError = await authChecker(req);
+  if (authError) {
+    return authError;
   }
 
   let actionParams: ActionParams | { error: string };

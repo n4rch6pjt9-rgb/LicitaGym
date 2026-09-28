@@ -17,8 +17,8 @@ Função Supabase Edge Function responsável por atender o frontend do Dashboard
 ## Arquitetura & Segurança RLS
 
 - **RLS em `public.licitacoes_externas`**: A tabela possui `SELECT` restrito exclusivamente para `authenticated`, com todo acesso de `anon` explicitamente revogado (conforme migrations `20260926110000_pncp_rls_policies.sql` e `20260928130000_licitacoes_externas_revoke_anon.sql`). A tabela não fica exposta diretamente à REST API pública do PostgREST.
-- **Leitura Server-Side Controlada**: A Edge Function é invocada pelo cliente com a chave anon do Supabase (com `verify_jwt` padrão quando autenticado). No servidor (Edge Function), as consultas a `licitacoes_externas` utilizam `SUPABASE_SERVICE_ROLE_KEY`. A chave de service_role **nunca** é devolvida nem exposta ao cliente.
-- **Projeção Estrita de Colunas Públicas**: As consultas **não** usam `select("*")`. Apenas um conjunto explícito de colunas seguras para consumo do dashboard é projetado (`PUBLIC_LICITACAO_COLUMNS`), omitindo colunas internas, payloads brutos (`raw`), fóruns (`esclarecimentos`, `notas`), chaves e anexos técnicos (`anexo_raiz_id`, `modulo`, `id_externo`, `edital_id`).
+- **Leitura Server-Side Controlada & Autenticação**: A Edge Function requer um usuário autenticado via JWT Supabase (`Authorization: Bearer <token>`), verificado por `requireUserAuth`. No servidor (Edge Function), as consultas a `licitacoes_externas` utilizam `SUPABASE_SERVICE_ROLE_KEY`. A chave de service_role **nunca** é devolvida nem exposta ao cliente.
+- **Projeção Estrita de Colunas Públicas**: As consultas **não** usam `select("*")`. Apenas um conjunto explícito de colunas seguras para consumo do dashboard é projetado (`PUBLIC_LICITACAO_COLUMNS`), incluindo identificadores de fonte não-secretos (`modulo`, `id_externo`) necessários para fontes como SEST SENAT (onde `codigo_externo` é nulo), e omitindo estritamente colunas internas, payloads brutos (`raw`), fóruns (`esclarecimentos`, `notas`) e anexos técnicos (`anexo_raiz_id`, `edital_id`).
 - **Isolamento de Credenciais**: O header `Authorization` do usuário não é repassado ao cliente service_role interno.
 - **Mensagens de Erro Seguras**: Detalhes crus de erros do PostgREST não são expostos na resposta HTTP; os erros são logados internamente via `console.error` e o cliente recebe mensagens de erro limpas e genéricas.
 - **Prevenção de Injeção SQL**: Todas as consultas são parametrizadas e estruturadas usando o query builder do `supabase-js`.
@@ -76,14 +76,14 @@ Obtém certames ou compras específicas.
 
 #### Modos de Consulta:
 1. **Por ID único da tabela (`id`)**: Retorna `{ item: ... }` ou 404.
-2. **Por Código Externo único (`codigo_externo`, com `fonte` opcional)**: Identificador único da compra no PNCP (`numero_controle_pncp`). Retorna `{ item: ... }` ou 404.
+2. **Por Código Externo único (`codigo_externo` + `fonte` obrigatório)**: Como a unicidade no banco é composta por `(fonte, codigo_externo)`, o parâmetro `fonte` é obrigatório quando `codigo_externo` for informado (retorna 400 se `fonte` for omitida). Retorna `{ item: ... }` ou 404.
 3. **Por Identidade do Certame/Processo (`orgao_cnpj` + `processo_norm`)**:
-   Como um processo administrativo pode conter múltiplas compras (relação 1..N compras por processo), retorna uma coleção `{ orgao_cnpj, processo_norm, total, items: [...] }`, sem `maybeSingle()`. Retorna 404 claro com `{ error: "Nenhuma licitação encontrada para este processo", items: [] }` se não houver registros.
+   Como um processo administrativo pode conter múltiplas compras (relação 1..N compras por processo), retorna uma coleção paginada `{ orgao_cnpj, processo_norm, page, limit, total, items: [...] }`, sem `maybeSingle()`. Aceita parâmetros opcionais `page` e `limit`. Retorna 404 claro com `{ error: "Nenhuma licitação encontrada para este processo", items: [] }` se não houver registros.
 
 #### Exemplos de Requisição:
 - **GET por ID**: `/functions/v1/api-dashboard-oportunidades?action=get&id=123`
 - **GET por Código Externo**: `/functions/v1/api-dashboard-oportunidades?action=get&codigo_externo=07486108000185-1-000001/2026&fonte=pncp`
-- **GET por Processo Administrativo**: `/functions/v1/api-dashboard-oportunidades?action=get&orgao_cnpj=07.486.108/0001-85&processo_norm=00007.20260204/0002-28`
+- **GET por Processo Administrativo**: `/functions/v1/api-dashboard-oportunidades?action=get&orgao_cnpj=07.486.108/0001-85&processo_norm=00007.20260204/0002-28&page=1&limit=20`
 - **POST equivalente**:
   ```json
   {
@@ -130,6 +130,8 @@ Obtém certames ou compras específicas.
 {
   "orgao_cnpj": "07486108000185",
   "processo_norm": "0000720260204000228",
+  "page": 1,
+  "limit": 20,
   "total": 2,
   "items": [
     {

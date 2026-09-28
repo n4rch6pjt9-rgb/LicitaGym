@@ -213,30 +213,46 @@ export function parseGetParams(
   }
 
   if (codigoExterno) {
+    if (!fonte) {
+      return {
+        ok: false,
+        error: "Parâmetro 'fonte' é obrigatório ao consultar por 'codigo_externo'",
+      };
+    }
     return {
       ok: true,
       params: {
         action: "get",
         codigo_externo: codigoExterno,
-        ...(fonte ? { fonte } : {}),
+        fonte,
       },
     };
   }
 
   if (orgaoCnpj && processoNorm) {
+    const pageRaw = sanitizeNumber(source.page);
+    const page = pageRaw !== undefined && pageRaw > 0 ? Math.floor(pageRaw) : 1;
+
+    const limitRaw = sanitizeNumber(source.limit);
+    const limit = limitRaw !== undefined && limitRaw > 0
+      ? Math.min(Math.floor(limitRaw), MAX_LIMIT)
+      : DEFAULT_LIMIT;
+
     return {
       ok: true,
       params: {
         action: "get",
         orgao_cnpj: orgaoCnpj,
         processo_norm: processoNorm,
+        page,
+        limit,
       },
     };
   }
 
   return {
     ok: false,
-    error: "Identificador ausente: informe 'id', 'codigo_externo' ou o par ('orgao_cnpj' e 'processo_norm')",
+    error: "Identificador ausente: informe 'id', ('codigo_externo' e 'fonte') ou o par ('orgao_cnpj' e 'processo_norm')",
   };
 }
 

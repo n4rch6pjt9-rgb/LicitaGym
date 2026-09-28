@@ -231,7 +231,7 @@ Deno.test("parseActionFromUrl roteia list, get e readiness", () => {
   }
 
   const getCodigoUrl = new URL(
-    "http://localhost/api?action=get&codigo_externo=07486108000185-1-000001/2026",
+    "http://localhost/api?action=get&codigo_externo=07486108000185-1-000001/2026&fonte=pncp",
   );
   const getCodigoRes = parseActionFromUrl(getCodigoUrl);
   assertEquals("error" in getCodigoRes, false);
@@ -239,6 +239,7 @@ Deno.test("parseActionFromUrl roteia list, get e readiness", () => {
     assertEquals(getCodigoRes.action, "get");
     if (getCodigoRes.action === "get") {
       assertEquals(getCodigoRes.codigo_externo, "07486108000185-1-000001/2026");
+      assertEquals(getCodigoRes.fonte, "pncp");
     }
   }
 
@@ -272,12 +273,14 @@ Deno.test("parseActionFromBody aceita JSON {action, ...}", () => {
   const getBody = parseActionFromBody({
     action: "get",
     codigo_externo: "12345678000199-1-000001/2026",
+    fonte: "pncp",
   });
   assertEquals("error" in getBody, false);
   if (!("error" in getBody)) {
     assertEquals(getBody.action, "get");
     if (getBody.action === "get") {
       assertEquals(getBody.codigo_externo, "12345678000199-1-000001/2026");
+      assertEquals(getBody.fonte, "pncp");
     }
   }
 
@@ -384,10 +387,10 @@ Deno.test("sanitizeSearchTerm remove caracteres que quebram sintaxe PostgREST", 
 });
 
 // --------------------------------------------------------------------------
-// Contrato HTTP (OPTIONS, CORS, Método não permitido, Erros de Validação e JSON)
+// Contrato HTTP (OPTIONS, CORS, Autenticação, Método não permitido, Erros de Validação e JSON)
 // --------------------------------------------------------------------------
 
-Deno.test("handleRequest responde 200 para OPTIONS com CORS headers", async () => {
+Deno.test("handleRequest responde 200 para OPTIONS com CORS headers (OPTIONS permanece público)", async () => {
   const req = new Request("http://localhost/api-dashboard-oportunidades", {
     method: "OPTIONS",
   });
@@ -396,21 +399,42 @@ Deno.test("handleRequest responde 200 para OPTIONS com CORS headers", async () =
   assertEquals(res.headers.get("Access-Control-Allow-Origin"), "*");
 });
 
-Deno.test("handleRequest rejeita métodos não permitidos com 405", async () => {
+Deno.test("handleRequest sem Authorization retorna 401 via requireUserAuth padrão", async () => {
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=readiness", {
+    method: "GET",
+  });
+  const res = await handleRequest(req);
+  assertEquals(res.status, 401);
+  const body = await res.json();
+  assertEquals(body.error, "Unauthorized");
+});
+
+Deno.test("handleRequest com Bearer inválido retorna 401", async () => {
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=readiness", {
+    method: "GET",
+    headers: { Authorization: "Bearer invalid-token" },
+  });
+  const res = await handleRequest(req);
+  assertEquals(res.status, 401);
+  const body = await res.json();
+  assertEquals(body.error, "Unauthorized");
+});
+
+Deno.test("handleRequest rejeita métodos não permitidos com 405 (com auth bypass)", async () => {
   const req = new Request("http://localhost/api-dashboard-oportunidades", {
     method: "DELETE",
   });
-  const res = await handleRequest(req);
+  const res = await handleRequest(req, { requireAuth: () => null });
   assertEquals(res.status, 405);
   const body = await res.json();
   assertEquals(body.error, "Método não permitido. Utilize GET ou POST.");
 });
 
-Deno.test("handleRequest rejeita ação inválida com 400", async () => {
+Deno.test("handleRequest rejeita ação inválida com 400 (com auth bypass)", async () => {
   const req = new Request("http://localhost/api-dashboard-oportunidades?action=invalid", {
     method: "GET",
   });
-  const res = await handleRequest(req);
+  const res = await handleRequest(req, { requireAuth: () => null });
   assertEquals(res.status, 400);
   const body = await res.json();
   assertEquals(body.error.includes("Ação inválida"), true);
@@ -422,7 +446,7 @@ Deno.test("handleRequest POST com JSON malformado retorna 400 e não cai em list
     headers: { "Content-Type": "application/json" },
     body: "{ malformed json",
   });
-  const res = await handleRequest(req);
+  const res = await handleRequest(req, { requireAuth: () => null });
   assertEquals(res.status, 400);
   const body = await res.json();
   assertEquals(body.error.includes("Corpo JSON inválido"), true);
@@ -434,7 +458,7 @@ Deno.test("handleRequest POST com JSON array retorna 400", async () => {
     headers: { "Content-Type": "application/json" },
     body: "[]",
   });
-  const res = await handleRequest(req);
+  const res = await handleRequest(req, { requireAuth: () => null });
   assertEquals(res.status, 400);
   const body = await res.json();
   assertEquals(body.error.includes("Esperado objeto JSON"), true);
@@ -444,10 +468,24 @@ Deno.test("handleRequest get sem parâmetros retorna 400 claro", async () => {
   const req = new Request("http://localhost/api-dashboard-oportunidades?action=get", {
     method: "GET",
   });
-  const res = await handleRequest(req);
+  const res = await handleRequest(req, { requireAuth: () => null });
   assertEquals(res.status, 400);
   const body = await res.json();
   assertEquals(body.error.includes("Identificador ausente"), true);
+});
+
+Deno.test("handleRequest get com codigo_externo sem fonte retorna 400 claro", async () => {
+  const req = new Request(
+    "http://localhost/api-dashboard-oportunidades?action=get&codigo_externo=07486108000185-1-000001/2026",
+    { method: "GET" },
+  );
+  const res = await handleRequest(req, { requireAuth: () => null });
+  assertEquals(res.status, 400);
+  const body = await res.json();
+  assertEquals(
+    body.error,
+    "Parâmetro 'fonte' é obrigatório ao consultar por 'codigo_externo'",
+  );
 });
 
 // --------------------------------------------------------------------------
@@ -553,7 +591,10 @@ Deno.test("handleRequest list com filtro uf asserte eq('uf', 'AC') e PUBLIC_LICI
     method: "GET",
   });
   // deno-lint-ignore no-explicit-any
-  const res = await handleRequest(req, { getClient: () => mockClient as any });
+  const res = await handleRequest(req, {
+    getClient: () => mockClient as any,
+    requireAuth: () => null,
+  });
   assertEquals(res.status, 200);
   const body = await res.json();
   assertEquals(body.action, "list");
@@ -566,6 +607,12 @@ Deno.test("handleRequest list com filtro uf asserte eq('uf', 'AC') e PUBLIC_LICI
   const selectCall = mockClient.calls.find((c) => c.method === "select");
   assertEquals(selectCall?.args[0], PUBLIC_LICITACAO_COLUMNS);
   assertEquals((selectCall?.args[0] as string).includes("raw"), false);
+  assertEquals((selectCall?.args[0] as string).includes("esclarecimentos"), false);
+  assertEquals((selectCall?.args[0] as string).includes("notas"), false);
+  assertEquals((selectCall?.args[0] as string).includes("anexo_raiz_id"), false);
+  assertEquals((selectCall?.args[0] as string).includes("edital_id"), false);
+  assertEquals((selectCall?.args[0] as string).includes("modulo"), true);
+  assertEquals((selectCall?.args[0] as string).includes("id_externo"), true);
 
   const eqUfCall = mockClient.calls.find((c) => c.method === "eq" && c.args[0] === "uf");
   assertEquals(eqUfCall, { method: "eq", args: ["uf", "AC"] });
@@ -583,7 +630,10 @@ Deno.test("handleRequest get por id asserte eq('id', 101) e maybeSingle", async 
     method: "GET",
   });
   // deno-lint-ignore no-explicit-any
-  const res = await handleRequest(req, { getClient: () => mockClient as any });
+  const res = await handleRequest(req, {
+    getClient: () => mockClient as any,
+    requireAuth: () => null,
+  });
   assertEquals(res.status, 200);
   const body = await res.json();
   assertEquals(body.item.id, 101);
@@ -598,29 +648,18 @@ Deno.test("handleRequest get por id asserte eq('id', 101) e maybeSingle", async 
   assertEquals(Boolean(maybeSingleCall), true);
 });
 
-Deno.test("handleRequest get por codigo_externo sem fonte asserte eq('codigo_externo', ...)", async () => {
-  const mockClient = createRecordingMockClient({
-    singleResult: {
-      data: { id: 102, codigo_externo: "07486108000185-1-000001/2026" },
-      error: null,
-    },
-  });
-
+Deno.test("handleRequest get por codigo_externo sem fonte retorna 400", async () => {
   const req = new Request(
     "http://localhost/api-dashboard-oportunidades?action=get&codigo_externo=07486108000185-1-000001/2026",
     { method: "GET" },
   );
-  // deno-lint-ignore no-explicit-any
-  const res = await handleRequest(req, { getClient: () => mockClient as any });
-  assertEquals(res.status, 200);
-
-  const eqCalls = mockClient.calls.filter((c) => c.method === "eq");
-  assertEquals(eqCalls, [
-    { method: "eq", args: ["codigo_externo", "07486108000185-1-000001/2026"] },
-  ]);
-
-  const maybeSingleCall = mockClient.calls.find((c) => c.method === "maybeSingle");
-  assertEquals(Boolean(maybeSingleCall), true);
+  const res = await handleRequest(req, { requireAuth: () => null });
+  assertEquals(res.status, 400);
+  const body = await res.json();
+  assertEquals(
+    body.error,
+    "Parâmetro 'fonte' é obrigatório ao consultar por 'codigo_externo'",
+  );
 });
 
 Deno.test("handleRequest get por codigo_externo com fonte asserte eq('codigo_externo') e eq('fonte')", async () => {
@@ -636,7 +675,10 @@ Deno.test("handleRequest get por codigo_externo com fonte asserte eq('codigo_ext
     { method: "GET" },
   );
   // deno-lint-ignore no-explicit-any
-  const res = await handleRequest(req, { getClient: () => mockClient as any });
+  const res = await handleRequest(req, {
+    getClient: () => mockClient as any,
+    requireAuth: () => null,
+  });
   assertEquals(res.status, 200);
 
   const eqCalls = mockClient.calls.filter((c) => c.method === "eq");
@@ -649,7 +691,7 @@ Deno.test("handleRequest get por codigo_externo com fonte asserte eq('codigo_ext
   assertEquals(Boolean(maybeSingleCall), true);
 });
 
-Deno.test("handleRequest get por orgao_cnpj + processo_norm asserte eq nos dois campos e SEM maybeSingle", async () => {
+Deno.test("handleRequest get por orgao_cnpj + processo_norm asserte eq nos dois campos, paginacao e SEM maybeSingle", async () => {
   const mockClient = createRecordingMockClient({
     listResult: {
       data: [
@@ -662,21 +704,33 @@ Deno.test("handleRequest get por orgao_cnpj + processo_norm asserte eq nos dois 
   });
 
   const req = new Request(
-    "http://localhost/api-dashboard-oportunidades?action=get&orgao_cnpj=07.486.108/0001-85&processo_norm=2026/001",
+    "http://localhost/api-dashboard-oportunidades?action=get&orgao_cnpj=07.486.108/0001-85&processo_norm=2026/001&page=1&limit=10",
     { method: "GET" },
   );
   // deno-lint-ignore no-explicit-any
-  const res = await handleRequest(req, { getClient: () => mockClient as any });
+  const res = await handleRequest(req, {
+    getClient: () => mockClient as any,
+    requireAuth: () => null,
+  });
   assertEquals(res.status, 200);
   const body = await res.json();
+  assertEquals(body.page, 1);
+  assertEquals(body.limit, 10);
   assertEquals(body.total, 2);
   assertEquals(body.items.length, 2);
+
+  const selectCall = mockClient.calls.find((c) => c.method === "select");
+  assertEquals(selectCall?.args[0], PUBLIC_LICITACAO_COLUMNS);
+  assertEquals(selectCall?.args[1], { count: "exact" });
+
+  const rangeCall = mockClient.calls.find((c) => c.method === "range");
+  assertEquals(rangeCall, { method: "range", args: [0, 9] });
 
   const eqCalls = mockClient.calls.filter((c) => c.method === "eq");
   assertEquals(eqCalls, [
     { method: "eq", args: ["orgao_cnpj", "07486108000185"] },
-    { method: "processo_norm", args: [] }, // marcador para comparar abaixo
-  ].map((c) => c.method === "processo_norm" ? { method: "eq", args: ["processo_norm", "2026001"] } : c));
+    { method: "eq", args: ["processo_norm", "2026001"] },
+  ]);
 
   // NÃO deve conter chamada a maybeSingle
   const maybeSingleCall = mockClient.calls.find((c) => c.method === "maybeSingle");
@@ -692,7 +746,10 @@ Deno.test("handleRequest mock com count nulo em list retorna total: 0 sem quebra
     method: "GET",
   });
   // deno-lint-ignore no-explicit-any
-  const res = await handleRequest(req, { getClient: () => mockClient as any });
+  const res = await handleRequest(req, {
+    getClient: () => mockClient as any,
+    requireAuth: () => null,
+  });
   assertEquals(res.status, 200);
   const body = await res.json();
   assertEquals(body.total, 0);
@@ -712,7 +769,10 @@ Deno.test("handleRequest mock com count nulo em readiness retorna total_registro
     method: "GET",
   });
   // deno-lint-ignore no-explicit-any
-  const res = await handleRequest(req, { getClient: () => mockClient as any });
+  const res = await handleRequest(req, {
+    getClient: () => mockClient as any,
+    requireAuth: () => null,
+  });
   assertEquals(res.status, 200);
   const body = await res.json();
   assertEquals(body.ready, true);
@@ -732,11 +792,42 @@ Deno.test("handleRequest em erro de banco retorna mensagem genérica (não vaza 
     method: "GET",
   });
   // deno-lint-ignore no-explicit-any
-  const res = await handleRequest(req, { getClient: () => mockClient as any });
+  const res = await handleRequest(req, {
+    getClient: () => mockClient as any,
+    requireAuth: () => null,
+  });
   assertEquals(res.status, 400);
   const body = await res.json();
   assertEquals(body.error, "Falha ao consultar licitação");
   assertEquals(JSON.stringify(body).includes("internals leaked"), false);
+});
+
+Deno.test("handleRequest com requireUserAuth simulado autenticado avança com sucesso", async () => {
+  const mockClient = createRecordingMockClient({
+    headCountResult: { count: 10, error: null },
+    singleResult: {
+      data: { updated_at: "2026-09-28T10:00:00Z", last_synced_at: null },
+      error: null,
+    },
+  });
+
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=readiness", {
+    method: "GET",
+    headers: { Authorization: "Bearer valid-user-token" },
+  });
+
+  const res = await handleRequest(req, {
+    getClient: () => mockClient as any,
+    requireAuth: (r) => {
+      // Simula requireUserAuth aceitando token de teste
+      if (r.headers.get("Authorization") === "Bearer valid-user-token") return null;
+      return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 });
+    },
+  });
+
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.ready, true);
 });
 
 Deno.test("importar index.ts não inicia servidor de fundo (sanitizer de recursos livre)", async () => {

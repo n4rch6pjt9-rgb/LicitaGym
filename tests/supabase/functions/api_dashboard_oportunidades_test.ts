@@ -759,6 +759,7 @@ Deno.test("handleRequest get por id asserte eq('id', 101) e maybeSingle", async 
   assertEquals(res.status, 200);
   const body = await res.json();
   assertEquals(body.item.id, 101);
+  assertEquals(body.item.url_edital, null);
 
   const selectCall = mockClient.calls.find((c) => c.method === "select");
   assertEquals(selectCall?.args[0], PUBLIC_LICITACAO_COLUMNS);
@@ -828,6 +829,9 @@ Deno.test("handleRequest get por codigo_externo com fonte asserte eq('codigo_ext
     requireAuth: () => null,
   });
   assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.item.id, 103);
+  assertEquals(body.item.url_edital, "https://pncp.gov.br/app/editais/07486108000185/2026/1");
 
   const eqCalls = mockClient.calls.filter((c) => c.method === "eq");
   assertEquals(eqCalls, [
@@ -866,6 +870,8 @@ Deno.test("handleRequest get por orgao_cnpj + processo_norm asserte eq nos dois 
   assertEquals(body.limit, 10);
   assertEquals(body.total, 2);
   assertEquals(body.items.length, 2);
+  assertEquals(body.items[0].url_edital, null);
+  assertEquals(body.items[1].url_edital, null);
 
   const selectCall = mockClient.calls.find((c) => c.method === "select");
   assertEquals(selectCall?.args[0], PUBLIC_LICITACAO_COLUMNS);
@@ -997,6 +1003,7 @@ Deno.test("handleRequest com requireUserAuth simulado autenticado em list avanç
   const body = await res.json();
   assertEquals(body.action, "list");
   assertEquals(body.total, 1);
+  assertEquals(body.items[0].url_edital, null);
 });
 
 Deno.test("requireUserAuth rejeita token inválido com 401 via mock determinístico e seguro offline", async () => {
@@ -1048,3 +1055,74 @@ Deno.test("script de verificacao de ACL efetiva supabase/tests/licitacoes_extern
   assertEquals(sql.includes("relrowsecurity"), true);
   assertEquals(sql.includes("coletores"), true);
 });
+
+Deno.test("handleRequest enriquece resposta de list e get com url_edital derivada na leitura", async () => {
+  const mockClient = createRecordingMockClient({
+    singleResult: {
+      data: {
+        id: 501,
+        fonte: "pncp",
+        codigo_externo: "07486108000185-1-000001/2026",
+        objeto: "Lote Teste Edital",
+      },
+      error: null,
+    },
+    listResult: {
+      data: [
+        {
+          id: 601,
+          fonte: "pncp",
+          codigo_externo: "44892693000140-1-000157/2026",
+          objeto: "Borracha Granulada",
+        },
+        {
+          id: 602,
+          fonte: "comprasgov_pesquisa_preco",
+          codigo_externo: "COMPRASGOV-PP-98703305900102026",
+          objeto: "Material Esportivo",
+        },
+        {
+          id: 603,
+          fonte: "custom_sem_link",
+          objeto: "Sem Link",
+        },
+      ],
+      count: 3,
+      error: null,
+    },
+  });
+
+  // 1. Testa GET detalhe
+  const reqGet = new Request("http://localhost/api-dashboard-oportunidades?action=get&id=501", {
+    method: "GET",
+  });
+  // deno-lint-ignore no-explicit-any
+  const resGet = await handleRequest(reqGet, {
+    getClient: () => mockClient as any,
+    requireAuth: () => null,
+  });
+  assertEquals(resGet.status, 200);
+  const bodyGet = await resGet.json();
+  assertEquals(bodyGet.item.id, 501);
+  assertEquals(bodyGet.item.url_edital, "https://pncp.gov.br/app/editais/07486108000185/2026/1");
+
+  // 2. Testa GET list
+  const reqList = new Request("http://localhost/api-dashboard-oportunidades?action=list", {
+    method: "GET",
+  });
+  // deno-lint-ignore no-explicit-any
+  const resList = await handleRequest(reqList, {
+    getClient: () => mockClient as any,
+    requireAuth: () => null,
+  });
+  assertEquals(resList.status, 200);
+  const bodyList = await resList.json();
+  assertEquals(bodyList.items.length, 3);
+  assertEquals(bodyList.items[0].url_edital, "https://pncp.gov.br/app/editais/44892693000140/2026/157");
+  assertEquals(
+    bodyList.items[1].url_edital,
+    "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/acompanhamento-compra?compra=98703305900102026",
+  );
+  assertEquals(bodyList.items[2].url_edital, null);
+});
+

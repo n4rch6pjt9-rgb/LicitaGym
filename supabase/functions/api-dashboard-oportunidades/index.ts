@@ -11,6 +11,7 @@ export const corsHeaders = {
 import type { ActionParams, GetActionParams, ListActionParams } from "./types.ts";
 import { parseActionFromBody, parseActionFromUrl } from "./validation.ts";
 import { applyLicitacaoFilters, calculateRange } from "./query.ts";
+import { buildEditalUrl } from "../_shared/edital-url.ts";
 
 /**
  * Colunas públicas explícitas da tabela licitacoes_externas expostas para o dashboard.
@@ -170,7 +171,13 @@ async function handleGet(
         );
       }
 
-      return jsonResponse({ item: data });
+      const itemRecord = data as unknown as Record<string, unknown>;
+      const itemWithUrl = {
+        ...itemRecord,
+        url_edital: buildEditalUrl(itemRecord),
+      };
+
+      return jsonResponse({ item: itemWithUrl });
     }
 
     // Caso 2: Busca única por codigo_externo + fonte
@@ -202,7 +209,13 @@ async function handleGet(
         );
       }
 
-      return jsonResponse({ item: data });
+      const itemRecord = data as unknown as Record<string, unknown>;
+      const itemWithUrl = {
+        ...itemRecord,
+        url_edital: buildEditalUrl(itemRecord),
+      };
+
+      return jsonResponse({ item: itemWithUrl });
     }
 
     // Caso 3: Busca por par órgão + processo (1..N compras/certames do mesmo processo administrativo) paginada
@@ -230,7 +243,11 @@ async function handleGet(
         return jsonResponse({ error: "Falha ao consultar compras do processo" }, 500);
       }
 
-      const items = data ?? [];
+      const rawItems = (data ?? []) as unknown as Array<Record<string, unknown>>;
+      const items = rawItems.map((row) => ({
+        ...row,
+        url_edital: buildEditalUrl(row),
+      }));
       const total = count;
       if (total === 0 && items.length === 0) {
         return jsonResponse(
@@ -297,6 +314,12 @@ async function handleList(
       return jsonResponse({ error: "Falha ao consultar lista de oportunidades" }, 500);
     }
 
+    const rawItems = (data ?? []) as unknown as Array<Record<string, unknown>>;
+    const items = rawItems.map((row) => ({
+      ...row,
+      url_edital: buildEditalUrl(row),
+    }));
+
     return jsonResponse({
       action: "list",
       page,
@@ -304,7 +327,7 @@ async function handleList(
       total: count,
       order_by,
       order_direction,
-      items: data ?? [],
+      items,
     });
   } catch (err: unknown) {
     console.error("[api-dashboard-oportunidades] Exceção em list:", err);

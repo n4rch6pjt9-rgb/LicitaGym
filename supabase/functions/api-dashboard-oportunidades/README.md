@@ -121,6 +121,7 @@ Obtém certames ou compras específicas.
     "categoria_escopo": "catmat",
     "interesse_borracha": false,
     "prioridade": "leads",
+    "url_edital": "https://pncp.gov.br/app/editais/07486108000185/2026/1",
     "created_at": "2026-09-20T08:05:00Z",
     "updated_at": "2026-09-28T09:00:00Z",
     "last_synced_at": "2026-09-28T09:00:00Z"
@@ -141,13 +142,15 @@ Obtém certames ou compras específicas.
       "id": 123,
       "codigo_externo": "07486108000185-1-000001/2026",
       "objeto": "Lote 1 - Esteiras Ergométricas",
-      "valor_total": 120000.00
+      "valor_total": 120000.00,
+      "url_edital": "https://pncp.gov.br/app/editais/07486108000185/2026/1"
     },
     {
       "id": 124,
       "codigo_externo": "07486108000185-1-000002/2026",
       "objeto": "Lote 2 - Anilhas e Barras",
-      "valor_total": 85000.00
+      "valor_total": 85000.00,
+      "url_edital": "https://pncp.gov.br/app/editais/07486108000185/2026/2"
     }
   ]
 }
@@ -209,7 +212,8 @@ Lista oportunidades com suporte a paginação, ordenação configurável e múlt
       "orgao_nome": "Comando da Aeronáutica",
       "uf": "DF",
       "valor_total": 45000.00,
-      "data_fim": "2026-10-15T10:00:00Z"
+      "data_fim": "2026-10-15T10:00:00Z",
+      "url_edital": "https://pncp.gov.br/app/editais/00394429000100/2026/1"
     }
   ]
 }

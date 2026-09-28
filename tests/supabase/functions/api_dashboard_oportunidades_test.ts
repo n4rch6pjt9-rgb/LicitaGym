@@ -1027,3 +1027,10 @@ Deno.test("index.ts possui bloco if (import.meta.main) que envolve Deno.serve", 
   const content = await Deno.readTextFile("./supabase/functions/api-dashboard-oportunidades/index.ts");
   assertEquals(content.includes("if (import.meta.main) {\n  Deno.serve((req) => handleRequest(req));\n}"), true);
 });
+
+Deno.test("migration D1.2 revoga SELECT de authenticated em licitacoes_externas", async () => {
+  const sql = await Deno.readTextFile("./supabase/migrations/20260928140000_licitacoes_externas_revoke_authenticated.sql");
+  assertEquals(sql.includes("drop policy if exists licitacoes_externas_select on public.licitacoes_externas;"), true);
+  assertEquals(sql.includes("revoke all on table public.licitacoes_externas from authenticated, anon, PUBLIC;"), true);
+  assertEquals(sql.includes("alter table public.licitacoes_externas enable row level security;"), true);
+});

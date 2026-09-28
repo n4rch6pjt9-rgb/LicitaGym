@@ -17,7 +17,8 @@ O contrato completo de requisições, respostas, parâmetros e tratamento de err
     - Lookup por `orgao_cnpj` + `processo_norm` paginado com `page` e `limit` (retorna coleção `{ orgao_cnpj, processo_norm, page, limit, total, items: [...] }`, ou 404).
   - `list`: Requer autenticação JWT do usuário. Lista com paginação (`page`, `limit`), ordenação com desempate determinístico por `id` e múltiplos filtros (UF, órgão, prioridade, escopo, borracha, datas com limites inclusivos em America/Sao_Paulo UTC-3, valores e busca textual literal com allowlist).
 - **Segurança & RLS**:
-  - `licitacoes_externas` possui `anon` explicitamente revogado (`REVOKE ALL ON TABLE public.licitacoes_externas FROM PUBLIC, anon;`).
+  - `licitacoes_externas` possui todo acesso direto via PostgREST revogado para `authenticated`, `anon` e `PUBLIC` (`REVOKE ALL ON TABLE public.licitacoes_externas FROM authenticated, anon, PUBLIC;`), com remoção de qualquer policy de SELECT para authenticated ou anon.
+  - A Edge Function `api-dashboard-oportunidades` é o **único caminho de leitura** para o frontend/dashboard.
   - Chamadas à Edge Function para `list` e `get` exigem autenticação de usuário via `requireUserAuth` (JWT de usuário Supabase), mantendo `OPTIONS` e `readiness` públicos.
   - A Edge Function executa server-side via `SUPABASE_SERVICE_ROLE_KEY` projetando exclusivamente colunas públicas seguras (`PUBLIC_LICITACAO_COLUMNS`, incluindo `modulo` e `id_externo` para SEST SENAT), sem expor payload bruto (`raw`), fóruns (`esclarecimentos`, `notas`) nem colunas de controle interno (`anexo_raiz_id`, `edital_id`).
   - O navegador invoca a função com token de usuário autenticado; a chave `service_role` nunca é entregue ao cliente.

@@ -8,14 +8,15 @@
  *    - Se possuir `orgao_cnpj` e `ano` + `numero_sequencial` (em raw ou derivados):
  *      monta `https://pncp.gov.br/app/editais/{cnpj}/{ano}/{sequencial}`.
  *    - Fallback: se `linkSistemaOrigem` ou `raw.linkSistemaOrigem` estiver presente e for https válido.
- * 2. Compras.gov.br (`comprasnet` / `comprasgov` / `compras_gov` / `compras`):
- *    - Se houver `idCompra` / `id_compra` ou `codigoUasg` + `numeroCompra`:
- *      monta URL canônica do Compras.gov (`https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/acompanhamento-compra?compra={idCompra}`).
+ * 2. Compras.gov.br (`comprasnet` / `comprasgov` / `compras_gov` / `compras` / `comprasgov_pesquisa_preco`):
+ *    - `idCompra` (17 dígitos, `UUUUUUMMNNNNNYYYY`) vindo de `codigo_externo` com prefixo `COMPRASGOV-PP-`
+ *      ou de `raw.idCompra` / `raw.id_compra` como string: monta URL de acompanhamento
+ *      (`https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/acompanhamento-compra?compra={idCompra}`, rota a confirmar).
+ *    - `id_externo` não é usado: é `int` e guarda o `nCdProcesso` do SEST SENAT.
  *    - Fallback: se houver `linkSistemaOrigem` ou `url`: valida protocolo https.
  * 3. SEST SENAT (`sestsenat` / `sest_senat`):
  *    - Portal Paradigma em `https://compras.sestsenat.org.br/portal/`.
- *    - Se houver `linkSistemaOrigem` https válido, usa-o.
- *    - Se houver `id_externo` (nCdProcesso), direciona para o portal público do SEST SENAT.
+ *    - Se houver `linkSistemaOrigem` https válido, usa-o; sem ele retorna null (não há rota pública por `id_externo`).
  * 4. Genérica / outras fontes:
  *    - Se houver `linkSistemaOrigem` (ou `url_edital`, `url` em colunas/raw): aceita se for https e host em `ALLOWED_ORIGEM_HOSTS`.
  *
@@ -50,6 +51,20 @@ const PNCP_CONTROLE_EXTENDED_RE = /^(\d{14})-(\d+)-(\d+)\/(\d{4})$/;
 
 /** Compra/edital legado PNCP: `{CNPJ14}-{seqPad}/{ano}` */
 const PNCP_CONTROLE_SIMPLE_RE = /^(\d{14})-(\d+)\/(\d{4})$/;
+
+const COMPRASGOV_FONTES = new Set([
+  "comprasnet",
+  "comprasgov",
+  "compras_gov",
+  "compras",
+  "comprasgov_pesquisa_preco",
+]);
+
+/** idCompra do Compras.gov: UASG(6) + modalidade(2) + número(5) + ano(4) */
+const COMPRASGOV_ID_COMPRA_RE = /^\d{17}$/;
+
+/** Prefixo de `codigo_externo` gravado pela carga da pesquisa de preços. */
+const COMPRASGOV_CODIGO_EXTERNO_PREFIX = "COMPRASGOV-PP-";
 
 export interface LicitacaoRowForEdital {
   fonte?: string | null;
@@ -146,6 +161,26 @@ export function parsePncpControleToUrl(controle: unknown): string | null {
 }
 
 /**
+ * Extrai o idCompra (17 dígitos) de uma linha do Compras.gov.
+ * `codigo_externo` vem primeiro por ser coluna projetada pelas Edge Functions (`raw` não é).
+ * Só aceita string: 17 dígitos passam de Number.MAX_SAFE_INTEGER e perderiam precisão como number.
+ */
+function extractComprasGovIdCompra(row: LicitacaoRowForEdital, raw: Record<string, unknown>): string | null {
+  const candidates: unknown[] = [];
+  if (typeof row.codigo_externo === "string" && row.codigo_externo.startsWith(COMPRASGOV_CODIGO_EXTERNO_PREFIX)) {
+    candidates.push(row.codigo_externo.slice(COMPRASGOV_CODIGO_EXTERNO_PREFIX.length));
+  }
+  candidates.push(raw.idCompra, raw.id_compra, raw.compra);
+
+  for (const cand of candidates) {
+    if (typeof cand !== "string") continue;
+    const val = cand.trim();
+    if (COMPRASGOV_ID_COMPRA_RE.test(val)) return val;
+  }
+  return null;
+}
+
+/**
  * Constrói a URL do edital para uma linha de licitação.
  * Retorna null se nenhuma URL segura/válida puder ser derivada.
  */
@@ -200,11 +235,9 @@ export function buildEditalUrl(row: LicitacaoRowForEdital | null | undefined): s
     return null;
   }
 
-  if (fonte === "comprasnet" || fonte === "comprasgov" || fonte === "compras_gov" || fonte === "compras") {
-    // Compras.gov.br
-    // Se houver idCompra / compra
-    const idCompra = raw.idCompra ?? raw.id_compra ?? raw.compra ?? row.id_externo;
-    if (idCompra && (typeof idCompra === "number" || /^\d+$/.test(String(idCompra)))) {
+  if (COMPRASGOV_FONTES.has(fonte)) {
+    const idCompra = extractComprasGovIdCompra(row, raw);
+    if (idCompra) {
       return `https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/acompanhamento-compra?compra=${idCompra}`;
     }
 

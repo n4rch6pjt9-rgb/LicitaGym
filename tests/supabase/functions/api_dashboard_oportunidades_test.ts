@@ -1077,8 +1077,8 @@ Deno.test("handleRequest enriquece resposta de list e get com url_edital derivad
         },
         {
           id: 602,
-          fonte: "comprasnet",
-          id_externo: 998877,
+          fonte: "comprasgov_pesquisa_preco",
+          codigo_externo: "COMPRASGOV-PP-98703305900102026",
           objeto: "Material Esportivo",
         },
         {
@@ -1121,7 +1121,7 @@ Deno.test("handleRequest enriquece resposta de list e get com url_edital derivad
   assertEquals(bodyList.items[0].url_edital, "https://pncp.gov.br/app/editais/44892693000140/2026/157");
   assertEquals(
     bodyList.items[1].url_edital,
-    "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/acompanhamento-compra?compra=998877",
+    "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/acompanhamento-compra?compra=98703305900102026",
   );
   assertEquals(bodyList.items[2].url_edital, null);
 });

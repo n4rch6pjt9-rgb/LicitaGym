@@ -197,28 +197,39 @@ Deno.test("buildEditalUrl: Fonte PNCP", () => {
 });
 
 Deno.test("buildEditalUrl: Fonte Compras.gov.br", () => {
-  // 1. Linha com idCompra em raw
+  // 1. Linha com idCompra (17 dígitos) em raw
   const row1 = {
     fonte: "comprasnet",
-    id_externo: 987654,
     raw: {
-      idCompra: 987654,
+      idCompra: "98703305900102026",
     },
   };
   assertEquals(
     buildEditalUrl(row1),
-    "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/acompanhamento-compra?compra=987654",
+    "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/acompanhamento-compra?compra=98703305900102026",
   );
 
-  // 2. Linha com id_externo numérico
+  // 2. id_externo não é idCompra (int, nCdProcesso do SEST SENAT): ignorado
+  assertEquals(buildEditalUrl({ fonte: "comprasgov", id_externo: "123450" }), null);
+  assertEquals(buildEditalUrl({ fonte: "comprasgov", id_externo: 98703305900102026 }), null);
+
+  // 2.1 Linha como a Edge Function recebe (sem raw): idCompra vem do codigo_externo
   const row2 = {
-    fonte: "comprasgov",
-    id_externo: "123450",
+    fonte: "comprasgov_pesquisa_preco",
+    codigo_externo: "COMPRASGOV-PP-98703305900102026",
   };
   assertEquals(
     buildEditalUrl(row2),
-    "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/acompanhamento-compra?compra=123450",
+    "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/acompanhamento-compra?compra=98703305900102026",
   );
+
+  // 2.2 idCompra fora do formato de 17 dígitos ou como number (perde precisão) é rejeitado
+  assertEquals(
+    buildEditalUrl({ fonte: "comprasgov_pesquisa_preco", codigo_externo: "COMPRASGOV-PP-987654" }),
+    null,
+  );
+  assertEquals(buildEditalUrl({ fonte: "comprasnet", raw: { idCompra: 987654 } }), null);
+  assertEquals(buildEditalUrl({ fonte: "comprasnet", raw: { idCompra: "9870330590010202X" } }), null);
 
   // 3. Compras.gov com linkSistemaOrigem
   const row3 = {

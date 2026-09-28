@@ -1,5 +1,6 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import {
+  ALLOWED_ORIGEM_HOSTS,
   buildEditalUrl,
   buildPncpEditalUrl,
   isValidHttpsUrl,
@@ -56,6 +57,36 @@ Deno.test("isValidHttpsUrl: valida e rejeita protocolos e formatos inválidos", 
     isValidHttpsUrl("https://malicious-domain.com/fake-edital", true),
     null,
   );
+
+  // Allowlist de origem: *.gov.br e SEST SENAT, sem lookalikes
+  assertEquals(
+    isValidHttpsUrl("https://portal.compras.mg.gov.br/edital/123", true, ALLOWED_ORIGEM_HOSTS),
+    "https://portal.compras.mg.gov.br/edital/123",
+  );
+  assertEquals(
+    isValidHttpsUrl("https://compras.sestsenat.org.br/portal/x", true, ALLOWED_ORIGEM_HOSTS),
+    "https://compras.sestsenat.org.br/portal/x",
+  );
+  assertEquals(isValidHttpsUrl("https://evilgov.br/edital", true, ALLOWED_ORIGEM_HOSTS), null);
+  assertEquals(isValidHttpsUrl("https://pncp.gov.br.evil.com/edital", true, ALLOWED_ORIGEM_HOSTS), null);
+  assertEquals(isValidHttpsUrl("https://pncp.gov.br@evil.com/edital", true, ALLOWED_ORIGEM_HOSTS), null);
+  assertEquals(isValidHttpsUrl("https://sestsenat.org.br/portal", true, ALLOWED_ORIGEM_HOSTS), null);
+
+  // A allowlist estática (URLs construídas) continua restrita
+  assertEquals(isValidHttpsUrl("https://portal.compras.mg.gov.br/edital/123", true), null);
+});
+
+Deno.test("buildEditalUrl: linkSistemaOrigem fora da allowlist é descartado", () => {
+  for (const fonte of ["pncp", "comprasnet", "sestsenat", "custom"]) {
+    assertEquals(
+      buildEditalUrl({ fonte, raw: { linkSistemaOrigem: "https://malicious-domain.com/fake-edital" } }),
+      null,
+    );
+    assertEquals(
+      buildEditalUrl({ fonte, linkSistemaOrigem: "https://pncp.gov.br.evil.com/edital" }),
+      null,
+    );
+  }
 });
 
 // -----------------------------------------------------------------------------

@@ -17,12 +17,13 @@
  *    - Se houver `linkSistemaOrigem` https válido, usa-o.
  *    - Se houver `id_externo` (nCdProcesso), direciona para o portal público do SEST SENAT.
  * 4. Genérica / outras fontes:
- *    - Se houver `linkSistemaOrigem` (ou `url_edital`, `url` em colunas/raw): aceita se for https e URL válida.
+ *    - Se houver `linkSistemaOrigem` (ou `url_edital`, `url` em colunas/raw): aceita se for https e host em `ALLOWED_ORIGEM_HOSTS`.
  *
  * Regras de Segurança:
  * - Apenas protocolo `https://`.
  * - Hosts conhecidos autorizados para URLs construídas: `pncp.gov.br`, `compras.gov.br`, `cnetmobile.estaleiro.serpro.gov.br`.
- * - Para o domínio vindo de `linkSistemaOrigem`, aceita somente se for https e URL válida.
+ * - Para o domínio vindo de `linkSistemaOrigem` (dado coletado de terceiros), aceita somente https
+ *   e host em `ALLOWED_ORIGEM_HOSTS`: qualquer `*.gov.br` e o portal do SEST SENAT.
  * - Retorna null quando não for possível construir URL válida ou segura.
  */
 
@@ -32,6 +33,16 @@ export const ALLOWED_STATIC_HOSTS = new Set([
   "compras.gov.br",
   "www.compras.gov.br",
   "cnetmobile.estaleiro.serpro.gov.br",
+]);
+
+/**
+ * Hosts aceitos para links vindos da origem (`linkSistemaOrigem`, `url_edital`, `url`).
+ * `gov.br` cobre portais federais, estaduais e municipais (registro restrito a órgãos públicos).
+ */
+export const ALLOWED_ORIGEM_HOSTS = new Set([
+  ...ALLOWED_STATIC_HOSTS,
+  "gov.br",
+  "compras.sestsenat.org.br",
 ]);
 
 /** Compra/edital estendido PNCP: `{CNPJ14}-{tipo}-{seqPad}/{ano}` */
@@ -56,10 +67,14 @@ export interface LicitacaoRowForEdital {
 
 /**
  * Valida se uma string é uma URL https válida.
- * Se allowedHostsOnly=true, restringe aos hosts da allowlist estática.
+ * Se allowedHostsOnly=true, restringe aos hosts de `allowedHosts` (e seus subdomínios).
  * Se allowedHostsOnly=false, aceita qualquer domínio válido desde que seja protocolo HTTPS.
  */
-export function isValidHttpsUrl(rawUrl: unknown, allowedHostsOnly = false): string | null {
+export function isValidHttpsUrl(
+  rawUrl: unknown,
+  allowedHostsOnly = false,
+  allowedHosts: ReadonlySet<string> = ALLOWED_STATIC_HOSTS,
+): string | null {
   if (typeof rawUrl !== "string") return null;
   const trimmed = rawUrl.trim();
   if (!trimmed.toLowerCase().startsWith("https://")) return null;
@@ -71,8 +86,8 @@ export function isValidHttpsUrl(rawUrl: unknown, allowedHostsOnly = false): stri
     if (!hostname || hostname.includes(" ")) return null;
 
     if (allowedHostsOnly) {
-      const isAllowed = ALLOWED_STATIC_HOSTS.has(hostname) ||
-        Array.from(ALLOWED_STATIC_HOSTS).some((h) => hostname === h || hostname.endsWith(`.${h}`));
+      const isAllowed = allowedHosts.has(hostname) ||
+        Array.from(allowedHosts).some((h) => hostname.endsWith(`.${h}`));
       if (!isAllowed) return null;
     }
 
@@ -147,8 +162,8 @@ export function buildEditalUrl(row: LicitacaoRowForEdital | null | undefined): s
     raw.url_edital ??
     row.url_edital;
 
-  // Aceita o domínio vindo de linkSistemaOrigem só se for https
-  const validOrigemUrl = isValidHttpsUrl(rawLinkSistemaOrigem, false);
+  // Link vindo da origem é dado de terceiros: só https e host da allowlist de origem
+  const validOrigemUrl = isValidHttpsUrl(rawLinkSistemaOrigem, true, ALLOWED_ORIGEM_HOSTS);
 
   // 2. Tratamento específico por fonte
   if (fonte === "pncp") {

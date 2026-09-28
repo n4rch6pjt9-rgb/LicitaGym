@@ -129,7 +129,7 @@ DECLARE
   v_status text;
   v_erro text;
 BEGIN
-  -- Caso 3.1: Stale regular com fatias pendentes -> deve virar 'incompleta'
+  -- Caso 3.1: Stale regular com fatias pendentes -> vira 'incompleta' no passo 1 e é HERDADO imediatamente pelo novo run
   DELETE FROM private.pncp_sync_run WHERE lock_key = 'test-stale-fatias';
   INSERT INTO private.pncp_sync_run (
     resource_type, lock_key, parametros, status, iniciada_em, last_heartbeat_at
@@ -140,12 +140,19 @@ BEGIN
   ) RETURNING id INTO v_stale_fatias_id;
 
   v_res := private.acquire_sync_lock('test-stale-fatias', 'teste', '{}'::jsonb);
-  SELECT status INTO v_status FROM private.pncp_sync_run WHERE id = v_stale_fatias_id;
-  IF v_status <> 'incompleta' THEN
-    RAISE EXCEPTION 'TESTE 3.1 FALHOU: Stale com fatias deveria virar incompleta, virou %', v_status;
+  
+  -- O novo run deve receber continuation e ter retomada_de_id = id do stale
+  IF (v_res->>'continuation') IS NULL OR (v_res->>'retomada_de_id')::uuid <> v_stale_fatias_id THEN
+    RAISE EXCEPTION 'TESTE 3.1 FALHOU: Novo run deveria ter herdado fatias e retomada_de_id=%, obteve %', v_stale_fatias_id, v_res;
   END IF;
 
-  -- Caso 3.2: Stale regular sem fatias -> deve virar 'falhou'
+  -- A execução anterior que era stale vira 'retomada' (pois foi herdada imediatamente pelo novo run)
+  SELECT status INTO v_status FROM private.pncp_sync_run WHERE id = v_stale_fatias_id;
+  IF v_status <> 'retomada' THEN
+    RAISE EXCEPTION 'TESTE 3.1 FALHOU: Execução stale com fatias deveria virar retomada pelo novo run, virou %', v_status;
+  END IF;
+
+  -- Caso 3.2: Stale regular sem fatias -> deve virar 'falhou' e novo run NÃO herda nada
   DELETE FROM private.pncp_sync_run WHERE lock_key = 'test-stale-sem-fatias';
   INSERT INTO private.pncp_sync_run (
     resource_type, lock_key, parametros, status, iniciada_em, last_heartbeat_at
@@ -159,8 +166,11 @@ BEGIN
   IF v_status <> 'falhou' THEN
     RAISE EXCEPTION 'TESTE 3.2 FALHOU: Stale sem fatias deveria virar falhou, virou %', v_status;
   END IF;
+  IF (v_res->>'continuation') IS NOT NULL THEN
+    RAISE EXCEPTION 'TESTE 3.2 FALHOU: Novo run não deveria herdar nada de stale sem fatias';
+  END IF;
 
-  -- Caso 3.3: Stale de chave ':manual:' com fatias -> deve virar 'falhou' (não gera incompleta)
+  -- Caso 3.3: Stale de chave ':manual:' com fatias -> deve virar 'falhou' (não gera incompleta/retomada)
   DELETE FROM private.pncp_sync_run WHERE lock_key = 'contratacoes-editais:manual:20260901:20260905';
   INSERT INTO private.pncp_sync_run (
     resource_type, lock_key, parametros, status, iniciada_em, last_heartbeat_at
@@ -175,8 +185,11 @@ BEGIN
   IF v_status <> 'falhou' THEN
     RAISE EXCEPTION 'TESTE 3.3 FALHOU: Stale manual deveria virar falhou mesmo com fatias, virou %', v_status;
   END IF;
+  IF (v_res->>'continuation') IS NOT NULL THEN
+    RAISE EXCEPTION 'TESTE 3.3 FALHOU: Disparo manual nunca herda continuation';
+  END IF;
 
-  RAISE NOTICE '✓ TESTE 3 PASSOU: Regras de lock stale com/sem fatias e regra :manual: validadas';
+  RAISE NOTICE '✓ TESTE 3 PASSOU: Regras de lock stale com/sem fatias e regra :manual: validadas (stale com fatias herdado imediatamente)';
 END $$;
 
 -- -----------------------------------------------------------------------------
@@ -295,7 +308,20 @@ BEGIN
   -- Reseta o cooldown para liberar o host nos testes seguintes
   UPDATE private.http_host_lease SET cooldown_until = now() - interval '1 second', next_allowed_at = now() - interval '1 second' WHERE host = v_host;
 
-  RAISE NOTICE '✓ TESTE 6 PASSOU: Cálculo de wait_ms com EPOCH * 1000 validado para esperas longas (% ms)', v_wait_ms;
+  -- 6.2 Testa que report_http_rate_limit não encurta cooldown ativo maior
+  PERFORM private.report_http_rate_limit(v_host, 60);
+  -- Chamada com 10s não deve baixar os 60s
+  PERFORM private.report_http_rate_limit(v_host, 10);
+  v_res := private.acquire_http_slot(v_host, 100000);
+  v_wait_ms := (v_res->>'wait_ms')::int;
+  IF v_wait_ms < 50000 THEN
+    RAISE EXCEPTION 'TESTE 6.2 FALHOU: report_http_rate_limit encurtou cooldown ativo! wait_ms=%', v_wait_ms;
+  END IF;
+
+  -- Limpa para os testes seguintes
+  UPDATE private.http_host_lease SET cooldown_until = now() - interval '1 second', next_allowed_at = now() - interval '1 second' WHERE host = v_host;
+
+  RAISE NOTICE '✓ TESTE 6 PASSOU: Cálculo de wait_ms com EPOCH * 1000 validado para esperas longas (% ms) e não encurtamento', v_wait_ms;
 END $$;
 
 -- -----------------------------------------------------------------------------

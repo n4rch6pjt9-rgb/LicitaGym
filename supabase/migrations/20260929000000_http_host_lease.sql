@@ -47,17 +47,16 @@ DECLARE
   v_wait_ms int;
   v_target_time timestamptz;
 BEGIN
+  -- Garante que a linha do host exista sem risco de unique_violation concorrente
+  INSERT INTO private.http_host_lease (host, min_interval_ms)
+  VALUES (p_host, 1000)
+  ON CONFLICT (host) DO NOTHING;
+
   -- Bloqueia exclusivamente a linha do host durante a transação rápida
   SELECT * INTO v_rec
   FROM private.http_host_lease
   WHERE host = p_host
   FOR UPDATE;
-
-  IF NOT FOUND THEN
-    INSERT INTO private.http_host_lease (host, min_interval_ms)
-    VALUES (p_host, 1000)
-    RETURNING * INTO v_rec;
-  END IF;
 
   -- 1. Verifica Cooldown Ativo (429 global do host)
   IF v_rec.cooldown_until > v_now THEN
@@ -111,10 +110,23 @@ LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = ''
 AS $$
+DECLARE
+  v_secs int;
+  v_new_target timestamptz;
 BEGIN
+  -- Valida p_cooldown_seconds > 0 com teto razoável de segurança (3600s = 1 hora)
+  v_secs := GREATEST(1, LEAST(COALESCE(p_cooldown_seconds, 1), 3600));
+  v_new_target := clock_timestamp() + (v_secs || ' seconds')::interval;
+
+  -- Garante que o host exista
+  INSERT INTO private.http_host_lease (host, min_interval_ms)
+  VALUES (p_host, 1000)
+  ON CONFLICT (host) DO NOTHING;
+
+  -- Atualiza sem encurtar cooldown já ativo maior
   UPDATE private.http_host_lease
-  SET cooldown_until = clock_timestamp() + (p_cooldown_seconds || ' seconds')::interval,
-      next_allowed_at = clock_timestamp() + (p_cooldown_seconds || ' seconds')::interval,
+  SET cooldown_until = GREATEST(cooldown_until, v_new_target),
+      next_allowed_at = GREATEST(next_allowed_at, v_new_target),
       updated_at = clock_timestamp()
   WHERE host = p_host;
 END;

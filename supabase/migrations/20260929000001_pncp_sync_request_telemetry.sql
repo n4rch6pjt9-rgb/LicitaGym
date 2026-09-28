@@ -9,9 +9,19 @@ ALTER TABLE private.pncp_sync_request
   ADD COLUMN IF NOT EXISTS retry_after_seconds int;
 
 -- 2. Colunas de heartbeat e rastreabilidade de retomada em private.pncp_sync_run
+-- Cuidados com retrocompatibilidade e zumbis (orgaos-sync:7830):
+-- Adiciona last_heartbeat_at como nullable para NÃO carimbar now() nas linhas antigas executando.
+-- Em seguida preenche linhas existentes com iniciada_em e ativa o default now() para novos inserts.
 ALTER TABLE private.pncp_sync_run
-  ADD COLUMN IF NOT EXISTS last_heartbeat_at timestamptz NOT NULL DEFAULT now(),
+  ADD COLUMN IF NOT EXISTS last_heartbeat_at timestamptz,
   ADD COLUMN IF NOT EXISTS retomada_por_id uuid REFERENCES private.pncp_sync_run(id) ON DELETE SET NULL;
+
+UPDATE private.pncp_sync_run
+SET last_heartbeat_at = iniciada_em
+WHERE last_heartbeat_at IS NULL;
+
+ALTER TABLE private.pncp_sync_run
+  ALTER COLUMN last_heartbeat_at SET DEFAULT now();
 
 -- 3. Inclusão do status 'retomada' no CHECK de status
 ALTER TABLE private.pncp_sync_run
@@ -131,13 +141,13 @@ BEGIN
   END IF;
 
   -- 2. Busca execução 'incompleta' anterior para o mesmo lock_key (se NÃO for manual)
-  -- Nota: não retoma o registro que acabou de ser detectado como stale nesta mesma transação
+  -- Importante: se o registro v_running_rec acima era stale COM fatias, ele virou 'incompleta'
+  -- no passo 1 e DEVE ser herdado imediatamente pelo novo run nesta mesma chamada.
   IF NOT v_is_manual THEN
     SELECT id, parametros, iniciada_em INTO v_prior_incompleta
     FROM private.pncp_sync_run
     WHERE lock_key = p_lock_key 
       AND status = 'incompleta'
-      AND (v_running_rec.id IS NULL OR id <> v_running_rec.id)
     ORDER BY iniciada_em DESC
     LIMIT 1
     FOR UPDATE;

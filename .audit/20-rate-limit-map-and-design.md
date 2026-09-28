@@ -240,17 +240,16 @@ DECLARE
   v_wait_ms int;
   v_target_time timestamptz;
 BEGIN
+  -- Garante que a linha do host exista sem risco de unique_violation concorrente
+  INSERT INTO private.http_host_lease (host, min_interval_ms)
+  VALUES (p_host, 1000)
+  ON CONFLICT (host) DO NOTHING;
+
   -- Bloqueia exclusivamente a linha do host durante a transação rápida
   SELECT * INTO v_rec
   FROM private.http_host_lease
   WHERE host = p_host
   FOR UPDATE;
-
-  IF NOT FOUND THEN
-    INSERT INTO private.http_host_lease (host, min_interval_ms)
-    VALUES (p_host, 1000)
-    RETURNING * INTO v_rec;
-  END IF;
 
   -- 1. Verifica Cooldown Ativo (429 global do host)
   IF v_rec.cooldown_until > v_now THEN
@@ -304,10 +303,23 @@ LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = ''
 AS $$
+DECLARE
+  v_secs int;
+  v_new_target timestamptz;
 BEGIN
+  -- Valida p_cooldown_seconds > 0 com teto razoável de segurança (3600s = 1 hora)
+  v_secs := GREATEST(1, LEAST(COALESCE(p_cooldown_seconds, 1), 3600));
+  v_new_target := clock_timestamp() + (v_secs || ' seconds')::interval;
+
+  -- Garante que o host exista
+  INSERT INTO private.http_host_lease (host, min_interval_ms)
+  VALUES (p_host, 1000)
+  ON CONFLICT (host) DO NOTHING;
+
+  -- Atualiza sem encurtar cooldown já ativo maior
   UPDATE private.http_host_lease
-  SET cooldown_until = clock_timestamp() + (p_cooldown_seconds || ' seconds')::interval,
-      next_allowed_at = clock_timestamp() + (p_cooldown_seconds || ' seconds')::interval,
+  SET cooldown_until = GREATEST(cooldown_until, v_new_target),
+      next_allowed_at = GREATEST(next_allowed_at, v_new_target),
       updated_at = clock_timestamp()
   WHERE host = p_host;
 END;
@@ -408,9 +420,16 @@ DECLARE
   v_prior_id uuid := NULL;
   v_initial_parametros jsonb;
   v_has_pending boolean;
+  v_is_manual boolean;
 BEGIN
-  -- 0. Serialização estrita por chave: impede race condition em invocações simultâneas
+  -- 0. Serialização estrita por chave: impede race condition em invocações concorrentes
   PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtext(p_lock_key));
+
+  -- Classifica se é chave ou disparo manual (ex.: contratacoes-editais:manual:20260801:20260810)
+  v_is_manual := (
+    p_lock_key LIKE '%:manual:%' 
+    OR (p_parametros ? 'data_inicial' AND p_parametros ? 'data_final')
+  );
 
   -- 1. Verifica se já existe execução com lock ativo
   SELECT id, iniciada_em, last_heartbeat_at, parametros INTO v_running_rec
@@ -428,36 +447,45 @@ BEGIN
     END IF;
 
     -- STALE DETECTADO: Processo anterior morreu ou travou sem heartbeat há mais de 3 min.
-    -- Preservação de fatias: se havia continuation com fatias pendentes, marca 'incompleta'; senão 'falhou'.
-    v_has_pending := (
-      v_running_rec.parametros->'continuation'->'pending' IS NOT NULL
-      AND jsonb_typeof(v_running_rec.parametros->'continuation'->'pending') = 'array'
-      AND jsonb_array_length(v_running_rec.parametros->'continuation'->'pending') > 0
-    );
-
-    IF v_has_pending THEN
+    -- Se for execução manual, vai sempre para 'falhou' (não gera incompleta retomável).
+    IF v_is_manual THEN
       UPDATE private.pncp_sync_run
-      SET status = 'incompleta',
-          erro_principal = 'lock expirado (stale) - fatias pendentes preservadas para retomada',
+      SET status = 'falhou',
+          erro_principal = 'lock expirado (stale / execucao manual)',
           finalizada_em = v_now
       WHERE id = v_running_rec.id;
     ELSE
-      UPDATE private.pncp_sync_run
-      SET status = 'falhou',
-          erro_principal = 'lock expirado (stale / worker morto sem fatias)',
-          finalizada_em = v_now
-      WHERE id = v_running_rec.id;
+      -- Execuções automáticas: se havia continuation com fatias pendentes, preserva como 'incompleta'
+      v_has_pending := (
+        v_running_rec.parametros->'continuation'->'pending' IS NOT NULL
+        AND jsonb_typeof(v_running_rec.parametros->'continuation'->'pending') = 'array'
+        AND jsonb_array_length(v_running_rec.parametros->'continuation'->'pending') > 0
+      );
+
+      IF v_has_pending THEN
+        UPDATE private.pncp_sync_run
+        SET status = 'incompleta',
+            erro_principal = 'lock expirado (stale) - fatias pendentes preservadas para retomada',
+            finalizada_em = v_now
+        WHERE id = v_running_rec.id;
+      ELSE
+        UPDATE private.pncp_sync_run
+        SET status = 'falhou',
+            erro_principal = 'lock expirado (stale / worker morto sem fatias)',
+            finalizada_em = v_now
+        WHERE id = v_running_rec.id;
+      END IF;
     END IF;
   END IF;
 
-  -- 2. Busca execução 'incompleta' anterior para o mesmo lock_key (se NÃO for disparo manual com datas)
-  -- Nota: não retoma o registro que acabou de ser detectado como stale nesta mesma transação
-  IF NOT (p_parametros ? 'data_inicial' AND p_parametros ? 'data_final') THEN
+  -- 2. Busca execução 'incompleta' anterior para o mesmo lock_key (se NÃO for manual)
+  -- Importante: se o registro v_running_rec acima era stale COM fatias, ele virou 'incompleta'
+  -- no passo 1 e DEVE ser herdado imediatamente pelo novo run nesta mesma chamada.
+  IF NOT v_is_manual THEN
     SELECT id, parametros, iniciada_em INTO v_prior_incompleta
     FROM private.pncp_sync_run
     WHERE lock_key = p_lock_key 
       AND status = 'incompleta'
-      AND (v_running_rec.id IS NULL OR id <> v_running_rec.id)
     ORDER BY iniciada_em DESC
     LIMIT 1
     FOR UPDATE;
@@ -631,7 +659,7 @@ O parâmetro `timeout_milliseconds` do `pg_net` mede o tempo **total** da requis
 4. **Comportamento do Heartbeat em Caso de Morte Abrupta do Worker (Crash / SIGKILL 546):**
    - Se o worker atingir o teto de isolamento (150 s / 400 s) e for morto pela infraestrutura, o bloco `catch` não roda.
    - Porém, a coluna `last_heartbeat_at` congela no timestamp da última página processada.
-   - No ciclo seguinte, a verificação `clock_timestamp() - last_heartbeat_at > interval '3 minutes'` identifica o processo abandonado como morto, atualiza a linha para `status = 'falhou'` (`erro_principal = 'lock expirado (executando stale / worker morto)'`) e permite a liberação segura do lock.
+   - No ciclo seguinte, a verificação `clock_timestamp() - last_heartbeat_at > interval '3 minutes'` na RPC `acquire_sync_lock` identifica o processo abandonado como stale. Como o processo gravava as fatias planejadas logo na largada e a cada página, a RPC marca a execução morta como `status = 'incompleta'`, preservando as fatias para que o novo run as herde na mesma chamada (e marca como `status = 'falhou'` apenas se não houver fatias pendentes ou se for chave `:manual:`). O lock é liberado com segurança sem travar o sistema.
 
 #### 3.4.5 Autenticação via Authorization: Bearer, Configuração de JWT e Comparação em Tempo Constante
 1. **Desativação de Verificação de JWT (`verify_jwt = false`):**
@@ -899,7 +927,17 @@ Como o ambiente de produção possui divergências no histórico local (as migra
    Abrir `supabase/migrations/20260929000000_http_host_lease.sql`, colar e executar no SQL Editor.
 4. **Passo 4 (Executar Migration de Telemetria e Sync Lock):**
    Abrir `supabase/migrations/20260929000001_pncp_sync_request_telemetry.sql`, colar e executar no SQL Editor.
-5. **Passo 5 (Registrar no Histórico do Supabase CLI sem `--include-all`):**
+5. **Passo 5 (Limpeza Manual do Zumbi orgaos-sync:7830 no Runbook):**
+   Executar no SQL Editor para liberar o lock zumbi ativo desde 2026-09-20 antes de rodar os novos crons:
+   ```sql
+   UPDATE private.pncp_sync_run
+   SET status = 'falhou',
+       erro_principal = 'encerrada manualmente no rollout (zumbi desde 2026-09-20)',
+       finalizada_em = now()
+   WHERE lock_key = 'orgaos-sync:7830'
+     AND status = 'executando';
+   ```
+6. **Passo 6 (Registrar no Histórico do Supabase CLI sem `--include-all`):**
    No terminal local (com Supabase CLI autenticado e linkado ao projeto):
    ```bash
    npx supabase migration repair --status applied 20260928235900

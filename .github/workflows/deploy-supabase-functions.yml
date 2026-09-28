@@ -54,28 +54,68 @@ jobs:
 
       - name: Deploy all functions (no JWT on sync jobs)
         run: |
-          supabase functions deploy sync-pncp-pca --no-verify-jwt
-          supabase functions deploy import-catmat-curadoria --no-verify-jwt
-          supabase functions deploy sync-pncp-legislation --no-verify-jwt
-          supabase functions deploy sync-pncp-contratacoes-editais --no-verify-jwt
-          supabase functions deploy sync-pncp-contratacoes-atas --no-verify-jwt
-          supabase functions deploy sync-pncp-contratacoes-contratos --no-verify-jwt
-          supabase functions deploy sync-pncp-catalogo --no-verify-jwt
-          supabase functions deploy sync-compras-catmat --no-verify-jwt
-          supabase functions deploy link-catmat-pca --no-verify-jwt
-          supabase functions deploy sync-pncp-irp --no-verify-jwt
-          supabase functions deploy sync-pncp-orgaos --no-verify-jwt
-          # PENDING (not production-ready — do not deploy yet):
-          #   discover-piso-pdm — external scrape prototype, no cron auth
-          #   sync-comprasgov-consulta — placeholder TODO (77 endpoints not wired)
-          supabase functions deploy api-pncp-pca --no-verify-jwt
-          supabase functions deploy api-pncp-legislacao --no-verify-jwt
-          supabase functions deploy api-pncp-contratacoes --no-verify-jwt
-          supabase functions deploy api-pncp-irp --no-verify-jwt
-          supabase functions deploy api-dashboard-oportunidades --no-verify-jwt
-          supabase functions deploy calculate-distance-webrouter --no-verify-jwt
+          FUNCTIONS=(
+            sync-pncp-pca
+            import-catmat-curadoria
+            sync-pncp-legislation
+            sync-pncp-contratacoes-editais
+            sync-pncp-contratacoes-atas
+            sync-pncp-contratacoes-contratos
+            sync-pncp-catalogo
+            sync-compras-catmat
+            link-catmat-pca
+            sync-pncp-irp
+            sync-pncp-orgaos
+            # PENDING (not production-ready — do not deploy yet):
+            #   discover-piso-pdm — external scrape prototype, no cron auth
+            #   sync-comprasgov-consulta — placeholder TODO (77 endpoints not wired)
+            api-pncp-pca
+            api-pncp-legislacao
+            api-pncp-contratacoes
+            api-pncp-irp
+            api-dashboard-oportunidades
+            calculate-distance-webrouter
+          )
+
+          FAILED=()
+          SUCCESS=()
+          DASHBOARD_DEPLOYED=false
+
+          echo "Iniciando deploy de ${#FUNCTIONS[@]} Edge Functions..."
+          for fn in "${FUNCTIONS[@]}"; do
+            echo "----------------------------------------"
+            echo "Deploying ${fn}..."
+            if supabase functions deploy "${fn}" --no-verify-jwt; then
+              echo "✓ ${fn} deploy com sucesso"
+              SUCCESS+=("${fn}")
+              if [ "${fn}" = "api-dashboard-oportunidades" ]; then
+                DASHBOARD_DEPLOYED=true
+              fi
+            else
+              echo "✗ ${fn} FALHOU no deploy"
+              FAILED+=("${fn}")
+            fi
+          done
+
+          echo "----------------------------------------"
+          echo "Resumo do deploy:"
+          echo "Sucesso (${#SUCCESS[@]}): ${SUCCESS[*]}"
+
+          if [ "${DASHBOARD_DEPLOYED}" = "true" ]; then
+            echo "DASHBOARD_DEPLOYED=true" >> "$GITHUB_ENV"
+          else
+            echo "DASHBOARD_DEPLOYED=false" >> "$GITHUB_ENV"
+          fi
+
+          if [ "${#FAILED[@]}" -gt 0 ]; then
+            echo "FALHAS (${#FAILED[@]}): ${FAILED[*]}"
+            echo "FAILED_FUNCTIONS=${FAILED[*]}" >> "$GITHUB_ENV"
+          else
+            echo "Todas as funções foram publicadas com sucesso!"
+          fi
 
       - name: Smoke test api-dashboard-oportunidades
+        if: env.DASHBOARD_DEPLOYED == 'true'
         run: |
           BASE_URL="https://${PROJECT_ID}.supabase.co/functions/v1/api-dashboard-oportunidades"
 
@@ -100,3 +140,15 @@ jobs:
           fi
 
           echo "Smoke tests passaram com sucesso."
+
+      - name: Report deployment status
+        if: always()
+        run: |
+          if [ -n "${FAILED_FUNCTIONS}" ]; then
+            echo "::error::As seguintes funções falharam no deploy: ${FAILED_FUNCTIONS}"
+            exit 1
+          fi
+          if [ "${DASHBOARD_DEPLOYED}" != "true" ]; then
+            echo "::error::api-dashboard-oportunidades não foi publicada."
+            exit 1
+          fi

@@ -78,3 +78,4 @@ scripts/.sync_state/
 ```
 # saidas locais e pendencias (nao versionar)
 var/
+supabase/.temp/

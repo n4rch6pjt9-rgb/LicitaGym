@@ -1,6 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, SupabaseClient } from "npm:@supabase/supabase-js@2";
-import { jsonResponse, requireUserAuth } from "../_shared/http.ts";
+import { extractBearerToken, jsonResponse, requireUserAuth } from "../_shared/http.ts";
 
 export const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -225,8 +225,13 @@ async function handleGet(
         return jsonResponse({ error: "Falha ao consultar compras do processo" }, 500);
       }
 
+      if (count === null) {
+        console.error("[api-dashboard-oportunidades] Contagem indisponível ao consultar compras do processo");
+        return jsonResponse({ error: "Falha ao consultar compras do processo" }, 500);
+      }
+
       const items = data ?? [];
-      const total = count ?? 0;
+      const total = count;
       if (total === 0 && items.length === 0) {
         return jsonResponse(
           { error: "Nenhuma licitação encontrada para este processo", items: [] },
@@ -287,11 +292,16 @@ async function handleList(
       return jsonResponse({ error: "Falha ao consultar lista de oportunidades" }, 500);
     }
 
+    if (count === null) {
+      console.error("[api-dashboard-oportunidades] Contagem indisponível ao listar oportunidades");
+      return jsonResponse({ error: "Falha ao consultar lista de oportunidades" }, 500);
+    }
+
     return jsonResponse({
       action: "list",
       page,
       limit,
-      total: count ?? 0,
+      total: count,
       order_by,
       order_direction,
       items: data ?? [],
@@ -299,6 +309,37 @@ async function handleList(
   } catch (err: unknown) {
     console.error("[api-dashboard-oportunidades] Exceção em list:", err);
     return jsonResponse({ error: "Erro interno no servidor" }, 500);
+  }
+}
+
+export async function authenticateUserWithFallback(req: Request): Promise<Response | null> {
+  const token = extractBearerToken(req);
+  if (!token) {
+    return jsonResponse({ error: "Unauthorized" }, 401);
+  }
+
+  const cronSecret = Deno.env.get("SYNC_CRON_SECRET")?.trim();
+  if (cronSecret && token === cronSecret) {
+    return jsonResponse({ error: "Unauthorized" }, 401);
+  }
+
+  const url = Deno.env.get("SUPABASE_URL")?.trim();
+  const anon = (Deno.env.get("SUPABASE_ANON_KEY") ?? Deno.env.get("SUPABASE_PUBLISHABLE_KEY"))?.trim();
+  if (!url || !anon) {
+    return requireUserAuth(req);
+  }
+
+  try {
+    const client = createClient(url, anon, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    const { data, error } = await client.auth.getUser(token);
+    if (error || !data.user) {
+      return jsonResponse({ error: "Unauthorized" }, 401);
+    }
+    return null;
+  } catch {
+    return jsonResponse({ error: "Unauthorized" }, 401);
   }
 }
 
@@ -341,7 +382,7 @@ export async function handleRequest(
   }
 
   // Autenticação obrigatória para leitura de dados (list e get)
-  const authChecker = ctx?.requireAuth ?? requireUserAuth;
+  const authChecker = ctx?.requireAuth ?? authenticateUserWithFallback;
   const authError = await authChecker(req);
   if (authError) {
     return authError;

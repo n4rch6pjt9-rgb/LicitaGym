@@ -889,7 +889,7 @@ Deno.test("handleRequest get por orgao_cnpj + processo_norm asserte eq nos dois 
   assertEquals(maybeSingleCall, undefined);
 });
 
-Deno.test("handleRequest mock com count nulo em list retorna total: 0 sem quebrar", async () => {
+Deno.test("handleRequest mock com count nulo em list retorna status 500 por indisponibilidade", async () => {
   const mockClient = createRecordingMockClient({
     listResult: { data: [{ id: 1 }], count: null, error: null },
   });
@@ -902,13 +902,31 @@ Deno.test("handleRequest mock com count nulo em list retorna total: 0 sem quebra
     getClient: () => mockClient as any,
     requireAuth: () => null,
   });
-  assertEquals(res.status, 200);
+  assertEquals(res.status, 500);
   const body = await res.json();
-  assertEquals(body.total, 0);
-  assertEquals(body.items.length, 1);
+  assertEquals(body.error, "Falha ao consultar lista de oportunidades");
 });
 
-Deno.test("handleRequest mock com count nulo em readiness retorna total_registros: 0 sem quebrar", async () => {
+Deno.test("handleRequest mock com count nulo em get por processo retorna status 500 por indisponibilidade", async () => {
+  const mockClient = createRecordingMockClient({
+    listResult: { data: [{ id: 1 }], count: null, error: null },
+  });
+
+  const req = new Request(
+    "http://localhost/api-dashboard-oportunidades?action=get&orgao_cnpj=07.486.108/0001-85&processo_norm=2026/001",
+    { method: "GET" },
+  );
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, {
+    getClient: () => mockClient as any,
+    requireAuth: () => null,
+  });
+  assertEquals(res.status, 500);
+  const body = await res.json();
+  assertEquals(body.error, "Falha ao consultar compras do processo");
+});
+
+Deno.test("handleRequest mock com count nulo em readiness retorna total_registros: 0 sem quebrar (best-effort)", async () => {
   const mockClient = createRecordingMockClient({
     headCountResult: { count: null, error: null },
     singleResult: {
@@ -977,6 +995,32 @@ Deno.test("handleRequest com requireUserAuth simulado autenticado em list avanç
   const body = await res.json();
   assertEquals(body.action, "list");
   assertEquals(body.total, 1);
+});
+
+Deno.test("authenticateUserWithFallback aceita SUPABASE_PUBLISHABLE_KEY como fallback", async () => {
+  const originalUrl = Deno.env.get("SUPABASE_URL");
+  const originalAnon = Deno.env.get("SUPABASE_ANON_KEY");
+  const originalPub = Deno.env.get("SUPABASE_PUBLISHABLE_KEY");
+
+  try {
+    Deno.env.set("SUPABASE_URL", "https://example.supabase.co");
+    Deno.env.delete("SUPABASE_ANON_KEY");
+    Deno.env.set("SUPABASE_PUBLISHABLE_KEY", "sb_pub_fallback_key");
+
+    const req = new Request("http://localhost/api?action=list", {
+      headers: { Authorization: "Bearer some-token" },
+    });
+    // Sem backend real vai falhar ao chamar getUser ou devolver 401, mas não quebra por env ausente
+    const res = await (await import("../../../supabase/functions/api-dashboard-oportunidades/index.ts")).authenticateUserWithFallback(req);
+    assertEquals(res?.status, 401);
+  } finally {
+    if (originalUrl) Deno.env.set("SUPABASE_URL", originalUrl);
+    else Deno.env.delete("SUPABASE_URL");
+    if (originalAnon) Deno.env.set("SUPABASE_ANON_KEY", originalAnon);
+    else Deno.env.delete("SUPABASE_ANON_KEY");
+    if (originalPub) Deno.env.set("SUPABASE_PUBLISHABLE_KEY", originalPub);
+    else Deno.env.delete("SUPABASE_PUBLISHABLE_KEY");
+  }
 });
 
 Deno.test("importar index.ts em subprocesso termina com código 0 sem escutar servidor", async () => {

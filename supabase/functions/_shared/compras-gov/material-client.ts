@@ -1,5 +1,7 @@
 import { fetchWithTimeout, PermanentHttpError, withRetry } from "../pncp/retry.ts";
+import type { RequestBudget } from "../pncp/retry.ts";
 import type { ComprasGovPage } from "./material-types.ts";
+import { UnifiedHttpClient } from "../http-client/index.ts";
 
 const BASE_URL = "https://dadosabertos.compras.gov.br";
 /** Swagger Dados Abertos: tamanhoPagina tipicamente 10–500. */
@@ -68,11 +70,52 @@ async function fetchPage<T>(path: string, params: MaterialListParams): Promise<{
   return { status: response.status, body, elapsedMs: Date.now() - started };
 }
 
+export type ComprasGovFetchOptions = {
+  syncRunId?: string;
+  onHeartbeat?: () => Promise<void>;
+  budget?: RequestBudget;
+};
+
 export class ComprasGovMaterialClient {
+  private httpClient?: UnifiedHttpClient;
+
+  constructor(httpClient?: UnifiedHttpClient) {
+    this.httpClient = httpClient;
+  }
+
+  withHttpClient(client: UnifiedHttpClient): this {
+    this.httpClient = client;
+    return this;
+  }
+
+  async fetchPage<T>(
+    path: string,
+    params: MaterialListParams,
+    options?: ComprasGovFetchOptions,
+  ): Promise<{
+    status: number;
+    body: ComprasGovPage<T>;
+    elapsedMs: number;
+  }> {
+    if (this.httpClient) {
+      const url = buildUrl(path, params);
+      return this.httpClient.getJson<ComprasGovPage<T>>(url, {
+        headers: { Accept: "application/json" },
+      }, {
+        budget: options?.budget,
+        syncRunId: options?.syncRunId,
+        endpoint: path,
+        parametros: params,
+        onHeartbeat: options?.onHeartbeat,
+      });
+    }
+    return fetchPage<T>(path, params);
+  }
+
   async fetchAllPages<T>(
     path: string,
     baseParams: MaterialListParams,
-    options?: { maxPaginas?: number; paginaInicial?: number; tamanhoPagina?: number },
+    options?: { maxPaginas?: number; paginaInicial?: number; tamanhoPagina?: number } & ComprasGovFetchOptions,
   ): Promise<{ pages: ComprasGovPage<T>[]; items: T[] }> {
     const maxPaginas = options?.maxPaginas ?? 500;
     const paginaInicial = options?.paginaInicial ?? 1;
@@ -83,17 +126,18 @@ export class ComprasGovMaterialClient {
     let paginasRestantes = 1;
 
     while (paginasRestantes > 0 && pagina < paginaInicial + maxPaginas) {
-      const { body } = await fetchPage<T>(path, {
+      const { body } = await this.fetchPage<T>(path, {
         ...baseParams,
         pagina,
         tamanhoPagina,
-      });
+      }, options);
       pages.push(body);
       items.push(...(body.resultado ?? []));
       paginasRestantes = body.paginasRestantes ?? 0;
       if ((body.resultado?.length ?? 0) === 0) break;
       pagina++;
       if (paginasRestantes > 0) {
+        if (options?.onHeartbeat) await options.onHeartbeat();
         await new Promise((r) => setTimeout(r, PAGE_DELAY_MS));
       }
     }
@@ -101,37 +145,37 @@ export class ComprasGovMaterialClient {
     return { pages, items };
   }
 
-  consultarGrupoMaterial(params: MaterialListParams) {
-    return fetchPage("/modulo-material/1_consultarGrupoMaterial", params);
+  consultarGrupoMaterial(params: MaterialListParams, options?: ComprasGovFetchOptions) {
+    return this.fetchPage("/modulo-material/1_consultarGrupoMaterial", params, options);
   }
 
-  consultarClasseMaterial(params: MaterialListParams) {
-    return fetchPage("/modulo-material/2_consultarClasseMaterial", params);
+  consultarClasseMaterial(params: MaterialListParams, options?: ComprasGovFetchOptions) {
+    return this.fetchPage("/modulo-material/2_consultarClasseMaterial", params, options);
   }
 
-  fetchPdms(params: MaterialListParams, options?: { maxPaginas?: number }) {
+  fetchPdms(params: MaterialListParams, options?: { maxPaginas?: number } & ComprasGovFetchOptions) {
     return this.fetchAllPages("/modulo-material/3_consultarPdmMaterial", params, options);
   }
 
-  fetchItens(params: MaterialListParams, options?: { maxPaginas?: number }) {
+  fetchItens(params: MaterialListParams, options?: { maxPaginas?: number } & ComprasGovFetchOptions) {
     return this.fetchAllPages("/modulo-material/4_consultarItemMaterial", params, options);
   }
 
-  async fetchNaturezasDespesa(codigoPdm: number, options?: { maxPaginas?: number }) {
+  async fetchNaturezasDespesa(codigoPdm: number, options?: { maxPaginas?: number } & ComprasGovFetchOptions) {
     await new Promise((r) => setTimeout(r, PDM_REQUEST_DELAY_MS));
     return await this.fetchAllPages("/modulo-material/5_consultarMaterialNaturezaDespesa", {
       codigoPdm,
     }, options);
   }
 
-  async fetchUnidadesFornecimento(codigoPdm: number, options?: { maxPaginas?: number }) {
+  async fetchUnidadesFornecimento(codigoPdm: number, options?: { maxPaginas?: number } & ComprasGovFetchOptions) {
     await new Promise((r) => setTimeout(r, PDM_REQUEST_DELAY_MS));
     return await this.fetchAllPages("/modulo-material/6_consultarMaterialUnidadeFornecimento", {
       codigoPdm,
     }, options);
   }
 
-  async fetchCaracteristicas(codigoItem: number, options?: { maxPaginas?: number }) {
+  async fetchCaracteristicas(codigoItem: number, options?: { maxPaginas?: number } & ComprasGovFetchOptions) {
     await new Promise((r) => setTimeout(r, PDM_REQUEST_DELAY_MS));
     return await this.fetchAllPages("/modulo-material/7_consultarMaterialCaracteristicas", {
       codigoItem,

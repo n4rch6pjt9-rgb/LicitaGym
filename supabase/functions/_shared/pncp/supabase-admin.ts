@@ -71,6 +71,43 @@ export async function finishSyncRun(
   if (error) throw error;
 }
 
+export async function updateSyncHeartbeat(
+  client: SupabaseClient,
+  runId: string,
+  extra?: {
+    continuation?: Record<string, unknown>;
+    paginaAtual?: number;
+    baseParametros?: Record<string, unknown>;
+  },
+): Promise<void> {
+  const patch: Record<string, unknown> = {
+    last_heartbeat_at: new Date().toISOString(),
+  };
+  if (extra?.paginaAtual !== undefined) {
+    patch.pagina_atual = extra.paginaAtual;
+  }
+  if (extra?.continuation !== undefined) {
+    if (extra.baseParametros) {
+      patch.parametros = {
+        ...extra.baseParametros,
+        continuation: extra.continuation,
+      };
+    } else {
+      const { data: current } = await client.schema("private")
+        .from("pncp_sync_run")
+        .select("parametros")
+        .eq("id", runId)
+        .maybeSingle();
+      const currentParams = (current?.parametros as Record<string, unknown>) ?? {};
+      patch.parametros = {
+        ...currentParams,
+        continuation: extra.continuation,
+      };
+    }
+  }
+  await client.schema("private").from("pncp_sync_run").update(patch).eq("id", runId);
+}
+
 export async function logSyncRequest(
   client: SupabaseClient,
   input: {
@@ -83,6 +120,8 @@ export async function logSyncRequest(
     respostaHash?: string;
     erro?: string;
     tentativa?: number;
+    host?: string;
+    retryAfterSeconds?: number;
   },
 ) {
   const { error } = await client.schema("private").from("pncp_sync_request").insert({
@@ -95,6 +134,8 @@ export async function logSyncRequest(
     resposta_hash: input.respostaHash,
     erro: input.erro,
     tentativa: input.tentativa ?? 1,
+    host: input.host,
+    retry_after_seconds: input.retryAfterSeconds,
   });
   if (error) throw error;
 }

@@ -174,6 +174,7 @@ export async function runCappedDateSync(opts: {
   slices: DateSlice[];
   fetchPage: (slice: DateSlice, pagina: number) => Promise<FetchedPage>;
   onPage: (slice: DateSlice, pagina: number, page: FetchedPage) => Promise<void>;
+  onHeartbeat?: (pendingQueue: DateSlice[], pagesFetched: number) => Promise<void>;
 }): Promise<{ status: RunStatus; pending: DateSlice[]; pagesFetched: number }> {
   const cap = opts.cap ?? PAGE_HARD_CAP;
   const queue = cloneQueue(opts.slices);
@@ -204,16 +205,21 @@ export async function runCappedDateSync(opts: {
       if (halves) {
         queue.shift();
         queue.unshift(halves[1], halves[0]);
+        if (opts.onHeartbeat) await opts.onHeartbeat(cloneQueue(queue), pagesFetched);
         continue;
       }
     }
 
     if (page.paginasRestantes <= 0) {
       queue.shift();
-      continue;
+    } else {
+      slice.nextPage += 1;
     }
 
-    slice.nextPage += 1;
+    if (opts.onHeartbeat) {
+      await opts.onHeartbeat(cloneQueue(queue), pagesFetched);
+    }
+
     if (pagesFetched >= cap) break;
   }
 

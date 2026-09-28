@@ -76,15 +76,17 @@ export function parseRetryAfterMs(
   header: string | null,
   now = Date.now(),
 ): number | null {
-  if (header == null || header.trim() === "") return null;
-  const seconds = Number(header);
-  if (
-    Number.isFinite(seconds) && seconds >= 0 &&
-    /^\d+(\.\d+)?$/.test(header.trim())
-  ) {
-    return Math.round(seconds * 1000);
+  if (header == null) return null;
+  const trimmed = header.trim();
+  if (trimmed === "") return null;
+  if (/^[-+]?\d+(\.\d+)?$/.test(trimmed)) {
+    const seconds = Number(trimmed);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      return Math.round(seconds * 1000);
+    }
+    return null;
   }
-  const dateMs = Date.parse(header);
+  const dateMs = Date.parse(trimmed);
   if (Number.isFinite(dateMs)) return Math.max(0, dateMs - now);
   return null;
 }

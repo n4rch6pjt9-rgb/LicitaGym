@@ -8,6 +8,7 @@ import {
   RetryableHttpError,
   withRetry,
 } from "./retry.ts";
+import { UnifiedHttpClient } from "../http-client/index.ts";
 
 const DEFAULT_SEARCH_BASE = "https://pncp.gov.br/api/search";
 
@@ -53,10 +54,19 @@ function parseTs(value: string | undefined): number | null {
 
 export class PncpSearchClient {
   private budget: RequestBudget | undefined;
+  private httpClient?: UnifiedHttpClient;
 
   constructor(
     private baseUrl = Deno.env.get("PNCP_SEARCH_BASE") ?? DEFAULT_SEARCH_BASE,
-  ) {}
+    httpClient?: UnifiedHttpClient,
+  ) {
+    this.httpClient = httpClient;
+  }
+
+  withHttpClient(client: UnifiedHttpClient): this {
+    this.httpClient = client;
+    return this;
+  }
 
   withBudget(budget: RequestBudget): this {
     this.budget = budget;
@@ -80,6 +90,22 @@ export class PncpSearchClient {
     url.searchParams.set("tam_pagina", String(params.tamPagina ?? 50));
     url.searchParams.set("ordenacao", "-data");
     if (params.ano) url.searchParams.set("anos", String(params.ano));
+
+    if (this.httpClient) {
+      const res = await this.httpClient.getJson<{ items?: PcaOrgaoSearchItem[]; total?: number }>(
+        url,
+        { headers: { Accept: "application/json" } },
+        {
+          budget: this.budget,
+          endpoint: "/api/search",
+          parametros: params,
+        },
+      );
+      return {
+        items: res.body.items ?? [],
+        total: Number(res.body.total ?? 0),
+      };
+    }
 
     return await withRetry(
       async () => {

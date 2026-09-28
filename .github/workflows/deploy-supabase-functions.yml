@@ -61,4 +61,5 @@ jobs:
           supabase functions deploy api-pncp-legislacao --no-verify-jwt
           supabase functions deploy api-pncp-contratacoes --no-verify-jwt
           supabase functions deploy api-pncp-irp --no-verify-jwt
+          supabase functions deploy api-dashboard-oportunidades --no-verify-jwt
           supabase functions deploy calculate-distance-webrouter --no-verify-jwt

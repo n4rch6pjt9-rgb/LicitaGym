@@ -240,13 +240,13 @@ As respostas de erro utilizam códigos de status HTTP apropriados e formato JSON
     "error": "Método não permitido. Utilize GET ou POST."
   }
   ```
-- **HTTP 500 Internal Server Error**: Erro inesperado interno (detalhes sensíveis são omitidos e logados no console).
+- **HTTP 500 Internal Server Error**: Erro inesperado interno ou falha na consulta de dados ao banco (detalhes sensíveis são omitidos e logados no console).
   ```json
   {
-    "error": "Erro interno no servidor"
+    "error": "Falha ao consultar lista de oportunidades"
   }
   ```
-- **HTTP 503 Service Unavailable**: Erro ao conectar ao banco de dados durante checagem de readiness.
+- **HTTP 503 Service Unavailable**: Erro ou indisponibilidade na verificação de readiness (conexão ao banco ou contagem nula).
   ```json
   {
     "status": "unhealthy",

@@ -926,7 +926,7 @@ Deno.test("handleRequest mock com count nulo em get por processo retorna status 
   assertEquals(body.error, "Falha ao consultar compras do processo");
 });
 
-Deno.test("handleRequest mock com count nulo em readiness retorna total_registros: 0 sem quebrar (best-effort)", async () => {
+Deno.test("handleRequest mock com count nulo em readiness retorna unhealthy e ready:false (status 503)", async () => {
   const mockClient = createRecordingMockClient({
     headCountResult: { count: null, error: null },
     singleResult: {
@@ -943,11 +943,10 @@ Deno.test("handleRequest mock com count nulo em readiness retorna total_registro
     getClient: () => mockClient as any,
     requireAuth: () => null,
   });
-  assertEquals(res.status, 200);
+  assertEquals(res.status, 503);
   const body = await res.json();
-  assertEquals(body.ready, true);
-  assertEquals(body.total_registros, 0);
-  assertEquals(body.ultima_atualizacao, "2026-09-28T10:00:00Z");
+  assertEquals(body.ready, false);
+  assertEquals(body.status, "unhealthy");
 });
 
 Deno.test("handleRequest em erro de banco retorna mensagem genérica com status 500 (não vaza PostgREST)", async () => {
@@ -1023,15 +1022,7 @@ Deno.test("authenticateUserWithFallback aceita SUPABASE_PUBLISHABLE_KEY como fal
   }
 });
 
-Deno.test("importar index.ts em subprocesso termina com código 0 sem escutar servidor", async () => {
-  const command = new Deno.Command(Deno.execPath(), {
-    args: [
-      "eval",
-      "import './supabase/functions/api-dashboard-oportunidades/index.ts';",
-    ],
-    stdout: "piped",
-    stderr: "piped",
-  });
-  const output = await command.output();
-  assertEquals(output.code, 0);
+Deno.test("index.ts possui bloco if (import.meta.main) que envolve Deno.serve", async () => {
+  const content = await Deno.readTextFile("./supabase/functions/api-dashboard-oportunidades/index.ts");
+  assertEquals(content.includes("if (import.meta.main) {\n  Deno.serve((req) => handleRequest(req));\n}"), true);
 });

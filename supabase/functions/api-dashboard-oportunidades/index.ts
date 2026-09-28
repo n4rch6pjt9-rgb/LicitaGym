@@ -89,8 +89,8 @@ async function handleReadiness(
       .from("licitacoes_externas")
       .select("id", { count: "exact", head: true });
 
-    if (countError) {
-      console.error("[api-dashboard-oportunidades] Erro de readiness ao consultar count:", countError);
+    if (countError || count === null) {
+      console.error("[api-dashboard-oportunidades] Erro de readiness ao consultar count:", countError ?? "count null");
       return jsonResponse(
         {
           status: "unhealthy",

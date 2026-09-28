@@ -1035,12 +1035,16 @@ Deno.test("migration D1.2 revoga SELECT de authenticated em licitacoes_externas 
   assertEquals(sql.includes("alter table public.licitacoes_externas enable row level security;"), true);
   assertEquals(sql.includes("comment on table public.licitacoes_externas is"), true);
   assertEquals(sql.includes("api-dashboard-oportunidades"), true);
+  assertEquals(sql.includes("coletores"), true);
+  assertEquals(sql.includes("service_role"), true);
 });
 
 Deno.test("script de verificacao de ACL efetiva supabase/tests/licitacoes_externas_acl_check.sql existe e contem assercoes", async () => {
   const sql = await Deno.readTextFile("./supabase/tests/licitacoes_externas_acl_check.sql");
   assertEquals(sql.includes("has_table_privilege('anon', 'public.licitacoes_externas', 'SELECT')"), true);
   assertEquals(sql.includes("has_table_privilege('authenticated', 'public.licitacoes_externas', 'SELECT')"), true);
+  assertEquals(sql.includes("has_table_privilege('service_role', 'public.licitacoes_externas', 'SELECT')"), true);
   assertEquals(sql.includes("pg_policies"), true);
   assertEquals(sql.includes("relrowsecurity"), true);
+  assertEquals(sql.includes("coletores"), true);
 });

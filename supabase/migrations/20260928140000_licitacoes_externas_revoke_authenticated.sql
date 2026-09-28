@@ -23,5 +23,6 @@ revoke all on table public.licitacoes_externas from authenticated, anon, PUBLIC;
 alter table public.licitacoes_externas enable row level security;
 
 comment on table public.licitacoes_externas is
-  'Licitações de portais públicos (PNCP, Paradigma). Leitura exclusiva via Edge Function api-dashboard-oportunidades (service_role); escrita só service_role.';
+  'Licitações de portais públicos (PNCP, Paradigma). Leituras de usuários/dashboard: exclusivamente via Edge Function api-dashboard-oportunidades (service_role + PUBLIC_LICITACAO_COLUMNS); leituras e escritas internas: service_role (Edge Function + coletores). Sem acesso direto via PostgREST para authenticated, anon ou PUBLIC.';
+
 

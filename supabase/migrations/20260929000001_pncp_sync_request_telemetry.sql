@@ -170,6 +170,7 @@ BEGIN
     lock_key,
     parametros,
     status,
+    modo,
     iniciada_em,
     last_heartbeat_at
   )
@@ -178,6 +179,7 @@ BEGIN
     p_lock_key,
     v_initial_parametros,
     'executando',
+    CASE WHEN v_is_manual THEN 'manual' ELSE 'incremental' END,
     v_now,
     v_now
   )

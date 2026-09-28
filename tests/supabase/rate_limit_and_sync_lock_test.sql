@@ -241,7 +241,29 @@ BEGIN
     RAISE EXCEPTION 'TESTE 5 FALHOU: Disparo manual herdou continuation indevidamente: %', v_res;
   END IF;
 
-  RAISE NOTICE '✓ TESTE 5 PASSOU: Chave :manual: isolada e sem herança de continuation';
+  -- Valida se a execução manual foi criada com modo = 'manual'
+  DECLARE
+    v_modo text;
+  BEGIN
+    SELECT modo INTO v_modo FROM private.pncp_sync_run WHERE id = (v_res->>'run_id')::uuid;
+    IF v_modo <> 'manual' THEN
+      RAISE EXCEPTION 'TESTE 5 FALHOU: Execução manual deveria ter modo=manual, obteve %', v_modo;
+    END IF;
+  END;
+
+  -- Valida se execução não-manual tem modo = 'incremental' (default)
+  DECLARE
+    v_res_auto jsonb;
+    v_modo_auto text;
+  BEGIN
+    v_res_auto := private.acquire_sync_lock('contratacoes-editais:padrao:modo-test', 'teste', '{}'::jsonb);
+    SELECT modo INTO v_modo_auto FROM private.pncp_sync_run WHERE id = (v_res_auto->>'run_id')::uuid;
+    IF v_modo_auto <> 'incremental' THEN
+      RAISE EXCEPTION 'TESTE 5 FALHOU: Execução automática deveria ter modo=incremental, obteve %', v_modo_auto;
+    END IF;
+  END;
+
+  RAISE NOTICE '✓ TESTE 5 PASSOU: Chave :manual: isolada, sem herança de continuation e com modo=manual';
 END $$;
 
 -- -----------------------------------------------------------------------------

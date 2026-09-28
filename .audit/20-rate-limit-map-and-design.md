@@ -490,6 +490,7 @@ BEGIN
     lock_key,
     parametros,
     status,
+    modo,
     iniciada_em,
     last_heartbeat_at
   )
@@ -498,6 +499,7 @@ BEGIN
     p_lock_key,
     v_initial_parametros,
     'executando',
+    CASE WHEN v_is_manual THEN 'manual' ELSE 'incremental' END,
     v_now,
     v_now
   )
@@ -814,10 +816,13 @@ ORDER BY iniciada_em DESC;
 ### 3.6 Lista de Migrations e Variáveis de Ambiente Propostas
 
 #### Migrations Previstas para a Fase 2:
-1. `supabase/migrations/20260929000000_http_host_lease.sql`:
+1. `supabase/migrations/20260928235900_revoke_try_acquire_sync_lock.sql` (Novo - Hardening Imediato):
+   - Revoga permissão de execução de `private.try_acquire_sync_lock` para `PUBLIC, anon, authenticated` e remove a função obsoleta (`DROP FUNCTION IF EXISTS private.try_acquire_sync_lock`).
+   - Elimina brecha de segurança onde qualquer portador da anon key poderia invocar a RPC antiga via PostgREST exposto e inserir locks falsos.
+2. `supabase/migrations/20260929000000_http_host_lease.sql`:
    - Cria tabela `private.http_host_lease` com RLS habilitado e sem grants para anon/authenticated.
-   - Cria funções PL/pgSQL `private.acquire_http_slot` (com cálculo de milissegundos via epoch) e `private.report_http_rate_limit` com `SECURITY DEFINER`, revoke de public/anon/authenticated e grant exclusivo para `service_role`.
-2. `supabase/migrations/20260929000001_pncp_sync_request_telemetry.sql`:
+   - Cria funções PL/pgSQL `private.acquire_http_slot` (com cálculo de milissegundos via epoch) e `private.report_http_rate_limit` com `SECURITY DEFINER`, `SET search_path = ''`, revoke de public/anon/authenticated e grant exclusivo para `service_role`.
+3. `supabase/migrations/20260929000001_pncp_sync_request_telemetry.sql`:
    - Adiciona colunas de auditoria em `private.pncp_sync_request`:
      ```sql
      ALTER TABLE private.pncp_sync_request
@@ -865,36 +870,47 @@ ORDER BY iniciada_em DESC;
        ON private.pncp_sync_run (lock_key)
        WHERE status = 'executando';
      ```
-3. `supabase/migrations/20260929000002_activate_pg_cron_jobs.sql` **(Aplicação Manual Separada no Fim do Rollout):**
+   - Cria RPC atômica `private.acquire_sync_lock` com `pg_advisory_xact_lock`, `SET search_path = ''`, transição atômica incompleta -> retomada, preservação de fatias em stale e suporte a `modo = 'manual'`.
+4. `supabase/migrations/20260929000002_activate_pg_cron_jobs.sql` **(Aplicação Manual Separada no Fim do Rollout):**
    - Contém os comandos `SELECT cron.schedule(...)` para ligar as coletas agendadas.
    - **Nota Operacional Crítica:** Esta migration deve ser mantida estritamente separada e aplicada **apenas após** testar um disparo pontual em produção.
    - **Gate Nacional (`isNationalPncpSyncEnabled`):** O código de `sync-pncp-contratacoes-*` verifica a variável `PNCP_NATIONAL_SYNC_ENABLED === "true"`. Se essa variável estiver desligada ou ausente no ambiente, a invocação do cron é imediatamente interceptada pelo gate (`nationalPncpSyncGate`), respondendo HTTP 423 e tornando a execução um no-op seguro.
 
-#### Horários do Cron (UTC vs Horário de Brasília - BRT / UTC-3):
-| Job Name | Expressão Cron | Horário UTC | Horário de Brasília (BRT) | Recurso / Frequência / Chave |
-|----------|----------------|-------------|----------------------------|-------------------------------|
-| `pncp-contratacoes-editais` | `0 */6 * * *` | 00:00, 06:00, 12:00, 18:00 UTC | 21:00, 03:00, 09:00, 15:00 BRT | Editais (a cada 6 h, janela 2 dias) — `contratacoes-editais:padrao` |
-| `pncp-contratacoes-editais-reconciliacao` | `0 3 * * 0` | 03:00 UTC (Domingos) | 00:00 BRT (Domingo) | Reconciliação Semanal Editais (janela 7 dias) — `contratacoes-editais:reconciliacao` |
-| `pncp-contratacoes-atas` | `15 */6 * * *` | 00:15, 06:15, 12:15, 18:15 UTC | 21:15, 03:15, 09:15, 15:15 BRT | Atas (a cada 6 h) — `contratacoes-atas:padrao` |
-| `pncp-contratacoes-contratos` | `30 */6 * * *` | 00:30, 06:30, 12:30, 18:30 UTC | 21:30, 03:30, 09:30, 15:30 BRT | Contratos (a cada 6 h) — `contratacoes-contratos:padrao` |
-| `sync-compras-catmat` | `45 4 * * *` | 04:45 UTC | 01:45 BRT | Catálogo CATMAT (Diário) — `compras-catmat:78:7830` |
-| `sync-pncp-pca-mensal` | `0 2 1 * *` | 02:00 UTC (dia 1) | 23:00 BRT (dia anterior) | PCA Probe (Mensal) — `pca:7830` |
+---
 
-#### Novas Variáveis de Ambiente e Valores Iniciais Sugeridos:
-| Variável | Valor Padrão Inicial | Descrição |
-|----------|----------------------|-----------|
-| `HTTP_PNCP_MIN_INTERVAL_MS` | `1000` | Intervalo mínimo entre requisições consecutivas ao `pncp.gov.br` (1 req/s) |
-| `HTTP_COMPRAS_MIN_INTERVAL_MS` | `1000` | Intervalo mínimo entre requisições consecutivas ao `dadosabertos.compras.gov.br` |
-| `HTTP_ATTEMPT_TIMEOUT_MS` | `20000` | Timeout por tentativa individual de fetch (20 segundos) |
-| `EDGE_TIME_BUDGET_MS` | `100000` | Orçamento total de tempo da Edge Function (100 s no plano Free, ajustável até 300 s no Pro) |
-| `HTTP_RETRY_MAX_ATTEMPTS` | `3` | Número máximo de tentativas por requisição em 429/5xx |
-| `HTTP_RETRY_MAX_TIMEOUT_ATTEMPTS` | `1` | Máximo de novas tentativas após um timeout (total de 2 tentativas) |
-| `HTTP_RETRY_BASE_DELAY_MS` | `2000` | Delay inicial de backoff quando não houver `Retry-After` |
-| `HTTP_RETRY_MAX_CAP_MS` | `60000` | Teto máximo de espera em retentativas (60 segundos) |
+### 3.7 Guia de Aplicação Isolada das Migrations em Produção (Sem `supabase db push`)
+
+Como o ambiente de produção possui divergências no histórico local (as migrations de `icatmat_*` `202609211000`–`202609211006`, `20260921_fase3_precos_praticados` e `20260922110000_icatmat_additive_alignment` não constam em `supabase_migrations.schema_migrations` remoto), **o comando `supabase db push` NÃO deve ser executado**, pois falharia ou exigiria `--include-all`, que tentaria recriar tabelas já existentes manualmente e quebraria o deploy.
+
+#### Procedimento Passo a Passo de Aplicação (SQL Editor):
+1. **Passo 1 (Pré-Checagem do Índice Único):**
+   Executar no SQL Editor:
+   ```sql
+   SELECT lock_key, count(*) 
+   FROM private.pncp_sync_run 
+   WHERE status = 'executando' 
+   GROUP BY lock_key 
+   HAVING count(*) > 1;
+   ```
+   *Resultado esperado:* 0 linhas. (Se houver zumbis duplicados, encerrá-los com UPDATE antes do passo seguinte).
+2. **Passo 2 (Executar Migration de Hardening):**
+   Abrir o arquivo `supabase/migrations/20260928235900_revoke_try_acquire_sync_lock.sql`, colar e executar no SQL Editor.
+3. **Passo 3 (Executar Migration de Host Lease):**
+   Abrir `supabase/migrations/20260929000000_http_host_lease.sql`, colar e executar no SQL Editor.
+4. **Passo 4 (Executar Migration de Telemetria e Sync Lock):**
+   Abrir `supabase/migrations/20260929000001_pncp_sync_request_telemetry.sql`, colar e executar no SQL Editor.
+5. **Passo 5 (Registrar no Histórico do Supabase CLI sem `--include-all`):**
+   No terminal local (com Supabase CLI autenticado e linkado ao projeto):
+   ```bash
+   npx supabase migration repair --status applied 20260928235900
+   npx supabase migration repair --status applied 20260929000000
+   npx supabase migration repair --status applied 20260929000001
+   ```
+   Isso sincroniza o estado da tabela remota `supabase_migrations.schema_migrations` sem tocar nas migrations pendentes de `icatmat`.
 
 ---
 
-### 3.7 Riscos, Perguntas em Aberto e Itens de Backlog Separados
+### 3.8 Riscos, Perguntas em Aberto e Itens de Backlog Separados
 
 #### Item Registrado Fora deste Escopo:
 - **`catmat_item_caracteristicas` (NULLS NOT DISTINCT):** A produção possui atualmente **0 registros duplicados**. A aplicação de `UNIQUE NULLS NOT DISTINCT` fica registrada como item de melhoria preventiva futura de schema, desacoplada do pacote de rate limiting.

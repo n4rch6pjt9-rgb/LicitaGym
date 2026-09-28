@@ -1,3 +1,5 @@
+import { timingSafeEqual } from "node:crypto";
+
 export const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
@@ -46,8 +48,18 @@ export function extractBearerToken(req: Request): string | null {
   return token.length > 0 ? token : null;
 }
 
+/** Constant-time string equality check to prevent timing attacks. */
+export function safeCompareSecret(provided: string, expected: string): boolean {
+  const enc = new TextEncoder();
+  const a = enc.encode(provided);
+  const b = enc.encode(expected);
+  if (a.byteLength !== b.byteLength) return false;
+  return timingSafeEqual(a, b);
+}
+
 /**
- * Cron auth: exact match of Bearer token to SYNC_CRON_SECRET.
+ * Cron auth: timing-safe match of Bearer token to SYNC_CRON_SECRET.
+ * Supports comma-separated secret list for zero-downtime secret rotation.
  * Fail-closed if secret missing/empty. Presence of "Bearer " is never enough.
  */
 export function authenticateCron(req: Request): AuthDecision {
@@ -55,7 +67,10 @@ export function authenticateCron(req: Request): AuthDecision {
   if (!secret) return "REJECTED";
   const token = extractBearerToken(req);
   if (!token) return "REJECTED";
-  return token === secret ? "CRON_AUTHENTICATED" : "REJECTED";
+
+  const allowedSecrets = secret.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+  const matched = allowedSecrets.some((sec) => safeCompareSecret(token, sec));
+  return matched ? "CRON_AUTHENTICATED" : "REJECTED";
 }
 
 /** @deprecated Prefer authenticateCron; kept for sync-* call sites. */

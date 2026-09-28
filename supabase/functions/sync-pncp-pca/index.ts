@@ -11,6 +11,7 @@ import {
   PncpConsultaClient,
 } from "../_shared/pncp/consulta-client.ts";
 import { BudgetExhaustedError } from "../_shared/pncp/retry.ts";
+import { RateLimitPauseError, UnifiedHttpClient } from "../_shared/http-client/index.ts";
 import { resolvePcaClassificacoes } from "../_shared/pncp/licitagym-catmat.ts";
 import { assertPcaClassificacoesInScope } from "../_shared/pncp/licitagym-scope-gate.ts";
 import {
@@ -29,6 +30,7 @@ import {
   finishSyncRun,
   logSyncRequest,
   storeSourceRecord,
+  updateSyncHeartbeat,
 } from "../_shared/pncp/supabase-admin.ts";
 import {
   normalizePcaItem,
@@ -54,6 +56,7 @@ type SyncBody = {
   verificar_periodo?: boolean;
   /** Ignora verificação de período (carga anual forçada). */
   forcar?: boolean;
+  async?: boolean;
 };
 
 type SyncStats = {
@@ -85,7 +88,7 @@ async function syncClassificacao(params: {
   paginaInicial: number;
   maxPaginas: number;
   tamanhoPagina: number;
-  onCheckpoint?: (nextPage: number) => void;
+  onCheckpoint?: (nextPage: number) => Promise<void> | void;
 }): Promise<
   { stats: SyncStats; ultimaPagina: number; paginasRestantes: number }
 > {
@@ -218,7 +221,7 @@ async function syncClassificacao(params: {
           if (itemLookupError) {
             stats.erros++;
           } else if (itemRecord) {
-            await linkPcaItemOrigemCodes(client, itemRecord.id, itemRow);
+            await linkPcaItemOrigemCodes(client, String(itemRecord.id), itemRow);
           }
         }
       }
@@ -229,7 +232,7 @@ async function syncClassificacao(params: {
       break;
     }
     pagina++;
-    params.onCheckpoint?.(pagina);
+    await params.onCheckpoint?.(pagina);
   }
 
   return { stats, ultimaPagina: pagina, paginasRestantes };
@@ -244,7 +247,9 @@ Deno.serve(async (req) => {
     return jsonResponse({ error: "Unauthorized" }, 401);
   }
 
+  const url = new URL(req.url);
   const body = (await req.json().catch(() => ({}))) as SyncBody;
+  const isAsync = url.searchParams.get("async") === "1" || body.async === true;
   const ano = body.ano ?? new Date().getUTCFullYear();
   const codigosClassificacao = resolvePcaClassificacoes(body);
   const scopeErr = assertPcaClassificacoesInScope(codigosClassificacao);
@@ -255,9 +260,12 @@ Deno.serve(async (req) => {
   const maxPaginas = body.max_paginas ?? 100;
   const tamanhoPagina = clampConsultaPageSize("pca", body.tamanho_pagina);
   const verificarPeriodo = body.verificar_periodo ?? !body.forcar;
+  const isManual = Boolean(body.forcar) || Boolean(body.pagina_inicial) || (Boolean(body.ano) && body.ano !== new Date().getUTCFullYear());
   const lockKey = body.somente_verificacao
     ? `pca-probe:${ano}`
-    : `pca-sync:${ano}:${codigosClassificacao.slice().sort().join(",")}`;
+    : (isManual
+        ? `pca-sync:manual:${ano}:${codigosClassificacao.slice().sort().join(",")}`
+        : `pca-sync:${ano}:${codigosClassificacao.slice().sort().join(",")}`);
 
   let client;
   try {
@@ -272,9 +280,13 @@ Deno.serve(async (req) => {
     );
   }
 
+  const httpClient = new UnifiedHttpClient({
+    supabaseClient: client,
+    telemetryLogger: (t) => logSyncRequest(client, t),
+  });
   const requestBudget = createRequestBudget();
-  const consulta = new PncpConsultaClient().withBudget(requestBudget);
-  const search = new PncpSearchClient().withBudget(requestBudget);
+  const consulta = new PncpConsultaClient(undefined, {}, httpClient).withBudget(requestBudget);
+  const search = new PncpSearchClient(undefined, httpClient).withBudget(requestBudget);
 
   // Smoke / period check: probes sequenciais para consumo previsível do budget compartilhado.
   if (body.somente_verificacao) {
@@ -494,7 +506,7 @@ Deno.serve(async (req) => {
     }
   }
 
-  const { runId, alreadyRunning } = await acquireSyncLock(
+  const { runId, alreadyRunning, continuation: inheritedContinuation } = await acquireSyncLock(
     client,
     lockKey,
     "pca",
@@ -505,145 +517,183 @@ Deno.serve(async (req) => {
     return jsonResponse({ status: "already_running", sync_id: runId });
   }
 
-  const stats = emptyStats();
-  const porCodigo: Record<
-    string,
-    SyncStats & { ultima_pagina: number; paginas_restantes: number }
-  > = {};
-  const paginaPendentePorCodigo: Record<string, number> = {};
-  let currentCodigoIndex = 0;
+  const executeSync = async (): Promise<Response> => {
+    const stats = emptyStats();
+    const porCodigo: Record<
+      string,
+      SyncStats & { ultima_pagina: number; paginas_restantes: number }
+    > = {};
+    const paginaPendentePorCodigo: Record<string, number> = {};
+    let currentCodigoIndex = 0;
 
-  try {
-    for (
-      currentCodigoIndex = 0;
-      currentCodigoIndex < codigosClassificacao.length;
-      currentCodigoIndex++
-    ) {
-      const codigoClassificacao = codigosClassificacao[currentCodigoIndex];
-      const result = await syncClassificacao({
-        client,
-        consulta,
-        runId,
-        ano,
-        codigoClassificacao,
-        paginaInicial,
-        maxPaginas,
-        tamanhoPagina,
-        onCheckpoint: (nextPage) => {
-          paginaPendentePorCodigo[codigoClassificacao] = nextPage;
-        },
-      });
-      porCodigo[codigoClassificacao] = {
-        ...result.stats,
-        ultima_pagina: result.ultimaPagina,
-        paginas_restantes: result.paginasRestantes,
-      };
-      mergeStats(stats, result.stats);
-    }
-    currentCodigoIndex = codigosClassificacao.length;
+    try {
+      // Run novo sem herança grava as fatias planejadas no primeiro heartbeat
+      if (!inheritedContinuation) {
+        await updateSyncHeartbeat(client, runId, {
+          paginaAtual: paginaInicial,
+          continuation: {
+            pending_codigos_classificacao: codigosClassificacao,
+            pagina_inicial: paginaInicial,
+            chain_id: runId,
+          },
+          baseParametros: body,
+        });
+      }
 
-    if (
-      body.modo === "completo" &&
-      stats.erros === 0 &&
-      Object.values(porCodigo).every((codigo) => codigo.paginas_restantes <= 0)
-    ) {
-      await inactivateNotSeen(client, "pca_planos", runId, {
-        ano_exercicio: ano,
-      });
-      const { data: planosVistos } = await client
-        .from("pca_planos")
-        .select("id")
-        .eq("last_seen_sync_id", runId);
-      if (planosVistos?.length) {
-        for (const plano of planosVistos) {
-          await inactivateNotSeen(client, "pca_itens", runId, {
-            pca_plano_id: plano.id,
-          });
+      for (
+        currentCodigoIndex = 0;
+        currentCodigoIndex < codigosClassificacao.length;
+        currentCodigoIndex++
+      ) {
+        const codigoClassificacao = codigosClassificacao[currentCodigoIndex];
+        const result = await syncClassificacao({
+          client,
+          consulta,
+          runId,
+          ano,
+          codigoClassificacao,
+          paginaInicial,
+          maxPaginas,
+          tamanhoPagina,
+          onCheckpoint: async (nextPage) => {
+            paginaPendentePorCodigo[codigoClassificacao] = nextPage;
+            await updateSyncHeartbeat(client, runId, {
+              paginaAtual: nextPage,
+              continuation: {
+                pending_codigos_classificacao: codigosClassificacao.slice(currentCodigoIndex),
+                pagina_inicial: nextPage,
+                pagina_por_codigo_pendente: paginaPendentePorCodigo,
+                chain_id: runId,
+              },
+              baseParametros: body,
+            });
+          },
+        });
+        porCodigo[codigoClassificacao] = {
+          ...result.stats,
+          ultima_pagina: result.ultimaPagina,
+          paginas_restantes: result.paginasRestantes,
+        };
+        mergeStats(stats, result.stats);
+      }
+      currentCodigoIndex = codigosClassificacao.length;
+
+      if (
+        body.modo === "completo" &&
+        stats.erros === 0 &&
+        Object.values(porCodigo).every((codigo) => codigo.paginas_restantes <= 0)
+      ) {
+        await inactivateNotSeen(client, "pca_planos", runId, {
+          ano_exercicio: ano,
+        });
+        const { data: planosVistos } = await client
+          .from("pca_planos")
+          .select("id")
+          .eq("last_seen_sync_id", runId);
+        if (planosVistos?.length) {
+          for (const plano of planosVistos) {
+            await inactivateNotSeen(client, "pca_itens", runId, {
+              pca_plano_id: plano.id,
+            });
+          }
         }
       }
-    }
 
-    if (stats.erros === 0) {
-      await markPeriodLoadComplete(client, periodSummary, probeMetadata, ano);
-    }
-
-    await finishSyncRun(client, runId, {
-      status: stats.erros > 0 ? "concluida_com_erros" : "concluida",
-      totalRecebidos: stats.recebidos,
-      totalNovos: stats.novos,
-      totalAtualizados: stats.alterados,
-      totalInalterados: stats.inalterados,
-      totalErros: stats.erros,
-      paginaAtual: Math.max(
-        ...Object.values(porCodigo).map((c) => c.ultima_pagina),
-        0,
-      ),
-    });
-
-    return jsonResponse({
-      sync_id: runId,
-      status: "concluida",
-      ano,
-      codigos_classificacao: codigosClassificacao,
-      periodo: periodSummary,
-      por_codigo: porCodigo,
-      ...stats,
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const isBudget = error instanceof BudgetExhaustedError ||
-      message.includes("BUDGET_EXHAUSTED");
-    const pendingCodigos =
-      isBudget && currentCodigoIndex < codigosClassificacao.length
-        ? codigosClassificacao.slice(currentCodigoIndex)
-        : [];
-    const paginaPorCodigoPendente = Object.fromEntries(
-      pendingCodigos.map((codigo, index) => [
-        codigo,
-        index === 0
-          ? (paginaPendentePorCodigo[codigo] ?? paginaInicial)
-          : paginaInicial,
-      ]),
-    );
-    const continuation = pendingCodigos.length > 0
-      ? {
-        pending_codigos_classificacao: pendingCodigos,
-        pagina_inicial: paginaPorCodigoPendente[pendingCodigos[0]] ??
-          paginaInicial,
-        pagina_por_codigo_pendente: paginaPorCodigoPendente,
-        max_paginas: maxPaginas,
-        tamanho_pagina: tamanhoPagina,
+      if (stats.erros === 0) {
+        await markPeriodLoadComplete(client, periodSummary, probeMetadata, ano);
       }
-      : undefined;
-    const runStatus = isBudget ? "incompleta" : "falhou";
-    await finishSyncRun(client, runId, {
-      status: runStatus,
-      erroPrincipal: message,
-      totalRecebidos: stats.recebidos,
-      totalNovos: stats.novos,
-      totalAtualizados: stats.alterados,
-      totalInalterados: stats.inalterados,
-      totalErros: stats.erros,
-      paginaAtual: Math.max(
-        ...Object.values(porCodigo).map((c) => c.ultima_pagina),
-        0,
-      ),
-      parametros: continuation
+
+      await finishSyncRun(client, runId, {
+        status: stats.erros > 0 ? "concluida_com_erros" : "concluida",
+        totalRecebidos: stats.recebidos,
+        totalNovos: stats.novos,
+        totalAtualizados: stats.alterados,
+        totalInalterados: stats.inalterados,
+        totalErros: stats.erros,
+        paginaAtual: Math.max(
+          ...Object.values(porCodigo).map((c) => c.ultima_pagina),
+          0,
+        ),
+      });
+
+      return jsonResponse({
+        sync_id: runId,
+        status: stats.erros > 0 ? "concluida_com_erros" : "concluida",
+        ano,
+        codigos_classificacao: codigosClassificacao,
+        periodo: periodSummary,
+        por_codigo: porCodigo,
+        ...stats,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const isBudget = error instanceof BudgetExhaustedError ||
+        error instanceof RateLimitPauseError ||
+        message.includes("BUDGET_EXHAUSTED");
+      const pendingCodigos =
+        isBudget && currentCodigoIndex < codigosClassificacao.length
+          ? codigosClassificacao.slice(currentCodigoIndex)
+          : [];
+      const paginaPorCodigoPendente = Object.fromEntries(
+        pendingCodigos.map((codigo, index) => [
+          codigo,
+          index === 0
+            ? (paginaPendentePorCodigo[codigo] ?? paginaInicial)
+            : paginaInicial,
+        ]),
+      );
+      const continuation = pendingCodigos.length > 0
         ? {
-          ...body,
-          codigos_classificacao: pendingCodigos,
+          pending_codigos_classificacao: pendingCodigos,
           pagina_inicial: paginaPorCodigoPendente[pendingCodigos[0]] ??
             paginaInicial,
-          continuation,
+          pagina_por_codigo_pendente: paginaPorCodigoPendente,
+          max_paginas: maxPaginas,
+          tamanho_pagina: tamanhoPagina,
         }
-        : undefined,
-    });
-    return jsonResponse({
-      error: message,
-      sync_id: runId,
-      status: isBudget ? "BUDGET_EXHAUSTED" : "falhou",
-      run_status: runStatus,
-      continuation,
-    }, isBudget ? 503 : 500);
+        : undefined;
+      const runStatus = isManual ? "falhou" : (isBudget ? "incompleta" : "falhou");
+      await finishSyncRun(client, runId, {
+        status: runStatus,
+        erroPrincipal: message,
+        totalRecebidos: stats.recebidos,
+        totalNovos: stats.novos,
+        totalAtualizados: stats.alterados,
+        totalInalterados: stats.inalterados,
+        totalErros: stats.erros,
+        paginaAtual: Math.max(
+          ...Object.values(porCodigo).map((c) => c.ultima_pagina),
+          0,
+        ),
+        parametros: continuation
+          ? {
+            ...body,
+            codigos_classificacao: pendingCodigos,
+            pagina_inicial: paginaPorCodigoPendente[pendingCodigos[0]] ??
+              paginaInicial,
+            continuation,
+          }
+          : undefined,
+      });
+      return jsonResponse({
+        error: message,
+        sync_id: runId,
+        status: isBudget ? "BUDGET_EXHAUSTED" : "falhou",
+        run_status: runStatus,
+        continuation,
+      }, isBudget ? 503 : 500);
+    }
+  };
+
+  if (isAsync) {
+    const edgeRuntime = (globalThis as unknown as { EdgeRuntime?: { waitUntil?: (promise: Promise<unknown>) => void } }).EdgeRuntime;
+    if (typeof edgeRuntime?.waitUntil === "function") {
+      edgeRuntime.waitUntil(executeSync());
+    } else {
+      executeSync().catch((err) => console.error(`[async pca ${runId}] Error:`, err));
+    }
+    return jsonResponse({ status: "accepted", sync_id: runId }, 202);
   }
+
+  return await executeSync();
 });

@@ -29,7 +29,10 @@ import {
   finishSyncRun,
   logSyncRequest,
   storeSourceRecord,
+  updateSyncHeartbeat,
 } from "../_shared/pncp/supabase-admin.ts";
+import { BudgetExhaustedError } from "../_shared/pncp/retry.ts";
+import { RateLimitPauseError, UnifiedHttpClient } from "../_shared/http-client/index.ts";
 import { upsertByNaturalKey } from "../_shared/compras-gov/upsert-natural.ts";
 import { upsertByHash, type UpsertResult } from "../_shared/pncp/upsert.ts";
 
@@ -46,6 +49,7 @@ type SyncBody = {
   somente_caracteristicas?: boolean;
   /** Inclui endpoint 7 na mesma execução (padrão: false — use script em lotes). */
   incluir_caracteristicas?: boolean;
+  async?: boolean;
 };
 
 type SyncStats = {
@@ -102,10 +106,38 @@ Deno.serve(async (req) => {
   if (req.method !== "POST") return jsonResponse({ error: "Use POST" }, 405);
   if (!validateCronAuth(req)) return jsonResponse({ error: "Unauthorized" }, 401);
 
+  const url = new URL(req.url);
   const body = (await req.json().catch(() => ({}))) as SyncBody;
+  const isAsync = url.searchParams.get("async") === "1" || body.async === true;
   const resolved = resolveCatmatIngestTargets(body);
   if (!resolved.ok) {
     return jsonResponse({ status: "blocked", reason: resolved.reason }, 423);
+  }
+  if (isAsync) {
+    const runWorker = async () => {
+      if (resolved.pairs.length !== 1) {
+        for (const pair of resolved.pairs) {
+          await ingestOneCatmatClass({
+            ...body,
+            codigo_grupo: pair.grupo,
+            codigo_classe: pair.classe,
+          });
+        }
+      } else {
+        await ingestOneCatmatClass({
+          ...body,
+          codigo_grupo: resolved.pairs[0].grupo,
+          codigo_classe: resolved.pairs[0].classe,
+        });
+      }
+    };
+    const edgeRuntime = (globalThis as unknown as { EdgeRuntime?: { waitUntil?: (promise: Promise<unknown>) => void } }).EdgeRuntime;
+    if (typeof edgeRuntime?.waitUntil === "function") {
+      edgeRuntime.waitUntil(runWorker());
+    } else {
+      runWorker().catch((err) => console.error("[async compras-catmat] Error:", err));
+    }
+    return jsonResponse({ status: "accepted" }, 202);
   }
   if (resolved.pairs.length !== 1) {
     const runs = [];
@@ -163,13 +195,17 @@ async function ingestOneCatmatClass(body: SyncBody): Promise<Response> {
   const incluirCaracteristicas = body.incluir_caracteristicas ?? somenteCaracteristicas;
 
   const client = createServiceClient();
-  const material = new ComprasGovMaterialClient();
+  const httpClient = new UnifiedHttpClient({
+    supabaseClient: client,
+    telemetryLogger: (t) => logSyncRequest(client, t),
+  });
+  const material = new ComprasGovMaterialClient(httpClient);
   const lockKey = `compras-catmat:${codigoGrupo}:${codigoClasse}`;
-  const { runId, alreadyRunning } = await acquireSyncLock(
+  const { runId, alreadyRunning, continuation: inheritedContinuation } = await acquireSyncLock(
     client,
     lockKey,
     "compras_catmat",
-    { codigoGrupo, codigoClasse },
+    { codigoGrupo, codigoClasse, ...body },
   );
 
   if (alreadyRunning) {
@@ -183,6 +219,17 @@ async function ingestOneCatmatClass(body: SyncBody): Promise<Response> {
   };
 
   try {
+      if (!inheritedContinuation) {
+        await updateSyncHeartbeat(client, runId, {
+          paginaAtual: 1,
+          continuation: {
+            codigoGrupo,
+            codigoClasse,
+            offset_caracteristicas: offsetCaracteristicas,
+          },
+          baseParametros: body,
+        });
+      }
     if (!somenteCaracteristicas) {
       const grupoRes = await material.consultarGrupoMaterial({
         codigoGrupo,
@@ -435,13 +482,25 @@ async function ingestOneCatmatClass(body: SyncBody): Promise<Response> {
       : typeof error === "object" && error !== null && "message" in error
       ? String((error as { message: unknown }).message)
       : JSON.stringify(error);
+    const isResumable = error instanceof BudgetExhaustedError || error instanceof RateLimitPauseError;
+    const isManual = lockKey.includes(":manual:");
+    const status = isManual ? "falhou" : (isResumable ? "incompleta" : "falhou");
     await finishSyncRun(client, runId, {
-      status: "falhou",
+      status,
       erroPrincipal: detalhe,
+      parametros: {
+        ...body,
+        continuation: {
+          codigoGrupo,
+          codigoClasse,
+          offset_caracteristicas: offsetCaracteristicas,
+        },
+      },
     });
     return jsonResponse({
       error: detalhe,
       sync_id: runId,
+      status,
     }, 500);
   }
 }

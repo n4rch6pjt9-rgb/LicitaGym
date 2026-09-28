@@ -11,6 +11,7 @@ import {
   type WithRetryOptions,
   withRetry,
 } from "./retry.ts";
+import { UnifiedHttpClient } from "../http-client/index.ts";
 
 const DEFAULT_BASE = "https://pncp.gov.br/api/consulta/v1";
 
@@ -36,6 +37,10 @@ export type ConsultaPage<T> = {
 
 export type ConsultaGetOptions = {
   budget?: RequestBudget;
+  syncRunId?: string;
+  pagina?: number;
+  parametros?: Record<string, unknown>;
+  onHeartbeat?: () => Promise<void>;
 };
 
 export function clampConsultaPageSize(
@@ -49,6 +54,7 @@ export function clampConsultaPageSize(
 
 export class PncpConsultaClient {
   private budget: RequestBudget | undefined;
+  private httpClient?: UnifiedHttpClient;
   private readonly retryOverrides: Pick<
     WithRetryOptions,
     "sleep" | "now" | "random"
@@ -57,8 +63,16 @@ export class PncpConsultaClient {
   constructor(
     private baseUrl = Deno.env.get("PNCP_CONSULTA_BASE") ?? DEFAULT_BASE,
     retryOverrides: Pick<WithRetryOptions, "sleep" | "now" | "random"> = {},
+    httpClient?: UnifiedHttpClient,
   ) {
     this.retryOverrides = retryOverrides;
+    this.httpClient = httpClient;
+  }
+
+  /** Attach a unified HTTP client with distributed host leasing and telemetry. */
+  withHttpClient(client: UnifiedHttpClient): this {
+    this.httpClient = client;
+    return this;
   }
 
   /** Bind a request-scoped Edge deadline for all subsequent calls. */
@@ -107,8 +121,28 @@ export class PncpConsultaClient {
     options: ConsultaGetOptions = {},
   ): Promise<{ status: number; body: T; elapsedMs: number }> {
     const url = this.buildUrl(path, params);
-    const started = Date.now();
     const budget = options.budget ?? this.budget;
+
+    if (this.httpClient) {
+      return this.httpClient.getJson<T>(url, {
+        headers: { Accept: "application/json" },
+      }, {
+        budget,
+        syncRunId: options.syncRunId,
+        endpoint: path,
+        pagina: options.pagina,
+        parametros: params,
+        onHeartbeat: options.onHeartbeat,
+        ...this.retryOverrides,
+        validateBody: (text: string, status: number) => {
+          if (status === 200 && !text.trim()) {
+            throw new EmptyBodyAnomalyError();
+          }
+        },
+      });
+    }
+
+    const started = Date.now();
 
     const { status, body } = await withRetry(
       async () => {
@@ -200,12 +234,16 @@ export class PncpConsultaClient {
     pagina: number,
     codigoClassificacaoSuperior: string,
     tamanhoPagina?: number,
+    options?: ConsultaGetOptions,
   ) {
     return this.getJson("/pca/", {
       anoPca,
       pagina,
       codigoClassificacaoSuperior,
       tamanhoPagina: clampConsultaPageSize("pca", tamanhoPagina),
+    }, {
+      ...options,
+      pagina,
     });
   }
 
@@ -278,11 +316,14 @@ export class PncpConsultaClient {
     codigoModalidadeContratacao: number;
     pagina: number;
     tamanhoPagina?: number;
-  }) {
+  }, options?: ConsultaGetOptions) {
     const { tamanhoPagina, ...rest } = params;
     return this.getJson("/contratacoes/publicacao", {
       ...rest,
       tamanhoPagina: clampConsultaPageSize("contratacoes", tamanhoPagina),
+    }, {
+      ...options,
+      pagina: params.pagina,
     });
   }
 
@@ -292,11 +333,14 @@ export class PncpConsultaClient {
     codigoModalidadeContratacao: number;
     pagina: number;
     tamanhoPagina?: number;
-  }) {
+  }, options?: ConsultaGetOptions) {
     const { tamanhoPagina, ...rest } = params;
     return this.getJson("/contratacoes/atualizacao", {
       ...rest,
       tamanhoPagina: clampConsultaPageSize("contratacoes", tamanhoPagina),
+    }, {
+      ...options,
+      pagina: params.pagina,
     });
   }
 
@@ -305,11 +349,14 @@ export class PncpConsultaClient {
     codigoModalidadeContratacao: number;
     pagina: number;
     tamanhoPagina?: number;
-  }) {
+  }, options?: ConsultaGetOptions) {
     const { tamanhoPagina, ...rest } = params;
     return this.getJson("/contratacoes/proposta", {
       ...rest,
       tamanhoPagina: clampConsultaPageSize("contratacoes", tamanhoPagina),
+    }, {
+      ...options,
+      pagina: params.pagina,
     });
   }
 
@@ -318,7 +365,7 @@ export class PncpConsultaClient {
     dataFinal: string;
     pagina: number;
     tamanhoPagina?: number;
-  }) {
+  }, options?: ConsultaGetOptions) {
     const { tamanhoPagina, ...rest } = params;
     return this.getJson("/instrumentoscobranca/inclusao", {
       ...rest,
@@ -326,6 +373,9 @@ export class PncpConsultaClient {
         "instrumentosCobranca",
         tamanhoPagina,
       ),
+    }, {
+      ...options,
+      pagina: params.pagina,
     });
   }
 
@@ -334,11 +384,14 @@ export class PncpConsultaClient {
     dataFinal: string;
     pagina: number;
     tamanhoPagina?: number;
-  }) {
+  }, options?: ConsultaGetOptions) {
     const { tamanhoPagina, ...rest } = params;
     return this.getJson("/atas", {
       ...rest,
       tamanhoPagina: clampConsultaPageSize("atasContratos", tamanhoPagina),
+    }, {
+      ...options,
+      pagina: params.pagina,
     });
   }
 
@@ -347,11 +400,14 @@ export class PncpConsultaClient {
     dataFinal: string;
     pagina: number;
     tamanhoPagina?: number;
-  }) {
+  }, options?: ConsultaGetOptions) {
     const { tamanhoPagina, ...rest } = params;
     return this.getJson("/contratos", {
       ...rest,
       tamanhoPagina: clampConsultaPageSize("atasContratos", tamanhoPagina),
+    }, {
+      ...options,
+      pagina: params.pagina,
     });
   }
 
@@ -362,11 +418,14 @@ export class PncpConsultaClient {
     tamanhoPagina?: number;
     cnpj?: string;
     codigoUnidade?: string;
-  }) {
+  }, options?: ConsultaGetOptions) {
     const { tamanhoPagina, ...rest } = params;
     return this.getJson("/pca/atualizacao", {
       ...rest,
       tamanhoPagina: clampConsultaPageSize("pca", tamanhoPagina),
+    }, {
+      ...options,
+      pagina: params.pagina,
     });
   }
 
@@ -375,11 +434,14 @@ export class PncpConsultaClient {
     dataFinal: string;
     pagina: number;
     tamanhoPagina?: number;
-  }) {
+  }, options?: ConsultaGetOptions) {
     const { tamanhoPagina, ...rest } = params;
     return this.getJson("/atas/atualizacao", {
       ...rest,
       tamanhoPagina: clampConsultaPageSize("atasContratos", tamanhoPagina),
+    }, {
+      ...options,
+      pagina: params.pagina,
     });
   }
 
@@ -388,11 +450,14 @@ export class PncpConsultaClient {
     dataFinal: string;
     pagina: number;
     tamanhoPagina?: number;
-  }) {
+  }, options?: ConsultaGetOptions) {
     const { tamanhoPagina, ...rest } = params;
     return this.getJson("/contratos/atualizacao", {
       ...rest,
       tamanhoPagina: clampConsultaPageSize("atasContratos", tamanhoPagina),
+    }, {
+      ...options,
+      pagina: params.pagina,
     });
   }
 }

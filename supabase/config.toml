@@ -67,3 +67,54 @@ site_url = "http://127.0.0.1:3000"
 
 # Edge Functions: deploy com --no-verify-jwt para sync jobs (Bearer SYNC_CRON_SECRET).
 # Local: npx supabase functions serve --no-verify-jwt --env-file supabase/.env.functions.local
+
+[functions.sync-pncp-pca]
+verify_jwt = false
+
+[functions.import-catmat-curadoria]
+verify_jwt = false
+
+[functions.sync-pncp-legislation]
+verify_jwt = false
+
+[functions.sync-pncp-contratacoes-editais]
+verify_jwt = false
+
+[functions.sync-pncp-contratacoes-atas]
+verify_jwt = false
+
+[functions.sync-pncp-contratacoes-contratos]
+verify_jwt = false
+
+[functions.sync-pncp-catalogo]
+verify_jwt = false
+
+[functions.sync-compras-catmat]
+verify_jwt = false
+
+[functions.link-catmat-pca]
+verify_jwt = false
+
+[functions.sync-pncp-irp]
+verify_jwt = false
+
+[functions.api-pncp-pca]
+verify_jwt = false
+
+[functions.api-pncp-legislacao]
+verify_jwt = false
+
+[functions.api-pncp-contratacoes]
+verify_jwt = false
+
+[functions.api-pncp-irp]
+verify_jwt = false
+
+[functions.calculate-distance-webrouter]
+verify_jwt = false
+
+[functions.sync-comprasgov-consulta]
+verify_jwt = false
+
+[functions.api-dashboard-oportunidades]
+verify_jwt = false

@@ -1,10 +1,23 @@
 import { withRetry } from "./retry.ts";
+import { UnifiedHttpClient } from "../http-client/index.ts";
 
 const DEFAULT_BASE = "https://pncp.gov.br/api/pncp/v1";
 
 /** Cliente API integração — NÃO inclui /usuarios (CLA-40). */
 export class PncpIntegracaoClient {
-  constructor(private baseUrl = Deno.env.get("PNCP_INTEGRACAO_BASE") ?? DEFAULT_BASE) {}
+  private httpClient?: UnifiedHttpClient;
+
+  constructor(
+    private baseUrl = Deno.env.get("PNCP_INTEGRACAO_BASE") ?? DEFAULT_BASE,
+    httpClient?: UnifiedHttpClient,
+  ) {
+    this.httpClient = httpClient;
+  }
+
+  withHttpClient(client: UnifiedHttpClient): this {
+    this.httpClient = client;
+    return this;
+  }
 
   private headers(): Record<string, string> {
     const headers: Record<string, string> = { Accept: "application/json" };
@@ -15,6 +28,12 @@ export class PncpIntegracaoClient {
 
   async getJson<T = unknown>(path: string): Promise<T> {
     const url = `${this.baseUrl.replace(/\/+$/, "")}${path}`;
+    if (this.httpClient) {
+      const res = await this.httpClient.getJson<T>(url, { headers: this.headers() }, {
+        endpoint: path,
+      });
+      return res.body;
+    }
     const response = await withRetry(async () => {
       const res = await fetch(url, { headers: this.headers() });
       if (res.status === 429 || res.status >= 500) {

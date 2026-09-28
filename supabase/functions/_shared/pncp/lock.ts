@@ -18,7 +18,35 @@ export async function acquireSyncLock(
   lockKey: string,
   resourceType: string,
   parametros: Record<string, unknown> = {},
-): Promise<{ runId: string; alreadyRunning: boolean }> {
+): Promise<{
+  runId: string;
+  alreadyRunning: boolean;
+  continuation?: unknown;
+  retomadaDeId?: string | null;
+}> {
+  // If Supabase client has RPC available, use the atomic private.acquire_sync_lock RPC
+  if (typeof client.rpc === "function") {
+    const { data, error } = await client.rpc("acquire_sync_lock", {
+      p_lock_key: lockKey,
+      p_resource_type: resourceType,
+      p_parametros: parametros,
+    });
+    if (error) throw error;
+    const res = data as {
+      already_running: boolean;
+      run_id: string;
+      continuation?: unknown;
+      retomada_de_id?: string | null;
+    };
+    return {
+      runId: res.run_id,
+      alreadyRunning: res.already_running,
+      continuation: res.continuation,
+      retomadaDeId: res.retomada_de_id,
+    };
+  }
+
+  // Fallback for mock clients in test harnesses that don't mock rpc
   const { data: existing } = await client.schema("private")
     .from("pncp_sync_run")
     .select("id, iniciada_em")
@@ -58,7 +86,19 @@ export async function loadPendingSlices(
   client: SupabaseClient,
   lockKey: string,
   currentRunId: string,
+  inheritedContinuation?: unknown,
 ): Promise<PendingContinuation | null> {
+  // If continuation was already returned atomically by acquire_sync_lock RPC
+  if (inheritedContinuation && typeof inheritedContinuation === "object") {
+    const cont = inheritedContinuation as { pending?: unknown; chain_id?: unknown };
+    if (Array.isArray(cont.pending) && cont.pending.length > 0) {
+      return {
+        slices: cont.pending as DateSlice[],
+        chainId: typeof cont.chain_id === "string" ? cont.chain_id : currentRunId,
+      };
+    }
+  }
+
   const selectPrior = () =>
     client.schema("private")
       .from("pncp_sync_run")

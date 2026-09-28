@@ -5,30 +5,59 @@ import type { ActionParams, GetActionParams, ListActionParams } from "./types.ts
 import { parseActionFromBody, parseActionFromUrl } from "./validation.ts";
 import { applyLicitacaoFilters, calculateRange } from "./query.ts";
 
+/**
+ * Colunas públicas explícitas da tabela licitacoes_externas expostas para o dashboard.
+ * Projeção seletiva: exclui colunas técnicas e internas (raw, esclarecimentos, notas,
+ * anexo_raiz_id, edital_id, modulo, id_externo).
+ */
+export const PUBLIC_LICITACAO_COLUMNS = [
+  "id",
+  "fonte",
+  "codigo_externo",
+  "numero_processo",
+  "processo_norm",
+  "numero_edital",
+  "objeto",
+  "unidade_compradora",
+  "modalidade",
+  "fase",
+  "situacao",
+  "data_inicio",
+  "data_fim",
+  "valor_total",
+  "orgao_cnpj",
+  "orgao_nome",
+  "municipio",
+  "uf",
+  "data_publicacao",
+  "data_homologacao",
+  "categoria_escopo",
+  "interesse_borracha",
+  "prioridade",
+  "termos_busca",
+  "created_at",
+  "updated_at",
+  "last_synced_at",
+].join(",");
+
 export interface DashboardOportunidadesClientContext {
-  getClient?: (req: Request) => SupabaseClient;
+  getClient?: () => SupabaseClient;
 }
 
 /**
- * Cliente Supabase com chave anon para consultas públicas / leitura do dashboard.
- * Preserva o header Authorization caso o usuário esteja autenticado via token JWT.
+ * Cria o cliente Supabase server-side com service_role_key.
+ * A chave NUNCA é exposta ao cliente/navegador.
+ * O Authorization do usuário final não é repassado para o client com service_role.
  */
-export function getDefaultClient(req: Request): SupabaseClient {
+export function getDefaultServiceClient(): SupabaseClient {
   const url = Deno.env.get("SUPABASE_URL");
-  const anon = Deno.env.get("SUPABASE_ANON_KEY");
-  if (!url || !anon) {
-    throw new Error("Variáveis de ambiente SUPABASE_URL ou SUPABASE_ANON_KEY não configuradas");
+  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!url || !serviceKey) {
+    throw new Error("Variáveis de ambiente SUPABASE_URL ou SUPABASE_SERVICE_ROLE_KEY não configuradas");
   }
 
-  const authHeader = req.headers.get("Authorization");
-  const headers: Record<string, string> = {};
-  if (authHeader) {
-    headers["Authorization"] = authHeader;
-  }
-
-  return createClient(url, anon, {
-    global: { headers },
-    auth: { persistSession: false },
+  return createClient(url, serviceKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
   });
 }
 
@@ -38,11 +67,10 @@ export function getDefaultClient(req: Request): SupabaseClient {
  * sem expor credenciais ou segredos.
  */
 async function handleReadiness(
-  req: Request,
   ctx?: DashboardOportunidadesClientContext,
 ): Promise<Response> {
   try {
-    const client = ctx?.getClient ? ctx.getClient(req) : getDefaultClient(req);
+    const client = ctx?.getClient ? ctx.getClient() : getDefaultServiceClient();
 
     // Contagem rápida e última atualização
     const { count, error: countError } = await client
@@ -50,11 +78,12 @@ async function handleReadiness(
       .select("id", { count: "exact", head: true });
 
     if (countError) {
+      console.error("[api-dashboard-oportunidades] Erro de readiness ao consultar count:", countError);
       return jsonResponse(
         {
           status: "unhealthy",
           ready: false,
-          error: countError.message,
+          error: "Falha ao verificar disponibilidade da base de dados",
         },
         503,
       );
@@ -68,11 +97,12 @@ async function handleReadiness(
       .maybeSingle();
 
     if (latestError) {
+      console.error("[api-dashboard-oportunidades] Erro de readiness ao consultar latest:", latestError);
       return jsonResponse(
         {
           status: "unhealthy",
           ready: false,
-          error: latestError.message,
+          error: "Falha ao verificar disponibilidade da base de dados",
         },
         503,
       );
@@ -87,56 +117,115 @@ async function handleReadiness(
       ultimo_sync: latest?.last_synced_at ?? null,
     });
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return jsonResponse({ status: "error", ready: false, error: msg }, 500);
+    console.error("[api-dashboard-oportunidades] Exceção em readiness:", err);
+    return jsonResponse(
+      { status: "error", ready: false, error: "Erro interno no servidor" },
+      500,
+    );
   }
 }
 
 /**
  * Ação: get
- * Busca um certame por ID ou pelo par (orgao_cnpj, processo_norm).
- * 404 claro quando não encontrado.
+ * - Se buscado por `id` ou `codigo_externo`: lookup único (retorna `{ item: ... }`, ou 404 claro).
+ * - Se buscado por `orgao_cnpj` + `processo_norm`: pode haver 1..N compras (AGENTS.md L66-77),
+ *   portanto retorna coleção (`{ items: [...] }`), sem maybeSingle().
  */
 async function handleGet(
-  req: Request,
   params: GetActionParams,
   ctx?: DashboardOportunidadesClientContext,
 ): Promise<Response> {
   try {
-    const client = ctx?.getClient ? ctx.getClient(req) : getDefaultClient(req);
+    const client = ctx?.getClient ? ctx.getClient() : getDefaultServiceClient();
 
-    let query = client.from("licitacoes_externas").select("*");
-
+    // Caso 1: Busca única por ID
     if (params.id !== undefined && params.id !== null) {
-      query = query.eq("id", params.id);
-    } else if (params.orgao_cnpj && params.processo_norm) {
-      query = query
+      const { data, error } = await client
+        .from("licitacoes_externas")
+        .select(PUBLIC_LICITACAO_COLUMNS)
+        .eq("id", params.id)
+        .maybeSingle();
+
+      if (error) {
+        console.error("[api-dashboard-oportunidades] Erro ao buscar por ID:", error);
+        return jsonResponse({ error: "Falha ao consultar licitação" }, 400);
+      }
+
+      if (!data) {
+        return jsonResponse(
+          { error: "Licitação não encontrada", item: null },
+          404,
+        );
+      }
+
+      return jsonResponse({ item: data });
+    }
+
+    // Caso 2: Busca única por codigo_externo (+ fonte opcional)
+    if (params.codigo_externo) {
+      let query = client
+        .from("licitacoes_externas")
+        .select(PUBLIC_LICITACAO_COLUMNS)
+        .eq("codigo_externo", params.codigo_externo);
+
+      if (params.fonte) {
+        query = query.eq("fonte", params.fonte);
+      }
+
+      const { data, error } = await query.maybeSingle();
+
+      if (error) {
+        console.error("[api-dashboard-oportunidades] Erro ao buscar por codigo_externo:", error);
+        return jsonResponse({ error: "Falha ao consultar licitação" }, 400);
+      }
+
+      if (!data) {
+        return jsonResponse(
+          { error: "Licitação não encontrada", item: null },
+          404,
+        );
+      }
+
+      return jsonResponse({ item: data });
+    }
+
+    // Caso 3: Busca por par órgão + processo (1..N compras/certames do mesmo processo administrativo)
+    if (params.orgao_cnpj && params.processo_norm) {
+      const { data, error } = await client
+        .from("licitacoes_externas")
+        .select(PUBLIC_LICITACAO_COLUMNS)
         .eq("orgao_cnpj", params.orgao_cnpj)
-        .eq("processo_norm", params.processo_norm);
-    } else {
-      return jsonResponse(
-        { error: "Identificador ausente: informe 'id' ou o par ('orgao_cnpj' e 'processo_norm')" },
-        400,
-      );
+        .eq("processo_norm", params.processo_norm)
+        .order("data_publicacao", { ascending: false, nullsFirst: false });
+
+      if (error) {
+        console.error("[api-dashboard-oportunidades] Erro ao buscar por processo:", error);
+        return jsonResponse({ error: "Falha ao consultar compras do processo" }, 400);
+      }
+
+      const items = data ?? [];
+      if (items.length === 0) {
+        return jsonResponse(
+          { error: "Nenhuma licitação encontrada para este processo", items: [] },
+          404,
+        );
+      }
+
+      return jsonResponse({
+        orgao_cnpj: params.orgao_cnpj,
+        processo_norm: params.processo_norm,
+        total: items.length,
+        items,
+      });
     }
 
-    const { data, error } = await query.maybeSingle();
-
-    if (error) {
-      return jsonResponse({ error: error.message }, 400);
-    }
-
-    if (!data) {
-      return jsonResponse(
-        { error: "Licitação não encontrada", item: null },
-        404,
-      );
-    }
-
-    return jsonResponse({ item: data });
+    return jsonResponse(
+      { error: "Identificador ausente: informe 'id', 'codigo_externo' ou o par ('orgao_cnpj' e 'processo_norm')" },
+      400,
+    );
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return jsonResponse({ error: msg }, 500);
+    console.error("[api-dashboard-oportunidades] Exceção em get:", err);
+    return jsonResponse({ error: "Erro interno no servidor" }, 500);
   }
 }
 
@@ -146,18 +235,17 @@ async function handleGet(
  * Distingue resultado vazio (200 com items: []) de erro (400/500).
  */
 async function handleList(
-  req: Request,
   params: ListActionParams,
   ctx?: DashboardOportunidadesClientContext,
 ): Promise<Response> {
   try {
-    const client = ctx?.getClient ? ctx.getClient(req) : getDefaultClient(req);
+    const client = ctx?.getClient ? ctx.getClient() : getDefaultServiceClient();
     const { page, limit, order_by, order_direction, filtros } = params;
     const { from, to } = calculateRange(page, limit);
 
     let baseQuery = client
       .from("licitacoes_externas")
-      .select("*", { count: "exact" });
+      .select(PUBLIC_LICITACAO_COLUMNS, { count: "exact" });
 
     baseQuery = applyLicitacaoFilters(baseQuery, filtros);
 
@@ -169,7 +257,8 @@ async function handleList(
     const { data, error, count } = await baseQuery;
 
     if (error) {
-      return jsonResponse({ error: error.message }, 400);
+      console.error("[api-dashboard-oportunidades] Erro ao listar oportunidades:", error);
+      return jsonResponse({ error: "Falha ao consultar lista de oportunidades" }, 400);
     }
 
     return jsonResponse({
@@ -182,8 +271,8 @@ async function handleList(
       items: data ?? [],
     });
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return jsonResponse({ error: msg }, 500);
+    console.error("[api-dashboard-oportunidades] Exceção em list:", err);
+    return jsonResponse({ error: "Erro interno no servidor" }, 500);
   }
 }
 
@@ -201,7 +290,13 @@ export async function handleRequest(
     const url = new URL(req.url);
     actionParams = parseActionFromUrl(url);
   } else if (req.method === "POST") {
-    const body = await req.json().catch(() => ({}));
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return jsonResponse({ error: "Corpo JSON inválido. Verifique a sintaxe da requisição." }, 400);
+    }
+
     if (typeof body !== "object" || body === null || Array.isArray(body)) {
       return jsonResponse({ error: "Corpo JSON inválido. Esperado objeto JSON." }, 400);
     }
@@ -216,11 +311,11 @@ export async function handleRequest(
 
   switch (actionParams.action) {
     case "readiness":
-      return await handleReadiness(req, ctx);
+      return await handleReadiness(ctx);
     case "get":
-      return await handleGet(req, actionParams, ctx);
+      return await handleGet(actionParams, ctx);
     case "list":
-      return await handleList(req, actionParams, ctx);
+      return await handleList(actionParams, ctx);
     default:
       return jsonResponse({ error: "Ação não suportada" }, 400);
   }
@@ -229,4 +324,3 @@ export async function handleRequest(
 if (import.meta.main) {
   Deno.serve((req) => handleRequest(req));
 }
-

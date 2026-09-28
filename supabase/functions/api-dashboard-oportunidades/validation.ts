@@ -24,14 +24,33 @@ export function sanitizeString(val: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+/**
+ * Valida formato de data ISO 8601 (YYYY-MM-DD ou com hora).
+ */
 export function sanitizeDate(val: unknown): string | undefined {
   if (typeof val !== "string") return undefined;
   const trimmed = val.trim();
   if (!trimmed) return undefined;
-  // Validar formato ISO 8601 (YYYY-MM-DD ou com hora)
   const d = new Date(trimmed);
   if (isNaN(d.getTime())) return undefined;
   return trimmed;
+}
+
+/**
+ * Retorna true se a string representa apenas uma data no formato YYYY-MM-DD.
+ */
+export function isDateOnly(val: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(val);
+}
+
+/**
+ * Calcula o dia seguinte (YYYY-MM-DD) para limites superiores estritos (< dia seguinte).
+ * Garante que a data YYYY-MM-DD cubra todo o dia até 23:59:59.999Z.
+ */
+export function getNextDayIso(dateStr: string): string {
+  const [year, month, day] = dateStr.split("-").map(Number);
+  const nextDate = new Date(Date.UTC(year, month - 1, day + 1));
+  return nextDate.toISOString().slice(0, 10);
 }
 
 export function sanitizeNumber(val: unknown): number | undefined {
@@ -128,6 +147,8 @@ export function parseGetParams(
   source: Record<string, unknown>,
 ): { ok: true; params: GetActionParams } | { ok: false; error: string } {
   const idRaw = source.id;
+  const codigoExterno = sanitizeString(source.codigo_externo);
+  const fonte = sanitizeString(source.fonte);
   const orgaoCnpj = sanitizeString(source.orgao_cnpj)?.replace(/\D/g, "");
   const processoNorm = sanitizeString(source.processo_norm)?.replace(/\D/g, "");
 
@@ -137,6 +158,17 @@ export function parseGetParams(
       params: {
         action: "get",
         id: String(idRaw).trim(),
+      },
+    };
+  }
+
+  if (codigoExterno) {
+    return {
+      ok: true,
+      params: {
+        action: "get",
+        codigo_externo: codigoExterno,
+        ...(fonte ? { fonte } : {}),
       },
     };
   }
@@ -154,7 +186,7 @@ export function parseGetParams(
 
   return {
     ok: false,
-    error: "Identificador ausente: informe 'id' ou o par ('orgao_cnpj' e 'processo_norm')",
+    error: "Identificador ausente: informe 'id', 'codigo_externo' ou o par ('orgao_cnpj' e 'processo_norm')",
   };
 }
 

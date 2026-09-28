@@ -1,5 +1,7 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import {
+  getNextDayIso,
+  isDateOnly,
   parseActionFromBody,
   parseActionFromUrl,
   parseGetParams,
@@ -16,7 +18,10 @@ import {
   sanitizeSearchTerm,
   type FilterableQuery,
 } from "../../../supabase/functions/api-dashboard-oportunidades/query.ts";
-import { handleRequest } from "../../../supabase/functions/api-dashboard-oportunidades/index.ts";
+import {
+  handleRequest,
+  PUBLIC_LICITACAO_COLUMNS,
+} from "../../../supabase/functions/api-dashboard-oportunidades/index.ts";
 
 // Helper mock para testar montagem de query
 class MockQueryBuilder implements FilterableQuery {
@@ -38,6 +43,10 @@ class MockQueryBuilder implements FilterableQuery {
     this.calls.push({ method: "lte", args: [column, value] });
     return this;
   }
+  lt(column: string, value: unknown): this {
+    this.calls.push({ method: "lt", args: [column, value] });
+    return this;
+  }
   ilike(column: string, pattern: string): this {
     this.calls.push({ method: "ilike", args: [column, pattern] });
     return this;
@@ -49,7 +58,7 @@ class MockQueryBuilder implements FilterableQuery {
 }
 
 // --------------------------------------------------------------------------
-// Sanitizers
+// Sanitizers e Utilitários de Data
 // --------------------------------------------------------------------------
 
 Deno.test("sanitizeString lida com tipos variados e vazios", () => {
@@ -67,6 +76,14 @@ Deno.test("sanitizeDate valida formato de data ISO", () => {
   assertEquals(sanitizeDate("data-invalida"), undefined);
   assertEquals(sanitizeDate(""), undefined);
   assertEquals(sanitizeDate(null), undefined);
+});
+
+Deno.test("isDateOnly e getNextDayIso para limites superiores de data cheia", () => {
+  assertEquals(isDateOnly("2026-09-28"), true);
+  assertEquals(isDateOnly("2026-09-28T10:00:00Z"), false);
+  assertEquals(isDateOnly("2026-02-28"), true);
+  assertEquals(getNextDayIso("2026-09-28"), "2026-09-29");
+  assertEquals(getNextDayIso("2026-12-31"), "2027-01-01");
 });
 
 Deno.test("sanitizeNumber valida e converte números e strings numéricas", () => {
@@ -131,11 +148,21 @@ Deno.test("parseListParams respeita MAX_LIMIT de 100", () => {
   assertEquals(result.limit, 100);
 });
 
-Deno.test("parseGetParams valida ID ou par orgao_cnpj + processo_norm", () => {
+Deno.test("parseGetParams valida ID, codigo_externo ou par orgao_cnpj + processo_norm", () => {
   const byId = parseGetParams({ id: 123 });
   assertEquals(byId.ok, true);
   if (byId.ok) {
     assertEquals(byId.params.id, "123");
+  }
+
+  const byCodigo = parseGetParams({
+    codigo_externo: "07486108000185-1-000001/2026",
+    fonte: "pncp",
+  });
+  assertEquals(byCodigo.ok, true);
+  if (byCodigo.ok) {
+    assertEquals(byCodigo.params.codigo_externo, "07486108000185-1-000001/2026");
+    assertEquals(byCodigo.params.fonte, "pncp");
   }
 
   const byCertame = parseGetParams({
@@ -174,6 +201,18 @@ Deno.test("parseActionFromUrl roteia list, get e readiness", () => {
     }
   }
 
+  const getCodigoUrl = new URL(
+    "http://localhost/api?action=get&codigo_externo=07486108000185-1-000001/2026",
+  );
+  const getCodigoRes = parseActionFromUrl(getCodigoUrl);
+  assertEquals("error" in getCodigoRes, false);
+  if (!("error" in getCodigoRes)) {
+    assertEquals(getCodigoRes.action, "get");
+    if (getCodigoRes.action === "get") {
+      assertEquals(getCodigoRes.codigo_externo, "07486108000185-1-000001/2026");
+    }
+  }
+
   const readinessUrl = new URL("http://localhost/api?action=readiness");
   const readRes = parseActionFromUrl(readinessUrl);
   assertEquals("error" in readRes, false);
@@ -203,15 +242,13 @@ Deno.test("parseActionFromBody aceita JSON {action, ...}", () => {
 
   const getBody = parseActionFromBody({
     action: "get",
-    orgao_cnpj: "12345678000199",
-    processo_norm: "2026001",
+    codigo_externo: "12345678000199-1-000001/2026",
   });
   assertEquals("error" in getBody, false);
   if (!("error" in getBody)) {
     assertEquals(getBody.action, "get");
     if (getBody.action === "get") {
-      assertEquals(getBody.orgao_cnpj, "12345678000199");
-      assertEquals(getBody.processo_norm, "2026001");
+      assertEquals(getBody.codigo_externo, "12345678000199-1-000001/2026");
     }
   }
 
@@ -223,13 +260,48 @@ Deno.test("parseActionFromBody aceita JSON {action, ...}", () => {
 });
 
 // --------------------------------------------------------------------------
-// Montagem de Query
+// Montagem de Query e Limites de Data
 // --------------------------------------------------------------------------
 
 Deno.test("calculateRange calcula limites PostgREST corretos", () => {
   assertEquals(calculateRange(1, 20), { from: 0, to: 19 });
   assertEquals(calculateRange(2, 20), { from: 20, to: 39 });
   assertEquals(calculateRange(3, 10), { from: 20, to: 29 });
+});
+
+Deno.test("applyLicitacaoFilters usa lt(dia_seguinte) para datas só-dia", () => {
+  const mock = new MockQueryBuilder();
+
+  applyLicitacaoFilters(mock, {
+    data_publicacao_fim: "2026-03-31",
+    data_fim_max: "2026-04-15",
+  });
+
+  const ltCalls = mock.calls.filter((c) => c.method === "lt");
+  assertEquals(ltCalls.length, 2);
+  assertEquals(ltCalls[0], {
+    method: "lt",
+    args: ["data_publicacao", "2026-04-01"],
+  });
+  assertEquals(ltCalls[1], {
+    method: "lt",
+    args: ["data_fim", "2026-04-16"],
+  });
+});
+
+Deno.test("applyLicitacaoFilters usa lte para datas com timestamp completo", () => {
+  const mock = new MockQueryBuilder();
+
+  applyLicitacaoFilters(mock, {
+    data_publicacao_fim: "2026-03-31T23:59:59Z",
+  });
+
+  const lteCalls = mock.calls.filter((c) => c.method === "lte");
+  assertEquals(lteCalls.length, 1);
+  assertEquals(lteCalls[0], {
+    method: "lte",
+    args: ["data_publicacao", "2026-03-31T23:59:59Z"],
+  });
 });
 
 Deno.test("applyLicitacaoFilters constrói chamadas no builder", () => {
@@ -265,7 +337,8 @@ Deno.test("applyLicitacaoFilters constrói chamadas no builder", () => {
   assertEquals(methodNames.includes("in"), true);
   assertEquals(methodNames.includes("ilike"), true);
   assertEquals(methodNames.includes("gte"), true);
-  assertEquals(methodNames.includes("lte"), true);
+  assertEquals(methodNames.includes("lt"), true);
+  assertEquals(methodNames.includes("lte"), true); // valor_max
   assertEquals(methodNames.includes("or"), true);
 
   // Verificar filtro or de busca textual
@@ -281,7 +354,7 @@ Deno.test("sanitizeSearchTerm remove caracteres que quebram sintaxe PostgREST", 
 });
 
 // --------------------------------------------------------------------------
-// Contrato HTTP (OPTIONS, CORS, Método não permitido, Erros de Validação)
+// Contrato HTTP (OPTIONS, CORS, Método não permitido, Erros de Validação e JSON)
 // --------------------------------------------------------------------------
 
 Deno.test("handleRequest responde 200 para OPTIONS com CORS headers", async () => {
@@ -313,6 +386,30 @@ Deno.test("handleRequest rejeita ação inválida com 400", async () => {
   assertEquals(body.error.includes("Ação inválida"), true);
 });
 
+Deno.test("handleRequest POST com JSON malformado retorna 400 e não cai em list", async () => {
+  const req = new Request("http://localhost/api-dashboard-oportunidades", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{ malformed json",
+  });
+  const res = await handleRequest(req);
+  assertEquals(res.status, 400);
+  const body = await res.json();
+  assertEquals(body.error.includes("Corpo JSON inválido"), true);
+});
+
+Deno.test("handleRequest POST com JSON array retorna 400", async () => {
+  const req = new Request("http://localhost/api-dashboard-oportunidades", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "[]",
+  });
+  const res = await handleRequest(req);
+  assertEquals(res.status, 400);
+  const body = await res.json();
+  assertEquals(body.error.includes("Esperado objeto JSON"), true);
+});
+
 Deno.test("handleRequest get sem parâmetros retorna 400 claro", async () => {
   const req = new Request("http://localhost/api-dashboard-oportunidades?action=get", {
     method: "GET",
@@ -324,20 +421,22 @@ Deno.test("handleRequest get sem parâmetros retorna 400 claro", async () => {
 });
 
 // --------------------------------------------------------------------------
-// Testes com Mock Client Supabase (list, get, readiness)
+// Testes com Mock Client Supabase (list, get, readiness, colunas públicas)
 // --------------------------------------------------------------------------
 
 function createMockSupabaseClient(config: {
   listResult?: { data: unknown[]; count: number; error: unknown };
   singleResult?: { data: unknown; error: unknown };
   headCountResult?: { count: number; error: unknown };
+  onSelect?: (cols?: string) => void;
 }) {
   const thenable = {
     then(onfulfilled?: (v: unknown) => unknown, onrejected?: (e: unknown) => unknown) {
       const res = config.listResult ?? { data: [], count: 0, error: null };
       return Promise.resolve(res).then(onfulfilled, onrejected);
     },
-    select() {
+    select(cols?: string) {
+      config.onSelect?.(cols);
       return thenable;
     },
     eq() {
@@ -350,6 +449,9 @@ function createMockSupabaseClient(config: {
       return thenable;
     },
     lte() {
+      return thenable;
+    },
+    lt() {
       return thenable;
     },
     ilike() {
@@ -375,7 +477,8 @@ function createMockSupabaseClient(config: {
   return {
     from(_table: string) {
       return {
-        select(_cols?: string, opts?: { count?: string; head?: boolean }) {
+        select(cols?: string, opts?: { count?: string; head?: boolean }) {
+          config.onSelect?.(cols);
           if (opts?.head) {
             return Promise.resolve(config.headCountResult ?? { count: 10, error: null });
           }
@@ -410,25 +513,13 @@ Deno.test("handleRequest readiness retorna status saudável e contagem", async (
   assertEquals(body.ultima_atualizacao, "2026-09-28T10:00:00Z");
 });
 
-Deno.test("handleRequest get retorna 404 claro para licitação inexistente", async () => {
+Deno.test("handleRequest get por id projeta colunas públicas seguras e retorna 200", async () => {
+  let selectedCols = "";
   // deno-lint-ignore no-explicit-any
   const mockClient = createMockSupabaseClient({
-    singleResult: { data: null, error: null },
-  }) as any;
-
-  const req = new Request("http://localhost/api-dashboard-oportunidades?action=get&id=9999", {
-    method: "GET",
-  });
-  const res = await handleRequest(req, { getClient: () => mockClient });
-  assertEquals(res.status, 404);
-  const body = await res.json();
-  assertEquals(body.error, "Licitação não encontrada");
-  assertEquals(body.item, null);
-});
-
-Deno.test("handleRequest get por id retorna 200 com item quando existente", async () => {
-  // deno-lint-ignore no-explicit-any
-  const mockClient = createMockSupabaseClient({
+    onSelect: (cols) => {
+      if (cols) selectedCols = cols;
+    },
     singleResult: {
       data: {
         id: 101,
@@ -446,19 +537,44 @@ Deno.test("handleRequest get por id retorna 200 com item quando existente", asyn
   assertEquals(res.status, 200);
   const body = await res.json();
   assertEquals(body.item.id, 101);
-  assertEquals(body.item.objeto, "Aquisição de Esteiras");
+  assertEquals(selectedCols, PUBLIC_LICITACAO_COLUMNS);
+  assertEquals(selectedCols.includes("raw"), false);
+  assertEquals(selectedCols.includes("esclarecimentos"), false);
 });
 
-Deno.test("handleRequest get por orgao_cnpj e processo_norm retorna 200", async () => {
+Deno.test("handleRequest get por codigo_externo único retorna 200", async () => {
   // deno-lint-ignore no-explicit-any
   const mockClient = createMockSupabaseClient({
     singleResult: {
       data: {
-        id: 202,
-        orgao_cnpj: "07486108000185",
-        processo_norm: "2026001",
-        objeto: "Equipamentos de Musculação",
+        id: 102,
+        codigo_externo: "07486108000185-1-000001/2026",
+        objeto: "Compra PNCP única",
       },
+      error: null,
+    },
+  }) as any;
+
+  const req = new Request(
+    "http://localhost/api-dashboard-oportunidades?action=get&codigo_externo=07486108000185-1-000001/2026&fonte=pncp",
+    { method: "GET" },
+  );
+  const res = await handleRequest(req, { getClient: () => mockClient });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.item.id, 102);
+  assertEquals(body.item.codigo_externo, "07486108000185-1-000001/2026");
+});
+
+Deno.test("handleRequest get por orgao_cnpj e processo_norm retorna coleção (items)", async () => {
+  // deno-lint-ignore no-explicit-any
+  const mockClient = createMockSupabaseClient({
+    listResult: {
+      data: [
+        { id: 201, objeto: "Compra 1 do processo" },
+        { id: 202, objeto: "Compra 2 do processo" },
+      ],
+      count: 2,
       error: null,
     },
   }) as any;
@@ -470,7 +586,47 @@ Deno.test("handleRequest get por orgao_cnpj e processo_norm retorna 200", async 
   const res = await handleRequest(req, { getClient: () => mockClient });
   assertEquals(res.status, 200);
   const body = await res.json();
-  assertEquals(body.item.id, 202);
+  assertEquals(body.total, 2);
+  assertEquals(Array.isArray(body.items), true);
+  assertEquals(body.items.length, 2);
+  assertEquals(body.items[0].id, 201);
+  assertEquals(body.items[1].id, 202);
+});
+
+Deno.test("handleRequest get por orgao_cnpj e processo_norm sem registros retorna 404", async () => {
+  // deno-lint-ignore no-explicit-any
+  const mockClient = createMockSupabaseClient({
+    listResult: { data: [], count: 0, error: null },
+  }) as any;
+
+  const req = new Request(
+    "http://localhost/api-dashboard-oportunidades?action=get&orgao_cnpj=07.486.108/0001-85&processo_norm=999999",
+    { method: "GET" },
+  );
+  const res = await handleRequest(req, { getClient: () => mockClient });
+  assertEquals(res.status, 404);
+  const body = await res.json();
+  assertEquals(body.error.includes("Nenhuma licitação encontrada"), true);
+  assertEquals(body.items, []);
+});
+
+Deno.test("handleRequest em erro de banco retorna mensagem genérica (não vaza PostgREST)", async () => {
+  // deno-lint-ignore no-explicit-any
+  const mockClient = createMockSupabaseClient({
+    singleResult: {
+      data: null,
+      error: { message: "relation licitacoes_externas does not exist (internals leaked)" },
+    },
+  }) as any;
+
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=get&id=1", {
+    method: "GET",
+  });
+  const res = await handleRequest(req, { getClient: () => mockClient });
+  assertEquals(res.status, 400);
+  const body = await res.json();
+  assertEquals(body.error, "Falha ao consultar licitação");
+  assertEquals(JSON.stringify(body).includes("internals leaked"), false);
 });
 
 Deno.test("handleRequest list retorna 200 com items e total (inclusive lista vazia)", async () => {

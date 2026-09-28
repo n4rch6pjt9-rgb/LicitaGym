@@ -1,4 +1,5 @@
-import type { LicitacaoFiltros, ListActionParams } from "./types.ts";
+import type { LicitacaoFiltros } from "./types.ts";
+import { getNextDayIso, isDateOnly } from "./validation.ts";
 
 /**
  * Sanitiza texto para uso em operadores PostgREST .or() e .ilike()
@@ -17,6 +18,7 @@ export interface FilterableQuery {
   in(column: string, values: unknown[]): this;
   gte(column: string, value: unknown): this;
   lte(column: string, value: unknown): this;
+  lt(column: string, value: unknown): this;
   ilike(column: string, pattern: string): this;
   or(filters: string): this;
 }
@@ -81,7 +83,11 @@ export function applyLicitacaoFilters<T extends FilterableQuery>(
     query.gte("data_publicacao", filtros.data_publicacao_inicio);
   }
   if (filtros.data_publicacao_fim) {
-    query.lte("data_publicacao", filtros.data_publicacao_fim);
+    if (isDateOnly(filtros.data_publicacao_fim)) {
+      query.lt("data_publicacao", getNextDayIso(filtros.data_publicacao_fim));
+    } else {
+      query.lte("data_publicacao", filtros.data_publicacao_fim);
+    }
   }
 
   // Intervalo de data_inicio
@@ -89,7 +95,11 @@ export function applyLicitacaoFilters<T extends FilterableQuery>(
     query.gte("data_inicio", filtros.data_inicio_min);
   }
   if (filtros.data_inicio_max) {
-    query.lte("data_inicio", filtros.data_inicio_max);
+    if (isDateOnly(filtros.data_inicio_max)) {
+      query.lt("data_inicio", getNextDayIso(filtros.data_inicio_max));
+    } else {
+      query.lte("data_inicio", filtros.data_inicio_max);
+    }
   }
 
   // Intervalo de data_fim
@@ -97,7 +107,11 @@ export function applyLicitacaoFilters<T extends FilterableQuery>(
     query.gte("data_fim", filtros.data_fim_min);
   }
   if (filtros.data_fim_max) {
-    query.lte("data_fim", filtros.data_fim_max);
+    if (isDateOnly(filtros.data_fim_max)) {
+      query.lt("data_fim", getNextDayIso(filtros.data_fim_max));
+    } else {
+      query.lte("data_fim", filtros.data_fim_max);
+    }
   }
 
   // Intervalo de data_homologacao
@@ -105,7 +119,11 @@ export function applyLicitacaoFilters<T extends FilterableQuery>(
     query.gte("data_homologacao", filtros.data_homologacao_min);
   }
   if (filtros.data_homologacao_max) {
-    query.lte("data_homologacao", filtros.data_homologacao_max);
+    if (isDateOnly(filtros.data_homologacao_max)) {
+      query.lt("data_homologacao", getNextDayIso(filtros.data_homologacao_max));
+    } else {
+      query.lte("data_homologacao", filtros.data_homologacao_max);
+    }
   }
 
   // Faixa de valor_total

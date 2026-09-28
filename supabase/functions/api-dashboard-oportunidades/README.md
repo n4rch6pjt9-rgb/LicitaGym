@@ -16,8 +16,8 @@ Função Supabase Edge Function responsável por atender o frontend do Dashboard
 
 ## Arquitetura & Segurança RLS
 
-- **RLS em `public.licitacoes_externas`**: A tabela possui `SELECT` restrito exclusivamente para `authenticated`, com todo acesso de `anon` explicitamente revogado (conforme migrations `20260926110000_pncp_rls_policies.sql` e `20260928130000_licitacoes_externas_revoke_anon.sql`). A tabela não fica exposta diretamente à REST API pública do PostgREST.
-- **Leitura Server-Side Controlada & Autenticação**: A Edge Function requer um usuário autenticado via JWT Supabase (`Authorization: Bearer <token>`) para as ações `list` e `get`, verificado por `requireUserAuth`. A ação `readiness` permanece pública para verificação de saúde e contagem sem expor dados de linhas. No servidor (Edge Function), as consultas a `licitacoes_externas` utilizam `SUPABASE_SERVICE_ROLE_KEY`. A chave de service_role **nunca** é devolvida nem exposta ao cliente.
+- **RLS em `public.licitacoes_externas`**: Todo acesso direto à tabela via PostgREST REST API está revogado para `authenticated`, `anon` e `PUBLIC` (conforme migrations `20260926110000_pncp_rls_policies.sql`, `20260928130000_licitacoes_externas_revoke_anon.sql` e `20260928140000_licitacoes_externas_revoke_authenticated.sql`). Nenhuma role não-privilegiada possui permissão de `SELECT`, impedindo a leitura direta de colunas sensíveis (`raw`, `notas`, `esclarecimentos`, etc.) no navegador ou REST API.
+- **Leitura Server-Side do Dashboard & Acesso Interno**: Leituras de usuários e do dashboard são realizadas exclusivamente através da Edge Function `api-dashboard-oportunidades` (que executa server-side utilizando `SUPABASE_SERVICE_ROLE_KEY` e projeta estritamente as colunas públicas seguras `PUBLIC_LICITACAO_COLUMNS`). Leituras e escritas internas permanecem restritas à role `service_role` (utilizada pela Edge Function e pelos coletores de backend). A chave de `service_role` **nunca** é devolvida nem exposta ao cliente. A ação `readiness` permanece pública para verificação de saúde e contagem sem expor dados de linhas.
 - **Projeção Estrita de Colunas Públicas**: As consultas **não** usam `select("*")`. Apenas um conjunto explícito de colunas seguras para consumo do dashboard é projetado (`PUBLIC_LICITACAO_COLUMNS`), incluindo identificadores de fonte não-secretos (`modulo`, `id_externo`) necessários para fontes como SEST SENAT (onde `codigo_externo` é nulo), e omitindo estritamente colunas internas, payloads brutos (`raw`), fóruns (`esclarecimentos`, `notas`) e anexos técnicos (`anexo_raiz_id`, `edital_id`).
 - **Isolamento de Credenciais**: O header `Authorization` do usuário não é repassado ao cliente service_role interno.
 - **Mensagens de Erro Seguras**: Detalhes crus de erros do PostgREST não são expostos na resposta HTTP; falhas de banco retornam status HTTP 500 com mensagem limpa, e erros de parâmetro inválido retornam status HTTP 400.
@@ -254,3 +254,21 @@ As respostas de erro utilizam códigos de status HTTP apropriados e formato JSON
     "error": "Falha ao verificar disponibilidade da base de dados"
   }
   ```
+
+---
+
+## Verificação de ACL e RLS (Banco de Dados)
+
+Após a aplicação das migrations em ambiente com banco de dados configurado, a restrição de acesso e a política de RLS em `public.licitacoes_externas` podem ser conferidas executando o script SQL:
+
+```bash
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/tests/licitacoes_externas_acl_check.sql
+```
+
+Esse script assevera deterministicamente:
+1. `has_table_privilege('anon', 'public.licitacoes_externas', 'SELECT') = false`
+2. `has_table_privilege('authenticated', 'public.licitacoes_externas', 'SELECT') = false`
+3. Zero policies permitindo acesso a `anon`, `authenticated` ou `PUBLIC` em `pg_policies`
+4. RLS habilitado (`pg_class.relrowsecurity = true`)
+5. Comentário da tabela atualizado documentando o acesso exclusivo via Edge Function `api-dashboard-oportunidades`.
+

@@ -17,7 +17,7 @@ python3 -m coletor.processo_edital --gravar-numero-processo   # troca numero_pro
 
 ## Coletor PNCP (fonte principal)
 
-Busca nacional no PNCP por frase exata (`TERMOS_PADRAO` em `coletor/pncp.py`), classifica cada compra
+Busca nacional no PNCP por frase exata (`TERMOS_ESCOPO_COMPLETO` em `coletor/escopo.py` cobrindo 100% dos 56 PDMs do escopo por padrão), classifica cada compra
 pelo objeto **e pelos itens** (`coletor/escopo.py`) e grava compra, itens, **vencedores** e arquivos.
 
 Três modos, em ordem de prioridade comercial:
@@ -34,12 +34,63 @@ para quando os editais foram publicados há mais de `dias + margem_publicacao` (
 ```bash
 # 1x: rodar migrations/20260924_pncp_itens_resultados.sql no SQL Editor
 python3 -m coletor.pncp --dry-run --termos "borracha granulada" --tam 20   # teste rápido
-python3 -m coletor.pncp                                   # leads: homologados nos últimos 120 dias
+python3 -m coletor.pncp                                   # leads: homologados nos últimos 120 dias (escopo completo padrão)
 python3 -m coletor.pncp --dias 60                         # só os últimos 60 dias
 python3 -m coletor.pncp --modo monitorar                  # abertos / em julgamento
 python3 -m coletor.pncp --modo historico --paginas 10 --baixar-arquivos
 python3 -m coletor.indexador                              # arquivos baixados -> RAG
 ```
+
+### Runbook de Produção (PNCP — Execução pelo Marcelo)
+
+Ordem recomendada de execução para atualizar a base com cobertura completa e baixar os anexos:
+
+#### 1. Pré-requisitos e Variáveis de Ambiente
+
+Configure as variáveis no ambiente (ex.: em `~/.licitagym.env` ou no Cloud Run / VM):
+
+```bash
+export SUPABASE_URL="https://<projeto>.supabase.co"
+export SUPABASE_SERVICE_ROLE_KEY="<chave-service-role>"
+export GCS_BUCKET="<nome-do-bucket-gcs>"     # se não definida, grava em ./dados local
+export DELAY_SEGUNDOS="0.5"                  # pausa entre requisições HTTP ao PNCP
+export MAX_MB="80"                           # limite de tamanho por arquivo (padrão 80 MB)
+export PNCP_WORKERS="3"                      # concorrência de processamento de compras
+```
+
+#### 2. Comandos na Ordem de Execução
+
+##### (a) Dry-run da coleta completa
+Verifica a varredura dos 148 termos do escopo CATMAT completo sem gravar no banco de dados e sem baixar arquivos:
+```bash
+python3 -m coletor.pncp --dry-run
+```
+*(Opcional com limite de páginas para teste rápido: `python3 -m coletor.pncp --dry-run --paginas 1`)*
+
+##### (b) Coleta completa com download de arquivos
+Varre todos os termos do escopo no modo `leads` (homologados nos últimos 120 dias), persiste no Supabase e baixa editais/anexos diretamente para o GCS:
+```bash
+python3 -m coletor.pncp --baixar-arquivos
+```
+
+##### (c) Download dos pendentes acumulados (141 documentos)
+Lê de `licitacao_documentos` os registros da fonte `pncp` com status `pendente`, filtra pelas categorias do escopo (`catmat,forte,borracha,piso,obra_piso`, excluindo `fraco`), faz download com backoff exponencial / `Retry-After`, salva no storage e atualiza `status_processamento`, `sha256`, `mime_type` e `tamanho_bytes`:
+```bash
+# 1. Primeiro confira a lista elegível em dry-run:
+python3 -m coletor.pncp --baixar-pendentes --categorias catmat,forte,borracha,piso --dry-run
+
+# 2. Execução real dos downloads:
+python3 -m coletor.pncp --baixar-pendentes --categorias catmat,forte,borracha,piso
+```
+
+#### 3. Estimativa de Volume e Tempo
+
+- **Download dos pendentes (~141 docs):**
+  - **Volume:** ~132 documentos elegíveis (excluindo os 9 da categoria `fraco`), tamanho médio 5–15 MB por edital/termo de referência, estimando ~0,8 GB a 2,0 GB totais.
+  - **Tempo:** com `DELAY_SEGUNDOS=0.5` e tempo de resposta do PNCP de ~1 a 2 s por arquivo, ~132 arquivos levam aproximadamente **3 a 6 minutos** (sujeito à estabilidade da API do PNCP e eventuais cabeçalhos `Retry-After`).
+- **Coleta completa de termos (148 termos):**
+  - **Tempo:** ~148 termos × 1–2 páginas úteis com `workers=3` leva entre **15 a 35 minutos**.
+  - **Volume:** ~50 a 150 novos certames no modo `leads`, gerando ~100 a 300 MB de novos anexos.
 
 `oportunidades_borracha` lista primeiro os leads, do homologado mais recente para o mais antigo,
 com `dias_desde_homologacao`.

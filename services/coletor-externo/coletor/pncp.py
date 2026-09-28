@@ -32,12 +32,20 @@ from datetime import datetime, timedelta, timezone
 import requests
 
 from .destino import Armazenamento, Supabase, env, parece_html, sha256
-from .escopo import TERMOS_BUSCA, classificar, excluir_compra, interesse_borracha
+from .escopo import (
+    PDMS_ESCOPO,
+    TERMOS_BUSCA,
+    TERMOS_ESCOPO_COMPLETO,
+    classificar,
+    excluir_compra,
+    interesse_borracha,
+)
 from .portal import cnpj_ou_none
 
 log = logging.getLogger("pncp")
 BASE = "https://pncp.gov.br"
 MAX_RETRY_AFTER_S = 60
+CATEGORIAS_PADRAO_DOWNLOAD = "catmat,forte,borracha,piso,obra_piso"
 
 
 class RespostaInvalida(RuntimeError):
@@ -168,17 +176,33 @@ class PNCP:
         return self._lista(self.base_compra(c) + "/arquivos")
 
     def baixar(self, url: str, max_bytes: int) -> tuple[bytes, str | None]:
-        with self.s.get(url, stream=True, timeout=(30, 180)) as r:
-            r.raise_for_status()
-            ctype = (r.headers.get("content-type") or "").split(";")[0] or None
-            partes, total = [], 0
-            for b in r.iter_content(256 * 1024):
-                partes.append(b)
-                total += len(b)
-                if total > max_bytes:
-                    raise ValueError(f"arquivo acima de {max_bytes // 1048576} MB")
-        time.sleep(self.delay)
-        return b"".join(partes), ctype
+        ultimo = None
+        for tentativa in range(self.tentativas):
+            try:
+                with self.s.get(url, stream=True, timeout=(30, 180)) as r:
+                    if r.status_code == 429:
+                        ultimo = requests.HTTPError(f"{r.status_code} do PNCP", response=r)
+                        espera = _retry_after_s(r)
+                        time.sleep(espera if espera is not None else min(60, 5 * 2 ** tentativa))
+                        continue
+                    if r.status_code in (500, 502, 503, 504):
+                        ultimo = requests.HTTPError(f"{r.status_code} do PNCP", response=r)
+                        time.sleep(min(60, 5 * 2 ** tentativa))
+                        continue
+                    r.raise_for_status()
+                    ctype = (r.headers.get("content-type") or "").split(";")[0] or None
+                    partes, total = [], 0
+                    for b in r.iter_content(256 * 1024):
+                        partes.append(b)
+                        total += len(b)
+                        if total > max_bytes:
+                            raise ValueError(f"arquivo acima de {max_bytes // 1048576} MB")
+                    time.sleep(self.delay)
+                    return b"".join(partes), ctype
+            except (requests.ConnectionError, requests.Timeout) as e:
+                ultimo = e
+                time.sleep(min(60, 5 * 2 ** tentativa))
+        raise ultimo or RuntimeError("PNCP sem resposta")
 
 
 def _num(v):
@@ -491,6 +515,142 @@ def corrigir_processos(pncp: PNCP, sb: Supabase) -> dict:
     return r
 
 
+def _compra_slug(lic: dict) -> str:
+    c = lic.get("raw") or {}
+    cnpj = c.get("orgao_cnpj") or lic.get("orgao_cnpj")
+    ano = c.get("ano")
+    seq = c.get("numero_sequencial")
+    if not (cnpj and ano and seq):
+        m = re.match(r"(\d{14})-\d-(\d+)/(\d{4})$", lic.get("codigo_externo") or "")
+        if m:
+            cnpj = cnpj or m.group(1)
+            seq = seq or int(m.group(2))
+            ano = ano or int(m.group(3))
+    if cnpj and ano and seq:
+        return f"{cnpj}-{ano}-{seq}"
+    if lic.get("codigo_externo"):
+        return re.sub(r"[^A-Za-z0-9._-]", "_", str(lic["codigo_externo"]))
+    return str(lic.get("id") or "0")
+
+
+def baixar_pendentes(pncp: PNCP, sb: Supabase, arm: Armazenamento | None,
+                     categorias: list[str] | set[str] | str | None = None,
+                     max_bytes: int = 80 * 1048576,
+                     dry_run: bool = False,
+                     limite: int | None = None) -> dict:
+    """Lê de licitacao_documentos os registros da fonte pncp com status 'pendente',
+    filtra por licitacoes_externas.categoria_escopo (por padrão exclui 'fraco'),
+    baixa cada arquivo pela URL guardada, grava no storage (GCS via Armazenamento ou local)
+    e atualiza status_processamento, sha256, mime_type, tamanho_bytes e erro,
+    respeitando MAX_MB, o delay e o Retry-After.
+    Idempotente: não baixa de novo o que já tem sha256.
+    --dry-run: lista os documentos elegíveis sem baixar nem gravar."""
+    if isinstance(categorias, str):
+        cat_set = {c.strip().lower() for c in categorias.split(",") if c.strip()}
+    elif categorias is not None:
+        cat_set = {c.strip().lower() for c in categorias if c.strip()}
+    else:
+        cat_set = {c.strip().lower() for c in CATEGORIAS_PADRAO_DOWNLOAD.split(",") if c.strip()}
+
+    log.info("baixar_pendentes: buscando licitações externas fonte=pncp e categorias=%s", sorted(cat_set))
+    lics = sb.selecionar("licitacoes_externas", fonte="eq.pncp",
+                         select="id,codigo_externo,orgao_cnpj,categoria_escopo,raw")
+    lic_map = {l["id"]: l for l in lics if (l.get("categoria_escopo") or "").lower() in cat_set}
+    lic_todas_pncp = {l["id"] for l in lics}
+    log.info("licitacoes_externas pncp: %d total, %d nas categorias selecionadas",
+             len(lic_todas_pncp), len(lic_map))
+
+    docs = sb.selecionar("licitacao_documentos", status_processamento="eq.pendente",
+                         select="id,licitacao_id,secao,nome_original,arquivo_origem,storage_uri,mime_type,tamanho_bytes,sha256,status_processamento,erro,raw")
+    log.info("licitacao_documentos com status pendente: %d encontrados", len(docs))
+
+    resumo = {
+        "lidos": len(docs),
+        "elegiveis": 0,
+        "baixados": 0,
+        "ja_baixados": 0,
+        "ignorados_categoria": 0,
+        "ignorados_sem_url": 0,
+        "erros": 0,
+        "detalhes": [],
+    }
+
+    for d in docs:
+        lic_id = d.get("licitacao_id")
+        if lic_id not in lic_todas_pncp:
+            # Não é documento de licitação do PNCP
+            continue
+
+        if lic_id not in lic_map:
+            # Excluído pelo filtro de categoria (ex.: fraco)
+            resumo["ignorados_categoria"] += 1
+            continue
+
+        lic = lic_map[lic_id]
+        cat = lic.get("categoria_escopo")
+
+        # Idempotência: não baixar de novo se já tem sha256
+        if d.get("sha256"):
+            resumo["ja_baixados"] += 1
+            log.info("  doc #%s já possui sha256; pulando", d["id"])
+            continue
+
+        url = (d.get("raw") or {}).get("url") or (d.get("raw") or {}).get("uri")
+        if not url:
+            resumo["ignorados_sem_url"] += 1
+            log.warning("  doc #%s sem URL em raw; pulando", d["id"])
+            continue
+
+        if limite and resumo["elegiveis"] >= limite:
+            log.info("Limite de %d downloads atingido", limite)
+            break
+
+        resumo["elegiveis"] += 1
+        compra_slug = _compra_slug(lic)
+        nome_orig = d.get("nome_original") or d.get("arquivo_origem") or "arquivo"
+
+        if dry_run:
+            log.info("  [dry-run] doc #%s | %s | lic #%s (cat: %s) -> %s",
+                     d["id"], nome_orig[:60], lic_id, cat, url)
+            resumo["detalhes"].append({
+                "doc_id": d["id"],
+                "licitacao_id": lic_id,
+                "categoria": cat,
+                "nome_original": nome_orig,
+                "url": url,
+            })
+            continue
+
+        try:
+            conteudo, ctype = pncp.baixar(url, max_bytes)
+            if parece_html(conteudo, ctype):
+                raise RuntimeError("PNCP devolveu HTML em vez do arquivo")
+            ext = (d.get("nome_original") or "").rsplit(".", 1)[-1][:5] if "." in (d.get("nome_original") or "") else "bin"
+            caminho = arm.caminho("pncp", 0, compra_slug, d.get("secao") or "processo", f"{d['arquivo_origem']}.{ext}")
+            uri = arm.salvar(caminho, conteudo, ctype)
+            h = sha256(conteudo)
+            sb.atualizar("licitacao_documentos", d["id"], {
+                "storage_uri": uri,
+                "mime_type": ctype,
+                "tamanho_bytes": len(conteudo),
+                "sha256": h,
+                "status_processamento": "baixado",
+                "erro": None,
+            })
+            resumo["baixados"] += 1
+            log.info("  doc #%s baixado: %s (%.1f MB) -> %s",
+                     d["id"], nome_orig[:60], len(conteudo) / 1048576, uri)
+        except Exception as e:
+            resumo["erros"] += 1
+            log.warning("  doc #%s falha ao baixar: %s", d["id"], str(e)[:120])
+            sb.atualizar("licitacao_documentos", d["id"], {
+                "status_processamento": "erro",
+                "erro": str(e)[:300],
+            })
+
+    return resumo
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Coletor PNCP (escopo LicitaGym)")
     ap.add_argument("--modo", choices=list(MODOS), default="leads",
@@ -498,14 +658,25 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dias", type=int, default=120, help="leads: janela da homologação (dias)")
     ap.add_argument("--margem-publicacao", type=int, default=240,
                     help="leads: ignora editais publicados há mais de dias+margem (padrão 240)")
-    ap.add_argument("--termos", help="lista separada por vírgula (padrão: TERMOS_PADRAO)")
-    ap.add_argument("--todos-termos", action="store_true", help="usa também todos os TERMOS_BUSCA do escopo")
+    ap.add_argument("--termos", help="lista separada por vírgula (padrão: escopo completo)")
+    ap.add_argument("--escopo-completo", action="store_true", default=True,
+                    help="usa todos os termos do escopo CATMAT (padrão)")
+    ap.add_argument("--termos-padrao", action="store_true",
+                    help="usa apenas os 12 termos prioritários resumidos (legado)")
+    ap.add_argument("--todos-termos", action="store_true",
+                    help="usa todos os termos do escopo (compatibilidade)")
     ap.add_argument("--status", choices=["todos", "recebendo_proposta", "em_julgamento", "encerradas"],
                     help="sobrescreve o status do modo")
     ap.add_argument("--paginas", type=int, help="páginas por termo (padrão: leads 20, outros 3)")
     ap.add_argument("--tam", type=int, default=50, help="resultados por página")
     ap.add_argument("--sem-resultados", action="store_true", help="não consulta vencedores (ignorado em leads)")
     ap.add_argument("--baixar-arquivos", action="store_true", help="baixa edital/anexos (para o RAG)")
+    ap.add_argument("--baixar-pendentes", action="store_true",
+                    help="baixa arquivos pendentes do PNCP gravados em licitacao_documentos")
+    ap.add_argument("--categorias",
+                    help="categorias de escopo permitidas no download de pendentes (padrão: catmat,forte,borracha,piso,obra_piso)")
+    ap.add_argument("--limite-download", type=int, default=None,
+                    help="limite máximo de documentos para baixar no modo --baixar-pendentes")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--corrigir-processos", action="store_true",
                     help="só corrige numero_processo das compras PNCP já gravadas (processo administrativo real)")
@@ -516,9 +687,30 @@ def main(argv: list[str] | None = None) -> int:
         log.info("RESUMO: %s", corrigir_processos(PNCP(delay=float(env("DELAY_SEGUNDOS", "0.5"))), sb))
         return 0
 
-    termos = [t.strip() for t in args.termos.split(",")] if args.termos else list(TERMOS_PADRAO)
+    if args.baixar_pendentes:
+        sb = Supabase(env("SUPABASE_URL", obrigatorio=True), env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True))
+        arm = Armazenamento(env("GCS_BUCKET")) if not args.dry_run else None
+        pncp = PNCP(delay=float(env("DELAY_SEGUNDOS", "0.5")))
+        r = baixar_pendentes(
+            pncp, sb, arm,
+            categorias=args.categorias,
+            max_bytes=int(float(env("MAX_MB", "80")) * 1048576),
+            dry_run=args.dry_run,
+            limite=args.limite_download,
+        )
+        log.info("RESUMO BAIXAR PENDENTES: %s", r)
+        return 0
+
+    if args.termos:
+        termos = [t.strip() for t in args.termos.split(",")] if args.termos else list(TERMOS_PADRAO)
+    elif args.termos_padrao:
+        termos = list(TERMOS_PADRAO)
+    else:
+        termos = list(TERMOS_ESCOPO_COMPLETO)
+
     if args.todos_termos:
-        termos += [t for t in TERMOS_BUSCA if t not in termos]
+        termos = list(dict.fromkeys(termos + list(TERMOS_ESCOPO_COMPLETO)))
+
     sb = arm = None
     if not args.dry_run:
         sb = Supabase(env("SUPABASE_URL", obrigatorio=True), env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True))

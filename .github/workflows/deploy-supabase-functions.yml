@@ -1,6 +1,13 @@
 # Deploy Edge Functions quando o CLI local retorna 403 (Management API).
 # GitHub → Settings → Secrets → SUPABASE_ACCESS_TOKEN (sbp_... da conta Owner)
 # Sem `uses:` de marketplace — evita falso positivo do validador offline do IDE.
+#
+# Como atualizar SUPABASE_CLI_VERSION e SUPABASE_CLI_SHA256:
+# 1. Consulte a release estável desejada em https://github.com/supabase/cli/releases
+# 2. Baixe ou visualize o arquivo oficial checksums.txt daquela release (ex.:
+#    curl -fsSL https://github.com/supabase/cli/releases/download/v<versao>/checksums.txt)
+# 3. Localize o hash sha256 correspondente a `supabase_<versao>_linux_amd64.tar.gz`
+# 4. Atualize SUPABASE_CLI_VERSION (sem o prefixo 'v') e SUPABASE_CLI_SHA256 simultaneamente abaixo.
 
 name: Deploy Supabase Edge Functions
 
@@ -9,6 +16,7 @@ on:
     branches: [main]
     paths:
       - "supabase/functions/**"
+      - ".github/workflows/deploy-supabase-functions.yml"
   workflow_dispatch:
 
 jobs:
@@ -17,6 +25,8 @@ jobs:
     env:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       PROJECT_ID: ifaiagegyicjzlpskafh
+      SUPABASE_CLI_VERSION: "2.118.0"
+      SUPABASE_CLI_SHA256: "f6089a86fb9d9221c958193a277338daddd6822f706929943812fa32e106c86d"
 
     steps:
       - name: Checkout repository
@@ -31,8 +41,9 @@ jobs:
 
       - name: Install Supabase CLI
         run: |
-          curl -fsSL -o /tmp/supabase-cli.tgz "https://github.com/supabase/cli/releases/latest/download/supabase_linux_amd64.tar.gz"
-          echo "69c05f85b9e47ee706d30f1a6ca8a526b4e337bfd12c7ef1ef522d24e7280d24  /tmp/supabase-cli.tgz" | sha256sum -c -
+          CLI_URL="https://github.com/supabase/cli/releases/download/v${SUPABASE_CLI_VERSION}/supabase_linux_amd64.tar.gz"
+          curl -fsSL -o /tmp/supabase-cli.tgz "$CLI_URL"
+          echo "${SUPABASE_CLI_SHA256}  /tmp/supabase-cli.tgz" | sha256sum -c -
           mkdir -p /tmp/supabase-cli
           tar -xzf /tmp/supabase-cli.tgz -C /tmp/supabase-cli
           sudo install -m 755 /tmp/supabase-cli/supabase /usr/local/bin/supabase
@@ -63,3 +74,29 @@ jobs:
           supabase functions deploy api-pncp-irp --no-verify-jwt
           supabase functions deploy api-dashboard-oportunidades --no-verify-jwt
           supabase functions deploy calculate-distance-webrouter --no-verify-jwt
+
+      - name: Smoke test api-dashboard-oportunidades
+        run: |
+          BASE_URL="https://${PROJECT_ID}.supabase.co/functions/v1/api-dashboard-oportunidades"
+
+          echo "Validando readiness (esperado HTTP 200)..."
+          READINESS_CODE=$(curl -s -o /tmp/readiness_response.json -w "%{http_code}" "${BASE_URL}?action=readiness")
+          echo "HTTP code recebido: ${READINESS_CODE}"
+          cat /tmp/readiness_response.json
+          echo ""
+          if [ "${READINESS_CODE}" -ne 200 ]; then
+            echo "Falha no smoke test: endpoint readiness retornou status ${READINESS_CODE}, esperado 200"
+            exit 1
+          fi
+
+          echo "Validando list sem JWT de usuário (esperado HTTP 401)..."
+          LIST_UNAUTH_CODE=$(curl -s -o /tmp/list_unauth_response.json -w "%{http_code}" "${BASE_URL}?action=list")
+          echo "HTTP code recebido: ${LIST_UNAUTH_CODE}"
+          cat /tmp/list_unauth_response.json
+          echo ""
+          if [ "${LIST_UNAUTH_CODE}" -ne 401 ]; then
+            echo "Falha no smoke test: endpoint list sem autenticacao retornou status ${LIST_UNAUTH_CODE}, esperado 401"
+            exit 1
+          fi
+
+          echo "Smoke tests passaram com sucesso."

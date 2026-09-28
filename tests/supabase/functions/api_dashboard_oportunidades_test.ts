@@ -90,6 +90,9 @@ Deno.test("sanitizeDate valida formato de data ISO e rejeita datas impossíveis 
     assertEquals(sanitizeDate("2026-09-28T12:00:00.000Z"), "2026-09-28T12:00:00.000Z");
     assertEquals(sanitizeDate("2026-09-28T12:00:00-03:00"), "2026-09-28T12:00:00-03:00");
     assertEquals(sanitizeDate("2026-09-28T12:00:00+02:00"), "2026-09-28T12:00:00+02:00");
+    // Espaço como separador deve ser rejeitado (só literal 'T' é aceito)
+    assertEquals(sanitizeDate("2026-09-28 12:00:00Z"), undefined);
+    assertEquals(sanitizeDate("2026-09-28 12:00:00-03:00"), undefined);
     // Sem Z ou offset deve ser rejeitado (dá undefined)
     assertEquals(sanitizeDate("2026-09-28 12:00:00"), undefined);
     assertEquals(sanitizeDate("2026-09-28T12:00:00"), undefined);
@@ -996,29 +999,27 @@ Deno.test("handleRequest com requireUserAuth simulado autenticado em list avanç
   assertEquals(body.total, 1);
 });
 
-Deno.test("authenticateUserWithFallback aceita SUPABASE_PUBLISHABLE_KEY como fallback", async () => {
-  const originalUrl = Deno.env.get("SUPABASE_URL");
-  const originalAnon = Deno.env.get("SUPABASE_ANON_KEY");
-  const originalPub = Deno.env.get("SUPABASE_PUBLISHABLE_KEY");
-
+Deno.test("requireUserAuth rejeita token inválido com 401 via mock determinístico e seguro offline", async () => {
+  const originalFetch = globalThis.fetch;
   try {
-    Deno.env.set("SUPABASE_URL", "https://example.supabase.co");
-    Deno.env.delete("SUPABASE_ANON_KEY");
-    Deno.env.set("SUPABASE_PUBLISHABLE_KEY", "sb_pub_fallback_key");
+    globalThis.fetch = () =>
+      Promise.resolve(
+        new Response(JSON.stringify({ message: "Invalid JWT" }), {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
 
     const req = new Request("http://localhost/api?action=list", {
       headers: { Authorization: "Bearer some-token" },
     });
-    // Sem backend real vai falhar ao chamar getUser ou devolver 401, mas não quebra por env ausente
-    const res = await (await import("../../../supabase/functions/api-dashboard-oportunidades/index.ts")).authenticateUserWithFallback(req);
-    assertEquals(res?.status, 401);
+    // Invoca handleRequest sem bypass para exercitar o fluxo real de requireUserAuth
+    const res = await handleRequest(req);
+    assertEquals(res.status, 401);
+    const body = await res.json();
+    assertEquals(body.error, "Unauthorized");
   } finally {
-    if (originalUrl) Deno.env.set("SUPABASE_URL", originalUrl);
-    else Deno.env.delete("SUPABASE_URL");
-    if (originalAnon) Deno.env.set("SUPABASE_ANON_KEY", originalAnon);
-    else Deno.env.delete("SUPABASE_ANON_KEY");
-    if (originalPub) Deno.env.set("SUPABASE_PUBLISHABLE_KEY", originalPub);
-    else Deno.env.delete("SUPABASE_PUBLISHABLE_KEY");
+    globalThis.fetch = originalFetch;
   }
 });
 

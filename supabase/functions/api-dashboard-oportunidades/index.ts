@@ -1,6 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, SupabaseClient } from "npm:@supabase/supabase-js@2";
-import { extractBearerToken, jsonResponse, requireUserAuth } from "../_shared/http.ts";
+import { jsonResponse, requireUserAuth } from "../_shared/http.ts";
 
 export const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -312,37 +312,6 @@ async function handleList(
   }
 }
 
-export async function authenticateUserWithFallback(req: Request): Promise<Response | null> {
-  const token = extractBearerToken(req);
-  if (!token) {
-    return jsonResponse({ error: "Unauthorized" }, 401);
-  }
-
-  const cronSecret = Deno.env.get("SYNC_CRON_SECRET")?.trim();
-  if (cronSecret && token === cronSecret) {
-    return jsonResponse({ error: "Unauthorized" }, 401);
-  }
-
-  const url = Deno.env.get("SUPABASE_URL")?.trim();
-  const anon = (Deno.env.get("SUPABASE_ANON_KEY") ?? Deno.env.get("SUPABASE_PUBLISHABLE_KEY"))?.trim();
-  if (!url || !anon) {
-    return requireUserAuth(req);
-  }
-
-  try {
-    const client = createClient(url, anon, {
-      auth: { persistSession: false, autoRefreshToken: false },
-    });
-    const { data, error } = await client.auth.getUser(token);
-    if (error || !data.user) {
-      return jsonResponse({ error: "Unauthorized" }, 401);
-    }
-    return null;
-  } catch {
-    return jsonResponse({ error: "Unauthorized" }, 401);
-  }
-}
-
 export async function handleRequest(
   req: Request,
   ctx?: DashboardOportunidadesClientContext,
@@ -382,7 +351,7 @@ export async function handleRequest(
   }
 
   // Autenticação obrigatória para leitura de dados (list e get)
-  const authChecker = ctx?.requireAuth ?? authenticateUserWithFallback;
+  const authChecker = ctx?.requireAuth ?? requireUserAuth;
   const authError = await authChecker(req);
   if (authError) {
     return authError;

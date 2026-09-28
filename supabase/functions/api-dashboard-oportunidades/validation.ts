@@ -127,8 +127,8 @@ export function sanitizeDate(val: unknown): string | undefined {
     return trimmed;
   }
 
-  // Timestamps com hora DEVEM ter Z ou offset explícito (+HH:MM ou -HH:MM)
-  const isoDateTimeMatch = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}(?:\.\d+)?))?(Z|[-+]\d{2}:?\d{2})$/i.exec(trimmed);
+  // Timestamps com hora DEVEM usar 'T' como separador e ter Z ou offset explícito (+HH:MM ou -HH:MM)
+  const isoDateTimeMatch = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}(?:\.\d+)?))?(Z|[-+]\d{2}:?\d{2})$/i.exec(trimmed);
   if (isoDateTimeMatch) {
     const year = Number(isoDateTimeMatch[1]);
     const month = Number(isoDateTimeMatch[2]);

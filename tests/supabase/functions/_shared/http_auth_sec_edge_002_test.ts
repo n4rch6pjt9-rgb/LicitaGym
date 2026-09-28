@@ -129,3 +129,70 @@ Deno.test("SEC-EDGE-002 startsWith Bearer alone is not sufficient", async () => 
     }
   });
 });
+
+Deno.test("authenticateUserJwt empty or whitespace ANON_KEY falls through to PUBLISHABLE_KEY", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    let requestedApiKey: string | null = null;
+    globalThis.fetch = (_input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      requestedApiKey = headers.get("apikey");
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            id: "user-123",
+            aud: "authenticated",
+            role: "authenticated",
+            email: "test@example.com",
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        ),
+      );
+    };
+
+    // 1) Empty string ANON_KEY falls through to PUBLISHABLE_KEY
+    await withEnv(
+      {
+        SUPABASE_URL: "https://example.supabase.co",
+        SUPABASE_ANON_KEY: "   ",
+        SUPABASE_PUBLISHABLE_KEY: "publishable-key-ok",
+      },
+      async () => {
+        const { authenticateUserJwt } = await import(
+          "../../../../supabase/functions/_shared/http.ts"
+        );
+        const decision = await authenticateUserJwt(req("Bearer valid-jwt-token"));
+        if (decision !== "USER_AUTHENTICATED") {
+          throw new Error(`expected USER_AUTHENTICATED, got ${decision}`);
+        }
+        if (requestedApiKey !== "publishable-key-ok") {
+          throw new Error(`expected apikey publishable-key-ok, got ${requestedApiKey}`);
+        }
+      },
+    );
+
+    // 2) Both blank fails closed
+    await withEnv(
+      {
+        SUPABASE_URL: "https://example.supabase.co",
+        SUPABASE_ANON_KEY: "   ",
+        SUPABASE_PUBLISHABLE_KEY: "   ",
+      },
+      async () => {
+        const { authenticateUserJwt } = await import(
+          "../../../../supabase/functions/_shared/http.ts"
+        );
+        const decision = await authenticateUserJwt(req("Bearer valid-jwt-token"));
+        if (decision !== "REJECTED") {
+          throw new Error(`expected REJECTED when both blank, got ${decision}`);
+        }
+      },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+

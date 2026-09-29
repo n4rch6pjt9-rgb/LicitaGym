@@ -1,12 +1,14 @@
 -- Verificação de ACL e do scanner do RAG (prompt injection)
 -- (migrations 20260929180000_legislacao_rag_baseline, 20260929180014_sec_rag_acl_lock,
 -- 20260929180030_sec_rag_chunks_confianca, 20260929180039_sec_rag_match_licitacao_chunks_v2 e
--- 20260929183258_sec_rag_chunks_classificacao_insert e 20260929185134_sec_rag_confianca_origem_controlada).
+-- 20260929183258_sec_rag_chunks_classificacao_insert, 20260929185134_sec_rag_confianca_origem_controlada e
+-- 20260929190000_sec_legislacao_fecha_leitura).
 -- Executar após aplicar as migrations (ex.: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/tests/sec_rag_prompt_injection_acl_check.sql):
---   1. legislacao / legislacao_embeddings: anon e authenticated só SELECT; sem policy de escrita para eles
+--   1. legislacao / legislacao_embeddings: anon e authenticated sem nenhum privilégio (nem SELECT) e sem policy para eles;
+--      consultas_log: sem escrita para anon/authenticated
 --   2. consultas_log: anon sem nada; authenticated só SELECT; policy por dono; user_id NOT NULL
 --   3. match_licitacao_chunks e _v2: EXECUTE só service_role (pega drift de grant, como o de 29/09/2026)
---   4. match_legislacao_embeddings: sem EXECUTE para anon/PUBLIC; search_path fixo
+--   4. match_legislacao_embeddings: EXECUTE só service_role; search_path fixo
 --   5. licitacao_chunks: trigger de scanner presente; nenhum chunk sem scan; regex de zero-width não casa com hífen
 --   6. classificação por tipo_documento cobre os 18 TIPOS do indexador (impugnacao = parte interessada)
 --   7. trigger dispara em INSERT e em UPDATE de texto/metadados/secao; base64_longo rebaixa; v2 ignora embedding nulo
@@ -31,6 +33,20 @@ begin
       raise exception 'ACL CHECK FALHOU: service_role sem INSERT em %', v_obj;
     end if;
   end loop;
+  foreach v_obj in array array['public.legislacao', 'public.legislacao_embeddings'] loop
+    if has_table_privilege('anon', v_obj, 'SELECT') or has_table_privilege('authenticated', v_obj, 'SELECT') then
+      raise exception 'ACL CHECK FALHOU: anon/authenticated possui SELECT em % (leitura só service_role)', v_obj;
+    end if;
+    if not has_table_privilege('service_role', v_obj, 'SELECT') then
+      raise exception 'ACL CHECK FALHOU: service_role sem SELECT em %', v_obj;
+    end if;
+  end loop;
+  select count(*) into v_n from pg_policies
+   where schemaname = 'public' and tablename in ('legislacao','legislacao_embeddings')
+     and roles && array['public','anon','authenticated']::name[];
+  if v_n > 0 then
+    raise exception 'ACL CHECK FALHOU: % policy(ies) para public/anon/authenticated em legislacao/legislacao_embeddings', v_n;
+  end if;
   select count(*) into v_n from pg_policies
    where schemaname = 'public' and tablename in ('legislacao','legislacao_embeddings','consultas_log')
      and cmd in ('INSERT','UPDATE','DELETE','ALL');
@@ -71,8 +87,11 @@ begin
   if v_fn is null then
     raise exception 'ACL CHECK FALHOU: função match_legislacao_embeddings não existe';
   end if;
-  if has_function_privilege('anon', v_fn, 'EXECUTE') then
-    raise exception 'ACL CHECK FALHOU: anon/PUBLIC possui EXECUTE em match_legislacao_embeddings';
+  if has_function_privilege('anon', v_fn, 'EXECUTE') or has_function_privilege('authenticated', v_fn, 'EXECUTE') then
+    raise exception 'ACL CHECK FALHOU: anon/authenticated/PUBLIC possui EXECUTE em match_legislacao_embeddings';
+  end if;
+  if not has_function_privilege('service_role', v_fn, 'EXECUTE') then
+    raise exception 'ACL CHECK FALHOU: service_role sem EXECUTE em match_legislacao_embeddings';
   end if;
   if not exists (select 1 from pg_proc where oid = v_fn and proconfig is not null
                   and exists (select 1 from unnest(proconfig) c where c like 'search_path=%')) then

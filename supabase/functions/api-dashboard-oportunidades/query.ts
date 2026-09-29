@@ -173,6 +173,11 @@ export function applyLicitacaoFilters<T extends FilterableQuery>(
     query.lte("valor_total", filtros.valor_max);
   }
 
+  // Recorte CATMAT já resolvido em ids (ver resolverCatmat em index.ts)
+  if (filtros.ids) {
+    query.in("id", filtros.ids);
+  }
+
   // Termo livre em objeto / numero_processo / numero_edital
   if (filtros.busca) {
     // No PostgREST .or(): coluna.ilike.*termo*

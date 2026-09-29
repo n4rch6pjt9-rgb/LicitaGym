@@ -21,6 +21,14 @@ export interface LicitacaoFiltros {
   valor_min?: number;
   valor_max?: number;
   busca?: string; // termo livre em objeto, numero_processo, numero_edital
+  // Recorte CATMAT (Grupo -> Classe -> PDM -> Item), resolvido por public.licitacoes_ids_por_catmat
+  catmat_grupo?: number[];
+  catmat_classe?: number[];
+  catmat_pdm?: number[];
+  catmat_item?: number[];
+  catalogo?: boolean; // somente o catálogo CATMAT da empresa
+  /** Uso interno: ids resolvidos pelo recorte CATMAT (nunca vem do cliente). */
+  ids?: number[];
 }
 
 export type SortField = "data_fim" | "data_publicacao" | "valor_total";

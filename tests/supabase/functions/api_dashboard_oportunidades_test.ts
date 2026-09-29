@@ -590,6 +590,8 @@ function createRecordingMockClient(config: {
   listResult?: { data: unknown[]; count: number | null; error: unknown };
   singleResult?: { data: unknown; error: unknown };
   headCountResult?: { count: number | null; error: unknown };
+  rpcResult?: { data: unknown[] | null; error: unknown };
+  pdmNomes?: Array<{ codigo_pdm: number; nome_pdm: string }>;
 }) {
   const calls: RecordedCall[] = [];
 
@@ -650,8 +652,26 @@ function createRecordingMockClient(config: {
 
   const client = {
     calls,
+    rpc(fn: string, args: unknown) {
+      calls.push({ method: "rpc", args: [fn, args] });
+      return Promise.resolve(config.rpcResult ?? { data: [], error: null });
+    },
     from(table: string) {
       calls.push({ method: "from", args: [table] });
+      if (table === "catmat_pdms") {
+        // Nomes dos PDMs do recorte CATMAT
+        return {
+          select: (cols?: string) => {
+            calls.push({ method: "catmat_pdms.select", args: [cols] });
+            return {
+              in: (col: string, vals: unknown[]) => {
+                calls.push({ method: "catmat_pdms.in", args: [col, vals] });
+                return Promise.resolve({ data: config.pdmNomes ?? [], error: null });
+              },
+            };
+          },
+        };
+      }
       return {
         select(cols?: string, opts?: { count?: string; head?: boolean }) {
           calls.push({ method: "select", args: [cols, opts] });
@@ -1265,4 +1285,112 @@ Deno.test("list além do fim com contagem indisponível devolve 500", async () =
   // deno-lint-ignore no-explicit-any
   const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
   assertEquals(res.status, 500);
+});
+
+
+// --------------------------------------------------------------------------
+// Recorte CATMAT (catmat_grupo/classe/pdm/item e catalogo)
+// --------------------------------------------------------------------------
+
+Deno.test("list: parâmetros CATMAT aceitam CSV e array, recusam código inválido e mais de 50", async () => {
+  const { parseActionFromUrl, parseActionFromBody } = await import("../../../supabase/functions/api-dashboard-oportunidades/validation.ts");
+  const url = parseActionFromUrl(new URL("http://x/?action=list&catmat_pdm=7115,2638,7115&catmat_classe=7830&catalogo=true"));
+  assertEquals((url as { filtros: { catmat_pdm: number[] } }).filtros.catmat_pdm, [7115, 2638]);
+  assertEquals((url as { filtros: { catmat_classe: number[] } }).filtros.catmat_classe, [7830]);
+  assertEquals((url as { filtros: { catalogo: boolean } }).filtros.catalogo, true);
+  const body = parseActionFromBody({ action: "list", catmat_item: [373980, "319134"] });
+  assertEquals((body as { filtros: { catmat_item: number[] } }).filtros.catmat_item, [373980, 319134]);
+  assertEquals("error" in parseActionFromUrl(new URL("http://x/?action=list&catmat_pdm=abc")), true);
+  assertEquals("error" in parseActionFromUrl(new URL("http://x/?action=list&catmat_pdm=0")), true);
+  const muitos = Array.from({ length: 51 }, (_, i) => i + 1).join(",");
+  assertEquals("error" in parseActionFromUrl(new URL(`http://x/?action=list&catmat_pdm=${muitos}`)), true);
+  // ids nunca vem do cliente
+  const forjado = parseActionFromBody({ action: "list", ids: [1, 2, 3] });
+  assertEquals((forjado as { filtros: { ids?: number[] } }).filtros.ids, undefined);
+});
+
+Deno.test("list com recorte CATMAT: resolve pela RPC, filtra por id e anexa catmat_match", async () => {
+  const mockClient = createRecordingMockClient({
+    rpcResult: {
+      data: [
+        { licitacao_id: 11, codigo_pdm: 7115, codigo_item: null, motivo: "texto_item" },
+        { licitacao_id: 11, codigo_pdm: 7115, codigo_item: null, motivo: "texto_objeto" },
+        { licitacao_id: 12, codigo_pdm: 2638, codigo_item: 602725, motivo: "codigo" },
+      ],
+      error: null,
+    },
+    pdmNomes: [{ codigo_pdm: 7115, nome_pdm: "ESTEIRA ELÉTRICA" }, { codigo_pdm: 2638, nome_pdm: "APARELHO / ACESSÓRIO" }],
+    listResult: { data: [{ id: 11, objeto: "esteira" }, { id: 12, objeto: "acessorios" }], count: 2, error: null },
+  });
+  const req = new Request("http://localhost/api-dashboard-oportunidades", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "list", catmat_classe: [7830], catalogo: true, uf: "SP" }),
+  });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+
+  const rpc = mockClient.calls.find((c) => c.method === "rpc");
+  assertEquals(rpc?.args[0], "licitacoes_ids_por_catmat");
+  assertEquals(rpc?.args[1], { p_grupos: null, p_classes: [7830], p_pdms: null, p_itens: null, p_somente_catalogo: true });
+  const inId = mockClient.calls.find((c) => c.method === "in" && c.args[0] === "id");
+  assertEquals((inId?.args[1] as number[]).sort(), [11, 12]);
+  assertEquals(mockClient.calls.some((c) => c.method === "eq" && c.args[0] === "uf" && c.args[1] === "SP"), true);
+
+  assertEquals(body.total, 2);
+  const l11 = body.items.find((i: { id: number }) => i.id === 11);
+  assertEquals(l11.catmat_match.length, 2);
+  assertEquals(l11.catmat_match[0].nome_pdm, "ESTEIRA ELÉTRICA");
+  const l12 = body.items.find((i: { id: number }) => i.id === 12);
+  assertEquals(l12.catmat_match, [{ codigo_pdm: 2638, nome_pdm: "APARELHO / ACESSÓRIO", codigo_item: 602725, motivo: "codigo" }]);
+});
+
+Deno.test("list com recorte CATMAT sem nenhuma licitação: 200 vazio, sem consultar licitacoes_externas", async () => {
+  const mockClient = createRecordingMockClient({ rpcResult: { data: [], error: null } });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list&catmat_pdm=7115", { method: "GET" });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.items, []);
+  assertEquals(body.total, 0);
+  assertEquals(mockClient.calls.some((c) => c.method === "from" && c.args[0] === "licitacoes_externas"), false);
+});
+
+Deno.test("list com recorte CATMAT acima de 1000 licitações: 422", async () => {
+  const data = Array.from({ length: 1001 }, (_, i) => ({ licitacao_id: i + 1, codigo_pdm: 7115, codigo_item: null, motivo: "texto_item" }));
+  const mockClient = createRecordingMockClient({ rpcResult: { data, error: null } });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list&catmat_grupo=78", { method: "GET" });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
+  assertEquals(res.status, 422);
+});
+
+Deno.test("list sem recorte CATMAT (ou catalogo=false) não chama a RPC nem anexa catmat_match", async () => {
+  for (const qs of ["action=list&uf=SP", "action=list&catalogo=false"]) {
+    const mockClient = createRecordingMockClient({ listResult: { data: [{ id: 1 }], count: 1, error: null } });
+    const req = new Request(`http://localhost/api-dashboard-oportunidades?${qs}`, { method: "GET" });
+    // deno-lint-ignore no-explicit-any
+    const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
+    assertEquals(res.status, 200);
+    const body = await res.json();
+    assertEquals(mockClient.calls.some((c) => c.method === "rpc"), false, qs);
+    assertEquals("catmat_match" in body.items[0], false, qs);
+  }
+});
+
+Deno.test("list com recorte CATMAT e página além do fim: a contagem também filtra pelos ids", async () => {
+  const mockClient = createRecordingMockClient({
+    rpcResult: { data: [{ licitacao_id: 5, codigo_pdm: 7115, codigo_item: null, motivo: "texto_item" }], error: null },
+    listResult: { data: null as unknown as unknown[], count: null, error: { code: "PGRST103", message: "Requested range not satisfiable" } },
+    headCountResult: { count: 1, error: null },
+  });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list&catmat_pdm=7115&page=2&limit=100", { method: "GET" });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
+  assertEquals(res.status, 200);
+  assertEquals((await res.json()).total, 1);
+  assertEquals(mockClient.calls.some((c) => c.method === "head.in" && c.args[0] === "id"), true);
 });

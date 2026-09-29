@@ -8,7 +8,7 @@ export const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, idempotency-key",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
 };
-import type { ActionParams, AcompanhamentoActionParams, GetActionParams, ListActionParams } from "./types.ts";
+import type { ActionParams, AcompanhamentoActionParams, GetActionParams, LicitacaoFiltros, ListActionParams } from "./types.ts";
 import { parseActionFromBody, parseActionFromUrl } from "./validation.ts";
 import { applyLicitacaoFilters, calculateRange } from "./query.ts";
 import { buildEditalUrl } from "../_shared/edital-url.ts";
@@ -284,14 +284,80 @@ async function handleGet(
  * Lista oportunidades com paginação, ordenação e múltiplos filtros.
  * Distingue resultado vazio (200 com items: []) de erro (400/500).
  */
+/** Teto de licitações resolvidas pelo recorte CATMAT antes do filtro por id (evita URL gigante no PostgREST). */
+export const MAX_IDS_CATMAT = 1000;
+
+export interface CatmatMatch {
+  codigo_pdm: number;
+  nome_pdm: string | null;
+  codigo_item: number | null;
+  motivo: string;
+}
+
+export function temRecorteCatmat(f: LicitacaoFiltros): boolean {
+  return !!(f.catmat_grupo || f.catmat_classe || f.catmat_pdm || f.catmat_item || f.catalogo === true);
+}
+
+/**
+ * Resolve o recorte CATMAT em ids de licitacoes_externas via public.licitacoes_ids_por_catmat
+ * (código numérico do item quando existe; senão padrões de texto do PDM no item e no objeto).
+ */
+async function resolverCatmat(
+  client: SupabaseClient,
+  filtros: LicitacaoFiltros,
+): Promise<{ ids: number[]; porLicitacao: Map<number, CatmatMatch[]> }> {
+  const { data, error } = await client.rpc("licitacoes_ids_por_catmat", {
+    p_grupos: filtros.catmat_grupo ?? null,
+    p_classes: filtros.catmat_classe ?? null,
+    p_pdms: filtros.catmat_pdm ?? null,
+    p_itens: filtros.catmat_item ?? null,
+    p_somente_catalogo: filtros.catalogo === true,
+  });
+  if (error) throw error;
+  const linhas = (data ?? []) as Array<{ licitacao_id: number; codigo_pdm: number; codigo_item: number | null; motivo: string }>;
+
+  const pdms = [...new Set(linhas.map((l) => l.codigo_pdm))];
+  const nomes = new Map<number, string>();
+  if (pdms.length > 0) {
+    const { data: rows, error: nomesError } = await client.from("catmat_pdms").select("codigo_pdm,nome_pdm").in("codigo_pdm", pdms);
+    if (nomesError) throw nomesError;
+    for (const r of (rows ?? []) as Array<{ codigo_pdm: number; nome_pdm: string }>) nomes.set(r.codigo_pdm, r.nome_pdm);
+  }
+
+  const porLicitacao = new Map<number, CatmatMatch[]>();
+  for (const l of linhas) {
+    const lista = porLicitacao.get(Number(l.licitacao_id)) ?? [];
+    lista.push({ codigo_pdm: l.codigo_pdm, nome_pdm: nomes.get(l.codigo_pdm) ?? null, codigo_item: l.codigo_item ?? null, motivo: l.motivo });
+    porLicitacao.set(Number(l.licitacao_id), lista);
+  }
+  return { ids: [...porLicitacao.keys()], porLicitacao };
+}
+
 async function handleList(
   params: ListActionParams,
   ctx?: DashboardOportunidadesClientContext,
 ): Promise<Response> {
   try {
     const client = ctx?.getClient ? ctx.getClient() : getDefaultServiceClient();
-    const { page, limit, order_by, order_direction, filtros } = params;
+    const { page, limit, order_by, order_direction } = params;
+    let filtros = params.filtros;
     const { from, to } = calculateRange(page, limit);
+
+    // Recorte CATMAT: resolve em ids antes da consulta principal
+    let matches: Map<number, CatmatMatch[]> | null = null;
+    if (temRecorteCatmat(filtros)) {
+      const r = await resolverCatmat(client, filtros);
+      if (r.ids.length === 0) {
+        return jsonResponse({ action: "list", page, limit, total: 0, order_by, order_direction, items: [] });
+      }
+      if (r.ids.length > MAX_IDS_CATMAT) {
+        return jsonResponse({
+          error: `O recorte CATMAT casa ${r.ids.length} licitações (limite ${MAX_IDS_CATMAT}). Refine por classe, PDM ou outro filtro.`,
+        }, 422);
+      }
+      filtros = { ...filtros, ids: r.ids };
+      matches = r.porLicitacao;
+    }
 
     let baseQuery = client
       .from("licitacoes_externas")
@@ -344,6 +410,7 @@ async function handleList(
     const items = rawItems.map((row) => ({
       ...row,
       url_edital: buildEditalUrl(row),
+      ...(matches ? { catmat_match: matches.get(Number(row.id)) ?? [] } : {}),
     }));
 
     return jsonResponse({

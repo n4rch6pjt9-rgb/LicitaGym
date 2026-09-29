@@ -195,6 +195,13 @@ Lista oportunidades com suporte a paginação, ordenação configurável e múlt
 | `valor_min` | number | `valor_total >= valor_min` |
 | `valor_max` | number | `valor_total <= valor_max` |
 | `busca` (ou `q`) | string | Busca textual livre em `objeto`, `numero_processo` e `numero_edital` |
+| `catmat_grupo`, `catmat_classe`, `catmat_pdm`, `catmat_item` | int[] (CSV ou array, até 50 cada) | Recorte CATMAT em cascata, resolvido por `public.licitacoes_ids_por_catmat`: casa pelo código numérico do item (`licitacao_itens.catalogo_codigo_item`) ou, sem código, pelos padrões de texto do PDM (`catmat_pdm_palavras`) na descrição do item e no objeto |
+| `catalogo` | boolean | `true` restringe ao catálogo CATMAT da empresa (herança e exclusões de `catalogo_empresa_catmat`) |
+
+Com recorte CATMAT:
+- cada item da resposta ganha `catmat_match: [{codigo_pdm, nome_pdm, codigo_item, motivo}]`, com `motivo` `codigo`, `texto_item`, `texto_objeto` ou `texto_item_aprox` (recorte por item casado por texto: identifica o PDM, não o item);
+- sem nenhuma licitação: `200` com `items: []` e `total: 0`;
+- acima de 1.000 licitações: `422` pedindo um recorte mais restrito.
 
 #### Resposta de Sucesso (HTTP 200)
 *Nota: Lista vazia é retornada com HTTP 200 e `items: []`, sem gerar erro.*

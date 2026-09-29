@@ -1,9 +1,15 @@
 -- Recuperado de supabase_migrations.schema_migrations em 2026-09-29 (aplicado no remoto sem arquivo no repo).
 -- Nao reaplicar: versao ja registrada como aplicada.
 -- Procedência: aplicada direto no projeto ifaiagegyicjzlpskafh via MCP (apply_migration) em 29/09/2026
--- 07:54:30 BRT (versão 20260929105430 = horário UTC), 1 statement. O corpo abaixo é byte a byte igual a
--- statements[1] de schema_migrations (md5 5ee55c7510aed00592fd5b6514d1a56d, conferido no banco no L0 de 29/09/2026).
--- supabase db push e a integração GitHub pulam este arquivo: a versão já consta em schema_migrations.
+-- 07:54:30 BRT (versão 20260929105430 = horário UTC), 1 statement. O corpo abaixo é o statements[1] de
+-- schema_migrations (md5 5ee55c7510aed00592fd5b6514d1a56d, conferido no banco no L0 de 29/09/2026) com UMA mudança
+-- para replay limpo (banco novo / supabase db reset): o "insert ... values" das 40 regras de catmat_pdm_palavras virou
+-- "insert ... select ... from (values ...) v where exists (catmat_pdms com o mesmo codigo_pdm)", com as mesmas 40
+-- linhas e os mesmos valores e mantendo "on conflict do nothing". Motivo: num banco novo catmat_pdms está vazia (é
+-- carregada pela função de importação, não por seed) e a FK codigo_pdm -> catmat_pdms quebraria o replay; lá a tabela
+-- nasce vazia, o que é esperado. Fora isso, o corpo é byte a byte o statement registrado.
+-- Produção não é afetada: a versão já consta em schema_migrations, e supabase db push e a integração GitHub pulam
+-- este arquivo.
 -- Ajustes de permissão/índice deste objeto: 20260929145232_l3_permissoes_fornecedores_pdm.sql (migration nova).
 
 create or replace function public.norm_txt(t text) returns text
@@ -26,7 +32,9 @@ alter table public.catmat_pdm_palavras enable row level security;
 create policy catmat_pdm_palavras_select on public.catmat_pdm_palavras for select to authenticated using (true);
 comment on table public.catmat_pdm_palavras is 'Curadoria: regex (sobre norm_txt da descrição do item) que classifica itens de licitação em PDMs CATMAT quando o PNCP não traz catalogoCodigoItem.';
 
-insert into public.catmat_pdm_palavras (codigo_pdm, padrao) values
+-- Replay: só insere regras cujo PDM existe em catmat_pdms (banco novo: nenhuma). No remoto já foi aplicado com values.
+insert into public.catmat_pdm_palavras (codigo_pdm, padrao)
+select v.codigo_pdm, v.padrao from (values
  (18481,'grama(do)? sintetic'),
  (12550,'tapete[^.]{0,40}borracha|borracha[^.]{0,20}tapete'),
  (745,'capacho'),
@@ -67,6 +75,8 @@ insert into public.catmat_pdm_palavras (codigo_pdm, padrao) values
  (3869,'inflavel'),
  (5349,'colete (salva|de piscina|flutua)'),
  (6827,'equipamentos? para ginasio')
+) as v(codigo_pdm, padrao)
+where exists (select 1 from public.catmat_pdms p where p.codigo_pdm = v.codigo_pdm)
 on conflict do nothing;
 
 -- Itens homologados com PDM (código de catálogo quando existe; senão palavra-chave)

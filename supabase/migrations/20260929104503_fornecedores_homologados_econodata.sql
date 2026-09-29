@@ -1,9 +1,14 @@
 -- Recuperado de supabase_migrations.schema_migrations em 2026-09-29 (aplicado no remoto sem arquivo no repo).
 -- Nao reaplicar: versao ja registrada como aplicada.
 -- Procedência: aplicada direto no projeto ifaiagegyicjzlpskafh via MCP (apply_migration) em 29/09/2026
--- 07:45:03 BRT (versão 20260929104503 = horário UTC), 1 statement. O corpo abaixo é byte a byte igual a
--- statements[1] de schema_migrations (md5 006aa8d1784abbd0a068bdacf77bea30, conferido no banco no L0 de 29/09/2026).
--- supabase db push e a integração GitHub pulam este arquivo: a versão já consta em schema_migrations.
+-- 07:45:03 BRT (versão 20260929104503 = horário UTC), 1 statement. O corpo abaixo é o statements[1] de
+-- schema_migrations (md5 006aa8d1784abbd0a068bdacf77bea30, conferido no banco no L0 de 29/09/2026) com UM acréscimo
+-- para replay limpo (banco novo / supabase db reset): o bloco "Compatibilidade de replay" antes da view
+-- fornecedores_homologados (alter table public.licitacao_resultados add column if not exists marca_normalizada text).
+-- No remoto a coluna já existia quando esta versão foi aplicada; no repo ela só nasce na 20260929140100 (mesmo tipo
+-- text, também "if not exists"). Fora esse bloco, o corpo é byte a byte o statement registrado.
+-- Produção não é afetada: a versão já consta em schema_migrations, e supabase db push e a integração GitHub pulam
+-- este arquivo.
 -- Ajustes de permissão/índice deste objeto: 20260929145232_l3_permissoes_fornecedores_pdm.sql (migration nova).
 
 -- Enriquecimento Econodata no cadastro de fornecedores
@@ -36,6 +41,10 @@ create table if not exists public.econodata_consultas (
 alter table public.econodata_consultas enable row level security;
 revoke all on public.econodata_consultas from anon, authenticated;
 comment on table public.econodata_consultas is 'Auditoria de chamadas à API Econodata. Acesso só service_role.';
+
+-- Compatibilidade de replay (não está no statement registrado): a view abaixo lê marca_normalizada, que no repo só
+-- é criada na 20260929140100_bi_perfil_equipamento. Idempotente e com o mesmo tipo (text); no remoto é no-op.
+alter table public.licitacao_resultados add column if not exists marca_normalizada text;
 
 -- Base agregada de fornecedores homologados (vencedores por item em licitacao_resultados)
 create or replace view public.fornecedores_homologados

@@ -137,8 +137,8 @@ export async function authenticateUser(req: Request): Promise<AuthenticatedUser 
 }
 
 /**
- * Validate Supabase Auth JWT (user session). Fail-closed on missing env/token/user.
- * Does not treat cron secret as a user session.
+ * Compatibilidade de merge: mantém o contrato legado de authenticateUserJwt para
+ * chamadas antigas, enquanto a nova api-catmat usa authenticateUser + isLicitagymAdmin.
  */
 export async function authenticateUserJwt(req: Request): Promise<AuthDecision> {
   return (await authenticateUser(req)) ? "USER_AUTHENTICATED" : "REJECTED";

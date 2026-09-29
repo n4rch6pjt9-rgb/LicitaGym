@@ -56,3 +56,22 @@ Deno.test("script supabase/tests/sistema_s_catalogos_acl_check.sql cobre os mesm
   assertEquals(sql.includes("has_function_privilege('anon'"), true);
   assertEquals(sql.includes("TRUNCATE"), true);
 });
+
+Deno.test("migrations do coletor Sistema S (documentos e BI) fecham as views e portal_visitante para anon", async () => {
+  const doc = await Deno.readTextFile("./supabase/migrations/20260929140000_documentos_no_licitagym.sql");
+  assertEquals(
+    doc.includes("revoke all on table public.portal_visitante, public.v_licitacao_documentos from anon, authenticated, PUBLIC;"),
+    true,
+  );
+  assertEquals(doc.includes("grant select on table public.v_licitacao_documentos to authenticated;"), true);
+  assertEquals(/grant [^;]*portal_visitante[^;]*to authenticated/i.test(doc), false);
+
+  const bi = await Deno.readTextFile("./supabase/migrations/20260929140100_bi_perfil_equipamento.sql");
+  assertEquals(bi.includes("revoke all on table public.v_bi_resultados_itens from anon, authenticated, PUBLIC;"), true);
+  assertEquals(bi.includes("grant select on table public.v_bi_resultados_itens to authenticated;"), true);
+
+  const check = await Deno.readTextFile(ACL_CHECK);
+  for (const obj of ["public.v_licitacao_documentos", "public.v_bi_resultados_itens", "public.portal_visitante"]) {
+    assertEquals(check.includes(`'${obj}'`), true, `${obj} fora do ACL check`);
+  }
+});

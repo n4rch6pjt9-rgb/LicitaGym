@@ -1,0 +1,482 @@
+"""Testes offline do adaptador Paradigma com respostas reais do portal FIESC (capturadas em 24/09/2026)."""
+from datetime import datetime, timezone
+from unittest.mock import MagicMock
+
+import pytest
+
+from coletor import paradigma as P
+
+NULO = "\u0013\u0012\u0012\u0013"
+DEC_MIN = -79228162514264337593543950335
+
+# PesquisarProcessos (linha real, reduzida)
+LISTA = [{"nCdProcesso": 9615, "nCdOrigem": 8003, "sNrEdital": "SDE 2026001107",
+          "sNmEmpresa": "100 - SESI/SC - DEPARTAMENTO REGIONAL", "nCdModulo": 59,
+          "sNmModalidade": "Processo de seleção sem disputa",
+          "sDsObjeto": "MATERIAL DIVERSOS - Centro de Distribuição CD"},
+         {"nCdProcesso": 9619, "nCdOrigem": -2147483648, "sNrEdital": "CRED 030/2026",
+          "sDsObjeto": "Serviços de Medicina do Trabalho"}]
+
+# PesquisarProcessoDetalhes(7752) — real
+DETALHE_7752 = {
+    "nCdProcesso": 7752, "sNrProcesso": "CDE 2026000149", "sNrEdital": "CDE 2026000149",
+    "sDsObjeto": "Aquisição de acessórios e equipamentos, de linha comercial, para academias das Unidades do SESI, "
+                 "conforme condições e exigências do Chamamento Público e seus anexos.",
+    "tDtInicial": "/Date(1784300000000)/", "tDtFinal": "/Date(-62135589600000)/",
+    "tDtHomologacao": "/Date(1788961898763)/", "nIdTipoApuracao": 1, "nCdAnexo": 10499308,
+    "sDsSituacao": "Homologado", "sDsFase": "Resultado do processo", "nCdFase": 6,
+    "sNmEmpresa": "100 - SESI/SC - DEPARTAMENTO REGIONAL", "nCdModulo": 59, "nCdSituacao": 4,
+    "sNmModalidade": "Processo de Seleção com Disputa (Proposta comercial, Disputa aberta, Julgamento, "
+                     "Qualificação e Resultado do Processo)",
+    "sNmModalidadeTipo": NULO, "dVlTotal": DEC_MIN,
+}
+# PesquisarProcessoDetalheItemProduto(7752, nCdLote=0) — real (2 de 5)
+ITENS_7752 = [
+    {"nCdItem": 28909, "nCdItemSequencial": 1, "dVlReferencia": 147639.76,
+     "sDsItem": "1 - LOTE 1 - Equipamentos de Cárdio", "sStItem": "Homologado", "dQtItem": 1,
+     "sDsUnidadeMedida": "Unidade"},
+    {"nCdItem": 28915, "nCdItemSequencial": 4, "dVlReferencia": 19612.38,
+     "sDsItem": "4 - LOTE 4 - Equipamentos de Musculação com peso livre (anilhas) - Homologados",
+     "sStItem": "Homologado", "dQtItem": 1, "sDsUnidadeMedida": "Unidade"},
+]
+# PesquisarProcessoClassificacaoItemLoteEmpresas(28909) — real
+RANKING_28909 = [
+    {"nCdFase": 6, "nNrRanking": 1, "sNmEmpresa": "JOHNSON INDUSTRIAL DO BRASIL LTDA",
+     "sDsStatus": "Classificada", "dVlProposta": 120000},
+    {"nCdFase": 6, "nNrRanking": 0, "sNmEmpresa": "JOHNSON INDUSTRIAL DO BRASIL LTDA",
+     "sDsStatus": "Classificada", "dVlProposta": 135905.06},
+]
+# Item de cotação (SDE 2025001643, SESI/SC Academia Joinville III) — real
+ITEM_COTACAO = {
+    "nCdItem": 22373, "nCdItemSequencial": 2, "dVlReferencia": 5000, "dQtItem": 1, "sDsUnidadeMedida": "Unidade",
+    "sStItem": "Homologado (Fracassado)",
+    "sDsItem": "2 - Acessorios para pilates e equipamentos de academia em geral\r\nVariação: Equipamentos para academia"
+               "\r\nDescrição: Simplificado: Power Rack Parede \r\n- Estrutura: perfil de aço tubular",
+}
+ITEM_SERVICO = {"nCdItem": 1, "nCdItemSequencial": 1, "dVlReferencia": 24850, "dQtItem": 1,
+                "sDsItem": "1 - Servicos de manutencao e reparo de equipamentos de academia\r\nVariação: Equipamentos de academia"}
+
+
+def test_valor_sentinela_e_zero():
+    assert P.valor(DEC_MIN) is None
+    assert P.valor(0) is None
+    assert P.valor(-3) is None
+    assert P.valor(147639.76) == 147639.76
+
+
+def test_partes_item_cotacao():
+    p = P.partes_item(ITEM_COTACAO["sDsItem"])
+    assert p["sequencial"] == 2
+    assert p["categoria"] == "Acessorios para pilates e equipamentos de academia em geral"
+    assert p["variacao"] == "Equipamentos para academia"
+
+
+def test_classifica_itens_material_e_servico():
+    assert P.classificar_item(ITEM_COTACAO)[0] == "forte"
+    assert P.classificar_item(ITENS_7752[1])[0] == "forte"
+    cat, borr, ms = P.classificar_item(ITEM_SERVICO)
+    assert (cat, borr, ms) == (None, False, "S")
+
+
+def test_objeto_generico_de_cotacao_entra_pelos_itens():
+    d = dict(DETALHE_7752, sDsObjeto="EQUIPAMENTOS E MATERIAIS DE ESPORTE E LAZER - [FRETE CIF | PAGAMENTO 45 DIAS]")
+    cat, _ = P.avaliar_processo(d, [ITEM_COTACAO])
+    assert cat == "forte"
+
+
+def test_status_e_acionabilidade():
+    assert P.status_normalizado("Homologado") == "homologada"
+    assert P.status_normalizado("Homologado (Fracassado)") == "sem_vencedor"
+    assert P.status_normalizado("Cancelado") == "cancelada"
+    assert P.status_normalizado(None) == "desconhecida"
+    agora = datetime(2026, 9, 24, tzinfo=timezone.utc)
+    assert P.acionabilidade("homologada", None, agora) == "NOT_ACTIONABLE"
+    assert P.acionabilidade("aberta", "2026-10-01T00:00:00+00:00", agora) == "ACTIONABLE"
+    assert P.acionabilidade("aberta", None, agora) == "ACTIONABILITY_UNRESOLVED"  # prazo nulo nunca vira oportunidade
+
+
+def test_linha_licitacao_fiesc():
+    li = P.linha_licitacao(P.FONTES["fiesc"], DETALHE_7752, "forte", False)
+    assert li["fonte"] == "fiesc" and li["id_externo"] == 7752 and li["modulo"] == 59
+    assert li["uf"] == "SC" and li["regulamento"] == "RCA"
+    assert li["valor_total"] is None  # Decimal.MinValue não vira número
+    assert li["data_homologacao"].startswith("2026-09")
+    assert li["status_normalizado"] == "homologada" and li["acionabilidade"] == "NOT_ACTIONABLE"
+    assert li["escopo_estado"] == "CLASSIFICATION_CANDIDATE"
+
+
+def test_linhas_itens_e_resultados():
+    li = P.linhas_itens(10, ITENS_7752)
+    assert [i["numero_item"] for i in li] == [1, 4]
+    assert li[0]["valor_total_estimado"] == 147639.76
+    res = P.linhas_resultados(10, 1, RANKING_28909, "2026-09-09T00:00:00+00:00")
+    assert len(res) == 1  # nNrRanking=0 é proposta anterior (histórico), não resultado
+    venc = [r for r in res if r["vencedor"]]
+    assert len(venc) == 1 and venc[0]["valor_proposta"] == 120000 and venc[0]["ranking"] == 1
+    assert all(r["fornecedor_cnpj"] is None for r in res)  # Paradigma não expõe CNPJ no ranking
+
+
+def test_fontes_bloqueadas_por_robots():
+    with pytest.raises(PermissionError):
+        P.PortalParadigma(P.FONTES["sescsp"], sessao=MagicMock())
+    P.PortalParadigma(P.FONTES["fiesc"], sessao=MagicMock())  # permitido
+
+
+def test_ws_sem_resposta_nao_vira_lista_vazia():
+    s = MagicMock()
+    s.post.return_value.status_code = 200
+    s.post.return_value.json.return_value = {"d": None}
+    p = P.PortalParadigma(P.FONTES["fiesc"], delay=0, sessao=s)
+    with pytest.raises(RuntimeError):
+        p.listar("academia")
+
+
+def test_coletar_dry_run_usa_nCdOrigem():
+    portal = MagicMock()
+    portal.fonte = P.FONTES["fiesc"]
+    portal.listar.return_value = LISTA
+    portal.detalhes.return_value = DETALHE_7752
+    portal.itens.return_value = ITENS_7752
+    r = P.coletar(portal, None, ["academia"], paginas=1, dry_run=True)
+    portal.detalhes.assert_called_once_with(8003, 59)  # id do processo = nCdOrigem; sentinela é ignorada
+    assert r["no_escopo"] == 1 and r["itens_escopo"] == 2 and r["erros"] == 0
+
+
+def test_coletar_respeita_modulo_da_listagem():
+    """FIEMS/SFIEC (26/09/2026): pregão no módulo 18; detalhe com 59 volta vazio e o processo sumia."""
+    portal = MagicMock()
+    portal.fonte = P.FONTES["fiems"]
+    portal.listar.return_value = [{"nCdOrigem": 1108, "nCdProcesso": 1256, "nCdModulo": 18,
+                                   "sDsObjeto": "Aquisição por compra única de equipamentos de ginástica/ academia"}]
+    portal.detalhes.return_value = None
+    P.coletar(portal, None, ["academia"], paginas=1, dry_run=True)
+    portal.detalhes.assert_called_once_with(1108, 18)
+
+
+def test_modulo_de_sentinela_e_ausente():
+    assert P.modulo_de({"nCdModulo": 18}) == 18
+    assert P.modulo_de({"nCdModulo": -2147483648}) == 59
+    assert P.modulo_de({}) == 59 and P.modulo_de(None) == 59
+
+
+def test_novos_tenants_paradigmabs_bloqueados():
+    for slug in ("sescdn", "sescrj", "sescba", "sescsp", "sesc_senac_rs"):
+        assert P.FONTES[slug].coleta_automatica is False
+        assert "paradigmabs.com.br" in P.FONTES[slug].base
+    assert P.FONTES["fiemg"].coleta_automatica is False  # Cloudflare bloqueia cliente automatizado
+    for slug in ("firjan", "fiergs", "findes", "fieb", "fiems", "fiemt", "sfiec"):
+        assert P.FONTES[slug].coleta_automatica is True
+
+
+def test_itens_academia_formato_codigo_sfiec():
+    """SFIEC usa 'AI0300090-LEG PRESS 45o' (sem 'N - '); número vem de nCdItemSequencial."""
+    its = [{"nCdItem": 15711, "nCdItemSequencial": 1, "sDsItem": "AI0300090-LEG PRESS 45o", "dQtItem": 2,
+            "sDsUnidadeMedida": "UNIDADE", "dVlReferencia": 13556.26},
+           {"nCdItem": 15713, "nCdItemSequencial": 3, "sDsItem": "AI0300036-PECK DECK C/ CRUCIFIXO", "dQtItem": 1,
+            "sDsUnidadeMedida": "UNIDADE", "dVlReferencia": 17869.98}]
+    li = P.linhas_itens(None, its)
+    assert [i["numero_item"] for i in li] == [1, 3]
+    assert li[0]["valor_total_estimado"] == 27112.52
+
+
+# ---- v14: vocabulário de item + catálogo SFIEC (26/09/2026) ----
+CATALOGO_NO_ESCOPO = [
+    "AI0300036-PECK DECK C/ CRUCIFIXO", "AI0300062-MAQUINA ADUTORA-ABDUTORA", "AI0300047-ESTEIRA PROF. LX 160 G2",
+    "AI0300070-STEP 13CM", "AI0300084-HACK 45o REGULAGEM", "AI0300067-CADEIRA FLEXO E EXTENSORA",
+    "NE5300010-WALL BALL TREINO CROSS 12LBS", "NE5300020-MINI BAND REVESTIDA LEVE CET", "NE5300024-BOLA SUICA PVC 55CM",
+    "NE5300029-BOLA HANDBOL H1 PU BUTIL 49CM", "NE5300035-CHAPEU CHINES CONE 19X8CM", "MC0600016-BARRA PARA PULLEY (BARRA DUPLA",
+    "MC0600031-BOLA MEDICINE DE BORRACHA PESO", "MC0600110-ELATICO DE TRACAO", "MC0600039-CONJUNTO DE BRINQUEDOS QUE AFU",
+]
+CATALOGO_FORA = [
+    "AI0300003-BALANCA ANTROPOMETRICA E ESTAD", "AI0300017-ESTADIOMETRO PORTATIL ALUMINIO", "MC0600015-APARELHO PARA AFERICAO DA PRES",
+    "MC0600028-BANDEIRA DO EST CEARA OFICIAL", "MC0600051-ALFABETO DO A AO Z EM EVA", "MC0600097-MASSAGEADOR DE CABECA",
+    "NE5300040-CRONOMETRO DIGITAL",
+]
+INDUSTRIAIS_FORA = [
+    "1 - MOTOR TRIFÁSICO 220/380 V 1745RPM 01CV", "1 - POLIA DE ALUMINIO PARA MOTOR 100MM", "1 - STEP MOTOR NEMA 17",
+    "1 - ESPALDAR PARA CADEIRA DE ESCRITORIO", "1 - MANETE DE FREIO MOTOCICLETA", "1 - COLETE REFLETIVO",
+    "1 - REDE DE COMPUTADORES CABO CAT6", "1 - ESTEIRA TRANSPORTADORA KIT DIDATICO", "1 - ANILHA DE VEDACAO 1/2",
+    "1 - LOCACAO DE ESTEIRA ERGOMETRICA E ELETROCARDIOGRAFO",
+]
+
+
+def test_catalogo_itens_academia_entram():
+    for s in CATALOGO_NO_ESCOPO:
+        assert P.classificar_item({"sDsItem": s})[0], s
+
+
+def test_catalogo_itens_fora_do_escopo():
+    for s in CATALOGO_FORA + INDUSTRIAIS_FORA:
+        assert P.classificar_item({"sDsItem": s})[0] is None, s
+
+
+def test_prefixo_de_catalogo_so_para_ambiguos():
+    # sem código não entra (ambíguo); com código AI03/NE53/MC06 entra marcado como 'catalogo'
+    assert P.classificar_item({"sDsItem": "1 - ESPALDAR EM MADEIRA MACICA COM"})[0] is None
+    cat, _, _, metodo = P.classificar_item_detalhe({"sDsItem": "MC0600007-ESPALDAR EM MADEIRA MACICA COM"})
+    assert cat == "forte" and metodo == "catalogo"
+    assert P.classificar_item_detalhe({"sDsItem": "AI0300036-PECK DECK C/ CRUCIFIXO"})[3] == "regra_item"
+    li = P.linhas_itens(None, [{"nCdItemSequencial": 1, "sDsItem": "NE5300046-BOMBA AR COMPR DIGIT PORTATIL"}])
+    assert li[0]["escopo_metodo"] == "catalogo"
+
+
+def test_objeto_step_eva_academia_entra_pelos_itens():
+    d = {"sDsObjeto": "AQUISICAO DE STEP EM EVA PARA FILIAL SESI CINELANDIA - ACADEMIA DO CENTRO"}
+    its = [{"sDsItem": "1 - STEP EM EVA, MEDINDO 90 CM X 30 CM X 15 CM (C X L X A )"}]
+    assert P.avaliar_processo(d, its)[0] == "forte"
+
+
+def test_locacao_esteira_com_eletrocardiografo_fora():
+    d = {"sDsObjeto": "LOCAÇÃO DE ESTEIRA ERGOMÉTRICA E ELETROCARDIÓGRAFO"}
+    its = [{"sDsItem": "1 - SV LOC ESTEIRA ERGO/ELETROCARD - SERVICO DE LOCACOA DE E"}]
+    assert P.avaliar_processo(d, its)[0] is None
+
+
+def test_piso_eva_e_placa_de_borracha():
+    """Pedido do Marcelo (26/09): piso/placa de EVA e placa de borracha de piso entram como 'piso'."""
+    dentro = ["1 - PLACA DE BORRACHA 50X50 20MM", "1 - PISO EVA 50X50 20MM", "1 - PLACA DE EVA 1X1M 20MM",
+              "1 - TAPETE EVA INFANTIL ENCAIXE", "1 - MANTA DE BORRACHA PARA PISO", "1 - GRAMA SINTETICA 12MM",
+              "1 - PISO DE BORRACHA 50X50CM 20MM"]
+    fora = ["1 - PLACA DE BORRACHA NEOPRENE 3MM", "1 - PLACA DE BORRACHA 1000X1000X3MM", "1 - LENCOL DE BORRACHA NITRILICA 3MM",
+            "1 - PLACA DE EVA COLORIDA 40X60CM 2MM", "1 - FOLHA DE EVA 40X60 2MM", "1 - ALFABETO DO A AO Z EM EVA"]
+    for s in dentro:
+        assert P.classificar_item({"sDsItem": s})[0] == "piso", s
+    for s in fora:
+        assert P.classificar_item({"sDsItem": s})[0] is None, s
+
+
+# ---------------- v15: lances (SFIEC PE000652022, pregão módulo 18), catálogo e fornecedores ----------------
+import json as _json
+from pathlib import Path as _Path
+
+SFIEC = _json.loads((_Path(__file__).parent / "fixtures" / "sfiec_pe000652022.json").read_text(encoding="utf-8"))
+SFIEC_ITEM = {i["nCdItem"]: i for i in SFIEC["itens"]}
+
+
+def _res(n_cd_item):
+    it = SFIEC_ITEM[n_cd_item]
+    return P.linhas_resultados(1, it["nCdItemSequencial"], P.limpar(SFIEC["lances"][str(n_cd_item)]),
+                               "2022-09-30T00:00:00+00:00", it["sStItem"])
+
+
+def test_lances_um_vencedor_com_trofeu_e_perdidas():
+    res = _res(2241)
+    venc = [r for r in res if r["vencedor"]]
+    assert len(venc) == 1
+    v = venc[0]
+    assert v["ranking"] == 1 and v["valor_proposta"] == 8200 == SFIEC_ITEM[2241]["dVlMelhorLanceMoedaVencedor"]
+    assert v["fornecedor_nome"] == "PROMED SERVICOS DE EQUIPAMENTOS MEDICOS" and v["fornecedor_cnpj"] == "06165288000130"
+    assert (v["marca"], v["modelo"]) == ("PROMED", "TUBULAR CARENADA")
+    assert v["situacao"] == "vencedor" and v["valor_unitario_homologado"] == 8200
+    perd = [r for r in res if not r["vencedor"]]
+    assert perd and all(r["situacao"] == "perdida" and r["valor_unitario_homologado"] is None for r in perd)
+
+
+def test_lances_historico_fora_e_sem_duplicata():
+    brutos = SFIEC["lances"]["2251"]
+    res = _res(2251)
+    assert len(res) < len(brutos)                        # lances sem posição (histórico) ficam fora
+    assert all(r["ranking"] for r in res)
+    assert all(r["valor_proposta"] < 100000 for r in res)  # lances-âncora de 100k/500k são histórico
+    chaves = [(r["fornecedor_cnpj"], r["valor_proposta"], r["raw"]["tDtLance"]) for r in res]
+    assert len(chaves) == len(set(chaves))               # o portal repete a linha do 3º
+    assert [r["sequencial_resultado"] for r in res] == list(range(1, len(res) + 1))
+
+
+def test_item_revogado_sem_vencedor_nao_falha():
+    assert _res(2257) == []
+
+
+def test_assert_um_ganhador():
+    base = P.limpar(SFIEC["lances"]["2241"])
+    dois = [dict(r, bFlVencedor=1) if r.get("nNrRanking") in (1, 2) else r for r in base]
+    with pytest.raises(P.ResultadoInvalido):
+        P.linhas_resultados(1, 1, dois, None, "Encerrado")
+    nenhum = [dict(r, bFlVencedor=0) for r in base]
+    with pytest.raises(P.ResultadoInvalido):
+        P.linhas_resultados(1, 1, nenhum, None, "Encerrado")
+    assert not any(r["vencedor"] for r in P.linhas_resultados(1, 1, nenhum, None, "Fracassado"))
+
+
+def test_classificacao_status_vazio_vira_perdida():
+    rk = [{"nNrRanking": 1, "sNmEmpresa": "A LTDA - 24.608.949/0001-37", "sDsStatus": "", "dVlProposta": 10},
+          {"nNrRanking": 2, "sNmEmpresa": "B LTDA", "sDsStatus": None, "dVlProposta": 12}]
+    res = P.linhas_resultados(1, 1, rk, None, "Homologado")
+    assert [r["situacao"] for r in res] == ["vencedor", "perdida"]
+    assert res[0]["fornecedor_cnpj"] == "24608949000137" and res[0]["fornecedor_nome"] == "A LTDA"
+
+
+def test_empresa_cnpj():
+    assert P.empresa_cnpj("J&A E-COMMERCE LTDA - 24.608.949/0001-37") == ("J&A E-COMMERCE LTDA", "24608949000137")
+    assert P.empresa_cnpj("JULIO CESAR GASPARINI JUNIOR - EIRELI ME - 08.973.569/0001-45") == \
+        ("JULIO CESAR GASPARINI JUNIOR - EIRELI ME", "08973569000145")
+    assert P.empresa_cnpj("Forn. 8") == ("Forn. 8", None)
+
+
+def test_catalogo_classifica_por_produto_e_respeita_item_fora():
+    produtos = {13185: {"codigo": "AI0300075"}, 13163: {"codigo": "AI0300003"}, 13181: {"codigo": "AI0300062"}}
+    li = {i["id_item_externo"]: i for i in P.linhas_itens(1, SFIEC["itens"], produtos)}
+    assert li[2241]["categoria_escopo"] == "forte" and li[2241]["escopo_metodo"] == "catalogo"
+    assert li[2241]["catalogo_codigo_item"] == "AI0300075"
+    assert li[2242]["categoria_escopo"] is None           # balança está na categoria, mas é ITEM_FORA
+    sem = {i["id_item_externo"]: i for i in P.linhas_itens(1, SFIEC["itens"])}
+    assert sem[2241]["catalogo_codigo_item"] == "AI0300075"  # código lido da descrição mesmo sem catálogo
+
+
+def test_lances_corpo_da_requisicao():
+    p = P.PortalParadigma(P.FONTES["sfiec"], sessao=MagicMock(), delay=0)
+    p._ws = MagicMock(return_value=[])
+    p.lances({**SFIEC["detalhe"], "nCdTipoModalidade": None}, SFIEC_ITEM[2241])
+    metodo, corpo = p._ws.call_args.args
+    dto = corpo["dtoProcesso"]
+    assert metodo == "PesquisarProcessoDetalheItemProdutoLance"
+    assert dto["nCdTipoModalidade"] == 0 and dto["nCdModulo"] == 18 and dto["nCdItem"] == 2241  # null -> 500
+
+
+def test_produtos_escopo_filtra_nome_exato_tipo_e_pagina():
+    p = P.PortalParadigma(P.FONTES["sfiec"], sessao=MagicMock(), delay=0)
+    classes = {"EQUIPAMENTOS ESPORTIVOS": [{"nCdClasse": 30, "sDsClasse": "EQUIPAMENTOS ESPORTIVOS"}],
+               "ESPORTIVO": [{"nCdClasse": 75, "sDsClasse": "DIDATICO ESPORTIVO"},
+                             {"nCdClasse": 371, "sDsClasse": "ESPORTIVO"}, {"nCdClasse": 74, "sDsClasse": "ESPORTIVO"}]}
+    chamadas = []
+
+    def ws(metodo, corpo):
+        dto = corpo["dtoProduto"]
+        if metodo == "PesquisarCatalogoProdutoClasses":
+            return classes[dto["sDsProduto"]]
+        chamadas.append((dto["nCdClasse"], dto["nCdTipo"], dto["dtoPaginacao"]["nPaginaDe"]))
+        n = 500 if (dto["nCdClasse"] == 74 and dto["dtoPaginacao"]["nPaginaDe"] == 1) else 3
+        base = dto["nCdClasse"] * 10000 + dto["dtoPaginacao"]["nPaginaDe"]
+        return [{"nCdProduto": base + k, "sCdProdutoEmpresa": f"X{k}", "sDsClasse": "c", "nCdClasse": dto["nCdClasse"]}
+                for k in range(n)]
+    p._ws = ws
+    prods = p.produtos_escopo(tipo="produto")
+    assert {c for c, _, _ in chamadas} == {30, 371, 74}   # DIDATICO ESPORTIVO não entra (nome não é exato)
+    assert all(t == 1 for _, t, _ in chamadas)            # Tipo = Produto
+    assert (74, 1, 501) in chamadas                       # paginou a categoria com 500+
+    assert len(prods) == 3 + 3 + 500 + 3
+
+
+def test_mural_estatistico_leva_totais_para_licitacao():
+    # linha real de PesquisarProcessosMuralEstatistico (HAR SFIEC, 26/09/2026), reduzida
+    est = {"nCdProcesso": 32, "nCdOrigem": 32, "nCdModulo": 18, "nAnoFinalizacao": 2022,
+           "dVlEstimado": 723570.83, "dVlNegociado": 367508.5, "dVlEconomia": 356062.33, "dPcEconomia": 49.20905,
+           "tDtEncerrado": "/Date(1664557838080)/", "sDsSituacao": NULO}
+    li = P.linha_licitacao(P.FONTES["sfiec"], dict(SFIEC["detalhe"], dVlTotal=DEC_MIN), "forte", False, listagem=est)
+    assert li["valor_total"] == 723570.83
+    assert li["raw"]["mural_estatistico"]["dVlNegociado"] == 367508.5
+    assert li["modulo"] == 18 and li["status_normalizado"] == "homologada"
+
+
+def test_nome_de_mei_com_cpf_e_mascarado():
+    nome, cnpj = P.empresa_cnpj("GABRIEL MOTA LIMA 00982645325 - 32.068.708/0001-70")
+    assert nome == "GABRIEL MOTA LIMA ***826453**" and cnpj == "32068708000170"
+
+
+# ---------------- peças de manutenção (categoria 'manutencao', só com contexto de academia) ----------------
+PECAS_SFIEC = [  # itens reais de dispensas da SFIEC (m19), 2022–2023
+    "MC1001497-CABO DE ACO GALVA 5/32 6X7 PTO",
+    "MC1001586-CABO DE ACO REVEST PVC 1/8 5MM",
+    "MC1001555-TECIDO COURVIN PRETO",
+    "MC0200029-OLEO DESENGRIPANTE LUBR 300ML",
+]
+
+
+@pytest.mark.parametrize("texto", PECAS_SFIEC)
+def test_peca_de_manutencao_entra_com_contexto_do_objeto(texto):
+    cat, _, ms, metodo = P.classificar_item_detalhe({"sDsItem": texto}, contexto=True)
+    assert (cat, ms, metodo) == ("manutencao", "M", "regra_item")
+
+
+def test_peca_de_manutencao_sem_contexto_fica_fora():
+    for texto in PECAS_SFIEC + ["POLIA DE FERRO FUNDIDO 200MM", "ROLAMENTO 6205 2RS", "MOLA DE COMPRESSAO ACO"]:
+        assert P.classificar_item_detalhe({"sDsItem": texto})[0] is None, texto
+
+
+def test_peca_com_contexto_no_proprio_item():
+    assert P.classificar_item_detalhe({"sDsItem": "CABO DE ACO PARA APARELHO DE MUSCULACAO"})[0] == "manutencao"
+    assert P.classificar_item_detalhe({"sDsItem": "LONA PARA ESTEIRA ERGOMETRICA"})[0] == "manutencao"
+
+
+def test_processo_so_de_pecas_vira_manutencao_e_equipamento_prevalece():
+    d = {"sDsObjeto": "MATERIAL PARA MANUTENÇÃO DOS EQUIPAMENTOS DA ACADEMIA"}
+    assert P.avaliar_processo(d, [{"sDsItem": PECAS_SFIEC[0]}])[0] == "manutencao"
+    assert P.avaliar_processo(d, [{"sDsItem": PECAS_SFIEC[0]}, {"sDsItem": "MC0600059-CANELEIRA EMBORRACHADA 4KG"}])[0] == "forte"
+    fora = {"sDsObjeto": "MATERIAL DE MANUTENÇÃO PREDIAL - SENAI"}
+    assert P.avaliar_processo(fora, [{"sDsItem": PECAS_SFIEC[0]}])[0] is None
+
+
+@pytest.mark.parametrize("texto,esperado", [
+    ("CABO DE ACO PARA LEG PRESS", "manutencao"), ("ESTOFAMENTO PARA BANCO SUPINO", "manutencao"),
+    ("CORREIA PARA ESTEIRA ELETRICA", "manutencao"), ("LONA PARA ESTEIRA ERGOMETRICA", "manutencao"),
+    ("MC0600012-MOLA PARA TRAMPOLIM/JUMP", "manutencao"),
+    ("LEG PRESS 45 COM CABOS DE ACO", "forte"), ("BANCO SUPINO RETO ESTOFADO", "forte"),
+    ("ESTACAO DE MUSCULACAO 4 ESTACOES COM POLIAS", "forte"), ("CAMA ELASTICA COM MOLAS", "forte"),
+    ("COLCHONETE DE ESPUMA PARA GINASTICA", "forte"), ("TATAME DE ESPUMA EVA 2CM", "forte"),
+])
+def test_peca_x_equipamento_pela_ordem_dos_termos(texto, esperado):
+    assert P.classificar_item_detalhe({"sDsItem": texto}, contexto=True)[0] == esperado
+
+
+def test_catalogo_refina_peca_para_manutencao():
+    it = {"sDsItem": "MC0600012-MOLA PARA TRAMPOLIM/JUMP", "nCdProduto": 999}
+    assert P.classificar_item_detalhe(it, {999: {"codigo": "MC0600012"}})[0::3] == ("manutencao", "catalogo")
+
+
+def test_compra_so_de_pecas_com_objeto_forte_fica_manutencao():
+    d = {"sDsObjeto": "CABO DE AÇO GALVANIZADO 5/32, 6X7 EM PVC PRETO PARA EQUIPAMENTO DE ACADEMIA"}
+    assert P.classificar(d["sDsObjeto"]) == "forte"
+    assert P.avaliar_processo(d, [{"sDsItem": "MC1001497-CABO DE ACO GALVA 5/32 6X7 PTO"}])[0] == "manutencao"
+    misto = {"sDsObjeto": "CABOS DE AÇO PARA EQUIPAMENTOS ESPORTIVOS E ÓLEO DESENGRIPANTE SPRAY 300ML"}
+    its = [{"sDsItem": "MC1001586-CABO DE ACO REVEST PVC 1/8 5MM"}, {"sDsItem": "MD0400796-LINHA NYLON DIAMETRO DE 080MM"}]
+    assert P.avaliar_processo(misto, its)[0] == "manutencao"
+
+
+def test_valor_do_lance_e_unitario_total_bate_com_relatorio():
+    # Relatório Final PE000652022: soma de valor × quantidade dos vencedores = R$ 377.233,50 (bate no centavo)
+    it = SFIEC_ITEM[2241]
+    res = P.linhas_resultados(1, 1, P.limpar(SFIEC["lances"]["2241"]), None, it["sStItem"], it["dQtItem"])
+    v = [r for r in res if r["vencedor"]][0]
+    assert v["quantidade_homologada"] == 1 and v["valor_total_homologado"] == 8200
+    assert all(r["valor_total_homologado"] is None for r in res if not r["vencedor"])
+    b = SFIEC_ITEM[2242]  # balança antropométrica, qtd 4
+    rb = P.linhas_resultados(1, 2, P.limpar(SFIEC["lances"]["2242"]), None, b["sStItem"], b["dQtItem"])
+    vb = [r for r in rb if r["vencedor"]][0]
+    assert vb["valor_unitario_homologado"] == 129 and vb["valor_total_homologado"] == 516
+
+
+def test_fornecedor_tem_uma_posicao_por_item_e_repete_entre_itens():
+    por_item = {k: [r for r in _res(k)] for k in (2241, 2251)}
+    for res in por_item.values():
+        cnpjs = [r["fornecedor_cnpj"] for r in res]
+        assert len(cnpjs) == len(set(cnpjs))               # 1 posição por fornecedor no item
+    comuns = {r["fornecedor_cnpj"] for r in por_item[2241]} & {r["fornecedor_cnpj"] for r in por_item[2251]}
+    assert comuns                                           # o mesmo fornecedor aparece em itens diferentes
+
+
+def test_cadastro_recebe_todos_os_participantes_do_certame():
+    """Relatório Final: 12 proponentes. Inclui quem só disputou item fora do escopo (balança) e quem ficou sem posição."""
+    p = P.PortalParadigma(P.FONTES["sfiec"], sessao=MagicMock(), delay=0)
+    p.detalhes = MagicMock(return_value=SFIEC["detalhe"])
+    p.itens = MagicMock(return_value=SFIEC["itens"])
+    p.resultado_item = lambda d, it: P.limpar(SFIEC["lances"][str(it["nCdItem"])])
+    forn = MagicMock()
+    forn.cadastrar.return_value = {"consultados": 0, "em_cache": 0, "erros": 0, "linhas": []}
+    resumo = P.coletar(p, None, [], 1, True, True, None, forn, [(32, 18)])
+    enviados = {c for c in forn.cadastrar.call_args.args[0]}
+    esperados = {P.empresa_cnpj(r["sNmEmpresa"])[1] for v in SFIEC["lances"].values() for r in v} - {None}
+    assert enviados == esperados and resumo["participantes"] == len(esperados)
+    assert "24608949000137" in enviados        # J&A: só disputou balança (fora do escopo)
+    assert resumo["erros"] == 0 and resumo["alertas"] == 0
+
+
+def test_disputa_aberta_2025_sem_trofeu_vence_classificada():
+    # PD000062025 (SFIEC, "Contratação ou aquisição (disputa aberta)"): bFlVencedor nulo; vale posição + Classificada
+    lances = [{"nCdLance": 19083, "nNrRanking": 1, "bFlVencedor": None, "dVlLanceMoeda": 54.0,
+               "sNmEmpresa": "VJ SILVA VARIEDADES LTDA - ME - 19.932.867/0001-03", "sDsSituacaoProposta": "Classificada",
+               "tDtLance": "/Date(1738349116303)/"},
+              {"nCdLance": 18099, "nNrRanking": None, "bFlVencedor": None, "dVlLanceMoeda": 155.88,
+               "sNmEmpresa": "TRAUM ARTIGOS ESPORTIVOS LTDA - 02.441.945/0001-74", "tDtLance": "/Date(1737663415700)/"}]
+    res = P.linhas_resultados(1, 1, lances, None, "Homologado", 2)
+    assert len(res) == 1 and res[0]["vencedor"] and res[0]["fornecedor_cnpj"] == "19932867000103"
+    assert res[0]["valor_total_homologado"] == 108

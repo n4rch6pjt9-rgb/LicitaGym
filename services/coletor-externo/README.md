@@ -1,21 +1,92 @@
 # Coletores LicitaGym (PNCP + SEST SENAT) → Supabase + RAG
 
-## Regra de identificação (IMPORTANTE)
+## Gate de marca e referências do edital (v16.3)
+- Colunas na ordem fornecedor → marca → modelo, e o gate do fornecedor calculado sobre **todas** as propostas dele:
+  `perfil_comercial` = fabricante — marca própria | fabricante + revenda | revenda monomarca | revenda multimarca;
+  `marca_propria` (+ método: nome na razão social ou mais frequente), `qtd_marcas_fornecedor`, `marcas_ofertadas_fornecedor`;
+  por linha, `relacao_marca` = marca própria | revenda.
+- Referências do edital estruturadas (`coletor/data/referencias_edital/*.json`): `ref_marca_1..3`, `ref_modelo_1..3`,
+  `qtd_marcas_referencia`, `marca_ofertada_na_referencia` (SIM/NÃO/SEM REFERÊNCIA, por marca normalizada) e `posicao_na_referencia`.
+- Preço × referência sem sinal, em %: `desconto_vs_ref_pct` (abaixo da referência, ex. 54,93%) e `acrescimo_vs_ref_pct` (acima, ex. 8,44%).
+- `python -m coletor.relatorio_ano --consolidar a.csv b.csv ... --saida todos.csv` junta anos e recalcula o gate.
 
-O número do edital ("Pregão Eletrônico nº 001/2026") **se repete entre órgãos** e não identifica nada.
-- Compra no PNCP → `codigo_externo` = número de controle PNCP (`CNPJ-1-sequencial/ano`).
-- Certame fora do PNCP → **CNPJ do órgão + número do PROCESSO ADMINISTRATIVO**.
-- Um processo administrativo pode ter **várias** compras (ex.: 131 compras num mesmo processo do Exército).
+## Relatório anual para o BI (v16.2)
+`python -m coletor.relatorio_ano --fonte sfiec --ano 2023 --saida bi-sfiec-2023.csv --cache cache_relatorio`
+- Junta o Mural estatístico do ano com o mural comum (o estatístico não traz tudo: ex. PD000802025 e os cancelados).
+- Itens no escopo → lances, vencedor, marca/modelo, valor unitário e total; participantes de todos os itens → CNPJ (fabricante × revenda).
+- CSV em padrão brasileiro (vírgula decimal, sem ponto de milhar). Cache por processo para retomar.
+- Vencedor na "Contratação ou aquisição (disputa aberta)" (regulamento novo, 2025+): sem troféu, vale a 1ª posição Classificada.
 
-```bash
-python3 -m coletor.buscar_processo "00007.20260204/0002-28" --cnpj 07.540.925/0001-74
-python3 -m coletor.pncp --corrigir-processos   # corrige compras gravadas até a v12
-python3 -m coletor.processo_edital --dry-run    # completa processos curtos ("4") lendo o edital
-python3 -m coletor.processo_edital               # v16: grava só em raw.processo_extraido (não troca numero_processo)
-python3 -m coletor.processo_edital --gravar-numero-processo   # troca numero_processo só com peso >= 4
+## BI: perfil do equipamento, marca e fabricante × revenda (v16.1)
+- `licitacao_itens`: `catalogo_codigo_item` (código do produto no portal, ex.: AI0300075), `familia_equipamento`, `no_taxonomia` (dicionário de aparelhos v0.3), `fonte_carga`, `perfil_metodo`/`perfil_confianca`.
+- `licitacao_resultados.marca_normalizada` (MOVIMENT/MOVEMNT/… → MOVEMENT).
+- `fornecedores.fabricante` (CNAE principal nas divisões 10–33).
+- View `v_bi_resultados_itens`: uma linha por proposta ranqueada com código, descrição, família, empresa, fabricante/revenda, marca, modelo, valor, referência e desconto.
+- O log do dry-run mostra código, descrição, família, vencedor, marca e desconto sobre a referência.
+- Migração: `supabase/migrations/20260929140100_bi_perfil_equipamento.sql` (aplicada pela integração Supabase no merge).
+
+## Documentos das licitações dentro do LicitaGym (v16, 26/09/2026)
+
+Todo processo Paradigma no escopo, aberto ou fechado, tem os anexos (edital, erratas, avisos, adiamentos, relatório final…) **registrados em `licitacao_documentos` e guardados no Supabase Storage** (bucket privado `licitacao-documentos`). Nada é apagado:
+- documento novo no portal → `first_seen_at` (o Dashboard mostra "novo" por 7 dias);
+- documento que some do portal → `removido_do_portal_em` (o arquivo continua no LicitaGym);
+- a view `v_licitacao_documentos` dá, por licitação, contagens e a lista completa (`documentos` jsonb com `bucket` e `caminho`).
+
+**Cadastro de visitante:** o portal exige identificação para baixar. O coletor se identifica com o **CNPJ da empresa** (nunca CPF). Sem estas variáveis, os documentos ficam `pendente` e nada é baixado:
+
+```
+SUPABASE_STORAGE_BUCKET=licitacao-documentos
+VISITANTE_CNPJ=00.000.000/0000-00
+VISITANTE_RAZAO_SOCIAL=...
+VISITANTE_EMAIL=...            # e-mail institucional
+VISITANTE_TELEFONE=...
+VISITANTE_UF=CE
+VISITANTE_CONTATO=...          # opcional (nome do contato comercial)
+VISITANTE_CONSENTIMENTO_LGPD=1 # aceite exigido pelo formulário do portal
+MAX_MB=50                      # acima disso o documento fica "ignorado"
+```
+Guardar como segredo (Secret Manager / variáveis do job), não no repositório.
+
+**Dashboard (abrir o arquivo):** usuário logado gera link assinado com o `bucket`/`caminho` da view:
+```ts
+const { data } = await supabase.storage.from(doc.bucket).createSignedUrl(doc.caminho, 3600)
 ```
 
-## Coletor PNCP (fonte principal)
+**Arquivos antigos fora do SaaS:** os PDFs do SEST SENAT que estão no disco da VM sobem com `python -m coletor.migrar_storage` (rodar na VM; confere sha256; não apaga o original). O coletor SEST SENAT e o PNCP passam a gravar no Storage quando `SUPABASE_STORAGE_BUCKET` está definido.
+
+Migração: `supabase/migrations/20260929140000_documentos_no_licitagym.sql` (aplicada pela integração Supabase no merge) (bucket + policy de leitura para `authenticated`, colunas de histórico, `portal_visitante`, view e o cadastro das fontes Paradigma que faltavam em `fontes_externas`).
+
+## Coletor Sistema S — adaptador Paradigma (v15, 26/09/2026)
+
+Novidades sobre a v14 (validado ao vivo na SFIEC, PE000652022):
+- **Resultado pela grade de lances** (`PesquisarProcessoDetalheItemProdutoLance`): ranking, empresa + **CNPJ**, **marca, modelo**, valor e troféu. A aba Classificação (usada até a v14) devolve HTTP 500 em pregão e fica só como fallback.
+- **Situação:** `vencedor` (troféu) ou `perdida` quando o portal deixa vazio. Cada item encerrado precisa ter **exatamente 1 vencedor**; senão levanta `ResultadoInvalido`, não grava e conta em `alertas`. Itens revogados/fracassados/desertos podem ter 0.
+- Lances sem posição (histórico, incluindo âncoras de R$ 100 mil/500 mil) e linhas repetidas não entram em `licitacao_resultados`.
+- **Filtro do catálogo** (tela Catálogo: Categoria + Tipo): `--categorias "EQUIPAMENTOS ESPORTIVOS;ESPORTIVO" --tipo produto` (padrão). Os itens cujo `nCdProduto` está nessas categorias entram com `escopo_metodo='catalogo'`, exceto ITEM_FORA (balanças etc.). `--sem-catalogo` desliga.
+- **Encerrados por ano** (Mural estatístico): `--anos 2022,2023`. Traz os valores estimado, negociado e economia do certame (`raw.mural_estatistico`).
+- **Cadastro de fornecedores** (`coletor/fornecedores.py`): todo CNPJ de participante é consultado (BrasilAPI → Minha Receita) e gravado em `public.fornecedores`. Cache de 30 dias. Não grava QSA; em MEI/empresário individual mascara o CPF e não guarda contato/endereço. Backfill: `python -m coletor.fornecedores --de-resultados`.
+- **Peças de manutenção (v15.1):** cabo de aço, courvin/corino, polia, rolamento, correia/lona de esteira, estofamento, mola, pino seletor, manopla, lubrificante/desengripante… entram com `categoria_escopo='manutencao'` (preço de peça não se mistura com equipamento). Só com contexto de academia no item ou no objeto; peça citada antes do aparelho ("CABO DE AÇO PARA LEG PRESS") é manutenção, aparelho com peça ("LEG PRESS COM CABOS DE AÇO") continua `forte`. Compra só de peças vira `manutencao` no processo.
+- **v15.2:** valor do lance é unitário; o vencedor grava `quantidade_homologada` e `valor_total_homologado` (conferido com o Relatório Final do PE000652022: 9 vencedores e R$ 377.233,50 no centavo). O cadastro de fornecedores recebe **todos os participantes do certame** (inclusive de itens fora do escopo e sem posição): 12 de 12 no PE000652022.
+- Teste de um processo: `python -m coletor.paradigma --fonte sfiec --processo 32/18 --dry-run`
+
+Pré-requisito: `supabase/migrations/20260925120000_sistema_s_coleta_externa.sql` e `20260926120000_fornecedores_e_lances.sql` (já aplicadas em produção).
+
+## Coletor Sistema S — adaptador Paradigma (v12)
+
+Um adaptador para todos os portais Paradigma (SEST SENAT, FIESC/SESI-SENAI SC). Validado em 24/09/2026.
+Lê os **itens** de cada processo (as cotações têm objeto genérico) e o ranking/vencedor por item.
+Precisa da migration `20260925120000_sistema_s_coleta_externa.sql` (PRD_SISTEMA_S_COLETA_EXTERNA_v1).
+
+```bash
+python3 -m coletor.paradigma --fonte fiesc --dry-run --paginas 1        # só lista (★ = interesse borracha)
+python3 -m coletor.paradigma --fonte fiesc                                # grava licitação + itens + ranking
+python3 -m coletor.paradigma --fonte sestsenat --termos "academia;esporte e lazer"
+```
+Sesc SP e Sesc/Senac RS (paradigmabs.com.br) são recusados: o robots.txt do host proíbe coleta automatizada.
+
+---
+
+## Coletor PNCP (trilho secundário)
 
 Busca nacional no PNCP por frase exata (`TERMOS_PADRAO` em `coletor/pncp.py`), classifica cada compra
 pelo objeto **e pelos itens** (`coletor/escopo.py`) e grava compra, itens, **vencedores** e arquivos.
@@ -32,7 +103,7 @@ O filtro de `leads` usa a **data de resultado de cada item** (`dataResultado` do
 para quando os editais foram publicados há mais de `dias + margem_publicacao` (240) dias.
 
 ```bash
-# 1x: rodar migrations/20260924_pncp_itens_resultados.sql no SQL Editor
+# pré-requisito: supabase/migrations/20260924100000_pncp_itens_resultados.sql (já aplicada)
 python3 -m coletor.pncp --dry-run --termos "borracha granulada" --tam 20   # teste rápido
 python3 -m coletor.pncp                                   # leads: homologados nos últimos 120 dias
 python3 -m coletor.pncp --dias 60                         # só os últimos 60 dias
@@ -89,8 +160,8 @@ O coletor usa `--escopo fitness` por padrão (`--escopo tudo` desliga o filtro).
 
 ## 1. Criar as tabelas (uma vez)
 
-Rode `migrations/20260923_licitacoes_externas.sql` no **SQL Editor** do Supabase
-(o conector usado aqui é somente leitura). Cria:
+As tabelas vêm de `supabase/migrations/20260923100000_licitacoes_externas.sql` (já aplicada; migrations novas entram por PR e a integração Supabase aplica no merge)
+Ela cria:
 
 | Tabela | Conteúdo |
 |---|---|
@@ -190,18 +261,3 @@ IAM e administrador → Cotas → "online prediction requests per base model …
 **Importante para o app:** a pergunta do usuário precisa ser convertida em vetor com o
 **mesmo modelo** (`text-multilingual-embedding-002`, 768d, `RETRIEVAL_QUERY`) antes de chamar
 `match_licitacao_chunks`. Veja `coletor/buscar.py` como referência.
-
-
-## processo_edital v16 (25/09/2026)
-
-- **Não sobrescreve o dado oficial por padrão.** O candidato vai para `raw.processo_extraido`
-  (`valor`, `fonte`, `arquivo`, `peso`, `trecho`, `processo_pncp`, `versao`, `em`). `numero_processo`
-  só muda com `--gravar-numero-processo` **e** peso >= 4 ("Processo Administrativo", "SEI", "Licitatório");
-  o original fica em `raw.processo_pncp`.
-- **Número do edital não é processo.** Candidato igual ao nº do edital/pregão com peso < 4 é descartado
-  (`bloqueado_edital`) e aparece no log como "descartado".
-- **Erro ≠ não encontrado.** Falha no detalhe (`falha_detalhe`), na lista de arquivos (`falha_arquivos`) ou em
-  todos os downloads vira `falha`; o comando sai com código **2** (execução parcial).
-- **Log auditável:** cada achado mostra o peso e o trecho do edital; peso baixo sai com `[REVISAR: peso baixo]`.
-- **Contagem fechada:** `lidas = encontrados + nao_encontrado + falha + codigo_invalido` (senão loga erro e sai com 2).
-- `monitor.sh` mostra **CONCLUÍDO** quando o processo terminou com `RESUMO`, e avisa se houve falhas.

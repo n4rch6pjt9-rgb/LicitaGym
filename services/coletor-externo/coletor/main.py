@@ -149,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
     sb = arm = None
     if not args.dry_run:
         sb = Supabase(env("SUPABASE_URL", obrigatorio=True), env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True))
-        arm = Armazenamento(env("GCS_BUCKET"))
+        arm = Armazenamento.do_ambiente()
 
     ids = [int(x) for x in args.ids.split(",")] if args.ids else list(range(args.de, args.ate + 1))
     vazios = 0

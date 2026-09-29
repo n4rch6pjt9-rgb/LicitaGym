@@ -25,6 +25,11 @@ PRIORIDADE = ["parecer", "recurso", "contrarrazoes", "habilitacao", "negociacao"
 
 
 def ler_arquivo(uri: str) -> bytes:
+    if uri.startswith("supabase://"):
+        from .destino import SupabaseStorage
+        bucket = uri.removeprefix("supabase://").split("/", 1)[0]
+        return SupabaseStorage(env("SUPABASE_URL", obrigatorio=True), env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True),
+                               bucket).ler(uri)
     if uri.startswith("gs://"):
         from google.cloud import storage
         bucket, _, caminho = uri[5:].partition("/")

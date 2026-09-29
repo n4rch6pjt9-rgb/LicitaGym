@@ -1,10 +1,12 @@
 -- Verificação de ACL dos objetos do coletor Sistema S e dos catálogos de fabricantes
--- (migration 20260929130000_acl_sistema_s_catalogos).
+-- (migrations 20260929130000_acl_sistema_s_catalogos, 20260929140000_documentos_no_licitagym e
+-- 20260929140100_bi_perfil_equipamento).
 -- Executar após aplicar as migrations (ex.: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/tests/sistema_s_catalogos_acl_check.sql):
 --   1. anon sem nenhum privilégio nas tabelas, views e sequences
 --   2. authenticated só com SELECT (+ INSERT em licitacao_escopo_decisao); sem TRUNCATE/UPDATE/DELETE
 --   3. service_role com SELECT e INSERT nas tabelas (coletores)
 --   4. match_catalogo_chunks: sem EXECUTE para anon/PUBLIC; com EXECUTE para authenticated
+--   5. portal_visitante: nenhum privilégio para anon nem authenticated (só service_role)
 -- Falha com EXCEPTION na primeira regra violada.
 
 do $$
@@ -15,7 +17,8 @@ declare
     'public.fornecedores',
     'public.catalogo_documentos', 'public.catalogo_produtos', 'public.catalogo_chunks',
     'public.fontes_externas', 'public.licitacao_escopo_decisao',
-    'public.v_fornecedor_participacoes', 'public.v_oportunidades_externas'
+    'public.v_fornecedor_participacoes', 'public.v_oportunidades_externas',
+    'public.v_licitacao_documentos', 'public.v_bi_resultados_itens'
   ];
   v_tabelas text[] := array[
     'public.fornecedores',
@@ -81,6 +84,20 @@ begin
   end if;
   if not has_function_privilege('authenticated', v_fn, 'EXECUTE') then
     raise exception 'ACL CHECK FALHOU: authenticated sem EXECUTE em match_catalogo_chunks';
+  end if;
+
+  -- 5. portal_visitante (código de visitante por portal): só service_role
+  if to_regclass('public.portal_visitante') is null then
+    raise exception 'ACL CHECK FALHOU: objeto public.portal_visitante não existe';
+  end if;
+  foreach v_priv in array array['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER'] loop
+    if has_table_privilege('anon', 'public.portal_visitante', v_priv)
+       or has_table_privilege('authenticated', 'public.portal_visitante', v_priv) then
+      raise exception 'ACL CHECK FALHOU: anon/authenticated possui % em public.portal_visitante', v_priv;
+    end if;
+  end loop;
+  if not has_table_privilege('service_role', 'public.portal_visitante', 'INSERT') then
+    raise exception 'ACL CHECK FALHOU: service_role sem INSERT em public.portal_visitante';
   end if;
 
   raise notice 'SUCESSO: ACL dos objetos do Sistema S e dos catálogos conferida';

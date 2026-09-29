@@ -1,0 +1,76 @@
+{
+ "versao": "2026-09-26",
+ "descricao": "Fontes públicas de catálogo dos fabricantes para ingestão no LicitaGym (bucket catalogos-fabricantes). robots.txt conferido em 26/09/2026: todos permitem. Páginas de produto viram fichas estruturadas (catalogo_produtos); PDFs vão para o bucket com histórico e depois para o RAG (catalogo_chunks).",
+ "fabricantes": {
+  "MOVEMENT": {
+   "site": "https://www.movement.com.br",
+   "cnpj": null,
+   "produtos": {
+    "sitemap": "https://www.movement.com.br/product-sitemap.xml",
+    "padrao_url": "/produto/"
+   },
+   "pdfs": [
+    {
+     "titulo": "Catálogo Movement 2022",
+     "url": "https://www.movement.com.br/wp-content/uploads/downloads/catalogo/Movement_Cat%C3%A1logo_2022.pdf",
+     "ano": 2022,
+     "tamanho_bytes": 53769966
+    },
+    {
+     "titulo": "Manual New Edge (tríceps)",
+     "url": "https://www.movement.com.br/wp-content/uploads/2023/07/8506492-MU-TRI-PFRD-NEW-EDGE.pdf",
+     "ano": 2023,
+     "tamanho_bytes": 14821556
+    }
+   ],
+   "manuais_sitemap": "https://www.movement.com.br/manuais_proprietario-sitemap.xml",
+   "observacao": "Catálogo 2023 existe só como visualizador FlipHTML5 (fliphtml5.com/rigcc/sbqh) — não é arquivo; usar as páginas de produto (167 no sitemap, com ficha: carga máxima, peso da placa, dimensões)."
+  },
+  "LION": {
+   "site": "https://lionfitness.com.br",
+   "produtos": {
+    "paginas_indice": [
+     "https://lionfitness.com.br/produtos",
+     "https://lionfitness.com.br/categoria-produto/linhas/"
+    ],
+    "padrao_url": "/produto/"
+   },
+   "pdfs": [],
+   "observacao": "Sem catálogo PDF público encontrado; sem sitemap. Coleta pelas páginas de produto a partir do índice."
+  },
+  "TOTAL HEALTH": {
+   "site": "https://totalhealth.com.br",
+   "produtos": {
+    "sitemap": "https://totalhealth.com.br/sitemap.xml",
+    "padrao_url": "^https://totalhealth\\.com\\.br/(?!fabrica|fabricante|comprar|solucoes|nossa|parque|clientes|contato|blog|aparelhos-de-academia|javascript)[a-z0-9-]+-[a-z0-9-]+",
+    "exige_codigo": true
+   },
+   "pdfs": [],
+   "observacao": "O link catalogo/catalogo_totalhealth.pdf dá 404 (26/09/2026). Linhas pelo site: RRF, RRX Premium, Total Access, Total Strength, Total Prime. 552 URLs no sitemap."
+  },
+  "MACSPORT": {
+   "site": "https://macsport.com.br",
+   "produtos": {
+    "paginas_indice": [
+     "https://macsport.com.br/equipamentos"
+    ],
+    "padrao_url": "/produto/[a-z0-9-]+/[a-z0-9-]+"
+   },
+   "pdfs": [],
+   "observacao": "Site novo em Next.js: produtos em /produto/<linha>/<slug> (linhas CROMUS, EVO, SIGMA, PESO LIVRE); links no payload JS. /loja/shop/ antigo redireciona (308)."
+  },
+  "FLEX EQUIPMENT": {
+   "site": "https://www.flex.ind.br",
+   "cnpj": "08973569000145",
+   "produtos": {
+    "paginas_indice": [
+     "https://www.flex.ind.br/linha/profissional-classic/",
+     "https://www.flex.ind.br/linha/special/"
+    ],
+    "padrao_url": "/produto/"
+   },
+   "pdfs": [],
+   "observacao": "Catálogo 2019 só no visualizador Calaméo (não é arquivo). Sitemap wp-sitemap.xml recusou conexão em 26/09/2026; coleta pelas páginas de linha."
+  }
+ }
+}

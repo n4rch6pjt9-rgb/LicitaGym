@@ -1,4 +1,5 @@
 """Testes offline com respostas no formato real do portal (capturadas em 23/09/2026)."""
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from coletor import main as M
@@ -142,7 +143,7 @@ def test_falha_em_secao_pula_limpeza_de_pendentes(tmp_path):
 def test_main_retorna_nao_zero_quando_ha_falha_operacional(monkeypatch):
     monkeypatch.setattr(M, "PortalSestSenat", lambda **k: object())
     monkeypatch.setattr(M, "Supabase", lambda *a, **k: object())
-    monkeypatch.setattr(M, "Armazenamento", lambda *a, **k: object())
+    monkeypatch.setattr(M, "Armazenamento", SimpleNamespace(do_ambiente=lambda: object()))
     monkeypatch.setattr(M, "env", lambda nome, padrao=None, obrigatorio=False: padrao)
     monkeypatch.setattr(M, "coletar_processo", lambda *a, **k: {"status": "ok", "erros": 1, "coleta_incompleta": False})
     assert M.main(["--ids", "1"]) == 1

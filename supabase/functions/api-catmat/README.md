@@ -15,10 +15,10 @@ Tabelas e funções: `supabase/migrations/20260930100000_catalogo_empresa_catmat
 | action | Corpo | Retorno |
 |---|---|---|
 | `arvore` | `nivel` (`grupos`\|`classes`\|`pdms`\|`itens`), `codigo` (do pai; em `grupos`, o próprio grupo), `incluir_inativos?`, `refresh?` (admin) | `nos[]` com `estado` (`incluido`\|`excluido`\|`herdado`\|`excluido_herdado`\|`nenhum`), `regra_id`, `origem_nivel`; `fonte` (`memoria`\|`banco`\|`compras.gov`), `stale`, `inativos_ocultos` |
-| `catalogo_listar` | — | `regras`, `resumo`, `opcoes` (`grupos`, `classes`, `pdms` com `palavras`, `itens`) para o filtro em cascata |
+| `catalogo_listar` | — | `regras`, `resumo` (inclui `pdms_sem_texto`: sem padrão e sem nó do dicionário), `opcoes` (`grupos`, `classes`, `pdms` com `palavras` e `nos_taxonomia`, `itens`) para o filtro em cascata |
 | `catalogo_salvar` | `nivel` (`grupo`\|`classe`\|`pdm`\|`item`), `codigo_grupo`, `codigo_classe`, `codigo_pdm`, `codigo_item` (conforme o nível), `incluido`, `observacao?` | `201` ao criar, `200` ao atualizar; `pdms_materializados`, `itens_hidratados` |
 | `catalogo_remover` | `id` | a regra removida |
-| `palavras_listar` | `codigo_pdm` | padrões do PDM |
+| `palavras_listar` | `codigo_pdm` | `palavras` (padrões do PDM) e `nos_taxonomia` (nós do dicionário de aparelhos que apontam para o PDM, só leitura) |
 | `palavras_salvar` | `codigo_pdm`, `padrao`, `ativo?`, `id?` (para editar) | o padrão |
 | `palavras_remover` | `id` | — |
 
@@ -53,3 +53,7 @@ Tabelas e funções: `supabase/migrations/20260930100000_catalogo_empresa_catmat
 ## Testes
 
 `tests/supabase/functions/api_catmat_test.ts`, com repositório em memória e Compras.gov falso.
+
+## Casamento por taxonomia
+
+`taxonomia_no_pdm` (migration `20260930110000_taxonomia_no_pdm.sql`) liga o nó do dicionário de aparelhos (slug que os coletores gravam em `licitacao_itens.no_taxonomia`) ao PDM CATMAT. Com isso, `licitacoes_ids_por_catmat` casa também por `taxonomia` (item) e `taxonomia_objeto` (licitação). É o caminho do Sistema S, cujos portais não usam CATMAT, e reforça o PNCP. A carga acompanha o `dicionario-aparelhos-v0.3.json`, e o teste `tests/supabase/taxonomia_no_pdm_test.ts` garante isso.

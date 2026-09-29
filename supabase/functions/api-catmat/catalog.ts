@@ -201,12 +201,13 @@ export async function listarCatalogo(repo: CatmatRepo, limiteItens = 2000) {
   const codClasses = [...new Set([...efetivos.map((e) => e.codigo_classe), ...avulsos.map((a) => a.codigo_classe as number)])];
   const codGrupos = [...new Set([...efetivos.map((e) => e.codigo_grupo), ...avulsos.map((a) => a.codigo_grupo)])];
 
-  const [grupos, classes, pdms, itensHidratados, palavras] = await Promise.all([
+  const [grupos, classes, pdms, itensHidratados, palavras, nosTaxonomia] = await Promise.all([
     repo.nomesGrupos(codGrupos),
     repo.nomesClasses(codClasses),
     repo.nomesPdms(codPdms),
     repo.itensDosPdms(efetivos.map((e) => e.codigo_pdm), limiteItens),
     repo.contarPalavrasPorPdm(codPdms),
+    repo.contarNosTaxonomiaPorPdm(codPdms),
   ]);
 
   const itens = new Map<number, { codigo: number; nome: string; codigo_pai: number }>();
@@ -225,13 +226,15 @@ export async function listarCatalogo(repo: CatmatRepo, limiteItens = 2000) {
       exclusoes: regras.filter((r) => !r.incluido).length,
       pdms_efetivos: codPdms.length,
       pdms_sem_palavras: codPdms.filter((c) => !palavras.get(c)).length,
+      // Sem padrão de texto e sem nó do dicionário: só casa com licitação que informa o código CATMAT
+      pdms_sem_texto: codPdms.filter((c) => !palavras.get(c) && !nosTaxonomia.get(c)).length,
       itens_opcoes: itens.size,
       itens_truncados: itensHidratados.length >= limiteItens,
     },
     opcoes: {
       grupos: porNome(grupos),
       classes: porNome(classes),
-      pdms: porNome(pdms).map((p) => ({ ...p, palavras: palavras.get(p.codigo) ?? 0 })),
+      pdms: porNome(pdms).map((p) => ({ ...p, palavras: palavras.get(p.codigo) ?? 0, nos_taxonomia: nosTaxonomia.get(p.codigo) ?? 0 })),
       itens: [...itens.values()].sort((a, b) => a.codigo - b.codigo),
     },
   };

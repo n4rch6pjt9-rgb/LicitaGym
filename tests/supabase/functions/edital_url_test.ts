@@ -5,6 +5,7 @@ import {
   buildPncpEditalUrl,
   isValidHttpsUrl,
   PARADIGMA_HOSTS,
+  PARADIGMA_SAAS_TENANTS,
   parsePncpControleToUrl,
 } from "../../../supabase/functions/_shared/edital-url.ts";
 
@@ -325,18 +326,39 @@ Deno.test("buildEditalUrl: Outras fontes e casos genéricos", () => {
 // Portais Paradigma do Sistema S
 // -----------------------------------------------------------------------------
 
-Deno.test("ALLOWED_ORIGEM_HOSTS cobre todo portal cadastrado em FONTES do coletor Paradigma", async () => {
+/** (slug, base_url) de cada Fonte cadastrada em services/coletor-externo/coletor/paradigma.py. */
+async function fontesParadigma(): Promise<Array<{ slug: string; base: URL }>> {
   const py = await Deno.readTextFile("./services/coletor-externo/coletor/paradigma.py");
-  const hosts = [...py.matchAll(/Fonte\("[a-z_]+",[^\n]*?"(https:\/\/[^"]+)"/g)].map((m) => new URL(m[1]).hostname.toLowerCase());
-  assertEquals(hosts.length >= 15, true, `esperava >= 15 portais em FONTES, achei ${hosts.length}`);
-  for (const h of new Set(hosts)) {
+  return [...py.matchAll(/Fonte\("([a-z_]+)",[^\n]*?"(https:\/\/[^"]+)"/g)].map((m) => ({ slug: m[1], base: new URL(m[2]) }));
+}
+
+Deno.test("allowlist de origem acompanha FONTES do coletor Paradigma (host próprio ou host SaaS + tenant)", async () => {
+  const fontes = await fontesParadigma();
+  assertEquals(fontes.length >= 15, true, `esperava >= 15 portais em FONTES, achei ${fontes.length}`);
+  const proprios = new Set<string>();
+  const saas = new Map<string, Map<string, string>>();
+  for (const { slug, base } of fontes) {
+    const host = base.hostname.toLowerCase();
+    // Link real do portal, na linha da própria fonte, tem de passar
     assertEquals(
-      isValidHttpsUrl(`https://${h}/portal/Mural.aspx`, true, ALLOWED_ORIGEM_HOSTS) !== null,
+      buildEditalUrl({ fonte: slug, linkSistemaOrigem: `${base.href}/Mural.aspx` }) !== null,
       true,
-      `host ${h} do paradigma.py fora de ALLOWED_ORIGEM_HOSTS`,
+      `portal ${slug} (${base.href}) recusado`,
     );
+    if (host.endsWith(".paradigmabs.com.br")) {
+      const tenant = base.pathname.split("/")[1].toLowerCase();
+      if (!saas.has(host)) saas.set(host, new Map());
+      saas.get(host)!.set(tenant, slug);
+    } else {
+      proprios.add(host);
+    }
   }
-  assertEquals(new Set(hosts).size, PARADIGMA_HOSTS.length, "PARADIGMA_HOSTS tem host que não está no coletor");
+  assertEquals([...proprios].sort(), [...PARADIGMA_HOSTS].sort(), "PARADIGMA_HOSTS diverge do paradigma.py");
+  assertEquals(
+    Object.fromEntries([...saas].map(([h, t]) => [h, Object.fromEntries(t)])),
+    PARADIGMA_SAAS_TENANTS,
+    "PARADIGMA_SAAS_TENANTS diverge do paradigma.py",
+  );
 });
 
 Deno.test("buildEditalUrl aceita linkSistemaOrigem de portal Paradigma e recusa parecidos", () => {
@@ -348,6 +370,11 @@ Deno.test("buildEditalUrl aceita linkSistemaOrigem de portal Paradigma e recusa 
     buildEditalUrl({ fonte: "sescdn", raw: { linkSistemaOrigem: "https://egov-br.paradigmabs.com.br/sescdn/portal/Mural.aspx" } }),
     "https://egov-br.paradigmabs.com.br/sescdn/portal/Mural.aspx",
   );
+  // Tenant com maiúsculas como no cadastro (SESCRJ)
+  assertEquals(
+    buildEditalUrl({ fonte: "sescrj", linkSistemaOrigem: "https://egov.paradigmabs.com.br/SESCRJ/portal/Mural.aspx" }),
+    "https://egov.paradigmabs.com.br/SESCRJ/portal/Mural.aspx",
+  );
   // Domínio SaaS inteiro não é liberado: outro cliente do Paradigma fica de fora
   assertEquals(buildEditalUrl({ fonte: "x", linkSistemaOrigem: "https://outrocliente.paradigmabs.com.br/portal" }), null);
   assertEquals(buildEditalUrl({ fonte: "x", linkSistemaOrigem: "https://paradigmabs.com.br/portal" }), null);
@@ -355,4 +382,26 @@ Deno.test("buildEditalUrl aceita linkSistemaOrigem de portal Paradigma e recusa 
   assertEquals(buildEditalUrl({ fonte: "fiesc", linkSistemaOrigem: "https://portaldecompras.fiesc.com.br.evil.com/p" }), null);
   assertEquals(buildEditalUrl({ fonte: "fiesc", linkSistemaOrigem: "https://evil-portaldecompras.fiesc.com.br.io/p" }), null);
   assertEquals(buildEditalUrl({ fonte: "fiesc", linkSistemaOrigem: "http://portaldecompras.fiesc.com.br/portal" }), null);
+});
+
+Deno.test("host SaaS compartilhado do Paradigma: só tenant do Sistema S e da própria fonte", () => {
+  const url = (u: string, fonte = "sescrj") => buildEditalUrl({ fonte, linkSistemaOrigem: u });
+  // Outro cliente no mesmo host SaaS (revisão do PR #76)
+  assertEquals(url("https://egov.paradigmabs.com.br/outrocliente/portal/Mural.aspx"), null);
+  assertEquals(url("https://egov.paradigmabs.com.br/outrocliente/portal/Mural.aspx", "x"), null);
+  // Sem tenant, tenant vazio, travessia de caminho
+  assertEquals(url("https://egov.paradigmabs.com.br/"), null);
+  assertEquals(url("https://egov.paradigmabs.com.br//outrocliente/portal"), null);
+  assertEquals(url("https://egov.paradigmabs.com.br/sescrj/../outrocliente/portal"), null);
+  // Subdomínio de host SaaS
+  assertEquals(url("https://x.egov.paradigmabs.com.br/sescrj/portal"), null);
+  // Tenant válido, mas de outra fonte: link do Sesc BA numa linha do Sesc RJ, ou numa linha fora do Paradigma
+  assertEquals(url("https://egov.paradigmabs.com.br/sescba/portal/Mural.aspx", "sescrj"), null);
+  assertEquals(url("https://egov.paradigmabs.com.br/sescba/portal/Mural.aspx", "pncp"), null);
+  // isValidHttpsUrl no modo restrito também recusa tenant fora da lista
+  assertEquals(isValidHttpsUrl("https://egov.paradigmabs.com.br/outrocliente/x", true, ALLOWED_ORIGEM_HOSTS), null);
+  assertEquals(
+    isValidHttpsUrl("https://egov.paradigmabs.com.br/sescba/x", true, ALLOWED_ORIGEM_HOSTS),
+    "https://egov.paradigmabs.com.br/sescba/x",
+  );
 });

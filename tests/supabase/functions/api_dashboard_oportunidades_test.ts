@@ -656,7 +656,20 @@ function createRecordingMockClient(config: {
         select(cols?: string, opts?: { count?: string; head?: boolean }) {
           calls.push({ method: "select", args: [cols, opts] });
           if (opts?.head) {
-            return Promise.resolve(config.headCountResult ?? { count: 10, error: null });
+            // Contagem (head): aceita os mesmos filtros encadeados e resolve com headCountResult
+            const headResult = config.headCountResult ?? { count: 10, error: null };
+            const headThenable: Record<string, unknown> = {
+              then(onfulfilled?: (v: unknown) => unknown, onrejected?: (e: unknown) => unknown) {
+                return Promise.resolve(headResult).then(onfulfilled, onrejected);
+              },
+            };
+            for (const m of ["eq", "in", "gte", "lte", "lt", "ilike", "or"]) {
+              headThenable[m] = (...args: unknown[]) => {
+                calls.push({ method: `head.${m}`, args });
+                return headThenable;
+              };
+            }
+            return headThenable;
           }
           return thenable;
         },
@@ -1204,3 +1217,52 @@ Deno.test("acompanhamento: linha não-PNCP retorna 200 com disponivel: false", a
 });
 
 
+
+Deno.test("list além do fim (PGRST103) devolve 200 com items vazio e total da contagem com os mesmos filtros", async () => {
+  const mockClient = createRecordingMockClient({
+    listResult: {
+      data: null as unknown as unknown[],
+      count: null,
+      error: { code: "PGRST103", message: "Requested range not satisfiable", details: "An offset of 100 was requested, but there are only 47 rows." },
+    },
+    headCountResult: { count: 47, error: null },
+  });
+
+  const req = new Request("http://localhost/api-dashboard-oportunidades", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "list", page: 2, limit: 100, uf: "SP", order_by: "data_fim", order_direction: "desc" }),
+  });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
+
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.items, []);
+  assertEquals(body.total, 47);
+  assertEquals(body.page, 2);
+  assertEquals(body.limit, 100);
+  // A contagem aplica o mesmo filtro de UF da lista
+  assertEquals(mockClient.calls.some((c) => c.method === "head.eq" && c.args[0] === "uf" && c.args[1] === "SP"), true);
+});
+
+Deno.test("list com outro erro do PostgREST continua 500", async () => {
+  const mockClient = createRecordingMockClient({
+    listResult: { data: null as unknown as unknown[], count: null, error: { code: "42P01", message: "relation does not exist" } },
+  });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list&page=2&limit=100", { method: "GET" });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
+  assertEquals(res.status, 500);
+});
+
+Deno.test("list além do fim com contagem indisponível devolve 500", async () => {
+  const mockClient = createRecordingMockClient({
+    listResult: { data: null as unknown as unknown[], count: null, error: { code: "PGRST103", message: "Requested range not satisfiable" } },
+    headCountResult: { count: null, error: { message: "timeout" } },
+  });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list&page=3&limit=100", { method: "GET" });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
+  assertEquals(res.status, 500);
+});

@@ -307,6 +307,29 @@ async function handleList(
 
     const { data, error, count } = await baseQuery;
 
+    // Página além do fim: o PostgREST responde 416 (PGRST103). Para o cliente é uma página vazia,
+    // não uma falha; o total vem de uma contagem com os mesmos filtros.
+    if (error && (error as { code?: string }).code === "PGRST103") {
+      let countQuery = client
+        .from("licitacoes_externas")
+        .select("id", { count: "exact", head: true });
+      countQuery = applyLicitacaoFilters(countQuery, filtros);
+      const { count: total, error: countError } = await countQuery;
+      if (countError || total === null || total === undefined) {
+        console.error("[api-dashboard-oportunidades] Contagem indisponível após página além do fim:", countError);
+        return jsonResponse({ error: "Falha ao consultar lista de oportunidades" }, 500);
+      }
+      return jsonResponse({
+        action: "list",
+        page,
+        limit,
+        total,
+        order_by,
+        order_direction,
+        items: [],
+      });
+    }
+
     if (error) {
       console.error("[api-dashboard-oportunidades] Erro ao listar oportunidades:", error);
       return jsonResponse({ error: "Falha ao consultar lista de oportunidades" }, 500);

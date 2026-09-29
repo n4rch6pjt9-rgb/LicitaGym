@@ -173,7 +173,7 @@ Lista oportunidades com suporte a paginação, ordenação configurável e múlt
 #### Parâmetros de Filtro
 | Filtro | Tipo | Descrição |
 |---|---|---|
-| `prioridade` | string | Prioridade do certame (`leads`, `monitorar`, `historico`) |
+| `prioridade` | string | Estado do certame (`leads` = recebendo proposta, `monitorar` = em julgamento, `historico` = encerrado/homologado/com resultado). Compra homologada não é `leads` (desde 29/09/2026) |
 | `uf` | string | Sigla da UF com 2 letras (ex: `SP`, `RJ`) |
 | `municipio` | string | Busca parcial (`ilike`) no nome do município |
 | `orgao_cnpj` | string | CNPJ do órgão (apenas dígitos são considerados) |

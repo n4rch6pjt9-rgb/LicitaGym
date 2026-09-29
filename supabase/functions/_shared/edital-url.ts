@@ -24,7 +24,7 @@
  * - Apenas protocolo `https://`.
  * - Hosts conhecidos autorizados para URLs construídas: `pncp.gov.br`, `compras.gov.br`, `cnetmobile.estaleiro.serpro.gov.br`.
  * - Para o domínio vindo de `linkSistemaOrigem` (dado coletado de terceiros), aceita somente https
- *   e host em `ALLOWED_ORIGEM_HOSTS`: qualquer `*.gov.br` e o portal do SEST SENAT.
+ *   e host em `ALLOWED_ORIGEM_HOSTS`: qualquer `*.gov.br` e os portais Paradigma do Sistema S.
  * - Retorna null quando não for possível construir URL válida ou segura.
  */
 
@@ -39,11 +39,30 @@ export const ALLOWED_STATIC_HOSTS = new Set([
 /**
  * Hosts aceitos para links vindos da origem (`linkSistemaOrigem`, `url_edital`, `url`).
  * `gov.br` cobre portais federais, estaduais e municipais (registro restrito a órgãos públicos).
+ * Portais Paradigma do Sistema S: um host por entidade de `FONTES` em
+ * services/coletor-externo/coletor/paradigma.py (teste garante que a lista acompanha o coletor).
+ * Os hosts SaaS `*.paradigmabs.com.br` entram um a um: o domínio inteiro atende qualquer cliente do Paradigma.
  */
+export const PARADIGMA_HOSTS = [
+  "compras.sestsenat.org.br",
+  "portaldecompras.fiesc.com.br",
+  "portaldecompras.firjan.com.br",
+  "compras.sistemafiergs.org.br",
+  "portaldecompras.findes.org.br",
+  "compras.fieb.org.br",
+  "compras.fiems.com.br",
+  "compras.sfiemt.ind.br",
+  "portaldecompras.sfiec.org.br",
+  "compras.fiemg.com.br",
+  "scr360.paradigmabs.com.br",
+  "egov.paradigmabs.com.br",
+  "egov-br.paradigmabs.com.br",
+] as const;
+
 export const ALLOWED_ORIGEM_HOSTS = new Set([
   ...ALLOWED_STATIC_HOSTS,
   "gov.br",
-  "compras.sestsenat.org.br",
+  ...PARADIGMA_HOSTS,
 ]);
 
 /** Compra/edital estendido PNCP: `{CNPJ14}-{tipo}-{seqPad}/{ano}` */

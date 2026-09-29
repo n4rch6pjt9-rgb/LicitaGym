@@ -1,14 +1,18 @@
 -- Recuperado de supabase_migrations.schema_migrations em 2026-09-29 (aplicado no remoto sem arquivo no repo).
 -- Nao reaplicar: versao ja registrada como aplicada.
 -- Procedência: aplicada direto no projeto ifaiagegyicjzlpskafh via MCP (apply_migration) em 29/09/2026
--- 07:45:03 BRT (versão 20260929104503 = horário UTC), 1 statement. O corpo abaixo é o statements[1] de
--- schema_migrations (md5 006aa8d1784abbd0a068bdacf77bea30, conferido no banco no L0 de 29/09/2026) com UM acréscimo
--- para replay limpo (banco novo / supabase db reset): o bloco "Compatibilidade de replay" antes da view
--- fornecedores_homologados (alter table public.licitacao_resultados add column if not exists marca_normalizada text).
--- No remoto a coluna já existia quando esta versão foi aplicada; no repo ela só nasce na 20260929140100 (mesmo tipo
--- text, também "if not exists"). Fora esse bloco, o corpo é byte a byte o statement registrado.
--- Produção não é afetada: a versão já consta em schema_migrations, e supabase db push e a integração GitHub pulam
--- este arquivo.
+-- 07:45:03 BRT (versão 20260929104503 = horário UTC), 1 statement.
+-- Corpo ORIGINAL (commit 4007aec): byte a byte igual a statements[1] de schema_migrations
+-- (md5 006aa8d1784abbd0a068bdacf77bea30, conferido no banco no L0 de 29/09/2026 e de novo depois do ab2af12).
+-- O corpo ATUAL NÃO é mais byte a byte igual. Mudança feita depois (commit ab2af12), só para replay limpo
+-- (banco novo / supabase db reset):
+--   1. acréscimo de 4 linhas antes da view fornecedores_homologados: 2 de comentário ("Compatibilidade de replay"),
+--      "alter table public.licitacao_resultados add column if not exists marca_normalizada text;" e 1 linha em branco.
+--      Motivo: a view lê marca_normalizada, que no repo só nasce na 20260929140100_bi_perfil_equipamento (mesmo
+--      tipo text, também "if not exists"); sem isso o replay quebra aqui. No remoto a coluna já existia.
+--   Nenhuma outra linha do corpo mudou: removendo essas 4 linhas o md5 volta a ser 006aa8d1784abbd0a068bdacf77bea30.
+-- Produção não é afetada: a versão 20260929104503 já consta em schema_migrations, então supabase db push e a
+-- integração Supabase↔GitHub pulam este arquivo (a mudança não roda no remoto).
 -- Ajustes de permissão/índice deste objeto: 20260929145232_l3_permissoes_fornecedores_pdm.sql (migration nova).
 
 -- Enriquecimento Econodata no cadastro de fornecedores

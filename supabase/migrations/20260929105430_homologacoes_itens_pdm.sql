@@ -1,15 +1,22 @@
 -- Recuperado de supabase_migrations.schema_migrations em 2026-09-29 (aplicado no remoto sem arquivo no repo).
 -- Nao reaplicar: versao ja registrada como aplicada.
 -- Procedência: aplicada direto no projeto ifaiagegyicjzlpskafh via MCP (apply_migration) em 29/09/2026
--- 07:54:30 BRT (versão 20260929105430 = horário UTC), 1 statement. O corpo abaixo é o statements[1] de
--- schema_migrations (md5 5ee55c7510aed00592fd5b6514d1a56d, conferido no banco no L0 de 29/09/2026) com UMA mudança
--- para replay limpo (banco novo / supabase db reset): o "insert ... values" das 40 regras de catmat_pdm_palavras virou
--- "insert ... select ... from (values ...) v where exists (catmat_pdms com o mesmo codigo_pdm)", com as mesmas 40
--- linhas e os mesmos valores e mantendo "on conflict do nothing". Motivo: num banco novo catmat_pdms está vazia (é
--- carregada pela função de importação, não por seed) e a FK codigo_pdm -> catmat_pdms quebraria o replay; lá a tabela
--- nasce vazia, o que é esperado. Fora isso, o corpo é byte a byte o statement registrado.
--- Produção não é afetada: a versão já consta em schema_migrations, e supabase db push e a integração GitHub pulam
--- este arquivo.
+-- 07:54:30 BRT (versão 20260929105430 = horário UTC), 1 statement.
+-- Corpo ORIGINAL (commit 4007aec): byte a byte igual a statements[1] de schema_migrations
+-- (md5 5ee55c7510aed00592fd5b6514d1a56d, conferido no banco no L0 de 29/09/2026 e de novo depois do ab2af12).
+-- O corpo ATUAL NÃO é mais byte a byte igual. Mudança feita depois (commit ab2af12), só para replay limpo
+-- (banco novo / supabase db reset), no insert das 40 regras de catmat_pdm_palavras:
+--   1. a linha "insert into public.catmat_pdm_palavras (codigo_pdm, padrao) values" virou 3 linhas: 1 comentário
+--      ("Replay: ..."), "insert into public.catmat_pdm_palavras (codigo_pdm, padrao)" e "select v.codigo_pdm,
+--      v.padrao from (values";
+--   2. entre a última tupla e "on conflict do nothing;" entraram 2 linhas: ") as v(codigo_pdm, padrao)" e
+--      "where exists (select 1 from public.catmat_pdms p where p.codigo_pdm = v.codigo_pdm)".
+--   As 40 tuplas, os valores e o "on conflict do nothing" são os mesmos; nenhuma outra linha do corpo mudou.
+--   Motivo: num banco novo catmat_pdms está vazia (é carregada pela função de importação, não por seed) e a FK
+--   codigo_pdm -> catmat_pdms quebraria o replay. Efeito: em banco novo catmat_pdm_palavras nasce vazia; a
+--   reinserção das regras depois da carga do CATMAT fica para PR separado.
+-- Produção não é afetada: a versão 20260929105430 já consta em schema_migrations, então supabase db push e a
+-- integração Supabase↔GitHub pulam este arquivo (a mudança não roda no remoto; lá as 40 regras já foram gravadas).
 -- Ajustes de permissão/índice deste objeto: 20260929145232_l3_permissoes_fornecedores_pdm.sql (migration nova).
 
 create or replace function public.norm_txt(t text) returns text

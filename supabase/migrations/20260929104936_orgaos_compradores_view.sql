@@ -2,7 +2,8 @@
 -- Nao reaplicar: versao ja registrada como aplicada.
 -- Procedência: aplicada direto no projeto ifaiagegyicjzlpskafh via MCP (apply_migration) em 29/09/2026
 -- 07:49:36 BRT (versão 20260929104936 = horário UTC), 1 statement. O corpo abaixo é byte a byte igual a
--- statements[1] de schema_migrations (md5 f235014dbf5ce5012551670408717826, conferido no banco no L0 de 29/09/2026).
+-- statements[1] de schema_migrations (md5 f235014dbf5ce5012551670408717826, conferido no banco no L0 de 29/09/2026 e
+-- de novo depois do ab2af12, que não mexeu neste arquivo).
 -- supabase db push e a integração GitHub pulam este arquivo: a versão já consta em schema_migrations.
 -- Ajustes de permissão/índice deste objeto: 20260929145232_l3_permissoes_fornecedores_pdm.sql (migration nova).
 

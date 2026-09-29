@@ -195,6 +195,23 @@ def _num(v):
         return None
 
 
+def _valor_positivo(v):
+    """Valor monetário da compra: None se ausente, inválido ou <= 0 (PNCP manda 0 em orçamento
+    sigiloso). Um 0 gravado pareceria dado real e sobrescreveria um valor bom."""
+    n = _num(v)
+    return n if n is not None and n > 0 else None
+
+
+def valor_total_detalhe(det: dict) -> float | None:
+    """valor_total da compra a partir do detalhe (/api/consulta/v1/.../compras/{ano}/{seq}).
+
+    Usa só valorTotalEstimado (valor de referência do edital). valorTotalHomologado NÃO entra como
+    fallback: é o valor adjudicado depois da disputa — grandeza diferente, e misturar os dois na
+    mesma coluna tornaria valor_total incomparável entre compras (e o homologado nem existe em
+    editais abertos, que são justamente os que chegam sem valor)."""
+    return _valor_positivo((det or {}).get("valorTotalEstimado"))
+
+
 def _data(v):
     if not v:
         return None
@@ -445,12 +462,19 @@ def identificacao_do_detalhe(c: dict, det: dict) -> dict:
     numero_edital = só rótulo de exibição ('Pregão Eletrônico nº 1/2026' se repete entre órgãos e NÃO identifica nada).
     Identidade: PNCP -> numero_controle_pncp; fora do PNCP -> (CNPJ do órgão, processo administrativo).
 
-    numero_processo None = detalhe respondeu sem processo."""
+    numero_processo None = detalhe respondeu sem processo.
+
+    valor_total (valorTotalEstimado do detalhe; a busca deixa valor_global vazio em editais) só
+    entra no dict quando existe: ausente nunca vira NULL gravado por cima de valor bom."""
     proc = (det.get("processo") or "").strip() or None
     num, ano = det.get("numeroCompra"), det.get("anoCompra") or c.get("ano")
     mod = det.get("modalidadeNome") or c.get("modalidade_licitacao_nome")
     edital = f"{mod} nº {num}/{ano}" if num else c.get("title")
-    return {"numero_processo": proc, "numero_edital": edital}
+    out = {"numero_processo": proc, "numero_edital": edital}
+    valor = valor_total_detalhe(det)
+    if valor is not None:
+        out["valor_total"] = valor
+    return out
 
 
 def identificacao(pncp, c: dict) -> dict:
@@ -527,9 +551,17 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
         "modalidade": c.get("modalidade_licitacao_nome"), "situacao": c.get("situacao_nome"),
         "data_publicacao": _data(c.get("data_publicacao_pncp")), "data_fim": _data(c.get("data_fim_vigencia")),
         "data_homologacao": data_homologacao.isoformat() if data_homologacao else None,
-        "prioridade": prioridade, "valor_total": _num(c.get("valor_global")), "categoria_escopo": categoria,
+        "prioridade": prioridade, "categoria_escopo": categoria,
         "interesse_borracha": interesse, "termos_busca": [termo], "raw": c,
     }
+    # valor_total: detalhe (valorTotalEstimado, via identificacao_do_detalhe) > valor_global da busca
+    # (vazio em editais). Sem nenhum dos dois a chave fica fora: o upsert (merge-duplicates) atualiza
+    # toda coluna enviada, e mandar null apagaria um valor já gravado.
+    valor_total = ident.get("valor_total") or _valor_positivo(c.get("valor_global"))
+    if valor_total is not None:
+        linha["valor_total"] = valor_total
+    else:
+        linha.pop("valor_total", None)
     # O estado derivado vence: encerrada/homologada vira historico mesmo que a linha fosse lead.
     # Só não grava quando não dá para saber (não apaga uma prioridade já gravada com NULL) ou quando
     # seria leads sem o detalhe confirmar (fail-closed: homologada nunca vira lead).
@@ -599,21 +631,29 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
             sb.atualizar("licitacao_documentos", d["id"], {"status_processamento": "erro", "erro": str(e)[:300]})
 
 
+def compra_de_codigo(codigo: str | None, **extra) -> dict | None:
+    """'44892693000140-1-000157/2026' (numero_controle_pncp) -> chaves do detalhe da compra."""
+    m = re.match(r"(\d{14})-\d-(\d+)/(\d{4})$", codigo or "")
+    if not m:
+        return None
+    return {"orgao_cnpj": m.group(1), "numero_sequencial": int(m.group(2)), "ano": int(m.group(3)),
+            "numero_controle_pncp": codigo, **extra}
+
+
 def corrigir_processos(pncp: PNCP, sb: Supabase) -> dict:
     """Versões até a v12 gravaram o código PNCP em numero_processo. Busca o processo administrativo real.
 
     Três desfechos por linha: processo encontrado (corrigidas), detalhe válido sem processo
     (sem_processo, grava NULL: o valor antigo era o código PNCP) e falha da consulta
-    (falha_consulta, não grava nada)."""
+    (falha_consulta, não grava nada). Se o detalhe trouxer valorTotalEstimado, valor_total vai junto
+    (nunca NULL: identificacao omite a chave sem valor)."""
     r = {"lidas": 0, "corrigidas": 0, "sem_processo": 0, "falha_consulta": 0}
     linhas = sb.selecionar("licitacoes_externas", fonte="eq.pncp", select="id,codigo_externo,orgao_cnpj,numero_edital")
     for ln in linhas:
         r["lidas"] += 1
-        m = re.match(r"(\d{14})-\d-(\d+)/(\d{4})$", ln.get("codigo_externo") or "")
-        if not m:
+        c = compra_de_codigo(ln.get("codigo_externo"), title=ln.get("numero_edital"))
+        if not c:
             continue
-        c = {"orgao_cnpj": m.group(1), "numero_sequencial": int(m.group(2)), "ano": int(m.group(3)),
-             "numero_controle_pncp": ln["codigo_externo"], "title": ln.get("numero_edital")}
         try:
             ident = identificacao(pncp, c)
         except ConsultaFalhou as e:

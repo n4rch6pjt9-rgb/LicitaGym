@@ -11,9 +11,9 @@ BLOQUEANTE:
 - segredo em código, teste, fixture, log ou doc (`service_role`, `sbp_`, JWT `eyJ`, chave de API, senha);
 - `.env`, HAR, CSV, zip ou dado de coleta versionado;
 - Edge Function nova sem autenticação: as funções sobem com `--no-verify-jwt`, então todo handler precisa usar um
-  helper de `supabase/functions/_shared/http.ts` e responder 401 quando falhar: `requireCronAuth(req)` /
-  `validateCronAuth(req)` (cron), `requireUserAuth(req)` / `authenticateUserJwt(req)` (usuário) ou
-  `requireCronOrUserAuth(req)`. Confira os nomes no arquivo antes de citar: helpers novos entram por PR;
+  helper de `supabase/functions/_shared/http.ts` e retornar a resposta 401 quando falhar: `requireCronAuth(req)` (cron),
+  `requireUserAuth(req)` (usuário) ou `requireCronOrUserAuth(req)` (ambos). `validateCronAuth(req)` é legado aceito
+  apenas em funções `sync-*` existentes; confira os nomes no arquivo antes de citar, pois helpers novos entram por PR;
 - ação de escrita sem checagem de papel admin (`app_metadata.licitagym_role === 'admin'`; nunca `user_metadata`);
 - `service_role` usado fora de Edge Function de sync/admin (ver `.github/instructions/edge-functions.instructions.md`);
 - erro tratado como vazio (`catch { return [] }`), que esconde falha de coleta;

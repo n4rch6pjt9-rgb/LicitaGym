@@ -20,7 +20,7 @@ Sempre **[BLOQUEANTE]**:
 3. **Secrets** — `service_role`, `sbp_…`, JWT, senha, API key em código, migration, log, fixture ou `.env` versionado.
 4. **Schema sem migration** — alteração de banco fora de `supabase/migrations/`.
 5. **Tabela nova sem `ENABLE ROW LEVEL SECURITY`**.
-6. **Edge Function sem autenticação** — as funções são publicadas com `--no-verify-jwt`; todo handler protegido deve chamar `validateCronAuth(req)` de `_shared/http.ts` e retornar 401 quando o resultado for `false`. Se forem necessários handlers de usuário, adicionar e documentar helper de validação de sessão/claims antes de exigir seu uso.
+6. **Edge Function sem autenticação** — as funções são publicadas com `--no-verify-jwt`; todo handler protegido deve, logo no início, chamar um helper de `_shared/http.ts` e retornar a resposta 401 que ele devolve: `requireCronAuth(req)` para sync/cron (o legado `validateCronAuth(req)` + 401 ainda é aceito), `requireUserAuth(req)` para endpoint de usuário (JWT do Supabase Auth; o secret de cron **não** vale como sessão) e `requireCronOrUserAuth(req)` quando ambos são permitidos. Ação pública deve ser explícita e não expor dado sensível. Não criar validação de token própria.
 7. **Identificador oficial substituído** por chave interna, ou `codigoItem` tratado como equivalente a `codigoPdm`.
 8. **Cálculo financeiro não determinístico** (BDI, margem, exequibilidade) sem regra de arredondamento explícita e sem teste.
 

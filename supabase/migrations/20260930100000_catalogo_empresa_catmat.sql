@@ -77,7 +77,7 @@ create table if not exists public.compras_catmat_cache (
 comment on table public.compras_catmat_cache is
   'Cache da árvore CATMAT do Compras.gov usado pela Edge Function api-catmat. Só service_role.';
 
--- 4) Padrões de texto por PDM: já existe em produção sem migration; versiona e completa ---------------------------
+-- 4) Padrões de texto por PDM: criada em 20260929105430 (#82); aqui só completa (idempotente) -----------------------
 create table if not exists public.catmat_pdm_palavras (
   id         bigint generated always as identity primary key,
   codigo_pdm int not null references public.catmat_pdms(codigo_pdm) on delete cascade,
@@ -175,6 +175,11 @@ $$;
 -- motivo: 'codigo' (catalogo_codigo_item numérico do item), 'texto_item' (padrão do PDM na descrição do item),
 --         'texto_objeto' (padrão do PDM no objeto da licitação). Com p_itens, o texto vira 'texto_item_aprox'
 --         (texto identifica o PDM, não o item).
+-- Regras de recorte:
+--   - item pedido em p_itens respeita grupo/classe/PDM informados e, no catálogo, as exclusões de item;
+--   - texto sem p_itens: só os PDMs alvo (item avulso do catálogo casa só por código, não expande
+--     para o PDM inteiro); com p_itens: os PDMs dos itens pedidos que passaram no recorte;
+--   - sem LIMIT: o chamador (api-dashboard-oportunidades) aplica o teto de licitações.
 create or replace function public.licitacoes_ids_por_catmat(
   p_grupos int[] default null,
   p_classes int[] default null,
@@ -214,10 +219,15 @@ as $$
        and (p_pdms    is null or c.codigo_pdm    = any (p_pdms))
   ),
   itens_alvo as (
-    -- itens pedidos explicitamente
+    -- itens pedidos explicitamente: dentro do recorte grupo/classe/PDM (quando informado) e, no catálogo,
+    -- PDM efetivo sem exclusão do item, ou item avulso incluído
     select m.codigo_item, m.codigo_pdm from mapa m
      where p_itens is not null and m.codigo_item = any (p_itens::bigint[])
-       and (not coalesce(p_somente_catalogo, false) or m.codigo_pdm in (select codigo_pdm from pdms_alvo)
+       and ((p_grupos is null and p_classes is null and p_pdms is null)
+            or m.codigo_pdm in (select codigo_pdm from pdms_recorte))
+       and (not coalesce(p_somente_catalogo, false)
+            or (m.codigo_pdm in (select codigo_pdm from pdms_alvo)
+                and m.codigo_item not in (select codigo_item from itens_excluidos))
             or m.codigo_item in (select codigo_item from itens_avulsos))
     union
     -- itens dos PDMs alvo (menos exclusões, quando for o catálogo)
@@ -225,14 +235,16 @@ as $$
      where p_itens is null and m.codigo_pdm in (select codigo_pdm from pdms_alvo)
        and (not coalesce(p_somente_catalogo, false) or m.codigo_item not in (select codigo_item from itens_excluidos))
     union
-    -- itens avulsos do catálogo (PDM não incluído como um todo)
+    -- itens avulsos do catálogo (PDM não incluído como um todo): só por código
     select a.codigo_item, a.codigo_pdm from itens_avulsos a
      where coalesce(p_somente_catalogo, false) and p_itens is null
   ),
   pdms_texto as (
-    select codigo_pdm from pdms_alvo
+    -- sem p_itens: PDMs alvo (item avulso não expande para o PDM inteiro)
+    select codigo_pdm from pdms_alvo where p_itens is null
     union
-    select codigo_pdm from itens_avulsos where coalesce(p_somente_catalogo, false) and p_itens is null
+    -- com p_itens: PDMs dos itens pedidos que passaram no recorte (inclui avulsos; exclui itens excluídos)
+    select codigo_pdm from itens_alvo where p_itens is not null
   ),
   padroes as (
     select w.codigo_pdm, w.padrao from public.catmat_pdm_palavras w
@@ -262,7 +274,6 @@ as $$
     union all select * from por_texto_item
     union all select * from por_texto_objeto
   ) t
-  limit 20000
 $$;
 
 -- 6) Índice para o casamento por código -----------------------------------------------------------------------------

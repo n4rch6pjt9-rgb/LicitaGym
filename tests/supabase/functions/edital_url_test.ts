@@ -4,6 +4,7 @@ import {
   buildEditalUrl,
   buildPncpEditalUrl,
   isValidHttpsUrl,
+  PARADIGMA_HOSTS,
   parsePncpControleToUrl,
 } from "../../../supabase/functions/_shared/edital-url.ts";
 
@@ -318,4 +319,40 @@ Deno.test("buildEditalUrl: Outras fontes e casos genéricos", () => {
     }),
     null,
   );
+});
+
+// -----------------------------------------------------------------------------
+// Portais Paradigma do Sistema S
+// -----------------------------------------------------------------------------
+
+Deno.test("ALLOWED_ORIGEM_HOSTS cobre todo portal cadastrado em FONTES do coletor Paradigma", async () => {
+  const py = await Deno.readTextFile("./services/coletor-externo/coletor/paradigma.py");
+  const hosts = [...py.matchAll(/Fonte\("[a-z_]+",[^\n]*?"(https:\/\/[^"]+)"/g)].map((m) => new URL(m[1]).hostname.toLowerCase());
+  assertEquals(hosts.length >= 15, true, `esperava >= 15 portais em FONTES, achei ${hosts.length}`);
+  for (const h of new Set(hosts)) {
+    assertEquals(
+      isValidHttpsUrl(`https://${h}/portal/Mural.aspx`, true, ALLOWED_ORIGEM_HOSTS) !== null,
+      true,
+      `host ${h} do paradigma.py fora de ALLOWED_ORIGEM_HOSTS`,
+    );
+  }
+  assertEquals(new Set(hosts).size, PARADIGMA_HOSTS.length, "PARADIGMA_HOSTS tem host que não está no coletor");
+});
+
+Deno.test("buildEditalUrl aceita linkSistemaOrigem de portal Paradigma e recusa parecidos", () => {
+  assertEquals(
+    buildEditalUrl({ fonte: "sfiec", linkSistemaOrigem: "https://portaldecompras.sfiec.org.br/portal/Mural.aspx?nNmTela=E" }),
+    "https://portaldecompras.sfiec.org.br/portal/Mural.aspx?nNmTela=E",
+  );
+  assertEquals(
+    buildEditalUrl({ fonte: "sescdn", raw: { linkSistemaOrigem: "https://egov-br.paradigmabs.com.br/sescdn/portal/Mural.aspx" } }),
+    "https://egov-br.paradigmabs.com.br/sescdn/portal/Mural.aspx",
+  );
+  // Domínio SaaS inteiro não é liberado: outro cliente do Paradigma fica de fora
+  assertEquals(buildEditalUrl({ fonte: "x", linkSistemaOrigem: "https://outrocliente.paradigmabs.com.br/portal" }), null);
+  assertEquals(buildEditalUrl({ fonte: "x", linkSistemaOrigem: "https://paradigmabs.com.br/portal" }), null);
+  // Lookalikes
+  assertEquals(buildEditalUrl({ fonte: "fiesc", linkSistemaOrigem: "https://portaldecompras.fiesc.com.br.evil.com/p" }), null);
+  assertEquals(buildEditalUrl({ fonte: "fiesc", linkSistemaOrigem: "https://evil-portaldecompras.fiesc.com.br.io/p" }), null);
+  assertEquals(buildEditalUrl({ fonte: "fiesc", linkSistemaOrigem: "http://portaldecompras.fiesc.com.br/portal" }), null);
 });

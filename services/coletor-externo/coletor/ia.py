@@ -122,12 +122,10 @@ class Gemini:
         return r.text or ""
 
     def responder(self, pergunta: str, trechos: list[dict]) -> str:
-        contexto = "\n\n---\n\n".join(
-            f"[{i + 1}] {t['numero_processo']} | {t['nome_original']} ({t['secao']})\n{t['texto']}"
-            for i, t in enumerate(trechos))
-        prompt = (f"Responda à pergunta usando SOMENTE os trechos abaixo de licitações do SEST SENAT. "
-                  f"Cite as fontes como [n]. Se os trechos não bastarem, diga isso.\n\n"
-                  f"PERGUNTA: {pergunta}\n\nTRECHOS:\n{contexto}")
+        # Envelope por nível de confiança (documento_publico × alegacao_de_parte) e regras de dados,
+        # ver coletor/rag_contexto.py. Suspeito/bloqueado são descartados de novo aqui.
+        from .rag_contexto import montar_prompt
+        prompt = montar_prompt(pergunta, trechos)
         r = self._retry(lambda: self.client.models.generate_content(
             model=GEN_MODEL, contents=prompt, config=self.types.GenerateContentConfig(temperature=0.2)))
         return r.text or ""

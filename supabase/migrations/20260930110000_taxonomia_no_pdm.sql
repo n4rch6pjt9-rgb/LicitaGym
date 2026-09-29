@@ -8,8 +8,12 @@
 -- licitacao_itens.no_taxonomia (e licitacoes_externas.no_taxonomia). Cada nó do dicionário já aponta para PDMs
 -- CATMAT (pdm_catmat). Esta migration leva esse mapeamento para o banco e acrescenta os motivos 'taxonomia' e
 -- 'taxonomia_objeto' em licitacoes_ids_por_catmat. Vale para o Sistema S e para o PNCP.
+-- No item, o nó vem de coalesce(no_taxonomia, taxonomia->>'no_taxonomia'): o aplicar_taxonomia.py antigo gravava
+-- só o JSONB. Na licitação só existe a coluna no_taxonomia (licitacoes_externas não tem o JSONB).
 --
--- taxonomia_no_pdm: 204 pares (99 nós, 48 PDMs) do dicionário v0.3. Sem FK para catmat_pdms: PDMs ainda não
+-- taxonomia_no_pdm: 180 pares (98 nós, 24 PDMs) do dicionário v0.3. O nó 'fora_escopo' NÃO entra: é o balde
+-- de tudo que está fora do escopo e aponta para 24 PDMs (cartão de árbitro, bandeirola, aro de basquete,
+-- gangorra...); mapeá-lo faria um item fora de escopo casar com todos esses PDMs. Sem FK para catmat_pdms: PDMs ainda não
 -- materializados ficam inertes até entrarem no catálogo. Um teste (tests/supabase/taxonomia_no_pdm_test.ts) garante
 -- que a carga acompanha o JSON; nova versão do dicionário = nova migration.
 --
@@ -126,30 +130,6 @@ insert into public.taxonomia_no_pdm (no_taxonomia, codigo_pdm, versao_dicionario
   ('fita_suspensao', 2640, '0.3'),
   ('flexora_em_pe', 2640, '0.3'),
   ('flexora_em_pe', 17574, '0.3'),
-  ('fora_escopo', 1199, '0.3'),
-  ('fora_escopo', 1386, '0.3'),
-  ('fora_escopo', 3233, '0.3'),
-  ('fora_escopo', 3869, '0.3'),
-  ('fora_escopo', 4308, '0.3'),
-  ('fora_escopo', 5026, '0.3'),
-  ('fora_escopo', 5028, '0.3'),
-  ('fora_escopo', 5349, '0.3'),
-  ('fora_escopo', 6820, '0.3'),
-  ('fora_escopo', 6929, '0.3'),
-  ('fora_escopo', 6930, '0.3'),
-  ('fora_escopo', 7111, '0.3'),
-  ('fora_escopo', 7921, '0.3'),
-  ('fora_escopo', 9629, '0.3'),
-  ('fora_escopo', 9632, '0.3'),
-  ('fora_escopo', 9634, '0.3'),
-  ('fora_escopo', 10462, '0.3'),
-  ('fora_escopo', 11132, '0.3'),
-  ('fora_escopo', 11503, '0.3'),
-  ('fora_escopo', 15243, '0.3'),
-  ('fora_escopo', 15625, '0.3'),
-  ('fora_escopo', 15677, '0.3'),
-  ('fora_escopo', 15679, '0.3'),
-  ('fora_escopo', 15681, '0.3'),
   ('ginastica_artistica_ritmica', 2640, '0.3'),
   ('ginastica_artistica_ritmica', 2976, '0.3'),
   ('ginastica_artistica_ritmica', 3431, '0.3'),
@@ -234,6 +214,8 @@ insert into public.taxonomia_no_pdm (no_taxonomia, codigo_pdm, versao_dicionario
   ('voador_peck_deck', 17574, '0.3'),
   ('wall_unit', 17574, '0.3')
 on conflict (no_taxonomia, codigo_pdm) do nothing;
+-- Nó-balde fora_escopo nunca mapeia para PDM (ver cabeçalho)
+delete from public.taxonomia_no_pdm where no_taxonomia = 'fora_escopo';
 
 create index if not exists licitacao_itens_no_taxonomia_idx
   on public.licitacao_itens (no_taxonomia) where no_taxonomia is not null;
@@ -244,7 +226,13 @@ create index if not exists licitacao_itens_no_taxonomia_idx
 -- motivo: 'codigo' (catalogo_codigo_item numérico do item), 'texto_item' (padrão do PDM na descrição do item),
 --         'texto_objeto' (padrão do PDM no objeto da licitação), 'taxonomia' (no_taxonomia do item, classificado
 --         pelo dicionário de aparelhos, aponta para o PDM em taxonomia_no_pdm), 'taxonomia_objeto' (idem, na licitação).
+--         No item, o nó vem de no_taxonomia ou, se nula, de taxonomia->>'no_taxonomia' (backfill aplicar_taxonomia.py).
 --         Com p_itens, texto e taxonomia viram '*_aprox' (identificam o PDM, não o item).
+-- Regras de recorte:
+--   - item pedido em p_itens respeita grupo/classe/PDM informados e, no catálogo, as exclusões de item;
+--   - texto/taxonomia sem p_itens: só os PDMs alvo (item avulso do catálogo casa só por código, não expande
+--     para o PDM inteiro); com p_itens: os PDMs dos itens pedidos que passaram no recorte;
+--   - sem LIMIT: o chamador (api-dashboard-oportunidades) aplica o teto de licitações.
 create or replace function public.licitacoes_ids_por_catmat(
   p_grupos int[] default null,
   p_classes int[] default null,
@@ -284,10 +272,15 @@ as $$
        and (p_pdms    is null or c.codigo_pdm    = any (p_pdms))
   ),
   itens_alvo as (
-    -- itens pedidos explicitamente
+    -- itens pedidos explicitamente: dentro do recorte grupo/classe/PDM (quando informado) e, no catálogo,
+    -- PDM efetivo sem exclusão do item, ou item avulso incluído
     select m.codigo_item, m.codigo_pdm from mapa m
      where p_itens is not null and m.codigo_item = any (p_itens::bigint[])
-       and (not coalesce(p_somente_catalogo, false) or m.codigo_pdm in (select codigo_pdm from pdms_alvo)
+       and ((p_grupos is null and p_classes is null and p_pdms is null)
+            or m.codigo_pdm in (select codigo_pdm from pdms_recorte))
+       and (not coalesce(p_somente_catalogo, false)
+            or (m.codigo_pdm in (select codigo_pdm from pdms_alvo)
+                and m.codigo_item not in (select codigo_item from itens_excluidos))
             or m.codigo_item in (select codigo_item from itens_avulsos))
     union
     -- itens dos PDMs alvo (menos exclusões, quando for o catálogo)
@@ -295,14 +288,16 @@ as $$
      where p_itens is null and m.codigo_pdm in (select codigo_pdm from pdms_alvo)
        and (not coalesce(p_somente_catalogo, false) or m.codigo_item not in (select codigo_item from itens_excluidos))
     union
-    -- itens avulsos do catálogo (PDM não incluído como um todo)
+    -- itens avulsos do catálogo (PDM não incluído como um todo): só por código
     select a.codigo_item, a.codigo_pdm from itens_avulsos a
      where coalesce(p_somente_catalogo, false) and p_itens is null
   ),
   pdms_texto as (
-    select codigo_pdm from pdms_alvo
+    -- sem p_itens: PDMs alvo (item avulso não expande para o PDM inteiro)
+    select codigo_pdm from pdms_alvo where p_itens is null
     union
-    select codigo_pdm from itens_avulsos where coalesce(p_somente_catalogo, false) and p_itens is null
+    -- com p_itens: PDMs dos itens pedidos que passaram no recorte (inclui avulsos; exclui itens excluídos)
+    select codigo_pdm from itens_alvo where p_itens is not null
   ),
   padroes as (
     select w.codigo_pdm, w.padrao from public.catmat_pdm_palavras w
@@ -335,7 +330,7 @@ as $$
     select li.licitacao_id, n.codigo_pdm, null::bigint as codigo_item,
            case when p_itens is null then 'taxonomia' else 'taxonomia_aprox' end as motivo
       from public.licitacao_itens li
-      join nos_alvo n on n.no_taxonomia = li.no_taxonomia
+      join nos_alvo n on n.no_taxonomia = coalesce(li.no_taxonomia, li.taxonomia->>'no_taxonomia')
   ),
   por_taxonomia_objeto as (
     select le.id as licitacao_id, n.codigo_pdm, null::bigint as codigo_item,
@@ -350,7 +345,6 @@ as $$
     union all select * from por_taxonomia
     union all select * from por_taxonomia_objeto
   ) t
-  limit 20000
 $$;
 
 alter table public.taxonomia_no_pdm enable row level security;

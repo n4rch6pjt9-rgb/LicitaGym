@@ -76,6 +76,20 @@ def test_prazo_de_proposta_sem_fuso_e_horario_de_brasilia():
     assert P.prioridade_da_compra(fim_hoje, agora=datetime(2026, 9, 29, 13, 30, tzinfo=timezone.utc)) == "monitorar"
 
 
+def test_linha_gravada_usa_prazo_do_raw_antes_do_data_fim_gravado_como_utc():
+    # o coletor grava data_fim_vigencia "09:30" (Brasília) como "09:30+00:00" (= 06:30 BRT);
+    # às 07:00 BRT o certame ainda recebe proposta até 09:30 BRT: é lead, não monitorar
+    linha = {"id": 9, "codigo_externo": ABERTA["numero_controle_pncp"], "prioridade": "leads",
+             "situacao": "Divulgada no PNCP", "data_homologacao": None,
+             "data_fim": "2026-10-13T09:30:00+00:00", "raw": ABERTA}
+    as_07_brt = datetime(2026, 10, 13, 10, 0, tzinfo=timezone.utc)
+    assert P.motivo_prioridade(linha, agora=as_07_brt) == ("leads", "recebendo proposta")
+    as_10_brt = datetime(2026, 10, 13, 13, 0, tzinfo=timezone.utc)
+    assert P.prioridade_da_compra(linha, agora=as_10_brt) == "monitorar"
+    # sem raw, o data_fim gravado continua valendo como último recurso
+    assert P.prioridade_da_compra(dict(linha, raw={}), agora=as_07_brt) == "monitorar"
+
+
 @pytest.mark.parametrize("situacao", ["Revogada", "Anulada", "Cancelada", "Deserta", "Fracassada", "Encerrada"])
 def test_situacao_encerrada_e_historico_mesmo_com_prazo_aberto(situacao):
     assert P.prioridade_da_compra(dict(ABERTA, situacao_nome=situacao), agora=AGORA) == "historico"

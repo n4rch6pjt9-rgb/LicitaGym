@@ -335,7 +335,9 @@ def motivo_prioridade(compra: dict, tem_resultado: bool | None = None, *, agora:
             return "historico", "todos os itens finalizados"
     if _SITUACAO_SUSPENSA.search(situacao):
         return "monitorar", f"situação {situacao}"
-    fim = _instante(_campo(compra, "dataEncerramentoProposta", "data_fim_vigencia", "data_fim"))
+    # prazo do PNCP (detalhe, depois raw.data_fim_vigencia) antes do data_fim gravado: o coletor grava o
+    # horário sem fuso do PNCP como UTC (_data), 3 h antes do prazo real em Brasília
+    fim = _instante(_campo(compra, "dataEncerramentoProposta", "data_fim_vigencia") or _campo(compra, "data_fim"))
     if fim:
         if fim > agora:
             return "leads", "recebendo proposta"

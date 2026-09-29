@@ -33,7 +33,8 @@ Migration nova: skill `validar-migrations` (Postgres descartável) antes do PR.
 ## Ambientes e entrega
 - **Um ambiente: produção** (Supabase `ifaiagegyicjzlpskafh`). Não há staging.
 - **Merge na `main` aplica em produção**:
-  - migrations: integração Supabase ↔ GitHub (configurada no painel do Supabase);
+  - migrations: integração Supabase ↔ GitHub (configurada no painel do Supabase). Aparece no commit como o check
+    **"Supabase Preview"**, mas aplica em produção (~30 s após o merge). Confira depois com a skill `verificar-producao`;
   - Edge Functions: `.github/workflows/deploy-supabase-functions.yml` (lista explícita de funções + smoke test).
 - Coletor externo: Cloud Run Job `coletor-sestsenat` (GCP), agendamento semanal; ver `services/coletor-externo/README.md`.
 - PR empilhado: merge commit (não squash), porque a branch é apagada no merge. Skill `merge-pilha`.
@@ -65,5 +66,5 @@ SQL Editor com o usuário.
   `.claude/hooks/bloquear-destrutivo.test.mjs`; rode `node .claude/hooks/bloquear-destrutivo.test.mjs` ao mudar o hook).
   Se for mesmo necessário, o usuário roda.
 - Não usa `user_metadata` para papel: admin é `app_metadata.licitagym_role = 'admin'`.
-- Não versiona `.env`, chaves, HAR, CSV, zip nem dados de coleta.
+- Não lê, copia nem versiona `.env*` (exceto `.env.example`), chaves, HAR, CSV, zip nem dados de coleta.
 - Não inventa dado (ver `AGENTS.md`).

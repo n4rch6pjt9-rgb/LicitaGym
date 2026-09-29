@@ -15,14 +15,19 @@ const REGRAS_COMANDO = [
   [/\bsupabase\s+(functions|secrets|projects|branches)\s+(delete|unset)\b/, "remoção de função/segredo/projeto/branch no Supabase."],
   [/\bsupabase\s+functions\s+deploy\b/, "deploy de Edge Function é feito pela CI (deploy-supabase-functions.yml) após o merge."],
   [/\bterraform\s+(destroy|apply|import)\b|\bterraform\s+state\s+(rm|push|mv)\b/, "terraform apply/destroy/state só na CI do licitagym-infra, depois do plan revisado."],
-  [/\bwrangler\s+(delete|secret\s+delete|r2\s+bucket\s+delete|kv\s+namespace\s+delete|d1\s+delete)\b/, "remoção de recurso na Cloudflare."],
-  [/\bwrangler\s+deploy\b/, "deploy do Dashboard é feito pelo usuário (npm run cf:deploy) ou pela CI com aprovação."],
-  [/\b(npm|bun|pnpm|yarn)\s+(run\s+)?cf:deploy\b/, "deploy do Dashboard é feito pelo usuário, com o .env.production.local dele."],
+  // opções entre o executável e o subcomando também contam (`npx wrangler --env x deploy`, `npm --silent run cf:deploy`)
+  [/\bwrangler(@\S+)?\b[^;&|]*\s(delete|secret\s+delete|r2\s+bucket\s+delete|kv\s+namespace\s+delete|d1\s+delete)\b/, "remoção de recurso na Cloudflare."],
+  [/\bwrangler(@\S+)?\b[^;&|]*\s(versions\s+)?deploy\b/, "deploy do Dashboard é feito pelo usuário (npm run cf:deploy) ou pela CI com aprovação."],
+  [/\b(npm|npx|bun|bunx|pnpm|yarn)\b[^;&|]*\bcf:deploy\b/, "deploy do Dashboard é feito pelo usuário, com o .env.production.local dele."],
   [/\bgh\s+repo\s+(delete|archive)\b/, "apagar/arquivar repositório."],
   [/\bgh\s+api\b[^;&|]*(\s-X\s*|\s--method[\s=]+)["']?DELETE\b/i, "gh api com DELETE."],
 ];
 
 const PROTEGIDAS = new Set(["main", "master"]);
+
+// Arquivos de segredo citados num comando de shell (cat, type, Get-Content, grep, source, cp...). Só o .env.example
+// (modelo sem valores) é liberado. Vale para qualquer comando: o agente não precisa ler nem copiar esses arquivos.
+const ARQUIVO_SEGREDO = /(^|[\s"'=<>(\\/])(\.env(?!\.example\b)(\.[\w-]+)*|\.dev\.vars(\.[\w-]+)*)(?=$|[\s"';|&)<>])/;
 
 // Divide em palavras reproduzindo a concatenação de trechos cotados do shell.
 function palavras(texto) {
@@ -139,6 +144,7 @@ export function motivo(entrada, atual = branchAtual) {
   const bruto = String(input.command ?? "");
   const cmd = bruto.replace(/\s+/g, " ");
   for (const [rx, texto] of REGRAS_COMANDO) if (rx.test(cmd)) return texto;
+  if (ARQUIVO_SEGREDO.test(cmd)) return "comando cita .env*/.dev.vars* (segredos): o agente não lê nem copia; peça ao usuário para conferir.";
   return motivoGitPush(bruto, entrada.cwd || process.cwd(), atual);
 }
 

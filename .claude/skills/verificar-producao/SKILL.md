@@ -25,8 +25,7 @@ Use `execute_sql` do MCP do Supabase (somente leitura). Não corrija nada em pro
    order by 1, 2;
    ```
    Esperado: nenhuma `rls_desligado`; policies de escrita só com checagem de `app_metadata.licitagym_role` ou de dono
-   (`auth.uid()`); leitura para `anon`/`public` só onde for dado público por decisão registrada (em 29/09/2026:
-   `legislacao` e `legislacao_embeddings`, ainda sem decisão registrada).
+   (`auth.uid()`); nenhuma leitura para `anon`/`public` (desde a 20260929190000 a varredura volta vazia).
    Funções executáveis por `anon`: `select p.oid::regprocedure from pg_proc p join pg_namespace n on n.oid = p.pronamespace
    where n.nspname = 'public' and has_function_privilege('anon', p.oid, 'EXECUTE');` (compare com o esperado da migration).
 3. **Sync do PNCP:**

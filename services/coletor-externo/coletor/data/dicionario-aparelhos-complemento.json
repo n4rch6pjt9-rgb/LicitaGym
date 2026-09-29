@@ -1,0 +1,62 @@
+{
+ "versao": "0.3+c1",
+ "data": "2026-09-26",
+ "descricao": "Complemento do dicionário de aparelhos v0.3 com sinônimos vistos nos portais Paradigma (textos curtos de catálogo). Aplicado ANTES do dicionário. Levar para docs/agente-editais/dicionario-aparelhos/dados.py na próxima versão.",
+ "regras": [
+  {
+   "padrao": "\\b(cadeira|maquina|maq)\\s+(de\\s+)?triceps\\b",
+   "slug": "triceps_maquina",
+   "decisao": "Marcelo 26/09: cadeira tríceps = máquina de tríceps",
+   "produto": "Máquina de Tríceps"
+  },
+  {
+   "padrao": "\\bsupino\\b.*\\bconvergente\\b|\\bconvergente\\b.*\\bsupino\\b",
+   "slug": "supino_maquina",
+   "atributos": {
+    "cinematica": "articulada"
+   },
+   "decisao": "Marcelo 26/09: convergente = articulado"
+  },
+  {
+   "padrao": "\\bmaq(uina)?\\s+(de\\s+)?desenvolvimento\\b",
+   "slug": "desenvolvimento_maquina",
+   "decisao": "texto SFIEC 'MAQUINA DESENVOLVIMENTO'"
+  },
+  {
+   "padrao": "\\bagachamento\\s+guiado\\b",
+   "slug": "smith",
+   "atributos": {
+    "cinematica": "guiada"
+   },
+   "decisao": "edital SFIEC PE000652022 item 21: Smith Machine / Barra Guiada"
+  },
+  {
+   "padrao": "^(ai\\d{7}\\s+)?remo\\b(?!.*remada)",
+   "slug": "remo_ergometro",
+   "decisao": "catálogo SFIEC AI0300148 'REMO' = remo ergômetro (magnético + ar)"
+  },
+  {
+   "padrao": "\\bsuporte\\b.*\\b(dumbb?ells?|halteres?)\\b",
+   "slug": "suporte_armazenamento",
+   "decisao": "suporte de halteres é suporte, não haltere"
+  },
+  {
+   "padrao": "\\bbicicleta\\b.*\\bhorizont",
+   "slug": "bicicleta_horizontal",
+   "decisao": "descrição truncada 'HORIZONT' no catálogo SFIEC"
+  },
+  {
+   "padrao": "\\bbanco\\s+n[oó]rdico\\b",
+   "slug": "banco_nordico",
+   "decisao": "nó proposto (não existe no v0.3): AI0300197 BANCO NORDICO"
+  }
+ ],
+ "nos_propostos": [
+  {
+   "slug": "banco_nordico",
+   "nome": "Banco nórdico (nordic hamstring)",
+   "familia": "equipamentos_fitness.peso_livre",
+   "exemplo": "AI0300197-BANCO NORDICO DENSIDADE AG120"
+  }
+ ]
+}

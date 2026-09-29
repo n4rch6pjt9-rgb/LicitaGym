@@ -522,7 +522,7 @@ def main(argv: list[str] | None = None) -> int:
     sb = arm = None
     if not args.dry_run:
         sb = Supabase(env("SUPABASE_URL", obrigatorio=True), env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True))
-        arm = Armazenamento(env("GCS_BUCKET"))
+        arm = Armazenamento.do_ambiente()
     status = args.status or MODOS[args.modo]["status"]
     paginas = args.paginas or (20 if args.modo == "leads" else 3)
     log.info("modo=%s status=%s dias=%s termos=%s", args.modo, status, args.dias, len(termos))

@@ -1,0 +1,531 @@
+{
+ "fonte": "sfiec",
+ "processo": "PE000652022",
+ "origem": "Edital pós-errata 001, Anexo II (fichas técnicas, págs. 21–46), transcrito em 26/09/2026",
+ "itens": {
+  "1": {
+   "codigo": "AI0300075",
+   "descricao_edital": "Máquina panturrilha em pé",
+   "perfil": "Musculação — placas (bateria de peso)",
+   "fonte_carga": "placas (carga 100 kg)",
+   "referencias": [
+    {
+     "marca": "LION",
+     "modelo": "08440 Panturrilha PRO"
+    },
+    {
+     "marca": "PHYSICUS",
+     "modelo": "PLC 11"
+    },
+    {
+     "marca": "FLEX",
+     "modelo": "Panturrilha vertical"
+    }
+   ]
+  },
+  "2": {
+   "codigo": "AI0300003",
+   "descricao_edital": "Balança antropométrica e estad.",
+   "perfil": "Avaliação física (fora do escopo)",
+   "fonte_carga": "-",
+   "referencias": [
+    {
+     "marca": "G-TECH",
+     "modelo": "Glass 200"
+    },
+    {
+     "marca": "Britânia",
+     "modelo": "Super Slim"
+    }
+   ]
+  },
+  "3": {
+   "codigo": "AI0300188",
+   "descricao_edital": "Aparelho elevação pélvica",
+   "perfil": "Musculação — anilhas (articulado/guiado)",
+   "fonte_carga": "anilhas",
+   "referencias": [
+    {
+     "marca": "LION FITNESS",
+     "modelo": "Elevação Pélvica G2"
+    },
+    {
+     "marca": "TNT FITNESS",
+     "modelo": null
+    }
+   ]
+  },
+  "4": {
+   "codigo": "AI0300191",
+   "descricao_edital": "Mesa flexora",
+   "perfil": "Musculação — placas (bateria de peso)",
+   "fonte_carga": "placas (carga 120 kg)",
+   "referencias": [
+    {
+     "marca": "LION",
+     "modelo": "Flexor deitado PRO"
+    },
+    {
+     "marca": "Moviment",
+     "modelo": "Idea Flexora deitada"
+    }
+   ]
+  },
+  "5": {
+   "codigo": "AI0300125",
+   "descricao_edital": "Remada articulada",
+   "perfil": "Musculação — anilhas (articulado/guiado)",
+   "fonte_carga": "anilhas (bateria: não; anilheiro: sim)",
+   "referencias": [
+    {
+     "marca": "PROMED",
+     "modelo": "Remada Articulada"
+    },
+    {
+     "marca": "LION",
+     "modelo": "Remada Sentada Optimus"
+    },
+    {
+     "marca": "TOTAL HEALTH",
+     "modelo": "Lat Row Convergente"
+    }
+   ]
+  },
+  "6": {
+   "codigo": "AI0300174",
+   "descricao_edital": "Cadeira tríceps",
+   "perfil": "Musculação — placas (bateria de peso)",
+   "fonte_carga": "placas (113,5 kg)",
+   "referencias": [
+    {
+     "marca": "LION",
+     "modelo": "08450 Tríceps Paralelo PRO"
+    },
+    {
+     "marca": "MOVEMENT",
+     "modelo": "Cadeira Tríceps Edge"
+    },
+    {
+     "marca": "TOTAL HEALTH",
+     "modelo": "505BRX - Triceps Press Machine"
+    }
+   ]
+  },
+  "7": {
+   "codigo": "AI0300176",
+   "descricao_edital": "Supino reto convergente",
+   "perfil": "Musculação — anilhas (articulado/guiado)",
+   "fonte_carga": "anilhas (articulado)",
+   "referencias": [
+    {
+     "marca": "PROMED",
+     "modelo": "Banco Supino Horizontal Articulado"
+    },
+    {
+     "marca": "RIGHETTO",
+     "modelo": "FS9030"
+    }
+   ]
+  },
+  "8": {
+   "codigo": "AI0300166",
+   "descricao_edital": "Puxada alta e baixa",
+   "perfil": "Musculação — placas (bateria de peso)",
+   "fonte_carga": "placas (100 kg)",
+   "referencias": [
+    {
+     "marca": "Lion",
+     "modelo": "Puxada 2x1"
+    },
+    {
+     "marca": "Movement",
+     "modelo": "EDGE Puxada alta e baixa"
+    }
+   ]
+  },
+  "9": {
+   "codigo": "AI0300165",
+   "descricao_edital": "Máquina de glúteo",
+   "perfil": "Musculação — placas (bateria de peso)",
+   "fonte_carga": "placas (115 kg)",
+   "referencias": [
+    {
+     "marca": "MOVEMENT",
+     "modelo": "Edge+ Glúteo"
+    },
+    {
+     "marca": "LION",
+     "modelo": "08437 Glúteo em pé PRO"
+    }
+   ]
+  },
+  "10": {
+   "codigo": "AI0300161",
+   "descricao_edital": "Cadeira flexora",
+   "perfil": "Musculação — placas (bateria de peso)",
+   "fonte_carga": "placas (120 kg)",
+   "referencias": [
+    {
+     "marca": "LION",
+     "modelo": "08436 Flexor sentado PRO"
+    },
+    {
+     "marca": "MOVEMENT",
+     "modelo": "EDGE+ Flexora"
+    },
+    {
+     "marca": "TOTAL HEALTH",
+     "modelo": "607RRF - Seated Leg Curl Machine"
+    }
+   ]
+  },
+  "11": {
+   "codigo": "AI0300062",
+   "descricao_edital": "Adutora/abdutora",
+   "perfil": "Musculação — placas (bateria de peso)",
+   "fonte_carga": "placas (bateria)",
+   "referencias": [
+    {
+     "marca": "Lion",
+     "modelo": "Adutor/Abdutor LFR"
+    },
+    {
+     "marca": "Moviment",
+     "modelo": "EDGE"
+    }
+   ]
+  },
+  "12": {
+   "codigo": "AI0300129",
+   "descricao_edital": "Balança antropométrica digital (Fortaleza)",
+   "perfil": "Avaliação física (fora do escopo)",
+   "fonte_carga": "-",
+   "referencias": [
+    {
+     "marca": "WELMY",
+     "modelo": "W200A LED"
+    },
+    {
+     "marca": "BALMAK",
+     "modelo": "BK 200 FAN"
+    }
+   ]
+  },
+  "13": {
+   "codigo": "AI0300148",
+   "descricao_edital": "Remo (Fortaleza)",
+   "perfil": "Cardio",
+   "fonte_carga": "magnético + ar",
+   "referencias": [
+    {
+     "marca": "PROTEUS",
+     "modelo": "PAR 5500"
+    },
+    {
+     "marca": "TOTAL HEALTH",
+     "modelo": "R900G"
+    }
+   ]
+  },
+  "14": {
+   "codigo": "AI0300160",
+   "descricao_edital": "Cadeira extensora",
+   "perfil": "Musculação — placas (bateria de peso)",
+   "fonte_carga": "placas (120 kg)",
+   "referencias": [
+    {
+     "marca": "LION",
+     "modelo": "08432 Extensor PRO"
+    },
+    {
+     "marca": "TOTAL HEALTH",
+     "modelo": "608RRF - Leg Extension Machine"
+    },
+    {
+     "marca": "MOVEMENT",
+     "modelo": "New Edge LEX+"
+    }
+   ]
+  },
+  "15": {
+   "codigo": "AI0300063",
+   "descricao_edital": "Desenvolvimento",
+   "perfil": "Musculação — placas (bateria de peso)",
+   "fonte_carga": "placas (80–110 kg)",
+   "referencias": [
+    {
+     "marca": "Lion",
+     "modelo": "Desenvolvimento de ombros Pro"
+    },
+    {
+     "marca": "Moviment",
+     "modelo": "Edge Multipress"
+    }
+   ]
+  },
+  "16": {
+   "codigo": "AI0300084",
+   "descricao_edital": "Hack 45°",
+   "perfil": "Musculação — anilhas (articulado/guiado)",
+   "fonte_carga": "anilhas (linha peso livre)",
+   "referencias": [
+    {
+     "marca": "LION",
+     "modelo": "Hack 45°"
+    },
+    {
+     "marca": "MOVEMENT",
+     "modelo": "Hack Machine"
+    }
+   ]
+  },
+  "17": {
+   "codigo": "AI0300181",
+   "descricao_edital": "Power rack gaiola crossfit",
+   "perfil": "Funcional/Crossfit",
+   "fonte_carga": "-",
+   "referencias": [
+    {
+     "marca": "3 SECONDS FITNESS",
+     "modelo": "Rack 4 baias"
+    },
+    {
+     "marca": "INICIATIVA FITNESS",
+     "modelo": "Gaiola 3 módulos"
+    }
+   ]
+  },
+  "18": {
+   "codigo": "AI0300014",
+   "descricao_edital": "Banco grande regulável",
+   "perfil": "Bancos e suportes (peso livre)",
+   "fonte_carga": "-",
+   "referencias": [
+    {
+     "marca": "MOVEMENT",
+     "modelo": "FWBA"
+    },
+    {
+     "marca": "Lion",
+     "modelo": "07581"
+    }
+   ]
+  },
+  "19": {
+   "codigo": "AI0300149",
+   "descricao_edital": "Graviton (Fortaleza)",
+   "perfil": "Musculação — placas (bateria de peso)",
+   "fonte_carga": "placas (113,5 kg)",
+   "referencias": [
+    {
+     "marca": "LION",
+     "modelo": "08438 Graviton PRO"
+    },
+    {
+     "marca": "MOVEMENT",
+     "modelo": "RT Graviton"
+    },
+    {
+     "marca": "TOTAL HEALTH",
+     "modelo": "MAQ804RX - Graviton"
+    }
+   ]
+  },
+  "20": {
+   "codigo": "AI0300148",
+   "descricao_edital": "Remo (Sobral)",
+   "perfil": "Cardio",
+   "fonte_carga": "magnético + ar",
+   "referencias": [
+    {
+     "marca": "PROTEUS",
+     "modelo": "PAR 5500"
+    },
+    {
+     "marca": "TOTAL HEALTH",
+     "modelo": "R900G"
+    }
+   ]
+  },
+  "21": {
+   "codigo": "AI0300001",
+   "descricao_edital": "Agachamento guiado (Smith)",
+   "perfil": "Musculação — anilhas (articulado/guiado)",
+   "fonte_carga": "anilhas (porta-anilhas)",
+   "referencias": [
+    {
+     "marca": "Moviment",
+     "modelo": "Smith Machine"
+    },
+    {
+     "marca": "Lion",
+     "modelo": "Barra Guiada G2"
+    }
+   ]
+  },
+  "22": {
+   "codigo": "AI0300147",
+   "descricao_edital": "Air bike",
+   "perfil": "Cardio",
+   "fonte_carga": "ar",
+   "referencias": [
+    {
+     "marca": "MOVEMENT",
+     "modelo": "linha Cycle"
+    },
+    {
+     "marca": "TOTAL HEALTH",
+     "modelo": "A800"
+    }
+   ]
+  },
+  "23": {
+   "codigo": "AI0300040",
+   "descricao_edital": "Crossover",
+   "perfil": "Musculação — placas (bateria de peso)",
+   "fonte_carga": "placas (torre)",
+   "referencias": [
+    {
+     "marca": "MOVEMENT",
+     "modelo": "Wire Crossover"
+    },
+    {
+     "marca": "LION",
+     "modelo": "LFR"
+    }
+   ]
+  },
+  "24": {
+   "codigo": "AI0300197",
+   "descricao_edital": "Banco nórdico",
+   "perfil": "Bancos e suportes (peso livre)",
+   "fonte_carga": "peso corporal",
+   "referencias": [
+    {
+     "marca": "LIFE MOVIMENT",
+     "modelo": "LP-0125"
+    },
+    {
+     "marca": "Lisarb Fit",
+     "modelo": "GA35 Plus G3"
+    }
+   ]
+  },
+  "25": {
+   "codigo": "AI0300027",
+   "descricao_edital": "Suporte dumbbells 12 pares",
+   "perfil": "Bancos e suportes (peso livre)",
+   "fonte_carga": "-",
+   "referencias": [
+    {
+     "marca": "Betta PRO",
+     "modelo": "Dumbbells Profissional"
+    },
+    {
+     "marca": "Flash Fundidos",
+     "modelo": "Expositor"
+    }
+   ]
+  },
+  "26": {
+   "codigo": "AI0300129",
+   "descricao_edital": "Balança antropométrica digital (Sobral)",
+   "perfil": "Avaliação física (fora do escopo)",
+   "fonte_carga": "-",
+   "referencias": [
+    {
+     "marca": "WELMY",
+     "modelo": "W200A LED"
+    },
+    {
+     "marca": "BALMAK",
+     "modelo": "BK 200 FAN"
+    }
+   ]
+  },
+  "27": {
+   "codigo": "AI0300149",
+   "descricao_edital": "Graviton (Juazeiro)",
+   "perfil": "Musculação — placas (bateria de peso)",
+   "fonte_carga": "placas (113,5 kg)",
+   "referencias": [
+    {
+     "marca": "LION",
+     "modelo": "08438 Graviton PRO"
+    },
+    {
+     "marca": "MOVEMENT",
+     "modelo": "RT Graviton"
+    },
+    {
+     "marca": "TOTAL HEALTH",
+     "modelo": "MAQ804RX - Graviton"
+    }
+   ]
+  },
+  "28": {
+   "codigo": "AI0300146",
+   "descricao_edital": "Bicicleta vertical",
+   "perfil": "Cardio",
+   "fonte_carga": "eletromagnética",
+   "referencias": [
+    {
+     "marca": "MOVEMENT",
+     "modelo": "RT-220"
+    },
+    {
+     "marca": "EMBREEX",
+     "modelo": "364CX"
+    }
+   ]
+  },
+  "29": {
+   "codigo": "AI0300045",
+   "descricao_edital": "Bicicleta horizontal",
+   "perfil": "Cardio",
+   "fonte_carga": "eletromagnética",
+   "referencias": [
+    {
+     "marca": "MOVEMENT",
+     "modelo": "RT-230"
+    },
+    {
+     "marca": "EMBREEX",
+     "modelo": "367GX"
+    }
+   ]
+  },
+  "30": {
+   "codigo": "AI0300148",
+   "descricao_edital": "Remo (Juazeiro)",
+   "perfil": "Cardio",
+   "fonte_carga": "magnético + ar",
+   "referencias": [
+    {
+     "marca": "PROTEUS",
+     "modelo": "PAR 5500"
+    },
+    {
+     "marca": "TOTAL HEALTH",
+     "modelo": "R900G"
+    }
+   ]
+  },
+  "31": {
+   "codigo": "AI0300129",
+   "descricao_edital": "Balança antropométrica digital (Juazeiro)",
+   "perfil": "Avaliação física (fora do escopo)",
+   "fonte_carga": "-",
+   "referencias": [
+    {
+     "marca": "WELMY",
+     "modelo": "W200A LED"
+    },
+    {
+     "marca": "BALMAK",
+     "modelo": "BK 200 FAN"
+    }
+   ]
+  }
+ }
+}

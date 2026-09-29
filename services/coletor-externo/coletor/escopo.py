@@ -83,7 +83,7 @@ TERMOS_BUSCA = [
 _FORTE = (
     r"(equipamentos?|materia(l|is)|aparelhos?|artigos?)\s+(\w+\s+){0,2}(de|para)\s+academia|academia\s+(de\s+ginastica|ao\s+ar\s+livre|da\s+saude|popular|de\s+musculacao)|"
     r"para\s+(a\s+)?academia|muscula|condicionamento\s+fisico|ginastic|ergometric|esteira\s+(eletric|ergom|profission)|"
-    r"eliptic|spinning|halter|anilha|kettlebell|barra\s+olimpica|crossfit|pilates|funcional|"
+    r"\bcardio\b|eliptic|spinning|halter|anilha|kettlebell|barra\s+olimpica|crossfit|pilates|funcional|"
     r"leg\s*press|supino|puxador|cross\s*over|estacao\s+de\s+musculacao|tatame|colchonete|"
     r"saco\s+(de\s+)?pancada|banco\s+sueco|corda\s+de\s+pular|rolo\s+(de\s+)?espuma|bambole|"
     r"cama\s+elastica|raia\s+antimarola|parque\s+infantil|playground|brinquedos?\s+(para\s+)?(praca|parque|playground)|escorregador|gangorra|balanco\s+infantil"
@@ -97,7 +97,8 @@ _EQUIPAMENTO = r"equipament|materia[il]|aparelh|acessori|artigos?|utensili|kit|b
 _FORA = (
     r"hospedagem|transporte|alimentac|veiculo|motocicleta|trofeu|medalha|uniforme|camiset|"
     r"producao\s+audiovisual|promocao\s+de\s+evento|organizacao.*evento|material\s+promocional|"
-    r"\bobras?\b|reforma|construcao|engenharia|pavimenta|comunicacao\s+visual|aquecimento|concessao|parceria"
+    r"\bobras?\b|reforma|construcao|engenharia|pavimenta|comunicacao\s+visual|aquecimento|concessao|parceria|"
+    r"eletrocardiograf|ergoespirometr"
 )
 # Piso/grama: entram mesmo quando o objeto é "fornecimento e instalação" (costuma vir assim)
 _PISO = (
@@ -126,6 +127,100 @@ BORRACHA = re.compile(
 OBRA_ESPORTIVA = re.compile(
     r"(constru|reforma|revitaliz|implant|ampliac|recupera|manutenc|execuc).{0,120}"
     r"(campo|quadra|society|arena|minicampo|estadio|praca\s+esportiva|academia\s+ao\s+ar\s+livre|playground)", re.I)
+
+
+# ---------------- nível de ITEM ----------------
+# Texto curto de catálogo do portal (ex.: "AI0300036-PECK DECK C/ CRUCIFIXO"). Só para itens: sem o
+# contexto do objeto, termos como "bola" ou "rede" são seguros aqui e perigosos no objeto.
+# Termos ambíguos na indústria (polia, step, espaldar, manete) exigem contexto de academia.
+_ITEM_FORTE = (
+    r"agachament|peck\s*deck|crucifixo|supino|puxador|leg\s*(press|\d+|curl)|hack\s*\d|"
+    r"banco\s+(para\s+)?(biceps|scott|supino|abdominal|extensor|adutor|abdutor|regulavel|grande\s+regulavel|romano)|"
+    r"maquina\s+(p/?\s*|para\s+)?(peitoral|dorso|adutora|abdutora|desenvolvimento|panturrilha|de\s+agachamento|remada|gluteo|voador)|"
+    r"adutora|abdutora|adutor/abdutor|adultor|flexo[\s-]*e?\s*extensor|cadeira\s+(extensora|flexora|adutora|abdutora)|mesa\s+flexora|"
+    r"panturrilha|gluteo\s+(guiado|maquina|4\s*apoios)|polia\s+\d+\s+estac|estacao\s+de\s+musculac|barra\s+para\s+pulley|pulley|"
+    r"esteira\s+(prof|ergom|eletric|elet\b)|eliptic|ergometric|"
+    r"dumbb?ells?|halter|anilha|kettlebell|barra\s+olimpica|suporte\s+(p/?\s*|para\s+)?(dumbb?ells?|halter|anilha|barra)|estante\s+(p/?\s*|para\s+)?barras|"
+    r"caneleira|wall\s*ball|mini\s*band|super\s*band|elas?tico\s+de\s+(tracao|treino)|tubo\s+elastic|"
+    r"bola\s+(suica|medicine|de\s+pilates|pilates)|gym\s*ball|disco\s+de\s+equilibrio|roda\s+abdominal|aparelho\s+para\s+abdominal|"
+    r"cinto\s+lombar|corda\s+(para\s+)?manetes?|trampolim|\(jump\)|cama\s+elastica|step\s+(\d+\s*cm|em\s+eva|de\s+eva|aerob)|"
+    r"aparelho/equipamento\s+para\s+cond|pedivela|"
+    r"bola\s+(de\s+|para\s+)?(futsal|futebol|volei|handbol|handebol|basquet|iniciacao|dente)|"
+    r"redes?\s+(de|para)\s+(os\s+aros\s+de\s+)?(volei|futsal|futebol|basquet|tenis)|forro\s+para\s+segurar\s+a\s+rede|"
+    r"bomba\s+(p\.?\s*|para\s+)?encher\s+bola|guarda\s+de\s+bolas|chapeu\s+chines|cone\s+esport|"
+    r"colete\s+(dupla\s+face|esportiv|de\s+treino|para\s+treino)|raquete|tenis\s+de\s+mesa|beach\s+tennis|"
+    r"prancha\s+(de\s+)?natacao|palmar\s+(em\s+latex|para\s+pratica|de\s+natacao|natacao)|espaguete|hidroginastica|"
+    r"poliboia|bandeirola|plataforma\s+redutora|(brinquedos|bamboles)\s+que\s+afu"
+)
+_ITEM_FORA = (
+    r"balanca|estadiometr|aferic|pressao\s+arterial|esfigmoman|bandeira\s+d[oae]s?\b|massageador|"
+    r"alfabeto|cronometr|eletrocardiograf|anilhas?\s+(de\s+)?(vedac|pressao|lisa|latao|cobre|nylon)|arruela"
+)
+# Piso de EVA/borracha no item sem a palavra "piso esportivo" (26/09/2026, pedido do Marcelo).
+# Placa de borracha só com espessura de 10 a 99 mm: lençol/placa industrial fina (3 mm, neoprene) fica fora.
+_ITEM_PISO = (
+    r"(piso|tapete)\s+(de\s+|em\s+)?eva\b|(placas?|manta)\s+(de\s+|em\s+)?eva\b(?=.*(\b\d{2}\s*mm|encaix|piso))|\beva\s+(de\s+)?\d{2}\s*mm|"
+    r"placas?\s+(de\s+)?borracha\s+(\d+([.,]\d+)?\s*(cm|m)?\s*x\s*\d+([.,]\d+)?\s*(cm|m)?\s*(x\s*)?)?\d{2}\s*mm|"
+    r"manta\s+(de\s+)?borracha\s+(para\s+)?(academia|piso)"
+)
+# Peças e insumos de manutenção de equipamento de academia (26/09/2026, pedido do Marcelo: entram no escopo,
+# em categoria própria 'manutencao' para não misturar preço de peça com preço de equipamento).
+# São genéricos na indústria (cabo de aço, polia, rolamento, mola...): só entram com contexto de academia
+# no próprio item OU no objeto do processo.
+_ITEM_MANUTENCAO = (
+    r"cabos?\s+(de\s+)?aco|courvin|corino|courino|curvim|\bnapa\b|couro\s+sintetic|"
+    r"\bpolias?\b|rolamentos?\b|correias?\s+(de\s+|da\s+|para\s+)?(esteira|transmiss|dentad|poly|em\s+v\b)|"
+    r"(lona|manta)\s+(de\s+|da\s+|para\s+)?esteira|\bestof(ament|ad)|espumas?\s+(para\s+|de\s+)?(estof|banco|rolo|assento|encosto)|manoplas?|pegador|"
+    r"pino\s+(seletor|trava|de\s+carga)|\bmolas?\b|esticador|mosquet|terminal\s+(de\s+|para\s+)?cabo|prensa[\s-]*cabo|"
+    r"grampo\s+(de\s+|para\s+)?cabo|lubrificante|desengripante|silicone\s+(liquido|spray|em\s+spray|para\s+esteira)|"
+    r"oleo\s+(de\s+)?silicone"
+)
+_CONTEXTO_ACADEMIA = (
+    r"academia|musculac|ginastic|fitness|crossfit|pilates|equipamentos?\s+esportiv|"
+    r"esteira\s+(ergom|eletric|prof)|aparelhos?\s+de\s+(ginastica|musculacao)"
+)
+ITEM_FORTE, ITEM_FORA, ITEM_PISO, ITEM_MANUTENCAO, CONTEXTO_ACADEMIA = (
+    re.compile(p, re.I) for p in (_ITEM_FORTE, _ITEM_FORA, _ITEM_PISO, _ITEM_MANUTENCAO, _CONTEXTO_ACADEMIA))
+
+
+def contexto_academia(texto: str | None) -> bool:
+    """Objeto/texto fala de academia/musculação/ginástica (habilita peças de manutenção nos itens)."""
+    return bool(CONTEXTO_ACADEMIA.search(normalizar(texto or "")))
+# Prefixos do catálogo de produtos do portal Paradigma da SFIEC (enviados pelo Marcelo em 26/09/2026):
+# AI03 = EQUIPAMENTOS ESPORTIVOS; NE53 e MC06 = ESPORTIVO. O código vem colado na descrição do item.
+CATALOGO_ESPORTIVO = re.compile(r"(^|\s)(AI03|NE53|MC06)\d{5}\s*-", re.I)
+
+
+def e_peca(t: str) -> bool:
+    """Peça quando o termo de peça vem ANTES de qualquer nome de equipamento: "LONA PARA ESTEIRA ERGOMÉTRICA"
+    e "CABO DE AÇO PARA LEG PRESS" são peça; "LEG PRESS 45 COM CABOS DE AÇO" e "BANCO SUPINO ESTOFADO" são equipamento."""
+    p = ITEM_MANUTENCAO.search(t)
+    if not p:
+        return False
+    eq = [m.start() for m in (ITEM_FORTE.search(t), ITEM_PISO.search(t)) if m]
+    return not eq or p.start() < min(eq)
+
+
+def classificar_texto_item(texto: str, contexto: bool = False) -> tuple[str | None, str]:
+    """(categoria, metodo) para o texto de UM item. metodo: regra | regra_item | catalogo.
+    `contexto`: o objeto do processo é de academia (libera peças de manutenção -> 'manutencao')."""
+    t = normalizar(texto)
+    if ITEM_FORA.search(t):
+        return None, "regra"
+    # Peça de reposição citando o aparelho ("cabo de aço para aparelho de musculação") é manutenção, não equipamento;
+    # vem antes das regras de objeto, mas depois do vocabulário explícito de equipamento (ITEM_FORTE).
+    if e_peca(t) and (contexto or CONTEXTO_ACADEMIA.search(t)):
+        return "manutencao", "regra_item"
+    cat = classificar(texto)
+    if cat:
+        return cat, "regra"
+    if ITEM_PISO.search(t):
+        return "piso", "regra_item"
+    if ITEM_FORTE.search(t):
+        return "forte", "regra_item"
+    if CATALOGO_ESPORTIVO.search(texto or ""):
+        return "forte", "catalogo"
+    return None, "regra"
 
 
 def normalizar(t: str) -> str:

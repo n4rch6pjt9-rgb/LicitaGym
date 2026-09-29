@@ -99,16 +99,56 @@ class Supabase:
                 return linhas
 
 
-class Armazenamento:
-    """Salva no Google Cloud Storage se GCS_BUCKET estiver definido; senão em ./dados."""
+class SupabaseStorage:
+    """Bucket privado do Supabase Storage (padrão do LicitaGym: os arquivos ficam dentro do SaaS).
+    URI gravada no banco: supabase://<bucket>/<caminho>. O Dashboard abre por link assinado (usuário logado)."""
 
-    def __init__(self, bucket: str | None = None, pasta_local: str = "dados"):
+    def __init__(self, url: str, service_key: str, bucket: str, sessao: requests.Session | None = None):
+        self.base = url.rstrip("/") + "/storage/v1"
+        self.bucket = bucket
+        self.s = sessao or requests.Session()
+        self.h = {"apikey": service_key, "Authorization": f"Bearer {service_key}"}
+
+    def salvar(self, caminho: str, conteudo: bytes, ctype: str) -> str:
+        r = self.s.post(f"{self.base}/object/{self.bucket}/{caminho}", data=conteudo,
+                        headers={**self.h, "Content-Type": ctype, "x-upsert": "true"}, timeout=(30, 300))
+        if r.status_code >= 300:
+            raise RuntimeError(f"Supabase Storage {caminho}: {r.status_code} {r.text[:300]}")
+        return f"supabase://{self.bucket}/{caminho}"
+
+    def ler(self, uri: str) -> bytes:
+        bucket, caminho = uri.removeprefix("supabase://").split("/", 1)
+        r = self.s.get(f"{self.base}/object/{bucket}/{caminho}", headers=self.h, timeout=(30, 300))
+        r.raise_for_status()
+        return r.content
+
+
+class Armazenamento:
+    """Destino dos arquivos, nesta ordem:
+    1. Supabase Storage, se SUPABASE_STORAGE_BUCKET estiver definido (padrão do LicitaGym);
+    2. Google Cloud Storage, se GCS_BUCKET estiver definido;
+    3. disco local ./dados (só para teste: fica fora do SaaS)."""
+
+    def __init__(self, bucket: str | None = None, pasta_local: str = "dados", supabase: SupabaseStorage | None = None):
         self.bucket_nome = bucket
         self.pasta_local = Path(pasta_local)
         self._bucket = None
-        if bucket:
+        self.supabase = supabase
+        if bucket and supabase is None:
             from google.cloud import storage  # import tardio: só precisa no Cloud Run
             self._bucket = storage.Client().bucket(bucket)
+
+    @classmethod
+    def do_ambiente(cls) -> "Armazenamento":
+        sb_bucket = env("SUPABASE_STORAGE_BUCKET")
+        if sb_bucket:
+            return cls(supabase=SupabaseStorage(env("SUPABASE_URL", obrigatorio=True),
+                                                env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True), sb_bucket))
+        return cls(env("GCS_BUCKET"))
+
+    @property
+    def dentro_do_saas(self) -> bool:
+        return self.supabase is not None or self._bucket is not None
 
     @staticmethod
     def caminho(fonte: str, modulo: int, id_externo: int, secao: str, arquivo: str) -> str:
@@ -117,6 +157,8 @@ class Armazenamento:
 
     def salvar(self, caminho: str, conteudo: bytes, content_type: str | None) -> str:
         ctype = content_type or mimetypes.guess_type(caminho)[0] or "application/octet-stream"
+        if self.supabase is not None:
+            return self.supabase.salvar(caminho, conteudo, ctype)
         if self._bucket is not None:
             blob = self._bucket.blob(caminho)
             blob.upload_from_string(conteudo, content_type=ctype)

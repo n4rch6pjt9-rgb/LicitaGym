@@ -226,3 +226,168 @@ def test_backfill_main_padrao_e_dry_run(monkeypatch, capsys):
     assert B.main([]) == 0
     assert sb.atualizacoes == []
     assert "leads->historico: 1" in capsys.readouterr().out
+
+
+# --- coletor: o detalhe da compra decide a prioridade (a busca pode estar defasada) ------------------
+
+# Item da busca "atrasado": prazo aberto, sem resultado, situação Divulgada. Itens em andamento.
+BUSCA_ABERTA = dict(ABERTA, orgao_cnpj="33781055000135", ano="2026", numero_sequencial="1683",
+                    description="Aquisição de piso emborrachado para academia", municipio_nome="Salvador",
+                    uf="BA", modalidade_licitacao_nome="Pregão - Eletrônico", valor_global=None)
+ITENS_EM_ANDAMENTO = [{"numeroItem": 1, "descricao": "Piso emborrachado 10mm", "quantidade": 100,
+                       "situacaoCompraItemNome": "Em andamento", "temResultado": False}]
+DETALHE_ABERTO = {"processo": "123/2026", "numeroCompra": "90", "anoCompra": 2026,
+                  "modalidadeNome": "Pregão - Eletrônico", "situacaoCompraNome": "Divulgada no PNCP",
+                  "existeResultado": False, "valorTotalHomologado": None,
+                  "dataEncerramentoProposta": "2026-10-13T09:30:00"}
+
+
+def _pncp_coleta(detalhe, busca=BUSCA_ABERTA):
+    """PNCP falso: `detalhe` = dict (resposta do detalhe) ou Exception (consulta falha)."""
+    p = MagicMock()
+    p.buscar.return_value = {"items": [busca], "total": 1}
+    p.itens.return_value = ITENS_EM_ANDAMENTO
+    p.resultados.return_value = []
+    p.arquivos.return_value = []
+    if isinstance(detalhe, Exception):
+        p.compra.side_effect = detalhe
+    else:
+        p.compra.return_value = detalhe
+    return p
+
+
+def _sb_coleta():
+    sb = MagicMock()
+    sb.upsert.side_effect = lambda t, linhas, conflito: [{"id": 7}] if t == "licitacoes_externas" else linhas
+    return sb
+
+
+def _coletar(p, sb=None, dry_run=False, status="recebendo_proposta"):
+    sb = sb if sb is not None else _sb_coleta()
+    r = P.coletar(p, sb, None, ["piso emborrachado"], status, 1, 50, com_resultados=True,
+                  baixar_arquivos=False, max_bytes=10**8, dry_run=dry_run, modo="leads", agora=AGORA,
+                  pausa_segunda_passada=0)
+    linhas = [c.args[1] for c in sb.upsert.call_args_list if c.args[0] == "licitacoes_externas"]
+    return r, (linhas[0] if linhas else None)
+
+
+def test_busca_aberta_mas_detalhe_com_resultado_grava_historico():
+    p = _pncp_coleta(dict(DETALHE_ABERTO, existeResultado=True))
+    r, lic = _coletar(p)
+    assert lic["prioridade"] == "historico"
+    assert r["prioridade_historico"] == 1 and "prioridade_leads" not in r
+    assert r["prioridade_diferente_do_modo"] == 1
+    assert lic["numero_processo"] == "123/2026"          # identificação do mesmo detalhe
+    assert p.compra.call_count == 1
+
+
+def test_detalhe_com_valor_homologado_grava_historico():
+    p = _pncp_coleta(dict(DETALHE_ABERTO, valorTotalHomologado=15760.03))
+    r, lic = _coletar(p)
+    assert lic["prioridade"] == "historico" and r["prioridade_historico"] == 1
+    assert p.compra.call_count == 1
+
+
+def test_detalhe_com_prazo_encerrado_sem_resultado_e_monitorar_mesmo_com_busca_aberta():
+    p = _pncp_coleta(dict(DETALHE_ABERTO, dataEncerramentoProposta="2026-09-20T09:30:00"))
+    r, lic = _coletar(p)
+    assert lic["prioridade"] == "monitorar" and r["prioridade_monitorar"] == 1
+    assert p.compra.call_count == 1
+
+
+def test_detalhe_aberto_confirma_lead():
+    p = _pncp_coleta(DETALHE_ABERTO)
+    r, lic = _coletar(p)
+    assert lic["prioridade"] == "leads" and r["prioridade_leads"] == 1
+    assert "prioridade_leads_sem_detalhe" not in r and p.compra.call_count == 1
+
+
+def test_falha_no_detalhe_e_busca_aberta_nao_grava_leads():
+    """Fail-closed: sem o detalhe, leads só pela busca+itens pode ser compra já homologada."""
+    p = _pncp_coleta(RuntimeError("timeout do PNCP"))
+    r, lic = _coletar(p)
+    assert lic is not None and "prioridade" not in lic          # fica o valor do banco
+    assert "numero_processo" not in lic and "numero_edital" not in lic
+    assert r["prioridade_leads_sem_detalhe"] == 1 and r["falha_detalhe"] == 1
+    assert "prioridade_leads" not in r and "prioridade_diferente_do_modo" not in r
+    assert r["gravadas"] == 1 and r["erros"] == 0
+    assert p.compra.call_count == 1
+
+
+def test_falha_no_detalhe_e_busca_encerrada_grava_historico():
+    p = _pncp_coleta(RuntimeError("503 do PNCP"), busca=dict(BUSCA_ABERTA, tem_resultado=True))
+    r, lic = _coletar(p, status="encerradas")
+    assert lic["prioridade"] == "historico" and r["prioridade_historico"] == 1
+    assert "prioridade_leads_sem_detalhe" not in r and r["falha_detalhe"] == 1
+
+
+def test_falha_no_detalhe_e_prazo_encerrado_na_busca_grava_monitorar():
+    p = _pncp_coleta(RuntimeError("503 do PNCP"), busca=dict(BUSCA_ABERTA, data_fim_vigencia="2026-09-20T09:30"))
+    r, lic = _coletar(p, status="em_julgamento")
+    assert lic["prioridade"] == "monitorar" and r["prioridade_monitorar"] == 1
+
+
+def test_detalhe_consultado_uma_vez_por_compra_inclusive_em_dry_run():
+    outra = dict(BUSCA_ABERTA, numero_controle_pncp="33781055000135-1-001684/2026", numero_sequencial="1684")
+    p = _pncp_coleta(dict(DETALHE_ABERTO, existeResultado=True))
+    p.buscar.return_value = {"items": [BUSCA_ABERTA, outra], "total": 2}
+    r, lic = _coletar(p, sb=MagicMock(), dry_run=True)
+    assert lic is None                                          # dry-run não grava
+    assert p.compra.call_count == 2
+    assert sorted(c.args[0]["numero_sequencial"] for c in p.compra.call_args_list) == ["1683", "1684"]
+    assert r["prioridade_historico"] == 2 and "prioridade_leads" not in r
+
+
+def test_compra_com_detalhe_o_detalhe_vence_a_busca():
+    busca = dict(BUSCA_ABERTA, tem_resultado=False, situacao_nome="Divulgada no PNCP")
+    det = {"existeResultado": True, "situacaoCompraNome": "Revogada", "dataEncerramentoProposta": "2026-09-20T00:00",
+           "valorTotalHomologado": None, "processo": "1/2026"}
+    v = P.compra_com_detalhe(busca, det)
+    assert P.motivo_prioridade(v, agora=AGORA) == ("historico", "compra com resultado")
+    assert P.motivo_prioridade(dict(v, existeResultado=False), agora=AGORA)[1] == "situação Revogada"
+    assert P.prioridade_da_compra(P.compra_com_detalhe(busca, {"dataEncerramentoProposta": "2026-09-20T00:00"}),
+                                  agora=AGORA) == "monitorar"
+    # detalhe diz sem resultado: vence o tem_resultado da busca
+    assert P.prioridade_da_compra(P.compra_com_detalhe(dict(busca, tem_resultado=True),
+                                                       {"existeResultado": False}), agora=AGORA) == "leads"
+    # campo vazio no detalhe não apaga o da busca; só estado entra na visão; entradas intactas
+    assert "processo" not in v and "valorTotalHomologado" not in v
+    assert busca["situacao_nome"] == "Divulgada no PNCP" and "existeResultado" not in busca
+    assert P.compra_com_detalhe(busca, None) is busca
+
+
+# --- backfill: detalhe vence e fail-closed ------------------------------------------------------------
+
+def test_backfill_falha_na_consulta_nao_grava_leads():
+    ln = dict(_linhas()[1])                                    # #2 monitorar; gravado diz leads
+    sb = _SbSomenteLeitura([ln])
+    pncp = MagicMock()
+    pncp.compra.side_effect = RuntimeError("429 do PNCP")
+    r = B.backfill(sb, pncp, aplicar=True, agora=AGORA, consultar_pncp=True)
+    assert sb.atualizacoes == [] and r["gravadas"] == 0
+    assert r["leads_sem_detalhe"] == 1 and r["falha_consulta"] == 1 and r["transicoes"] == {}
+
+
+def test_backfill_detalhe_vence_o_gravado():
+    ln = dict(_linhas()[1])                                    # gravado: prazo aberto, sem resultado
+    sb = _SbSomenteLeitura([ln])
+    pncp = MagicMock()
+    pncp.compra.return_value = {"situacaoCompraNome": "Divulgada no PNCP", "existeResultado": False,
+                                "valorTotalHomologado": 900.0, "dataEncerramentoProposta": "2026-10-13T09:30:00"}
+    r = B.backfill(sb, pncp, aplicar=True, agora=AGORA, consultar_pncp=True)
+    assert sb.atualizacoes == [("licitacoes_externas", 2, {"prioridade": "historico"})]
+    assert "valor homologado" in r["amostra"]["monitorar->historico"][0][2]
+
+
+def test_backfill_historico_nao_e_rebaixado_sem_o_detalhe():
+    """O coletor grava historico pelo detalhe (existeResultado), que não fica nas colunas: sem consulta, não rebaixa."""
+    ln = dict(_linhas()[1], prioridade="historico")            # gravado diria leads
+    sb = _SbSomenteLeitura([ln])
+    r = B.backfill(sb, aplicar=True, agora=AGORA)
+    assert sb.atualizacoes == [] and r["historico_mantido_sem_detalhe"] == 1
+    # com o detalhe confirmando compra aberta e sem resultado, sai de historico
+    pncp = MagicMock()
+    pncp.compra.return_value = DETALHE_ABERTO
+    r = B.backfill(sb, pncp, aplicar=True, agora=AGORA, consultar_pncp=True)
+    assert sb.atualizacoes == [("licitacoes_externas", 2, {"prioridade": "leads"})]
+    assert r["historico_mantido_sem_detalhe"] == 0

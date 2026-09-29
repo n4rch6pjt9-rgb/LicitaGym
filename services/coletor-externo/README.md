@@ -109,6 +109,13 @@ resultado, vale o status da busca; sem isso a coluna não é gravada. O estado d
 encerrada vira `historico` mesmo que já estivesse gravada como lead. O filtro `status` do PNCP é ruidoso
 (`em_julgamento` devolve compras ainda abertas, com resultado e anuladas), por isso ele é só o último recurso.
 A janela de 120 dias de homologação do antigo modo `leads` saiu; `--dias`/`--margem-publicacao` são aceitos e ignorados.
+O detalhe da compra (`/api/consulta/v1/.../compras/{ano}/{seq}`, consultado uma vez por compra, o mesmo que dá o
+processo) vence o item da busca, que atrasa: `existeResultado`, `valorTotalHomologado`, `situacaoCompraNome` e
+`dataEncerramentoProposta` do detalhe têm precedência (`compra_com_detalhe()`). Se o detalhe falha e a busca+itens
+dizem `leads`, a coluna **não** é gravada (fail-closed; conta `prioridade_leads_sem_detalhe`); `historico`/`monitorar`
+pela busca+itens continuam gravados. No backfill, a mesma regra: consulta falha + gravado diz `leads` = não grava
+(`leads_sem_detalhe`), e uma linha já `historico` só sai de `historico` com o detalhe confirmando
+(`historico_mantido_sem_detalhe`).
 
 ```bash
 # pré-requisito: supabase/migrations/20260924100000_pncp_itens_resultados.sql (já aplicada)

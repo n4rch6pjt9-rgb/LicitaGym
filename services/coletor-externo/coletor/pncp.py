@@ -2,7 +2,7 @@
 
 Usa as APIs públicas do Portal Nacional de Contratações Públicas (mapeadas em 24/09/2026):
   GET https://pncp.gov.br/api/search/?q="termo"&tipos_documento=edital&status=...&pagina=&tam_pagina=
-  GET https://pncp.gov.br/api/consulta/v1/orgaos/{cnpj}/compras/{ano}/{seq}   (detalhe: processo)
+  GET https://pncp.gov.br/api/consulta/v1/orgaos/{cnpj}/compras/{ano}/{seq}   (detalhe: processo e estado)
   GET https://pncp.gov.br/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/itens
   GET https://pncp.gov.br/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/itens/{n}/resultados
   GET https://pncp.gov.br/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/arquivos  (-> url de cada arquivo)
@@ -142,7 +142,9 @@ class PNCP:
 
     def compra(self, c: dict) -> dict:
         """Detalhe da compra: traz o número do PROCESSO ADMINISTRATIVO ('processo'),
-        que a busca não devolve. É ele (com o CNPJ do órgão) que identifica o certame fora do PNCP."""
+        que a busca não devolve. É ele (com o CNPJ do órgão) que identifica o certame fora do PNCP.
+        Traz também o estado atual da compra (existeResultado, valorTotalHomologado, situacaoCompraNome,
+        dataEncerramentoProposta), que vence o item da busca na prioridade (ver compra_com_detalhe)."""
         r = self._get(self.detalhe_compra(c), _timeout=DETALHE_TIMEOUT, _tentativas=DETALHE_TENTATIVAS)
         # PNCP devolve erro de rota como JSON {status, message} com HTTP 200.
         if isinstance(r, dict) and str(r.get("status", "")).startswith(("3", "4", "5")) and "message" in r:
@@ -287,13 +289,18 @@ def motivo_prioridade(compra: dict, tem_resultado: bool | None = None, *, agora:
     Ordem: 1) historico se há homologação/resultado ou a compra está encerrada (revogada, anulada,
     cancelada, deserta, fracassada, todos os itens finalizados); 2) monitorar se suspensa; 3) pelo prazo
     de proposta: aberto -> leads, encerrado sem resultado -> monitorar; 4) sem prazo: o status da busca
-    (último recurso); 5) None = indeterminado (quem chama não grava)."""
+    (último recurso); 5) None = indeterminado (quem chama não grava).
+
+    Precedência de chaves (_campo): as do detalhe vêm antes das da busca (existeResultado > tem_resultado,
+    situacaoCompraNome > situacao_nome, dataEncerramentoProposta > data_fim_vigencia), então na visão
+    compra_com_detalhe() o detalhe vence a busca, que pode estar defasada."""
     agora = agora or datetime.now(timezone.utc)
     if tem_resultado is True:
         return "historico", "resultado consultado"
     if _campo(compra, "data_homologacao"):
         return "historico", "data_homologacao"
-    if _verdadeiro(_campo(compra, "tem_resultado", "existeResultado")):
+    # chaves do detalhe antes das da busca: na visão compra_com_detalhe() o detalhe vence
+    if _verdadeiro(_campo(compra, "existeResultado", "tem_resultado")):
         return "historico", "compra com resultado"
     if (_num(_campo(compra, "valorTotalHomologado")) or 0) > 0:
         return "historico", "valor homologado"
@@ -319,6 +326,20 @@ def motivo_prioridade(compra: dict, tem_resultado: bool | None = None, *, agora:
     if status_busca in PRIORIDADE_DO_STATUS_BUSCA:
         return PRIORIDADE_DO_STATUS_BUSCA[status_busca], f"sem prazo de proposta; busca status={status_busca}"
     return None, "indeterminado (sem prazo de proposta nem resultado)"
+
+
+# Campos de estado do detalhe da compra (/api/consulta/v1/...) que motivo_prioridade lê.
+ESTADO_DETALHE = ("existeResultado", "valorTotalHomologado", "situacaoCompraNome", "dataEncerramentoProposta")
+
+
+def compra_com_detalhe(compra: dict, det: dict | None) -> dict:
+    """Visão para motivo_prioridade: `compra` (item da busca ou linha gravada) + os campos de estado do
+    detalhe. O detalhe é a fonte autoritativa (a busca atrasa: prazo "aberto" e sem resultado numa compra
+    já homologada); como motivo_prioridade lê as chaves do detalhe primeiro, ele vence onde tem valor e a
+    busca só completa o que o detalhe não traz. Não altera as entradas."""
+    if not det:
+        return compra
+    return {**compra, **{k: det[k] for k in ESTADO_DETALHE if det.get(k) not in (None, "")}}
 
 
 def prioridade_da_compra(compra: dict, tem_resultado: bool | None = None, *, agora: datetime | None = None,
@@ -410,22 +431,32 @@ def _resultados_relevantes(pncp, c, itens, por_item) -> list[tuple[dict, dict]]:
     return pares
 
 
-def identificacao(pncp, c: dict) -> dict:
+def consultar_detalhe(pncp, c: dict) -> dict:
+    """Detalhe da compra (uma consulta por compra: identificação e prioridade usam o mesmo retorno).
+    Falha da consulta levanta ConsultaFalhou."""
+    try:
+        return pncp.compra(c)
+    except Exception as e:
+        raise ConsultaFalhou(f"detalhe da compra {c.get('numero_controle_pncp')}: {e}") from e
+
+
+def identificacao_do_detalhe(c: dict, det: dict) -> dict:
     """numero_processo = processo administrativo do órgão (ex.: 00007.20260204/0002-28).
     numero_edital = só rótulo de exibição ('Pregão Eletrônico nº 1/2026' se repete entre órgãos e NÃO identifica nada).
     Identidade: PNCP -> numero_controle_pncp; fora do PNCP -> (CNPJ do órgão, processo administrativo).
 
-    numero_processo None = detalhe respondeu sem processo. Falha da consulta levanta ConsultaFalhou:
-    quem chama não grava identificação (não sobrescreve valor bom com NULL)."""
-    try:
-        det = pncp.compra(c)
-    except Exception as e:
-        raise ConsultaFalhou(f"detalhe da compra {c.get('numero_controle_pncp')}: {e}") from e
+    numero_processo None = detalhe respondeu sem processo."""
     proc = (det.get("processo") or "").strip() or None
     num, ano = det.get("numeroCompra"), det.get("anoCompra") or c.get("ano")
     mod = det.get("modalidadeNome") or c.get("modalidade_licitacao_nome")
     edital = f"{mod} nº {num}/{ano}" if num else c.get("title")
     return {"numero_processo": proc, "numero_edital": edital}
+
+
+def identificacao(pncp, c: dict) -> dict:
+    """Consulta o detalhe e extrai a identificação (ver identificacao_do_detalhe). Falha da consulta
+    levanta ConsultaFalhou: quem chama não grava identificação (não sobrescreve valor bom com NULL)."""
+    return identificacao_do_detalhe(c, consultar_detalhe(pncp, c))
 
 
 def _raw_resultado(r: dict) -> dict:
@@ -451,25 +482,40 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
     datas = [d for d in (_dt(r.get("dataResultado")) for _, r in pares) if d]
     data_homologacao = max(datas) if datas else None
     tem_resultado = (bool(pares) or data_homologacao is not None) if com_resultados else None
-    prioridade, motivo = motivo_prioridade(c, tem_resultado, agora=agora, status_busca=status_busca, itens=itens)
-    _inc(resumo, f"prioridade_{prioridade or 'indeterminada'}")
-    if modo and prioridade and prioridade != modo:
-        _inc(resumo, "prioridade_diferente_do_modo")
+
+    # Detalhe consultado uma vez: identificação + estado autoritativo da compra (a busca atrasa).
+    try:
+        det, erro_detalhe = consultar_detalhe(pncp, c), None
+    except ConsultaFalhou as e:
+        det, erro_detalhe = None, e
+    ident = identificacao_do_detalhe(c, det) if det is not None else {}
+    prioridade, motivo = motivo_prioridade(compra_com_detalhe(c, det), tem_resultado, agora=agora,
+                                           status_busca=status_busca, itens=itens)
+    # Fail-closed: sem o detalhe, "leads" vindo só da busca+itens pode ser compra já homologada.
+    # Não grava (fica o valor do banco); historico/monitorar pela busca+itens continuam valendo.
+    leads_sem_detalhe = det is None and prioridade == "leads"
+    if leads_sem_detalhe:
+        _inc(resumo, "prioridade_leads_sem_detalhe")
+    else:
+        _inc(resumo, f"prioridade_{prioridade or 'indeterminada'}")
+        if modo and prioridade and prioridade != modo:
+            _inc(resumo, "prioridade_diferente_do_modo")
 
     vencedores = sorted({(r.get("nomeRazaoSocialFornecedor") or "")[:40] for _, r in pares
                          if r.get("tipoPessoa") != "PF" and r.get("nomeRazaoSocialFornecedor")})
     log.info("  %-9s%s | %s | %s (%s)%s%s", categoria, " ★borracha" if interesse else "", rotulo,
-             prioridade or "prioridade ?", motivo,
+             "leads NÃO gravada (sem detalhe)" if leads_sem_detalhe else prioridade or "prioridade ?", motivo,
              f" | homologado {data_homologacao.date()}" if data_homologacao else "",
              f" | vencedor(es): {', '.join(vencedores[:3])}" if vencedores else "")
-    try:
-        ident = identificacao(pncp, c)
+    if det is not None:
         log.info("            processo %s | %s | órgão %s", ident["numero_processo"] or "?",
                  ident["numero_edital"], c.get("orgao_cnpj"))
-    except ConsultaFalhou as e:
-        ident = {}
+    else:
         _inc(resumo, "falha_detalhe")
-        log.warning("            detalhe indisponível, identificação não gravada: %s", str(e)[:120])
+        log.warning("            detalhe indisponível, identificação não gravada: %s", str(erro_detalhe)[:120])
+        if leads_sem_detalhe:
+            log.warning("            leads só pela busca+itens, sem o detalhe: prioridade não gravada "
+                        "(fica a do banco)")
     if dry_run:
         return
 
@@ -485,8 +531,9 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
         "interesse_borracha": interesse, "termos_busca": [termo], "raw": c,
     }
     # O estado derivado vence: encerrada/homologada vira historico mesmo que a linha fosse lead.
-    # Só não grava quando não dá para saber (não apaga uma prioridade já gravada com NULL).
-    if prioridade is None:
+    # Só não grava quando não dá para saber (não apaga uma prioridade já gravada com NULL) ou quando
+    # seria leads sem o detalhe confirmar (fail-closed: homologada nunca vira lead).
+    if prioridade is None or leads_sem_detalhe:
         linha.pop("prioridade")
     if not data_homologacao:
         linha.pop("data_homologacao")

@@ -16,7 +16,12 @@ Padrão: DRY-RUN (lê, mostra contagem por transição e amostra, não grava nad
   python -m coletor.backfill_prioridade_pncp                        # dry-run, só dados gravados
   python -m coletor.backfill_prioridade_pncp --consultar-pncp --limit 50   # dry-run + detalhe do PNCP
   python -m coletor.backfill_prioridade_pncp --apply                # grava só a coluna prioridade
-Falha de consulta ao PNCP não grava nada da consulta (fica o cálculo pelos dados gravados).
+Falha de consulta ao PNCP não grava nada da consulta (fica o cálculo pelos dados gravados), com uma
+exceção fail-closed: com --consultar-pncp, se a consulta falha e os dados gravados dizem `leads`, não
+grava (conta leads_sem_detalhe): o retrato gravado pode ser de uma compra já homologada.
+Linha já `historico` só sai de historico com o detalhe do PNCP confirmando: o coletor decide historico
+pelo detalhe (existeResultado, valorTotalHomologado), que não fica nas colunas gravadas; sem consulta,
+conta historico_mantido_sem_detalhe e não mexe.
 """
 from __future__ import annotations
 
@@ -27,7 +32,7 @@ import sys
 from datetime import datetime, timezone
 
 from .destino import Supabase, env
-from .pncp import PNCP, motivo_prioridade
+from .pncp import PNCP, compra_com_detalhe, motivo_prioridade
 
 log = logging.getLogger("coletor.backfill_prioridade_pncp")
 
@@ -50,8 +55,9 @@ def _consultar(pncp, ln: dict, agora: datetime) -> tuple[str | None, str]:
     if not c:
         raise ValueError(f"codigo_externo inválido: {ln.get('codigo_externo')!r}")
     det = pncp.compra(c)
-    # detalhe atual vence o retrato gravado; data_homologacao gravada (resultado já visto) continua valendo
-    base = {**det, "data_homologacao": ln.get("data_homologacao")}
+    # detalhe atual vence o retrato gravado (mesma visão do coletor: compra_com_detalhe); o gravado só
+    # completa o que o detalhe não traz. data_homologacao gravada (resultado já visto) continua valendo.
+    base = compra_com_detalhe({k: v for k, v in ln.items() if k not in ("prioridade", "licitacao_itens")}, det)
     prioridade, motivo = motivo_prioridade(base, agora=agora)
     if prioridade == "monitorar":
         itens = pncp.itens(c)
@@ -68,18 +74,30 @@ def backfill(sb, pncp=None, *, aplicar: bool = False, limite: int | None = None,
         filtros["limit"] = str(limite)
     linhas = sb.selecionar("licitacoes_externas", **filtros)
     r = {"lidas": len(linhas), "sem_mudanca": 0, "mudariam": 0, "gravadas": 0, "indeterminadas": 0,
-         "consultadas_pncp": 0, "falha_consulta": 0, "transicoes": {}, "amostra": {}}
+         "consultadas_pncp": 0, "falha_consulta": 0, "leads_sem_detalhe": 0, "historico_mantido_sem_detalhe": 0,
+         "transicoes": {}, "amostra": {}}
     for ln in linhas:
         atual = ln.get("prioridade")
         nova, motivo = motivo_prioridade(ln, agora=agora, itens=ln.get("licitacao_itens") or None)
+        confirmado_pncp = False
         if consultar_pncp and pncp is not None and nova != "historico":
             try:
                 nova, motivo = _consultar(pncp, ln, agora)
                 r["consultadas_pncp"] += 1
+                confirmado_pncp = True
             except Exception as e:
                 r["falha_consulta"] += 1
                 log.warning("  %s: consulta ao PNCP falhou, fica o cálculo pelos dados gravados: %s",
                             ln.get("codigo_externo"), str(e)[:120])
+                if nova == "leads":
+                    # fail-closed (como o coletor): leads sem o detalhe confirmar não é gravado
+                    r["leads_sem_detalhe"] += 1
+                    continue
+        if atual == "historico" and nova not in (None, "historico") and not confirmado_pncp:
+            # historico gravado pelo coletor pode vir do detalhe (que não fica nas colunas): sem o
+            # detalhe confirmar, não rebaixa
+            r["historico_mantido_sem_detalhe"] += 1
+            continue
         if nova is None:
             r["indeterminadas"] += 1
             continue

@@ -2,16 +2,21 @@
 
 Usa as APIs públicas do Portal Nacional de Contratações Públicas (mapeadas em 24/09/2026):
   GET https://pncp.gov.br/api/search/?q="termo"&tipos_documento=edital&status=...&pagina=&tam_pagina=
-  GET https://pncp.gov.br/api/consulta/v1/orgaos/{cnpj}/compras/{ano}/{seq}   (detalhe: processo)
+  GET https://pncp.gov.br/api/consulta/v1/orgaos/{cnpj}/compras/{ano}/{seq}   (detalhe: processo e estado)
   GET https://pncp.gov.br/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/itens
   GET https://pncp.gov.br/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/itens/{n}/resultados
   GET https://pncp.gov.br/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/arquivos  (-> url de cada arquivo)
 
 Exemplos:
   python -m coletor.pncp --dry-run --paginas 1                       # só mostra o que acharia
-  python -m coletor.pncp --status recebendo_proposta                 # oportunidades abertas
-  python -m coletor.pncp --status encerradas --paginas 20            # histórico p/ RAG e leads
+  python -m coletor.pncp                                             # leads: recebendo proposta
+  python -m coletor.pncp --modo monitorar                            # em julgamento
+  python -m coletor.pncp --modo historico --paginas 20               # encerradas: histórico p/ RAG e preço
   python -m coletor.pncp --termos "borracha granulada,raspa de borracha" --baixar-arquivos
+
+licitacoes_externas.prioridade (decisão do owner, 29/09/2026) vem do ESTADO da compra, não do modo:
+  leads = recebendo proposta | monitorar = em julgamento | historico = encerrada/homologada/com resultado.
+Ver prioridade_da_compra(). Compra homologada não é lead.
 
 Prefeituras normalmente NÃO informam código CATMAT; por isso a busca é textual e cada
 compra passa pelo classificador de escopo (coletor/escopo.py) usando objeto + itens.
@@ -137,7 +142,9 @@ class PNCP:
 
     def compra(self, c: dict) -> dict:
         """Detalhe da compra: traz o número do PROCESSO ADMINISTRATIVO ('processo'),
-        que a busca não devolve. É ele (com o CNPJ do órgão) que identifica o certame fora do PNCP."""
+        que a busca não devolve. É ele (com o CNPJ do órgão) que identifica o certame fora do PNCP.
+        Traz também o estado atual da compra (existeResultado, valorTotalHomologado, situacaoCompraNome,
+        dataEncerramentoProposta), que vence o item da busca na prioridade (ver compra_com_detalhe)."""
         r = self._get(self.detalhe_compra(c), _timeout=DETALHE_TIMEOUT, _tentativas=DETALHE_TENTATIVAS)
         # PNCP devolve erro de rota como JSON {status, message} com HTTP 200.
         if isinstance(r, dict) and str(r.get("status", "")).startswith(("3", "4", "5")) and "message" in r:
@@ -215,15 +222,130 @@ def avaliar(compra: dict, itens: list[dict]) -> tuple[str | None, bool, dict[int
     return categoria, interesse, por_item
 
 
-# Modos de coleta, em ordem de prioridade comercial
+# Modos de coleta, em ordem de prioridade comercial. O modo só escolhe o filtro `status` da busca;
+# a prioridade gravada vem de prioridade_da_compra() (o filtro do PNCP é ruidoso: em 29/09/2026
+# status=em_julgamento devolvia compras ainda recebendo proposta, com resultado e anuladas).
 MODOS = {
-    # vencedor já conhecido e ainda vai comprar o material -> principal fonte de leads
-    "leads": {"status": "encerradas", "exige_resultado_recente": True},
-    # certames abertos/em julgamento -> lista de acompanhamento (vencedor ainda não existe)
-    "monitorar": {"status": ["recebendo_proposta", "em_julgamento"], "exige_resultado_recente": False},
-    # encerrados antigos -> histórico de preços e RAG
-    "historico": {"status": "encerradas", "exige_resultado_recente": False},
+    # certames recebendo proposta -> ainda dá para disputar: são os leads
+    "leads": {"status": "recebendo_proposta"},
+    # propostas encerradas, sem resultado -> acompanhar até sair o vencedor
+    "monitorar": {"status": "em_julgamento"},
+    # encerradas (homologadas, com resultado, revogadas, anuladas, desertas...) -> histórico de preço e RAG
+    "historico": {"status": "encerradas"},
 }
+
+# Valores de licitacoes_externas.prioridade (decisão do owner, 29/09/2026). Compra homologada NÃO é lead.
+PRIORIDADES = ("leads", "monitorar", "historico")
+# Último recurso quando a compra não tem prazo de proposta nem sinal de encerramento/resultado.
+PRIORIDADE_DO_STATUS_BUSCA = {"recebendo_proposta": "leads", "em_julgamento": "monitorar",
+                              "encerradas": "historico"}
+_SITUACAO_ENCERRADA = re.compile(r"revogad|anulad|cancelad|desert|fracassad|encerrad|homologad|"
+                                 r"adjudicad|conclu[ií]d|finalizad", re.I)
+_SITUACAO_SUSPENSA = re.compile(r"suspens", re.I)
+_ITEM_COM_RESULTADO = re.compile(r"homologad|adjudicad", re.I)
+_ITEM_FINAL = re.compile(r"homologad|adjudicad|desert|fracassad|anulad|revogad|cancelad", re.I)
+# Datas do PNCP sem fuso (ex.: data_fim_vigencia "2026-10-13T09:30") estão no horário de Brasília.
+FUSO_PNCP = timezone(timedelta(hours=-3))
+
+
+def _instante(v) -> datetime | None:
+    if not v:
+        return None
+    if isinstance(v, datetime):
+        d = v
+    else:
+        try:
+            d = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return d if d.tzinfo else d.replace(tzinfo=FUSO_PNCP)
+
+
+def _campo(compra: dict, *chaves):
+    """Primeiro valor presente entre as chaves, na compra e depois no `raw` gravado (item da busca)."""
+    raw = compra.get("raw") if isinstance(compra.get("raw"), dict) else {}
+    for fonte in (compra, raw):
+        for k in chaves:
+            v = fonte.get(k)
+            if v not in (None, ""):
+                return v
+    return None
+
+
+def _verdadeiro(v) -> bool:
+    return v is True or (isinstance(v, str) and v.strip().lower() in ("true", "t", "1", "sim"))
+
+
+def motivo_prioridade(compra: dict, tem_resultado: bool | None = None, *, agora: datetime | None = None,
+                      status_busca: str | None = None, itens: list[dict] | None = None) -> tuple[str | None, str]:
+    """(prioridade, motivo). Função pura: não consulta nada, só lê os campos recebidos.
+
+    `compra` aceita o item da busca (situacao_nome, tem_resultado, cancelado, data_fim_vigencia), o detalhe
+    (situacaoCompraNome, existeResultado, valorTotalHomologado, dataEncerramentoProposta) ou a linha gravada
+    em licitacoes_externas (situacao, data_homologacao, data_fim, raw). `tem_resultado=True` = quem chama já
+    viu resultado (ex.: /resultados); False/None não anula o que a compra diz. `itens` no formato do PNCP
+    (situacaoCompraItemNome, temResultado) ou de licitacao_itens (situacao, tem_resultado).
+
+    Ordem: 1) historico se há homologação/resultado ou a compra está encerrada (revogada, anulada,
+    cancelada, deserta, fracassada, todos os itens finalizados); 2) monitorar se suspensa; 3) pelo prazo
+    de proposta: aberto -> leads, encerrado sem resultado -> monitorar; 4) sem prazo: o status da busca
+    (último recurso); 5) None = indeterminado (quem chama não grava).
+
+    Precedência de chaves (_campo): as do detalhe vêm antes das da busca (existeResultado > tem_resultado,
+    situacaoCompraNome > situacao_nome, dataEncerramentoProposta > data_fim_vigencia), então na visão
+    compra_com_detalhe() o detalhe vence a busca, que pode estar defasada."""
+    agora = agora or datetime.now(timezone.utc)
+    if tem_resultado is True:
+        return "historico", "resultado consultado"
+    if _campo(compra, "data_homologacao"):
+        return "historico", "data_homologacao"
+    # chaves do detalhe antes das da busca: na visão compra_com_detalhe() o detalhe vence
+    if _verdadeiro(_campo(compra, "existeResultado", "tem_resultado")):
+        return "historico", "compra com resultado"
+    if (_num(_campo(compra, "valorTotalHomologado")) or 0) > 0:
+        return "historico", "valor homologado"
+    if _verdadeiro(_campo(compra, "cancelado")):
+        return "historico", "cancelada"
+    situacao = str(_campo(compra, "situacaoCompraNome", "situacao_nome", "situacao") or "")
+    if _SITUACAO_ENCERRADA.search(situacao):
+        return "historico", f"situação {situacao}"
+    if itens:
+        sit_itens = [str(it.get("situacaoCompraItemNome") or it.get("situacao") or "") for it in itens]
+        if any(_verdadeiro(it.get("temResultado", it.get("tem_resultado"))) for it in itens) or \
+                any(_ITEM_COM_RESULTADO.search(s) for s in sit_itens):
+            return "historico", "item com resultado"
+        if all(_ITEM_FINAL.search(s) for s in sit_itens):
+            return "historico", "todos os itens finalizados"
+    if _SITUACAO_SUSPENSA.search(situacao):
+        return "monitorar", f"situação {situacao}"
+    fim = _instante(_campo(compra, "dataEncerramentoProposta", "data_fim_vigencia", "data_fim"))
+    if fim:
+        if fim > agora:
+            return "leads", "recebendo proposta"
+        return "monitorar", "propostas encerradas sem resultado"
+    if status_busca in PRIORIDADE_DO_STATUS_BUSCA:
+        return PRIORIDADE_DO_STATUS_BUSCA[status_busca], f"sem prazo de proposta; busca status={status_busca}"
+    return None, "indeterminado (sem prazo de proposta nem resultado)"
+
+
+# Campos de estado do detalhe da compra (/api/consulta/v1/...) que motivo_prioridade lê.
+ESTADO_DETALHE = ("existeResultado", "valorTotalHomologado", "situacaoCompraNome", "dataEncerramentoProposta")
+
+
+def compra_com_detalhe(compra: dict, det: dict | None) -> dict:
+    """Visão para motivo_prioridade: `compra` (item da busca ou linha gravada) + os campos de estado do
+    detalhe. O detalhe é a fonte autoritativa (a busca atrasa: prazo "aberto" e sem resultado numa compra
+    já homologada); como motivo_prioridade lê as chaves do detalhe primeiro, ele vence onde tem valor e a
+    busca só completa o que o detalhe não traz. Não altera as entradas."""
+    if not det:
+        return compra
+    return {**compra, **{k: det[k] for k in ESTADO_DETALHE if det.get(k) not in (None, "")}}
+
+
+def prioridade_da_compra(compra: dict, tem_resultado: bool | None = None, *, agora: datetime | None = None,
+                         status_busca: str | None = None, itens: list[dict] | None = None) -> str | None:
+    """leads | monitorar | historico a partir do estado real da compra (ver motivo_prioridade)."""
+    return motivo_prioridade(compra, tem_resultado, agora=agora, status_busca=status_busca, itens=itens)[0]
 
 
 _trava = threading.Lock()
@@ -241,24 +363,22 @@ def _dt(v) -> datetime | None:
 
 def coletar(pncp: PNCP, sb: Supabase | None, arm: Armazenamento | None, termos: list[str], status,
             paginas: int, tam: int, com_resultados: bool, baixar_arquivos: bool, max_bytes: int,
-            dry_run: bool, modo: str | None = None, dias: int = 120, margem_publicacao: int = 240,
-            agora: datetime | None = None, workers: int = 3, pausa_segunda_passada: float = 30) -> dict:
-    """modo='leads': só grava compras com resultado (homologação) nos últimos `dias`.
-    A busca vem ordenada por data de publicação (mais recente primeiro); a paginação para quando
-    o edital foi publicado há mais de `dias + margem_publicacao` dias (não pode ter homologação recente)."""
+            dry_run: bool, modo: str | None = None, agora: datetime | None = None, workers: int = 3,
+            pausa_segunda_passada: float = 30) -> dict:
+    """Busca `status` para cada termo e grava as compras no escopo. `modo` só vai para o log/resumo:
+    a prioridade de cada compra vem de prioridade_da_compra() (estado real, com o status da busca só
+    como último recurso). Uma compra encerrada vira historico mesmo que já fosse lead (rebaixa)."""
     agora = agora or datetime.now(timezone.utc)
-    corte_resultado = agora - timedelta(days=dias) if modo == "leads" else None
-    corte_publicacao = agora - timedelta(days=dias + margem_publicacao) if modo == "leads" else None
     status_lista = status if isinstance(status, list) else [status]
     vistos: dict[str, list[str]] = {}
     resumo = {"encontradas": 0, "no_escopo": 0, "interesse_borracha": 0, "fora": 0,
-              "sem_resultado_recente": 0, "gravadas": 0, "erros": 0}
-    falhas: list[tuple[dict, str]] = []
+              "gravadas": 0, "erros": 0}
+    falhas: list[tuple[dict, str, str]] = []
 
-    def _tentar(c, termo):
+    def _tentar(c, termo, st):
         try:
-            _processar(pncp, sb, arm, c, termo, com_resultados or modo == "leads", baixar_arquivos,
-                       max_bytes, dry_run, resumo, modo, corte_resultado)
+            _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos,
+                       max_bytes, dry_run, resumo, modo, status_busca=st, agora=agora)
             return c, None
         except Exception as e:
             if "Supabase" in str(e) and (" 401 " in str(e) or " 403 " in str(e)):
@@ -273,19 +393,11 @@ def coletar(pncp: PNCP, sb: Supabase | None, arm: Armazenamento | None, termos: 
                 res = pncp.buscar(termo, st, pagina, tam)
                 lote = res.get("items") or []
                 log.info('"%s" [%s] pág. %s: %s de %s', termo, st, pagina, len(lote), res.get("total"))
-                antigas = 0
                 fila = []
                 for c in lote:
                     chave = c.get("numero_controle_pncp")
                     if not chave:
                         continue
-                    if corte_publicacao:
-                        pub = _dt(c.get("data_publicacao_pncp"))
-                        if pub and pub < corte_publicacao:
-                            antigas += 1
-                            continue
-                        if c.get("tem_resultado") is False:
-                            continue
                     if chave in vistos:
                         vistos[chave].append(termo)
                         continue
@@ -293,20 +405,17 @@ def coletar(pncp: PNCP, sb: Supabase | None, arm: Armazenamento | None, termos: 
                     resumo["encontradas"] += 1
                     fila.append(c)
                 with ThreadPoolExecutor(max_workers=workers) as ex:
-                    for c, erro in ex.map(lambda c: _tentar(c, termo), fila):
+                    for c, erro in ex.map(lambda c: _tentar(c, termo, st), fila):
                         if erro:
-                            falhas.append((c, termo))
-                if len(lote) < tam or (lote and antigas == len(lote)):
-                    if antigas:
-                        log.info("  editais publicados antes de %s: fim da paginação deste termo",
-                                 corte_publicacao.date())
+                            falhas.append((c, termo, st))
+                if len(lote) < tam:
                     break
 
     if falhas:
         log.info("Segunda passada: %s compra(s) que falharam por instabilidade do PNCP", len(falhas))
         time.sleep(pausa_segunda_passada)
-        for c, termo in falhas:
-            _, erro = _tentar(c, termo)
+        for c, termo, st in falhas:
+            _, erro = _tentar(c, termo, st)
             if erro:
                 _inc(resumo, "erros")
     return resumo
@@ -322,22 +431,32 @@ def _resultados_relevantes(pncp, c, itens, por_item) -> list[tuple[dict, dict]]:
     return pares
 
 
-def identificacao(pncp, c: dict) -> dict:
+def consultar_detalhe(pncp, c: dict) -> dict:
+    """Detalhe da compra (uma consulta por compra: identificação e prioridade usam o mesmo retorno).
+    Falha da consulta levanta ConsultaFalhou."""
+    try:
+        return pncp.compra(c)
+    except Exception as e:
+        raise ConsultaFalhou(f"detalhe da compra {c.get('numero_controle_pncp')}: {e}") from e
+
+
+def identificacao_do_detalhe(c: dict, det: dict) -> dict:
     """numero_processo = processo administrativo do órgão (ex.: 00007.20260204/0002-28).
     numero_edital = só rótulo de exibição ('Pregão Eletrônico nº 1/2026' se repete entre órgãos e NÃO identifica nada).
     Identidade: PNCP -> numero_controle_pncp; fora do PNCP -> (CNPJ do órgão, processo administrativo).
 
-    numero_processo None = detalhe respondeu sem processo. Falha da consulta levanta ConsultaFalhou:
-    quem chama não grava identificação (não sobrescreve valor bom com NULL)."""
-    try:
-        det = pncp.compra(c)
-    except Exception as e:
-        raise ConsultaFalhou(f"detalhe da compra {c.get('numero_controle_pncp')}: {e}") from e
+    numero_processo None = detalhe respondeu sem processo."""
     proc = (det.get("processo") or "").strip() or None
     num, ano = det.get("numeroCompra"), det.get("anoCompra") or c.get("ano")
     mod = det.get("modalidadeNome") or c.get("modalidade_licitacao_nome")
     edital = f"{mod} nº {num}/{ano}" if num else c.get("title")
     return {"numero_processo": proc, "numero_edital": edital}
+
+
+def identificacao(pncp, c: dict) -> dict:
+    """Consulta o detalhe e extrai a identificação (ver identificacao_do_detalhe). Falha da consulta
+    levanta ConsultaFalhou: quem chama não grava identificação (não sobrescreve valor bom com NULL)."""
+    return identificacao_do_detalhe(c, consultar_detalhe(pncp, c))
 
 
 def _raw_resultado(r: dict) -> dict:
@@ -348,7 +467,7 @@ def _raw_resultado(r: dict) -> dict:
 
 
 def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_bytes, dry_run, resumo,
-               modo=None, corte_resultado=None):
+               modo=None, status_busca=None, agora=None):
     itens = pncp.itens(c)
     categoria, interesse, por_item = avaliar(c, itens)
     rotulo = f"{c.get('municipio_nome')}/{c.get('uf')} | {(c.get('description') or '').strip()[:80]}"
@@ -362,25 +481,41 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
     pares = _resultados_relevantes(pncp, c, itens, por_item) if com_resultados else []
     datas = [d for d in (_dt(r.get("dataResultado")) for _, r in pares) if d]
     data_homologacao = max(datas) if datas else None
-    if corte_resultado and (not data_homologacao or data_homologacao < corte_resultado):
-        _inc(resumo, "sem_resultado_recente")
-        log.info("  %-9s | sem homologação recente (%s) | %s", categoria,
-                 data_homologacao.date() if data_homologacao else "sem resultado", rotulo)
-        return
+    tem_resultado = (bool(pares) or data_homologacao is not None) if com_resultados else None
+
+    # Detalhe consultado uma vez: identificação + estado autoritativo da compra (a busca atrasa).
+    try:
+        det, erro_detalhe = consultar_detalhe(pncp, c), None
+    except ConsultaFalhou as e:
+        det, erro_detalhe = None, e
+    ident = identificacao_do_detalhe(c, det) if det is not None else {}
+    prioridade, motivo = motivo_prioridade(compra_com_detalhe(c, det), tem_resultado, agora=agora,
+                                           status_busca=status_busca, itens=itens)
+    # Fail-closed: sem o detalhe, "leads" vindo só da busca+itens pode ser compra já homologada.
+    # Não grava (fica o valor do banco); historico/monitorar pela busca+itens continuam valendo.
+    leads_sem_detalhe = det is None and prioridade == "leads"
+    if leads_sem_detalhe:
+        _inc(resumo, "prioridade_leads_sem_detalhe")
+    else:
+        _inc(resumo, f"prioridade_{prioridade or 'indeterminada'}")
+        if modo and prioridade and prioridade != modo:
+            _inc(resumo, "prioridade_diferente_do_modo")
 
     vencedores = sorted({(r.get("nomeRazaoSocialFornecedor") or "")[:40] for _, r in pares
                          if r.get("tipoPessoa") != "PF" and r.get("nomeRazaoSocialFornecedor")})
-    log.info("  %-9s%s | %s%s%s", categoria, " ★borracha" if interesse else "", rotulo,
+    log.info("  %-9s%s | %s | %s (%s)%s%s", categoria, " ★borracha" if interesse else "", rotulo,
+             "leads NÃO gravada (sem detalhe)" if leads_sem_detalhe else prioridade or "prioridade ?", motivo,
              f" | homologado {data_homologacao.date()}" if data_homologacao else "",
              f" | vencedor(es): {', '.join(vencedores[:3])}" if vencedores else "")
-    try:
-        ident = identificacao(pncp, c)
+    if det is not None:
         log.info("            processo %s | %s | órgão %s", ident["numero_processo"] or "?",
                  ident["numero_edital"], c.get("orgao_cnpj"))
-    except ConsultaFalhou as e:
-        ident = {}
+    else:
         _inc(resumo, "falha_detalhe")
-        log.warning("            detalhe indisponível, identificação não gravada: %s", str(e)[:120])
+        log.warning("            detalhe indisponível, identificação não gravada: %s", str(erro_detalhe)[:120])
+        if leads_sem_detalhe:
+            log.warning("            leads só pela busca+itens, sem o detalhe: prioridade não gravada "
+                        "(fica a do banco)")
     if dry_run:
         return
 
@@ -392,11 +527,14 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
         "modalidade": c.get("modalidade_licitacao_nome"), "situacao": c.get("situacao_nome"),
         "data_publicacao": _data(c.get("data_publicacao_pncp")), "data_fim": _data(c.get("data_fim_vigencia")),
         "data_homologacao": data_homologacao.isoformat() if data_homologacao else None,
-        "prioridade": modo, "valor_total": _num(c.get("valor_global")), "categoria_escopo": categoria,
+        "prioridade": prioridade, "valor_total": _num(c.get("valor_global")), "categoria_escopo": categoria,
         "interesse_borracha": interesse, "termos_busca": [termo], "raw": c,
     }
-    if modo not in ("leads", "monitorar"):
-        linha.pop("prioridade")   # histórico não rebaixa um lead já gravado
+    # O estado derivado vence: encerrada/homologada vira historico mesmo que a linha fosse lead.
+    # Só não grava quando não dá para saber (não apaga uma prioridade já gravada com NULL) ou quando
+    # seria leads sem o detalhe confirmar (fail-closed: homologada nunca vira lead).
+    if prioridade is None or leads_sem_detalhe:
+        linha.pop("prioridade")
     if not data_homologacao:
         linha.pop("data_homologacao")
     lic_id = sb.upsert("licitacoes_externas", linha, "fonte,codigo_externo")[0]["id"]
@@ -494,17 +632,18 @@ def corrigir_processos(pncp: PNCP, sb: Supabase) -> dict:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Coletor PNCP (escopo LicitaGym)")
     ap.add_argument("--modo", choices=list(MODOS), default="leads",
-                    help="leads (padrão): homologados nos últimos --dias; monitorar: abertos; historico: encerrados")
-    ap.add_argument("--dias", type=int, default=120, help="leads: janela da homologação (dias)")
-    ap.add_argument("--margem-publicacao", type=int, default=240,
-                    help="leads: ignora editais publicados há mais de dias+margem (padrão 240)")
+                    help="leads (padrão): recebendo proposta; monitorar: em julgamento; historico: encerradas. "
+                         "Só escolhe o status da busca: a prioridade gravada vem do estado de cada compra")
+    # Obsoletos (janela de homologação do antigo modo leads): aceitos para não quebrar agendamentos, sem efeito.
+    ap.add_argument("--dias", type=int, help=argparse.SUPPRESS)
+    ap.add_argument("--margem-publicacao", type=int, help=argparse.SUPPRESS)
     ap.add_argument("--termos", help="lista separada por vírgula (padrão: TERMOS_PADRAO)")
     ap.add_argument("--todos-termos", action="store_true", help="usa também todos os TERMOS_BUSCA do escopo")
     ap.add_argument("--status", choices=["todos", "recebendo_proposta", "em_julgamento", "encerradas"],
                     help="sobrescreve o status do modo")
     ap.add_argument("--paginas", type=int, help="páginas por termo (padrão: leads 20, outros 3)")
     ap.add_argument("--tam", type=int, default=50, help="resultados por página")
-    ap.add_argument("--sem-resultados", action="store_true", help="não consulta vencedores (ignorado em leads)")
+    ap.add_argument("--sem-resultados", action="store_true", help="não consulta vencedores")
     ap.add_argument("--baixar-arquivos", action="store_true", help="baixa edital/anexos (para o RAG)")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--corrigir-processos", action="store_true",
@@ -523,14 +662,16 @@ def main(argv: list[str] | None = None) -> int:
     if not args.dry_run:
         sb = Supabase(env("SUPABASE_URL", obrigatorio=True), env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True))
         arm = Armazenamento.do_ambiente()
+    if args.dias is not None or args.margem_publicacao is not None:
+        log.warning("--dias/--margem-publicacao não têm mais efeito: leads = recebendo proposta "
+                    "(compra homologada não é lead; decisão de 29/09/2026)")
     status = args.status or MODOS[args.modo]["status"]
     paginas = args.paginas or (20 if args.modo == "leads" else 3)
-    log.info("modo=%s status=%s dias=%s termos=%s", args.modo, status, args.dias, len(termos))
+    log.info("modo=%s status=%s termos=%s", args.modo, status, len(termos))
     r = coletar(PNCP(delay=float(env("DELAY_SEGUNDOS", "0.5"))), sb, arm, termos, status, paginas,
                 args.tam, not args.sem_resultados, args.baixar_arquivos,
                 int(float(env("MAX_MB", "80")) * 1048576), args.dry_run,
-                modo=args.modo, dias=args.dias, margem_publicacao=args.margem_publicacao,
-                workers=int(env("PNCP_WORKERS", "3")))
+                modo=args.modo, workers=int(env("PNCP_WORKERS", "3")))
     log.info("RESUMO: %s", r)
     return 0
 

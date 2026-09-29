@@ -101,49 +101,98 @@ def _sb():
     return sb
 
 
-def test_leads_grava_homologado_recente_com_data_e_prioridade():
-    sb = _sb()
-    agora = datetime(2026, 9, 24, tzinfo=timezone.utc)          # resultado em 21/08 -> 34 dias
-    r = P.coletar(_pncp([COMPRA]), sb, None, ["x"], "encerradas", 1, 50, False, False, 10**8, False,
-                  modo="leads", dias=120, agora=agora)
-    assert r["gravadas"] == 1 and r["sem_resultado_recente"] == 0
-    lic = {c.args[0]: c.args[1] for c in sb.upsert.call_args_list}["licitacoes_externas"]
-    assert lic["prioridade"] == "leads" and lic["data_homologacao"].startswith("2026-08-21")
+ABERTA = dict(COMPRA, numero_controle_pncp="44892693000140-1-000200/2026", numero_sequencial=200,
+              data_inicio_vigencia="2026-09-25T08:00", data_fim_vigencia="2026-10-13T09:30", tem_resultado=False)
+ITENS_ABERTOS = [dict(it, situacaoCompraItemNome="Em andamento", temResultado=False) for it in ITENS]
+AGORA = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
 
 
-def test_leads_descarta_homologacao_antiga():
-    sb = _sb()
-    agora = datetime(2027, 3, 1, tzinfo=timezone.utc)           # 21/08/2026 -> ~190 dias
-    r = P.coletar(_pncp([dict(COMPRA, data_publicacao_pncp="2026-12-01T00:00:00")]), sb, None, ["x"],
-                  "encerradas", 1, 50, False, False, 10**8, False, modo="leads", dias=120, agora=agora)
-    assert r["gravadas"] == 0 and r["sem_resultado_recente"] == 1
-    assert not sb.upsert.called
-
-
-def test_leads_para_de_paginar_quando_editais_ficam_antigos():
-    p = _pncp([dict(COMPRA, data_publicacao_pncp="2025-01-01T00:00:00")] * 50)
-    agora = datetime(2026, 9, 24, tzinfo=timezone.utc)
-    r = P.coletar(p, None, None, ["x"], "encerradas", 20, 50, False, False, 10**8, True,
-                  modo="leads", dias=120, margem_publicacao=240, agora=agora)
-    assert p.buscar.call_count == 1 and r["encontradas"] == 0 and not p.itens.called
-
-
-def test_monitorar_usa_dois_status_e_grava_sem_resultado():
-    sb = _sb()
-    p = _pncp([COMPRA])
+def _pncp_aberto(compras):
+    p = _pncp(compras)
+    p.itens.return_value = ITENS_ABERTOS
     p.resultados.return_value = []
-    r = P.coletar(p, sb, None, ["x"], ["recebendo_proposta", "em_julgamento"], 1, 50, False, False, 10**8,
-                  False, modo="monitorar")
-    assert p.buscar.call_count == 2 and r["gravadas"] == 1
-    lic = {c.args[0]: c.args[1] for c in sb.upsert.call_args_list}["licitacoes_externas"]
-    assert lic["prioridade"] == "monitorar" and "data_homologacao" not in lic
+    return p
 
 
-def test_historico_nao_sobrescreve_prioridade():
+def _lic(sb):
+    return {c.args[0]: c.args[1] for c in sb.upsert.call_args_list}["licitacoes_externas"]
+
+
+def test_modos_buscam_status_da_nova_semantica():
+    assert P.MODOS["leads"]["status"] == "recebendo_proposta"
+    assert P.MODOS["monitorar"]["status"] == "em_julgamento"
+    assert P.MODOS["historico"]["status"] == "encerradas"
+
+
+def test_leads_grava_compra_recebendo_proposta_como_lead():
     sb = _sb()
-    P.coletar(_pncp([COMPRA]), sb, None, ["x"], "encerradas", 1, 50, True, False, 10**8, False, modo="historico")
-    lic = {c.args[0]: c.args[1] for c in sb.upsert.call_args_list}["licitacoes_externas"]
-    assert "prioridade" not in lic
+    r = P.coletar(_pncp_aberto([ABERTA]), sb, None, ["x"], P.MODOS["leads"]["status"], 1, 50, True, False,
+                  10**8, False, modo="leads", agora=AGORA)
+    lic = _lic(sb)
+    assert r["gravadas"] == 1 and r["prioridade_leads"] == 1
+    assert lic["prioridade"] == "leads" and "data_homologacao" not in lic
+
+
+def test_homologada_na_busca_de_leads_vira_historico():
+    """Ruído do filtro do PNCP: a compra homologada nunca é gravada como lead."""
+    sb = _sb()
+    r = P.coletar(_pncp([dict(COMPRA, tem_resultado=True)]), sb, None, ["x"], "recebendo_proposta", 1, 50,
+                  True, False, 10**8, False, modo="leads", agora=AGORA)
+    lic = _lic(sb)
+    assert lic["prioridade"] == "historico" and lic["data_homologacao"].startswith("2026-08-21")
+    assert r["prioridade_historico"] == 1 and r["prioridade_diferente_do_modo"] == 1
+
+
+def test_monitorar_busca_em_julgamento_e_grava_monitorar():
+    sb = _sb()
+    julg = dict(ABERTA, data_fim_vigencia="2026-09-20T09:30")
+    p = _pncp_aberto([julg])
+    r = P.coletar(p, sb, None, ["x"], P.MODOS["monitorar"]["status"], 1, 50, True, False, 10**8,
+                  False, modo="monitorar", agora=AGORA)
+    assert p.buscar.call_count == 1 and p.buscar.call_args.args[1] == "em_julgamento"
+    lic = _lic(sb)
+    assert r["gravadas"] == 1 and lic["prioridade"] == "monitorar" and "data_homologacao" not in lic
+
+
+def test_historico_grava_prioridade_historico():
+    sb = _sb()
+    P.coletar(_pncp([COMPRA]), sb, None, ["x"], "encerradas", 1, 50, True, False, 10**8, False,
+              modo="historico", agora=AGORA)
+    assert _lic(sb)["prioridade"] == "historico"
+
+
+def test_compra_encerrada_rebaixa_lead_ja_gravado():
+    """Regra antiga ("histórico não rebaixa um lead") saiu: o estado derivado vence."""
+    sb = _FakeSbIdempotente()
+    P.coletar(_pncp_aberto([ABERTA]), sb, None, ["x"], "recebendo_proposta", 1, 50, True, False, 10**8, False,
+              modo="leads", agora=AGORA)
+    (lic,) = sb.tabelas["licitacoes_externas"].values()
+    assert lic["prioridade"] == "leads"
+    P.coletar(_pncp([dict(ABERTA, tem_resultado=True)]), sb, None, ["x"], "encerradas", 1, 50, True, False,
+              10**8, False, modo="historico", agora=AGORA)
+    (lic,) = sb.tabelas["licitacoes_externas"].values()
+    assert lic["prioridade"] == "historico"
+
+
+def test_prioridade_indeterminada_nao_sobrescreve():
+    sb = _sb()
+    sem_prazo = dict(COMPRA, tem_resultado=False)             # sem data_fim_vigencia, busca status=todos
+    r = P.coletar(_pncp_aberto([sem_prazo]), sb, None, ["x"], "todos", 1, 50, True, False, 10**8, False,
+                  agora=AGORA)
+    assert "prioridade" not in _lic(sb) and r["prioridade_indeterminada"] == 1
+
+
+def test_main_leads_busca_recebendo_proposta_e_ignora_dias_obsoleto(monkeypatch):
+    visto = {}
+
+    def fake_coletar(pncp, sb, arm, termos, status, paginas, *a, **kw):
+        visto.update(status=status, paginas=paginas, **kw)
+        return {}
+
+    monkeypatch.setattr(P, "coletar", fake_coletar)
+    assert P.main(["--dry-run", "--dias", "60", "--termos", "x"]) == 0
+    assert visto["status"] == "recebendo_proposta" and visto["modo"] == "leads"
+    assert "dias" not in visto and "margem_publicacao" not in visto
 
 
 def test_instabilidade_do_pncp_vai_para_segunda_passada():

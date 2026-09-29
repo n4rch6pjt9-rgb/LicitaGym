@@ -91,36 +91,60 @@ Sesc SP e Sesc/Senac RS (paradigmabs.com.br) são recusados: o robots.txt do hos
 Busca nacional no PNCP por frase exata (`TERMOS_PADRAO` em `coletor/pncp.py`), classifica cada compra
 pelo objeto **e pelos itens** (`coletor/escopo.py`) e grava compra, itens, **vencedores** e arquivos.
 
-Três modos, em ordem de prioridade comercial:
+Três modos, em ordem de prioridade comercial (o modo só escolhe o filtro `status` da busca):
 
-| Modo | O que pega | Uso |
+| Modo | Status da busca | Uso |
 |---|---|---|
-| `leads` (padrão) | homologados nos últimos `--dias` (120), vencedor conhecido | oferecer raspa ao vencedor que ainda vai comprar |
-| `monitorar` | recebendo proposta + em julgamento | acompanhar até sair o vencedor |
-| `historico` | encerrados antigos | histórico de preço e RAG |
+| `leads` (padrão) | `recebendo_proposta` | certame aberto: ainda dá para disputar |
+| `monitorar` | `em_julgamento` | propostas encerradas, sem resultado: acompanhar até sair o vencedor |
+| `historico` | `encerradas` | homologadas/com resultado/revogadas/anuladas/desertas: preço, vencedor e RAG |
 
-O filtro de `leads` usa a **data de resultado de cada item** (`dataResultado` do PNCP). A paginação
-para quando os editais foram publicados há mais de `dias + margem_publicacao` (240) dias.
+**`licitacoes_externas.prioridade` vem do estado de cada compra, não do modo** (decisão do owner, 29/09/2026 —
+**compra homologada não é lead**). `prioridade_da_compra()` em `coletor/pncp.py`:
+`historico` se há homologação/resultado (`data_homologacao`, `tem_resultado`/`existeResultado`, item homologado,
+`valorTotalHomologado`) ou a compra está encerrada (revogada, anulada, cancelada, deserta, fracassada, todos os
+itens finalizados); `monitorar` se suspensa ou se o prazo de proposta (`data_fim_vigencia` /
+`dataEncerramentoProposta`) já passou sem resultado; `leads` se o prazo ainda está aberto. Sem prazo nem
+resultado, vale o status da busca; sem isso a coluna não é gravada. O estado derivado vence: uma compra
+encerrada vira `historico` mesmo que já estivesse gravada como lead. O filtro `status` do PNCP é ruidoso
+(`em_julgamento` devolve compras ainda abertas, com resultado e anuladas), por isso ele é só o último recurso.
+A janela de 120 dias de homologação do antigo modo `leads` saiu; `--dias`/`--margem-publicacao` são aceitos e ignorados.
+O detalhe da compra (`/api/consulta/v1/.../compras/{ano}/{seq}`, consultado uma vez por compra, o mesmo que dá o
+processo) vence o item da busca, que atrasa: `existeResultado`, `valorTotalHomologado`, `situacaoCompraNome` e
+`dataEncerramentoProposta` do detalhe têm precedência (`compra_com_detalhe()`). Se o detalhe falha e a busca+itens
+dizem `leads`, a coluna **não** é gravada (fail-closed; conta `prioridade_leads_sem_detalhe`); `historico`/`monitorar`
+pela busca+itens continuam gravados. No backfill, a mesma regra: consulta falha + gravado diz `leads` = não grava
+(`leads_sem_detalhe`), e uma linha já `historico` só sai de `historico` com o detalhe confirmando
+(`historico_mantido_sem_detalhe`).
 
 ```bash
 # pré-requisito: supabase/migrations/20260924100000_pncp_itens_resultados.sql (já aplicada)
 python3 -m coletor.pncp --dry-run --termos "borracha granulada" --tam 20   # teste rápido
-python3 -m coletor.pncp                                   # leads: homologados nos últimos 120 dias
-python3 -m coletor.pncp --dias 60                         # só os últimos 60 dias
-python3 -m coletor.pncp --modo monitorar                  # abertos / em julgamento
-python3 -m coletor.pncp --modo historico --paginas 10 --baixar-arquivos
+python3 -m coletor.pncp                                   # leads: recebendo proposta
+python3 -m coletor.pncp --modo monitorar                  # em julgamento
+python3 -m coletor.pncp --modo historico --paginas 10 --baixar-arquivos   # encerradas
 python3 -m coletor.indexador                              # arquivos baixados -> RAG
 ```
 
-`oportunidades_borracha` lista primeiro os leads, do homologado mais recente para o mais antigo,
-com `dias_desde_homologacao`.
+Reclassificar as linhas PNCP já gravadas (as antigas `leads` homologadas viram `historico`) — dry-run por padrão:
+
+```bash
+export SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=...                       # do ambiente, nunca no código
+python3 -m coletor.backfill_prioridade_pncp                                 # DRY-RUN: contagem por transição + amostra
+python3 -m coletor.backfill_prioridade_pncp --consultar-pncp --limit 50     # DRY-RUN relendo o detalhe no PNCP (GET)
+python3 -m coletor.backfill_prioridade_pncp --apply                         # grava só a coluna prioridade
+```
+
+`oportunidades_borracha` lista primeiro os `leads` (certames abertos, ainda sem vencedor) e depois o resto, do
+homologado mais recente para o mais antigo, com `dias_desde_homologacao`. Para oferecer raspa ao vencedor,
+use as linhas `historico` com homologação recente (`dias_desde_homologacao`), não `prioridade = 'leads'`.
 
 Volume observado (24/09/2026, frase exata): grama sintética 3.263 (85 abertas), academia ao ar livre 1.563,
 equipamentos de academia 1.023, piso emborrachado 986, campo society 794, borracha granulada 122.
 A busca do PNCP também acha termos dentro dos itens — decoração natalina, arbitragem e grama natural são
 descartadas pelo classificador.
 
-**Leads de raspa de borracha:** a view `oportunidades_borracha` junta compra, item e vencedor
+**Raspa de borracha para o vencedor:** a view `oportunidades_borracha` junta compra, item e vencedor
 (ex.: Carapicuíba/SP, 50 t de borracha granulada G3 homologadas a R$ 2.779,46/t para HG Comércio).
 
 ---

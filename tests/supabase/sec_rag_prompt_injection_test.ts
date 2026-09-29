@@ -12,6 +12,7 @@ const BUSCAR_PY = "./services/coletor-externo/coletor/buscar.py";
 const RAG_CONTEXTO_PY = "./services/coletor-externo/coletor/rag_contexto.py";
 const ACL_CHECK = "./supabase/tests/sec_rag_prompt_injection_acl_check.sql";
 const IA_PY = "./services/coletor-externo/coletor/ia.py";
+const FECHA_LEITURA = `${MIG}/20260929190000_sec_legislacao_fecha_leitura.sql`;
 
 /** Lista TIPOS = [...] do indexador (fonte da verdade dos tipo_documento emitidos). */
 async function tiposDoIndexador(): Promise<string[]> {
@@ -106,4 +107,25 @@ Deno.test("ACL lock para com diagnóstico se consultas_log tiver linhas sem dono
   const sql = await Deno.readTextFile(ACL_LOCK);
   const guarda = sql.indexOf("sem dono identificável");
   assertEquals(guarda > 0 && guarda < sql.indexOf("add column if not exists user_id uuid not null"), true);
+});
+
+Deno.test("base normativa: leitura e busca vetorial só service_role (20260929190000)", async () => {
+  const sql = await Deno.readTextFile(FECHA_LEITURA);
+  assertEquals(ACL_LOCK < FECHA_LEITURA && BASELINE < FECHA_LEITURA, true, "precisa vir depois da baseline e do ACL lock");
+  for (const p of ["Permitir leitura pública de legislação", "Permitir leitura pública de embeddings"]) {
+    assertEquals(sql.includes(`drop policy if exists "${p}"`), true, p);
+  }
+  assertEquals(
+    sql.includes("revoke all on table public.legislacao, public.legislacao_embeddings from public, anon, authenticated;"),
+    true,
+  );
+  assertEquals(
+    sql.includes("revoke all on function public.match_legislacao_embeddings(vector, double precision, integer) from public, anon, authenticated;"),
+    true,
+  );
+  assertEquals(/grant [^;]*to [^;]*\b(anon|authenticated|public)\b/i.test(sql), false, "não pode conceder nada a anon/authenticated/public");
+
+  const check = await Deno.readTextFile(ACL_CHECK);
+  assertEquals(check.includes("possui SELECT em % (leitura só service_role)"), true, "ACL check espera SELECT fechado");
+  assertEquals(check.includes("has_function_privilege('authenticated', v_fn, 'EXECUTE')"), true);
 });

@@ -139,6 +139,18 @@ python3 -m coletor.backfill_prioridade_pncp --apply                         # gr
 homologado mais recente para o mais antigo, com `dias_desde_homologacao`. Para oferecer raspa ao vencedor,
 use as linhas `historico` com homologação recente (`dias_desde_homologacao`), não `prioridade = 'leads'`.
 
+**`valor_total` da compra:** vem do detalhe (`valorTotalEstimado` de `/api/consulta/v1/orgaos/{cnpj}/compras/{ano}/{seq}`);
+`valor_global` da busca (vazio em editais) é só fallback. Sem valor (ou 0, orçamento sigiloso) a coluna não vai
+no upsert, então nunca apaga um valor já gravado. `valorTotalHomologado` não é usado (é o valor adjudicado, outra grandeza).
+Backfill das linhas PNCP gravadas antes da correção (`valor_total IS NULL`) — dry-run por padrão:
+
+```bash
+export SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=...        # do ambiente, nunca no código
+python3 -m coletor.backfill_valor_total_pncp --limit 20       # DRY-RUN: consulta o PNCP, mostra contagem/amostra, não grava
+python3 -m coletor.backfill_valor_total_pncp --apply          # grava só valor_total, só onde o detalhe traz valor
+```
+Usa o cliente PNCP do coletor (`DELAY_SEGUNDOS`, backoff em 429/5xx). Falha de consulta não grava; rodar de novo retoma.
+
 Volume observado (24/09/2026, frase exata): grama sintética 3.263 (85 abertas), academia ao ar livre 1.563,
 equipamentos de academia 1.023, piso emborrachado 986, campo society 794, borracha granulada 122.
 A busca do PNCP também acha termos dentro dos itens — decoração natalina, arbitragem e grama natural são

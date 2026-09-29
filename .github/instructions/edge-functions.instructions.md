@@ -4,7 +4,16 @@ applyTo: "supabase/functions/**"
 # Supabase Edge Functions (Deno/TypeScript)
 
 ## Segurança — [BLOQUEANTE]
-- O deploy usa `--no-verify-jwt`. **Todo handler protegido** deve chamar logo no início `validateCronAuth(req)` (`_shared/http.ts`) e retornar uma resposta 401 quando o resultado for `false`; se forem necessários handlers de usuário, adicionar antes um helper de validação de sessão/claims e documentá-lo aqui.
+- O deploy usa `--no-verify-jwt`. **Todo handler protegido** deve chamar logo no início um helper de `_shared/http.ts` e retornar a resposta 401 que ele devolve:
+
+  | Quem chama | Helper | Uso |
+  |---|---|---|
+  | Cron/sync (`SYNC_CRON_SECRET`) | `requireCronAuth(req)` | `const denied = requireCronAuth(req); if (denied) return denied;` |
+  | Usuário autenticado (JWT Supabase Auth) | `requireUserAuth(req)` | `const denied = await requireUserAuth(req); if (denied) return denied;` |
+  | Cron **ou** usuário | `requireCronOrUserAuth(req)` | `const denied = await requireCronOrUserAuth(req); if (denied) return denied;` |
+
+  `validateCronAuth(req)` (booleano) está **deprecado**; é aceito em funções `sync-*` existentes, mas código novo usa `requireCronAuth`. Os helpers de usuário são assíncronos — `requireUserAuth` sem `await` é [BLOQUEANTE] (a Promise é sempre truthy, então o `if (denied)` perde o sentido e a resposta sai errada). O secret de cron nunca vale como sessão de usuário. Não criar validação de token própria.
+- Ação pública (ex.: `readiness`) deve ser explícita no código e não expor dado sensível.
 - `service_role` / cliente admin (`_shared/pncp/supabase-admin.ts`) só em funções de sync/cron; nunca em endpoint `api-*` chamado pelo usuário sem checar autorização.
 - Nenhum secret em código, log ou resposta HTTP. Ler de `Deno.env.get`.
 - Não refletir mensagens de erro internas (stack, SQL) para o cliente.

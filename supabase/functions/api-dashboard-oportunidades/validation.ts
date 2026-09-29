@@ -1,4 +1,5 @@
 import type {
+  AcompanhamentoActionParams,
   ActionParams,
   GetActionParams,
   LicitacaoFiltros,
@@ -347,6 +348,32 @@ export function parseGetParams(
   };
 }
 
+/** `id` de licitacoes_externas (bigint): somente dígitos, 1 a 18. */
+export const ACOMPANHAMENTO_ID_RE = /^\d{1,18}$/;
+
+/**
+ * Valida o `id` da ação `acompanhamento`. Aceita string ou número inteiro não
+ * negativo; qualquer outro formato (sinal, decimal, letras, >18 dígitos) é erro (400).
+ */
+export function parseAcompanhamentoParams(
+  idRaw: unknown,
+): AcompanhamentoActionParams | { error: string } {
+  if (idRaw === undefined || idRaw === null || String(idRaw).trim() === "") {
+    return { error: "Parâmetro 'id' é obrigatório para a ação 'acompanhamento'." };
+  }
+  if (typeof idRaw !== "string" && typeof idRaw !== "number") {
+    return { error: "Parâmetro 'id' inválido: informe apenas dígitos (1 a 18)." };
+  }
+  if (typeof idRaw === "number" && !Number.isSafeInteger(idRaw)) {
+    return { error: "Parâmetro 'id' inválido: informe apenas dígitos (1 a 18)." };
+  }
+  const id = String(idRaw).trim();
+  if (!ACOMPANHAMENTO_ID_RE.test(id)) {
+    return { error: "Parâmetro 'id' inválido: informe apenas dígitos (1 a 18)." };
+  }
+  return { action: "acompanhamento", id };
+}
+
 export function parseActionFromUrl(url: URL): ActionParams | { error: string } {
   const actionParam = url.searchParams.get("action") ?? "list";
 
@@ -375,11 +402,7 @@ export function parseActionFromUrl(url: URL): ActionParams | { error: string } {
   }
 
   if (actionParam === "acompanhamento") {
-    const idRaw = url.searchParams.get("id");
-    if (!idRaw || !idRaw.trim()) {
-      return { error: "Parâmetro 'id' é obrigatório para a ação 'acompanhamento'." };
-    }
-    return { action: "acompanhamento", id: idRaw.trim() };
+    return parseAcompanhamentoParams(url.searchParams.get("id"));
   }
 
   return { error: `Ação inválida: '${actionParam}'. Use 'list', 'get', 'readiness' ou 'acompanhamento'.` };
@@ -407,11 +430,7 @@ export function parseActionFromBody(
   }
 
   if (action === "acompanhamento") {
-    const idRaw = body.id;
-    if (idRaw === undefined || idRaw === null || String(idRaw).trim() === "") {
-      return { error: "Parâmetro 'id' é obrigatório para a ação 'acompanhamento'." };
-    }
-    return { action: "acompanhamento", id: String(idRaw).trim() };
+    return parseAcompanhamentoParams(body.id);
   }
 
   return { error: `Ação inválida: '${action}'. Use 'list', 'get', 'readiness' ou 'acompanhamento'.` };

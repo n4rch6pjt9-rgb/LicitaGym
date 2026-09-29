@@ -726,7 +726,6 @@ Deno.test("handleRequest list com filtro uf asserte eq('uf', 'AC') e PUBLIC_LICI
     "created_at",
     "updated_at",
     "last_synced_at",
-    "linkSistemaOrigem",
   ].join(",");
   assertEquals(selectCall?.args[0], EXPECTED_PROJECTION);
 

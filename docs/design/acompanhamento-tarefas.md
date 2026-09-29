@@ -2,8 +2,8 @@
 
 **Documento:** `docs/design/acompanhamento-tarefas.md`  
 **Data:** 29 de setembro de 2026  
-**Status:** Design Técnico e Proposta de Migration (Não aplicada)  
-**Migration Relacionada:** `supabase/migrations/20260929120000_acompanhamento_tarefas.sql`
+**Status:** Design Técnico e Proposta de SQL (não aplicada)  
+**SQL proposto:** [`docs/design/sql/acompanhamento_tarefas.sql`](sql/acompanhamento_tarefas.sql) — proposta fora de `supabase/migrations`, não aplicada em nenhum banco. Quando o design for aprovado, vira `supabase/migrations/<timestamp>_acompanhamento_tarefas.sql` com timestamp novo, gerado na data da aprovação.
 
 ---
 
@@ -109,7 +109,7 @@ O fluxo de automação é disparado de forma desacoplada:
                                    │                                                     │
                                    ▼                                                     ▼
                       Seleciona Oportunidades                                Consulta /historico PNCP
-                      (prioridade IN leads/monitorar)                                    │
+                      (view acompanhamento_escopo)                                       │
                                    │                                                     ▼
                                    │                                         Upsert acompanhamento_eventos
                                    │                                                     │
@@ -140,10 +140,20 @@ SELECT cron.schedule(
 ```
 
 ### 4.2 Escopo: Quais Oportunidades são Monitoradas?
-O job não monitora todas as licitações antigas da base. O escopo é focado em:
-1. `prioridade IN ('leads', 'monitorar')` na tabela `licitacoes_externas`.
-2. Certames em andamento ou homologados recentemente (`data_homologacao >= now() - interval '30 days'` ou `situacao != 'Homologado'`).
-3. Oportunidades com `interesse_borracha = true` ou salvas como favoritas por usuários.
+**Decisão do owner.** O job monitora as linhas de `licitacoes_externas` que atendem **todas** as condições abaixo, materializadas na view `public.acompanhamento_escopo` do SQL proposto:
+
+1. **Prioridade de funil:** `prioridade IN ('leads', 'monitorar')` — valores gravados pelo coletor PNCP (`--modo leads|monitorar`, coluna criada em `20260924100000_pncp_itens_resultados.sql`) e exibidos no dashboard como "Lead" e "Monitorar". Linhas **sem prioridade** (`prioridade IS NULL`, inclusive as gravadas pelo modo `historico`) ficam fora.
+2. **Compra viva:** não revogada, anulada nem cancelada — `status_normalizado <> 'cancelada'` e `situacao` sem "Revogada", "Anulada" ou "Cancelada".
+3. **Janela de tempo:** a compra atende a pelo menos um dos critérios:
+   - não homologada (`data_homologacao IS NULL` e sem status/situação de homologada);
+   - homologada nos últimos 30 dias (`data_homologacao >= now() - interval '30 days'`);
+   - tem ata de registro de preço ainda em vigência (`contratacoes_atas.ativo` e `vigencia_fim >= current_date`, ligada à compra por `contratacoes_editais`, via `licitacoes_externas.edital_id` ou `numero_controle_pncp = codigo_externo`).
+
+   Compra homologada sem `data_homologacao` conhecida só entra pelo critério da ata vigente.
+
+**Justificativa:**
+- A prioridade é o marcador de funil da equipe: só gera tarefa o que a equipe marcou como Lead ou Monitorar.
+- A janela de tempo limita o volume de consultas ao `/historico` do PNCP, mantendo o job dentro do limite de 1 req/s por host (§4.3).
 
 ### 4.3 Controle de Concorrência e Rate Limiting
 1. **Coordenação de Execução com `acquire_sync_lock`:**

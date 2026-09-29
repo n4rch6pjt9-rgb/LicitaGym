@@ -1,6 +1,14 @@
 -- =============================================================================
--- MIGRATION: 20260929120000_acompanhamento_tarefas.sql
--- STATUS: PROPOSTA DE DESIGN — NÃO APLICADA NO BANCO DE DADOS
+-- PROPOSTA: docs/design/sql/acompanhamento_tarefas.sql
+-- STATUS: PROPOSTA DE DESIGN — NÃO APLICADA EM NENHUM BANCO.
+--
+-- Este arquivo NÃO é uma migration e fica fora de supabase/migrations de
+-- propósito (supabase db push não o executa). Quando o design for aprovado,
+-- o conteúdo será copiado para supabase/migrations/<timestamp>_acompanhamento_tarefas.sql
+-- com um timestamp NOVO, gerado no momento da aprovação (posterior à última
+-- migration existente), e revisado contra o schema vigente nessa data.
+--
+-- Design: docs/design/acompanhamento-tarefas.md
 --
 -- Modelagem para acompanhamento de eventos do histórico PNCP e automação
 -- de tarefas do fornecedor (Lei 14.133/2021).
@@ -9,6 +17,7 @@
 --   1. public.acompanhamento_eventos: ingestão idempotente do histórico PNCP
 --   2. public.tarefa_tipos: regras canônicas de mapeamento (categoria, tipo) -> tarefa
 --   3. public.tarefas: instâncias operacionais de tarefas para a equipe
+--   4. public.acompanhamento_escopo (view): oportunidades monitoradas pelo job
 -- =============================================================================
 
 -- -----------------------------------------------------------------------------
@@ -207,7 +216,64 @@ COMMENT ON TABLE public.tarefas IS
   'Instâncias de tarefas da equipe geradas por automação de eventos ou manualmente.';
 
 -- -----------------------------------------------------------------------------
--- 4. Políticas de Segurança (RLS e Permissões)
+-- 4. View: public.acompanhamento_escopo
+-- Escopo de monitoramento do job de tarefas (decisão do owner, ver
+-- docs/design/acompanhamento-tarefas.md §4.2). Uma linha de licitacoes_externas
+-- entra no escopo quando TODAS as condições valem:
+--   a) prioridade IN ('leads', 'monitorar') — valores gravados pelo coletor PNCP
+--      (--modo leads|monitorar), exibidos no dashboard como "Lead"/"Monitorar".
+--      Sem prioridade (NULL, inclusive o modo historico) fica fora.
+--   b) compra viva: não revogada, anulada nem cancelada
+--      (status_normalizado <> 'cancelada' e situacao sem Revogada/Anulada/Cancelada).
+--   c) não homologada, OU homologada nos últimos 30 dias, OU com ata de registro
+--      de preço ainda em vigência (contratacoes_atas.vigencia_fim >= hoje).
+-- Homologada sem data_homologacao conhecida só entra por ata vigente.
+-- -----------------------------------------------------------------------------
+
+CREATE OR REPLACE VIEW public.acompanhamento_escopo
+WITH (security_invoker = true) AS
+SELECT
+  l.id AS licitacao_id,
+  l.fonte,
+  l.codigo_externo,
+  l.orgao_cnpj,
+  l.prioridade,
+  l.situacao,
+  l.status_normalizado,
+  l.data_homologacao
+FROM public.licitacoes_externas l
+WHERE l.prioridade IN ('leads', 'monitorar')
+  -- b) compra viva
+  AND COALESCE(l.status_normalizado, '') <> 'cancelada'
+  AND COALESCE(l.situacao, '') !~* '(revogad|anulad|cancelad)'
+  -- c) janela de tempo
+  AND (
+    (
+      l.data_homologacao IS NULL
+      AND COALESCE(l.status_normalizado, '') <> 'homologada'
+      AND COALESCE(l.situacao, '') !~* 'homologad'
+    )
+    OR l.data_homologacao >= now() - INTERVAL '30 days'
+    OR EXISTS (
+      SELECT 1
+      FROM public.contratacoes_atas a
+      JOIN public.contratacoes_editais e ON e.id = a.edital_id
+      WHERE (e.id = l.edital_id OR e.numero_controle_pncp = l.codigo_externo)
+        AND a.ativo
+        AND a.vigencia_fim >= CURRENT_DATE
+        AND COALESCE(a.status, '') !~* '(cancelad|revogad|anulad)'
+    )
+  );
+
+COMMENT ON VIEW public.acompanhamento_escopo IS
+  'Oportunidades monitoradas pelo job de tarefas: prioridade leads/monitorar, compra viva e '
+  '(não homologada | homologada há <= 30 dias | ata de registro de preço vigente).';
+
+REVOKE ALL ON TABLE public.acompanhamento_escopo FROM PUBLIC, anon, authenticated;
+GRANT SELECT ON TABLE public.acompanhamento_escopo TO service_role;
+
+-- -----------------------------------------------------------------------------
+-- 5. Políticas de Segurança (RLS e Permissões)
 -- Apenas usuários autenticados (authenticated) podem ler/escrever tarefas e eventos.
 -- REVOKE ALL explícito para role 'anon' em tabelas e sequências.
 -- -----------------------------------------------------------------------------

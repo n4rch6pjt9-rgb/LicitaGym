@@ -1,10 +1,16 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import {
+  ACOMPANHAMENTO_LICITACAO_COLUMNS,
   buildAcompanhamentoUrl,
   clearAcompanhamentoCache,
   handleAcompanhamento,
+  linkSistemaOrigemFromRaw,
   resolvePncpKey,
 } from "../../../supabase/functions/api-dashboard-oportunidades/acompanhamento.ts";
+import {
+  parseActionFromBody,
+  parseActionFromUrl,
+} from "../../../supabase/functions/api-dashboard-oportunidades/validation.ts";
 import { handleRequest } from "../../../supabase/functions/api-dashboard-oportunidades/index.ts";
 import { UnifiedHttpClient } from "../../../supabase/functions/_shared/http-client/index.ts";
 
@@ -144,7 +150,9 @@ Deno.test("acompanhamento: fluxo completo com paginação, resultados, atas, his
     fonte: "pncp",
     codigo_externo: "45138070000149-1-000559/2026",
     numero_edital: "90010/2026",
-    linkSistemaOrigem: "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/landing?destino=quadro-informativo&compra=98703305900102026",
+    raw: {
+      linkSistemaOrigem: "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/landing?destino=quadro-informativo&compra=98703305900102026",
+    },
   };
 
   const originalFetch = globalThis.fetch;
@@ -442,4 +450,157 @@ Deno.test("acompanhamento: falha parcial em endpoints secundários não quebra r
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+// -----------------------------------------------------------------------------
+// Colunas selecionadas, linkSistemaOrigem via raw e não exposição de raw
+// -----------------------------------------------------------------------------
+
+Deno.test("acompanhamento: select não inclui linkSistemaOrigem e usa a lista exportada", async () => {
+  clearAcompanhamentoCache();
+  assertEquals(ACOMPANHAMENTO_LICITACAO_COLUMNS.includes("linkSistemaOrigem"), false);
+
+  let selectedCols: string | null = null;
+  const client = {
+    from: (_table: string) => ({
+      select: (cols: string) => {
+        selectedCols = cols;
+        return {
+          eq: (_col: string, _val: unknown) => ({
+            maybeSingle: () => Promise.resolve({ data: { id: 7, fonte: "sestsenat", id_externo: 1 }, error: null }),
+          }),
+        };
+      },
+    }),
+  };
+
+  const res = await handleAcompanhamento({ action: "acompanhamento", id: "7" }, { getClient: () => client as any });
+  assertEquals(res.status, 200);
+  assertEquals(selectedCols, ACOMPANHAMENTO_LICITACAO_COLUMNS.join(","));
+});
+
+Deno.test("linkSistemaOrigemFromRaw: lê string de raw e ignora formatos inválidos", () => {
+  assertEquals(linkSistemaOrigemFromRaw({ linkSistemaOrigem: "https://x.gov.br/a" }), "https://x.gov.br/a");
+  assertEquals(linkSistemaOrigemFromRaw({ linkSistemaOrigem: 123 }), null);
+  assertEquals(linkSistemaOrigemFromRaw({ linkSistemaOrigem: "  " }), null);
+  assertEquals(linkSistemaOrigemFromRaw({}), null);
+  assertEquals(linkSistemaOrigemFromRaw(null), null);
+  assertEquals(linkSistemaOrigemFromRaw("https://x.gov.br/a"), null);
+  assertEquals(linkSistemaOrigemFromRaw(["https://x.gov.br/a"]), null);
+});
+
+Deno.test("acompanhamento: url_acompanhamento vem de raw.linkSistemaOrigem quando a compra falha; raw nunca é exposto", async () => {
+  clearAcompanhamentoCache();
+  const secret = "SEGREDO_DO_RAW_NAO_EXPOR";
+  const row = {
+    id: 300,
+    fonte: "pncp",
+    codigo_externo: "45138070000149-1-000559/2026",
+    raw: {
+      linkSistemaOrigem:
+        "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/landing?destino=quadro-informativo&compra=98703305900102026",
+      campoInterno: secret,
+    },
+  };
+
+  const originalFetch = globalThis.fetch;
+  // PNCP não devolve a compra (404): a URL só pode vir de raw.
+  globalThis.fetch = () => Promise.resolve(new Response("Not Found", { status: 404 }));
+  try {
+    const httpClient = new UnifiedHttpClient({
+      hostLease: {
+        acquireSlot: () => Promise.resolve({ allowed: true, wait_ms: 0 }),
+        reportRateLimit: () => Promise.resolve(),
+      },
+    });
+    const res = await handleAcompanhamento(
+      { action: "acompanhamento", id: "300" },
+      { getClient: () => createMockSupabase(row) as any, httpClient },
+    );
+    assertEquals(res.status, 200);
+    const text = await res.text();
+    assertEquals(text.includes(secret), false);
+    const body = JSON.parse(text);
+    assertEquals("raw" in body, false);
+    assertEquals(body.disponivel, true);
+    assertEquals(
+      body.url_acompanhamento,
+      "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/landing?destino=acompanhamento-compra&compra=98703305900102026",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    clearAcompanhamentoCache();
+  }
+});
+
+// -----------------------------------------------------------------------------
+// Validação do parâmetro id (/^\d{1,18}$/)
+// -----------------------------------------------------------------------------
+
+Deno.test("validation acompanhamento: id válido (1 a 18 dígitos) via URL e body", () => {
+  for (const id of ["1", "101", "000123", "123456789012345678"]) {
+    const url = new URL(`http://localhost/api-dashboard-oportunidades?action=acompanhamento&id=${id}`);
+    assertEquals(parseActionFromUrl(url), { action: "acompanhamento", id });
+    assertEquals(parseActionFromBody({ action: "acompanhamento", id }), { action: "acompanhamento", id });
+  }
+  assertEquals(parseActionFromBody({ action: "acompanhamento", id: 42 }), { action: "acompanhamento", id: "42" });
+  const padded = new URL("http://localhost/api-dashboard-oportunidades?action=acompanhamento&id=%2042%20");
+  assertEquals(parseActionFromUrl(padded), { action: "acompanhamento", id: "42" });
+});
+
+Deno.test("validation acompanhamento: id inválido retorna erro", () => {
+  const invalid = [
+    "abc",
+    "12a",
+    "-1",
+    "+1",
+    "1.5",
+    "1e3",
+    "0x10",
+    "1234567890123456789", // 19 dígitos
+    "1 2",
+    "１２３", // dígitos full-width
+    "1;drop table x",
+  ];
+  for (const id of invalid) {
+    const url = new URL("http://localhost/api-dashboard-oportunidades");
+    url.searchParams.set("action", "acompanhamento");
+    url.searchParams.set("id", id);
+    const fromUrl = parseActionFromUrl(url);
+    assertEquals("error" in fromUrl, true, `URL id=${JSON.stringify(id)} deveria falhar`);
+    const fromBody = parseActionFromBody({ action: "acompanhamento", id });
+    assertEquals("error" in fromBody, true, `body id=${JSON.stringify(id)} deveria falhar`);
+  }
+  for (const id of [-1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 2, true, {}, ["1"]]) {
+    const fromBody = parseActionFromBody({ action: "acompanhamento", id });
+    assertEquals("error" in fromBody, true, `body id=${String(id)} deveria falhar`);
+  }
+});
+
+Deno.test("acompanhamento: id inválido retorna 400 via handleRequest sem consultar o banco", async () => {
+  let dbCalled = false;
+  const client = {
+    from: () => {
+      dbCalled = true;
+      throw new Error("não deveria consultar");
+    },
+  };
+  for (const id of ["abc", "-5", "1234567890123456789"]) {
+    const reqGet = new Request(
+      `http://localhost/api-dashboard-oportunidades?action=acompanhamento&id=${encodeURIComponent(id)}`,
+    );
+    const resGet = await handleRequest(reqGet, { getClient: () => client as any, requireAuth: () => null });
+    assertEquals(resGet.status, 400);
+    await resGet.body?.cancel();
+
+    const reqPost = new Request("http://localhost/api-dashboard-oportunidades", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "acompanhamento", id }),
+    });
+    const resPost = await handleRequest(reqPost, { getClient: () => client as any, requireAuth: () => null });
+    assertEquals(resPost.status, 400);
+    await resPost.body?.cancel();
+  }
+  assertEquals(dbCalled, false);
 });

@@ -535,6 +535,33 @@ async function fetchArquivos(
 // Handler Principal da Ação `acompanhamento`
 // -----------------------------------------------------------------------------
 
+/**
+ * Colunas de `licitacoes_externas` lidas pela ação `acompanhamento`.
+ * Todas devem existir nas migrations (verificado em
+ * tests/supabase/functions/licitacoes_externas_columns_test.ts).
+ * `raw` é lido apenas server-side (resolução da chave PNCP e linkSistemaOrigem)
+ * e nunca é incluído na resposta.
+ */
+export const ACOMPANHAMENTO_LICITACAO_COLUMNS: readonly string[] = [
+  "id",
+  "fonte",
+  "modulo",
+  "id_externo",
+  "codigo_externo",
+  "numero_processo",
+  "processo_norm",
+  "numero_edital",
+  "orgao_cnpj",
+  "raw",
+];
+
+/** Extrai `linkSistemaOrigem` do payload bruto (`raw`) da linha, se for string. */
+export function linkSistemaOrigemFromRaw(raw: unknown): string | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const value = (raw as Record<string, unknown>).linkSistemaOrigem;
+  return typeof value === "string" && value.trim() !== "" ? value : null;
+}
+
 export async function handleAcompanhamento(
   params: AcompanhamentoActionParams,
   ctx?: DashboardOportunidadesClientContext,
@@ -549,7 +576,7 @@ export async function handleAcompanhamento(
     // 1. Busca a oportunidade por ID
     const { data, error } = await client
       .from("licitacoes_externas")
-      .select("id, fonte, modulo, id_externo, codigo_externo, numero_processo, processo_norm, numero_edital, orgao_cnpj, linkSistemaOrigem, raw")
+      .select(ACOMPANHAMENTO_LICITACAO_COLUMNS.join(","))
       .eq("id", params.id)
       .maybeSingle();
 
@@ -562,7 +589,7 @@ export async function handleAcompanhamento(
       return jsonResponse({ error: "Licitação não encontrada", item: null }, 404);
     }
 
-    const row = data as Record<string, unknown>;
+    const row = data as unknown as Record<string, unknown>;
 
     // 2. Resolve a chave PNCP
     const pncpKey = resolvePncpKey(row);
@@ -570,7 +597,7 @@ export async function handleAcompanhamento(
       // Linha que não é PNCP -> HTTP 200 com disponivel: false e razao
       return jsonResponse({
         disponivel: false,
-        id: data.id,
+        id: row.id as number | string,
         motivo: "Esta oportunidade não é de origem PNCP ou não possui chave de identificação PNCP.",
         razao: "Esta oportunidade não é de origem PNCP ou não possui chave de identificação PNCP.",
       });
@@ -627,14 +654,14 @@ export async function handleAcompanhamento(
 
     // 6. Deriva url_edital e url_acompanhamento
     const urlEdital = buildEditalUrl(row) ?? buildPncpEditalUrl(pncpKey.cnpj, pncpKey.ano, pncpKey.sequencial);
-    const rawLinkOrigem = compraSection.dados?.linkSistemaOrigem ??
-      (row.linkSistemaOrigem as string | null) ??
-      ((row.raw as Record<string, unknown> | null)?.linkSistemaOrigem as string | null);
+    // linkSistemaOrigem não é coluna de licitacoes_externas: vem do PNCP (compra)
+    // ou do payload `raw`, lido apenas server-side (raw nunca é devolvido).
+    const rawLinkOrigem = compraSection.dados?.linkSistemaOrigem ?? linkSistemaOrigemFromRaw(row.raw);
     const urlAcompanhamento = buildAcompanhamentoUrl(rawLinkOrigem);
 
     const payload: AcompanhamentoResponse = {
       disponivel: true,
-      id: data.id,
+      id: row.id as number | string,
       pncp: {
         cnpj: pncpKey.cnpj,
         ano: pncpKey.ano,

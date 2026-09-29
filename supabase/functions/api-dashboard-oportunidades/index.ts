@@ -52,7 +52,6 @@ export const PUBLIC_LICITACAO_COLUMNS = [
   "created_at",
   "updated_at",
   "last_synced_at",
-  "linkSistemaOrigem",
 ].join(",");
 
 export interface DashboardOportunidadesClientContext {

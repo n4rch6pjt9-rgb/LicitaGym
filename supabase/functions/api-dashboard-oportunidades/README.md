@@ -236,6 +236,8 @@ Obtém o painel de acompanhamento em tempo real para uma oportunidade, consultan
 
 Requer autenticação JWT do usuário (`401` se não autenticado).
 
+A ação é somente leitura: não grava eventos nem gera tarefas. A automação de tarefas a partir do histórico está em design em [`docs/design/acompanhamento-tarefas.md`](../../../docs/design/acompanhamento-tarefas.md), com SQL proposto (não aplicado, fora de `supabase/migrations`) em [`docs/design/sql/acompanhamento_tarefas.sql`](../../../docs/design/sql/acompanhamento_tarefas.sql).
+
 #### Requisição
 - **GET**: `/functions/v1/api-dashboard-oportunidades?action=acompanhamento&id=101`
 - **POST**:
@@ -245,6 +247,7 @@ Requer autenticação JWT do usuário (`401` se não autenticado).
     "id": 101
   }
   ```
+- **Validação de `id`**: obrigatório; somente dígitos, 1 a 18 (`/^\d{1,18}$/`, aceito como string ou inteiro no body). Qualquer outro formato retorna `400` sem consultar o banco.
 
 #### Resposta de Sucesso para oportunidade PNCP (HTTP 200)
 ```json

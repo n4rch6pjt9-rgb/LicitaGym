@@ -21,8 +21,7 @@ Use `execute_sql` do MCP do Supabase (somente leitura). Não corrija nada em pro
           p.policyname || ' roles=' || array_to_string(p.roles, ',') || ' using=' || coalesce(left(p.qual, 60), '-')
      from pg_policies p
     where p.schemaname in ('public','private')
-      and (p.roles && array['anon','public']::name[]
-           or (p.cmd in ('INSERT','UPDATE','DELETE','ALL') and p.roles && array['authenticated']::name[]))
+     and p.roles && array['anon','public','authenticated']::name[]
    order by 1, 2;
    ```
    Esperado: nenhuma `rls_desligado`; policies de escrita só com checagem de `app_metadata.licitagym_role` ou de dono

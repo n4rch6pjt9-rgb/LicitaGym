@@ -44,6 +44,10 @@ Tabelas e funções: `supabase/migrations/20260930100000_catalogo_empresa_catmat
 - Limite de 8 s por chamada, 1 nova tentativa em 429 ou 5xx, e orçamento de 25 s por árvore.
 - Cache em memória por isolate (10 min) e em `compras_catmat_cache` (24 h). Pedidos iguais simultâneos compartilham a mesma busca.
 - Se o Compras.gov falhar: devolve o cache vencido com `stale: true`. Sem cache nenhum, responde `504`.
+- `catalogo_salvar` não aceita a cópia vencida: se o Compras.gov estiver fora e só houver cache vencido, responde `503` sem gravar nada.
+- Lista vazia (código sem filhos ou inexistente) não vai para o cache.
+- A hierarquia gravada em `catmat_grupos/classes/pdms` não mexe em `data_atualizacao_origem` (é do `sync-compras-catmat`).
+- Deploy: listada em `supabase/config.toml` com `verify_jwt = false` (a função valida o JWT e o papel no código) e no workflow `deploy-supabase-functions.yml`.
 - O cache guarda ativos e inativos; `incluir_inativos` só filtra a resposta.
 
 ## Testes

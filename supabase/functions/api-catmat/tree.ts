@@ -166,6 +166,7 @@ async function buscarNoComprasGov(deps: TreeDeps, nivel: NivelArvore, codigo: nu
 /**
  * Filhos de um nó (ou o próprio grupo, em 'grupos'), com todos os status. Ordem de busca:
  * memória (10 min) -> banco (24 h) -> Compras.gov. Se o Compras.gov falhar, devolve o cache vencido com stale=true.
+ * Resultado vazio não é guardado em cache.
  * Pedidos iguais simultâneos compartilham a mesma busca.
  */
 export async function obterArvore(
@@ -194,8 +195,11 @@ export async function obterArvore(
     }
     try {
       const nos = await buscarNoComprasGov(deps, nivel, codigo);
-      memoria.set(chave, { nos, expira: agora + TTL_MEMORIA_MS });
-      await deps.repo.cacheGravar(chave, nos, nos.length, new Date(agora + TTL_BANCO_MS));
+      // Lista vazia não vai para o cache: código inexistente não ocupa o banco e um nó novo aparece na hora
+      if (nos.length > 0) {
+        memoria.set(chave, { nos, expira: agora + TTL_MEMORIA_MS });
+        await deps.repo.cacheGravar(chave, nos, nos.length, new Date(agora + TTL_BANCO_MS));
+      }
       return { nos, fonte: "compras.gov", stale: false };
     } catch (e) {
       if (banco) return { nos: banco.payload as CatmatNo[], fonte: "banco", stale: true };

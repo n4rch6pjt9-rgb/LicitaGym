@@ -281,6 +281,50 @@ Deno.test("api-catmat: registrar a classe 7830 grava ancestrais, materializa os 
   assertEquals(mem.regras.length, 1);
 });
 
+Deno.test("api-catmat: catalogo_salvar recusa árvore vencida (stale) com 503 e não grava nada", async () => {
+  limparCacheMemoria();
+  const mem = repoMemoria();
+  // Aquece o cache do banco (classes e PDMs de 7830) e depois deixa vencer
+  await handleRequest(post({ action: "arvore", nivel: "grupos", codigo: 78 }), ctx(mem));
+  await handleRequest(post({ action: "arvore", nivel: "classes", codigo: 78 }), ctx(mem));
+  await handleRequest(post({ action: "arvore", nivel: "pdms", codigo: 7830 }), ctx(mem));
+  limparCacheMemoria();
+  const depois = () => 1_000_000 + 25 * 3600_000;
+  const c = ctx(mem, comprasGovFalso({ falhar: true }), ADMIN, depois);
+  // Navegar continua possível com o vencido...
+  assertEquals((await (await handleRequest(post({ action: "arvore", nivel: "classes", codigo: 78 }), c)).json()).stale, true);
+  // ...mas registrar não
+  const res = await handleRequest(post({ action: "catalogo_salvar", nivel: "classe", codigo_grupo: 78, codigo_classe: 7830, incluido: true }), c);
+  assertEquals(res.status, 503);
+  assertEquals(mem.regras.length, 0);
+  assertEquals(mem.pdms.size, 0);
+});
+
+Deno.test("api-catmat: hierarquia gravada sem data_atualizacao_origem (não apaga a data do sync)", async () => {
+  limparCacheMemoria();
+  const mem = repoMemoria();
+  const linhas: Record<string, unknown>[] = [];
+  const orig = { g: mem.repo.upsertGrupo, c: mem.repo.upsertClasse, p: mem.repo.upsertPdm };
+  mem.repo.upsertGrupo = (r) => (linhas.push(r), orig.g(r));
+  mem.repo.upsertClasse = (r) => (linhas.push(r), orig.c(r));
+  mem.repo.upsertPdm = (r) => (linhas.push(r), orig.p(r));
+  const res = await handleRequest(post({ action: "catalogo_salvar", nivel: "classe", codigo_grupo: 78, codigo_classe: 7830, incluido: true }), ctx(mem));
+  assertEquals(res.status, 201);
+  assertEquals(linhas.length > 0, true);
+  assertEquals(linhas.some((r) => "data_atualizacao_origem" in r), false);
+});
+
+Deno.test("api-catmat: lista vazia do Compras.gov não vai para o cache", async () => {
+  limparCacheMemoria();
+  const mem = repoMemoria();
+  const gov = comprasGovFalso();
+  const r1 = await (await handleRequest(post({ action: "arvore", nivel: "pdms", codigo: 7810 }), ctx(mem, gov))).json();
+  assertEquals(r1.total, 0);
+  assertEquals(mem.cache.has("pdms:7810"), false);
+  await handleRequest(post({ action: "arvore", nivel: "pdms", codigo: 7810 }), ctx(mem, gov));
+  assertEquals(gov.chamadas.filter((u) => u.includes("codigoClasse=7810")).length, 2);
+});
+
 Deno.test("api-catmat: exclusão só vale para nó herdado; o mais específico vence nas opções", async () => {
   limparCacheMemoria();
   const mem = repoMemoria();

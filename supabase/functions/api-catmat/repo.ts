@@ -47,9 +47,9 @@ export interface CatmatRepo {
   atualizarRegra(id: number, row: RegraInput, userId: string): Promise<CatmatRegra>;
   removerRegra(id: number): Promise<boolean>;
 
-  upsertGrupo(row: { codigo_grupo: number; nome: string; status: boolean; data_atualizacao_origem: string | null }): Promise<void>;
-  upsertClasse(row: { codigo_grupo: number; codigo_classe: number; nome: string; status: boolean; data_atualizacao_origem: string | null }): Promise<void>;
-  upsertPdm(row: { codigo_pdm: number; codigo_grupo: number; codigo_classe: number; nome_pdm: string; status: boolean; data_atualizacao_origem: string | null }): Promise<void>;
+  upsertGrupo(row: { codigo_grupo: number; nome: string; status: boolean }): Promise<void>;
+  upsertClasse(row: { codigo_grupo: number; codigo_classe: number; nome: string; status: boolean }): Promise<void>;
+  upsertPdm(row: { codigo_pdm: number; codigo_grupo: number; codigo_classe: number; nome_pdm: string; status: boolean }): Promise<void>;
   upsertItensPdm(rows: ItemPdmInput[]): Promise<void>;
   pdmExiste(codigoPdm: number): Promise<boolean>;
 

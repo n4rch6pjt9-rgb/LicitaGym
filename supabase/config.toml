@@ -118,3 +118,7 @@ verify_jwt = false
 
 [functions.api-dashboard-oportunidades]
 verify_jwt = false
+
+# api-catmat valida o JWT do usuário no código (auth.getUser) e o papel admin em app_metadata
+[functions.api-catmat]
+verify_jwt = false

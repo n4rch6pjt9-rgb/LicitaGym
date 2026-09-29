@@ -1,6 +1,6 @@
 import type { CatmatRepo, RegraInput } from "./repo.ts";
 import { obterArvore, type TreeDeps } from "./tree.ts";
-import type { CatmatEstado, CatmatNo, CatmatNoAnotado, CatmatRegra, NivelRegra } from "./types.ts";
+import type { CatmatEstado, CatmatNo, CatmatNoAnotado, CatmatRegra, NivelArvore, NivelRegra } from "./types.ts";
 
 /** Erro de negócio com status HTTP. */
 export class ErroCatalogo extends Error {
@@ -51,6 +51,18 @@ export function anotar(nos: CatmatNo[], regras: CatmatRegra[]): CatmatNoAnotado[
   return nos.map((no) => ({ ...no, ...estadoDoNo(no, idx) }));
 }
 
+/**
+ * Árvore para escrita: recusa a cópia vencida (stale) que obterArvore devolve quando o Compras.gov está fora.
+ * Navegar com cache vencido é aceitável; gravar regra ou hierarquia a partir dele, não.
+ */
+async function arvoreVerificada(deps: TreeDeps, nivel: NivelArvore, codigo: number): Promise<CatmatNo[]> {
+  const arvore = await obterArvore(deps, nivel, codigo);
+  if (arvore.stale) {
+    throw new ErroCatalogo(503, "O Compras.gov não respondeu e só há cópia vencida da árvore; tente registrar de novo em instantes.");
+  }
+  return arvore.nos;
+}
+
 /** Localiza o nó na árvore do Compras.gov (valida existência) e devolve também o nó do grupo. */
 async function localizarNo(
   deps: TreeDeps,
@@ -61,31 +73,32 @@ async function localizarNo(
     if (!no) throw new ErroCatalogo(404, `${rotulo} ${codigo} não encontrado no Compras.gov.`);
     return no;
   };
-  const grupo = acha((await obterArvore(deps, "grupos", alvo.codigo_grupo)).nos, alvo.codigo_grupo, "Grupo");
+  const grupo = acha(await arvoreVerificada(deps, "grupos", alvo.codigo_grupo), alvo.codigo_grupo, "Grupo");
   if (alvo.nivel === "grupo") return { no: grupo, grupo, classe: null, pdm: null };
 
-  const classe = acha((await obterArvore(deps, "classes", alvo.codigo_grupo)).nos, alvo.codigo_classe, "Classe");
+  const classe = acha(await arvoreVerificada(deps, "classes", alvo.codigo_grupo), alvo.codigo_classe, "Classe");
   if (alvo.nivel === "classe") return { no: classe, grupo, classe, pdm: null };
 
-  const pdm = acha((await obterArvore(deps, "pdms", alvo.codigo_classe as number)).nos, alvo.codigo_pdm, "PDM");
+  const pdm = acha(await arvoreVerificada(deps, "pdms", alvo.codigo_classe as number), alvo.codigo_pdm, "PDM");
   if (alvo.nivel === "pdm") return { no: pdm, grupo, classe, pdm };
 
-  const item = acha((await obterArvore(deps, "itens", alvo.codigo_pdm as number)).nos, alvo.codigo_item, "Item");
+  const item = acha(await arvoreVerificada(deps, "itens", alvo.codigo_pdm as number), alvo.codigo_item, "Item");
   return { no: item, grupo, classe, pdm };
 }
 
 async function gravarGrupo(repo: CatmatRepo, g: CatmatNo) {
-  await repo.upsertGrupo({ codigo_grupo: g.codigo_grupo, nome: g.nome, status: g.ativo, data_atualizacao_origem: null });
+  // Sem data_atualizacao_origem: o nó do Compras.gov não traz a data e não se apaga a gravada pelo sync-compras-catmat
+  await repo.upsertGrupo({ codigo_grupo: g.codigo_grupo, nome: g.nome, status: g.ativo });
 }
 async function gravarClasse(repo: CatmatRepo, c: CatmatNo) {
   await repo.upsertClasse({
-    codigo_grupo: c.codigo_grupo, codigo_classe: c.codigo_classe as number, nome: c.nome, status: c.ativo, data_atualizacao_origem: null,
+    codigo_grupo: c.codigo_grupo, codigo_classe: c.codigo_classe as number, nome: c.nome, status: c.ativo,
   });
 }
 async function gravarPdm(repo: CatmatRepo, p: CatmatNo) {
   await repo.upsertPdm({
     codigo_pdm: p.codigo_pdm as number, codigo_grupo: p.codigo_grupo, codigo_classe: p.codigo_classe as number,
-    nome_pdm: p.nome, status: p.ativo, data_atualizacao_origem: null,
+    nome_pdm: p.nome, status: p.ativo,
   });
 }
 function paraItemPdm(i: CatmatNo) {
@@ -130,17 +143,17 @@ export async function salvarRegra(
   let pdmsMaterializados = 0;
   let itensHidratados = 0;
   if (alvo.incluido && (alvo.nivel === "grupo" || alvo.nivel === "classe")) {
-    const classes = alvo.nivel === "grupo" ? (await obterArvore(deps, "classes", alvo.codigo_grupo)).nos : [classe as CatmatNo];
+    const classes = alvo.nivel === "grupo" ? await arvoreVerificada(deps, "classes", alvo.codigo_grupo) : [classe as CatmatNo];
     for (const c of classes) {
       if (alvo.nivel === "grupo") await gravarClasse(repo, c);
-      for (const p of (await obterArvore(deps, "pdms", c.codigo_classe as number)).nos) {
+      for (const p of await arvoreVerificada(deps, "pdms", c.codigo_classe as number)) {
         await gravarPdm(repo, p);
         pdmsMaterializados++;
       }
     }
   }
   if (alvo.nivel === "pdm" || alvo.nivel === "item") {
-    const itens = (await obterArvore(deps, "itens", alvo.codigo_pdm as number)).nos;
+    const itens = await arvoreVerificada(deps, "itens", alvo.codigo_pdm as number);
     await repo.upsertItensPdm(itens.map(paraItemPdm));
     itensHidratados = itens.length;
   }

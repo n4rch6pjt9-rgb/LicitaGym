@@ -726,6 +726,7 @@ Deno.test("handleRequest list com filtro uf asserte eq('uf', 'AC') e PUBLIC_LICI
     "created_at",
     "updated_at",
     "last_synced_at",
+    "linkSistemaOrigem",
   ].join(",");
   assertEquals(selectCall?.args[0], EXPECTED_PROJECTION);
 
@@ -1125,4 +1126,82 @@ Deno.test("handleRequest enriquece resposta de list e get com url_edital derivad
   );
   assertEquals(bodyList.items[2].url_edital, null);
 });
+
+// --------------------------------------------------------------------------
+// Testes para a Ação `acompanhamento`
+// --------------------------------------------------------------------------
+
+Deno.test("acompanhamento: requer autenticação de usuário (401 sem token)", async () => {
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=acompanhamento&id=101", {
+    method: "GET",
+  });
+  const res = await handleRequest(req, {
+    requireAuth: () => new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 }),
+  });
+  assertEquals(res.status, 401);
+  const body = await res.json();
+  assertEquals(body.error, "Unauthorized");
+});
+
+Deno.test("acompanhamento: validação de ID ausente retorna 400", async () => {
+  const reqGet = new Request("http://localhost/api-dashboard-oportunidades?action=acompanhamento", {
+    method: "GET",
+  });
+  const resGet = await handleRequest(reqGet, { requireAuth: () => null });
+  assertEquals(resGet.status, 400);
+
+  const reqPost = new Request("http://localhost/api-dashboard-oportunidades", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "acompanhamento" }),
+  });
+  const resPost = await handleRequest(reqPost, { requireAuth: () => null });
+  assertEquals(resPost.status, 400);
+});
+
+Deno.test("acompanhamento: oportunidade não encontrada retorna 404", async () => {
+  const mockClient = createRecordingMockClient({
+    singleResult: { data: null, error: null },
+  });
+
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=acompanhamento&id=9999", {
+    method: "GET",
+  });
+  const res = await handleRequest(req, {
+    getClient: () => mockClient as any,
+    requireAuth: () => null,
+  });
+  assertEquals(res.status, 404);
+  const body = await res.json();
+  assertEquals(body.error, "Licitação não encontrada");
+});
+
+Deno.test("acompanhamento: linha não-PNCP retorna 200 com disponivel: false", async () => {
+  const mockClient = createRecordingMockClient({
+    singleResult: {
+      data: {
+        id: 202,
+        fonte: "sestsenat",
+        modulo: 59,
+        id_externo: 12345,
+        objeto: "Contratação SEST SENAT",
+      },
+      error: null,
+    },
+  });
+
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=acompanhamento&id=202", {
+    method: "GET",
+  });
+  const res = await handleRequest(req, {
+    getClient: () => mockClient as any,
+    requireAuth: () => null,
+  });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.disponivel, false);
+  assertEquals(body.id, 202);
+  assertEquals(typeof body.motivo, "string");
+});
+
 

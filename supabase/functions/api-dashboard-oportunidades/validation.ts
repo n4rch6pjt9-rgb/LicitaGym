@@ -374,7 +374,15 @@ export function parseActionFromUrl(url: URL): ActionParams | { error: string } {
     return result;
   }
 
-  return { error: `Ação inválida: '${actionParam}'. Use 'list', 'get' ou 'readiness'.` };
+  if (actionParam === "acompanhamento") {
+    const idRaw = url.searchParams.get("id");
+    if (!idRaw || !idRaw.trim()) {
+      return { error: "Parâmetro 'id' é obrigatório para a ação 'acompanhamento'." };
+    }
+    return { action: "acompanhamento", id: idRaw.trim() };
+  }
+
+  return { error: `Ação inválida: '${actionParam}'. Use 'list', 'get', 'readiness' ou 'acompanhamento'.` };
 }
 
 export function parseActionFromBody(
@@ -398,5 +406,13 @@ export function parseActionFromBody(
     return result;
   }
 
-  return { error: `Ação inválida: '${action}'. Use 'list', 'get' ou 'readiness'.` };
+  if (action === "acompanhamento") {
+    const idRaw = body.id;
+    if (idRaw === undefined || idRaw === null || String(idRaw).trim() === "") {
+      return { error: "Parâmetro 'id' é obrigatório para a ação 'acompanhamento'." };
+    }
+    return { action: "acompanhamento", id: String(idRaw).trim() };
+  }
+
+  return { error: `Ação inválida: '${action}'. Use 'list', 'get', 'readiness' ou 'acompanhamento'.` };
 }

@@ -35,6 +35,18 @@ revoke all on sequence public.legislacao_id_seq, public.legislacao_embeddings_id
 grant all on sequence public.legislacao_id_seq, public.legislacao_embeddings_id_seq to service_role;
 
 -- 2) consultas_log: log por dono + trace do RAG -------------------------------------------------------
+-- user_id é NOT NULL e não há fonte verificável para o dono de logs antigos (a tabela não guardava
+-- usuário). Em vez de inventar dono ou apagar logs, a migration para com diagnóstico se houver linhas.
+do $$
+begin
+  if not exists (select 1 from information_schema.columns where table_schema = 'public'
+                  and table_name = 'consultas_log' and column_name = 'user_id')
+     and exists (select 1 from public.consultas_log) then
+    raise exception 'consultas_log tem % linha(s) sem dono identificável. Exporte e esvazie a tabela (ou migre só as linhas com dono comprovado) antes desta migration.',
+      (select count(*) from public.consultas_log);
+  end if;
+end $$;
+
 alter table public.consultas_log
   add column if not exists user_id uuid not null references auth.users(id) on delete cascade,
   add column if not exists trace_id uuid not null default gen_random_uuid(),

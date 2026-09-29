@@ -7,7 +7,8 @@
 --     chamador pede explicitamente (pergunta SOBRE a alegação, nunca pergunta de fato ou de norma);
 --   * devolve tipo_documento, nivel_confianca, autor_tipo e fornecedor para o envelope do prompt;
 --   * limita match_count a 20.
--- Só service_role (Edge Function do assistente). A v1 continua existindo até o assistente migrar.
+-- Só service_role. Todo consumidor deve usar esta RPC antes de enviar contexto ao modelo
+-- (services/coletor-externo/coletor/buscar.py migrado na review 2 do PR #89). A v1 fica só por compatibilidade.
 
 create or replace function public.match_licitacao_chunks_v2(
   query_embedding vector,

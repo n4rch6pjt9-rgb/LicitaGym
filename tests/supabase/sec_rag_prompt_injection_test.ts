@@ -7,6 +7,9 @@ const MIG = "./supabase/migrations";
 const BASELINE = `${MIG}/20260929180000_legislacao_rag_baseline.sql`;
 const ACL_LOCK = `${MIG}/20260929180014_sec_rag_acl_lock.sql`;
 const CLASSIFICACAO = `${MIG}/20260929183258_sec_rag_chunks_classificacao_insert.sql`;
+const ORIGEM = `${MIG}/20260929185134_sec_rag_confianca_origem_controlada.sql`;
+const BUSCAR_PY = "./services/coletor-externo/coletor/buscar.py";
+const RAG_CONTEXTO_PY = "./services/coletor-externo/coletor/rag_contexto.py";
 const ACL_CHECK = "./supabase/tests/sec_rag_prompt_injection_acl_check.sql";
 const IA_PY = "./services/coletor-externo/coletor/ia.py";
 
@@ -69,10 +72,38 @@ Deno.test("checagem SQL cobre ACL, classificação e scanner", async () => {
     "TRUNCATE",
     "has_function_privilege('anon'",
     "classificar_tipo_documento('impugnacao')",
-    "INSERT OR UPDATE OF texto, metadados",
+    "INSERT OR UPDATE OF texto, metadados, secao",
+    "classificar_origem_controlada",
     "base64_longo",
     "EMBEDDING IS NOT NULL",
   ]) {
     assertEquals(sql.includes(trecho), true, `ACL check sem: ${trecho}`);
   }
+});
+
+Deno.test("confiança vem da seção do portal; tipo_documento da IA só rebaixa", async () => {
+  const sql = await Deno.readTextFile(ORIGEM);
+  assertEquals(sql.includes("before insert or update of texto, metadados, secao"), true);
+  assertEquals(sql.includes("from private.classificar_origem_controlada(new.metadados, new.secao) c"), true);
+  const trigger = sql.slice(sql.indexOf("create or replace function private.trg_scan_chunk"));
+  assertEquals(trigger.includes("classificar_tipo_documento"), false, "trigger não pode usar o tipo da IA direto");
+  // na função de origem, orgao_publicado só nasce da seção 'parecer'
+  const origem = sql.slice(sql.indexOf("create or replace function private.classificar_origem_controlada"), sql.indexOf("comment on function"));
+  assertEquals((origem.match(/'orgao_publicado'/g) ?? []).length, 1);
+  assertEquals(origem.includes("elsif secao = 'parecer' then"), true);
+});
+
+Deno.test("consumidor do RAG usa a v2 e o envelope de confiança", async () => {
+  const py = await Deno.readTextFile(BUSCAR_PY);
+  assertEquals(py.includes('"match_licitacao_chunks_v2"'), true);
+  assertEquals(/rpc\("match_licitacao_chunks"/.test(py), false, "buscar.py ainda chama a v1");
+  assertEquals(py.includes('"incluir_partes_interessadas"'), true);
+  const ctx = await Deno.readTextFile(RAG_CONTEXTO_PY);
+  assertEquals(ctx.includes("alegacao_de_parte") && ctx.includes("NIVEIS_EXCLUIDOS"), true);
+});
+
+Deno.test("ACL lock para com diagnóstico se consultas_log tiver linhas sem dono", async () => {
+  const sql = await Deno.readTextFile(ACL_LOCK);
+  const guarda = sql.indexOf("sem dono identificável");
+  assertEquals(guarda > 0 && guarda < sql.indexOf("add column if not exists user_id uuid not null"), true);
 });

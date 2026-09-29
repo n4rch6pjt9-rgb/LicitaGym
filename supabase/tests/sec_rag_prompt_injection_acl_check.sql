@@ -1,7 +1,7 @@
 -- Verificação de ACL e do scanner do RAG (prompt injection)
 -- (migrations 20260929180000_legislacao_rag_baseline, 20260929180014_sec_rag_acl_lock,
 -- 20260929180030_sec_rag_chunks_confianca, 20260929180039_sec_rag_match_licitacao_chunks_v2 e
--- 20260929183258_sec_rag_chunks_classificacao_insert).
+-- 20260929183258_sec_rag_chunks_classificacao_insert e 20260929185134_sec_rag_confianca_origem_controlada).
 -- Executar após aplicar as migrations (ex.: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/tests/sec_rag_prompt_injection_acl_check.sql):
 --   1. legislacao / legislacao_embeddings: anon e authenticated só SELECT; sem policy de escrita para eles
 --   2. consultas_log: anon sem nada; authenticated só SELECT; policy por dono; user_id NOT NULL
@@ -9,7 +9,8 @@
 --   4. match_legislacao_embeddings: sem EXECUTE para anon/PUBLIC; search_path fixo
 --   5. licitacao_chunks: trigger de scanner presente; nenhum chunk sem scan; regex de zero-width não casa com hífen
 --   6. classificação por tipo_documento cobre os 18 TIPOS do indexador (impugnacao = parte interessada)
---   7. trigger dispara em INSERT e em UPDATE de texto/metadados; base64_longo rebaixa; v2 ignora embedding nulo
+--   7. trigger dispara em INSERT e em UPDATE de texto/metadados/secao; base64_longo rebaixa; v2 ignora embedding nulo
+--   8. confiança vem da secao (controlada pelo coletor); tipo_documento da IA só rebaixa, nunca eleva
 -- Falha com EXCEPTION na primeira regra violada.
 
 do $$
@@ -112,7 +113,7 @@ begin
 
   -- 7. trigger em INSERT e UPDATE de texto/metadados; base64 rebaixa; v2 ignora embedding nulo
   if not exists (select 1 from pg_trigger t where t.tgrelid = 'public.licitacao_chunks'::regclass
-                  and t.tgname = 'licitacao_chunks_scan' and pg_get_triggerdef(t.oid) like '%INSERT OR UPDATE OF texto, metadados%') then
+                  and t.tgname = 'licitacao_chunks_scan' and pg_get_triggerdef(t.oid) like '%INSERT OR UPDATE OF texto, metadados, secao%') then
     raise exception 'ACL CHECK FALHOU: trigger não cobre UPDATE de metadados';
   end if;
   if position('base64_longo' in pg_get_functiondef('private.trg_scan_chunk()'::regprocedure)) = 0 then
@@ -126,6 +127,25 @@ begin
      and (select nivel from private.classificar_tipo_documento(metadados->>'tipo_documento')) = 'parte_interessada';
   if v_n > 0 then
     raise exception 'ACL CHECK FALHOU: % chunk(s) de parte interessada rotulado(s) como externo/órgão', v_n;
+  end if;
+
+  -- 8. origem controlada: a IA não eleva confiança
+  if (select nivel from private.classificar_origem_controlada('{"tipo_documento":"edital"}'::jsonb, 'recurso')) <> 'parte_interessada' then
+    raise exception 'ACL CHECK FALHOU: tipo_documento da IA elevou chunk da seção recurso';
+  end if;
+  if (select nivel from private.classificar_origem_controlada('{"tipo_documento":"homologacao"}'::jsonb, 'processo')) = 'orgao_publicado' then
+    raise exception 'ACL CHECK FALHOU: tipo_documento da IA elevou chunk da seção processo para orgao_publicado';
+  end if;
+  if (select nivel from private.classificar_origem_controlada('{"tipo_documento":"impugnacao"}'::jsonb, 'parecer')) <> 'parte_interessada' then
+    raise exception 'ACL CHECK FALHOU: tipo_documento da IA não rebaixou';
+  end if;
+  if position('classificar_origem_controlada' in pg_get_functiondef('private.trg_scan_chunk()'::regprocedure)) = 0 then
+    raise exception 'ACL CHECK FALHOU: trigger não usa classificar_origem_controlada';
+  end if;
+  select count(*) into v_n from public.licitacao_chunks
+   where nivel_confianca = 'orgao_publicado' and secao is distinct from 'parecer';
+  if v_n > 0 then
+    raise exception 'ACL CHECK FALHOU: % chunk(s) orgao_publicado fora da seção parecer', v_n;
   end if;
 
   raise notice 'SUCESSO: ACL e scanner do RAG conferidos';

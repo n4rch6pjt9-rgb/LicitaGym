@@ -24,10 +24,37 @@ const REGRAS_COMANDO = [
 
 const PROTEGIDAS = new Set(["main", "master"]);
 
-// Divide em palavras respeitando aspas simples/duplas (suficiente para linhas de comando de agente).
+// Divide em palavras reproduzindo a concatenação de trechos cotados do shell.
 function palavras(texto) {
   const out = [];
-  for (const m of texto.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)) out.push(m[1] ?? m[2] ?? m[3]);
+  let palavra = "";
+  let iniciou = false;
+  let aspas = null;
+  for (let i = 0; i < texto.length; i++) {
+    const c = texto[i];
+    if (aspas) {
+      if (c === aspas) aspas = null;
+      else if (c === "\\" && aspas === '"' && i + 1 < texto.length) palavra += texto[++i];
+      else palavra += c;
+      iniciou = true;
+    } else if (c === "'" || c === '"') {
+      aspas = c;
+      iniciou = true;
+    } else if (c === "\\") {
+      if (i + 1 < texto.length) palavra += texto[++i];
+      iniciou = true;
+    } else if (/\s/.test(c)) {
+      if (iniciou) {
+        out.push(palavra);
+        palavra = "";
+        iniciou = false;
+      }
+    } else {
+      palavra += c;
+      iniciou = true;
+    }
+  }
+  if (iniciou) out.push(palavra);
   return out;
 }
 

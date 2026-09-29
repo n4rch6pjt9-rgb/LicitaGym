@@ -14,6 +14,7 @@ const bloqueia = [
   bash("git push --force origin feat/x"), bash("git push -f"), bash("git push -fu origin feat/x"), bash("git push -uf origin feat/x"),
   bash("git push --force=origin/feat/x origin feat/x"),
   bash("git push origin main"), bash("git push origin HEAD:main"), bash("git push origin HEAD:refs/heads/main"),
+  bash('git push origin HEAD:refs/heads/"main"'),
   bash("git push origin +HEAD:refs/heads/main"), bash("git push origin feat/x:master"), bash("git push --delete origin main"),
   bash("git push --all origin"), bash("git -C /tmp/main-clone push"), bash("git -C ../outro push origin main"),
   naMain("git push"), naMain("git push origin"), naMain("git push -u origin HEAD"), naMain("git add . && git push"),

@@ -61,8 +61,9 @@ SQL Editor com o usuário.
 ## O que o agente NÃO faz
 - Não faz merge nem deploy sem o "ok" explícito do usuário (merge aplica em produção).
 - Não roda `supabase db reset/push`, `supabase migration repair`, `git push --force`, push direto na `main`,
-  `terraform apply/destroy`, `wrangler delete`: `.claude/hooks/bloquear-destrutivo.mjs` bloqueia. Se for mesmo
-  necessário, o usuário roda.
+  `terraform apply/destroy`, `wrangler delete`: `.claude/hooks/bloquear-destrutivo.mjs` bloqueia (casos de teste em
+  `.claude/hooks/bloquear-destrutivo.test.mjs`; rode `node .claude/hooks/bloquear-destrutivo.test.mjs` ao mudar o hook).
+  Se for mesmo necessário, o usuário roda.
 - Não usa `user_metadata` para papel: admin é `app_metadata.licitagym_role = 'admin'`.
 - Não versiona `.env`, chaves, HAR, CSV, zip nem dados de coleta.
 - Não inventa dado (ver `AGENTS.md`).

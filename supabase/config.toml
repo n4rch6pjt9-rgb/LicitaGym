@@ -121,6 +121,3 @@ verify_jwt = false
 
 [functions.sync-pncp-orgaos]
 verify_jwt = false
-
-[functions.discover-piso-pdm]
-verify_jwt = false

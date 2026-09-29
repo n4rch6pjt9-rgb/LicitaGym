@@ -16,6 +16,12 @@ RAIZ="$(git rev-parse --show-toplevel)"
 PULAR="202609180008_cron.sql"
 
 cd "$RAIZ"
+if ! git rev-parse --verify --quiet "${BASE}^{commit}" >/dev/null; then
+  echo "Base '$BASE' não encontrada (rode git fetch ou informe outra base)."; exit 2
+fi
+if ! NOVAS=$(git diff --name-only --diff-filter=AM "$BASE"...HEAD -- 'supabase/migrations/2*.sql'); then
+  echo "git diff contra '$BASE' falhou."; exit 2
+fi
 limpar() { docker rm -f "$NOME" >/dev/null 2>&1; }
 trap limpar EXIT
 docker run -d --name "$NOME" -e POSTGRES_PASSWORD=x "$IMG" >/dev/null
@@ -38,7 +44,8 @@ for f in $(ls supabase/migrations/2*.sql | sort); do
   case " $PULAR " in *" $(basename "$f") "*) echo "pulada $(basename "$f") (extensão só no Supabase)"; continue;; esac
   aplicar "$f" "migr  "
 done
-for f in $(git diff --name-only --diff-filter=AM "$BASE"...HEAD -- 'supabase/migrations/2*.sql' 2>/dev/null | sort); do
+echo "migrations novas/alteradas vs $BASE: $(wc -w <<<"$NOVAS")"
+for f in $(sort <<<"$NOVAS"); do
   aplicar "$f" "2a vez"
 done
 for f in supabase/tests/*_check.sql; do aplicar "$f" "check "; done

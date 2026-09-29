@@ -53,4 +53,115 @@ export interface ReadinessActionParams {
   action: "readiness";
 }
 
-export type ActionParams = ListActionParams | GetActionParams | ReadinessActionParams;
+export interface AcompanhamentoActionParams {
+  action: "acompanhamento";
+  id: number | string;
+}
+
+export type ActionParams =
+  | ListActionParams
+  | GetActionParams
+  | ReadinessActionParams
+  | AcompanhamentoActionParams;
+
+export interface CompraMetadata {
+  situacao: string | null;
+  situacaoCompraId?: number | null;
+  modalidade: string | null;
+  modalidadeId?: number | null;
+  objeto: string | null;
+  valorEstimado: number | null;
+  valorHomologado: number | null;
+  datas: {
+    publicacao: string | null;
+    aberturaProposta: string | null;
+    encerramentoProposta: string | null;
+    inclusao: string | null;
+    atualizacao: string | null;
+  };
+  linkSistemaOrigem: string | null;
+  numeroCompra?: string | null;
+  processo?: string | null;
+  srp?: boolean | null;
+  existeResultado?: boolean | null;
+  orgaoEntidade?: unknown;
+  unidadeOrgao?: unknown;
+}
+
+export interface ItemResultado {
+  fornecedorCnpj: string | null;
+  fornecedorNome: string | null;
+  valorUnitarioHomologado: number | null;
+  quantidadeHomologada: number | null;
+  dataResultado: string | null;
+}
+
+export interface ItemAcompanhamento {
+  numeroItem: number;
+  descricao: string | null;
+  quantidade: number | null;
+  unidade: string | null;
+  valorUnitarioEstimado: number | null;
+  situacaoCompraItemNome: string | null;
+  temResultado: boolean;
+  resultados: ItemResultado[];
+  resultadosErro?: string | null;
+}
+
+export interface AtaAcompanhamento {
+  numero: string | null;
+  ano: number | null;
+  vigenciaInicio: string | null;
+  vigenciaFim: string | null;
+  dataAssinatura?: string | null;
+  cancelado: boolean;
+  objeto?: string | null;
+}
+
+export interface HistoricoEvento {
+  data: string | null;
+  categoria: string | null;
+  tipo: string | null;
+  item: number | null;
+  documentoTitulo: string | null;
+  justificativa: string | null;
+}
+
+export interface ArquivoAcompanhamento {
+  titulo: string | null;
+  tipo: string | null;
+  url: string | null;
+  sequencialDocumento?: number | null;
+}
+
+export interface AcompanhamentoSection<T> {
+  dados: T | null;
+  total?: number;
+  erro: string | null;
+}
+
+export type AcompanhamentoResponse =
+  | {
+    disponivel: false;
+    id: number | string;
+    motivo: string;
+    razao: string;
+  }
+  | {
+    disponivel: true;
+    id: number | string;
+    pncp: {
+      cnpj: string;
+      ano: number;
+      sequencial: number;
+      numero_controle_pncp?: string | null;
+    };
+    url_edital: string | null;
+    url_acompanhamento: string | null;
+    compra: AcompanhamentoSection<CompraMetadata>;
+    itens: AcompanhamentoSection<ItemAcompanhamento[]> & { total: number };
+    atas: AcompanhamentoSection<AtaAcompanhamento[]> & { total: number };
+    historico: AcompanhamentoSection<HistoricoEvento[]> & { total: number };
+    arquivos: AcompanhamentoSection<ArquivoAcompanhamento[]> & { total: number };
+  };
+

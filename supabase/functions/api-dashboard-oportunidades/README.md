@@ -9,6 +9,7 @@ Função Supabase Edge Function responsável por atender o frontend do Dashboard
   - [1. `readiness`](#1-readiness)
   - [2. `get`](#2-get)
   - [3. `list`](#3-list)
+  - [4. `acompanhamento`](#4-acompanhamento)
 - [Exemplos de Requisição](#exemplos-de-requisição)
 - [Tratamento de Erros](#tratamento-de-erros)
 
@@ -216,6 +217,141 @@ Lista oportunidades com suporte a paginação, ordenação configurável e múlt
       "url_edital": "https://pncp.gov.br/app/editais/00394429000100/2026/1"
     }
   ]
+}
+```
+
+---
+
+### 4. `acompanhamento`
+Obtém o painel de acompanhamento em tempo real para uma oportunidade, consultando em paralelo a API oficial do PNCP para carregar:
+- Metadados da compra (`situacao`, `modalidade`, `objeto`, `valorEstimado`, `valorHomologado`, `datas`, `linkSistemaOrigem`).
+- Lista completa de itens paginada (`numeroItem`, `descricao`, `quantidade`, `unidade`, `valorUnitarioEstimado`, `situacaoCompraItemNome`, `temResultado`).
+- Vencedores e homologação de itens com resultado via `/itens/{n}/resultados` com concorrência limitada (~5). CNPJ/CPF retornados como dados públicos oficiais.
+- Atas de registro de preço associadas (`numero`, `ano`, `vigenciaInicio`, `vigenciaFim`, `cancelado`).
+- Histórico completo de eventos e retificações paginado (`data`, `categoria`, `tipo`, `item`, `documentoTitulo`, `justificativa`).
+- Arquivos e editais oficiais para download direto (`titulo`, `tipo`, `url`).
+- URLs seguras derivadas na leitura: `url_edital` e `url_acompanhamento` (redirecionamento Comprasnet `https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/landing?destino=acompanhamento-compra&compra={idCompra}` quando `idCompra` tem 17 dígitos válidos).
+- Cache em memória de ~5 minutos (`Cache-Control: private, max-age=300`).
+- Isolamento de falhas parciais: falha em uma seção não inviabiliza as demais; cada seção possui seu campo `erro`.
+
+Requer autenticação JWT do usuário (`401` se não autenticado).
+
+A ação é somente leitura: não grava eventos nem gera tarefas. A automação de tarefas a partir do histórico está em design em [`docs/design/acompanhamento-tarefas.md`](../../../docs/design/acompanhamento-tarefas.md), com SQL proposto (não aplicado, fora de `supabase/migrations`) em [`docs/design/sql/acompanhamento_tarefas.sql`](../../../docs/design/sql/acompanhamento_tarefas.sql).
+
+#### Requisição
+- **GET**: `/functions/v1/api-dashboard-oportunidades?action=acompanhamento&id=101`
+- **POST**:
+  ```json
+  {
+    "action": "acompanhamento",
+    "id": 101
+  }
+  ```
+- **Validação de `id`**: obrigatório; somente dígitos, 1 a 18 (`/^\d{1,18}$/`, aceito como string ou inteiro no body). Qualquer outro formato retorna `400` sem consultar o banco.
+
+#### Resposta de Sucesso para oportunidade PNCP (HTTP 200)
+```json
+{
+  "disponivel": true,
+  "id": 101,
+  "pncp": {
+    "cnpj": "45138070000149",
+    "ano": 2026,
+    "sequencial": 559,
+    "numero_controle_pncp": "45138070000149-1-000559/2026"
+  },
+  "url_edital": "https://pncp.gov.br/app/editais/45138070000149/2026/559",
+  "url_acompanhamento": "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/landing?destino=acompanhamento-compra&compra=98703305900102026",
+  "compra": {
+    "dados": {
+      "situacao": "Divulgada no PNCP",
+      "modalidade": "Pregão - Eletrônico",
+      "objeto": "Visa-se o REGISTRO DE PREÇOS para futura e eventual aquisição de materiais esportivos...",
+      "valorEstimado": 250000.0,
+      "valorHomologado": 210000.0,
+      "datas": {
+        "publicacao": "2026-06-15T07:04:53",
+        "aberturaProposta": "2026-06-25T08:00:00",
+        "encerramentoProposta": "2026-06-25T09:00:00",
+        "inclusao": "2026-06-15T07:04:53",
+        "atualizacao": "2026-09-18T08:07:28"
+      },
+      "linkSistemaOrigem": "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/landing?destino=quadro-informativo&compra=98703305900102026"
+    },
+    "erro": null
+  },
+  "itens": {
+    "dados": [
+      {
+        "numeroItem": 1,
+        "descricao": "Apito",
+        "quantidade": 90.0,
+        "unidade": "Unidade",
+        "valorUnitarioEstimado": 30.33,
+        "situacaoCompraItemNome": "Homologado",
+        "temResultado": true,
+        "resultados": [
+          {
+            "fornecedorCnpj": "27197345000133",
+            "fornecedorNome": "DAIANE CRISTINA MEIRA ZEGOBIA BARBOSA LTDA",
+            "valorUnitarioHomologado": 5.4,
+            "quantidadeHomologada": 90.0,
+            "dataResultado": "2026-09-18"
+          }
+        ]
+      }
+    ],
+    "total": 77,
+    "erro": null
+  },
+  "atas": {
+    "dados": [
+      {
+        "numero": "151",
+        "ano": 2026,
+        "vigenciaInicio": "2026-09-25",
+        "vigenciaFim": "2027-09-24",
+        "cancelado": false
+      }
+    ],
+    "total": 18,
+    "erro": null
+  },
+  "historico": {
+    "dados": [
+      {
+        "data": "2026-06-15T07:04:53",
+        "categoria": "Contratação",
+        "tipo": "Inclusão",
+        "item": null,
+        "documentoTitulo": null,
+        "justificativa": null
+      }
+    ],
+    "total": 228,
+    "erro": null
+  },
+  "arquivos": {
+    "dados": [
+      {
+        "titulo": "98703305900102026000",
+        "tipo": "Edital",
+        "url": "https://pncp.gov.br/pncp-api/v1/orgaos/45138070000149/compras/2026/559/arquivos/1"
+      }
+    ],
+    "total": 2,
+    "erro": null
+  }
+}
+```
+
+#### Resposta para oportunidade Não-PNCP (HTTP 200)
+```json
+{
+  "disponivel": false,
+  "id": 202,
+  "motivo": "Esta oportunidade não é de origem PNCP ou não possui chave de identificação PNCP.",
+  "razao": "Esta oportunidade não é de origem PNCP ou não possui chave de identificação PNCP."
 }
 ```
 

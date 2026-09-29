@@ -8,10 +8,12 @@ export const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, idempotency-key",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
 };
-import type { ActionParams, GetActionParams, ListActionParams } from "./types.ts";
+import type { ActionParams, AcompanhamentoActionParams, GetActionParams, ListActionParams } from "./types.ts";
 import { parseActionFromBody, parseActionFromUrl } from "./validation.ts";
 import { applyLicitacaoFilters, calculateRange } from "./query.ts";
 import { buildEditalUrl } from "../_shared/edital-url.ts";
+import { handleAcompanhamento } from "./acompanhamento.ts";
+import type { UnifiedHttpClient } from "../_shared/http-client/index.ts";
 
 /**
  * Colunas públicas explícitas da tabela licitacoes_externas expostas para o dashboard.
@@ -55,6 +57,7 @@ export const PUBLIC_LICITACAO_COLUMNS = [
 export interface DashboardOportunidadesClientContext {
   getClient?: () => SupabaseClient;
   requireAuth?: (req: Request) => Promise<Response | null> | Response | null;
+  httpClient?: UnifiedHttpClient;
 }
 
 /**
@@ -373,7 +376,7 @@ export async function handleRequest(
     return await handleReadiness(ctx);
   }
 
-  // Autenticação obrigatória para leitura de dados (list e get)
+  // Autenticação obrigatória para leitura de dados (list, get e acompanhamento)
   const authChecker = ctx?.requireAuth ?? requireUserAuth;
   const authError = await authChecker(req);
   if (authError) {
@@ -385,6 +388,8 @@ export async function handleRequest(
       return await handleGet(actionParams, ctx);
     case "list":
       return await handleList(actionParams, ctx);
+    case "acompanhamento":
+      return await handleAcompanhamento(actionParams, ctx, getDefaultServiceClient);
     default:
       return jsonResponse({ error: "Ação não suportada" }, 400);
   }

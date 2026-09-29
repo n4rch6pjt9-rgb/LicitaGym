@@ -12,12 +12,17 @@ export type AuthDecision =
   | "USER_AUTHENTICATED"
   | "REJECTED";
 
-export function jsonResponse(body: unknown, status = 200): Response {
+export function jsonResponse(
+  body: unknown,
+  status = 200,
+  extraHeaders: HeadersInit = {},
+): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: {
       ...corsHeaders,
       "Content-Type": "application/json; charset=utf-8",
+      ...extraHeaders,
     },
   });
 }

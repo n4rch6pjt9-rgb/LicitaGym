@@ -1,11 +1,15 @@
 -- Verificação de ACL e do scanner do RAG (prompt injection)
--- (migrations 20260929180014_sec_rag_acl_lock, 20260929180030_sec_rag_chunks_confianca e 20260929180039_sec_rag_match_licitacao_chunks_v2).
+-- (migrations 20260929180000_legislacao_rag_baseline, 20260929180014_sec_rag_acl_lock,
+-- 20260929180030_sec_rag_chunks_confianca, 20260929180039_sec_rag_match_licitacao_chunks_v2 e
+-- 20260929183258_sec_rag_chunks_classificacao_insert).
 -- Executar após aplicar as migrations (ex.: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/tests/sec_rag_prompt_injection_acl_check.sql):
 --   1. legislacao / legislacao_embeddings: anon e authenticated só SELECT; sem policy de escrita para eles
 --   2. consultas_log: anon sem nada; authenticated só SELECT; policy por dono; user_id NOT NULL
 --   3. match_licitacao_chunks e _v2: EXECUTE só service_role (pega drift de grant, como o de 29/09/2026)
 --   4. match_legislacao_embeddings: sem EXECUTE para anon/PUBLIC; search_path fixo
 --   5. licitacao_chunks: trigger de scanner presente; nenhum chunk sem scan; regex de zero-width não casa com hífen
+--   6. classificação por tipo_documento cobre os 18 TIPOS do indexador (impugnacao = parte interessada)
+--   7. trigger dispara em INSERT e em UPDATE de texto/metadados; base64_longo rebaixa; v2 ignora embedding nulo
 -- Falha com EXCEPTION na primeira regra violada.
 
 do $$
@@ -88,6 +92,40 @@ begin
   end if;
   if not (private.scan_chunk_texto(('a' || chr(8203) || 'b'))->>'zero_width')::boolean then
     raise exception 'ACL CHECK FALHOU: regex de zero-width não detecta U+200B';
+  end if;
+
+  -- 6. classificação por tipo_documento (todos os TIPOS de services/coletor-externo/coletor/ia.py)
+  if (select nivel from private.classificar_tipo_documento('impugnacao')) <> 'parte_interessada' then
+    raise exception 'ACL CHECK FALHOU: impugnacao não é parte_interessada';
+  end if;
+  foreach v_obj in array array['proposta','habilitacao','recurso','contrarrazoes','outro'] loop
+    if (select nivel from private.classificar_tipo_documento(v_obj)) <> 'parte_interessada' then
+      raise exception 'ACL CHECK FALHOU: % não é parte_interessada', v_obj;
+    end if;
+  end loop;
+  foreach v_obj in array array['edital','aviso','termo_referencia','ata_sessao','analise_tecnica','diligencia',
+                               'decisao_recurso','adjudicacao','homologacao','revogacao','contrato'] loop
+    if (select nivel from private.classificar_tipo_documento(v_obj)) <> 'orgao_publicado' then
+      raise exception 'ACL CHECK FALHOU: % não é orgao_publicado', v_obj;
+    end if;
+  end loop;
+
+  -- 7. trigger em INSERT e UPDATE de texto/metadados; base64 rebaixa; v2 ignora embedding nulo
+  if not exists (select 1 from pg_trigger t where t.tgrelid = 'public.licitacao_chunks'::regclass
+                  and t.tgname = 'licitacao_chunks_scan' and pg_get_triggerdef(t.oid) like '%INSERT OR UPDATE OF texto, metadados%') then
+    raise exception 'ACL CHECK FALHOU: trigger não cobre UPDATE de metadados';
+  end if;
+  if position('base64_longo' in pg_get_functiondef('private.trg_scan_chunk()'::regprocedure)) = 0 then
+    raise exception 'ACL CHECK FALHOU: base64_longo fora da condição de suspeita';
+  end if;
+  if position('EMBEDDING IS NOT NULL' in upper(pg_get_functiondef(to_regprocedure('public.match_licitacao_chunks_v2(vector,integer,text,text,boolean)')))) = 0 then
+    raise exception 'ACL CHECK FALHOU: match_licitacao_chunks_v2 não filtra embedding nulo';
+  end if;
+  select count(*) into v_n from public.licitacao_chunks
+   where nivel_confianca in ('externo','orgao_publicado')
+     and (select nivel from private.classificar_tipo_documento(metadados->>'tipo_documento')) = 'parte_interessada';
+  if v_n > 0 then
+    raise exception 'ACL CHECK FALHOU: % chunk(s) de parte interessada rotulado(s) como externo/órgão', v_n;
   end if;
 
   raise notice 'SUCESSO: ACL e scanner do RAG conferidos';

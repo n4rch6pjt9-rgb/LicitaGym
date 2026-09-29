@@ -16,6 +16,7 @@ const REGRAS_COMANDO = [
   [/\bterraform\s+(destroy|apply|import)\b|\bterraform\s+state\s+(rm|push|mv)\b/, "terraform apply/destroy/state só na CI do licitagym-infra, depois do plan revisado."],
   [/\bwrangler\s+(delete|secret\s+delete|r2\s+bucket\s+delete|kv\s+namespace\s+delete|d1\s+delete)\b/, "remoção de recurso na Cloudflare."],
   [/\bwrangler\s+deploy\b/, "deploy do Dashboard é feito pelo usuário (npm run cf:deploy) ou pela CI com aprovação."],
+  [/\b(npm|bun|pnpm|yarn)\s+(run\s+)?cf:deploy\b/, "deploy do Dashboard é feito pelo usuário, com o .env.production.local dele."],
   [/\bgh\s+repo\s+(delete|archive)\b/, "apagar/arquivar repositório."],
   [/\bgh\s+api\b[^;&|]*-X\s*DELETE\b/i, "gh api com DELETE."],
 ];

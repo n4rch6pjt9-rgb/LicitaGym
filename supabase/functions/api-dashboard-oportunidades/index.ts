@@ -284,7 +284,10 @@ async function handleGet(
  * Lista oportunidades com paginação, ordenação e múltiplos filtros.
  * Distingue resultado vazio (200 com items: []) de erro (400/500).
  */
-/** Teto de licitações resolvidas pelo recorte CATMAT antes do filtro por id (evita URL gigante no PostgREST). */
+/**
+ * Teto de licitações resolvidas pelo recorte CATMAT antes do filtro por id (evita URL gigante no PostgREST).
+ * licitacoes_ids_por_catmat não trunca (sem LIMIT), então r.ids é completo e o teto é verificado sobre o total real.
+ */
 export const MAX_IDS_CATMAT = 1000;
 
 export interface CatmatMatch {

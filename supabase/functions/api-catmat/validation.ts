@@ -1,4 +1,4 @@
-import type { ActionParams, NivelArvore, NivelRegra } from "./types.ts";
+import type { ActionParams, NivelArvore, NivelRegra, TipoPalavra } from "./types.ts";
 
 const NIVEIS_ARVORE: readonly NivelArvore[] = ["grupos", "classes", "pdms", "itens"];
 const NIVEIS_REGRA: readonly NivelRegra[] = ["grupo", "classe", "pdm", "item"];
@@ -22,6 +22,18 @@ function booleano(valor: unknown, padrao: boolean): boolean {
 
 function isErro(v: unknown): v is { error: string } {
   return typeof v === "object" && v !== null && "error" in v;
+}
+
+/**
+ * tipo do padrão: 'inclui' (catmat_pdm_palavras) ou 'exclui' (catmat_pdm_exclusoes). Os ids são independentes nas
+ * duas tabelas, então com `id` (editar/remover) o tipo é obrigatório; só ao criar, ausente = 'inclui'.
+ */
+function tipoPalavra(v: unknown, obrigatorio: boolean): TipoPalavra | { error: string } {
+  if (v === undefined || v === null || v === "") {
+    return obrigatorio ? { error: "Parâmetro 'tipo' ('inclui' ou 'exclui') é obrigatório junto com 'id'." } : "inclui";
+  }
+  if (v === "inclui" || v === "exclui") return v;
+  return { error: "Parâmetro 'tipo' deve ser 'inclui' ou 'exclui'." };
 }
 
 export function parseActionFromBody(body: Record<string, unknown>): ActionParams | { error: string } {
@@ -80,11 +92,18 @@ export function parseActionFromBody(body: Record<string, unknown>): ActionParams
       };
     }
 
-    case "catalogo_remover":
-    case "palavras_remover": {
+    case "catalogo_remover": {
       const id = codigo(body.id, "id", true);
       if (isErro(id)) return id;
       return { action, id: id as number };
+    }
+
+    case "palavras_remover": {
+      const id = codigo(body.id, "id", true);
+      if (isErro(id)) return id;
+      const tipo = tipoPalavra(body.tipo, true);
+      if (isErro(tipo)) return tipo;
+      return { action, id: id as number, tipo };
     }
 
     case "palavras_listar": {
@@ -102,7 +121,9 @@ export function parseActionFromBody(body: Record<string, unknown>): ActionParams
       if (!padrao || padrao.length > 300) {
         return { error: "Parâmetro 'padrao' é obrigatório e deve ter até 300 caracteres." };
       }
-      return { action, id: id as number | null, codigo_pdm: p as number, padrao, ativo: booleano(body.ativo, true) };
+      const tipo = tipoPalavra(body.tipo, id !== null);
+      if (isErro(tipo)) return tipo;
+      return { action, id: id as number | null, codigo_pdm: p as number, padrao, ativo: booleano(body.ativo, true), tipo };
     }
 
     default:

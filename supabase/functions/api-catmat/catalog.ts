@@ -1,6 +1,6 @@
 import type { CatmatRepo, RegraInput } from "./repo.ts";
 import { obterArvore, type TreeDeps } from "./tree.ts";
-import type { CatmatEstado, CatmatNo, CatmatNoAnotado, CatmatRegra, NivelArvore, NivelRegra } from "./types.ts";
+import type { CatmatEstado, CatmatNo, CatmatNoAnotado, CatmatRegra, NivelArvore, NivelRegra, TipoPalavra } from "./types.ts";
 
 /** Erro de negócio com status HTTP. */
 export class ErroCatalogo extends Error {
@@ -243,19 +243,20 @@ export async function listarCatalogo(repo: CatmatRepo, limiteItens = 2000) {
 export async function salvarPalavra(
   repo: CatmatRepo,
   userId: string,
-  p: { id: number | null; codigo_pdm: number; padrao: string; ativo: boolean },
+  p: { id: number | null; codigo_pdm: number; padrao: string; ativo: boolean; tipo: TipoPalavra },
 ) {
   if (!(await repo.regexValido(p.padrao))) {
     throw new ErroCatalogo(400, "Padrão inválido no dialeto de regex do Postgres (ou maior que 300 caracteres).");
   }
   if (p.id !== null) {
-    const atual = await repo.obterPalavra(p.id);
-    if (!atual) throw new ErroCatalogo(404, "Padrão não encontrado.");
+    // id é da tabela do tipo informado; trocar o tipo = remover e criar de novo
+    const atual = await repo.obterPalavra(p.id, p.tipo);
+    if (!atual) throw new ErroCatalogo(404, "Padrão não encontrado (confira o tipo: inclui ou exclui).");
     if (atual.codigo_pdm !== p.codigo_pdm) throw new ErroCatalogo(400, "O padrão pertence a outro PDM.");
-    return await repo.atualizarPalavra(p.id, p.padrao, p.ativo, userId);
+    return await repo.atualizarPalavra(p.id, p.tipo, p.padrao, p.ativo, userId);
   }
   if (!(await repo.pdmExiste(p.codigo_pdm))) {
     throw new ErroCatalogo(409, "Registre o PDM no catálogo antes de cadastrar padrões para ele.");
   }
-  return await repo.inserirPalavra(p.codigo_pdm, p.padrao, p.ativo, userId);
+  return await repo.inserirPalavra(p.codigo_pdm, p.padrao, p.ativo, p.tipo, userId);
 }

@@ -18,6 +18,7 @@ function repoMemoria() {
   const itens = new Map<number, ItemPdmInput>();
   const cache = new Map<string, { payload: unknown; total: number | null; expira_em: string }>();
   const palavras: CatmatPalavra[] = [];
+  const seqPalavra = { inclui: 0, exclui: 0 };
   const taxonomia = [{ no_taxonomia: "esteira_eletrica", codigo_pdm: 7115 }, { no_taxonomia: "esteira_ergometrica", codigo_pdm: 7115 }];
   const chave = (r: RegraInput) => `${r.nivel}:${r.codigo_item ?? r.codigo_pdm ?? r.codigo_classe ?? r.codigo_grupo}`;
   const repo: CatmatRepo = {
@@ -63,10 +64,11 @@ function repoMemoria() {
         .map((i) => ({ codigo_item: i.codigo_item, codigo_pdm: i.codigo_pdm, descricao: i.descricao }))),
     cacheLer: (c) => Promise.resolve(cache.get(c) ?? null),
     cacheGravar: (c, payload, total, expira) => (cache.set(c, { payload, total, expira_em: expira.toISOString() }), Promise.resolve()),
-    listarPalavras: (c) => Promise.resolve(palavras.filter((p) => p.codigo_pdm === c)),
+    // Duas "tabelas" (inclusões e exclusões) com ids independentes, como no banco
+    listarPalavras: (c) => Promise.resolve(palavras.filter((p) => p.codigo_pdm === c).sort((a, b) => a.tipo === b.tipo ? a.id - b.id : a.tipo === "inclui" ? -1 : 1)),
     contarPalavrasPorPdm: (cs) => {
       const m = new Map<number, number>();
-      for (const p of palavras) if (p.ativo && cs.includes(p.codigo_pdm)) m.set(p.codigo_pdm, (m.get(p.codigo_pdm) ?? 0) + 1);
+      for (const p of palavras) if (p.ativo && p.tipo === "inclui" && cs.includes(p.codigo_pdm)) m.set(p.codigo_pdm, (m.get(p.codigo_pdm) ?? 0) + 1);
       return Promise.resolve(m);
     },
     nosTaxonomiaDoPdm: (c) => Promise.resolve(taxonomia.filter((t) => t.codigo_pdm === c).map((t) => t.no_taxonomia).sort()),
@@ -75,19 +77,19 @@ function repoMemoria() {
       for (const t of taxonomia) if (cs.includes(t.codigo_pdm)) m.set(t.codigo_pdm, (m.get(t.codigo_pdm) ?? 0) + 1);
       return Promise.resolve(m);
     },
-    obterPalavra: (id) => Promise.resolve(palavras.find((p) => p.id === id) ?? null),
-    inserirPalavra: (c, padrao, ativo) => {
-      const p = { id: ++seq, codigo_pdm: c, padrao, ativo };
+    obterPalavra: (id, tipo) => Promise.resolve(palavras.find((p) => p.id === id && p.tipo === tipo) ?? null),
+    inserirPalavra: (c, padrao, ativo, tipo) => {
+      const p = { id: ++seqPalavra[tipo], codigo_pdm: c, padrao, ativo, tipo };
       palavras.push(p);
       return Promise.resolve(p);
     },
-    atualizarPalavra: (id, padrao, ativo) => {
-      const p = palavras.find((x) => x.id === id)!;
+    atualizarPalavra: (id, tipo, padrao, ativo) => {
+      const p = palavras.find((x) => x.id === id && x.tipo === tipo)!;
       Object.assign(p, { padrao, ativo });
       return Promise.resolve(p);
     },
-    removerPalavra: (id) => {
-      const i = palavras.findIndex((p) => p.id === id);
+    removerPalavra: (id, tipo) => {
+      const i = palavras.findIndex((p) => p.id === id && p.tipo === tipo);
       if (i < 0) return Promise.resolve(false);
       palavras.splice(i, 1);
       return Promise.resolve(true);
@@ -186,7 +188,7 @@ Deno.test("api-catmat: usuário comum lê, mas não altera o catálogo nem forç
     { action: "catalogo_salvar", nivel: "classe", codigo_grupo: 78, codigo_classe: 7830, incluido: true },
     { action: "catalogo_remover", id: 1 },
     { action: "palavras_salvar", codigo_pdm: 7115, padrao: "esteira" },
-    { action: "palavras_remover", id: 1 },
+    { action: "palavras_remover", id: 1, tipo: "inclui" },
     { action: "arvore", nivel: "classes", codigo: 78, refresh: true },
   ]) {
     assertEquals((await handleRequest(post(body), c)).status, 403, JSON.stringify(body));
@@ -392,9 +394,57 @@ Deno.test("api-catmat: padrões exigem PDM registrado e regex válida", async ()
   const lista = await (await handleRequest(post({ action: "palavras_listar", codigo_pdm: 7115 }), ctx(mem, comprasGovFalso(), COMUM))).json();
   assertEquals(lista.palavras.length, 1);
 
-  const outroPdm = await handleRequest(post({ action: "palavras_salvar", id: palavra.id, codigo_pdm: 2638, padrao: "x" }), ctx(mem));
+  assertEquals(palavra.tipo, "inclui");
+
+  const outroPdm = await handleRequest(post({ action: "palavras_salvar", id: palavra.id, tipo: "inclui", codigo_pdm: 2638, padrao: "x" }), ctx(mem));
   assertEquals(outroPdm.status, 400);
-  assertEquals((await handleRequest(post({ action: "palavras_remover", id: palavra.id }), ctx(mem))).status, 200);
+  assertEquals((await outroPdm.json()).error, "O padrão pertence a outro PDM.");
+  assertEquals((await handleRequest(post({ action: "palavras_remover", id: palavra.id, tipo: "inclui" }), ctx(mem))).status, 200);
+});
+
+Deno.test("api-catmat: exclusões ficam em tabela própria (tipo), não contam como cobertura e o id vale só dentro do tipo", async () => {
+  limparCacheMemoria();
+  const mem = repoMemoria();
+  await handleRequest(post({ action: "catalogo_salvar", nivel: "pdm", codigo_grupo: 78, codigo_classe: 7830, codigo_pdm: 7115, incluido: true }), ctx(mem));
+  const tipoInvalido = await handleRequest(post({ action: "palavras_salvar", codigo_pdm: 7115, padrao: "x", tipo: "talvez" }), ctx(mem));
+  assertEquals(tipoInvalido.status, 400);
+  assertEquals((await handleRequest(post({ action: "palavras_remover", id: 1, tipo: "talvez" }), ctx(mem))).status, 400);
+
+  const inc = await (await handleRequest(post({ action: "palavras_salvar", codigo_pdm: 7115, padrao: "esteira" }), ctx(mem))).json();
+  const exc = await handleRequest(post({ action: "palavras_salvar", codigo_pdm: 7115, padrao: "polipropileno", tipo: "exclui" }), ctx(mem));
+  assertEquals(exc.status, 201);
+  const { palavra } = await exc.json();
+  assertEquals(palavra.tipo, "exclui");
+  // ids independentes: os dois têm id 1
+  assertEquals([inc.palavra.id, palavra.id], [1, 1]);
+
+  const lista = await (await handleRequest(post({ action: "palavras_listar", codigo_pdm: 7115 }), ctx(mem, comprasGovFalso(), COMUM))).json();
+  assertEquals(lista.palavras.map((p: { tipo: string; padrao: string }) => `${p.tipo}:${p.padrao}`), ["inclui:esteira", "exclui:polipropileno"]);
+
+  // Cobertura de texto conta só a inclusão
+  const cat = await (await handleRequest(post({ action: "catalogo_listar" }), ctx(mem, comprasGovFalso(), COMUM))).json();
+  assertEquals(cat.opcoes.pdms.find((p: { codigo: number }) => p.codigo === 7115).palavras, 1);
+
+  // Editar com id + tipo mexe só na exclusão
+  const desativado = await handleRequest(post({ action: "palavras_salvar", id: 1, tipo: "exclui", codigo_pdm: 7115, padrao: "polipropileno", ativo: false }), ctx(mem));
+  assertEquals(desativado.status, 200);
+  assertEquals((await desativado.json()).palavra, { id: 1, codigo_pdm: 7115, padrao: "polipropileno", ativo: false, tipo: "exclui" });
+  assertEquals(mem.palavras.find((p) => p.tipo === "inclui")!.ativo, true);
+
+  // Com id, tipo é obrigatório: editar/remover sem tipo = 400 e nada muda
+  const semTipo = await handleRequest(post({ action: "palavras_salvar", id: 1, codigo_pdm: 7115, padrao: "esteira", ativo: false }), ctx(mem));
+  assertEquals(semTipo.status, 400);
+  assertEquals((await semTipo.json()).error, "Parâmetro 'tipo' ('inclui' ou 'exclui') é obrigatório junto com 'id'.");
+  assertEquals((await handleRequest(post({ action: "palavras_remover", id: 1 }), ctx(mem))).status, 400);
+  assertEquals(mem.palavras.length, 2);
+  assertEquals(mem.palavras.find((p) => p.tipo === "inclui")!.ativo, true);
+
+  // Remover a inclusão; a exclusão de mesmo id continua
+  assertEquals((await handleRequest(post({ action: "palavras_remover", id: 1, tipo: "inclui" }), ctx(mem))).status, 200);
+  assertEquals(mem.palavras.map((p) => p.tipo), ["exclui"]);
+  assertEquals((await handleRequest(post({ action: "palavras_remover", id: 1, tipo: "inclui" }), ctx(mem))).status, 404);
+  assertEquals((await handleRequest(post({ action: "palavras_remover", id: 1, tipo: "exclui" }), ctx(mem))).status, 200);
+  assertEquals(mem.palavras.length, 0);
 });
 
 // ------------------------------------------------------------------------------------------------

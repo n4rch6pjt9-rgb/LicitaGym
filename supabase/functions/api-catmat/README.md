@@ -18,9 +18,11 @@ Tabelas e funções: `supabase/migrations/20260930100000_catalogo_empresa_catmat
 | `catalogo_listar` | — | `regras`, `resumo` (inclui `pdms_sem_texto`: sem padrão e sem nó do dicionário), `opcoes` (`grupos`, `classes`, `pdms` com `palavras` e `nos_taxonomia`, `itens`) para o filtro em cascata |
 | `catalogo_salvar` | `nivel` (`grupo`\|`classe`\|`pdm`\|`item`), `codigo_grupo`, `codigo_classe`, `codigo_pdm`, `codigo_item` (conforme o nível), `incluido`, `observacao?` | `201` ao criar, `200` ao atualizar; `pdms_materializados`, `itens_hidratados` |
 | `catalogo_remover` | `id` | a regra removida |
-| `palavras_listar` | `codigo_pdm` | `palavras` (padrões do PDM) e `nos_taxonomia` (nós do dicionário de aparelhos que apontam para o PDM, só leitura) |
-| `palavras_salvar` | `codigo_pdm`, `padrao`, `ativo?`, `id?` (para editar) | o padrão |
-| `palavras_remover` | `id` | — |
+| `palavras_listar` | `codigo_pdm` | `palavras` (padrões do PDM com `tipo`: primeiro as inclusões, depois as exclusões) e `nos_taxonomia` (nós do dicionário de aparelhos e da taxonomia de pisos que apontam para o PDM, só leitura) |
+| `palavras_salvar` | `codigo_pdm`, `padrao`, `ativo?`, `tipo` (`inclui`\|`exclui`; `exclui` = texto que casar não conta para o PDM; **obrigatório com `id`**, ao criar ausente = `inclui`), `id?` (para editar) | o padrão |
+| `palavras_remover` | `id`, `tipo` (obrigatório) | — |
+
+Inclusões ficam em `catmat_pdm_palavras` e exclusões em `catmat_pdm_exclusoes` (migration `20260930120000_taxonomia_pisos.sql`). O `id` só é único dentro do tipo, por isso editar/remover sem `tipo` responde `400` (evita mexer na inclusão de mesmo id quando a intenção era a exclusão); para trocar o tipo de um padrão, remova e crie de novo. Exclusão não conta como cobertura de texto (`palavras` em `opcoes.pdms`, `pdms_sem_palavras`).
 
 `nivel` em `arvore` pede os **filhos** do código informado: `classes` + `78` devolve 7810, 7820 e 7830; `pdms` + `7830`; `itens` + `7115`.
 

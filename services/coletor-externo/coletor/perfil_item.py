@@ -15,6 +15,7 @@ import re
 from pathlib import Path
 
 from .classificar_aparelho import DICIONARIO_VERSAO, get_classificador, norm
+from .classificar_piso import classificar_piso
 
 _COD = re.compile(r"^\s*[A-Z]{2}\d{7}\s*-\s*")
 
@@ -57,12 +58,19 @@ def _regras_complemento() -> list[tuple[re.Pattern, dict]]:
     return _complemento
 
 
-def perfil_item(descricao: str | None) -> dict:
-    """{no_taxonomia, produto_padronizado, familia_equipamento, fonte_carga, cinematica, perfil_metodo, ...}."""
+def perfil_item(descricao: str | None, contexto: str | None = None) -> dict:
+    """{no_taxonomia, produto_padronizado, familia_equipamento, fonte_carga, cinematica, perfil_metodo, ...}.
+    `contexto` (opcional): objeto da licitação, usado só para o segmento dos pisos (academia, haras...)."""
     t = texto_do_item(descricao)
     clf = get_classificador()
     tn = norm(t)
     base = {"versao_taxonomia": VERSAO_COMPLEMENTO}
+    # Pisos e placas de borracha (taxonomia-pisos): o dicionário de aparelhos não tem esses nós.
+    piso = classificar_piso(t, contexto)
+    if piso:
+        return {"versao_taxonomia": piso["versao"], "no_taxonomia": piso["slug"], "produto_padronizado": piso["nome"],
+                "familia_equipamento": piso["familia"], "fonte_carga": None, "cinematica": None,
+                "perfil_metodo": "taxonomia_pisos", "perfil_confianca": piso["confianca"]}
     for rx, regra in _regras_complemento():
         no = clf.nos.get(regra["slug"]) or _propostos.get(regra["slug"])
         if rx.search(tn) and no:

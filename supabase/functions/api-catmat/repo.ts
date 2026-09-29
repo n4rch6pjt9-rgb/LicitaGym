@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { upsertByNaturalKey } from "../_shared/compras-gov/upsert-natural.ts";
-import type { CatmatPalavra, CatmatRegra, NivelRegra } from "./types.ts";
+import type { CatmatPalavra, CatmatRegra, NivelRegra, TipoPalavra } from "./types.ts";
 
 /** Linha nova ou alterada de regra (chave, id e datas são do banco). */
 export interface RegraInput {
@@ -62,20 +62,30 @@ export interface CatmatRepo {
   cacheLer(chave: string): Promise<CacheLinha | null>;
   cacheGravar(chave: string, payload: unknown, total: number, expiraEm: Date): Promise<void>;
 
+  /** Inclusões (catmat_pdm_palavras) e exclusões (catmat_pdm_exclusoes) do PDM, com `tipo`. */
   listarPalavras(codigoPdm: number): Promise<CatmatPalavra[]>;
+  /** Só inclusões ativas: exclusão não é cobertura de texto. */
   contarPalavrasPorPdm(codigosPdm: number[]): Promise<Map<number, number>>;
   /** Nós do dicionário de aparelhos que apontam para o PDM (casamento por taxonomia). */
   nosTaxonomiaDoPdm(codigoPdm: number): Promise<string[]>;
   contarNosTaxonomiaPorPdm(codigosPdm: number[]): Promise<Map<number, number>>;
-  obterPalavra(id: number): Promise<CatmatPalavra | null>;
-  inserirPalavra(codigoPdm: number, padrao: string, ativo: boolean, userId: string): Promise<CatmatPalavra>;
-  atualizarPalavra(id: number, padrao: string, ativo: boolean, userId: string): Promise<CatmatPalavra>;
-  removerPalavra(id: number): Promise<boolean>;
+  obterPalavra(id: number, tipo: TipoPalavra): Promise<CatmatPalavra | null>;
+  inserirPalavra(codigoPdm: number, padrao: string, ativo: boolean, tipo: TipoPalavra, userId: string): Promise<CatmatPalavra>;
+  atualizarPalavra(id: number, tipo: TipoPalavra, padrao: string, ativo: boolean, userId: string): Promise<CatmatPalavra>;
+  removerPalavra(id: number, tipo: TipoPalavra): Promise<boolean>;
   regexValido(padrao: string): Promise<boolean>;
 }
 
 const REGRA_COLS =
   "id,nivel,codigo_grupo,codigo_classe,codigo_pdm,codigo_item,nome_snapshot,ancestrais_snapshot,incluido,observacao,chave,created_by,updated_by,created_at,updated_at";
+
+/** Tabela de cada tipo de padrão (ids independentes). */
+const TABELA_PALAVRA: Record<TipoPalavra, string> = { inclui: "catmat_pdm_palavras", exclui: "catmat_pdm_exclusoes" };
+const PALAVRA_COLS = "id,codigo_pdm,padrao,ativo";
+
+function comTipo(linhas: unknown, tipo: TipoPalavra): CatmatPalavra[] {
+  return ((linhas ?? []) as Omit<CatmatPalavra, "tipo">[]).map((l) => ({ ...l, tipo }));
+}
 
 function falha(contexto: string, error: unknown): never {
   const msg = (error as { message?: string })?.message ?? String(error);
@@ -197,10 +207,12 @@ export function createSupabaseRepo(client: SupabaseClient): CatmatRepo {
     },
 
     async listarPalavras(codigoPdm) {
-      const { data, error } = await client.from("catmat_pdm_palavras").select("id,codigo_pdm,padrao,ativo")
-        .eq("codigo_pdm", codigoPdm).order("id");
-      if (error) falha("listar palavras", error);
-      return (data ?? []) as CatmatPalavra[];
+      const [inc, exc] = await Promise.all((["inclui", "exclui"] as const).map((t) =>
+        client.from(TABELA_PALAVRA[t]).select(PALAVRA_COLS).eq("codigo_pdm", codigoPdm).order("id")
+      ));
+      if (inc.error) falha("listar palavras", inc.error);
+      if (exc.error) falha("listar exclusões", exc.error);
+      return [...comTipo(inc.data, "inclui"), ...comTipo(exc.data, "exclui")];
     },
     async contarPalavrasPorPdm(codigosPdm) {
       const mapa = new Map<number, number>();
@@ -223,27 +235,27 @@ export function createSupabaseRepo(client: SupabaseClient): CatmatRepo {
       for (const r of (data ?? []) as Array<{ codigo_pdm: number }>) mapa.set(r.codigo_pdm, (mapa.get(r.codigo_pdm) ?? 0) + 1);
       return mapa;
     },
-    async obterPalavra(id) {
-      const { data, error } = await client.from("catmat_pdm_palavras").select("id,codigo_pdm,padrao,ativo").eq("id", id).maybeSingle();
+    async obterPalavra(id, tipo) {
+      const { data, error } = await client.from(TABELA_PALAVRA[tipo]).select(PALAVRA_COLS).eq("id", id).maybeSingle();
       if (error) falha("obter palavra", error);
-      return (data ?? null) as CatmatPalavra | null;
+      return data ? comTipo([data], tipo)[0] : null;
     },
-    async inserirPalavra(codigoPdm, padrao, ativo, userId) {
-      const { data, error } = await client.from("catmat_pdm_palavras")
+    async inserirPalavra(codigoPdm, padrao, ativo, tipo, userId) {
+      const { data, error } = await client.from(TABELA_PALAVRA[tipo])
         .insert({ codigo_pdm: codigoPdm, padrao, ativo, updated_by: userId, updated_at: new Date().toISOString() })
-        .select("id,codigo_pdm,padrao,ativo").single();
+        .select(PALAVRA_COLS).single();
       if (error) falha("inserir palavra", error);
-      return data as CatmatPalavra;
+      return comTipo([data], tipo)[0];
     },
-    async atualizarPalavra(id, padrao, ativo, userId) {
-      const { data, error } = await client.from("catmat_pdm_palavras")
+    async atualizarPalavra(id, tipo, padrao, ativo, userId) {
+      const { data, error } = await client.from(TABELA_PALAVRA[tipo])
         .update({ padrao, ativo, updated_by: userId, updated_at: new Date().toISOString() })
-        .eq("id", id).select("id,codigo_pdm,padrao,ativo").single();
+        .eq("id", id).select(PALAVRA_COLS).single();
       if (error) falha("atualizar palavra", error);
-      return data as CatmatPalavra;
+      return comTipo([data], tipo)[0];
     },
-    async removerPalavra(id) {
-      const { data, error } = await client.from("catmat_pdm_palavras").delete().eq("id", id).select("id");
+    async removerPalavra(id, tipo) {
+      const { data, error } = await client.from(TABELA_PALAVRA[tipo]).delete().eq("id", id).select("id");
       if (error) falha("remover palavra", error);
       return (data ?? []).length > 0;
     },

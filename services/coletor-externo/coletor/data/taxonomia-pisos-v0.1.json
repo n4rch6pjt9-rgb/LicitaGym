@@ -1,0 +1,148 @@
+{
+  "versao": "pisos-0.1",
+  "data": "2026-09-29",
+  "descricao": "Taxonomia de pisos e placas de borracha (linha Playfit): texto de item/edital -> nó (produto), segmento (ambiente) e prioridade comercial. Complementa o dicionário de aparelhos v0.3, que não tem pisos. Regex no dialeto Python sobre o texto de classificar_aparelho.norm() (minúsculas, sem acento, pontuação vira espaço).",
+  "prioridades": {
+    "alta": "Core da Playfit: placa emborrachada, piso emborrachado, piso de borracha reciclada, SBR, EPDM, piso para academia, piso para crossfit, playground.",
+    "media": "Segmentos atendidos fora do core (haras, paisagismo) e sinais de contexto (proteção/absorção de impacto, segurança infantil). Sinais de contexto nunca classificam sozinhos.",
+    "baixa": "Indício de concorrente (Flexquadra e similares): piso modular esportivo PP/TPE, polipropileno copolímero, quadra poliesportiva modular, piso desmontável, placas plásticas encaixáveis."
+  },
+  "gatilho": "\\b(piso|pisos|placa|placas|tapete|tapetes|manta|mantas|revestimento|borracha|emborrachad[oa]s?|sbr|epdm|granulad[oa]s?|granulos?|graos?|pneus?|mulch)\\b",
+  "borracha_explicita": "borracha|emborrachad|\\bsbr\\b|\\bepdm\\b|\\bpneus?\\b",
+  "sinais_contexto": {
+    "impacto": "(protecao|absorcao|amortecimento) (contra |de |ao )?impacto|amortecedor|antiimpacto|anti impacto",
+    "seguranca_infantil": "seguranca infantil|queda (de )?crianca|altura (critica )?de queda|nbr 16071"
+  },
+  "sinais_baixa": {
+    "polipropileno": "polipropileno|copolimero|\\bpp\\b|\\btpe\\b",
+    "modular_esportivo": "piso (modular|esportivo modular) (esportivo|de quadra|para quadra|de encaixe plastic)|piso modular esportivo|quadra poliesportiva modular|placas? plastic[oa]s? (de )?encaix",
+    "desmontavel": "desmontave(l|is)",
+    "modalidades_de_quadra": "\\b(futsal|basquete|basquetebol|handebol|handball|voleibol)\\b"
+  },
+  "medidas": {
+    "placa": "\\b(1 ?x ?1 ?m|1 ?m ?x ?1 ?m|1 ?000 ?x ?1 ?000|1000 ?x ?1000|500 ?x ?500|0 5 ?x ?0 5 ?m|50 ?x ?50 ?cm|100 ?x ?100 ?cm)\\b",
+    "espessura_mm": "\\b(15|16|20|25|30|40|50) ?mm\\b"
+  },
+  "ambientes": [
+    {
+      "slug": "crossfit",
+      "nome": "CrossFit e treinamento funcional",
+      "prioridade": "alta",
+      "padrao": "crossfit|cross fit|cross training|box de cross|treinamento funcional|funcional|\\blpo\\b|levantamento (de peso )?olimpico"
+    },
+    {
+      "slug": "academia",
+      "nome": "Academias e centros de treinamento",
+      "prioridade": "alta",
+      "padrao": "academia|musculacao|sala de ginastica|fitness|centro de treinamento|\\bct\\b|area de peso livre|peso livre"
+    },
+    {
+      "slug": "playground",
+      "nome": "Playground, escolas, creches, praças e condomínios",
+      "prioridade": "alta",
+      "padrao": "playground|parque infantil|parquinho|area (de )?recreacao|recreacao infantil|brinquedos?|escola|escolar|creche|\\bcmei\\b|\\bemei\\b|educacao infantil|praca|condominio"
+    },
+    {
+      "slug": "haras",
+      "nome": "Haras e estábulos",
+      "prioridade": "media",
+      "padrao": "haras|estabulo|baias?|cocheiras?|equin[oa]s?|cavalos?|equoterapia|hipic"
+    },
+    {
+      "slug": "paisagismo",
+      "nome": "Paisagismo",
+      "prioridade": "media",
+      "padrao": "paisagis|jardim|jardins|jardinagem|canteiros?|mulch|cobertura (de|do) solo"
+    }
+  ],
+  "nos": [
+    {
+      "slug": "piso_modular_pp",
+      "nome": "Piso modular esportivo PP/TPE (concorrente)",
+      "familia": "fora",
+      "prioridade": "baixa",
+      "escopo": "OUT",
+      "padrao": "piso modular|polipropileno|copolimero|quadra poliesportiva modular|desmontave|placas? plastic",
+      "pdm_catmat": [],
+      "obs": "Indício de concorrente (Flexquadra). Só vence quando o texto não cita borracha; com borracha explícita o nó de borracha vence e a confiança cai para média."
+    },
+    {
+      "slug": "piso_epdm",
+      "nome": "Piso EPDM",
+      "familia": "pisos_emborrachados",
+      "prioridade": "alta",
+      "escopo": "IN",
+      "padrao": "\\bepdm\\b",
+      "pdm_catmat": [
+        10779,
+        757
+      ],
+      "obs": "Grânulo colorido; costuma ser a camada de acabamento sobre base SBR."
+    },
+    {
+      "slug": "piso_borracha_reciclada_sbr",
+      "nome": "Piso de borracha reciclada (SBR)",
+      "familia": "pisos_emborrachados",
+      "prioridade": "alta",
+      "escopo": "IN",
+      "padrao": "(piso|pisos|placa|placas|revestimento|manta)( [a-z0-9]+){0,4} (sbr|borracha reciclad[oa]|granulad[oa]s? de (borracha|pneus?)|granulos? de (borracha|pneus?)|graos? de pneus?|pneus? reciclad[oa]s?)|(sbr|borracha reciclad[oa]|pneus? reciclad[oa]s?)( [a-z0-9]+){0,3} (piso|pisos|placa|placas)",
+      "pdm_catmat": [
+        10779,
+        757
+      ],
+      "obs": "Piso/placa de grânulos de pneu reciclado aglomerados com PU. Granulado solto (infill, paisagismo) é borracha_granulada."
+    },
+    {
+      "slug": "placa_emborrachada",
+      "nome": "Placa emborrachada",
+      "familia": "pisos_emborrachados",
+      "prioridade": "alta",
+      "escopo": "IN",
+      "padrao": "placas? (de piso )?(emborrachad[oa]s?|de borracha|em borracha)|(piso|pisos|tapete|tapetes) (emborrachad[oa]s? |de borracha )?(em|de) placas?|tapetes? de borracha( [a-z0-9]+){0,4} (1 ?x ?1|1 ?m ?x ?1|1 ?000 ?x ?1 ?000|500 ?x ?500|50 ?x ?50|100 ?x ?100)",
+      "pdm_catmat": [
+        10779,
+        757,
+        12550
+      ],
+      "obs": "Medidas típicas 1x1 m (1000x1000 mm) e 500x500 mm; espessuras de 15 a 40 mm. Tapete de borracha 1x1 m do CATMAT (PDM 12550) é a mesma peça."
+    },
+    {
+      "slug": "borracha_granulada",
+      "nome": "Borracha granulada (SBR solto)",
+      "familia": "pisos_emborrachados",
+      "prioridade": "alta",
+      "escopo": "IN",
+      "padrao": "(borracha|raspa|po) (de borracha )?(granulad|triturad|moid)|granulad[oa]s? (de )?borracha|granulos? de borracha|raspa de borracha|borracha (sbr|reciclad[oa])|\\bsbr\\b|mulch de borracha",
+      "pdm_catmat": [
+        9461
+      ],
+      "obs": "Infill de grama sintética e cobertura de paisagismo. PDM 9461 (classe 9320) ainda não materializado em catmat_pdms: fica inerte até entrar no catálogo."
+    },
+    {
+      "slug": "tapete_borracha",
+      "nome": "Tapete de borracha",
+      "familia": "pisos_emborrachados",
+      "prioridade": "alta",
+      "escopo": "IN",
+      "padrao": "tapetes? (de |em )?borracha|borracha( [a-z0-9]+){0,2} tapetes?|(tapete|tapetes|piso|pisos|placa|placas)( [a-z0-9]+){0,3} (para )?(baias?|cocheiras?|estabulos?|haras)",
+      "pdm_catmat": [
+        12550,
+        757
+      ],
+      "obs": "Inclui tapete de baia/cocheira (haras). Tapete fino de entrada (capacho) fica fora pelo PDM. Com medida de placa (1x1 m, 500x500 mm...) vira placa_emborrachada."
+    },
+    {
+      "slug": "piso_emborrachado",
+      "nome": "Piso emborrachado",
+      "familia": "pisos_emborrachados",
+      "prioridade": "alta",
+      "escopo": "IN",
+      "padrao": "(piso|pisos|revestimento (de |para )?pisos?)( [a-z0-9]+){0,3} (emborrachad[oa]s?|de borracha|em borracha|material borracha)|mantas? (de |em )?borracha (para )?(piso|academia|playground)|piso borracha|(piso|pisos) (sintetico )?(para|de) (academia|crossfit|playground|parque infantil|area de recreacao)|(piso|pisos) (amortecedor|de seguranca|antiimpacto|anti impacto|drenante)",
+      "pdm_catmat": [
+        10779,
+        757
+      ],
+      "obs": "Genérico: vale quando o texto não diz placa, SBR, EPDM nem tapete. Com medida de placa (1x1 m, 500x500 mm...) vira placa_emborrachada."
+    }
+  ]
+}

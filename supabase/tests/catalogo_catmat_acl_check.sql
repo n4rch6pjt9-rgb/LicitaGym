@@ -1,8 +1,8 @@
--- Verificação de ACL do catálogo CATMAT da empresa (migrations 20260930100000_catalogo_empresa_catmat e
--- 20260930110000_taxonomia_no_pdm).
+-- Verificação de ACL do catálogo CATMAT da empresa (migrations 20260930100000_catalogo_empresa_catmat,
+-- 20260930110000_taxonomia_no_pdm e 20260930120000_taxonomia_pisos).
 -- Executar após aplicar as migrations (ex.: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/tests/catalogo_catmat_acl_check.sql):
 --   1. anon sem nenhum privilégio nas tabelas e sequences
---   2. authenticated só SELECT em regras, mapa de itens e padrões; nada no cache
+--   2. authenticated só SELECT em regras, mapa de itens, padrões e exclusões; nada no cache
 --   3. service_role com leitura e escrita
 --   4. funções de resolução executáveis só por service_role
 --   5. RLS ligado e nenhuma policy de escrita
@@ -12,9 +12,11 @@ do $$
 declare
   v_obj text;
   v_priv text;
-  v_leitura text[] := array['public.catalogo_empresa_catmat', 'public.catmat_item_pdm', 'public.catmat_pdm_palavras', 'public.taxonomia_no_pdm'];
-  v_todas   text[] := array['public.catalogo_empresa_catmat', 'public.catmat_item_pdm', 'public.catmat_pdm_palavras', 'public.compras_catmat_cache', 'public.taxonomia_no_pdm'];
-  v_seqs    text[] := array['public.catalogo_empresa_catmat_id_seq', 'public.catmat_pdm_palavras_id_seq'];
+  v_leitura text[] := array['public.catalogo_empresa_catmat', 'public.catmat_item_pdm', 'public.catmat_pdm_palavras', 'public.taxonomia_no_pdm',
+                             'public.catmat_pdm_exclusoes'];
+  v_todas   text[] := array['public.catalogo_empresa_catmat', 'public.catmat_item_pdm', 'public.catmat_pdm_palavras', 'public.compras_catmat_cache',
+                             'public.taxonomia_no_pdm', 'public.catmat_pdm_exclusoes'];
+  v_seqs    text[] := array['public.catalogo_empresa_catmat_id_seq', 'public.catmat_pdm_palavras_id_seq', 'public.catmat_pdm_exclusoes_id_seq'];
   v_fns     text[] := array[
     'public.lg_normalizar(text)',
     'public.catmat_regex_valido(text)',

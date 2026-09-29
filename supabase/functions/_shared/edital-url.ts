@@ -41,7 +41,8 @@ export const ALLOWED_STATIC_HOSTS = new Set([
  * `gov.br` cobre portais federais, estaduais e municipais (registro restrito a órgãos públicos).
  * Portais Paradigma do Sistema S: um host por entidade de `FONTES` em
  * services/coletor-externo/coletor/paradigma.py (teste garante que a lista acompanha o coletor).
- * Os hosts SaaS `*.paradigmabs.com.br` entram um a um: o domínio inteiro atende qualquer cliente do Paradigma.
+ * Os hosts SaaS `*.paradigmabs.com.br` são compartilhados entre clientes do Paradigma: o cliente é o primeiro
+ * segmento do caminho. Neles só vale o host exato + um tenant de `PARADIGMA_SAAS_TENANTS`.
  */
 export const PARADIGMA_HOSTS = [
   "compras.sestsenat.org.br",
@@ -54,16 +55,37 @@ export const PARADIGMA_HOSTS = [
   "compras.sfiemt.ind.br",
   "portaldecompras.sfiec.org.br",
   "compras.fiemg.com.br",
-  "scr360.paradigmabs.com.br",
-  "egov.paradigmabs.com.br",
-  "egov-br.paradigmabs.com.br",
 ] as const;
+
+/** Host SaaS -> tenant (1º segmento do caminho, minúsculo) -> `fonte` do coletor Paradigma. */
+export const PARADIGMA_SAAS_TENANTS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  "scr360.paradigmabs.com.br": { sescsp: "sescsp" },
+  "egov.paradigmabs.com.br": { sesc_senac_rs: "sesc_senac_rs", sescrj: "sescrj", sescba: "sescba" },
+  "egov-br.paradigmabs.com.br": { sescdn: "sescdn" },
+};
 
 export const ALLOWED_ORIGEM_HOSTS = new Set([
   ...ALLOWED_STATIC_HOSTS,
   "gov.br",
   ...PARADIGMA_HOSTS,
+  ...Object.keys(PARADIGMA_SAAS_TENANTS),
 ]);
+
+/** Domínio dos hosts SaaS compartilhados do Paradigma. */
+const PARADIGMA_SAAS_DOMINIO = "paradigmabs.com.br";
+
+/**
+ * Fonte Paradigma dona de uma URL em host SaaS compartilhado, ou null se não for host SaaS.
+ * Host SaaS desconhecido, subdomínio de host SaaS ou tenant fora da lista -> "" (recusar).
+ */
+function tenantParadigmaSaas(parsed: URL): string | null {
+  const host = parsed.hostname.toLowerCase();
+  if (host !== PARADIGMA_SAAS_DOMINIO && !host.endsWith(`.${PARADIGMA_SAAS_DOMINIO}`)) return null;
+  const tenants = PARADIGMA_SAAS_TENANTS[host];
+  if (!tenants) return "";
+  const tenant = parsed.pathname.split("/")[1]?.toLowerCase() ?? "";
+  return tenants[tenant] ?? "";
+}
 
 /** Compra/edital estendido PNCP: `{CNPJ14}-{tipo}-{seqPad}/{ano}` */
 const PNCP_CONTROLE_EXTENDED_RE = /^(\d{14})-(\d+)-(\d+)\/(\d{4})$/;
@@ -103,12 +125,22 @@ export interface LicitacaoRowForEdital {
  * Valida se uma string é uma URL https válida.
  * Se allowedHostsOnly=true, restringe aos hosts de `allowedHosts` (e seus subdomínios).
  * Se allowedHostsOnly=false, aceita qualquer domínio válido desde que seja protocolo HTTPS.
+ * Em host SaaS compartilhado do Paradigma, o modo restrito exige host exato + tenant de `PARADIGMA_SAAS_TENANTS`.
  */
 export function isValidHttpsUrl(
   rawUrl: unknown,
   allowedHostsOnly = false,
   allowedHosts: ReadonlySet<string> = ALLOWED_STATIC_HOSTS,
 ): string | null {
+  const parsed = parseHttpsUrl(rawUrl, allowedHostsOnly, allowedHosts);
+  return parsed ? parsed.toString() : null;
+}
+
+function parseHttpsUrl(
+  rawUrl: unknown,
+  allowedHostsOnly: boolean,
+  allowedHosts: ReadonlySet<string>,
+): URL | null {
   if (typeof rawUrl !== "string") return null;
   const trimmed = rawUrl.trim();
   if (!trimmed.toLowerCase().startsWith("https://")) return null;
@@ -123,12 +155,25 @@ export function isValidHttpsUrl(
       const isAllowed = allowedHosts.has(hostname) ||
         Array.from(allowedHosts).some((h) => hostname.endsWith(`.${h}`));
       if (!isAllowed) return null;
+      if (tenantParadigmaSaas(parsed) === "") return null;
     }
 
-    return parsed.toString();
+    return parsed;
   } catch {
     return null;
   }
+}
+
+/**
+ * Link vindo da origem (dado de terceiros): https, host de `ALLOWED_ORIGEM_HOSTS` e, em host SaaS do
+ * Paradigma, tenant da própria `fonte` da linha (link do Sesc RJ não vale numa linha de outra fonte).
+ */
+function validarLinkOrigem(rawUrl: unknown, fonte: string): string | null {
+  const parsed = parseHttpsUrl(rawUrl, true, ALLOWED_ORIGEM_HOSTS);
+  if (!parsed) return null;
+  const donoSaas = tenantParadigmaSaas(parsed);
+  if (donoSaas !== null && donoSaas !== fonte) return null;
+  return parsed.toString();
 }
 
 /**
@@ -217,7 +262,7 @@ export function buildEditalUrl(row: LicitacaoRowForEdital | null | undefined): s
     row.url_edital;
 
   // Link vindo da origem é dado de terceiros: só https e host da allowlist de origem
-  const validOrigemUrl = isValidHttpsUrl(rawLinkSistemaOrigem, true, ALLOWED_ORIGEM_HOSTS);
+  const validOrigemUrl = validarLinkOrigem(rawLinkSistemaOrigem, fonte);
 
   // 2. Tratamento específico por fonte
   if (fonte === "pncp") {

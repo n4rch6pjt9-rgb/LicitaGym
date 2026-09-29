@@ -48,7 +48,7 @@ export function motivoGitPush(comando, cwd = process.cwd(), atual = branchAtual)
     let dir = cwd;
     let i = iGit + 1;
     for (; i < p.length && p[i] !== "push"; i++) {
-      if (p[i] === "-C" && p[i + 1]) dir = resolve(cwd, p[++i]);
+      if (p[i] === "-C" && p[i + 1]) dir = resolve(dir, p[++i]);
       else if (!p[i].startsWith("-")) break; // outro subcomando (commit, log...)
     }
     if (p[i] !== "push") continue;

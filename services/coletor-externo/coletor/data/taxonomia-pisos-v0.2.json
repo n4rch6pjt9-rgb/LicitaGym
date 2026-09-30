@@ -117,7 +117,7 @@
       "pdm_catmat": [
         18481
       ],
-      "obs": "Campo, minicampo, society e decoração. Com granulado de borracha no mesmo texto vence o termo que aparece primeiro: 'grama sintética com infill de borracha granulada' é grama; 'borracha granulada para grama sintética' é granulado."
+      "obs": "Campo, minicampo, society e decoração. Com EPDM, SBR ou granulado de borracha no mesmo texto vence o termo que aparece primeiro: 'grama sintética com infill de borracha granulada' e 'piso de grama sintética com borracha reciclada SBR' são grama; 'borracha granulada para grama sintética' e 'EPDM para grama sintética' são infill (borracha_granulada)."
     },
     {
       "slug": "borracha_granulada",

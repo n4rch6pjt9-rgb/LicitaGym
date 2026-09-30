@@ -13,7 +13,10 @@ Regras:
   nem grama sintética explícita no texto -> piso_modular_pp; com borracha ou grama explícita o nó IN vence, com
   confiança média;
 - piso/tapete de borracha com medida de placa (1x1 m, 1000x1000 mm, 500x500 mm) -> placa_emborrachada;
-- grama sintética disputa com EPDM e granulado (infill): vence o termo que aparece primeiro no texto.
+- grama sintética disputa com EPDM, SBR e granulado: vence o termo que aparece primeiro no texto. Se a grama vem
+  primeiro, é grama_sintetica ("grama sintética com infill EPDM", "piso de grama sintética com borracha reciclada
+  SBR"); se a borracha vem primeiro, ela é o infill da grama e vira borracha_granulada ("EPDM para grama sintética",
+  "borracha granulada para grama sintética").
 
 Uso:
     from coletor.classificar_piso import classificar_piso
@@ -31,9 +34,11 @@ from .classificar_aparelho import norm
 TAXONOMIA_PISOS_ARQ = Path(__file__).resolve().parent / "data" / "taxonomia-pisos-v0.2.json"
 # Piso/tapete de borracha com medida de placa (1x1 m, 500x500 mm...) é placa emborrachada.
 _VIRA_PLACA = {"piso_emborrachado", "tapete_borracha"}
-# Grama sintética costuma vir com infill de EPDM/granulado no mesmo texto: vence quem aparece primeiro.
+# Grama sintética costuma vir com infill de EPDM/SBR/granulado no mesmo texto: vence quem aparece primeiro.
+# Borracha antes da grama é o infill da grama: vira borracha_granulada (PDM 9461), não piso EPDM/SBR.
 _GRAMA = "grama_sintetica"
-_DISPUTA_GRAMA = {"piso_epdm", "borracha_granulada"}
+_INFILL = "borracha_granulada"
+_DISPUTA_GRAMA = {"piso_epdm", "piso_borracha_reciclada_sbr", "borracha_granulada"}
 
 
 class ClassificadorPiso:
@@ -51,17 +56,31 @@ class ClassificadorPiso:
         self._rx = {n["slug"]: rx for rx, n in self._padroes}
 
     def _desempatar_grama(self, t: str, no: dict) -> dict:
-        """Grama sintética x EPDM/granulado no mesmo texto: o nó cujo termo aparece primeiro."""
+        """Grama sintética x EPDM/SBR/granulado no mesmo texto: vence o termo que aparece primeiro.
+
+        A posição do rival é a do material de borracha dentro do trecho casado, não o início do trecho: o padrão de
+        SBR começa em "piso" ("piso de grama sintética com borracha reciclada SBR" casa desde "piso"), e o que conta
+        é onde a borracha aparece. Borracha antes da grama é infill: vira borracha_granulada, se o nó existir.
+        Nós ausentes do JSON são ignorados (self._rx.get), sem KeyError."""
         if no["slug"] != _GRAMA and no["slug"] not in _DISPUTA_GRAMA:
             return no
-        g = self._rx[_GRAMA].search(t) if _GRAMA in self._rx else None
+        rx_grama = self._rx.get(_GRAMA)
+        g = rx_grama.search(t) if rx_grama else None
         if g is None:
             return no
-        rivais = [(m.start(), s) for s in _DISPUTA_GRAMA if (m := self._rx[s].search(t))]
+        rivais = []
+        for s in sorted(_DISPUTA_GRAMA):
+            rx = self._rx.get(s)
+            m = rx.search(t) if rx else None
+            if m:
+                b = self.borracha.search(t, m.start(), m.end())
+                rivais.append(((b or m).start(), s))
         if not rivais:
             return no
         pos, slug = min(rivais)
-        return self.nos[slug] if pos < g.start() else self.nos[_GRAMA]
+        if pos > g.start():
+            return self.nos[_GRAMA]
+        return self.nos.get(_INFILL) or self.nos[slug]
 
     def _ambiente(self, t: str) -> tuple[str, str] | None:
         for slug, prioridade, rx in self.ambientes:

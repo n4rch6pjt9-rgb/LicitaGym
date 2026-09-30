@@ -104,15 +104,15 @@ export async function handleRequest(req: Request, ctx: ApiCatmatContext = {}): P
 
       case "palavras_salvar": {
         const palavra = await salvarPalavra(repo, user.id, params);
-        console.info("[api-catmat] palavras_salvar", { user: user.id, codigo_pdm: palavra.codigo_pdm, id: palavra.id });
+        console.info("[api-catmat] palavras_salvar", { user: user.id, codigo_pdm: palavra.codigo_pdm, id: palavra.id, tipo: palavra.tipo });
         return jsonResponse({ action: "palavras_salvar", palavra }, params.id === null ? 201 : 200);
       }
 
       case "palavras_remover": {
-        const ok = await repo.removerPalavra(params.id);
+        const ok = await repo.removerPalavra(params.id, params.tipo);
         if (!ok) return jsonResponse({ error: "Padrão não encontrado." }, 404);
-        console.info("[api-catmat] palavras_remover", { user: user.id, id: params.id });
-        return jsonResponse({ action: "palavras_remover", id: params.id });
+        console.info("[api-catmat] palavras_remover", { user: user.id, id: params.id, tipo: params.tipo });
+        return jsonResponse({ action: "palavras_remover", id: params.id, tipo: params.tipo });
       }
     }
   } catch (e) {

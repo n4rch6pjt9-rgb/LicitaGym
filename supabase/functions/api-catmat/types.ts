@@ -45,11 +45,19 @@ export interface CatmatRegra {
   updated_at: string;
 }
 
+/**
+ * inclui: o padrão identifica o PDM no texto (catmat_pdm_palavras);
+ * exclui: texto que casar o padrão não conta para o PDM (catmat_pdm_exclusoes; ex.: piso modular PP de concorrente).
+ * São tabelas separadas: o id só é único dentro do tipo.
+ */
+export type TipoPalavra = "inclui" | "exclui";
+
 export interface CatmatPalavra {
   id: number;
   codigo_pdm: number;
   padrao: string;
   ativo: boolean;
+  tipo: TipoPalavra;
 }
 
 export type ActionParams =
@@ -67,7 +75,7 @@ export type ActionParams =
   }
   | { action: "catalogo_remover"; id: number }
   | { action: "palavras_listar"; codigo_pdm: number }
-  | { action: "palavras_salvar"; id: number | null; codigo_pdm: number; padrao: string; ativo: boolean }
-  | { action: "palavras_remover"; id: number };
+  | { action: "palavras_salvar"; id: number | null; codigo_pdm: number; padrao: string; ativo: boolean; tipo: TipoPalavra }
+  | { action: "palavras_remover"; id: number; tipo: TipoPalavra };
 
 export const ACOES_ADMIN = new Set(["catalogo_salvar", "catalogo_remover", "palavras_salvar", "palavras_remover"]);

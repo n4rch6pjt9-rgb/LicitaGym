@@ -104,25 +104,37 @@ _FORA = (
 _PISO = (
     r"gram(a|ado)\s+sintetic|piso\s+(sintetic|emborrachad|esportiv|vinilico\s+esportiv|de\s+borracha|"
     r"para\s+(academia|quadra|playground|parque))|revestimento\s+esportiv|placas?\s+de\s+borracha\s+para\s+piso|"
+    # Linha Playfit (29/09/2026): placa emborrachada, SBR/EPDM, crossfit, haras
+    r"placas?\s+(de\s+piso\s+)?emborrachad|piso\s+(sbr|epdm|drenante|amortecedor|de\s+seguranca|para\s+(crossfit|parque\s+infantil))|"
+    r"(piso|tapete|placa)s?\s+(de\s+borracha\s+|emborrachad[oa]s?\s+)?para\s+(baias?|cocheiras?|estabulos?|haras)|"
     r"campo\s+(de\s+futebol\s+)?society|arena\s+society|quadra\s+society|mini\s*campo|campo\s+sintetic"
 )
 FORTE, FRACO, EQUIP, FORA, PISO = (re.compile(p, re.I) for p in (_FORTE, _FRACO, _EQUIPAMENTO, _FORA, _PISO))
 # Compra inteira fora do escopo, mesmo que algum item cite grama/esporte
 # (a busca do PNCP acha termos dentro dos itens: grama sintética como enfeite de Natal etc.)
 EXCLUSAO_COMPRA = re.compile(
-    r"natal|decorac|enfeite|ornament|arbitragem|arbitro|paisagis|jardinagem|"
+    r"natal|decorac|enfeite|ornament|arbitragem|arbitro|"
     r"grama\s+(natural|esmeralda|batatais|zeon|zoysia|sao\s+carlos|bermuda)|"
     r"locacao\s+de\s+(tenda|palco|estrutura)|evento", re.I)
 
 
+# Paisagismo/jardinagem só fica fora quando não envolve borracha (granulado de borracha para paisagismo é da linha Playfit)
+EXCLUSAO_PAISAGISMO = re.compile(r"paisagis|jardinagem", re.I)
+
+
+def _excluida(t: str) -> bool:
+    return bool(EXCLUSAO_COMPRA.search(t) or (EXCLUSAO_PAISAGISMO.search(t) and not BORRACHA.search(t)))
+
+
 def excluir_compra(objeto: str) -> bool:
-    return bool(EXCLUSAO_COMPRA.search(normalizar(objeto)))
+    return _excluida(normalizar(objeto))
 
 
 # Borracha para infill/piso: raspa, granulado, SBR, EPDM, pneu triturado
 BORRACHA = re.compile(
-    r"(raspa|granulad|granulo|triturad|reciclad|po)\s+(de\s+)?borracha|borracha\s+(granulad|triturad|reciclad|moid|sbr|epdm)|"
-    r"\bsbr\b|\bepdm\b|pneus?\s+(triturad|inserviv)|preenchimento\s+(com|de)\s+borracha", re.I)
+    r"(raspa|granulad[oa]s?|granulos?|triturad[oa]s?|reciclad[oa]s?|po)\s+(de\s+)?borracha|borracha\s+(granulad|triturad|reciclad|moid|sbr|epdm)|"
+    r"\bsbr\b|\bepdm\b|pneus?\s+(triturad|inserviv|reciclad)|(granulos?|graos?)\s+de\s+pneus?|preenchimento\s+(com|de)\s+borracha|"
+    r"mulch\s+de\s+borracha", re.I)
 # Obra de quadra/campo: entra quando envolve grama sintética, piso emborrachado ou borracha
 OBRA_ESPORTIVA = re.compile(
     r"(constru|reforma|revitaliz|implant|ampliac|recupera|manutenc|execuc).{0,120}"
@@ -161,7 +173,8 @@ _ITEM_FORA = (
 _ITEM_PISO = (
     r"(piso|tapete)\s+(de\s+|em\s+)?eva\b|(placas?|manta)\s+(de\s+|em\s+)?eva\b(?=.*(\b\d{2}\s*mm|encaix|piso))|\beva\s+(de\s+)?\d{2}\s*mm|"
     r"placas?\s+(de\s+)?borracha\s+(\d+([.,]\d+)?\s*(cm|m)?\s*x\s*\d+([.,]\d+)?\s*(cm|m)?\s*(x\s*)?)?\d{2}\s*mm|"
-    r"manta\s+(de\s+)?borracha\s+(para\s+)?(academia|piso)"
+    r"manta\s+(de\s+)?borracha\s+(para\s+)?(academia|piso)|placas?\s+(de\s+piso\s+)?emborrachad|"
+    r"(tapete|piso|placa)s?\s+(de\s+borracha\s+)?para\s+(baias?|cocheiras?|estabulos?|haras)"
 )
 # Peças e insumos de manutenção de equipamento de academia (26/09/2026, pedido do Marcelo: entram no escopo,
 # em categoria própria 'manutencao' para não misturar preço de peça com preço de equipamento).
@@ -239,7 +252,7 @@ def classificar(objeto: str, classes_catmat: set[int] | None = None,
     if pdms and any(pdms & set(p) for p in PDMS_POR_CLASSE_PARCIAL.values()):
         return "catmat"
     t = normalizar(objeto)
-    if EXCLUSAO_COMPRA.search(t):
+    if _excluida(t):
         return None
     if BORRACHA.search(t):
         return "borracha"

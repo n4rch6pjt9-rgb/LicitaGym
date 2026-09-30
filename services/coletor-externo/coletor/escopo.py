@@ -137,8 +137,10 @@ BORRACHA = re.compile(
     r"mulch\s+de\s+borracha", re.I)
 # Obra de quadra/campo: entra quando envolve grama sintética, piso emborrachado ou borracha
 OBRA_ESPORTIVA = re.compile(
-    r"(constru|reforma|revitaliz|implant|ampliac|recupera|manutenc|execuc).{0,120}"
+    r"(constru|reforma|revitaliz|implant|ampliac|recupera|manutenc|execuc|substitui).{0,120}"
     r"(campo|quadra|society|arena|minicampo|estadio|praca\s+esportiva|academia\s+ao\s+ar\s+livre|playground)", re.I)
+# Piso moldado no local (monolítico, EPDM/SBR aplicado in loco) é obra/instalação, não compra de placas.
+PISO_IN_LOCO = re.compile(r"monolitic|moldad\w*\s+(in\s+loco|no\s+local)|\bin\s+loco\b", re.I)
 
 
 # ---------------- nível de ITEM ----------------
@@ -259,7 +261,7 @@ def classificar(objeto: str, classes_catmat: set[int] | None = None,
     if pdms and pdms & set(PDMS_CONDICIONAIS) and (PISO.search(t) or FRACO.search(t) or FORTE.search(t)):
         return "catmat"
     if PISO.search(t):
-        return "obra_piso" if OBRA_ESPORTIVA.search(t) else "piso"
+        return "obra_piso" if (OBRA_ESPORTIVA.search(t) or PISO_IN_LOCO.search(t)) else "piso"
     if FORA.search(t):
         return None
     if FORTE.search(t):

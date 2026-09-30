@@ -1,17 +1,18 @@
 {
-  "versao": "pisos-0.1",
-  "data": "2026-09-29",
-  "descricao": "Taxonomia de pisos e placas de borracha (linha Playfit): texto de item/edital -> nó (produto), segmento (ambiente) e prioridade comercial. Complementa o dicionário de aparelhos v0.3, que não tem pisos. Regex no dialeto Python sobre o texto de classificar_aparelho.norm() (minúsculas, sem acento, pontuação vira espaço).",
+  "versao": "pisos-0.2",
+  "data": "2026-09-30",
+  "descricao": "Taxonomia de pisos, placas de borracha e grama sintética (linha Playfit): texto de item/edital -> nó (produto), segmento (ambiente) e prioridade comercial. Complementa o dicionário de aparelhos v0.3, que não tem pisos. Regex no dialeto Python sobre o texto de classificar_aparelho.norm() (minúsculas, sem acento, pontuação vira espaço).",
   "prioridades": {
     "alta": "Core da Playfit: placa emborrachada, piso emborrachado, piso de borracha reciclada, SBR, EPDM, piso para academia, piso para crossfit, playground.",
     "media": "Segmentos atendidos fora do core (haras, paisagismo) e sinais de contexto (proteção/absorção de impacto, segurança infantil). Sinais de contexto nunca classificam sozinhos.",
     "baixa": "Indício de concorrente (Flexquadra e similares): piso modular esportivo PP/TPE, polipropileno copolímero, quadra poliesportiva modular, piso desmontável, placas plásticas encaixáveis."
   },
-  "gatilho": "\\b(piso|pisos|placa|placas|tapete|tapetes|manta|mantas|revestimento|borracha|emborrachad[oa]s?|sbr|epdm|granulad[oa]s?|granulos?|graos?|pneus?|mulch)\\b",
+  "gatilho": "\\b(piso|pisos|placa|placas|tapete|tapetes|manta|mantas|revestimento|borracha|emborrachad[oa]s?|sbr|epdm|granulad[oa]s?|granulos?|graos?|pneus?|mulch|grama|gramados?|relva|infill)\\b",
   "borracha_explicita": "borracha|emborrachad|\\bsbr\\b|\\bepdm\\b|\\bpneus?\\b",
   "sinais_contexto": {
     "impacto": "(protecao|absorcao|amortecimento) (contra |de |ao )?impacto|amortecedor|antiimpacto|anti impacto",
-    "seguranca_infantil": "seguranca infantil|queda (de )?crianca|altura (critica )?de queda|nbr 16071"
+    "seguranca_infantil": "seguranca infantil|queda (de )?crianca|altura (critica )?de queda|nbr 16071",
+    "instalacao_in_loco": "monolitic[oa]s?|moldad[oa]s? (in loco|no local)|\\bin loco\\b|aplicad[oa]s? no local"
   },
   "sinais_baixa": {
     "polipropileno": "polipropileno|copolimero|\\bpp\\b|\\btpe\\b",
@@ -107,16 +108,28 @@
       "obs": "Medidas típicas 1x1 m (1000x1000 mm) e 500x500 mm; espessuras de 15 a 40 mm. Tapete de borracha 1x1 m do CATMAT (PDM 12550) é a mesma peça."
     },
     {
+      "slug": "grama_sintetica",
+      "nome": "Grama sintética",
+      "familia": "gramados_sinteticos",
+      "prioridade": "alta",
+      "escopo": "IN",
+      "padrao": "(grama|gramados?|relva)( [a-z0-9]+){0,2} (sintetic[oa]s?|artificia(l|is))",
+      "pdm_catmat": [
+        18481
+      ],
+      "obs": "Campo, minicampo, society e decoração. Com granulado de borracha no mesmo texto vence o termo que aparece primeiro: 'grama sintética com infill de borracha granulada' é grama; 'borracha granulada para grama sintética' é granulado."
+    },
+    {
       "slug": "borracha_granulada",
       "nome": "Borracha granulada (SBR solto)",
       "familia": "pisos_emborrachados",
       "prioridade": "alta",
       "escopo": "IN",
-      "padrao": "(borracha|raspa|po) (de borracha )?(granulad|triturad|moid)|granulad[oa]s? (de )?borracha|granulos? de borracha|raspa de borracha|borracha (sbr|reciclad[oa])|\\bsbr\\b|mulch de borracha",
+      "padrao": "(borracha|raspa|po) (de borracha )?(granul|triturad|moid)|granulad[oa]s? (de )?borracha|granulos? de borracha|raspa de borracha|borracha (sbr|reciclad[oa])|\\bsbr\\b|mulch de borracha|(infill|preenchimento)( [a-z0-9]+){0,3} (de |em )?(borracha|sbr|epdm)",
       "pdm_catmat": [
         9461
       ],
-      "obs": "Infill de grama sintética e cobertura de paisagismo. PDM 9461 (classe 9320) ainda não materializado em catmat_pdms: fica inerte até entrar no catálogo."
+      "obs": "Infill de grama sintética e cobertura de paisagismo. Aceita abreviação de catálogo (\"BORRACHA GRANUL.\"). PDM 9461 (BORRACHA GRANULADA, grupo 93, classe 9320 ARTIGOS DE BORRACHA) materializado por curadoria em 20260930150000; a classe 9320 segue fora da política de escopo (TRANSITIONAL_FITNESS_SCOPE)."
     },
     {
       "slug": "tapete_borracha",

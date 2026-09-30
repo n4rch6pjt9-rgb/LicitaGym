@@ -1,8 +1,8 @@
-"""Classificador de pisos e placas de borracha (taxonomia-pisos-v0.1.json, linha Playfit).
+"""Classificador de pisos, placas de borracha e grama sintética (taxonomia-pisos-v0.2.json, linha Playfit).
 
 O dicionário de aparelhos v0.3 não tem pisos. Esta taxonomia dá, para o texto de um item:
-- nó (produto): placa_emborrachada, piso_borracha_reciclada_sbr, piso_epdm, borracha_granulada, tapete_borracha,
-  piso_emborrachado — ou piso_modular_pp (escopo OUT, indício de concorrente);
+- nó (produto): placa_emborrachada, piso_borracha_reciclada_sbr, piso_epdm, grama_sintetica, borracha_granulada,
+  tapete_borracha, piso_emborrachado — ou piso_modular_pp (escopo OUT, indício de concorrente);
 - ambiente (segmento): crossfit, academia, playground, haras, paisagismo — do próprio item e, se não houver, do
   objeto da licitação (`contexto`);
 - prioridade comercial: alta | media | baixa.
@@ -11,7 +11,8 @@ Regras:
 - sinais de contexto (absorção de impacto, segurança infantil) nunca classificam sozinhos;
 - sinal de concorrente (PP/TPE, polipropileno, quadra modular, desmontável, futsal/basquete/handebol) sem borracha
   explícita no texto -> piso_modular_pp; com borracha explícita o nó de borracha vence, com confiança média;
-- piso/tapete de borracha com medida de placa (1x1 m, 1000x1000 mm, 500x500 mm) -> placa_emborrachada.
+- piso/tapete de borracha com medida de placa (1x1 m, 1000x1000 mm, 500x500 mm) -> placa_emborrachada;
+- grama sintética disputa com EPDM e granulado (infill): vence o termo que aparece primeiro no texto.
 
 Uso:
     from coletor.classificar_piso import classificar_piso
@@ -26,9 +27,12 @@ from pathlib import Path
 
 from .classificar_aparelho import norm
 
-TAXONOMIA_PISOS_ARQ = Path(__file__).resolve().parent / "data" / "taxonomia-pisos-v0.1.json"
+TAXONOMIA_PISOS_ARQ = Path(__file__).resolve().parent / "data" / "taxonomia-pisos-v0.2.json"
 # Piso/tapete de borracha com medida de placa (1x1 m, 500x500 mm...) é placa emborrachada.
 _VIRA_PLACA = {"piso_emborrachado", "tapete_borracha"}
+# Grama sintética costuma vir com infill de EPDM/granulado no mesmo texto: vence quem aparece primeiro.
+_GRAMA = "grama_sintetica"
+_DISPUTA_GRAMA = {"piso_epdm", "borracha_granulada"}
 
 
 class ClassificadorPiso:
@@ -43,6 +47,20 @@ class ClassificadorPiso:
         self.ambientes = [(a["slug"], a["prioridade"], re.compile(a["padrao"])) for a in d["ambientes"]]
         self.nos = {n["slug"]: n for n in d["nos"]}
         self._padroes = [(re.compile(n["padrao"]), n) for n in d["nos"]]
+        self._rx = {n["slug"]: rx for rx, n in self._padroes}
+
+    def _desempatar_grama(self, t: str, no: dict) -> dict:
+        """Grama sintética x EPDM/granulado no mesmo texto: o nó cujo termo aparece primeiro."""
+        if no["slug"] != _GRAMA and no["slug"] not in _DISPUTA_GRAMA:
+            return no
+        g = self._rx[_GRAMA].search(t) if _GRAMA in self._rx else None
+        if g is None:
+            return no
+        rivais = [(m.start(), s) for s in _DISPUTA_GRAMA if (m := self._rx[s].search(t))]
+        if not rivais:
+            return no
+        pos, slug = min(rivais)
+        return self.nos[slug] if pos < g.start() else self.nos[_GRAMA]
 
     def _ambiente(self, t: str) -> tuple[str, str] | None:
         for slug, prioridade, rx in self.ambientes:
@@ -70,6 +88,7 @@ class ClassificadorPiso:
                 break
         if no is None:
             return None
+        no = self._desempatar_grama(t, no)
         medidas = {k: m.group(0) for k, rx in self.medidas.items() if (m := rx.search(t))}
         if no["slug"] in _VIRA_PLACA and "placa" in medidas:
             no = self.nos["placa_emborrachada"]

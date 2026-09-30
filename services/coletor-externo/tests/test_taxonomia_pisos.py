@@ -111,3 +111,53 @@ def test_escopo_da_linha_playfit():
     assert excluir_compra("Aquisição de granulado de borracha para paisagismo") is False
     assert excluir_compra("Serviços de paisagismo e jardinagem") is True
     assert classificar_texto_item("PLACA EMBORRACHADA 50X50 20MM")[0] == "piso"
+
+
+# ---------------- P3 da revisão do #100 ----------------
+
+def test_substitui_generico_nao_vira_obra_piso():
+    # "substitui" solto (edital que substitui o anterior) não é obra: só com grama/gramado/piso/revestimento/campo/quadra
+    assert classificar("Aquisição de grama sintética para o campo municipal, edital que substitui o anterior") == "piso"
+    assert classificar("Grama sintética: este edital substitui o anterior, campo society do bairro") == "piso"
+    # a substituição do próprio gramado/piso segue como obra
+    assert classificar("SUBSTITUIÇÃO DO GRAMADO SINTÉTICO DA QUADRA DO SESC MAFRA") == "obra_piso"
+    assert classificar("Substituição do piso emborrachado do playground") == "obra_piso"
+    # fora do regex da revisão ("de piso", "o piso"): segue "piso", com interesse de borracha
+    assert classificar("Substituição de piso emborrachado do playground") == "piso"
+    assert classificar("Reforma do campo de futebol com substituição do gramado sintético") == "obra_piso"
+
+
+@pytest.mark.parametrize("texto,slug", [
+    # grama vem antes da borracha: é grama (o SBR conta pela posição de "borracha", não pelo "piso" do padrão)
+    ("Piso de grama sintética com borracha reciclada SBR", "grama_sintetica"),
+    # borracha antes da grama é o infill: vira borracha granulada, nunca piso EPDM/SBR
+    ("EPDM para grama sintética", "borracha_granulada"),
+    ("Borracha reciclada SBR para grama sintética", "borracha_granulada"),
+    ("Grama sintética com infill EPDM", "grama_sintetica"),
+])
+def test_disputa_grama_com_epdm_sbr_e_granulado(texto, slug):
+    r = classificar_piso(texto)
+    assert r["slug"] == slug
+    assert r["pdm_catmat"] == ([18481] if slug == "grama_sintetica" else [9461])
+
+
+def test_desempate_da_grama_sem_no_rival_no_json_nao_quebra(tmp_path):
+    from coletor.classificar_piso import ClassificadorPiso
+    d = json.loads(TAXONOMIA_PISOS_ARQ.read_text(encoding="utf-8"))
+    d["nos"] = [n for n in d["nos"] if n["slug"] not in ("piso_epdm", "borracha_granulada")]
+    arq = tmp_path / "taxonomia-sem-rivais.json"
+    arq.write_text(json.dumps(d), encoding="utf-8")
+    c = ClassificadorPiso(arq)
+    assert c.classificar("Grama sintética com infill EPDM")["slug"] == "grama_sintetica"
+    # sem o nó de infill, a borracha antes da grama fica no próprio nó rival
+    assert c.classificar("Piso SBR com grama sintética")["slug"] == "piso_borracha_reciclada_sbr"
+
+
+def test_piso_monolitico_in_loco_sem_material_e_obra_piso():
+    assert classificar("Piso monolítico moldado in loco") == "obra_piso"
+    assert classificar("Execução de piso aplicado in loco para playground") == "obra_piso"
+    # sem a palavra piso, ou com material de obra civil, não entra
+    assert classificar("Monolítico moldado in loco") is None
+    assert classificar("Execução de piso de concreto monolítico") is None
+    # com borracha explícita o material manda (ver comentário em escopo.classificar)
+    assert classificar("Piso monolítico em EPDM moldado in loco") == "borracha"

@@ -18,6 +18,8 @@ O PDM de piso **NÃO está em 78/7830** (grupo/classe padrão de academia). Esta
 
 ### GET `/functions/v1/discover-piso-pdm`
 
+**Autenticação:** exige usuário logado. Envie `Authorization: Bearer <access_token>` de uma sessão do Supabase Auth; sem sessão (ou com a anon key) a resposta é `401 Unauthorized`. A função está no `supabase/config.toml` (`verify_jwt = false`, JWT validado no código) e é republicada a cada merge na `main`.
+
 **Query Parameters:**
 
 | Parâmetro | Tipo | Default | Descrição |
@@ -29,7 +31,7 @@ O PDM de piso **NÃO está em 78/7830** (grupo/classe padrão de academia). Esta
 
 **Exemplo:**
 ```bash
-curl "http://localhost:54321/functions/v1/discover-piso-pdm?termo=piso&estado=sp&limite=20"
+curl -H "Authorization: Bearer $LICITAGYM_USER_JWT" "http://localhost:54321/functions/v1/discover-piso-pdm?termo=piso&estado=sp&limite=20"
 ```
 
 **Response (200 OK):**
@@ -70,7 +72,7 @@ curl "http://localhost:54321/functions/v1/discover-piso-pdm?termo=piso&estado=sp
 supabase start
 
 # Em outro terminal, testar a API
-curl "http://localhost:54321/functions/v1/discover-piso-pdm?termo=piso&limite=10" | jq .
+curl -H "Authorization: Bearer $LICITAGYM_USER_JWT" "http://localhost:54321/functions/v1/discover-piso-pdm?termo=piso&limite=10" | jq .
 ```
 
 ### 2. Via script Deno (recomendado)
@@ -114,10 +116,10 @@ WHERE codigo_pdm = '123456';
 
 ```bash
 # Desenvolvimento
-curl "http://localhost:54321/functions/v1/discover-piso-pdm?termo=piso" | jq .
+curl -H "Authorization: Bearer $LICITAGYM_USER_JWT" "http://localhost:54321/functions/v1/discover-piso-pdm?termo=piso" | jq .
 
 # Produção (quando deployado)
-curl "https://seu-project.supabase.co/functions/v1/discover-piso-pdm?termo=piso" | jq .
+curl -H "Authorization: Bearer $LICITAGYM_USER_JWT" "https://seu-project.supabase.co/functions/v1/discover-piso-pdm?termo=piso" | jq .
 ```
 
 ---

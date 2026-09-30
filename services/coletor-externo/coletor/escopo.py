@@ -256,12 +256,25 @@ BORRACHA = re.compile(
     r"\bsbr\b|\bepdm\b|pneus?\s+(triturad|inserviv|reciclad)|(granulos?|graos?)\s+de\s+pneus?|preenchimento\s+(com|de)\s+borracha|"
     r"mulch\s+de\s+borracha", re.I)
 # Obra de quadra/campo: entra quando envolve grama sintética, piso emborrachado ou borracha
+# "substitui" é genérico ("edital que substitui o anterior... campo"): só conta com o objeto logo em seguida
+# ("substituição do gramado", "substituir o piso", "substituição da quadra").
 OBRA_ESPORTIVA = re.compile(
-    r"(constru|reforma|revitaliz|implant|ampliac|recupera|manutenc|execuc|substitui).{0,120}"
-    r"(campo|quadra|society|arena|minicampo|estadio|praca\s+esportiva|academia\s+ao\s+ar\s+livre|playground)", re.I)
+    r"(constru|reforma|revitaliz|implant|ampliac|recupera|manutenc|execuc).{0,120}"
+    r"(campo|quadra|society|arena|minicampo|estadio|praca\s+esportiva|academia\s+ao\s+ar\s+livre|playground)|"
+    r"substitui\w*\s+(d[oa]s?\s+)?(grama|gramado|piso|revestimento|campo|quadra)", re.I)
 # Piso moldado no local (monolítico, EPDM/SBR aplicado in loco) é obra/instalação, não compra de placas.
 # "in loco" solto (vistoria, treinamento, instalação in loco) não conta: só execução do piso no local.
 PISO_IN_LOCO = re.compile(r"monolitic|(moldad|aplicad|executad|fundid)\w*\s+(in\s+loco|no\s+local)", re.I)
+# "Piso monolítico moldado in loco" sem material não casa PISO: com a palavra "piso", o in loco basta como sinal de
+# piso. Piso monolítico de concreto, granilite, epóxi, cerâmica etc. é piso de obra civil, não da linha Playfit.
+PISO_PALAVRA = re.compile(r"\bpisos?\b", re.I)
+PISO_NAO_ESPORTIVO = re.compile(
+    r"concreto|cimenti|argamassa|granilit|marmorit|epox|porcelanat|ceramic|vinilic|madeira|asfalt|industrial", re.I)
+
+
+def _piso_in_loco(t: str) -> bool:
+    """Piso executado no local, sem material que o tire da linha Playfit."""
+    return bool(PISO_IN_LOCO.search(t) and PISO_PALAVRA.search(t) and not PISO_NAO_ESPORTIVO.search(t))
 
 
 # ---------------- nível de ITEM ----------------
@@ -377,10 +390,17 @@ def classificar(objeto: str, classes_catmat: set[int] | None = None,
     t = normalizar(objeto)
     if _excluida(t):
         return None
+    # "borracha" vem antes de "piso"/"obra_piso" de propósito: o material explícito (raspa, granulado, SBR, EPDM,
+    # pneu) é o produto que a Playfit vende e é a categoria de maior prioridade em pncp.avaliar e
+    # paradigma.avaliar_processo. Por isso "Piso monolítico em EPDM moldado in loco" é "borracha", nunca
+    # "obra_piso": a obra não se perde para o comercial, porque interesse_borracha() é True nos dois casos.
+    # "obra_piso" fica para obra/execução de piso ou gramado sem material de borracha explícito no texto.
     if BORRACHA.search(t):
         return "borracha"
     if pdms and pdms & set(PDMS_CONDICIONAIS) and (PISO.search(t) or FRACO.search(t) or FORTE.search(t)):
         return "catmat"
+    if _piso_in_loco(t):
+        return "obra_piso"
     if PISO.search(t):
         return "obra_piso" if (OBRA_ESPORTIVA.search(t) or PISO_IN_LOCO.search(t)) else "piso"
     if FORA.search(t):

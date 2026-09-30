@@ -1,5 +1,15 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { corsHeaders } from "../_shared/http.ts";
+import { type AuthenticatedUser, authenticateUser, corsHeaders, jsonResponse } from "../_shared/http.ts";
+
+/**
+ * discover-piso-pdm: protótipo que busca PDMs de piso num site de terceiros (todaslicitacoes.com.br).
+ * Não lê nem grava no banco. Mesmo assim só atende usuário logado (JWT de sessão validado no código com
+ * authenticateUser; a anon key e o SYNC_CRON_SECRET não são sessão): regra do projeto, dado só para quem
+ * está logado, e sem proxy aberto para o site externo. verify_jwt = false no config.toml, como as demais api-*.
+ */
+export interface DiscoverPisoContext {
+  getUser?: (req: Request) => Promise<AuthenticatedUser | null>;
+  fetchFn?: typeof fetch;
+}
 
 interface PdmDiscovery {
   codigoPdm: string;
@@ -17,17 +27,22 @@ interface ApiResponse {
   avisos: string[];
 }
 
-serve(async (req: Request) => {
+export async function handleRequest(req: Request, ctx: DiscoverPisoContext = {}): Promise<Response> {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
+
+  const user = await (ctx.getUser ?? authenticateUser)(req);
+  if (!user) return jsonResponse({ error: "Unauthorized" }, 401);
+  const fetchFn = ctx.fetchFn ?? fetch;
 
   try {
     const url = new URL(req.url);
     const categoria = url.searchParams.get("categoria") || "equipamentos-esportivos-e-lazer";
     const termo = url.searchParams.get("termo") || "piso";
     const estado = url.searchParams.get("estado") || "";
-    const limite = parseInt(url.searchParams.get("limite") || "100");
+    const limiteBruto = Number.parseInt(url.searchParams.get("limite") || "100", 10);
+    const limite = Number.isFinite(limiteBruto) ? Math.min(Math.max(limiteBruto, 1), 100) : 100;
 
     const pdmsEncontrados: PdmDiscovery[] = [];
     const avisos: string[] = [];
@@ -41,7 +56,7 @@ serve(async (req: Request) => {
       apiUrl.searchParams.append("limit", String(limite));
       if (estado) apiUrl.searchParams.append("estado", estado);
 
-      const apiResponse = await fetch(apiUrl.toString(), {
+      const apiResponse = await fetchFn(apiUrl.toString(), {
         headers: {
           "User-Agent": "LicitaGym/1.0",
           "Accept": "application/json",
@@ -78,8 +93,8 @@ serve(async (req: Request) => {
           query BuscarPisos {
             material(
               where: {
-                categoria: "${categoria}"
-                descricao_contains: "${termo}"
+                categoria: ${JSON.stringify(categoria)}
+                descricao_contains: ${JSON.stringify(termo)}
               }
               limit: ${limite}
             ) {
@@ -93,7 +108,7 @@ serve(async (req: Request) => {
           }
         `;
 
-        const gqlResponse = await fetch("https://www.todaslicitacoes.com.br/graphql", {
+        const gqlResponse = await fetchFn("https://www.todaslicitacoes.com.br/graphql", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -191,7 +206,9 @@ serve(async (req: Request) => {
       }
     );
   }
-});
+}
+
+if (import.meta.main) Deno.serve((req) => handleRequest(req));
 
 /**
  * Extrai PDM de um item retornado pela API

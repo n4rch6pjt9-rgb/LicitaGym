@@ -33,20 +33,50 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urljoin, urlsplit
 
 import requests
 
 from .destino import Armazenamento, Supabase, env, parece_html, sha256
-from .escopo import TERMOS_BUSCA, classificar, excluir_compra, interesse_borracha
+from .escopo import (
+    TERMOS_ESCOPO_COMPLETO,
+    classificar,
+    excluir_compra,
+    interesse_borracha,
+)
 from .portal import cnpj_ou_none
 
 log = logging.getLogger("pncp")
 BASE = "https://pncp.gov.br"
 MAX_RETRY_AFTER_S = 60
+CATEGORIAS_PADRAO_DOWNLOAD = "catmat,forte,borracha,piso,obra_piso"
+# Downloads só de https nestes hosts (match exato, sem subdomínio). A URL vem do banco
+# (licitacao_documentos.raw.url): sem a allowlist o coletor buscaria qualquer endereço (SSRF).
+PNCP_HOSTS_PERMITIDOS = tuple(h.strip().lower() for h in
+                              os.environ.get("PNCP_HOSTS_PERMITIDOS", "pncp.gov.br").split(",") if h.strip())
+MAX_REDIRECTS = 5
+_REDIRECTS = (301, 302, 303, 307, 308)
 
 
 class RespostaInvalida(RuntimeError):
     """HTTP 200 cujo corpo não é o JSON esperado (HTML, JSON inválido, tipo errado)."""
+
+
+class ArquivoRecusado(ValueError):
+    """Download recusado de forma definitiva (host fora da allowlist, HTML no lugar do arquivo).
+    Repetir não adianta: o documento vai para status 'erro'."""
+
+
+def url_permitida(url: str | None, hosts: tuple[str, ...] | None = None) -> bool:
+    """https, host exato da allowlist, porta padrão e sem credenciais na URL."""
+    hosts = PNCP_HOSTS_PERMITIDOS if hosts is None else hosts
+    try:
+        p = urlsplit(url or "")
+        porta = p.port
+    except ValueError:
+        return False
+    return (p.scheme == "https" and (p.hostname or "").lower() in hosts and porta in (None, 443)
+            and not p.username and not p.password)
 
 
 class ConsultaFalhou(RuntimeError):
@@ -174,18 +204,52 @@ class PNCP:
     def arquivos(self, c: dict) -> list[dict]:
         return self._lista(self.base_compra(c) + "/arquivos")
 
+    def _abrir(self, url: str):
+        """GET em streaming sem redirecionamento automático: cada salto passa pela allowlist."""
+        atual = url
+        for _ in range(MAX_REDIRECTS + 1):
+            if not url_permitida(atual):
+                raise ArquivoRecusado(f"URL fora dos hosts permitidos ({', '.join(PNCP_HOSTS_PERMITIDOS)}): "
+                                      f"{str(atual)[:120]}")
+            r = self.s.get(atual, stream=True, timeout=(30, 180), allow_redirects=False)
+            if r.status_code in _REDIRECTS:
+                destino = (r.headers or {}).get("Location")
+                r.close()
+                if not destino:
+                    raise RespostaInvalida(f"PNCP {atual}: redirecionamento sem Location")
+                atual = urljoin(atual, destino)
+                continue
+            return r
+        raise RespostaInvalida(f"PNCP {url}: mais de {MAX_REDIRECTS} redirecionamentos")
+
     def baixar(self, url: str, max_bytes: int) -> tuple[bytes, str | None]:
-        with self.s.get(url, stream=True, timeout=(30, 180)) as r:
-            r.raise_for_status()
-            ctype = (r.headers.get("content-type") or "").split(";")[0] or None
-            partes, total = [], 0
-            for b in r.iter_content(256 * 1024):
-                partes.append(b)
-                total += len(b)
-                if total > max_bytes:
-                    raise ValueError(f"arquivo acima de {max_bytes // 1048576} MB")
-        time.sleep(self.delay)
-        return b"".join(partes), ctype
+        ultimo = None
+        for tentativa in range(self.tentativas):
+            try:
+                with self._abrir(url) as r:
+                    if r.status_code == 429:
+                        ultimo = requests.HTTPError(f"{r.status_code} do PNCP", response=r)
+                        espera = _retry_after_s(r)
+                        time.sleep(espera if espera is not None else min(60, 5 * 2 ** tentativa))
+                        continue
+                    if r.status_code in (500, 502, 503, 504):
+                        ultimo = requests.HTTPError(f"{r.status_code} do PNCP", response=r)
+                        time.sleep(min(60, 5 * 2 ** tentativa))
+                        continue
+                    r.raise_for_status()
+                    ctype = (r.headers.get("content-type") or "").split(";")[0] or None
+                    partes, total = [], 0
+                    for b in r.iter_content(256 * 1024):
+                        partes.append(b)
+                        total += len(b)
+                        if total > max_bytes:
+                            raise ValueError(f"arquivo acima de {max_bytes // 1048576} MB")
+                    time.sleep(self.delay)
+                    return b"".join(partes), ctype
+            except (requests.ConnectionError, requests.Timeout) as e:
+                ultimo = e
+                time.sleep(min(60, 5 * 2 ** tentativa))
+        raise ultimo or RuntimeError("PNCP sem resposta")
 
 
 def _num(v):
@@ -409,7 +473,17 @@ def coletar(pncp: PNCP, sb: Supabase | None, arm: Armazenamento | None, termos: 
     for termo in termos:
         for st in status_lista:
             for pagina in range(1, paginas + 1):
-                res = pncp.buscar(termo, st, pagina, tam)
+                try:
+                    res = pncp.buscar(termo, st, pagina, tam)
+                except Exception as e:
+                    # Uma busca que esgotou as tentativas (429/5xx/timeout) não derruba os outros termos;
+                    # fica no resumo e o processo sai com código 1 (ver main).
+                    _inc(resumo, "falha_busca")
+                    with _trava:
+                        resumo.setdefault("termos_com_falha", []).append(f"{termo} [{st}] pág. {pagina}")
+                    log.error('"%s" [%s] pág. %s: busca falhou, segue para o próximo termo: %s',
+                              termo, st, pagina, str(e)[:160])
+                    break
                 lote = res.get("items") or []
                 log.info('"%s" [%s] pág. %s: %s de %s', termo, st, pagina, len(lote), res.get("total"))
                 fila = []
@@ -671,6 +745,184 @@ def corrigir_processos(pncp: PNCP, sb: Supabase) -> dict:
     return r
 
 
+def _compra_slug(lic: dict) -> str:
+    c = lic.get("raw") or {}
+    cnpj = c.get("orgao_cnpj") or lic.get("orgao_cnpj")
+    ano = c.get("ano")
+    seq = c.get("numero_sequencial")
+    if not (cnpj and ano and seq):
+        m = re.match(r"(\d{14})-\d-(\d+)/(\d{4})$", lic.get("codigo_externo") or "")
+        if m:
+            cnpj = cnpj or m.group(1)
+            seq = seq or int(m.group(2))
+            ano = ano or int(m.group(3))
+    if cnpj and ano and seq:
+        return f"{cnpj}-{ano}-{seq}"
+    if lic.get("codigo_externo"):
+        return re.sub(r"[^A-Za-z0-9._-]", "_", str(lic["codigo_externo"]))
+    return str(lic.get("id") or "0")
+
+
+def baixar_pendentes(pncp: PNCP, sb: Supabase, arm: Armazenamento | None,
+                     categorias: list[str] | set[str] | str | None = None,
+                     max_bytes: int = 80 * 1048576,
+                     dry_run: bool = False,
+                     limite: int | None = None) -> dict:
+    """Lê de licitacao_documentos os registros da fonte pncp com status 'pendente',
+    filtra por licitacoes_externas.categoria_escopo (por padrão exclui 'fraco'),
+    baixa cada arquivo pela URL guardada, grava no storage (Armazenamento.do_ambiente: Supabase Storage, GCS ou local)
+    e atualiza status_processamento, sha256, mime_type, tamanho_bytes e erro,
+    respeitando MAX_MB, o delay e o Retry-After.
+    Idempotente: não baixa de novo o que já tem sha256; o caminho no storage é determinístico (sobrescreve).
+    Só baixa URL https de PNCP_HOSTS_PERMITIDOS (cada redirecionamento também é validado).
+    Falha transitória (429/5xx esgotados, timeout, conexão, storage) mantém 'pendente' com o erro anotado,
+    para a próxima execução tentar de novo; falha definitiva (acima de MAX_MB, HTML, host fora da allowlist,
+    4xx) vai para 'erro'.
+    --dry-run: lista os documentos elegíveis sem baixar nem gravar."""
+    if isinstance(categorias, str):
+        cat_set = {c.strip().lower() for c in categorias.split(",") if c.strip()}
+    elif categorias is not None:
+        cat_set = {c.strip().lower() for c in categorias if c.strip()}
+    else:
+        cat_set = {c.strip().lower() for c in CATEGORIAS_PADRAO_DOWNLOAD.split(",") if c.strip()}
+
+    log.info("baixar_pendentes: buscando licitações externas fonte=pncp e categorias=%s", sorted(cat_set))
+    lics = sb.selecionar("licitacoes_externas", fonte="eq.pncp", order="id.asc",
+                         select="id,codigo_externo,orgao_cnpj,categoria_escopo,raw")
+    lic_map = {l["id"]: l for l in lics if (l.get("categoria_escopo") or "").lower() in cat_set}
+    lic_todas_pncp = {l["id"] for l in lics}
+    log.info("licitacoes_externas pncp: %d total, %d nas categorias selecionadas",
+             len(lic_todas_pncp), len(lic_map))
+
+    docs = sb.selecionar("licitacao_documentos", status_processamento="eq.pendente", order="id.asc",
+                         select="id,licitacao_id,secao,nome_original,arquivo_origem,storage_uri,mime_type,tamanho_bytes,sha256,status_processamento,erro,raw")
+    log.info("licitacao_documentos com status pendente: %d encontrados", len(docs))
+
+    resumo = {
+        "lidos": len(docs),
+        "elegiveis": 0,
+        "baixados": 0,
+        "ja_baixados": 0,
+        "ignorados_categoria": 0,
+        "ignorados_sem_url": 0,
+        "bloqueados_host": 0,
+        "erros": 0,
+        "erros_transitorios": 0,
+        "detalhes": [],
+    }
+
+    for d in docs:
+        lic_id = d.get("licitacao_id")
+        if lic_id not in lic_todas_pncp:
+            # Não é documento de licitação do PNCP
+            continue
+
+        if lic_id not in lic_map:
+            # Excluído pelo filtro de categoria (ex.: fraco)
+            resumo["ignorados_categoria"] += 1
+            continue
+
+        lic = lic_map[lic_id]
+        cat = lic.get("categoria_escopo")
+
+        # Idempotência: não baixar de novo se já tem sha256
+        if d.get("sha256"):
+            resumo["ja_baixados"] += 1
+            log.info("  doc #%s já possui sha256; pulando", d["id"])
+            continue
+
+        url = (d.get("raw") or {}).get("url") or (d.get("raw") or {}).get("uri")
+        if not url:
+            resumo["ignorados_sem_url"] += 1
+            log.warning("  doc #%s sem URL em raw; pulando", d["id"])
+            continue
+
+        if not url_permitida(url):
+            resumo["bloqueados_host"] += 1
+            log.warning("  doc #%s: URL fora dos hosts permitidos (%s); não baixa: %s",
+                        d["id"], ",".join(PNCP_HOSTS_PERMITIDOS), str(url)[:120])
+            if not dry_run:
+                sb.atualizar("licitacao_documentos", d["id"], {
+                    "status_processamento": "erro",
+                    "erro": f"URL fora dos hosts permitidos: {str(url)[:200]}",
+                })
+            continue
+
+        if limite and resumo["elegiveis"] >= limite:
+            log.info("Limite de %d downloads atingido", limite)
+            break
+
+        resumo["elegiveis"] += 1
+        compra_slug = _compra_slug(lic)
+        nome_orig = d.get("nome_original") or d.get("arquivo_origem") or "arquivo"
+
+        if dry_run:
+            log.info("  [dry-run] doc #%s | %s | lic #%s (cat: %s) -> %s",
+                     d["id"], nome_orig[:60], lic_id, cat, url)
+            resumo["detalhes"].append({
+                "doc_id": d["id"],
+                "licitacao_id": lic_id,
+                "categoria": cat,
+                "nome_original": nome_orig,
+                "url": url,
+            })
+            continue
+
+        try:
+            conteudo, ctype = pncp.baixar(url, max_bytes)
+            if parece_html(conteudo, ctype):
+                raise ArquivoRecusado("PNCP devolveu HTML em vez do arquivo")
+            ext = (d.get("nome_original") or "").rsplit(".", 1)[-1][:5] if "." in (d.get("nome_original") or "") else "bin"
+            caminho = arm.caminho("pncp", 0, compra_slug, d.get("secao") or "processo", f"{d['arquivo_origem']}.{ext}")
+            uri = arm.salvar(caminho, conteudo, ctype)
+            h = sha256(conteudo)
+            sb.atualizar("licitacao_documentos", d["id"], {
+                "storage_uri": uri,
+                "mime_type": ctype,
+                "tamanho_bytes": len(conteudo),
+                "sha256": h,
+                "status_processamento": "baixado",
+                "erro": None,
+            })
+            resumo["baixados"] += 1
+            log.info("  doc #%s baixado: %s (%.1f MB) -> %s",
+                     d["id"], nome_orig[:60], len(conteudo) / 1048576, uri)
+        except Exception as e:
+            definitivo = _falha_definitiva(e)
+            resumo["erros" if definitivo else "erros_transitorios"] += 1
+            log.warning("  doc #%s falha %s ao baixar: %s", d["id"],
+                        "definitiva" if definitivo else "transitória (fica pendente)", str(e)[:120])
+            sb.atualizar("licitacao_documentos", d["id"], {
+                "status_processamento": "erro" if definitivo else "pendente",
+                "erro": str(e)[:300],
+            })
+
+    return resumo
+
+
+def _falha_definitiva(e: Exception) -> bool:
+    """Acima de MAX_MB, HTML, host fora da allowlist, resposta inválida e 4xx (exceto 429) não melhoram
+    com nova tentativa. O resto (429/5xx esgotados, timeout, conexão, storage) é transitório."""
+    if isinstance(e, (ValueError, RespostaInvalida)):
+        return True
+    if isinstance(e, requests.HTTPError) and e.response is not None:
+        return 400 <= e.response.status_code < 500 and e.response.status_code != 429
+    return False
+
+
+def fatiar_lote(termos: list[str], lote: str) -> list[str]:
+    """'K/N' -> K-ésima de N fatias contíguas da lista (1-based). Determinístico: rodar 1/N..N/N cobre a
+    lista inteira sem repetir, e repetir um lote que falhou retoma exatamente os mesmos termos."""
+    m = re.fullmatch(r"\s*(\d+)\s*/\s*(\d+)\s*", lote or "")
+    if not m:
+        raise ValueError(f"--lote deve ser K/N (ex.: 1/4), veio {lote!r}")
+    k, n = int(m.group(1)), int(m.group(2))
+    if n < 1 or not 1 <= k <= n:
+        raise ValueError(f"--lote {lote}: precisa de 1 <= K <= N")
+    tam = -(-len(termos) // n)
+    return termos[(k - 1) * tam:k * tam]
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Coletor PNCP (escopo LicitaGym)")
     ap.add_argument("--modo", choices=list(MODOS), default="leads",
@@ -679,14 +931,27 @@ def main(argv: list[str] | None = None) -> int:
     # Obsoletos (janela de homologação do antigo modo leads): aceitos para não quebrar agendamentos, sem efeito.
     ap.add_argument("--dias", type=int, help=argparse.SUPPRESS)
     ap.add_argument("--margem-publicacao", type=int, help=argparse.SUPPRESS)
-    ap.add_argument("--termos", help="lista separada por vírgula (padrão: TERMOS_PADRAO)")
-    ap.add_argument("--todos-termos", action="store_true", help="usa também todos os TERMOS_BUSCA do escopo")
+    selecao = ap.add_mutually_exclusive_group()
+    selecao.add_argument("--termos", help="lista separada por vírgula (padrão: os 12 de TERMOS_PADRAO)")
+    selecao.add_argument("--escopo-completo", action="store_true",
+                         help="usa os ~160 termos de TERMOS_ESCOPO_COMPLETO (58 PDMs); rode em lotes com --lote")
+    selecao.add_argument("--termos-padrao", action="store_true",
+                         help="usa os 12 termos de TERMOS_PADRAO (já é o padrão; mantido por compatibilidade)")
+    ap.add_argument("--todos-termos", action="store_true",
+                    help="TERMOS_PADRAO (ou --termos) + escopo completo (compatibilidade)")
+    ap.add_argument("--lote", help="K/N: roda só a fatia K de N da lista de termos (ex.: --escopo-completo --lote 1/4)")
     ap.add_argument("--status", choices=["todos", "recebendo_proposta", "em_julgamento", "encerradas"],
                     help="sobrescreve o status do modo")
     ap.add_argument("--paginas", type=int, help="páginas por termo (padrão: leads 20, outros 3)")
     ap.add_argument("--tam", type=int, default=50, help="resultados por página")
     ap.add_argument("--sem-resultados", action="store_true", help="não consulta vencedores")
     ap.add_argument("--baixar-arquivos", action="store_true", help="baixa edital/anexos (para o RAG)")
+    ap.add_argument("--baixar-pendentes", action="store_true",
+                    help="baixa arquivos pendentes do PNCP gravados em licitacao_documentos")
+    ap.add_argument("--categorias",
+                    help="categorias de escopo permitidas no download de pendentes (padrão: catmat,forte,borracha,piso,obra_piso)")
+    ap.add_argument("--limite-download", type=int, default=None,
+                    help="limite máximo de documentos para baixar no modo --baixar-pendentes")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--corrigir-processos", action="store_true",
                     help="só corrige numero_processo das compras PNCP já gravadas (processo administrativo real)")
@@ -697,9 +962,40 @@ def main(argv: list[str] | None = None) -> int:
         log.info("RESUMO: %s", corrigir_processos(PNCP(delay=float(env("DELAY_SEGUNDOS", "0.5"))), sb))
         return 0
 
-    termos = [t.strip() for t in args.termos.split(",")] if args.termos else list(TERMOS_PADRAO)
+    if args.baixar_pendentes:
+        sb = Supabase(env("SUPABASE_URL", obrigatorio=True), env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True))
+        arm = Armazenamento.do_ambiente() if not args.dry_run else None
+        pncp = PNCP(delay=float(env("DELAY_SEGUNDOS", "0.5")))
+        r = baixar_pendentes(
+            pncp, sb, arm,
+            categorias=args.categorias,
+            max_bytes=int(float(env("MAX_MB", "80")) * 1048576),
+            dry_run=args.dry_run,
+            limite=args.limite_download,
+        )
+        log.info("RESUMO BAIXAR PENDENTES: %s", r)
+        return 0
+
+    # Padrão = 12 termos (cron diário). O escopo completo multiplica as chamadas ao PNCP por ~13 e é opt-in.
+    if args.termos:
+        termos = [t.strip() for t in args.termos.split(",") if t.strip()]
+    elif args.escopo_completo:
+        termos = list(TERMOS_ESCOPO_COMPLETO)
+    else:
+        termos = list(TERMOS_PADRAO)
     if args.todos_termos:
-        termos += [t for t in TERMOS_BUSCA if t not in termos]
+        termos = list(dict.fromkeys(termos + list(TERMOS_ESCOPO_COMPLETO)))
+    if args.lote:
+        try:
+            termos = fatiar_lote(termos, args.lote)
+        except ValueError as e:
+            ap.error(str(e))
+    # Lista maior que a padrão: 1 worker e 1 s entre chamadas (~1 req/s, o mesmo ritmo que as Edge Functions
+    # usam para pncp.gov.br em private.http_host_lease), salvo PNCP_WORKERS/DELAY_SEGUNDOS explícitos.
+    amplo = len(termos) > len(TERMOS_PADRAO)
+    delay = float(env("DELAY_SEGUNDOS", "1.0" if amplo else "0.5"))
+    workers = int(env("PNCP_WORKERS", "1" if amplo else "3"))
+
     sb = arm = None
     if not args.dry_run:
         sb = Supabase(env("SUPABASE_URL", obrigatorio=True), env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True))
@@ -709,12 +1005,17 @@ def main(argv: list[str] | None = None) -> int:
                     "(compra homologada não é lead; decisão de 29/09/2026)")
     status = args.status or MODOS[args.modo]["status"]
     paginas = args.paginas or (20 if args.modo == "leads" else 3)
-    log.info("modo=%s status=%s termos=%s", args.modo, status, len(termos))
-    r = coletar(PNCP(delay=float(env("DELAY_SEGUNDOS", "0.5"))), sb, arm, termos, status, paginas,
+    log.info("modo=%s status=%s termos=%s lote=%s workers=%s delay=%ss", args.modo, status, len(termos),
+             args.lote or "-", workers, delay)
+    r = coletar(PNCP(delay=delay), sb, arm, termos, status, paginas,
                 args.tam, not args.sem_resultados, args.baixar_arquivos,
                 int(float(env("MAX_MB", "80")) * 1048576), args.dry_run,
-                modo=args.modo, workers=int(env("PNCP_WORKERS", "3")))
+                modo=args.modo, workers=workers)
     log.info("RESUMO: %s", r)
+    if r.get("falha_busca"):
+        log.error("%s busca(s) falharam: %s. Rode de novo o mesmo comando (os upserts são idempotentes).",
+                  r["falha_busca"], "; ".join(r.get("termos_com_falha", [])[:10]))
+        return 1
     return 0
 
 

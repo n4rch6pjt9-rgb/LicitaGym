@@ -88,7 +88,9 @@ Sesc SP e Sesc/Senac RS (paradigmabs.com.br) são recusados: o robots.txt do hos
 
 ## Coletor PNCP (trilho secundário)
 
-Busca nacional no PNCP por frase exata (`TERMOS_PADRAO` em `coletor/pncp.py`), classifica cada compra
+Busca nacional no PNCP por frase exata (por padrão os 12 termos de `TERMOS_PADRAO` em `coletor/pncp.py`;
+`--escopo-completo` usa os 160 termos de `TERMOS_ESCOPO_COMPLETO` em `coletor/escopo.py`, que cobrem os 58 PDMs do
+escopo, e deve rodar em lotes com `--lote K/N`), classifica cada compra
 pelo objeto **e pelos itens** (`coletor/escopo.py`) e grava compra, itens, **vencedores** e arquivos.
 
 Três modos, em ordem de prioridade comercial (o modo só escolhe o filtro `status` da busca):
@@ -124,6 +126,29 @@ python3 -m coletor.pncp                                   # leads: recebendo pro
 python3 -m coletor.pncp --modo monitorar                  # em julgamento
 python3 -m coletor.pncp --modo historico --paginas 10 --baixar-arquivos   # encerradas
 python3 -m coletor.indexador                              # arquivos baixados -> RAG
+```
+
+Escopo completo (160 termos, ~13x as chamadas do padrão): rode em 4 lotes, um por execução. Com lista maior que a
+padrão o coletor usa 1 worker e 1 s entre chamadas (~1 req/s, o ritmo de `private.http_host_lease` para
+`pncp.gov.br`), salvo `PNCP_WORKERS`/`DELAY_SEGUNDOS`. Busca que esgota as tentativas não derruba os outros termos:
+entra em `falha_busca`/`termos_com_falha` no resumo e o processo sai com código 1; repetir o mesmo lote retoma.
+
+```bash
+python3 -m coletor.pncp --escopo-completo --lote 1/4 --dry-run --paginas 1   # confere a fatia
+python3 -m coletor.pncp --escopo-completo --lote 1/4                         # depois 2/4, 3/4, 4/4
+```
+
+Documentos PNCP pendentes (`licitacao_documentos.status_processamento = 'pendente'`): `--baixar-pendentes` baixa pela
+URL guardada, só das licitações nas categorias do escopo (padrão `catmat,forte,borracha,piso,obra_piso`; `fraco` fica
+fora), grava pelo mesmo destino do coletor (`Armazenamento.do_ambiente()`: Supabase Storage com
+`SUPABASE_STORAGE_BUCKET`, senão GCS, senão local), respeita `MAX_MB` e `Retry-After`, e não baixa de novo o que já tem
+`sha256`. Em 30/09/2026 eram 141 pendentes do PNCP (108 borracha, 22 piso, 2 forte, 9 fraco).
+
+```bash
+python3 -m coletor.pncp --baixar-pendentes --dry-run                         # lista os elegíveis
+python3 -m coletor.pncp --baixar-pendentes --limite-download 20              # lote pequeno primeiro
+python3 -m coletor.pncp --baixar-pendentes --categorias catmat,forte,borracha,piso,obra_piso
+python3 scripts/gerar_relatorio_termos.py                                    # docs/coletor-pncp-termos.md (PDM x termo)
 ```
 
 Reclassificar as linhas PNCP já gravadas (as antigas `leads` homologadas viram `historico`) — dry-run por padrão:

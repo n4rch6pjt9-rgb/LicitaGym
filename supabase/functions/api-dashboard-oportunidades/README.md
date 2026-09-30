@@ -211,7 +211,7 @@ Com recorte CATMAT:
 - com `catalogo=true`, item avulso do catálogo (registrado sem o PDM inteiro) casa só por código: não expande para o texto/taxonomia do PDM;
 - a resolução não trunca (sem `LIMIT` na função); o teto é o de licitações abaixo;
 - sem nenhuma licitação: `200` com `items: []` e `total: 0`;
-- acima de 1.000 licitações: `422` pedindo um recorte mais restrito.
+- acima de 1.000 licitações: os ids são antes reduzidos ao escopo pedido na view da prioridade efetiva (sem filtro, sem `historico`; com `prioridade`, só ela), em lotes de 500; o `422` pedindo um recorte mais restrito só vale se ainda sobrarem mais de 1.000 oportunidades (se não sobrar nenhuma, 200 vazio).
 
 #### Resposta de Sucesso (HTTP 200)
 *Nota: Lista vazia é retornada com HTTP 200 e `items: []`, sem gerar erro.*

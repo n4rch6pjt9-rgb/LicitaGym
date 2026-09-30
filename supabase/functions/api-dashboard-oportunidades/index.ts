@@ -306,9 +306,13 @@ async function handleGet(
  */
 /**
  * Teto de licitações resolvidas pelo recorte CATMAT antes do filtro por id (evita URL gigante no PostgREST).
- * licitacoes_ids_por_catmat não trunca (sem LIMIT), então r.ids é completo e o teto é verificado sobre o total real.
+ * licitacoes_ids_por_catmat não trunca (sem LIMIT), então r.ids é completo. Acima do teto, os ids são
+ * primeiro reduzidos ao escopo de Oportunidades (idsNoEscopo) e o teto vale sobre o que sobra.
  */
 export const MAX_IDS_CATMAT = 1000;
+
+/** Tamanho do lote de ids por consulta ao reduzir o recorte CATMAT ao escopo (URL curta no PostgREST). */
+export const CATMAT_ESCOPO_LOTE = 500;
 
 export interface CatmatMatch {
   codigo_pdm: number;
@@ -356,6 +360,29 @@ async function resolverCatmat(
   return { ids: [...porLicitacao.keys()], porLicitacao };
 }
 
+/**
+ * Reduz os ids do recorte CATMAT ao escopo pedido, na view da prioridade efetiva: sem filtro de
+ * prioridade, exclui `historico` (applyOportunidadesScope); com filtro, só aquela prioridade. Assim um
+ * recorte com muitas compras arquivadas (historico) e poucas Oportunidades não bate no teto à toa.
+ * Consulta em lotes de CATMAT_ESCOPO_LOTE ids; falha de consulta levanta (vira 500).
+ */
+export async function idsNoEscopo(
+  client: SupabaseClient,
+  ids: number[],
+  filtros: LicitacaoFiltros,
+): Promise<number[]> {
+  const mantidos: number[] = [];
+  for (let i = 0; i < ids.length; i += CATMAT_ESCOPO_LOTE) {
+    const lote = ids.slice(i, i + CATMAT_ESCOPO_LOTE);
+    let query = client.from(OPORTUNIDADES_VIEW).select("id").in("id", lote);
+    query = filtros.prioridade ? query.eq("prioridade", filtros.prioridade) : applyOportunidadesScope(query, filtros);
+    const { data, error } = await query;
+    if (error) throw error;
+    for (const row of (data ?? []) as Array<{ id: number }>) mantidos.push(Number(row.id));
+  }
+  return mantidos;
+}
+
 async function handleList(
   params: ListActionParams,
   ctx?: DashboardOportunidadesClientContext,
@@ -379,12 +406,21 @@ async function handleList(
       if (r.ids.length === 0) {
         return jsonResponse({ action: "list", page, limit, total: 0, order_by, order_direction, items: [] });
       }
-      if (r.ids.length > MAX_IDS_CATMAT) {
-        return jsonResponse({
-          error: `O recorte CATMAT casa ${r.ids.length} licitações (limite ${MAX_IDS_CATMAT}). Refine por classe, PDM ou outro filtro.`,
-        }, 422);
+      let ids = r.ids;
+      if (ids.length > MAX_IDS_CATMAT) {
+        // O teto vale sobre as Oportunidades do recorte, não sobre as compras arquivadas (historico):
+        // reduz ao escopo pedido antes de decidir o 422. Abaixo do teto, a consulta principal já recorta.
+        ids = await idsNoEscopo(client, ids, filtros);
+        if (ids.length === 0) {
+          return jsonResponse({ action: "list", page, limit, total: 0, order_by, order_direction, items: [] });
+        }
+        if (ids.length > MAX_IDS_CATMAT) {
+          return jsonResponse({
+            error: `O recorte CATMAT casa ${ids.length} oportunidades (limite ${MAX_IDS_CATMAT}). Refine por classe, PDM ou outro filtro.`,
+          }, 422);
+        }
       }
-      filtros = { ...filtros, ids: r.ids };
+      filtros = { ...filtros, ids };
       matches = r.porLicitacao;
     }
 

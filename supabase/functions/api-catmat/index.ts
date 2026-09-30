@@ -95,7 +95,12 @@ export async function handleRequest(req: Request, ctx: ApiCatmatContext = {}): P
       }
 
       case "palavras_listar":
-        return jsonResponse({ action: "palavras_listar", codigo_pdm: params.codigo_pdm, palavras: await repo.listarPalavras(params.codigo_pdm) });
+        return jsonResponse({
+          action: "palavras_listar",
+          codigo_pdm: params.codigo_pdm,
+          palavras: await repo.listarPalavras(params.codigo_pdm),
+          nos_taxonomia: await repo.nosTaxonomiaDoPdm(params.codigo_pdm),
+        });
 
       case "palavras_salvar": {
         const palavra = await salvarPalavra(repo, user.id, params);

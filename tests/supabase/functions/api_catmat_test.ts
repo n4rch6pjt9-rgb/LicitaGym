@@ -18,6 +18,7 @@ function repoMemoria() {
   const itens = new Map<number, ItemPdmInput>();
   const cache = new Map<string, { payload: unknown; total: number | null; expira_em: string }>();
   const palavras: CatmatPalavra[] = [];
+  const taxonomia = [{ no_taxonomia: "esteira_eletrica", codigo_pdm: 7115 }, { no_taxonomia: "esteira_ergometrica", codigo_pdm: 7115 }];
   const chave = (r: RegraInput) => `${r.nivel}:${r.codigo_item ?? r.codigo_pdm ?? r.codigo_classe ?? r.codigo_grupo}`;
   const repo: CatmatRepo = {
     listarRegras: () => Promise.resolve([...regras]),
@@ -66,6 +67,12 @@ function repoMemoria() {
     contarPalavrasPorPdm: (cs) => {
       const m = new Map<number, number>();
       for (const p of palavras) if (p.ativo && cs.includes(p.codigo_pdm)) m.set(p.codigo_pdm, (m.get(p.codigo_pdm) ?? 0) + 1);
+      return Promise.resolve(m);
+    },
+    nosTaxonomiaDoPdm: (c) => Promise.resolve(taxonomia.filter((t) => t.codigo_pdm === c).map((t) => t.no_taxonomia).sort()),
+    contarNosTaxonomiaPorPdm: (cs) => {
+      const m = new Map<number, number>();
+      for (const t of taxonomia) if (cs.includes(t.codigo_pdm)) m.set(t.codigo_pdm, (m.get(t.codigo_pdm) ?? 0) + 1);
       return Promise.resolve(m);
     },
     obterPalavra: (id) => Promise.resolve(palavras.find((p) => p.id === id) ?? null),
@@ -404,4 +411,18 @@ Deno.test("estadoDoNo: regra própria vence; senão o ancestral mais próximo", 
   assertEquals(estadoDoNo(no("item", 111, 2638), idx).estado, "excluido_herdado");
   assertEquals(estadoDoNo(no("item", 602725, 2638), idx).estado, "incluido");
   assertEquals(estadoDoNo(no("item", 222, 7115), idx).origem_nivel, "grupo");
+});
+
+Deno.test("api-catmat: taxonomia conta como cobertura de texto; palavras_listar traz os nós do dicionário", async () => {
+  limparCacheMemoria();
+  const mem = repoMemoria();
+  await handleRequest(post({ action: "catalogo_salvar", nivel: "classe", codigo_grupo: 78, codigo_classe: 7830, incluido: true }), ctx(mem));
+  const lista = await (await handleRequest(post({ action: "catalogo_listar" }), ctx(mem))).json();
+  // 3 PDMs, nenhum com padrão; 7115 tem nós do dicionário -> só 2 ficam "só código"
+  assertEquals(lista.resumo.pdms_sem_palavras, 3);
+  assertEquals(lista.resumo.pdms_sem_texto, 2);
+  assertEquals(lista.opcoes.pdms.find((p: { codigo: number }) => p.codigo === 7115).nos_taxonomia, 2);
+
+  const pal = await (await handleRequest(post({ action: "palavras_listar", codigo_pdm: 7115 }), ctx(mem, comprasGovFalso(), COMUM))).json();
+  assertEquals(pal.nos_taxonomia, ["esteira_eletrica", "esteira_ergometrica"]);
 });

@@ -2,6 +2,9 @@
 
 Grava em <tabela>.taxonomia (jsonb): blocos + plano +, quando aparelho_ou_fora,
 no_taxonomia / metodo=regra / confianca / versao_taxonomia=0.3.
+Em licitacao_itens grava também as colunas no_taxonomia / versao_taxonomia (lidas por
+licitacoes_ids_por_catmat e pela taxonomia_no_pdm), só quando o item ainda não tem no_taxonomia:
+não sobrescreve o que o coletor (perfil_item) já gravou.
 
 Uso (Cloud Shell, com ~/.licitagym.env carregado):
   python3 -m coletor.aplicar_taxonomia --dry-run --limite 20
@@ -29,6 +32,15 @@ def calcular(descricao: str, codigo_item=None, codigo_pdm=None, tipo_catmat: str
     )
 
 
+def montar_patch(tabela: str, linha: dict, tax: dict) -> dict:
+    """Campos a gravar na linha: sempre o JSONB; em licitacao_itens também as colunas do nó, se vazias."""
+    patch: dict = {"taxonomia": tax}
+    if tabela == "licitacao_itens" and tax.get("no_taxonomia") and not linha.get("no_taxonomia"):
+        patch["no_taxonomia"] = tax["no_taxonomia"]
+        patch["versao_taxonomia"] = tax.get("versao_taxonomia")
+    return patch
+
+
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tabela", choices=TABELAS, default="licitacao_itens")
@@ -40,7 +52,7 @@ def main(argv: list[str] | None = None) -> None:
 
     sb = Supabase(env("SUPABASE_URL", obrigatorio=True), env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True))
     feitos, vistos_ultimo = 0, None
-    select = "id,descricao,catalogo_codigo_item" if a.tabela == "licitacao_itens" else "id,descricao"
+    select = "id,descricao,catalogo_codigo_item,no_taxonomia" if a.tabela == "licitacao_itens" else "id,descricao"
     while True:
         filtros = {"select": select, "order": "id", "limit": str(a.lote)}
         if not a.refazer:
@@ -61,7 +73,7 @@ def main(argv: list[str] | None = None) -> None:
                 p = {k: v for k, v in tax["plano"].items() if v is not None}
                 print(f"#{ln['id']}: {(ln.get('descricao') or '')[:70]!r}\n    {json.dumps(p, ensure_ascii=False)[:300]}")
             else:
-                sb.atualizar(a.tabela, ln["id"], {"taxonomia": tax})
+                sb.atualizar(a.tabela, ln["id"], montar_patch(a.tabela, ln, tax))
             feitos += 1
             if a.limite and feitos >= a.limite:
                 break

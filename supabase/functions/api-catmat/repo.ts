@@ -64,6 +64,9 @@ export interface CatmatRepo {
 
   listarPalavras(codigoPdm: number): Promise<CatmatPalavra[]>;
   contarPalavrasPorPdm(codigosPdm: number[]): Promise<Map<number, number>>;
+  /** Nós do dicionário de aparelhos que apontam para o PDM (casamento por taxonomia). */
+  nosTaxonomiaDoPdm(codigoPdm: number): Promise<string[]>;
+  contarNosTaxonomiaPorPdm(codigosPdm: number[]): Promise<Map<number, number>>;
   obterPalavra(id: number): Promise<CatmatPalavra | null>;
   inserirPalavra(codigoPdm: number, padrao: string, ativo: boolean, userId: string): Promise<CatmatPalavra>;
   atualizarPalavra(id: number, padrao: string, ativo: boolean, userId: string): Promise<CatmatPalavra>;
@@ -204,6 +207,19 @@ export function createSupabaseRepo(client: SupabaseClient): CatmatRepo {
       if (codigosPdm.length === 0) return mapa;
       const { data, error } = await client.from("catmat_pdm_palavras").select("codigo_pdm").eq("ativo", true).in("codigo_pdm", codigosPdm);
       if (error) falha("contar palavras", error);
+      for (const r of (data ?? []) as Array<{ codigo_pdm: number }>) mapa.set(r.codigo_pdm, (mapa.get(r.codigo_pdm) ?? 0) + 1);
+      return mapa;
+    },
+    async nosTaxonomiaDoPdm(codigoPdm) {
+      const { data, error } = await client.from("taxonomia_no_pdm").select("no_taxonomia").eq("codigo_pdm", codigoPdm).order("no_taxonomia");
+      if (error) falha("nós de taxonomia", error);
+      return ((data ?? []) as Array<{ no_taxonomia: string }>).map((r) => r.no_taxonomia);
+    },
+    async contarNosTaxonomiaPorPdm(codigosPdm) {
+      const mapa = new Map<number, number>();
+      if (codigosPdm.length === 0) return mapa;
+      const { data, error } = await client.from("taxonomia_no_pdm").select("codigo_pdm").in("codigo_pdm", codigosPdm);
+      if (error) falha("contar nós de taxonomia", error);
       for (const r of (data ?? []) as Array<{ codigo_pdm: number }>) mapa.set(r.codigo_pdm, (mapa.get(r.codigo_pdm) ?? 0) + 1);
       return mapa;
     },

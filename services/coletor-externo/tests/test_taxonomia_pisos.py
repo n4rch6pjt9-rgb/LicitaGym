@@ -1,4 +1,4 @@
-"""Taxonomia de pisos e placas de borracha (linha Playfit): nó, segmento, prioridade e sinais de concorrente."""
+"""Taxonomia de pisos, placas de borracha e grama sintética (linha Playfit): nó, segmento, prioridade e sinais de concorrente."""
 import json
 
 import pytest
@@ -25,6 +25,17 @@ from coletor.perfil_item import perfil_item
     ("Tapete de borracha para baia de cavalos 1,80 x 1,20 m", None, "tapete_borracha", "pisos_emborrachados.haras", "media"),
     ("Piso modular esportivo em polipropileno copolímero para quadra poliesportiva", None, "piso_modular_pp", "fora", "baixa"),
     ("Piso para quadra de futsal", None, "piso_modular_pp", "fora", "baixa"),
+    # v0.2: grama sintética, granulado abreviado de catálogo e infill
+    ("PRESTAÇÃO DE SERVIÇOS DE FORNECIMENTO E INSTALAÇÃO DE GRAMA SINTÉTICA", None, "grama_sintetica",
+     "gramados_sinteticos.geral", "alta"),
+    ("Manutenção de Campo de Gramado Sintético", None, "grama_sintetica", "gramados_sinteticos.geral", "alta"),
+    ("Tapete de grama artificial 2x1m", None, "grama_sintetica", "gramados_sinteticos.geral", "alta"),
+    ("Grama sintética 50 mm com preenchimento de borracha granulada SBR", None, "grama_sintetica",
+     "gramados_sinteticos.geral", "alta"),
+    ("Grama sintética com infill EPDM", None, "grama_sintetica", "gramados_sinteticos.geral", "alta"),
+    ("BORRACHA GRANUL.P/GRAMA SINT.", None, "borracha_granulada", "pisos_emborrachados.geral", "alta"),
+    ("Granulado de borracha SBR 1-3 mm para infill de campo society", None, "borracha_granulada",
+     "pisos_emborrachados.geral", "alta"),
 ])
 def test_classificar_piso(texto, contexto, slug, familia, prioridade):
     r = classificar_piso(texto, contexto)
@@ -44,6 +55,34 @@ def test_nao_e_piso_de_borracha(texto):
     assert classificar_piso(texto) is None
 
 
+@pytest.mark.parametrize("texto,sinal", [
+    ("Grama sintética para quadra de futsal", "modalidades_de_quadra"),
+    ("Grama sintética em polipropileno 12 mm", "polipropileno"),
+])
+def test_grama_sintetica_explicita_vence_o_sinal_de_concorrente_com_confianca_media(texto, sinal):
+    r = classificar_piso(texto)
+    assert r["slug"] == "grama_sintetica" and r["escopo"] == "IN"
+    assert r["confianca"] == "media" and r["sinais_baixa"] == [sinal]
+
+
+def test_in_loco_solto_nao_e_execucao_de_piso():
+    assert classificar("piso emborrachado em placas com vistoria in loco") == "piso"
+    assert classificar("Piso emborrachado com treinamento in loco") == "piso"
+    assert classificar_piso("piso emborrachado em placas com vistoria in loco")["sinais_contexto"] == []
+    # moldado in loco segue como obra (o texto precisa casar PISO antes; EPDM/SBR caem antes em "borracha")
+    assert classificar("Piso emborrachado monolítico moldado in loco") == "obra_piso"
+    assert classificar_piso("Piso emborrachado monolítico moldado in loco")["sinais_contexto"] == ["instalacao_in_loco"]
+
+
+def test_piso_moldado_in_loco_vira_sinal_de_contexto_e_obra_piso():
+    r = classificar_piso("FORNECIMENTO E INSTALAÇÃO DE PISO EMBORRACHADO MONOLÍTICO")
+    assert r["slug"] == "piso_emborrachado" and r["sinais_contexto"] == ["instalacao_in_loco"]
+    assert classificar("FORNECIMENTO E INSTALAÇÃO DE PISO EMBORRACHADO MONOLÍTICO") == "obra_piso"
+    assert classificar("Aquisição de piso emborrachado em placas 50x50") == "piso"
+    assert classificar("SUBSTITUIÇÃO DO GRAMADO SINTÉTICO DA QUADRA DO SESC MAFRA") == "obra_piso"
+    assert classificar("Substituição de lâmpadas da quadra") is None
+
+
 def test_medidas_e_sinais_de_contexto():
     r = classificar_piso("Placa emborrachada 1x1 m 25 mm com absorção de impacto")
     assert r["medidas"] == {"placa": "1x1 m", "espessura_mm": "25 mm"} and r["sinais_contexto"] == ["impacto"]
@@ -52,7 +91,7 @@ def test_medidas_e_sinais_de_contexto():
 def test_perfil_item_usa_a_taxonomia_de_pisos_e_mantem_as_chaves():
     p = perfil_item("PLACA EMBORRACHADA 50X50 20MM", contexto="piso para box de crossfit")
     assert p["no_taxonomia"] == "placa_emborrachada" and p["familia_equipamento"] == "pisos_emborrachados.crossfit"
-    assert p["perfil_metodo"] == "taxonomia_pisos" and p["versao_taxonomia"] == "pisos-0.1"
+    assert p["perfil_metodo"] == "taxonomia_pisos" and p["versao_taxonomia"] == "pisos-0.2"
     assert set(p) == set(perfil_item("AI0300148-REMO"))  # mesmas colunas de licitacao_itens
     assert perfil_item("AI0300148-REMO")["no_taxonomia"] == "remo_ergometro"
 

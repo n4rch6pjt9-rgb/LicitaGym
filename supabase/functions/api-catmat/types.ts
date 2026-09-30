@@ -1,0 +1,73 @@
+/** Níveis da árvore CATMAT (plural = listagem de filhos; singular = nível de uma regra). */
+export type NivelArvore = "grupos" | "classes" | "pdms" | "itens";
+export type NivelRegra = "grupo" | "classe" | "pdm" | "item";
+
+/** Nó da árvore, normalizado a partir do Compras.gov. */
+export interface CatmatNo {
+  nivel: NivelRegra;
+  codigo: number;
+  nome: string;
+  ativo: boolean;
+  codigo_grupo: number;
+  codigo_classe: number | null;
+  codigo_pdm: number | null;
+  codigo_item: number | null;
+  nome_grupo: string | null;
+  nome_classe: string | null;
+  nome_pdm: string | null;
+}
+
+/** Estado de um nó em relação ao catálogo da empresa. */
+export type CatmatEstado = "incluido" | "excluido" | "herdado" | "excluido_herdado" | "nenhum";
+
+export interface CatmatNoAnotado extends CatmatNo {
+  estado: CatmatEstado;
+  regra_id: number | null;
+  origem_nivel: NivelRegra | null;
+}
+
+/** Linha de public.catalogo_empresa_catmat. */
+export interface CatmatRegra {
+  id: number;
+  nivel: NivelRegra;
+  codigo_grupo: number;
+  codigo_classe: number | null;
+  codigo_pdm: number | null;
+  codigo_item: number | null;
+  nome_snapshot: string;
+  ancestrais_snapshot: Record<string, unknown>;
+  incluido: boolean;
+  observacao: string | null;
+  chave: string;
+  created_by: string | null;
+  updated_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CatmatPalavra {
+  id: number;
+  codigo_pdm: number;
+  padrao: string;
+  ativo: boolean;
+}
+
+export type ActionParams =
+  | { action: "arvore"; nivel: NivelArvore; codigo: number; incluir_inativos: boolean; refresh: boolean }
+  | { action: "catalogo_listar" }
+  | {
+    action: "catalogo_salvar";
+    nivel: NivelRegra;
+    codigo_grupo: number;
+    codigo_classe: number | null;
+    codigo_pdm: number | null;
+    codigo_item: number | null;
+    incluido: boolean;
+    observacao: string | null;
+  }
+  | { action: "catalogo_remover"; id: number }
+  | { action: "palavras_listar"; codigo_pdm: number }
+  | { action: "palavras_salvar"; id: number | null; codigo_pdm: number; padrao: string; ativo: boolean }
+  | { action: "palavras_remover"; id: number };
+
+export const ACOES_ADMIN = new Set(["catalogo_salvar", "catalogo_remover", "palavras_salvar", "palavras_remover"]);

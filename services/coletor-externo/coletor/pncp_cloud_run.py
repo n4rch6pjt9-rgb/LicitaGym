@@ -36,11 +36,17 @@ def lote_da_task(ambiente: dict[str, str] | None = None) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    if any(a == "--lote" or a.startswith("--lote=") for a in argv):
-        raise SystemExit("--lote vem de CLOUD_RUN_TASK_INDEX/CLOUD_RUN_TASK_COUNT; não passe --lote aqui")
-    if "--baixar-pendentes" in argv and os.environ.get("CLOUD_RUN_TASK_COUNT", "1") != "1":
-        raise SystemExit("--baixar-pendentes não divide em lotes: use um job com --tasks=1")
     lote = lote_da_task()
+    # Lê as opções com o próprio parser do coletor: abreviações aceitas pelo argparse (--lot, --baixar-p,
+    # --corrigir) chegam aqui já resolvidas, então as travas não dependem do texto exato do argumento.
+    opcoes = pncp.criar_parser().parse_args(argv)
+    if opcoes.lote is not None:
+        raise SystemExit("--lote vem de CLOUD_RUN_TASK_INDEX/CLOUD_RUN_TASK_COUNT; não passe --lote aqui")
+    # Estes modos ignoram --lote e percorrem a tabela inteira: com várias tasks, cada uma repetiria tudo.
+    modos_inteiros = [nome for nome, ligado in (("--baixar-pendentes", opcoes.baixar_pendentes),
+                                                 ("--corrigir-processos", opcoes.corrigir_processos)) if ligado]
+    if modos_inteiros and int(lote.split("/")[1]) > 1:
+        raise SystemExit(f"{', '.join(modos_inteiros)} não divide em lotes: use um job com --tasks=1")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     log.info("Cloud Run: execução %s, task %s (tentativa %s) -> --lote %s",
              os.environ.get("CLOUD_RUN_EXECUTION", "-"), os.environ.get("CLOUD_RUN_TASK_INDEX", "-"),

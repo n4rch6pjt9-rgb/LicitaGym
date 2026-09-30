@@ -923,7 +923,9 @@ def fatiar_lote(termos: list[str], lote: str) -> list[str]:
     return termos[(k - 1) * tam:k * tam]
 
 
-def main(argv: list[str] | None = None) -> int:
+def criar_parser() -> argparse.ArgumentParser:
+    """Parser da linha de comando (também usado por coletor.pncp_cloud_run para ler as opções já canônicas,
+    com as abreviações do argparse resolvidas)."""
     ap = argparse.ArgumentParser(description="Coletor PNCP (escopo LicitaGym)")
     ap.add_argument("--modo", choices=list(MODOS), default="leads",
                     help="leads (padrão): recebendo proposta; monitorar: em julgamento; historico: encerradas. "
@@ -955,6 +957,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--corrigir-processos", action="store_true",
                     help="só corrige numero_processo das compras PNCP já gravadas (processo administrativo real)")
+    return ap
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = criar_parser()
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if args.corrigir_processos:

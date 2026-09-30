@@ -211,6 +211,27 @@ export function sanitizeStringList(val: unknown): string[] | undefined {
   return undefined;
 }
 
+/** Lista de códigos CATMAT (CSV ou array de inteiros positivos). */
+export const MAX_CODIGOS_CATMAT = 50;
+export function sanitizeCodigoList(val: unknown, campo: string): number[] | undefined | { error: string } {
+  if (val === undefined || val === null || val === "") return undefined;
+  const brutos = Array.isArray(val) ? val : String(val).split(",");
+  const codigos: number[] = [];
+  for (const b of brutos) {
+    const t = typeof b === "number" ? String(b) : String(b ?? "").trim();
+    if (t === "") continue;
+    if (!/^\d{1,9}$/.test(t) || Number(t) <= 0) {
+      return { error: `Parâmetro '${campo}' deve conter códigos CATMAT inteiros positivos.` };
+    }
+    codigos.push(Number(t));
+  }
+  const unicos = [...new Set(codigos)];
+  if (unicos.length > MAX_CODIGOS_CATMAT) {
+    return { error: `Parâmetro '${campo}' aceita no máximo ${MAX_CODIGOS_CATMAT} códigos.` };
+  }
+  return unicos.length > 0 ? unicos : undefined;
+}
+
 export function parseListParams(
   source: Record<string, unknown>,
 ): ListActionParams | { error: string } {
@@ -252,6 +273,13 @@ export function parseListParams(
     }
   }
 
+  const catmat: Record<string, number[] | undefined> = {};
+  for (const campo of ["catmat_grupo", "catmat_classe", "catmat_pdm", "catmat_item"]) {
+    const r = sanitizeCodigoList(source[campo], campo);
+    if (r && !Array.isArray(r)) return { error: r.error };
+    catmat[campo] = r;
+  }
+
   const filtros: LicitacaoFiltros = {
     prioridade: sanitizeString(source.prioridade),
     uf: sanitizeString(source.uf)?.toUpperCase(),
@@ -275,6 +303,11 @@ export function parseListParams(
     valor_min: sanitizeNumber(source.valor_min),
     valor_max: sanitizeNumber(source.valor_max),
     busca: sanitizeSearchTerm(source.busca ?? source.q),
+    catmat_grupo: catmat.catmat_grupo,
+    catmat_classe: catmat.catmat_classe,
+    catmat_pdm: catmat.catmat_pdm,
+    catmat_item: catmat.catmat_item,
+    catalogo: sanitizeBoolean(source.catalogo),
   };
 
   return {

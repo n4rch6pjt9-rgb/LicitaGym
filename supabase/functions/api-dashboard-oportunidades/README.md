@@ -195,6 +195,19 @@ Lista oportunidades com suporte a paginação, ordenação configurável e múlt
 | `valor_min` | number | `valor_total >= valor_min` |
 | `valor_max` | number | `valor_total <= valor_max` |
 | `busca` (ou `q`) | string | Busca textual livre em `objeto`, `numero_processo` e `numero_edital` |
+| `catmat_grupo`, `catmat_classe`, `catmat_pdm`, `catmat_item` | int[] (CSV ou array, até 50 cada) | Recorte CATMAT em cascata, resolvido por `public.licitacoes_ids_por_catmat`: casa pelo código numérico do item (`licitacao_itens.catalogo_codigo_item`) ou, sem código, pelos padrões de texto do PDM (`catmat_pdm_palavras`) na descrição do item e no objeto |
+| `catalogo` | boolean | `true` restringe ao catálogo CATMAT da empresa (herança e exclusões de `catalogo_empresa_catmat`) |
+
+Com recorte CATMAT:
+- cada item da resposta ganha `catmat_match: [{codigo_pdm, nome_pdm, codigo_item, motivo}]`, com `motivo`:
+  - `codigo`: código numérico do item (`licitacao_itens.catalogo_codigo_item`);
+  - `texto_item` / `texto_objeto`: padrão do PDM (`catmat_pdm_palavras`) na descrição do item / no objeto;
+  - `taxonomia` / `taxonomia_objeto`: nó do dicionário de aparelhos (`no_taxonomia` do item / da licitação) mapeado para o PDM em `taxonomia_no_pdm` (a partir da migration `20260930110000_taxonomia_no_pdm`);
+  - `texto_item_aprox` / `taxonomia_aprox`: recorte por item (`catmat_item`) casado por texto ou taxonomia, que identificam o PDM, não o item;
+- com `catalogo=true`, item avulso do catálogo (registrado sem o PDM inteiro) casa só por código: não expande para o texto/taxonomia do PDM;
+- a resolução não trunca (sem `LIMIT` na função); o teto é o de licitações abaixo;
+- sem nenhuma licitação: `200` com `items: []` e `total: 0`;
+- acima de 1.000 licitações: `422` pedindo um recorte mais restrito.
 
 #### Resposta de Sucesso (HTTP 200)
 *Nota: Lista vazia é retornada com HTTP 200 e `items: []`, sem gerar erro.*

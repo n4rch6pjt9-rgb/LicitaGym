@@ -165,19 +165,21 @@ Scripts locais (apontando remoto):
 
 ## 7. Cron (pg_cron + Vault)
 
-1. Dashboard → **Vault** — criar secrets (ver comentários em `supabase/migrations/202609180008_cron.sql`):
-   - `sync_cron_secret`
-   - `sync_pncp_pca_url` → `https://ifaiagegyicjzlpskafh.supabase.co/functions/v1/sync-pncp-pca`
-   - URLs das demais functions de sync
+Os jobs são criados pela migration `20260930180000_cron_sync_jobs.sql`, aplicada no merge. Não precisa descomentar nada. Plano, horários e monitoramento estão em [cron-sync-jobs.md](./cron-sync-jobs.md).
 
-2. SQL Editor — descomentar e executar os `cron.schedule` desejados:
-   - **Recomendado:** `pncp-pca-probe-mensal` + `pncp-pca-carga-anual`
-   - Legislação / contratações conforme [architecture.md](./architecture.md)
+1. Dashboard → Edge Functions → Secrets: `SYNC_CRON_SECRET` com um valor forte.
+2. SQL Editor: gravar o **mesmo valor** no Vault com o nome `sync_cron_secret`:
+
+```sql
+select vault.create_secret('<valor>', 'sync_cron_secret', 'Bearer dos jobs pg_cron das Edge Functions sync-*');
+```
+
+Sem esse segredo, os jobs falham de forma visível em `cron.job_run_details` e não chamam nenhuma função.
 
 3. Verificar:
 
 ```sql
-SELECT jobid, jobname, schedule, active FROM cron.job;
+SELECT jobid, jobname, schedule, active FROM cron.job WHERE jobname LIKE 'licitagym-%';
 ```
 
 ## 8. Pós-deploy

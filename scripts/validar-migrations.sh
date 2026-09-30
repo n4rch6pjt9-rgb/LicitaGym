@@ -13,7 +13,7 @@ IMG="pgvector/pgvector:pg16"
 NOME="lg-validar-migrations-$$"
 RAIZ="$(git rev-parse --show-toplevel)"
 # Migrations que dependem de extensão ausente no Postgres puro (só existem no Supabase)
-PULAR="202609180008_cron.sql"
+PULAR="202609180008_cron.sql 20260930180000_cron_sync_jobs.sql"
 
 cd "$RAIZ"
 if ! git rev-parse --verify --quiet "${BASE}^{commit}" >/dev/null; then

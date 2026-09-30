@@ -88,9 +88,9 @@ Sesc SP e Sesc/Senac RS (paradigmabs.com.br) são recusados: o robots.txt do hos
 
 ## Coletor PNCP (trilho secundário)
 
-Busca nacional no PNCP por frase exata (por padrão os 12 termos de `TERMOS_PADRAO` em `coletor/pncp.py`;
-`--escopo-completo` usa os 160 termos de `TERMOS_ESCOPO_COMPLETO` em `coletor/escopo.py`, que cobrem os 58 PDMs do
-escopo, e deve rodar em lotes com `--lote K/N`), classifica cada compra
+Busca nacional no PNCP por frase exata (por padrão os 160 termos de `TERMOS_ESCOPO_COMPLETO` em `coletor/escopo.py`,
+que cobrem os 58 PDMs do escopo — decisão do owner em 30/09/2026; `--termos-padrao` volta aos 12 termos resumidos de
+`TERMOS_PADRAO` em `coletor/pncp.py`), classifica cada compra
 pelo objeto **e pelos itens** (`coletor/escopo.py`) e grava compra, itens, **vencedores** e arquivos.
 
 Três modos, em ordem de prioridade comercial (o modo só escolhe o filtro `status` da busca):
@@ -128,14 +128,15 @@ python3 -m coletor.pncp --modo historico --paginas 10 --baixar-arquivos   # ence
 python3 -m coletor.indexador                              # arquivos baixados -> RAG
 ```
 
-Escopo completo (160 termos, ~13x as chamadas do padrão): rode em 4 lotes, um por execução. Com lista maior que a
-padrão o coletor usa 1 worker e 1 s entre chamadas (~1 req/s, o ritmo de `private.http_host_lease` para
+Escopo completo (160 termos, o padrão; ~13x as chamadas dos 12 termos): pode rodar inteiro ou em 4 lotes, um por
+execução (`--lote K/N`). Com lista maior que a de 12 termos o coletor usa 1 worker e 1 s entre chamadas (~1 req/s, o ritmo de `private.http_host_lease` para
 `pncp.gov.br`), salvo `PNCP_WORKERS`/`DELAY_SEGUNDOS`. Busca que esgota as tentativas não derruba os outros termos:
 entra em `falha_busca`/`termos_com_falha` no resumo e o processo sai com código 1; repetir o mesmo lote retoma.
 
 ```bash
-python3 -m coletor.pncp --escopo-completo --lote 1/4 --dry-run --paginas 1   # confere a fatia
-python3 -m coletor.pncp --escopo-completo --lote 1/4                         # depois 2/4, 3/4, 4/4
+python3 -m coletor.pncp --lote 1/4 --dry-run --paginas 1   # confere a fatia
+python3 -m coletor.pncp --lote 1/4                         # depois 2/4, 3/4, 4/4
+python3 -m coletor.pncp --termos-padrao                    # execução rápida só com os 12 termos
 ```
 
 Documentos PNCP pendentes (`licitacao_documentos.status_processamento = 'pendente'`): `--baixar-pendentes` baixa pela

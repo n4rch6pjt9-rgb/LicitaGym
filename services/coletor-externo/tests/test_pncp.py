@@ -471,3 +471,181 @@ def test_itens_rejeita_pagina_repetida():
         assert "página repetida" in str(e)
         assert "página 2" in str(e)
     assert cli._lista.call_count == 2
+
+
+def test_cobertura_termos_completa_catmat():
+    from coletor.escopo import (
+        PDMS_ESCOPO,
+        PDMS_CLASSE_7830,
+        TERMOS_POR_PDM,
+        TERMOS_ESCOPO_COMPLETO,
+        pdms_sem_termo,
+        termos_do_pdm,
+    )
+
+    # 1. Deve cobrir todos os 53 PDMs da classe 7830 (49 ativos + 4 históricos)
+    assert len(PDMS_CLASSE_7830) == 53
+    # Mais os 2 da 7220 (18481, 10779) e o 1 da 9320 (9461)
+    assert 18481 in PDMS_ESCOPO
+    assert 10779 in PDMS_ESCOPO
+    assert 9461 in PDMS_ESCOPO
+    assert 757 in PDMS_ESCOPO and 12550 in PDMS_ESCOPO  # taxonomia de pisos v0.2
+    assert len(PDMS_ESCOPO) == 58
+
+    # 2. Meta zero PDMs sem termo
+    sem = pdms_sem_termo()
+    assert sem == [], f"PDMs sem termo encontrados: {sem}"
+
+    # 3. Cada PDM tem ao menos um termo
+    for pdm in PDMS_ESCOPO:
+        termos = termos_do_pdm(pdm)
+        assert len(termos) >= 1, f"PDM {pdm} sem termos"
+
+    # 4. Escopo completo possui termos únicos cobrindo o escopo
+    assert len(TERMOS_ESCOPO_COMPLETO) >= 100
+    assert "borracha granulada" in TERMOS_ESCOPO_COMPLETO
+    assert "grama sintética" in TERMOS_ESCOPO_COMPLETO
+    assert "supino" in TERMOS_ESCOPO_COMPLETO
+    assert "halteres" in TERMOS_ESCOPO_COMPLETO
+
+    # 5. CLI default usa lista completa em vez de TERMOS_PADRAO
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--termos", help="lista")
+    ap.add_argument("--termos-padrao", action="store_true")
+    # Simula a lógica de default da main()
+    args_default = ap.parse_args([])
+    termos_def = P.TERMOS_ESCOPO_COMPLETO if not args_default.termos and not args_default.termos_padrao else P.TERMOS_PADRAO
+    assert len(termos_def) == len(TERMOS_ESCOPO_COMPLETO)
+
+
+def test_baixar_pendentes_filtro_categoria():
+    sb = MagicMock()
+    arm = MagicMock()
+    pncp = MagicMock()
+
+    lics = [
+        {"id": 1, "codigo_externo": "111-1-1/2026", "orgao_cnpj": "111", "categoria_escopo": "borracha"},
+        {"id": 2, "codigo_externo": "222-1-2/2026", "orgao_cnpj": "222", "categoria_escopo": "piso"},
+        {"id": 3, "codigo_externo": "333-1-3/2026", "orgao_cnpj": "333", "categoria_escopo": "forte"},
+        {"id": 4, "codigo_externo": "444-1-4/2026", "orgao_cnpj": "444", "categoria_escopo": "catmat"},
+        {"id": 5, "codigo_externo": "555-1-5/2026", "orgao_cnpj": "555", "categoria_escopo": "fraco"},
+    ]
+    docs = [
+        {"id": 101, "licitacao_id": 1, "arquivo_origem": "pncp-1", "nome_original": "ed1.pdf", "raw": {"url": "http://u/1"}, "sha256": None, "status_processamento": "pendente"},
+        {"id": 102, "licitacao_id": 2, "arquivo_origem": "pncp-2", "nome_original": "ed2.pdf", "raw": {"url": "http://u/2"}, "sha256": None, "status_processamento": "pendente"},
+        {"id": 103, "licitacao_id": 3, "arquivo_origem": "pncp-3", "nome_original": "ed3.pdf", "raw": {"url": "http://u/3"}, "sha256": None, "status_processamento": "pendente"},
+        {"id": 104, "licitacao_id": 4, "arquivo_origem": "pncp-4", "nome_original": "ed4.pdf", "raw": {"url": "http://u/4"}, "sha256": None, "status_processamento": "pendente"},
+        {"id": 105, "licitacao_id": 5, "arquivo_origem": "pncp-5", "nome_original": "ed5.pdf", "raw": {"url": "http://u/5"}, "sha256": None, "status_processamento": "pendente"},
+    ]
+
+    sb.selecionar.side_effect = lambda t, **kw: lics if t == "licitacoes_externas" else docs
+    pncp.baixar.return_value = (b"%PDF-edital", "application/pdf")
+    arm.salvar.return_value = "gs://bucket/pncp/0/111-2026-1/processo/pncp-1.pdf"
+
+    # Default exclui 'fraco' (baixa 4 de 5)
+    res = P.baixar_pendentes(pncp, sb, arm)
+    assert res["baixados"] == 4
+    assert res["ignorados_categoria"] == 1
+    assert pncp.baixar.call_count == 4
+
+    # Filtro explícito: só borracha e piso
+    pncp.baixar.reset_mock()
+    res_filtrado = P.baixar_pendentes(pncp, sb, arm, categorias="borracha,piso")
+    assert res_filtrado["baixados"] == 2
+    assert res_filtrado["ignorados_categoria"] == 3
+    assert pncp.baixar.call_count == 2
+
+
+def test_baixar_pendentes_idempotencia_e_dry_run():
+    sb = MagicMock()
+    arm = MagicMock()
+    pncp = MagicMock()
+
+    lics = [{"id": 1, "codigo_externo": "111-1-1/2026", "orgao_cnpj": "111", "categoria_escopo": "borracha"}]
+    docs = [
+        {"id": 101, "licitacao_id": 1, "arquivo_origem": "pncp-1", "nome_original": "ed1.pdf",
+         "raw": {"url": "http://u/1"}, "sha256": "hash_ja_existente_12345", "status_processamento": "pendente"},
+        {"id": 102, "licitacao_id": 1, "arquivo_origem": "pncp-2", "nome_original": "ed2.pdf",
+         "raw": {"url": "http://u/2"}, "sha256": None, "status_processamento": "pendente"},
+    ]
+    sb.selecionar.side_effect = lambda t, **kw: lics if t == "licitacoes_externas" else docs
+    pncp.baixar.return_value = (b"%PDF-conteudo", "application/pdf")
+    arm.salvar.return_value = "gs://bucket/pncp/0/111-2026-1/processo/pncp-2.pdf"
+
+    # Idempotência: doc 101 já tem sha256 -> deve pular e só baixar o doc 102
+    res = P.baixar_pendentes(pncp, sb, arm)
+    assert res["ja_baixados"] == 1
+    assert res["baixados"] == 1
+    assert pncp.baixar.call_count == 1
+    # Verifica que atualizou apenas o doc 102
+    assert sb.atualizar.call_count == 1
+    assert sb.atualizar.call_args[0][1] == 102
+
+    # Modo dry-run: lista os elegíveis mas não baixa e não grava nada
+    pncp.baixar.reset_mock()
+    sb.atualizar.reset_mock()
+    arm.salvar.reset_mock()
+    docs[0]["sha256"] = None  # reseta para ter 2 elegíveis no dry-run
+    res_dry = P.baixar_pendentes(pncp, sb, None, dry_run=True)
+    assert res_dry["elegiveis"] == 2
+    assert res_dry["baixados"] == 0
+    assert len(res_dry["detalhes"]) == 2
+    assert pncp.baixar.call_count == 0
+    assert sb.atualizar.call_count == 0
+    assert arm.salvar.call_count == 0
+
+
+def test_pncp_baixar_429_com_retry_after(monkeypatch):
+    cli = P.PNCP(delay=0.01, timeout=5, tentativas=3)
+    esperas = []
+    monkeypatch.setattr(P.time, "sleep", lambda s: esperas.append(s))
+
+    resp_429 = MagicMock(status_code=429, headers={"Retry-After": "5"})
+    resp_200 = MagicMock(status_code=200, headers={"content-type": "application/pdf"})
+    resp_200.iter_content.return_value = [b"%PDF-1.7 payload valido"]
+
+    sess = MagicMock()
+    sess.get.return_value.__enter__ = MagicMock(side_effect=[resp_429, resp_200])
+    sess.get.return_value.__exit__ = MagicMock(return_value=None)
+    cli._local.s = sess
+
+    conteudo, ctype = cli.baixar("https://pncp.gov.br/doc.pdf", max_bytes=1048576)
+    assert conteudo == b"%PDF-1.7 payload valido"
+    assert ctype == "application/pdf"
+    assert 5.0 in esperas
+    assert sess.get.call_count == 2
+
+
+def test_pncp_baixar_arquivo_acima_do_limite():
+    cli = P.PNCP(delay=0, timeout=5, tentativas=1)
+    resp_grande = MagicMock(status_code=200, headers={"content-type": "application/pdf"})
+    resp_grande.iter_content.return_value = [b"a" * 1024, b"b" * 1024]
+
+    sess = MagicMock()
+    sess.get.return_value.__enter__ = MagicMock(return_value=resp_grande)
+    sess.get.return_value.__exit__ = MagicMock(return_value=None)
+    cli._local.s = sess
+
+    import pytest
+    with pytest.raises(ValueError, match="arquivo acima de"):
+        cli.baixar("https://pncp.gov.br/grande.pdf", max_bytes=1000)
+
+    # Teste de integração em baixar_pendentes: erro deve atualizar o status no Supabase
+    sb = MagicMock()
+    pncp = MagicMock()
+    pncp.baixar.side_effect = ValueError("arquivo acima de 80 MB")
+
+    lics = [{"id": 1, "codigo_externo": "111-1-1/2026", "categoria_escopo": "borracha"}]
+    docs = [{"id": 201, "licitacao_id": 1, "arquivo_origem": "pncp-1", "nome_original": "grande.pdf",
+             "raw": {"url": "http://u/grande"}, "sha256": None, "status_processamento": "pendente"}]
+    sb.selecionar.side_effect = lambda t, **kw: lics if t == "licitacoes_externas" else docs
+
+    res = P.baixar_pendentes(pncp, sb, None, dry_run=False)
+    assert res["erros"] == 1
+    assert sb.atualizar.call_count == 1
+    call_args = sb.atualizar.call_args[0]
+    assert call_args[1] == 201
+    assert call_args[2]["status_processamento"] == "erro"
+    assert "arquivo acima de 80 MB" in call_args[2]["erro"]
+

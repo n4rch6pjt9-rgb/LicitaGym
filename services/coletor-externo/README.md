@@ -88,7 +88,8 @@ Sesc SP e Sesc/Senac RS (paradigmabs.com.br) são recusados: o robots.txt do hos
 
 ## Coletor PNCP (trilho secundário)
 
-Busca nacional no PNCP por frase exata (`TERMOS_PADRAO` em `coletor/pncp.py`), classifica cada compra
+Busca nacional no PNCP por frase exata (por padrão `TERMOS_ESCOPO_COMPLETO` em `coletor/escopo.py`, 148 termos cobrindo
+os 56 PDMs do escopo; `--termos-padrao` volta aos 12 termos de `TERMOS_PADRAO`), classifica cada compra
 pelo objeto **e pelos itens** (`coletor/escopo.py`) e grava compra, itens, **vencedores** e arquivos.
 
 Três modos, em ordem de prioridade comercial (o modo só escolhe o filtro `status` da busca):
@@ -124,6 +125,19 @@ python3 -m coletor.pncp                                   # leads: recebendo pro
 python3 -m coletor.pncp --modo monitorar                  # em julgamento
 python3 -m coletor.pncp --modo historico --paginas 10 --baixar-arquivos   # encerradas
 python3 -m coletor.indexador                              # arquivos baixados -> RAG
+```
+
+Documentos PNCP pendentes (`licitacao_documentos.status_processamento = 'pendente'`): `--baixar-pendentes` baixa pela
+URL guardada, só das licitações nas categorias do escopo (padrão `catmat,forte,borracha,piso,obra_piso`; `fraco` fica
+fora), grava pelo mesmo destino do coletor (`Armazenamento.do_ambiente()`: Supabase Storage com
+`SUPABASE_STORAGE_BUCKET`, senão GCS, senão local), respeita `MAX_MB` e `Retry-After`, e não baixa de novo o que já tem
+`sha256`. Em 30/09/2026 eram 141 pendentes do PNCP (108 borracha, 22 piso, 2 forte, 9 fraco).
+
+```bash
+python3 -m coletor.pncp --baixar-pendentes --dry-run                         # lista os elegíveis
+python3 -m coletor.pncp --baixar-pendentes --limite-download 20              # lote pequeno primeiro
+python3 -m coletor.pncp --baixar-pendentes --categorias catmat,forte,borracha,piso,obra_piso
+python3 scripts/gerar_relatorio_termos.py                                    # docs/coletor-pncp-termos.md (PDM x termo)
 ```
 
 Reclassificar as linhas PNCP já gravadas (as antigas `leads` homologadas viram `historico`) — dry-run por padrão:

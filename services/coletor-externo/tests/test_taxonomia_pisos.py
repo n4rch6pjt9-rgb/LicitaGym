@@ -55,6 +55,25 @@ def test_nao_e_piso_de_borracha(texto):
     assert classificar_piso(texto) is None
 
 
+@pytest.mark.parametrize("texto,sinal", [
+    ("Grama sintética para quadra de futsal", "modalidades_de_quadra"),
+    ("Grama sintética em polipropileno 12 mm", "polipropileno"),
+])
+def test_grama_sintetica_explicita_vence_o_sinal_de_concorrente_com_confianca_media(texto, sinal):
+    r = classificar_piso(texto)
+    assert r["slug"] == "grama_sintetica" and r["escopo"] == "IN"
+    assert r["confianca"] == "media" and r["sinais_baixa"] == [sinal]
+
+
+def test_in_loco_solto_nao_e_execucao_de_piso():
+    assert classificar("piso emborrachado em placas com vistoria in loco") == "piso"
+    assert classificar("Piso emborrachado com treinamento in loco") == "piso"
+    assert classificar_piso("piso emborrachado em placas com vistoria in loco")["sinais_contexto"] == []
+    # moldado in loco segue como obra (o texto precisa casar PISO antes; EPDM/SBR caem antes em "borracha")
+    assert classificar("Piso emborrachado monolítico moldado in loco") == "obra_piso"
+    assert classificar_piso("Piso emborrachado monolítico moldado in loco")["sinais_contexto"] == ["instalacao_in_loco"]
+
+
 def test_piso_moldado_in_loco_vira_sinal_de_contexto_e_obra_piso():
     r = classificar_piso("FORNECIMENTO E INSTALAÇÃO DE PISO EMBORRACHADO MONOLÍTICO")
     assert r["slug"] == "piso_emborrachado" and r["sinais_contexto"] == ["instalacao_in_loco"]

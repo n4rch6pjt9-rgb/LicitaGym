@@ -12,7 +12,7 @@
   "sinais_contexto": {
     "impacto": "(protecao|absorcao|amortecimento) (contra |de |ao )?impacto|amortecedor|antiimpacto|anti impacto",
     "seguranca_infantil": "seguranca infantil|queda (de )?crianca|altura (critica )?de queda|nbr 16071",
-    "instalacao_in_loco": "monolitic[oa]s?|moldad[oa]s? (in loco|no local)|\\bin loco\\b|aplicad[oa]s? no local"
+    "instalacao_in_loco": "monolitic[oa]s?|(moldad|aplicad|executad|fundid)[oa]s? (in loco|no local)"
   },
   "sinais_baixa": {
     "polipropileno": "polipropileno|copolimero|\\bpp\\b|\\btpe\\b",

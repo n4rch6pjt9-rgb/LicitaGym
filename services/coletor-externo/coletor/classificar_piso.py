@@ -10,7 +10,8 @@ O dicionário de aparelhos v0.3 não tem pisos. Esta taxonomia dá, para o texto
 Regras:
 - sinais de contexto (absorção de impacto, segurança infantil) nunca classificam sozinhos;
 - sinal de concorrente (PP/TPE, polipropileno, quadra modular, desmontável, futsal/basquete/handebol) sem borracha
-  explícita no texto -> piso_modular_pp; com borracha explícita o nó de borracha vence, com confiança média;
+  nem grama sintética explícita no texto -> piso_modular_pp; com borracha ou grama explícita o nó IN vence, com
+  confiança média;
 - piso/tapete de borracha com medida de placa (1x1 m, 1000x1000 mm, 500x500 mm) -> placa_emborrachada;
 - grama sintética disputa com EPDM e granulado (infill): vence o termo que aparece primeiro no texto.
 
@@ -75,11 +76,13 @@ class ClassificadorPiso:
         if not t or not self.gatilho.search(t):
             return None
         baixa = [k for k, rx in self.baixa.items() if rx.search(t)]
-        tem_borracha = bool(self.borracha.search(t))
+        # Material explícito da linha Playfit (borracha ou grama sintética): o sinal de concorrente não vira
+        # piso_modular_pp ("grama sintética para quadra de futsal", fio de polipropileno) — só baixa a confiança.
+        tem_material = bool(self.borracha.search(t)) or bool(_GRAMA in self._rx and self._rx[_GRAMA].search(t))
         no = None
         for rx, n in self._padroes:
             if n["escopo"] == "OUT":
-                if not tem_borracha and (rx.search(t) or baixa):
+                if not tem_material and (rx.search(t) or baixa):
                     no = n
                     break
                 continue

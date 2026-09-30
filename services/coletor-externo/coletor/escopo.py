@@ -140,7 +140,8 @@ OBRA_ESPORTIVA = re.compile(
     r"(constru|reforma|revitaliz|implant|ampliac|recupera|manutenc|execuc|substitui).{0,120}"
     r"(campo|quadra|society|arena|minicampo|estadio|praca\s+esportiva|academia\s+ao\s+ar\s+livre|playground)", re.I)
 # Piso moldado no local (monolítico, EPDM/SBR aplicado in loco) é obra/instalação, não compra de placas.
-PISO_IN_LOCO = re.compile(r"monolitic|moldad\w*\s+(in\s+loco|no\s+local)|\bin\s+loco\b", re.I)
+# "in loco" solto (vistoria, treinamento, instalação in loco) não conta: só execução do piso no local.
+PISO_IN_LOCO = re.compile(r"monolitic|(moldad|aplicad|executad|fundid)\w*\s+(in\s+loco|no\s+local)", re.I)
 
 
 # ---------------- nível de ITEM ----------------

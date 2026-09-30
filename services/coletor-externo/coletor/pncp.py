@@ -33,13 +33,12 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urljoin, urlsplit
 
 import requests
 
 from .destino import Armazenamento, Supabase, env, parece_html, sha256
 from .escopo import (
-    PDMS_ESCOPO,
-    TERMOS_BUSCA,
     TERMOS_ESCOPO_COMPLETO,
     classificar,
     excluir_compra,
@@ -51,10 +50,33 @@ log = logging.getLogger("pncp")
 BASE = "https://pncp.gov.br"
 MAX_RETRY_AFTER_S = 60
 CATEGORIAS_PADRAO_DOWNLOAD = "catmat,forte,borracha,piso,obra_piso"
+# Downloads só de https nestes hosts (match exato, sem subdomínio). A URL vem do banco
+# (licitacao_documentos.raw.url): sem a allowlist o coletor buscaria qualquer endereço (SSRF).
+PNCP_HOSTS_PERMITIDOS = tuple(h.strip().lower() for h in
+                              os.environ.get("PNCP_HOSTS_PERMITIDOS", "pncp.gov.br").split(",") if h.strip())
+MAX_REDIRECTS = 5
+_REDIRECTS = (301, 302, 303, 307, 308)
 
 
 class RespostaInvalida(RuntimeError):
     """HTTP 200 cujo corpo não é o JSON esperado (HTML, JSON inválido, tipo errado)."""
+
+
+class ArquivoRecusado(ValueError):
+    """Download recusado de forma definitiva (host fora da allowlist, HTML no lugar do arquivo).
+    Repetir não adianta: o documento vai para status 'erro'."""
+
+
+def url_permitida(url: str | None, hosts: tuple[str, ...] | None = None) -> bool:
+    """https, host exato da allowlist, porta padrão e sem credenciais na URL."""
+    hosts = PNCP_HOSTS_PERMITIDOS if hosts is None else hosts
+    try:
+        p = urlsplit(url or "")
+        porta = p.port
+    except ValueError:
+        return False
+    return (p.scheme == "https" and (p.hostname or "").lower() in hosts and porta in (None, 443)
+            and not p.username and not p.password)
 
 
 class ConsultaFalhou(RuntimeError):
@@ -182,11 +204,29 @@ class PNCP:
     def arquivos(self, c: dict) -> list[dict]:
         return self._lista(self.base_compra(c) + "/arquivos")
 
+    def _abrir(self, url: str):
+        """GET em streaming sem redirecionamento automático: cada salto passa pela allowlist."""
+        atual = url
+        for _ in range(MAX_REDIRECTS + 1):
+            if not url_permitida(atual):
+                raise ArquivoRecusado(f"URL fora dos hosts permitidos ({', '.join(PNCP_HOSTS_PERMITIDOS)}): "
+                                      f"{str(atual)[:120]}")
+            r = self.s.get(atual, stream=True, timeout=(30, 180), allow_redirects=False)
+            if r.status_code in _REDIRECTS:
+                destino = (r.headers or {}).get("Location")
+                r.close()
+                if not destino:
+                    raise RespostaInvalida(f"PNCP {atual}: redirecionamento sem Location")
+                atual = urljoin(atual, destino)
+                continue
+            return r
+        raise RespostaInvalida(f"PNCP {url}: mais de {MAX_REDIRECTS} redirecionamentos")
+
     def baixar(self, url: str, max_bytes: int) -> tuple[bytes, str | None]:
         ultimo = None
         for tentativa in range(self.tentativas):
             try:
-                with self.s.get(url, stream=True, timeout=(30, 180)) as r:
+                with self._abrir(url) as r:
                     if r.status_code == 429:
                         ultimo = requests.HTTPError(f"{r.status_code} do PNCP", response=r)
                         espera = _retry_after_s(r)
@@ -723,7 +763,11 @@ def baixar_pendentes(pncp: PNCP, sb: Supabase, arm: Armazenamento | None,
     baixa cada arquivo pela URL guardada, grava no storage (Armazenamento.do_ambiente: Supabase Storage, GCS ou local)
     e atualiza status_processamento, sha256, mime_type, tamanho_bytes e erro,
     respeitando MAX_MB, o delay e o Retry-After.
-    Idempotente: não baixa de novo o que já tem sha256.
+    Idempotente: não baixa de novo o que já tem sha256; o caminho no storage é determinístico (sobrescreve).
+    Só baixa URL https de PNCP_HOSTS_PERMITIDOS (cada redirecionamento também é validado).
+    Falha transitória (429/5xx esgotados, timeout, conexão, storage) mantém 'pendente' com o erro anotado,
+    para a próxima execução tentar de novo; falha definitiva (acima de MAX_MB, HTML, host fora da allowlist,
+    4xx) vai para 'erro'.
     --dry-run: lista os documentos elegíveis sem baixar nem gravar."""
     if isinstance(categorias, str):
         cat_set = {c.strip().lower() for c in categorias.split(",") if c.strip()}
@@ -733,14 +777,14 @@ def baixar_pendentes(pncp: PNCP, sb: Supabase, arm: Armazenamento | None,
         cat_set = {c.strip().lower() for c in CATEGORIAS_PADRAO_DOWNLOAD.split(",") if c.strip()}
 
     log.info("baixar_pendentes: buscando licitações externas fonte=pncp e categorias=%s", sorted(cat_set))
-    lics = sb.selecionar("licitacoes_externas", fonte="eq.pncp",
+    lics = sb.selecionar("licitacoes_externas", fonte="eq.pncp", order="id.asc",
                          select="id,codigo_externo,orgao_cnpj,categoria_escopo,raw")
     lic_map = {l["id"]: l for l in lics if (l.get("categoria_escopo") or "").lower() in cat_set}
     lic_todas_pncp = {l["id"] for l in lics}
     log.info("licitacoes_externas pncp: %d total, %d nas categorias selecionadas",
              len(lic_todas_pncp), len(lic_map))
 
-    docs = sb.selecionar("licitacao_documentos", status_processamento="eq.pendente",
+    docs = sb.selecionar("licitacao_documentos", status_processamento="eq.pendente", order="id.asc",
                          select="id,licitacao_id,secao,nome_original,arquivo_origem,storage_uri,mime_type,tamanho_bytes,sha256,status_processamento,erro,raw")
     log.info("licitacao_documentos com status pendente: %d encontrados", len(docs))
 
@@ -751,7 +795,9 @@ def baixar_pendentes(pncp: PNCP, sb: Supabase, arm: Armazenamento | None,
         "ja_baixados": 0,
         "ignorados_categoria": 0,
         "ignorados_sem_url": 0,
+        "bloqueados_host": 0,
         "erros": 0,
+        "erros_transitorios": 0,
         "detalhes": [],
     }
 
@@ -781,6 +827,17 @@ def baixar_pendentes(pncp: PNCP, sb: Supabase, arm: Armazenamento | None,
             log.warning("  doc #%s sem URL em raw; pulando", d["id"])
             continue
 
+        if not url_permitida(url):
+            resumo["bloqueados_host"] += 1
+            log.warning("  doc #%s: URL fora dos hosts permitidos (%s); não baixa: %s",
+                        d["id"], ",".join(PNCP_HOSTS_PERMITIDOS), str(url)[:120])
+            if not dry_run:
+                sb.atualizar("licitacao_documentos", d["id"], {
+                    "status_processamento": "erro",
+                    "erro": f"URL fora dos hosts permitidos: {str(url)[:200]}",
+                })
+            continue
+
         if limite and resumo["elegiveis"] >= limite:
             log.info("Limite de %d downloads atingido", limite)
             break
@@ -804,7 +861,7 @@ def baixar_pendentes(pncp: PNCP, sb: Supabase, arm: Armazenamento | None,
         try:
             conteudo, ctype = pncp.baixar(url, max_bytes)
             if parece_html(conteudo, ctype):
-                raise RuntimeError("PNCP devolveu HTML em vez do arquivo")
+                raise ArquivoRecusado("PNCP devolveu HTML em vez do arquivo")
             ext = (d.get("nome_original") or "").rsplit(".", 1)[-1][:5] if "." in (d.get("nome_original") or "") else "bin"
             caminho = arm.caminho("pncp", 0, compra_slug, d.get("secao") or "processo", f"{d['arquivo_origem']}.{ext}")
             uri = arm.salvar(caminho, conteudo, ctype)
@@ -821,14 +878,26 @@ def baixar_pendentes(pncp: PNCP, sb: Supabase, arm: Armazenamento | None,
             log.info("  doc #%s baixado: %s (%.1f MB) -> %s",
                      d["id"], nome_orig[:60], len(conteudo) / 1048576, uri)
         except Exception as e:
-            resumo["erros"] += 1
-            log.warning("  doc #%s falha ao baixar: %s", d["id"], str(e)[:120])
+            definitivo = _falha_definitiva(e)
+            resumo["erros" if definitivo else "erros_transitorios"] += 1
+            log.warning("  doc #%s falha %s ao baixar: %s", d["id"],
+                        "definitiva" if definitivo else "transitória (fica pendente)", str(e)[:120])
             sb.atualizar("licitacao_documentos", d["id"], {
-                "status_processamento": "erro",
+                "status_processamento": "erro" if definitivo else "pendente",
                 "erro": str(e)[:300],
             })
 
     return resumo
+
+
+def _falha_definitiva(e: Exception) -> bool:
+    """Acima de MAX_MB, HTML, host fora da allowlist, resposta inválida e 4xx (exceto 429) não melhoram
+    com nova tentativa. O resto (429/5xx esgotados, timeout, conexão, storage) é transitório."""
+    if isinstance(e, (ValueError, RespostaInvalida)):
+        return True
+    if isinstance(e, requests.HTTPError) and e.response is not None:
+        return 400 <= e.response.status_code < 500 and e.response.status_code != 429
+    return False
 
 
 def main(argv: list[str] | None = None) -> int:

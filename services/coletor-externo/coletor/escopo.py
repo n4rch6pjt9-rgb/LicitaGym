@@ -130,7 +130,7 @@ TERMOS_POR_PDM = {
     7100: ["estante material esportivo", "suporte para halteres", "suporte para anilhas", "rack de musculação"],
     7111: ["esteira de praia"],
     7113: ["esteira ergonômica"],
-    7115: ["esteira elétrica"],
+    7115: ["esteira elétrica", "esteira ergométrica"],
     7116: ["esteira mecânica", "esteira rolante não elétrica", "esteira curva"],
     7253: ["extensor elástico", "extensor de braço", "faixa elástica"],
     7921: ["gangorra", "gangorra infantil"],

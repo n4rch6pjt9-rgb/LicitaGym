@@ -31,7 +31,7 @@ lines.append('## PDMs sem Termo de Busca')
 lines.append('')
 sem = pdms_sem_termo()
 if not sem:
-    lines.append('**Nenhum PDM sem termo.** Todos os 56 PDMs do escopo possuem ao menos um termo de busca correspondente.')
+    lines.append(f'**Nenhum PDM sem termo.** Todos os {len(PDMS_ESCOPO)} PDMs do escopo possuem ao menos um termo de busca correspondente.')
 else:
     for s in sem:
         lines.append(f'- PDM {s}: {PDMS_ESCOPO[s]}')

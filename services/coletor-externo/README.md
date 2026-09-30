@@ -88,8 +88,8 @@ Sesc SP e Sesc/Senac RS (paradigmabs.com.br) são recusados: o robots.txt do hos
 
 ## Coletor PNCP (trilho secundário)
 
-Busca nacional no PNCP por frase exata (por padrão `TERMOS_ESCOPO_COMPLETO` em `coletor/escopo.py`, 148 termos cobrindo
-os 56 PDMs do escopo; `--termos-padrao` volta aos 12 termos de `TERMOS_PADRAO`), classifica cada compra
+Busca nacional no PNCP por frase exata (por padrão `TERMOS_ESCOPO_COMPLETO` em `coletor/escopo.py`, 160 termos cobrindo
+os 58 PDMs do escopo; `--termos-padrao` volta aos 12 termos de `TERMOS_PADRAO`), classifica cada compra
 pelo objeto **e pelos itens** (`coletor/escopo.py`) e grava compra, itens, **vencedores** e arquivos.
 
 Três modos, em ordem de prioridade comercial (o modo só escolhe o filtro `status` da busca):

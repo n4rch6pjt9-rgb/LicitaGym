@@ -57,7 +57,7 @@ python3 -m coletor.processo_edital --dry-run    # completa processos curtos ("4"
 
 ## Coletor PNCP (fonte principal)
 
-Busca nacional no PNCP por frase exata (`TERMOS_PADRAO` em `coletor/pncp.py`), classifica cada compra
+Busca nacional no PNCP por frase exata (por padrão os 160 termos de `TERMOS_ESCOPO_COMPLETO`; `--termos-padrao` = 12 termos), classifica cada compra
 pelo objeto **e pelos itens** (`coletor/escopo.py`) e grava compra, itens, **vencedores** e arquivos.
 
 Três modos, em ordem de prioridade comercial (o modo só escolhe o filtro `status` da busca):

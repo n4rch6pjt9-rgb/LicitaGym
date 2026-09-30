@@ -777,7 +777,7 @@ def test_escopo_mantem_esteira_ergometrica():
     assert [t for t in antigos if t not in TERMOS_ESCOPO_COMPLETO] == []
 
 
-# --- política de execução: padrão 12 termos, escopo completo opt-in em lotes, falha de busca isolada ---
+# --- política de execução: padrão escopo completo (~160 termos) a ~1 req/s, 12 termos opt-out, lotes, falha isolada ---
 
 def _main_capturando(monkeypatch, argv, env=None):
     for k in ("PNCP_WORKERS", "DELAY_SEGUNDOS"):
@@ -794,23 +794,23 @@ def _main_capturando(monkeypatch, argv, env=None):
     return visto
 
 
-def test_main_padrao_usa_12_termos_e_ritmo_atual(monkeypatch):
+def test_main_padrao_usa_escopo_completo_com_ritmo_de_1_req_s(monkeypatch):
     v = _main_capturando(monkeypatch, [])
-    assert v["termos"] == P.TERMOS_PADRAO and len(v["termos"]) == 12
-    assert (v["workers"], v["delay"]) == (3, 0.5) and v["sb"] is None and v["rc"] == 0
-    assert _main_capturando(monkeypatch, ["--termos-padrao"])["termos"] == P.TERMOS_PADRAO
-
-
-def test_main_escopo_completo_opt_in_com_ritmo_de_1_req_s(monkeypatch):
-    v = _main_capturando(monkeypatch, ["--escopo-completo"])
     assert v["termos"] == P.TERMOS_ESCOPO_COMPLETO and len(v["termos"]) >= 150
-    assert (v["workers"], v["delay"]) == (1, 1.0)
-    v = _main_capturando(monkeypatch, ["--escopo-completo"], {"PNCP_WORKERS": "2", "DELAY_SEGUNDOS": "0.7"})
+    assert (v["workers"], v["delay"]) == (1, 1.0) and v["sb"] is None and v["rc"] == 0
+    assert _main_capturando(monkeypatch, ["--escopo-completo"])["termos"] == P.TERMOS_ESCOPO_COMPLETO
+    v = _main_capturando(monkeypatch, [], {"PNCP_WORKERS": "2", "DELAY_SEGUNDOS": "0.7"})
     assert (v["workers"], v["delay"]) == (2, 0.7)
 
 
+def test_main_termos_padrao_volta_aos_12_com_ritmo_rapido(monkeypatch):
+    v = _main_capturando(monkeypatch, ["--termos-padrao"])
+    assert v["termos"] == P.TERMOS_PADRAO and len(v["termos"]) == 12
+    assert (v["workers"], v["delay"]) == (3, 0.5)
+
+
 def test_main_lotes_cobrem_escopo_sem_repetir(monkeypatch):
-    fatias = [_main_capturando(monkeypatch, ["--escopo-completo", "--lote", f"{k}/4"])["termos"] for k in range(1, 5)]
+    fatias = [_main_capturando(monkeypatch, ["--lote", f"{k}/4"])["termos"] for k in range(1, 5)]
     assert [t for f in fatias for t in f] == P.TERMOS_ESCOPO_COMPLETO
     assert max(map(len, fatias)) - min(map(len, fatias)) <= 3
 
@@ -830,6 +830,8 @@ def test_main_lote_invalido_e_selecoes_conflitantes_saem_com_erro(monkeypatch):
         _main_capturando(monkeypatch, ["--escopo-completo", "--lote", "5/4"])
     with pytest.raises(SystemExit):
         _main_capturando(monkeypatch, ["--escopo-completo", "--termos", "tatame"])
+    with pytest.raises(SystemExit):
+        _main_capturando(monkeypatch, ["--termos-padrao", "--termos", "tatame"])
 
 
 def test_coletar_isola_falha_de_busca_e_main_sai_com_1(monkeypatch):

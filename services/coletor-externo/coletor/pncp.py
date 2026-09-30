@@ -932,14 +932,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dias", type=int, help=argparse.SUPPRESS)
     ap.add_argument("--margem-publicacao", type=int, help=argparse.SUPPRESS)
     selecao = ap.add_mutually_exclusive_group()
-    selecao.add_argument("--termos", help="lista separada por vírgula (padrão: os 12 de TERMOS_PADRAO)")
+    selecao.add_argument("--termos", help="lista separada por vírgula (padrão: os ~160 de TERMOS_ESCOPO_COMPLETO)")
     selecao.add_argument("--escopo-completo", action="store_true",
-                         help="usa os ~160 termos de TERMOS_ESCOPO_COMPLETO (58 PDMs); rode em lotes com --lote")
+                         help="usa os ~160 termos de TERMOS_ESCOPO_COMPLETO (58 PDMs; já é o padrão, mantido por compatibilidade)")
     selecao.add_argument("--termos-padrao", action="store_true",
-                         help="usa os 12 termos de TERMOS_PADRAO (já é o padrão; mantido por compatibilidade)")
+                         help="usa só os 12 termos resumidos de TERMOS_PADRAO (execução rápida)")
     ap.add_argument("--todos-termos", action="store_true",
                     help="TERMOS_PADRAO (ou --termos) + escopo completo (compatibilidade)")
-    ap.add_argument("--lote", help="K/N: roda só a fatia K de N da lista de termos (ex.: --escopo-completo --lote 1/4)")
+    ap.add_argument("--lote", help="K/N: roda só a fatia K de N da lista de termos (ex.: --lote 1/4)")
     ap.add_argument("--status", choices=["todos", "recebendo_proposta", "em_julgamento", "encerradas"],
                     help="sobrescreve o status do modo")
     ap.add_argument("--paginas", type=int, help="páginas por termo (padrão: leads 20, outros 3)")
@@ -976,13 +976,14 @@ def main(argv: list[str] | None = None) -> int:
         log.info("RESUMO BAIXAR PENDENTES: %s", r)
         return 0
 
-    # Padrão = 12 termos (cron diário). O escopo completo multiplica as chamadas ao PNCP por ~13 e é opt-in.
+    # Padrão = escopo completo (~160 termos, 58 PDMs; decisão do owner, 30/09/2026). --termos-padrao volta aos 12
+    # termos resumidos. Com a lista ampla o ritmo cai para ~1 req/s (abaixo) e --lote K/N divide a execução.
     if args.termos:
         termos = [t.strip() for t in args.termos.split(",") if t.strip()]
-    elif args.escopo_completo:
-        termos = list(TERMOS_ESCOPO_COMPLETO)
-    else:
+    elif args.termos_padrao:
         termos = list(TERMOS_PADRAO)
+    else:
+        termos = list(TERMOS_ESCOPO_COMPLETO)
     if args.todos_termos:
         termos = list(dict.fromkeys(termos + list(TERMOS_ESCOPO_COMPLETO)))
     if args.lote:

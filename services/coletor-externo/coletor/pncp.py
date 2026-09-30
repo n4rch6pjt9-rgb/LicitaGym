@@ -473,7 +473,17 @@ def coletar(pncp: PNCP, sb: Supabase | None, arm: Armazenamento | None, termos: 
     for termo in termos:
         for st in status_lista:
             for pagina in range(1, paginas + 1):
-                res = pncp.buscar(termo, st, pagina, tam)
+                try:
+                    res = pncp.buscar(termo, st, pagina, tam)
+                except Exception as e:
+                    # Uma busca que esgotou as tentativas (429/5xx/timeout) não derruba os outros termos;
+                    # fica no resumo e o processo sai com código 1 (ver main).
+                    _inc(resumo, "falha_busca")
+                    with _trava:
+                        resumo.setdefault("termos_com_falha", []).append(f"{termo} [{st}] pág. {pagina}")
+                    log.error('"%s" [%s] pág. %s: busca falhou, segue para o próximo termo: %s',
+                              termo, st, pagina, str(e)[:160])
+                    break
                 lote = res.get("items") or []
                 log.info('"%s" [%s] pág. %s: %s de %s', termo, st, pagina, len(lote), res.get("total"))
                 fila = []
@@ -900,6 +910,19 @@ def _falha_definitiva(e: Exception) -> bool:
     return False
 
 
+def fatiar_lote(termos: list[str], lote: str) -> list[str]:
+    """'K/N' -> K-ésima de N fatias contíguas da lista (1-based). Determinístico: rodar 1/N..N/N cobre a
+    lista inteira sem repetir, e repetir um lote que falhou retoma exatamente os mesmos termos."""
+    m = re.fullmatch(r"\s*(\d+)\s*/\s*(\d+)\s*", lote or "")
+    if not m:
+        raise ValueError(f"--lote deve ser K/N (ex.: 1/4), veio {lote!r}")
+    k, n = int(m.group(1)), int(m.group(2))
+    if n < 1 or not 1 <= k <= n:
+        raise ValueError(f"--lote {lote}: precisa de 1 <= K <= N")
+    tam = -(-len(termos) // n)
+    return termos[(k - 1) * tam:k * tam]
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Coletor PNCP (escopo LicitaGym)")
     ap.add_argument("--modo", choices=list(MODOS), default="leads",
@@ -908,13 +931,15 @@ def main(argv: list[str] | None = None) -> int:
     # Obsoletos (janela de homologação do antigo modo leads): aceitos para não quebrar agendamentos, sem efeito.
     ap.add_argument("--dias", type=int, help=argparse.SUPPRESS)
     ap.add_argument("--margem-publicacao", type=int, help=argparse.SUPPRESS)
-    ap.add_argument("--termos", help="lista separada por vírgula (padrão: escopo completo)")
-    ap.add_argument("--escopo-completo", action="store_true", default=True,
-                    help="usa todos os termos do escopo CATMAT (padrão)")
-    ap.add_argument("--termos-padrao", action="store_true",
-                    help="usa apenas os termos prioritários resumidos (legado)")
+    selecao = ap.add_mutually_exclusive_group()
+    selecao.add_argument("--termos", help="lista separada por vírgula (padrão: os 12 de TERMOS_PADRAO)")
+    selecao.add_argument("--escopo-completo", action="store_true",
+                         help="usa os ~160 termos de TERMOS_ESCOPO_COMPLETO (58 PDMs); rode em lotes com --lote")
+    selecao.add_argument("--termos-padrao", action="store_true",
+                         help="usa os 12 termos de TERMOS_PADRAO (já é o padrão; mantido por compatibilidade)")
     ap.add_argument("--todos-termos", action="store_true",
-                    help="usa todos os termos do escopo (compatibilidade)")
+                    help="TERMOS_PADRAO (ou --termos) + escopo completo (compatibilidade)")
+    ap.add_argument("--lote", help="K/N: roda só a fatia K de N da lista de termos (ex.: --escopo-completo --lote 1/4)")
     ap.add_argument("--status", choices=["todos", "recebendo_proposta", "em_julgamento", "encerradas"],
                     help="sobrescreve o status do modo")
     ap.add_argument("--paginas", type=int, help="páginas por termo (padrão: leads 20, outros 3)")
@@ -951,15 +976,25 @@ def main(argv: list[str] | None = None) -> int:
         log.info("RESUMO BAIXAR PENDENTES: %s", r)
         return 0
 
+    # Padrão = 12 termos (cron diário). O escopo completo multiplica as chamadas ao PNCP por ~13 e é opt-in.
     if args.termos:
-        termos = [t.strip() for t in args.termos.split(",")] if args.termos else list(TERMOS_PADRAO)
-    elif args.termos_padrao:
-        termos = list(TERMOS_PADRAO)
-    else:
+        termos = [t.strip() for t in args.termos.split(",") if t.strip()]
+    elif args.escopo_completo:
         termos = list(TERMOS_ESCOPO_COMPLETO)
-
+    else:
+        termos = list(TERMOS_PADRAO)
     if args.todos_termos:
         termos = list(dict.fromkeys(termos + list(TERMOS_ESCOPO_COMPLETO)))
+    if args.lote:
+        try:
+            termos = fatiar_lote(termos, args.lote)
+        except ValueError as e:
+            ap.error(str(e))
+    # Lista maior que a padrão: 1 worker e 1 s entre chamadas (~1 req/s, o mesmo ritmo que as Edge Functions
+    # usam para pncp.gov.br em private.http_host_lease), salvo PNCP_WORKERS/DELAY_SEGUNDOS explícitos.
+    amplo = len(termos) > len(TERMOS_PADRAO)
+    delay = float(env("DELAY_SEGUNDOS", "1.0" if amplo else "0.5"))
+    workers = int(env("PNCP_WORKERS", "1" if amplo else "3"))
 
     sb = arm = None
     if not args.dry_run:
@@ -970,12 +1005,17 @@ def main(argv: list[str] | None = None) -> int:
                     "(compra homologada não é lead; decisão de 29/09/2026)")
     status = args.status or MODOS[args.modo]["status"]
     paginas = args.paginas or (20 if args.modo == "leads" else 3)
-    log.info("modo=%s status=%s termos=%s", args.modo, status, len(termos))
-    r = coletar(PNCP(delay=float(env("DELAY_SEGUNDOS", "0.5"))), sb, arm, termos, status, paginas,
+    log.info("modo=%s status=%s termos=%s lote=%s workers=%s delay=%ss", args.modo, status, len(termos),
+             args.lote or "-", workers, delay)
+    r = coletar(PNCP(delay=delay), sb, arm, termos, status, paginas,
                 args.tam, not args.sem_resultados, args.baixar_arquivos,
                 int(float(env("MAX_MB", "80")) * 1048576), args.dry_run,
-                modo=args.modo, workers=int(env("PNCP_WORKERS", "3")))
+                modo=args.modo, workers=workers)
     log.info("RESUMO: %s", r)
+    if r.get("falha_busca"):
+        log.error("%s busca(s) falharam: %s. Rode de novo o mesmo comando (os upserts são idempotentes).",
+                  r["falha_busca"], "; ".join(r.get("termos_com_falha", [])[:10]))
+        return 1
     return 0
 
 

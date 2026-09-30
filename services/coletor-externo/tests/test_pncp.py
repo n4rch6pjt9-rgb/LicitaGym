@@ -508,15 +508,6 @@ def test_cobertura_termos_completa_catmat():
     assert "supino" in TERMOS_ESCOPO_COMPLETO
     assert "halteres" in TERMOS_ESCOPO_COMPLETO
 
-    # 5. CLI default usa lista completa em vez de TERMOS_PADRAO
-    import argparse
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--termos", help="lista")
-    ap.add_argument("--termos-padrao", action="store_true")
-    # Simula a lógica de default da main()
-    args_default = ap.parse_args([])
-    termos_def = P.TERMOS_ESCOPO_COMPLETO if not args_default.termos and not args_default.termos_padrao else P.TERMOS_PADRAO
-    assert len(termos_def) == len(TERMOS_ESCOPO_COMPLETO)
 
 
 def test_baixar_pendentes_filtro_categoria():
@@ -784,3 +775,71 @@ def test_escopo_mantem_esteira_ergometrica():
                "granulado de borracha", "raspa de borracha", "borracha triturada", "borracha reciclada",
                "pó de borracha", "SBR", "EPDM"]
     assert [t for t in antigos if t not in TERMOS_ESCOPO_COMPLETO] == []
+
+
+# --- política de execução: padrão 12 termos, escopo completo opt-in em lotes, falha de busca isolada ---
+
+def _main_capturando(monkeypatch, argv, env=None):
+    for k in ("PNCP_WORKERS", "DELAY_SEGUNDOS"):
+        monkeypatch.delenv(k, raising=False)
+    for k, v in (env or {}).items():
+        monkeypatch.setenv(k, v)
+    visto = {}
+
+    def falso_coletar(pncp, sb, arm, termos, status, paginas, *a, **kw):
+        visto.update(termos=termos, delay=pncp.delay, workers=kw["workers"], sb=sb)
+        return visto.get("resumo", {"encontradas": 0})
+    monkeypatch.setattr(P, "coletar", falso_coletar)
+    visto["rc"] = P.main(["--dry-run"] + argv)
+    return visto
+
+
+def test_main_padrao_usa_12_termos_e_ritmo_atual(monkeypatch):
+    v = _main_capturando(monkeypatch, [])
+    assert v["termos"] == P.TERMOS_PADRAO and len(v["termos"]) == 12
+    assert (v["workers"], v["delay"]) == (3, 0.5) and v["sb"] is None and v["rc"] == 0
+    assert _main_capturando(monkeypatch, ["--termos-padrao"])["termos"] == P.TERMOS_PADRAO
+
+
+def test_main_escopo_completo_opt_in_com_ritmo_de_1_req_s(monkeypatch):
+    v = _main_capturando(monkeypatch, ["--escopo-completo"])
+    assert v["termos"] == P.TERMOS_ESCOPO_COMPLETO and len(v["termos"]) >= 150
+    assert (v["workers"], v["delay"]) == (1, 1.0)
+    v = _main_capturando(monkeypatch, ["--escopo-completo"], {"PNCP_WORKERS": "2", "DELAY_SEGUNDOS": "0.7"})
+    assert (v["workers"], v["delay"]) == (2, 0.7)
+
+
+def test_main_lotes_cobrem_escopo_sem_repetir(monkeypatch):
+    fatias = [_main_capturando(monkeypatch, ["--escopo-completo", "--lote", f"{k}/4"])["termos"] for k in range(1, 5)]
+    assert [t for f in fatias for t in f] == P.TERMOS_ESCOPO_COMPLETO
+    assert max(map(len, fatias)) - min(map(len, fatias)) <= 3
+
+
+def test_fatiar_lote_valida_formato():
+    import pytest
+    assert P.fatiar_lote(list("abcde"), "2/2") == ["d", "e"]
+    assert P.fatiar_lote(list("ab"), "3/3") == []
+    for ruim in ("0/4", "5/4", "1/0", "x", "", "1-4"):
+        with pytest.raises(ValueError):
+            P.fatiar_lote(list("abc"), ruim)
+
+
+def test_main_lote_invalido_e_selecoes_conflitantes_saem_com_erro(monkeypatch):
+    import pytest
+    with pytest.raises(SystemExit):
+        _main_capturando(monkeypatch, ["--escopo-completo", "--lote", "5/4"])
+    with pytest.raises(SystemExit):
+        _main_capturando(monkeypatch, ["--escopo-completo", "--termos", "tatame"])
+
+
+def test_coletar_isola_falha_de_busca_e_main_sai_com_1(monkeypatch):
+    pncp = MagicMock()
+    pncp.buscar.side_effect = [RuntimeError("429 do PNCP"), {"items": [], "total": 0}]
+    r = P.coletar(pncp, None, None, ["grama sintética", "tatame"], "recebendo_proposta", 20, 50,
+                  False, False, 1, True)
+    assert r["falha_busca"] == 1 and r["termos_com_falha"] == ["grama sintética [recebendo_proposta] pág. 1"]
+    assert pncp.buscar.call_count == 2   # o segundo termo rodou
+
+    visto = {"resumo": {"falha_busca": 1, "termos_com_falha": ["x [s] pág. 1"]}}
+    monkeypatch.setattr(P, "coletar", lambda *a, **kw: visto["resumo"])
+    assert P.main(["--dry-run"]) == 1

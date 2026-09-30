@@ -1,4 +1,5 @@
 export interface LicitacaoFiltros {
+  /** leads | monitorar (efetiva, da view). `historico` responde vazio: não é Oportunidade (é do BI). */
   prioridade?: string;
   uf?: string;
   municipio?: string;

@@ -20,6 +20,8 @@ Função Supabase Edge Function responsável por atender o frontend do Dashboard
 - **RLS em `public.licitacoes_externas`**: Todo acesso direto à tabela via PostgREST REST API está revogado para `authenticated`, `anon` e `PUBLIC` (conforme migrations `20260926110000_pncp_rls_policies.sql`, `20260928130000_licitacoes_externas_revoke_anon.sql` e `20260928140000_licitacoes_externas_revoke_authenticated.sql`). Nenhuma role não-privilegiada possui permissão de `SELECT`, impedindo a leitura direta de colunas sensíveis (`raw`, `notas`, `esclarecimentos`, etc.) no navegador ou REST API.
 - **Leitura Server-Side do Dashboard & Acesso Interno**: Leituras de usuários e do dashboard são realizadas exclusivamente através da Edge Function `api-dashboard-oportunidades` (que executa server-side utilizando `SUPABASE_SERVICE_ROLE_KEY` e projeta estritamente as colunas públicas seguras `PUBLIC_LICITACAO_COLUMNS`). Leituras e escritas internas permanecem restritas à role `service_role` (utilizada pela Edge Function e pelos coletores de backend). A chave de `service_role` **nunca** é devolvida nem exposta ao cliente. A ação `readiness` permanece pública para verificação de saúde e contagem sem expor dados de linhas.
 - **Projeção Estrita de Colunas Públicas**: As consultas **não** usam `select("*")`. Apenas um conjunto explícito de colunas seguras para consumo do dashboard é projetado (`PUBLIC_LICITACAO_COLUMNS`), incluindo identificadores de fonte não-secretos (`modulo`, `id_externo`) necessários para fontes como SEST SENAT (onde `codigo_externo` é nulo), e omitindo estritamente colunas internas, payloads brutos (`raw`), fóruns (`esclarecimentos`, `notas`) e anexos técnicos (`anexo_raiz_id`, `edital_id`).
+- **Prioridade efetiva (view `public.licitacoes_externas_prioridade_efetiva`)**: `list` e `get` leem a view criada em `20260930200000_licitacoes_prioridade_efetiva.sql`, com as mesmas colunas públicas e `prioridade` recalculada só para baixo: `historico` com qualquer sinal de encerramento (`data_homologacao`, resultado em `licitacao_resultados`, `raw.tem_resultado`, `raw.cancelado`, situação encerrada/homologada/revogada...), `leads` → `monitorar` com o prazo de proposta vencido (`raw.data_fim_vigencia` em BRT, senão `data_fim`), senão a prioridade gravada. A view é `security_invoker` e só `service_role` lê. `readiness` e `acompanhamento` continuam na tabela.
+- **Oportunidades sem `historico` (decisão de produto 30/09/2026)**: compra homologada ou encerrada é só do BI. Sem filtro de prioridade, `list` (itens e `total`, inclusive a contagem do PGRST103) exclui `historico` e mantém `leads`, `monitorar` e `NULL` (fonte que não grava prioridade e sem sinal de encerramento). `prioridade=historico` responde **200 com `items: []` e `total: 0`**, sem consultar o banco (não 400: o Dashboard ainda oferece "Histórico de Certames" no seletor e mostraria erro). `get` de uma compra `historico` responde normalmente, com `prioridade: "historico"`, para links do BI e links diretos continuarem funcionando.
 - **Isolamento de Credenciais**: O header `Authorization` do usuário não é repassado ao cliente service_role interno.
 - **Mensagens de Erro Seguras**: Detalhes crus de erros do PostgREST não são expostos na resposta HTTP; falhas de banco retornam status HTTP 500 com mensagem limpa, e erros de parâmetro inválido retornam status HTTP 400.
 - **Prevenção de Injeção SQL & Sanitização**: Todas as consultas são parametrizadas e estruturadas usando o query builder do `supabase-js`. Termos de busca textual livre (`busca`, `q`, `municipio`, `orgao_nome`) são normalizados em Unicode NFC, filtrados via allowlist (`[^\p{L}\p{N}\s-]`), sem curingas `%`, `_`, `*`, `\\`, colapsados e limitados a 200 caracteres.
@@ -77,6 +79,8 @@ Verifica a conectividade e disponibilidade da base de licitações externas sem 
 
 ### 2. `get`
 Obtém certames ou compras específicas.
+
+Lê a view da prioridade efetiva. Uma compra `historico` é devolvida normalmente (com `prioridade: "historico"`), embora não apareça no `list`.
 
 #### Modos de Consulta:
 1. **Por ID único da tabela (`id`)**: Retorna `{ item: ... }` ou 404.
@@ -160,7 +164,7 @@ Obtém certames ou compras específicas.
 ---
 
 ### 3. `list`
-Lista oportunidades com suporte a paginação, ordenação configurável e múltiplos filtros.
+Lista oportunidades com suporte a paginação, ordenação configurável e múltiplos filtros. Lê a view da prioridade efetiva e, por padrão, **exclui `historico`** da lista e do `total` (compra homologada/encerrada é só do BI).
 
 #### Parâmetros de Paginação e Ordenação
 | Parâmetro | Tipo | Padrão | Descrição |
@@ -173,7 +177,7 @@ Lista oportunidades com suporte a paginação, ordenação configurável e múlt
 #### Parâmetros de Filtro
 | Filtro | Tipo | Descrição |
 |---|---|---|
-| `prioridade` | string | Estado do certame (`leads` = recebendo proposta, `monitorar` = em julgamento, `historico` = encerrado/homologado/com resultado). Compra homologada não é `leads` (desde 29/09/2026) |
+| `prioridade` | string | Prioridade **efetiva** (view): `leads` = recebendo proposta, `monitorar` = em julgamento. Sem o filtro, o list traz `leads`, `monitorar` e `NULL`, nunca `historico`. `historico` (encerrado/homologado/com resultado) responde 200 com `items: []` e `total: 0`: não é Oportunidade, é do BI (desde 30/09/2026) |
 | `uf` | string | Sigla da UF com 2 letras (ex: `SP`, `RJ`) |
 | `municipio` | string | Busca parcial (`ilike`) no nome do município |
 | `orgao_cnpj` | string | CNPJ do órgão (apenas dígitos são considerados) |

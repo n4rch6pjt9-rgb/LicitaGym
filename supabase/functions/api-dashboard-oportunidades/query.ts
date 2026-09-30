@@ -189,6 +189,22 @@ export function applyLicitacaoFilters<T extends FilterableQuery>(
   return query;
 }
 
+/**
+ * Recorte de Oportunidades (decisão de produto 30/09/2026): sem filtro de prioridade, exclui
+ * `historico` (compra homologada/encerrada é só do BI) mantendo NULL (fonte que não grava prioridade,
+ * sem sinal de encerramento na view). Aplicado na lista e na contagem, sobre a view com a prioridade
+ * efetiva. Com filtro explícito (leads/monitorar), o eq de applyLicitacaoFilters já recorta.
+ */
+export function applyOportunidadesScope<T extends FilterableQuery>(
+  query: T,
+  filtros: LicitacaoFiltros,
+): T {
+  if (!filtros.prioridade) {
+    query.or("prioridade.is.null,prioridade.neq.historico");
+  }
+  return query;
+}
+
 export function calculateRange(page: number, limit: number): { from: number; to: number } {
   const safePage = page > 0 ? page : 1;
   const safeLimit = limit > 0 ? limit : 20;

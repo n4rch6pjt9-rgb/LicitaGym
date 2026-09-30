@@ -10,10 +10,27 @@ export const corsHeaders = {
 };
 import type { ActionParams, AcompanhamentoActionParams, GetActionParams, LicitacaoFiltros, ListActionParams } from "./types.ts";
 import { parseActionFromBody, parseActionFromUrl } from "./validation.ts";
-import { applyLicitacaoFilters, calculateRange } from "./query.ts";
+import { applyLicitacaoFilters, applyOportunidadesScope, calculateRange } from "./query.ts";
 import { buildEditalUrl } from "../_shared/edital-url.ts";
 import { handleAcompanhamento } from "./acompanhamento.ts";
 import type { UnifiedHttpClient } from "../_shared/http-client/index.ts";
+
+/**
+ * Fonte de leitura de list/get: a view com a prioridade EFETIVA (migration
+ * 20260930200000_licitacoes_prioridade_efetiva). Mesmas colunas públicas da tabela, mas `prioridade`
+ * recalculada só para baixo (historico com qualquer sinal de encerramento; leads -> monitorar com o
+ * prazo vencido). security_invoker + SELECT só para service_role (o client desta função).
+ * readiness e acompanhamento continuam lendo a tabela (saúde da base e `raw` server-side).
+ */
+export const OPORTUNIDADES_VIEW = "licitacoes_externas_prioridade_efetiva";
+
+/**
+ * Prioridades que aparecem em Oportunidades (decisão de produto 30/09/2026): compra homologada ou
+ * encerrada (`historico`) é só do BI. O list exclui `historico` por padrão (lista e contagem);
+ * `prioridade=historico` responde 200 vazio (ver handleList). NULL (fonte que não grava prioridade e
+ * sem sinal de encerramento) continua aparecendo.
+ */
+export const PRIORIDADE_FORA_DE_OPORTUNIDADES = "historico";
 
 /**
  * Colunas públicas explícitas da tabela licitacoes_externas expostas para o dashboard.
@@ -143,6 +160,9 @@ async function handleReadiness(
 
 /**
  * Ação: get
+ * Lê da view com a prioridade efetiva. Uma compra `historico` é devolvida normalmente (com
+ * `prioridade: "historico"`): links do BI e links diretos continuam funcionando; ela só não aparece
+ * no list de Oportunidades.
  * - Se buscado por `id` ou `codigo_externo`: lookup único (retorna `{ item: ... }`, ou 404 claro).
  * - Se buscado por `orgao_cnpj` + `processo_norm`: pode haver 1..N compras (AGENTS.md L66-77),
  *   portanto retorna coleção (`{ items: [...] }`), sem maybeSingle().
@@ -157,7 +177,7 @@ async function handleGet(
     // Caso 1: Busca única por ID
     if (params.id !== undefined && params.id !== null) {
       const { data, error } = await client
-        .from("licitacoes_externas")
+        .from(OPORTUNIDADES_VIEW)
         .select(PUBLIC_LICITACAO_COLUMNS)
         .eq("id", params.id)
         .maybeSingle();
@@ -193,7 +213,7 @@ async function handleGet(
       }
 
       const query = client
-        .from("licitacoes_externas")
+        .from(OPORTUNIDADES_VIEW)
         .select(PUBLIC_LICITACAO_COLUMNS)
         .eq("codigo_externo", params.codigo_externo)
         .eq("fonte", params.fonte);
@@ -228,7 +248,7 @@ async function handleGet(
       const { from, to } = calculateRange(page, limit);
 
       const { data, error, count } = await client
-        .from("licitacoes_externas")
+        .from(OPORTUNIDADES_VIEW)
         .select(PUBLIC_LICITACAO_COLUMNS, { count: "exact" })
         .eq("orgao_cnpj", params.orgao_cnpj)
         .eq("processo_norm", params.processo_norm)
@@ -346,6 +366,12 @@ async function handleList(
     let filtros = params.filtros;
     const { from, to } = calculateRange(page, limit);
 
+    // historico não é Oportunidade (é do BI): o filtro explícito responde vazio, sem consultar o banco.
+    // 200 vazio (e não 400) porque o Dashboard ainda oferece "Histórico de Certames" no seletor.
+    if (filtros.prioridade === PRIORIDADE_FORA_DE_OPORTUNIDADES) {
+      return jsonResponse({ action: "list", page, limit, total: 0, order_by, order_direction, items: [] });
+    }
+
     // Recorte CATMAT: resolve em ids antes da consulta principal
     let matches: Map<number, CatmatMatch[]> | null = null;
     if (temRecorteCatmat(filtros)) {
@@ -363,10 +389,10 @@ async function handleList(
     }
 
     let baseQuery = client
-      .from("licitacoes_externas")
+      .from(OPORTUNIDADES_VIEW)
       .select(PUBLIC_LICITACAO_COLUMNS, { count: "exact" });
 
-    baseQuery = applyLicitacaoFilters(baseQuery, filtros);
+    baseQuery = applyOportunidadesScope(applyLicitacaoFilters(baseQuery, filtros), filtros);
 
     const isAscending = order_direction === "asc";
     baseQuery = baseQuery
@@ -380,9 +406,9 @@ async function handleList(
     // não uma falha; o total vem de uma contagem com os mesmos filtros.
     if (error && (error as { code?: string }).code === "PGRST103") {
       let countQuery = client
-        .from("licitacoes_externas")
+        .from(OPORTUNIDADES_VIEW)
         .select("id", { count: "exact", head: true });
-      countQuery = applyLicitacaoFilters(countQuery, filtros);
+      countQuery = applyOportunidadesScope(applyLicitacaoFilters(countQuery, filtros), filtros);
       const { count: total, error: countError } = await countQuery;
       if (countError || total === null || total === undefined) {
         console.error("[api-dashboard-oportunidades] Contagem indisponível após página além do fim:", countError);

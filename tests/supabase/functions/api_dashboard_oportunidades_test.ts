@@ -14,12 +14,14 @@ import {
 } from "../../../supabase/functions/api-dashboard-oportunidades/validation.ts";
 import {
   applyLicitacaoFilters,
+  applyOportunidadesScope,
   calculateRange,
   sanitizeSearchTerm,
   type FilterableQuery,
 } from "../../../supabase/functions/api-dashboard-oportunidades/query.ts";
 import {
   handleRequest,
+  OPORTUNIDADES_VIEW,
   PUBLIC_LICITACAO_COLUMNS,
 } from "../../../supabase/functions/api-dashboard-oportunidades/index.ts";
 
@@ -724,7 +726,7 @@ Deno.test("handleRequest list com filtro uf asserte eq('uf', 'AC') e PUBLIC_LICI
 
   // Asserção das chamadas ao mock
   const fromCall = mockClient.calls.find((c) => c.method === "from");
-  assertEquals(fromCall, { method: "from", args: ["licitacoes_externas"] });
+  assertEquals(fromCall, { method: "from", args: [OPORTUNIDADES_VIEW] });
 
   const selectCall = mockClient.calls.find((c) => c.method === "select");
   assertEquals(selectCall?.args[0], PUBLIC_LICITACAO_COLUMNS);
@@ -1393,4 +1395,128 @@ Deno.test("list com recorte CATMAT e página além do fim: a contagem também fi
   assertEquals(res.status, 200);
   assertEquals((await res.json()).total, 1);
   assertEquals(mockClient.calls.some((c) => c.method === "head.in" && c.args[0] === "id"), true);
+});
+
+
+// --------------------------------------------------------------------------
+// Oportunidades sem historico (decisão de produto 30/09/2026): prioridade efetiva da view,
+// historico fora do list e da contagem; get devolve historico normalmente.
+// Dados fictícios.
+// --------------------------------------------------------------------------
+
+const ESCOPO_OPORTUNIDADES = "prioridade.is.null,prioridade.neq.historico";
+
+function listReq(qs: string): Request {
+  return new Request(`http://localhost/api-dashboard-oportunidades?action=list${qs}`, { method: "GET" });
+}
+
+Deno.test("OPORTUNIDADES_VIEW é a view da prioridade efetiva", () => {
+  assertEquals(OPORTUNIDADES_VIEW, "licitacoes_externas_prioridade_efetiva");
+});
+
+Deno.test("applyOportunidadesScope: sem prioridade exclui historico e mantém NULL; com prioridade não mexe", () => {
+  const semFiltro = new MockQueryBuilder();
+  applyOportunidadesScope(semFiltro, {});
+  assertEquals(semFiltro.calls, [{ method: "or", args: [ESCOPO_OPORTUNIDADES] }]);
+
+  const leads = new MockQueryBuilder();
+  applyOportunidadesScope(leads, { prioridade: "leads" });
+  assertEquals(leads.calls, []);
+});
+
+Deno.test("list padrão lê a view e exclui historico na lista", async () => {
+  const mockClient = createRecordingMockClient({ listResult: { data: [], count: 0, error: null } });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(listReq("&uf=BA"), { getClient: () => mockClient as any, requireAuth: () => null });
+  assertEquals(res.status, 200);
+  assertEquals(mockClient.calls.filter((c) => c.method === "from"), [{ method: "from", args: [OPORTUNIDADES_VIEW] }]);
+  const ors = mockClient.calls.filter((c) => c.method === "or");
+  assertEquals(ors, [{ method: "or", args: [ESCOPO_OPORTUNIDADES] }]);
+  assertEquals(mockClient.calls.some((c) => c.method === "eq" && c.args[0] === "prioridade"), false);
+});
+
+Deno.test("list padrão com busca: escopo e busca são dois or (AND no PostgREST)", async () => {
+  const mockClient = createRecordingMockClient({ listResult: { data: [], count: 0, error: null } });
+  // deno-lint-ignore no-explicit-any
+  await handleRequest(listReq("&busca=piso"), { getClient: () => mockClient as any, requireAuth: () => null });
+  const ors = mockClient.calls.filter((c) => c.method === "or").map((c) => c.args[0]);
+  assertEquals(ors.length, 2);
+  assertEquals(ors.includes(ESCOPO_OPORTUNIDADES), true);
+  assertEquals(ors.some((o) => String(o).startsWith("objeto.ilike.*piso*")), true);
+});
+
+Deno.test("list com prioridade=leads filtra a prioridade efetiva sem o or do escopo", async () => {
+  const mockClient = createRecordingMockClient({ listResult: { data: [], count: 0, error: null } });
+  // deno-lint-ignore no-explicit-any
+  await handleRequest(listReq("&prioridade=leads"), { getClient: () => mockClient as any, requireAuth: () => null });
+  assertEquals(mockClient.calls.filter((c) => c.method === "eq" && c.args[0] === "prioridade"), [
+    { method: "eq", args: ["prioridade", "leads"] },
+  ]);
+  assertEquals(mockClient.calls.some((c) => c.method === "or"), false);
+});
+
+Deno.test("list com prioridade=historico responde 200 vazio sem consultar o banco (nem o recorte CATMAT)", async () => {
+  const mockClient = createRecordingMockClient({
+    listResult: { data: [{ id: 1, prioridade: "historico" }], count: 1, error: null },
+    rpcResult: { data: [{ licitacao_id: 1, codigo_pdm: 1, codigo_item: null, motivo: "texto" }], error: null },
+  });
+  const res = await handleRequest(listReq("&prioridade=historico&catmat_pdm=1&page=2&limit=10"), {
+    // deno-lint-ignore no-explicit-any
+    getClient: () => mockClient as any,
+    requireAuth: () => null,
+  });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.action, "list");
+  assertEquals(body.items, []);
+  assertEquals(body.total, 0);
+  assertEquals(body.page, 2);
+  assertEquals(body.limit, 10);
+  assertEquals(mockClient.calls, []);
+});
+
+Deno.test("list além do fim (PGRST103): a contagem também exclui historico e lê a view", async () => {
+  const mockClient = createRecordingMockClient({
+    listResult: { data: null as unknown as unknown[], count: null, error: { code: "PGRST103", message: "range" } },
+    headCountResult: { count: 3, error: null },
+  });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(listReq("&page=5&limit=100"), { getClient: () => mockClient as any, requireAuth: () => null });
+  assertEquals(res.status, 200);
+  assertEquals((await res.json()).total, 3);
+  assertEquals(mockClient.calls.filter((c) => c.method === "from").map((c) => c.args[0]), [OPORTUNIDADES_VIEW, OPORTUNIDADES_VIEW]);
+  assertEquals(mockClient.calls.some((c) => c.method === "head.or" && c.args[0] === ESCOPO_OPORTUNIDADES), true);
+});
+
+Deno.test("get por id de uma compra historico devolve 200 com a prioridade efetiva (links do BI)", async () => {
+  const mockClient = createRecordingMockClient({
+    singleResult: { data: { id: 9001, fonte: "pncp", prioridade: "historico", objeto: "Piso emborrachado (fictício)" }, error: null },
+  });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=get&id=9001", { method: "GET" });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
+  assertEquals(res.status, 200);
+  assertEquals((await res.json()).item.prioridade, "historico");
+  assertEquals(mockClient.calls.filter((c) => c.method === "from"), [{ method: "from", args: [OPORTUNIDADES_VIEW] }]);
+  assertEquals(mockClient.calls.some((c) => c.method === "or"), false);
+});
+
+Deno.test("get por codigo_externo e por orgao_cnpj + processo_norm leem a view, sem excluir historico", async () => {
+  for (
+    const qs of [
+      "codigo_externo=11111111000100-1-000001/2026&fonte=pncp",
+      "orgao_cnpj=11111111000100&processo_norm=0001202600001",
+    ]
+  ) {
+    const mockClient = createRecordingMockClient({
+      singleResult: { data: { id: 9001, prioridade: "historico" }, error: null },
+      listResult: { data: [{ id: 9001, prioridade: "historico" }], count: 1, error: null },
+    });
+    const req = new Request(`http://localhost/api-dashboard-oportunidades?action=get&${qs}`, { method: "GET" });
+    // deno-lint-ignore no-explicit-any
+    const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
+    assertEquals(res.status, 200, qs);
+    assertEquals(mockClient.calls.filter((c) => c.method === "from"), [{ method: "from", args: [OPORTUNIDADES_VIEW] }]);
+    assertEquals(mockClient.calls.some((c) => c.method === "or"), false);
+  }
 });

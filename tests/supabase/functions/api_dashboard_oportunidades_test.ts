@@ -659,7 +659,25 @@ function createRecordingMockClient(config: {
     calls,
     rpc(fn: string, args: unknown) {
       calls.push({ method: "rpc", args: [fn, args] });
-      return Promise.resolve(config.rpcResult ?? { data: [], error: null });
+      let rpcRange: [number, number] | undefined;
+      const rpcQuery = {
+        order(column: string, options: unknown) {
+          calls.push({ method: "rpc.order", args: [column, options] });
+          return rpcQuery;
+        },
+        range(from: number, to: number) {
+          rpcRange = [from, to];
+          calls.push({ method: "rpc.range", args: [from, to] });
+          return rpcQuery;
+        },
+        then(onfulfilled?: (v: unknown) => unknown, onrejected?: (e: unknown) => unknown) {
+          const result = config.rpcResult ?? { data: [], error: null };
+          const [from, to] = rpcRange ?? [0, Number.MAX_SAFE_INTEGER];
+          const data = result.data?.slice(from, to + 1) ?? null;
+          return Promise.resolve({ data, error: result.error }).then(onfulfilled, onrejected);
+        },
+      };
+      return rpcQuery;
     },
     from(table: string) {
       calls.push({ method: "from", args: [table] });
@@ -1575,6 +1593,7 @@ Deno.test("CATMAT: 1200 historico + 300 atuais não dá 422; lista só as atuais
   assertEquals(body.items[0].catmat_match.length, 1);
 
   // escopo: 3 lotes (500+500+500) na view, cada um com o or que exclui historico
+  assertEquals(mockClient.calls.filter((c) => c.method === "rpc.range").map((c) => c.args), [[0, 999], [1000, 1999]]);
   const lotes = mockClient.calls.filter((c) => c.method === "escopo.in");
   assertEquals(lotes.map((c) => (c.args[1] as number[]).length), [500, 500, 500]);
   assertEquals(lotes.every((c) => c.args[0] === "id"), true);

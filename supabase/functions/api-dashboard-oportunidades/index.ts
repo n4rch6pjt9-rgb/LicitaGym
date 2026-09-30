@@ -313,6 +313,7 @@ export const MAX_IDS_CATMAT = 1000;
 
 /** Tamanho do lote de ids por consulta ao reduzir o recorte CATMAT ao escopo (URL curta no PostgREST). */
 export const CATMAT_ESCOPO_LOTE = 500;
+const CATMAT_RPC_PAGE_SIZE = 1000;
 
 export interface CatmatMatch {
   codigo_pdm: number;
@@ -333,15 +334,26 @@ async function resolverCatmat(
   client: SupabaseClient,
   filtros: LicitacaoFiltros,
 ): Promise<{ ids: number[]; porLicitacao: Map<number, CatmatMatch[]> }> {
-  const { data, error } = await client.rpc("licitacoes_ids_por_catmat", {
-    p_grupos: filtros.catmat_grupo ?? null,
-    p_classes: filtros.catmat_classe ?? null,
-    p_pdms: filtros.catmat_pdm ?? null,
-    p_itens: filtros.catmat_item ?? null,
-    p_somente_catalogo: filtros.catalogo === true,
-  });
-  if (error) throw error;
-  const linhas = (data ?? []) as Array<{ licitacao_id: number; codigo_pdm: number; codigo_item: number | null; motivo: string }>;
+  const linhas: Array<{ licitacao_id: number; codigo_pdm: number; codigo_item: number | null; motivo: string }> = [];
+  for (let from = 0;; from += CATMAT_RPC_PAGE_SIZE) {
+    const { data, error } = await client
+      .rpc("licitacoes_ids_por_catmat", {
+        p_grupos: filtros.catmat_grupo ?? null,
+        p_classes: filtros.catmat_classe ?? null,
+        p_pdms: filtros.catmat_pdm ?? null,
+        p_itens: filtros.catmat_item ?? null,
+        p_somente_catalogo: filtros.catalogo === true,
+      })
+      .order("licitacao_id", { ascending: true })
+      .order("codigo_pdm", { ascending: true })
+      .order("codigo_item", { ascending: true, nullsFirst: true })
+      .order("motivo", { ascending: true })
+      .range(from, from + CATMAT_RPC_PAGE_SIZE - 1);
+    if (error) throw error;
+    const pagina = (data ?? []) as Array<{ licitacao_id: number; codigo_pdm: number; codigo_item: number | null; motivo: string }>;
+    linhas.push(...pagina);
+    if (pagina.length < CATMAT_RPC_PAGE_SIZE) break;
+  }
 
   const pdms = [...new Set(linhas.map((l) => l.codigo_pdm))];
   const nomes = new Map<number, string>();

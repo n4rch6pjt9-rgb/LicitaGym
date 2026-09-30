@@ -10,10 +10,27 @@ export const corsHeaders = {
 };
 import type { ActionParams, AcompanhamentoActionParams, GetActionParams, LicitacaoFiltros, ListActionParams } from "./types.ts";
 import { parseActionFromBody, parseActionFromUrl } from "./validation.ts";
-import { applyLicitacaoFilters, calculateRange } from "./query.ts";
+import { applyLicitacaoFilters, applyOportunidadesScope, calculateRange } from "./query.ts";
 import { buildEditalUrl } from "../_shared/edital-url.ts";
 import { handleAcompanhamento } from "./acompanhamento.ts";
 import type { UnifiedHttpClient } from "../_shared/http-client/index.ts";
+
+/**
+ * Fonte de leitura de list/get: a view com a prioridade EFETIVA (migration
+ * 20260930200000_licitacoes_prioridade_efetiva). Mesmas colunas públicas da tabela, mas `prioridade`
+ * recalculada só para baixo (historico com qualquer sinal de encerramento; leads -> monitorar com o
+ * prazo vencido). security_invoker + SELECT só para service_role (o client desta função).
+ * readiness e acompanhamento continuam lendo a tabela (saúde da base e `raw` server-side).
+ */
+export const OPORTUNIDADES_VIEW = "licitacoes_externas_prioridade_efetiva";
+
+/**
+ * Prioridades que aparecem em Oportunidades (decisão de produto 30/09/2026): compra homologada ou
+ * encerrada (`historico`) é só do BI. O list exclui `historico` por padrão (lista e contagem);
+ * `prioridade=historico` responde 200 vazio (ver handleList). NULL (fonte que não grava prioridade e
+ * sem sinal de encerramento) continua aparecendo.
+ */
+export const PRIORIDADE_FORA_DE_OPORTUNIDADES = "historico";
 
 /**
  * Colunas públicas explícitas da tabela licitacoes_externas expostas para o dashboard.
@@ -143,6 +160,9 @@ async function handleReadiness(
 
 /**
  * Ação: get
+ * Lê da view com a prioridade efetiva. Uma compra `historico` é devolvida normalmente (com
+ * `prioridade: "historico"`): links do BI e links diretos continuam funcionando; ela só não aparece
+ * no list de Oportunidades.
  * - Se buscado por `id` ou `codigo_externo`: lookup único (retorna `{ item: ... }`, ou 404 claro).
  * - Se buscado por `orgao_cnpj` + `processo_norm`: pode haver 1..N compras (AGENTS.md L66-77),
  *   portanto retorna coleção (`{ items: [...] }`), sem maybeSingle().
@@ -157,7 +177,7 @@ async function handleGet(
     // Caso 1: Busca única por ID
     if (params.id !== undefined && params.id !== null) {
       const { data, error } = await client
-        .from("licitacoes_externas")
+        .from(OPORTUNIDADES_VIEW)
         .select(PUBLIC_LICITACAO_COLUMNS)
         .eq("id", params.id)
         .maybeSingle();
@@ -193,7 +213,7 @@ async function handleGet(
       }
 
       const query = client
-        .from("licitacoes_externas")
+        .from(OPORTUNIDADES_VIEW)
         .select(PUBLIC_LICITACAO_COLUMNS)
         .eq("codigo_externo", params.codigo_externo)
         .eq("fonte", params.fonte);
@@ -228,7 +248,7 @@ async function handleGet(
       const { from, to } = calculateRange(page, limit);
 
       const { data, error, count } = await client
-        .from("licitacoes_externas")
+        .from(OPORTUNIDADES_VIEW)
         .select(PUBLIC_LICITACAO_COLUMNS, { count: "exact" })
         .eq("orgao_cnpj", params.orgao_cnpj)
         .eq("processo_norm", params.processo_norm)
@@ -286,9 +306,14 @@ async function handleGet(
  */
 /**
  * Teto de licitações resolvidas pelo recorte CATMAT antes do filtro por id (evita URL gigante no PostgREST).
- * licitacoes_ids_por_catmat não trunca (sem LIMIT), então r.ids é completo e o teto é verificado sobre o total real.
+ * licitacoes_ids_por_catmat não trunca (sem LIMIT), então r.ids é completo. Acima do teto, os ids são
+ * primeiro reduzidos ao escopo de Oportunidades (idsNoEscopo) e o teto vale sobre o que sobra.
  */
 export const MAX_IDS_CATMAT = 1000;
+
+/** Tamanho do lote de ids por consulta ao reduzir o recorte CATMAT ao escopo (URL curta no PostgREST). */
+export const CATMAT_ESCOPO_LOTE = 500;
+const CATMAT_RPC_PAGE_SIZE = 1000;
 
 export interface CatmatMatch {
   codigo_pdm: number;
@@ -309,15 +334,26 @@ async function resolverCatmat(
   client: SupabaseClient,
   filtros: LicitacaoFiltros,
 ): Promise<{ ids: number[]; porLicitacao: Map<number, CatmatMatch[]> }> {
-  const { data, error } = await client.rpc("licitacoes_ids_por_catmat", {
-    p_grupos: filtros.catmat_grupo ?? null,
-    p_classes: filtros.catmat_classe ?? null,
-    p_pdms: filtros.catmat_pdm ?? null,
-    p_itens: filtros.catmat_item ?? null,
-    p_somente_catalogo: filtros.catalogo === true,
-  });
-  if (error) throw error;
-  const linhas = (data ?? []) as Array<{ licitacao_id: number; codigo_pdm: number; codigo_item: number | null; motivo: string }>;
+  const linhas: Array<{ licitacao_id: number; codigo_pdm: number; codigo_item: number | null; motivo: string }> = [];
+  for (let from = 0;; from += CATMAT_RPC_PAGE_SIZE) {
+    const { data, error } = await client
+      .rpc("licitacoes_ids_por_catmat", {
+        p_grupos: filtros.catmat_grupo ?? null,
+        p_classes: filtros.catmat_classe ?? null,
+        p_pdms: filtros.catmat_pdm ?? null,
+        p_itens: filtros.catmat_item ?? null,
+        p_somente_catalogo: filtros.catalogo === true,
+      })
+      .order("licitacao_id", { ascending: true })
+      .order("codigo_pdm", { ascending: true })
+      .order("codigo_item", { ascending: true, nullsFirst: true })
+      .order("motivo", { ascending: true })
+      .range(from, from + CATMAT_RPC_PAGE_SIZE - 1);
+    if (error) throw error;
+    const pagina = (data ?? []) as Array<{ licitacao_id: number; codigo_pdm: number; codigo_item: number | null; motivo: string }>;
+    linhas.push(...pagina);
+    if (pagina.length < CATMAT_RPC_PAGE_SIZE) break;
+  }
 
   const pdms = [...new Set(linhas.map((l) => l.codigo_pdm))];
   const nomes = new Map<number, string>();
@@ -336,6 +372,29 @@ async function resolverCatmat(
   return { ids: [...porLicitacao.keys()], porLicitacao };
 }
 
+/**
+ * Reduz os ids do recorte CATMAT ao escopo pedido, na view da prioridade efetiva: sem filtro de
+ * prioridade, exclui `historico` (applyOportunidadesScope); com filtro, só aquela prioridade. Assim um
+ * recorte com muitas compras arquivadas (historico) e poucas Oportunidades não bate no teto à toa.
+ * Consulta em lotes de CATMAT_ESCOPO_LOTE ids; falha de consulta levanta (vira 500).
+ */
+export async function idsNoEscopo(
+  client: SupabaseClient,
+  ids: number[],
+  filtros: LicitacaoFiltros,
+): Promise<number[]> {
+  const mantidos: number[] = [];
+  for (let i = 0; i < ids.length; i += CATMAT_ESCOPO_LOTE) {
+    const lote = ids.slice(i, i + CATMAT_ESCOPO_LOTE);
+    let query = client.from(OPORTUNIDADES_VIEW).select("id").in("id", lote);
+    query = filtros.prioridade ? query.eq("prioridade", filtros.prioridade) : applyOportunidadesScope(query, filtros);
+    const { data, error } = await query;
+    if (error) throw error;
+    for (const row of (data ?? []) as Array<{ id: number }>) mantidos.push(Number(row.id));
+  }
+  return mantidos;
+}
+
 async function handleList(
   params: ListActionParams,
   ctx?: DashboardOportunidadesClientContext,
@@ -346,6 +405,12 @@ async function handleList(
     let filtros = params.filtros;
     const { from, to } = calculateRange(page, limit);
 
+    // historico não é Oportunidade (é do BI): o filtro explícito responde vazio, sem consultar o banco.
+    // 200 vazio (e não 400) porque o Dashboard ainda oferece "Histórico de Certames" no seletor.
+    if (filtros.prioridade === PRIORIDADE_FORA_DE_OPORTUNIDADES) {
+      return jsonResponse({ action: "list", page, limit, total: 0, order_by, order_direction, items: [] });
+    }
+
     // Recorte CATMAT: resolve em ids antes da consulta principal
     let matches: Map<number, CatmatMatch[]> | null = null;
     if (temRecorteCatmat(filtros)) {
@@ -353,20 +418,29 @@ async function handleList(
       if (r.ids.length === 0) {
         return jsonResponse({ action: "list", page, limit, total: 0, order_by, order_direction, items: [] });
       }
-      if (r.ids.length > MAX_IDS_CATMAT) {
-        return jsonResponse({
-          error: `O recorte CATMAT casa ${r.ids.length} licitações (limite ${MAX_IDS_CATMAT}). Refine por classe, PDM ou outro filtro.`,
-        }, 422);
+      let ids = r.ids;
+      if (ids.length > MAX_IDS_CATMAT) {
+        // O teto vale sobre as Oportunidades do recorte, não sobre as compras arquivadas (historico):
+        // reduz ao escopo pedido antes de decidir o 422. Abaixo do teto, a consulta principal já recorta.
+        ids = await idsNoEscopo(client, ids, filtros);
+        if (ids.length === 0) {
+          return jsonResponse({ action: "list", page, limit, total: 0, order_by, order_direction, items: [] });
+        }
+        if (ids.length > MAX_IDS_CATMAT) {
+          return jsonResponse({
+            error: `O recorte CATMAT casa ${ids.length} oportunidades (limite ${MAX_IDS_CATMAT}). Refine por classe, PDM ou outro filtro.`,
+          }, 422);
+        }
       }
-      filtros = { ...filtros, ids: r.ids };
+      filtros = { ...filtros, ids };
       matches = r.porLicitacao;
     }
 
     let baseQuery = client
-      .from("licitacoes_externas")
+      .from(OPORTUNIDADES_VIEW)
       .select(PUBLIC_LICITACAO_COLUMNS, { count: "exact" });
 
-    baseQuery = applyLicitacaoFilters(baseQuery, filtros);
+    baseQuery = applyOportunidadesScope(applyLicitacaoFilters(baseQuery, filtros), filtros);
 
     const isAscending = order_direction === "asc";
     baseQuery = baseQuery
@@ -380,9 +454,9 @@ async function handleList(
     // não uma falha; o total vem de uma contagem com os mesmos filtros.
     if (error && (error as { code?: string }).code === "PGRST103") {
       let countQuery = client
-        .from("licitacoes_externas")
+        .from(OPORTUNIDADES_VIEW)
         .select("id", { count: "exact", head: true });
-      countQuery = applyLicitacaoFilters(countQuery, filtros);
+      countQuery = applyOportunidadesScope(applyLicitacaoFilters(countQuery, filtros), filtros);
       const { count: total, error: countError } = await countQuery;
       if (countError || total === null || total === undefined) {
         console.error("[api-dashboard-oportunidades] Contagem indisponível após página além do fim:", countError);

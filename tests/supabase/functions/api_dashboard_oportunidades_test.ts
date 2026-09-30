@@ -14,12 +14,14 @@ import {
 } from "../../../supabase/functions/api-dashboard-oportunidades/validation.ts";
 import {
   applyLicitacaoFilters,
+  applyOportunidadesScope,
   calculateRange,
   sanitizeSearchTerm,
   type FilterableQuery,
 } from "../../../supabase/functions/api-dashboard-oportunidades/query.ts";
 import {
   handleRequest,
+  OPORTUNIDADES_VIEW,
   PUBLIC_LICITACAO_COLUMNS,
 } from "../../../supabase/functions/api-dashboard-oportunidades/index.ts";
 
@@ -592,6 +594,9 @@ function createRecordingMockClient(config: {
   headCountResult?: { count: number | null; error: unknown };
   rpcResult?: { data: unknown[] | null; error: unknown };
   pdmNomes?: Array<{ codigo_pdm: number; nome_pdm: string }>;
+  /** Consulta de escopo do recorte CATMAT (select("id") na view): ids que ficam. Padrão: todos. */
+  escopoIds?: (ids: number[]) => number[];
+  escopoError?: unknown;
 }) {
   const calls: RecordedCall[] = [];
 
@@ -654,7 +659,25 @@ function createRecordingMockClient(config: {
     calls,
     rpc(fn: string, args: unknown) {
       calls.push({ method: "rpc", args: [fn, args] });
-      return Promise.resolve(config.rpcResult ?? { data: [], error: null });
+      let rpcRange: [number, number] | undefined;
+      const rpcQuery = {
+        order(column: string, options: unknown) {
+          calls.push({ method: "rpc.order", args: [column, options] });
+          return rpcQuery;
+        },
+        range(from: number, to: number) {
+          rpcRange = [from, to];
+          calls.push({ method: "rpc.range", args: [from, to] });
+          return rpcQuery;
+        },
+        then(onfulfilled?: (v: unknown) => unknown, onrejected?: (e: unknown) => unknown) {
+          const result = config.rpcResult ?? { data: [], error: null };
+          const [from, to] = rpcRange ?? [0, Number.MAX_SAFE_INTEGER];
+          const data = result.data?.slice(from, to + 1) ?? null;
+          return Promise.resolve({ data, error: result.error }).then(onfulfilled, onrejected);
+        },
+      };
+      return rpcQuery;
     },
     from(table: string) {
       calls.push({ method: "from", args: [table] });
@@ -675,6 +698,26 @@ function createRecordingMockClient(config: {
       return {
         select(cols?: string, opts?: { count?: string; head?: boolean }) {
           calls.push({ method: "select", args: [cols, opts] });
+          if (cols === "id" && !opts) {
+            // Escopo do recorte CATMAT: select("id").in("id", lote).eq|or(...)
+            let lote: number[] = [];
+            const escopo: Record<string, unknown> = {
+              then(onfulfilled?: (v: unknown) => unknown, onrejected?: (e: unknown) => unknown) {
+                const res = config.escopoError
+                  ? { data: null, error: config.escopoError }
+                  : { data: (config.escopoIds ?? ((x: number[]) => x))(lote).map((id) => ({ id })), error: null };
+                return Promise.resolve(res).then(onfulfilled, onrejected);
+              },
+            };
+            for (const m of ["eq", "in", "or"]) {
+              escopo[m] = (...args: unknown[]) => {
+                calls.push({ method: `escopo.${m}`, args });
+                if (m === "in") lote = args[1] as number[];
+                return escopo;
+              };
+            }
+            return escopo;
+          }
           if (opts?.head) {
             // Contagem (head): aceita os mesmos filtros encadeados e resolve com headCountResult
             const headResult = config.headCountResult ?? { count: 10, error: null };
@@ -724,7 +767,7 @@ Deno.test("handleRequest list com filtro uf asserte eq('uf', 'AC') e PUBLIC_LICI
 
   // Asserção das chamadas ao mock
   const fromCall = mockClient.calls.find((c) => c.method === "from");
-  assertEquals(fromCall, { method: "from", args: ["licitacoes_externas"] });
+  assertEquals(fromCall, { method: "from", args: [OPORTUNIDADES_VIEW] });
 
   const selectCall = mockClient.calls.find((c) => c.method === "select");
   assertEquals(selectCall?.args[0], PUBLIC_LICITACAO_COLUMNS);
@@ -1393,4 +1436,239 @@ Deno.test("list com recorte CATMAT e página além do fim: a contagem também fi
   assertEquals(res.status, 200);
   assertEquals((await res.json()).total, 1);
   assertEquals(mockClient.calls.some((c) => c.method === "head.in" && c.args[0] === "id"), true);
+});
+
+
+// --------------------------------------------------------------------------
+// Oportunidades sem historico (decisão de produto 30/09/2026): prioridade efetiva da view,
+// historico fora do list e da contagem; get devolve historico normalmente.
+// Dados fictícios.
+// --------------------------------------------------------------------------
+
+const ESCOPO_OPORTUNIDADES = "prioridade.is.null,prioridade.neq.historico";
+
+function listReq(qs: string): Request {
+  return new Request(`http://localhost/api-dashboard-oportunidades?action=list${qs}`, { method: "GET" });
+}
+
+Deno.test("OPORTUNIDADES_VIEW é a view da prioridade efetiva", () => {
+  assertEquals(OPORTUNIDADES_VIEW, "licitacoes_externas_prioridade_efetiva");
+});
+
+Deno.test("applyOportunidadesScope: sem prioridade exclui historico e mantém NULL; com prioridade não mexe", () => {
+  const semFiltro = new MockQueryBuilder();
+  applyOportunidadesScope(semFiltro, {});
+  assertEquals(semFiltro.calls, [{ method: "or", args: [ESCOPO_OPORTUNIDADES] }]);
+
+  const leads = new MockQueryBuilder();
+  applyOportunidadesScope(leads, { prioridade: "leads" });
+  assertEquals(leads.calls, []);
+});
+
+Deno.test("list padrão lê a view e exclui historico na lista", async () => {
+  const mockClient = createRecordingMockClient({ listResult: { data: [], count: 0, error: null } });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(listReq("&uf=BA"), { getClient: () => mockClient as any, requireAuth: () => null });
+  assertEquals(res.status, 200);
+  assertEquals(mockClient.calls.filter((c) => c.method === "from"), [{ method: "from", args: [OPORTUNIDADES_VIEW] }]);
+  const ors = mockClient.calls.filter((c) => c.method === "or");
+  assertEquals(ors, [{ method: "or", args: [ESCOPO_OPORTUNIDADES] }]);
+  assertEquals(mockClient.calls.some((c) => c.method === "eq" && c.args[0] === "prioridade"), false);
+});
+
+Deno.test("list padrão com busca: escopo e busca são dois or (AND no PostgREST)", async () => {
+  const mockClient = createRecordingMockClient({ listResult: { data: [], count: 0, error: null } });
+  // deno-lint-ignore no-explicit-any
+  await handleRequest(listReq("&busca=piso"), { getClient: () => mockClient as any, requireAuth: () => null });
+  const ors = mockClient.calls.filter((c) => c.method === "or").map((c) => c.args[0]);
+  assertEquals(ors.length, 2);
+  assertEquals(ors.includes(ESCOPO_OPORTUNIDADES), true);
+  assertEquals(ors.some((o) => String(o).startsWith("objeto.ilike.*piso*")), true);
+});
+
+Deno.test("list com prioridade=leads filtra a prioridade efetiva sem o or do escopo", async () => {
+  const mockClient = createRecordingMockClient({ listResult: { data: [], count: 0, error: null } });
+  // deno-lint-ignore no-explicit-any
+  await handleRequest(listReq("&prioridade=leads"), { getClient: () => mockClient as any, requireAuth: () => null });
+  assertEquals(mockClient.calls.filter((c) => c.method === "eq" && c.args[0] === "prioridade"), [
+    { method: "eq", args: ["prioridade", "leads"] },
+  ]);
+  assertEquals(mockClient.calls.some((c) => c.method === "or"), false);
+});
+
+Deno.test("list com prioridade=historico responde 200 vazio sem consultar o banco (nem o recorte CATMAT)", async () => {
+  const mockClient = createRecordingMockClient({
+    listResult: { data: [{ id: 1, prioridade: "historico" }], count: 1, error: null },
+    rpcResult: { data: [{ licitacao_id: 1, codigo_pdm: 1, codigo_item: null, motivo: "texto" }], error: null },
+  });
+  const res = await handleRequest(listReq("&prioridade=historico&catmat_pdm=1&page=2&limit=10"), {
+    // deno-lint-ignore no-explicit-any
+    getClient: () => mockClient as any,
+    requireAuth: () => null,
+  });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.action, "list");
+  assertEquals(body.items, []);
+  assertEquals(body.total, 0);
+  assertEquals(body.page, 2);
+  assertEquals(body.limit, 10);
+  assertEquals(mockClient.calls, []);
+});
+
+Deno.test("list além do fim (PGRST103): a contagem também exclui historico e lê a view", async () => {
+  const mockClient = createRecordingMockClient({
+    listResult: { data: null as unknown as unknown[], count: null, error: { code: "PGRST103", message: "range" } },
+    headCountResult: { count: 3, error: null },
+  });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(listReq("&page=5&limit=100"), { getClient: () => mockClient as any, requireAuth: () => null });
+  assertEquals(res.status, 200);
+  assertEquals((await res.json()).total, 3);
+  assertEquals(mockClient.calls.filter((c) => c.method === "from").map((c) => c.args[0]), [OPORTUNIDADES_VIEW, OPORTUNIDADES_VIEW]);
+  assertEquals(mockClient.calls.some((c) => c.method === "head.or" && c.args[0] === ESCOPO_OPORTUNIDADES), true);
+});
+
+Deno.test("get por id de uma compra historico devolve 200 com a prioridade efetiva (links do BI)", async () => {
+  const mockClient = createRecordingMockClient({
+    singleResult: { data: { id: 9001, fonte: "pncp", prioridade: "historico", objeto: "Piso emborrachado (fictício)" }, error: null },
+  });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=get&id=9001", { method: "GET" });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
+  assertEquals(res.status, 200);
+  assertEquals((await res.json()).item.prioridade, "historico");
+  assertEquals(mockClient.calls.filter((c) => c.method === "from"), [{ method: "from", args: [OPORTUNIDADES_VIEW] }]);
+  assertEquals(mockClient.calls.some((c) => c.method === "or"), false);
+});
+
+Deno.test("get por codigo_externo e por orgao_cnpj + processo_norm leem a view, sem excluir historico", async () => {
+  for (
+    const qs of [
+      "codigo_externo=11111111000100-1-000001/2026&fonte=pncp",
+      "orgao_cnpj=11111111000100&processo_norm=0001202600001",
+    ]
+  ) {
+    const mockClient = createRecordingMockClient({
+      singleResult: { data: { id: 9001, prioridade: "historico" }, error: null },
+      listResult: { data: [{ id: 9001, prioridade: "historico" }], count: 1, error: null },
+    });
+    const req = new Request(`http://localhost/api-dashboard-oportunidades?action=get&${qs}`, { method: "GET" });
+    // deno-lint-ignore no-explicit-any
+    const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
+    assertEquals(res.status, 200, qs);
+    assertEquals(mockClient.calls.filter((c) => c.method === "from"), [{ method: "from", args: [OPORTUNIDADES_VIEW] }]);
+    assertEquals(mockClient.calls.some((c) => c.method === "or"), false);
+  }
+});
+
+
+// --------------------------------------------------------------------------
+// Recorte CATMAT x escopo de Oportunidades (review do #108): o teto MAX_IDS_CATMAT vale sobre as
+// Oportunidades do recorte, depois de tirar historico. Dados fictícios.
+// --------------------------------------------------------------------------
+
+function rpcComIds(n: number) {
+  return {
+    data: Array.from({ length: n }, (_, i) => ({ licitacao_id: i + 1, codigo_pdm: 7115, codigo_item: null, motivo: "texto_item" })),
+    error: null,
+  };
+}
+
+Deno.test("CATMAT: 1200 historico + 300 atuais não dá 422; lista só as atuais, escopo em lotes de 500", async () => {
+  // ids 1..1200 historico, 1201..1500 atuais (leads/monitorar)
+  const atuais = (ids: number[]) => ids.filter((id) => id > 1200);
+  const mockClient = createRecordingMockClient({
+    rpcResult: rpcComIds(1500),
+    escopoIds: atuais,
+    listResult: { data: [{ id: 1201 }, { id: 1202 }], count: 300, error: null },
+  });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list&catmat_grupo=78&limit=2", { method: "GET" });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.total, 300);
+  assertEquals(body.items.map((i: { id: number }) => i.id), [1201, 1202]);
+  assertEquals(body.items[0].catmat_match.length, 1);
+
+  // escopo: 3 lotes (500+500+500) na view, cada um com o or que exclui historico
+  assertEquals(mockClient.calls.filter((c) => c.method === "rpc.range").map((c) => c.args), [[0, 999], [1000, 1999]]);
+  const lotes = mockClient.calls.filter((c) => c.method === "escopo.in");
+  assertEquals(lotes.map((c) => (c.args[1] as number[]).length), [500, 500, 500]);
+  assertEquals(lotes.every((c) => c.args[0] === "id"), true);
+  assertEquals(mockClient.calls.filter((c) => c.method === "escopo.or").map((c) => c.args[0]), [
+    ESCOPO_OPORTUNIDADES,
+    ESCOPO_OPORTUNIDADES,
+    ESCOPO_OPORTUNIDADES,
+  ]);
+  assertEquals(mockClient.calls.some((c) => c.method === "escopo.eq"), false);
+  // consulta principal filtra pelos 300 ids atuais (e aplica o escopo de novo)
+  const inPrincipal = mockClient.calls.find((c) => c.method === "in" && c.args[0] === "id");
+  assertEquals((inPrincipal?.args[1] as number[]).length, 300);
+  assertEquals(Math.min(...(inPrincipal?.args[1] as number[])), 1201);
+  assertEquals(mockClient.calls.filter((c) => c.method === "from").map((c) => c.args[0]).filter((t) => t !== "catmat_pdms").every((t) => t === OPORTUNIDADES_VIEW), true);
+});
+
+Deno.test("CATMAT: mais de 1000 atuais depois do escopo continua 422 (com a contagem de oportunidades)", async () => {
+  // 1300 ids, 200 historico: sobram 1100 atuais
+  const mockClient = createRecordingMockClient({ rpcResult: rpcComIds(1300), escopoIds: (ids) => ids.filter((id) => id > 200) });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list&catmat_grupo=78", { method: "GET" });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
+  assertEquals(res.status, 422);
+  assertEquals((await res.json()).error.includes("1100 oportunidades"), true);
+  // a consulta principal nem roda
+  assertEquals(mockClient.calls.some((c) => c.method === "select" && c.args[0] === PUBLIC_LICITACAO_COLUMNS), false);
+});
+
+Deno.test("CATMAT com prioridade=leads acima do teto: escopo filtra eq(prioridade, leads), sem o or", async () => {
+  const mockClient = createRecordingMockClient({
+    rpcResult: rpcComIds(1001),
+    escopoIds: (ids) => ids.filter((id) => id % 2 === 0),
+    listResult: { data: [], count: 0, error: null },
+  });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list&catmat_grupo=78&prioridade=leads", { method: "GET" });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
+  assertEquals(res.status, 200);
+  assertEquals(mockClient.calls.filter((c) => c.method === "escopo.eq").map((c) => c.args), [
+    ["prioridade", "leads"],
+    ["prioridade", "leads"],
+    ["prioridade", "leads"],
+  ]);
+  assertEquals(mockClient.calls.some((c) => c.method === "escopo.or"), false);
+  const inPrincipal = mockClient.calls.find((c) => c.method === "in" && c.args[0] === "id");
+  assertEquals((inPrincipal?.args[1] as number[]).length, 500);
+});
+
+Deno.test("CATMAT acima do teto só com historico: 200 vazio sem a consulta principal", async () => {
+  const mockClient = createRecordingMockClient({ rpcResult: rpcComIds(1500), escopoIds: () => [] });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list&catmat_grupo=78", { method: "GET" });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.total, 0);
+  assertEquals(body.items, []);
+  assertEquals(mockClient.calls.some((c) => c.method === "select" && c.args[0] === PUBLIC_LICITACAO_COLUMNS), false);
+});
+
+Deno.test("CATMAT até o teto não faz a consulta de escopo (a consulta principal já recorta)", async () => {
+  const mockClient = createRecordingMockClient({ rpcResult: rpcComIds(1000), listResult: { data: [], count: 0, error: null } });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list&catmat_grupo=78", { method: "GET" });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
+  assertEquals(res.status, 200);
+  assertEquals(mockClient.calls.some((c) => c.method.startsWith("escopo.")), false);
+  assertEquals(mockClient.calls.some((c) => c.method === "or" && c.args[0] === ESCOPO_OPORTUNIDADES), true);
+});
+
+Deno.test("CATMAT acima do teto com falha na consulta de escopo: 500 genérico", async () => {
+  const mockClient = createRecordingMockClient({ rpcResult: rpcComIds(1001), escopoError: { message: "timeout" } });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list&catmat_grupo=78", { method: "GET" });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
+  assertEquals(res.status, 500);
+  assertEquals((await res.json()).error, "Erro interno no servidor");
 });

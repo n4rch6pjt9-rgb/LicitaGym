@@ -380,8 +380,10 @@ def motivo_prioridade(compra: dict, tem_resultado: bool | None = None, *, agora:
         return "historico", "resultado consultado"
     if _campo(compra, "data_homologacao"):
         return "historico", "data_homologacao"
-    # chaves do detalhe antes das da busca: na visão compra_com_detalhe() o detalhe vence
-    if _verdadeiro(_campo(compra, "existeResultado", "tem_resultado")):
+    # sinal POSITIVO de resultado vence de qualquer fonte (fail-closed: homologada nunca vira lead).
+    # A busca atrasa no sentido de "sem resultado"; um existeResultado=False do detalhe não apaga o
+    # tem_resultado=True da busca/raw.
+    if any(_verdadeiro(_campo(compra, k)) for k in ("existeResultado", "tem_resultado")):
         return "historico", "compra com resultado"
     if (_num(_campo(compra, "valorTotalHomologado")) or 0) > 0:
         return "historico", "valor homologado"

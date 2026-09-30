@@ -361,9 +361,9 @@ def test_compra_com_detalhe_o_detalhe_vence_a_busca():
     assert P.motivo_prioridade(dict(v, existeResultado=False), agora=AGORA)[1] == "situação Revogada"
     assert P.prioridade_da_compra(P.compra_com_detalhe(busca, {"dataEncerramentoProposta": "2026-09-20T00:00"}),
                                   agora=AGORA) == "monitorar"
-    # detalhe diz sem resultado: vence o tem_resultado da busca
+    # resultado visto em qualquer fonte vence: detalhe sem resultado não reabre como lead (fail-closed)
     assert P.prioridade_da_compra(P.compra_com_detalhe(dict(busca, tem_resultado=True),
-                                                       {"existeResultado": False}), agora=AGORA) == "leads"
+                                                       {"existeResultado": False}), agora=AGORA) == "historico"
     # campo vazio no detalhe não apaga o da busca; só estado entra na visão; entradas intactas
     assert "processo" not in v and "valorTotalHomologado" not in v
     assert busca["situacao_nome"] == "Divulgada no PNCP" and "existeResultado" not in busca
@@ -405,3 +405,11 @@ def test_backfill_historico_nao_e_rebaixado_sem_o_detalhe():
     r = B.backfill(sb, pncp, aplicar=True, agora=AGORA, consultar_pncp=True)
     assert sb.atualizacoes == [("licitacoes_externas", 2, {"prioridade": "leads"})]
     assert r["historico_mantido_sem_detalhe"] == 0
+
+
+def test_dispensa_homologada_com_prazo_futuro_nao_e_lead():
+    """Dispensa homologada antes do fim do prazo de proposta (caso PM-BA): nunca lead."""
+    busca = dict(BUSCA_ABERTA, modalidade_licitacao_nome="Dispensa", tem_resultado=True)
+    det = dict(DETALHE_ABERTO, modalidadeNome="Dispensa", existeResultado=False)   # prazo 13/10, futuro
+    r, lic = _coletar(_pncp_coleta(det, busca))
+    assert lic["prioridade"] == "historico" and "prioridade_leads" not in r

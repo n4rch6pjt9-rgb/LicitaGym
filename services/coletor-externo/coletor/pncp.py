@@ -380,8 +380,10 @@ def motivo_prioridade(compra: dict, tem_resultado: bool | None = None, *, agora:
         return "historico", "resultado consultado"
     if _campo(compra, "data_homologacao"):
         return "historico", "data_homologacao"
-    # chaves do detalhe antes das da busca: na visão compra_com_detalhe() o detalhe vence
-    if _verdadeiro(_campo(compra, "existeResultado", "tem_resultado")):
+    # sinal POSITIVO de resultado vence de qualquer fonte (fail-closed: homologada nunca vira lead).
+    # A busca atrasa no sentido de "sem resultado"; um existeResultado=False do detalhe não apaga o
+    # tem_resultado=True da busca/raw.
+    if any(_verdadeiro(_campo(compra, k)) for k in ("existeResultado", "tem_resultado")):
         return "historico", "compra com resultado"
     if (_num(_campo(compra, "valorTotalHomologado")) or 0) > 0:
         return "historico", "valor homologado"
@@ -923,7 +925,9 @@ def fatiar_lote(termos: list[str], lote: str) -> list[str]:
     return termos[(k - 1) * tam:k * tam]
 
 
-def main(argv: list[str] | None = None) -> int:
+def criar_parser() -> argparse.ArgumentParser:
+    """Parser da linha de comando (também usado por coletor.pncp_cloud_run para ler as opções já canônicas,
+    com as abreviações do argparse resolvidas)."""
     ap = argparse.ArgumentParser(description="Coletor PNCP (escopo LicitaGym)")
     ap.add_argument("--modo", choices=list(MODOS), default="leads",
                     help="leads (padrão): recebendo proposta; monitorar: em julgamento; historico: encerradas. "
@@ -955,6 +959,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--corrigir-processos", action="store_true",
                     help="só corrige numero_processo das compras PNCP já gravadas (processo administrativo real)")
+    return ap
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = criar_parser()
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if args.corrigir_processos:

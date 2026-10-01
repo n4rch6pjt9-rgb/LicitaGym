@@ -8,7 +8,8 @@ O contrato completo de requisições, respostas, parâmetros e tratamento de err
 ## Resumo Rápido
 
 - **Caminho**: `/functions/v1/api-dashboard-oportunidades`
-- **Tabela Fonte**: `public.licitacoes_externas`
+- **Tabela Fonte**: `public.licitacoes_externas`; `list` e `get` leem a view `public.licitacoes_externas_prioridade_efetiva` (mesmas colunas públicas, `prioridade` efetiva que só rebaixa; `security_invoker`, SELECT só para `service_role`).
+- **Oportunidades sem `historico`** (decisão de produto 30/09/2026): o `list` exclui `historico` por padrão (itens e `total`); `prioridade=historico` responde 200 vazio; `get` de uma compra `historico` responde normalmente com a prioridade efetiva (links do BI).
 - **Ações**:
   - `readiness`: Retorna prontidão da tabela e data do último sync sem vazar segredos (pública).
   - `get`: Requer autenticação JWT do usuário.

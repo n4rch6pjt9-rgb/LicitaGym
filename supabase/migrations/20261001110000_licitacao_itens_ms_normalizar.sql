@@ -19,6 +19,8 @@
 -- varredura da tabela. Em 01/10/2026 eram 1976 linhas (~3,7 MB). lock_timeout evita ficar na fila atrás de
 -- um lock longo.
 
+begin;
+
 set local lock_timeout = '10s';
 
 update public.licitacao_itens
@@ -42,3 +44,5 @@ begin
     alter table public.licitacao_itens validate constraint licitem_ms_chk;
   end if;
 end $$;
+
+commit;

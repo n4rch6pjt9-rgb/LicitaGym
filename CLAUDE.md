@@ -40,6 +40,9 @@ Migration nova: skill `validar-migrations` (Postgres descartável) antes do PR.
 - PR empilhado: merge commit (não squash), porque a branch é apagada no merge. Skill `merge-pilha`.
 
 ## Observabilidade
+- **Saúde consolidada:** `private.saude_operacional_resumo()` (limiares em `private.saude_limiares`), exposta pela
+  Edge Function `api-saude` (cron secret ou admin). O workflow `.github/workflows/saude.yml` (a cada 30 min) abre/fecha
+  a issue com rótulo `alerta-operacional` quando há verificação crítica.
 - Execuções: `private.pncp_sync_run` (heartbeat, `incompleta`/`retomada`), `private.coleta_externa_run`,
   `private.pncp_sync_request`.
 - Saúde da API: `api-dashboard-oportunidades?action=readiness`.

@@ -75,6 +75,7 @@ jobs:
             api-pncp-irp
             api-dashboard-oportunidades
             api-catmat
+            api-saude
             calculate-distance-webrouter
           )
 
@@ -95,6 +96,9 @@ jobs:
               if [ "${fn}" = "api-catmat" ]; then
                 CATMAT_DEPLOYED=true
               fi
+              if [ "${fn}" = "api-saude" ]; then
+                SAUDE_DEPLOYED=true
+              fi
             else
               echo "✗ ${fn} FALHOU no deploy"
               FAILED+=("${fn}")
@@ -106,6 +110,7 @@ jobs:
           echo "Sucesso (${#SUCCESS[@]}): ${SUCCESS[*]}"
 
           echo "CATMAT_DEPLOYED=${CATMAT_DEPLOYED:-false}" >> "$GITHUB_ENV"
+          echo "SAUDE_DEPLOYED=${SAUDE_DEPLOYED:-false}" >> "$GITHUB_ENV"
 
           if [ "${DASHBOARD_DEPLOYED}" = "true" ]; then
             echo "DASHBOARD_DEPLOYED=true" >> "$GITHUB_ENV"
@@ -161,6 +166,19 @@ jobs:
             exit 1
           fi
           echo "Smoke test api-catmat passou."
+
+      - name: Smoke test api-saude
+        if: env.SAUDE_DEPLOYED == 'true'
+        run: |
+          BASE_URL="https://${PROJECT_ID}.supabase.co/functions/v1/api-saude"
+          echo "Validando resumo sem credencial (esperado HTTP 401)..."
+          CODE=$(curl -s -o /tmp/saude_unauth.json -w "%{http_code}" -X POST -H "Content-Type: application/json" -d '{"action":"resumo"}' "${BASE_URL}")
+          echo "HTTP code recebido: ${CODE}"
+          if [ "${CODE}" -ne 401 ]; then
+            echo "Falha no smoke test: api-saude sem autenticacao retornou ${CODE}, esperado 401"
+            exit 1
+          fi
+          echo "Smoke test api-saude passou."
 
       - name: Report deployment status
         if: always()

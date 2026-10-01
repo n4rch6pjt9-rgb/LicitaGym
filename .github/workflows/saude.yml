@@ -1,0 +1,44 @@
+# Saúde operacional (plano DevOps, Fase 3): a cada 30 min consulta a api-saude, o readiness da api-dashboard-oportunidades
+# e o Dashboard; com verificação crítica abre/atualiza a issue "alerta-operacional" (o GitHub avisa por e-mail) e a fecha
+# quando normaliza. Limiares: private.saude_limiares. Lógica: scripts/saude-alerta.sh (testável com DRY_RUN=1).
+# Pré-requisito: secret SAUDE_TOKEN = o mesmo valor de SYNC_CRON_SECRET das Edge Functions.
+name: Saude operacional
+
+on:
+  schedule:
+    - cron: "7,37 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: saude-operacional
+  cancel-in-progress: false
+
+jobs:
+  saude:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout (git, sem actions de terceiros)
+        run: |
+          git init -q .
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --depth 1 origin "${GITHUB_SHA}"
+          git checkout -q FETCH_HEAD -- scripts/saude-alerta.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Verificar e alertar
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SAUDE_TOKEN: ${{ secrets.SAUDE_TOKEN }}
+        run: |
+          if [ -z "${SAUDE_TOKEN}" ]; then
+            echo "::error::Secret SAUDE_TOKEN ausente (use o valor de SYNC_CRON_SECRET)."
+            exit 1
+          fi
+          bash scripts/saude-alerta.sh

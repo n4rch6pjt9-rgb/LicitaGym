@@ -202,14 +202,15 @@ def pdms_cobertos_por_termo(termo: str) -> list[int]:
 
 _FORTE = (
     r"(equipamentos?|materia(l|is)|aparelhos?|artigos?)\s+(\w+\s+){0,2}(de|para)\s+academia|academia\s+(de\s+ginastica|da\s+saude|de\s+musculacao)|"
-    r"para\s+(a\s+)?academia|muscula|condicionamento\s+fisico|ginastic|ergometric|esteira\s+(eletric|ergom|profission)|"
-    r"\bcardio\b|eliptic|spinning|halter|anilha|kettlebell|barra\s+olimpica|crossfit|pilates|"
+    r"para\s+(a\s+)?academia|muscula|condicionamento\s+fisico|ginastic|esteira\s+(eletric|ergom|profission)|"
+    # cardio, elíptico, ergométrico, tatame, rolo de espuma e escorregador: ambíguos, ver forte_ambiguo() (01/10/2026)
+    r"spinning|halter|anilha|kettlebell|barra\s+olimpica|crossfit|pilates|"
     # "funcional" solto casava "impressora multifuncional", "mesa funcional", "design funcional" (30/09/2026)
     r"(treinamento|treino)\s+funcional|funcional\s+training|(circuito|estacao|rack|gaiola|kit|acessorios?|"
     r"equipamentos?|materia(l|is)|aparelhos?)\s+(de\s+|para\s+)?(treinamento\s+|treino\s+)?funcional\b|"
-    r"leg\s*press|supino|estacao\s+de\s+musculacao|tatame|"
-    r"saco\s+(de\s+)?pancada|banco\s+sueco|corda\s+de\s+pular|rolo\s+(de\s+)?espuma|bambole|"
-    r"cama\s+elastica|raia\s+antimarola|parque\s+infantil|playground|brinquedos?\s+(para\s+)?(praca|parque|playground)|escorregador|gangorra|balanco\s+infantil"
+    r"leg\s*press|supino|estacao\s+de\s+musculacao|"
+    r"saco\s+(de\s+)?pancada|banco\s+sueco|corda\s+de\s+pular|bambole|"
+    r"cama\s+elastica|raia\s+antimarola|parque\s+infantil|playground|brinquedos?\s+(para\s+)?(praca|parque|playground)|gangorra|balanco\s+infantil"
 )
 _FRACO = (
     r"esport|desport|poliesportiv|atletismo|natacao|piscina|futebol|volei|basquet|handebol|"
@@ -294,6 +295,28 @@ def academia_ar_livre(texto: str | None) -> bool:
     t = normalizar(texto or "")
     return bool(ACADEMIA_AR_LIVRE.search(t) or
                 (ACADEMIA_AR_LIVRE_SIGLA.search(t) and ACADEMIA_AR_LIVRE_SIGLA_CONTEXTO.search(t)))
+
+
+# Brinquedo infantil está FORA do escopo (01/10/2026, decisão do Marcelo): piscina de bolinhas, brinquedos infantis/
+# pedagógicos/educativos, brinquedoteca, kits e jogos pedagógicos, casinha de brinquedo, blocos de montar etc.
+# Playground/parquinho, cama elástica, gangorra, escorregador e balanço continuam no escopo nesta mudança
+# (BRINQUEDO_INFANTIL_FICA): "playground infantil ... brinquedo infantil para praça" segue "forte".
+BRINQUEDO_INFANTIL = re.compile(
+    r"piscinas?\s+(de\s+)?bolinhas?|bolinhas?\s+(coloridas\s+|plasticas\s+)?(para|de)\s+piscina|"
+    r"brinquedos?\s+(\w+\s+){0,2}?(infantis?|pedagogic|educativ|didatic|de\s+encaixe|de\s+montar|sonoros?|musica(l|is))|"
+    r"brinquedoteca|(kits?|conjuntos?|jogos?)\s+(\w+\s+){0,2}?(pedagogic|educativ)|kits?\s+(de\s+)?brinquedos?|"
+    r"casinhas?\s+(de\s+brinquedo|infantil|de\s+boneca)|blocos?\s+(de\s+)?(montar|encaixe)|\bbonecas?\b|pelucia|"
+    r"chocalho|mordedor|quebra[\s-]*cabeca|massinha|carrinhos?\s+de\s+(brinquedo|controle\s+remoto|empurrar)|"
+    r"fantoche|jogo\s+da\s+memoria", re.I)
+BRINQUEDO_INFANTIL_FICA = re.compile(
+    r"playground|parquinho|parque\s+infantil|cama\s+elastica|pula[\s-]*pula|gangorra|escorregador|balanco|"
+    r"brinquedos?\s+(para\s+)?(praca|parque|playground)", re.I)
+
+
+def brinquedo_infantil(texto: str | None) -> bool:
+    """Texto de brinquedo infantil (fora do escopo), salvo playground/cama elástica/gangorra/escorregador."""
+    t = normalizar(texto or "")
+    return bool(BRINQUEDO_INFANTIL.search(t) and not BRINQUEDO_INFANTIL_FICA.search(t))
 
 
 def servico_sem_material(texto: str | None) -> bool:
@@ -405,17 +428,97 @@ def _cross_over_academia(t: str) -> bool:
     return bool(CROSS_OVER.search(t) and not CROSS_OVER_FORA.search(t))
 
 
+# ---------------- segunda rodada de falsos positivos (reclassificação de 01/10/2026) ----------------
+# Cada termo: (padrão, contexto que o tira do escopo, contexto de academia que o mantém mesmo assim).
+# - "cardio": "CARDIOVERSOR ... cardio-desfibrilador implantável", "batimentos cardio-fetais", "RCP (ressuscitação
+#   cardio-pulmonar)", "compatível com cardio touch" (itens hospitalares). Fica: esteira/bike/equipamento de cardio.
+# - "elíptico": "tubo de aço elíptico", "seção elíptica", "formato elíptico", "cavidade elíptica para porta-lápis",
+#   mesa/conjunto escolar sextavado/hexagonal. Fica: elíptico/transport (aparelho).
+# - "ergométrico": "banco ergométrico ... indicado para exames", "cadeira giratória ergométrica", teste
+#   ergométrico/ergometria (exame). Fica: bicicleta/esteira ergométrica, cicloergômetro.
+# - "rolo de espuma": rolo de pintura ("ROLO DE ESPUMA P/ PINTURA", "rolo espuma 23 cm c/ cabo", espaçador),
+#   rolo de posicionamento cirúrgico/decúbito. Fica: liberação miofascial, massagem, pilates, rolo revestido.
+# - "tatame": tatame sensorial/de texturas, tapete infantil dobrável para creche/berçário. Fica: lutas, judô,
+#   academia, esportivo.
+# - "escorregador": "escorregador para ingredientes" (batedeira planetária), antiescorregador/antiderrapante.
+#   Fica: playground (o escopo inclui parque infantil).
+_AMBIGUOS = {
+    "cardio": (
+        r"\bcardio\b",
+        # "implant" solto casava "implantação de academia"; "monitor multi" casava "monitor multifunção" (Codex, PR #114)
+        r"desfibril|cardiovers|implantave|implantad|marca[\s-]*passo|cardio[\s-]+(fetal|fetais|pulmonar|vascular|respirat|touch)|"
+        r"ressuscit|\brcp\b|\becg\b|eletrocardio|cardiolog|hospital|ambulator|cateter|\bstent|paciente|doppler|"
+        r"monitor\s+multiparametr",
+        r"esteira|bicicleta|\bbike\b|eliptic|academia|fitness|equipamentos?\s+(de\s+)?cardio|aparelhos?\s+(de\s+)?cardio",
+    ),
+    "eliptico": (
+        r"eliptic",
+        # Peça/forma: o substantivo vem colado ("tubo de aço elíptico", "seção elíptica"); "aço ... movimento elíptico"
+        # e "forma"/"desenho" soltos casavam descrição de aparelho. Iluminação só como objeto de iluminação:
+        # "lumin" solto casava "display iluminado"/"painel luminoso" do próprio elíptico (Codex, PR #114).
+        r"(secao|formato|cavidade|perfil|tubos?(\s+de\s+aco)?|travessa|tampo|furo|recorte|contorno)\s+(\w+\s+)?eliptic|"
+        r"eliptic\w*\s+(sae\b|\d+\s*x\s*\d+)|\bmesas?\b|\bcadeiras?\b|conjunto\s+escolar|\bcarteiras?\b|sextavad|hexagon|"
+        r"mobiliari|porta[\s-]*lapis|\bespelhos?\b|"
+        r"luminaria|\blustres?\b|arandela|plafon|refletor|\bspots?\b|lampada|abajur|pendente\s+(de\s+)?(teto|luz)",
+        # "^eliptico...": item que começa pelo nome do aparelho ("Elíptico com display iluminado e monitor LCD")
+        r"^\W*(\d+\W+)?((aparelho|equipamento)\s+(\w+\s+)?)?(transport\s+)?eliptic|"
+        r"(aparelho|equipamento|simulador|transport)\w*\s+(\w+\s+){0,2}?eliptic|eliptic\w*\s+(profission|residencial|magnetic|"
+        r"eletromagnetic|ergometric|sentado|duplo|simulador)|bicicleta\s+eliptic|condicionamento\s+fisico",
+    ),
+    "ergometrico": (
+        r"ergometric",
+        r"bancos?\s+ergometric|cadeiras?\b[^.;]{0,30}?ergometric|teste\s+ergometric|exames?\s+(\w+\s+){0,2}?ergometric|"
+        r"ergometria|indicado\s+para\s+exa",
+        r"bicicleta|\bbike\b|esteira|cicloergometr|eliptic|remo\s+ergometric|condicionamento\s+fisico|academia",
+    ),
+    "rolo_espuma": (
+        r"rolo\s+(de\s+)?espuma",
+        # "pintura" só como finalidade ("p/ pintura", "pintura de parede"; não "pintura eletrostática" da base);
+        # "textura" saiu ("rolo de espuma texturizado" é de liberação miofascial) (Codex, PR #114)
+        r"(para|p/|de)\s+pintura|pintura\s+(de\s+)?(parede|imobiliaria|latex|acrilica)|pintar|\btintas?\b|verniz|esmalte|"
+        r"parede|\bcabo\b|c/\s*cabo|s/\s*cabo|espacador|pincel|trincha|bandeja|posicionament|posicionador|cirurg|"
+        r"decubito|coxim",
+        r"miofascial|liberacao|massag|pilates|\byoga\b|\bioga\b|foam\s+roller|alongamento|treino|academia|fitness",
+    ),
+    "tatame": (
+        r"tatame",   # sem \b: catálogo cola "TATAMEx000D" (quebra de linha do Excel)
+        r"sensorial|texturas|tapete\s+infantil|\bbebes?\b|creche|bercari|brinquedoteca|\bxpe\b|"   # \b: "bebedouro"
+        r"alfabet|tatames?\s+(\w+\s+){0,3}?(letras|numeros|numerais)|quebra[\s-]*cabeca",
+        r"\bjudo\b|\blutas?\b|karate|jiu|artes\s+marciais|taekwondo|capoeira|esportiv|academia|ginastic",
+    ),
+    "escorregador": (
+        r"(?<!anti)(?<!anti-)(?<!anti\s)escorregador",
+        r"ingrediente|batedeira|liquidific|cozinha|alimento|antiderrapante",
+        r"playground|parque|infantil|crianc|brinquedo|degraus|rampa|toboga|escalada|polietileno|rotomoldad",
+    ),
+}
+AMBIGUOS = {k: tuple(re.compile(p, re.I) for p in v) for k, v in _AMBIGUOS.items()}
+
+
+def _ambiguo_academia(t: str, nome: str):
+    """Match do termo ambíguo `nome` quando conta como academia; None quando falta ou o contexto o tira."""
+    termo, fora, fica = AMBIGUOS[nome]
+    m = termo.search(t)
+    if not m or (fora.search(t) and not fica.search(t)):
+        return None
+    return m
+
+
 def forte_ambiguo(t: str) -> bool:
-    """Termo ambíguo (puxador, cross over, colchonete) no texto normalizado conta como 'forte' só com o contexto
-    certo."""
-    return _puxador_academia(t) or _cross_over_academia(t) or _colchonete_academia(t)
+    """Termo ambíguo (puxador, cross over, colchonete, cardio, elíptico, ergométrico, rolo de espuma, tatame,
+    escorregador) no texto normalizado conta como 'forte' só com o contexto certo."""
+    return bool(_puxador_academia(t) or _cross_over_academia(t) or _colchonete_academia(t)
+                or any(_ambiguo_academia(t, k) for k in AMBIGUOS))
 
 
 def _posicao_aparelho_ambiguo(t: str):
-    """Match do nome de aparelho ambíguo (puxador alto..., cross over) para e_peca(); None sem contexto."""
+    """Match do nome de aparelho ambíguo (puxador alto..., cross over, elíptico, bicicleta ergométrica...) para
+    e_peca(); None sem contexto."""
     if _puxador_academia(t) and PUXADOR_APARELHO.search(t):
         return PUXADOR_APARELHO.search(t)
-    return CROSS_OVER.search(t) if _cross_over_academia(t) else None
+    ms = [m for m in [CROSS_OVER.search(t) if _cross_over_academia(t) else None] +
+          [_ambiguo_academia(t, k) for k in ("eliptico", "ergometrico", "cardio")] if m]
+    return min(ms, key=lambda m: m.start()) if ms else None
 
 
 def _forte(t: str) -> bool:
@@ -432,7 +535,7 @@ _ITEM_FORTE = (
     r"maquina\s+(p/?\s*|para\s+)?(peitoral|dorso|adutora|abdutora|desenvolvimento|panturrilha|de\s+agachamento|remada|gluteo|voador)|"
     r"adutora|abdutora|adutor/abdutor|adultor|flexo[\s-]*e?\s*extensor|cadeira\s+(extensora|flexora|adutora|abdutora)|mesa\s+flexora|"
     r"panturrilha|gluteo\s+(guiado|maquina|4\s*apoios)|polia\s+\d+\s+estac|estacao\s+de\s+musculac|barra\s+para\s+pulley|pulley|"
-    r"esteira\s+(prof|ergom|eletric|elet\b)|eliptic|ergometric|"
+    r"esteira\s+(prof|ergom|eletric|elet\b)|"   # eliptic/ergometric: ambíguos, ver forte_ambiguo()
     r"dumbb?ells?|halter|anilha|kettlebell|barra\s+olimpica|suporte\s+(p/?\s*|para\s+)?(dumbb?ells?|halter|anilha|barra)|estante\s+(p/?\s*|para\s+)?barras|"
     r"caneleira|wall\s*ball|mini\s*band|super\s*band|elas?tico\s+de\s+(tracao|treino)|tubo\s+elastic|"
     r"bola\s+(suica|medicine|de\s+pilates|pilates)|gym\s*ball|disco\s+de\s+equilibrio|roda\s+abdominal|aparelho\s+para\s+abdominal|"
@@ -510,9 +613,11 @@ def classificar_texto_item(texto: str, contexto: bool = False) -> tuple[str | No
         return cat, "regra"
     if ITEM_PISO.search(t):
         return "piso", "regra_item"
-    if academia_ar_livre(t):
+    if academia_ar_livre(t) or brinquedo_infantil(t):
         return None, "regra"
-    if ITEM_FORTE.search(t):
+    # elíptico/ergométrico saíram de ITEM_FORTE (ambíguos): continuam valendo aqui com o contexto certo, como antes
+    # ("BICICLETA ERGOMÉTRICA ... alimentação elétrica" cai em FORA no classificar() e era salva por ITEM_FORTE)
+    if ITEM_FORTE.search(t) or _ambiguo_academia(t, "eliptico") or _ambiguo_academia(t, "ergometrico"):
         return "forte", "regra_item"
     if CATALOGO_ESPORTIVO.search(texto or ""):
         return "forte", "catalogo"
@@ -555,6 +660,8 @@ def classificar(objeto: str, classes_catmat: set[int] | None = None,
     if SERVICO_PESSOAL.search(t) and not PRODUTO.search(t):  # depois do piso: execução de piso continua
         return None
     if academia_ar_livre(t):  # piso/grama/borracha já saíram acima; aparelho de academia ao ar livre fica fora
+        return None
+    if brinquedo_infantil(t):  # piscina de bolinhas, brinquedo pedagógico etc. (playground continua)
         return None
     if _forte(t):
         return "forte"

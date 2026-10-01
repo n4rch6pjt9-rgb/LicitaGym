@@ -152,3 +152,43 @@ def test_avaliar_aplica_fallback_de_item_para_bicicleta_ergometrica():
 def test_tatame_colado_em_quebra_de_linha_e_cone_dobravel():
     assert classificar("TATAMEx000D Especificações mínimas: EVA 20 mm") == "forte"
     assert classificar("Cone dobrável para atividade física; acompanha tatame esportivo") == "forte"
+
+
+# ---- revisão do Codex no PR #114: radicais soltos no contexto "fora" descartavam aparelho legítimo ----
+@pytest.mark.parametrize("texto", [
+    "Elíptico com display iluminado e monitor LCD",
+    "Transport elíptico com painel luminoso e 16 níveis de resistência",
+    "Elíptico com estrutura em aço carbono e movimento elíptico suave",
+    "Aparelho elíptico com painel luminoso",
+])
+def test_eliptico_com_display_iluminado_ou_aco_continua_forte(texto):
+    assert classificar(texto) == "forte"
+    assert classificar_texto_item(texto)[0] == "forte"
+
+
+@pytest.mark.parametrize("texto", [
+    "Luminária elíptica de sobrepor em alumínio, 2 lâmpadas LED",
+    "Plafon elíptico de LED 24W",
+    "Arandela com difusor de seção elíptica",
+])
+def test_luminaria_eliptica_fica_fora(texto):
+    assert classificar(texto) is None
+    assert classificar_texto_item(texto)[0] is None
+
+
+def test_cardio_com_implantacao_ou_monitor_multifuncao_continua_forte():
+    assert classificar("Implantação de espaço com equipamentos de cardio") == "forte"
+    assert classificar("Cardio bike com monitor multifunção") == "forte"
+    assert classificar("Monitor multiparamétrico cardio para UTI") is None
+
+
+def test_rolo_de_espuma_texturizado_ou_massageador_continua_forte():
+    assert classificar("Rolo de espuma texturizado 33 cm") == "forte"
+    assert classificar("Rolo de espuma massageador com cabo") == "forte"
+    assert classificar("Rolo de espuma com base em aço e pintura eletrostática") == "forte"
+    assert classificar("Rolo de espuma para pintura de parede 23 cm") is None
+
+
+def test_tatame_com_bebedouro_no_mesmo_texto_continua_forte():
+    assert classificar("Aquisição de tatames e bebedouros para o ginásio") == "forte"
+    assert classificar("Tatame para bebês, 1 m x 1 m") is None

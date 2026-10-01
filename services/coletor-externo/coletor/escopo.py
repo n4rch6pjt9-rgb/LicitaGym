@@ -445,15 +445,23 @@ def _cross_over_academia(t: str) -> bool:
 _AMBIGUOS = {
     "cardio": (
         r"\bcardio\b",
-        r"desfibril|cardiovers|implant|marca[\s-]*passo|cardio[\s-]+(fetal|fetais|pulmonar|vascular|respirat|touch)|"
-        r"ressuscit|\brcp\b|\becg\b|eletrocardio|cardiolog|hospital|ambulator|cateter|\bstent|paciente|doppler|monitor\s+multi",
+        # "implant" solto casava "implantação de academia"; "monitor multi" casava "monitor multifunção" (Codex, PR #114)
+        r"desfibril|cardiovers|implantave|implantad|marca[\s-]*passo|cardio[\s-]+(fetal|fetais|pulmonar|vascular|respirat|touch)|"
+        r"ressuscit|\brcp\b|\becg\b|eletrocardio|cardiolog|hospital|ambulator|cateter|\bstent|paciente|doppler|"
+        r"monitor\s+multiparametr",
         r"esteira|bicicleta|\bbike\b|eliptic|academia|fitness|equipamentos?\s+(de\s+)?cardio|aparelhos?\s+(de\s+)?cardio",
     ),
     "eliptico": (
         r"eliptic",
-        r"(secao|formato|forma|cavidade|perfil|tubos?|travessa|tampo|furo|recorte|desenho|contorno|aco)\s+(\w+\s+){0,3}?eliptic|"
-        r"eliptic\w*\s+(sae\b|\d+\s*x\s*\d+)|\bmesas?\b|cadeiras?\b|conjunto\s+escolar|carteira|sextavad|hexagon|"
-        r"mobiliari|porta[\s-]*lapis|espelho|lumin",
+        # Peça/forma: o substantivo vem colado ("tubo de aço elíptico", "seção elíptica"); "aço ... movimento elíptico"
+        # e "forma"/"desenho" soltos casavam descrição de aparelho. Iluminação só como objeto de iluminação:
+        # "lumin" solto casava "display iluminado"/"painel luminoso" do próprio elíptico (Codex, PR #114).
+        r"(secao|formato|cavidade|perfil|tubos?(\s+de\s+aco)?|travessa|tampo|furo|recorte|contorno)\s+(\w+\s+)?eliptic|"
+        r"eliptic\w*\s+(sae\b|\d+\s*x\s*\d+)|\bmesas?\b|\bcadeiras?\b|conjunto\s+escolar|\bcarteiras?\b|sextavad|hexagon|"
+        r"mobiliari|porta[\s-]*lapis|\bespelhos?\b|"
+        r"luminaria|\blustres?\b|arandela|plafon|refletor|\bspots?\b|lampada|abajur|pendente\s+(de\s+)?(teto|luz)",
+        # "^eliptico...": item que começa pelo nome do aparelho ("Elíptico com display iluminado e monitor LCD")
+        r"^\W*(\d+\W+)?((aparelho|equipamento)\s+(\w+\s+)?)?(transport\s+)?eliptic|"
         r"(aparelho|equipamento|simulador|transport)\w*\s+(\w+\s+){0,2}?eliptic|eliptic\w*\s+(profission|residencial|magnetic|"
         r"eletromagnetic|ergometric|sentado|duplo|simulador)|bicicleta\s+eliptic|condicionamento\s+fisico",
     ),
@@ -465,13 +473,16 @@ _AMBIGUOS = {
     ),
     "rolo_espuma": (
         r"rolo\s+(de\s+)?espuma",
-        r"pintura|pintar|\btintas?\b|textura|verniz|esmalte|parede|\bcabo\b|c/\s*cabo|s/\s*cabo|espacador|pincel|trincha|"
-        r"bandeja|posicionament|posicionador|cirurg|decubito|coxim",
-        r"miofascial|liberacao|massagem|pilates|\byoga\b|\bioga\b|foam\s+roller|alongamento|treino|academia|fitness",
+        # "pintura" só como finalidade ("p/ pintura", "pintura de parede"; não "pintura eletrostática" da base);
+        # "textura" saiu ("rolo de espuma texturizado" é de liberação miofascial) (Codex, PR #114)
+        r"(para|p/|de)\s+pintura|pintura\s+(de\s+)?(parede|imobiliaria|latex|acrilica)|pintar|\btintas?\b|verniz|esmalte|"
+        r"parede|\bcabo\b|c/\s*cabo|s/\s*cabo|espacador|pincel|trincha|bandeja|posicionament|posicionador|cirurg|"
+        r"decubito|coxim",
+        r"miofascial|liberacao|massag|pilates|\byoga\b|\bioga\b|foam\s+roller|alongamento|treino|academia|fitness",
     ),
     "tatame": (
         r"tatame",   # sem \b: catálogo cola "TATAMEx000D" (quebra de linha do Excel)
-        r"sensorial|texturas|tapete\s+infantil|bebe|creche|bercari|brinquedoteca|\bxpe\b|"
+        r"sensorial|texturas|tapete\s+infantil|\bbebes?\b|creche|bercari|brinquedoteca|\bxpe\b|"   # \b: "bebedouro"
         r"alfabet|tatames?\s+(\w+\s+){0,3}?(letras|numeros|numerais)|quebra[\s-]*cabeca",
         r"\bjudo\b|\blutas?\b|karate|jiu|artes\s+marciais|taekwondo|capoeira|esportiv|academia|ginastic",
     ),

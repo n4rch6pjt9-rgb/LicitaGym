@@ -26,8 +26,11 @@ begin
       select 'constraint', 'licitem_ms_chk validada', 'true', coalesce((select convalidated::text from c), 'ausente')
       union all
       select 'constraint', 'licitem_ms_chk domínio M/S', 'true',
-             coalesce((select (def ilike '%material_ou_servico IS NULL%' and def like '%''M''%' and def like '%''S''%'
-                               and def not ilike '%NOT VALID%')::text from c), 'ausente')
+             coalesce((select (
+               def ilike '%material_ou_servico IS NULL%'
+               and (select array_agg(m[1] order by m[1])
+                      from regexp_matches(def, '''([^'']+)''', 'g') m) = array['M', 'S']
+             )::text from c), 'ausente')
       union all
       select 'dados', 'licitacao_itens com material_ou_servico fora de NULL/M/S', '0',
              (select count(*)::text from public.licitacao_itens

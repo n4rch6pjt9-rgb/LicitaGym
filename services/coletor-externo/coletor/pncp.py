@@ -44,7 +44,6 @@ from .escopo import (
     TERMOS_ESCOPO_COMPLETO,
     academia_ar_livre,
     classificar,
-    classificar_texto_item,
     excluir_compra,
     interesse_borracha,
     normalizar,
@@ -335,10 +334,6 @@ def avaliar(compra: dict, itens: list[dict]) -> tuple[str | None, bool, dict[int
     for it in itens:
         desc = it.get("descricao") or ""
         cat = classificar(desc)
-        if cat is None:
-            item_cat, _ = classificar_texto_item(desc)
-            if item_cat == "forte":
-                cat = item_cat
         if cat in CATEGORIAS_SO_MATERIAL and material_ou_servico(it) == "S" and not PRODUTO.search(normalizar(desc)):
             cat = None
         if ar_livre and cat in CATEGORIAS_SO_MATERIAL:

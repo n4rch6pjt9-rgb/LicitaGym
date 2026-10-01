@@ -613,9 +613,11 @@ export async function handleAcompanhamento(
     }
 
     // 4. Instancia cliente HTTP
+    // Host lease usa private.acquire_http_slot via client.schema("private").rpc(...).
+    const hasPrivateRpc = typeof client.rpc === "function" && typeof client.schema === "function";
     const httpClient = ctx?.httpClient ?? new UnifiedHttpClient({
-      supabaseClient: typeof client.rpc === "function" ? client : null,
-      hostLease: typeof client.rpc === "function" ? undefined : null,
+      supabaseClient: hasPrivateRpc ? client : null,
+      hostLease: hasPrivateRpc ? undefined : null,
     });
 
     // 5. Executa requisições em paralelo com tratamento individual de erros

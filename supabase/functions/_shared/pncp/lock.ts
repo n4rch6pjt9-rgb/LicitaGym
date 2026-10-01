@@ -24,9 +24,12 @@ export async function acquireSyncLock(
   continuation?: unknown;
   retomadaDeId?: string | null;
 }> {
-  // If Supabase client has RPC available, use the atomic private.acquire_sync_lock RPC
-  if (typeof client.rpc === "function") {
-    const { data, error } = await client.rpc("acquire_sync_lock", {
+  // If Supabase client has RPC available, use the atomic private.acquire_sync_lock RPC.
+  // A função vive no schema `private` (exposto no PostgREST); `client.rpc` sozinho
+  // mira `public` e falha com PGRST202. Por isso a chamada passa por schema("private").
+  const privateClient = typeof client.schema === "function" ? client.schema("private") : null;
+  if (privateClient && typeof privateClient.rpc === "function") {
+    const { data, error } = await privateClient.rpc("acquire_sync_lock", {
       p_lock_key: lockKey,
       p_resource_type: resourceType,
       p_parametros: parametros,

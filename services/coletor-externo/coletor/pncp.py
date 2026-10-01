@@ -31,6 +31,7 @@ import re
 import sys
 import threading
 import time
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urljoin, urlsplit
@@ -39,10 +40,14 @@ import requests
 
 from .destino import Armazenamento, Supabase, env, parece_html, sha256
 from .escopo import (
+    PRODUTO,
     TERMOS_ESCOPO_COMPLETO,
+    academia_ar_livre,
     classificar,
     excluir_compra,
     interesse_borracha,
+    normalizar,
+    servico_sem_material,
 )
 from .portal import cnpj_ou_none
 
@@ -276,6 +281,26 @@ def valor_total_detalhe(det: dict) -> float | None:
     return _valor_positivo((det or {}).get("valorTotalEstimado"))
 
 
+# licitacao_itens.material_ou_servico só aceita 'M' ou 'S' (CHECK licitem_ms_chk, migration 20260925120000).
+# O PNCP manda o código em materialOuServico ("M"/"S") e o nome em materialOuServicoNome ("Material"/"Serviço").
+# Em 30/09/2026 o coletor gravava o nome: todo insert de item falhava com 23514 e, como a exceção interrompe
+# _processar, nenhum item, resultado ou documento das compras era gravado.
+_MS_NOMES = {"m": "M", "material": "M", "materiais": "M", "s": "S", "servico": "S", "servicos": "S"}
+
+
+def material_ou_servico(it: dict) -> str | None:
+    """'M' | 'S' | None para um item do PNCP: o código (materialOuServico) vence o nome; o nome é comparado sem
+    caixa e sem acento. Valor desconhecido vira None (o CHECK aceita NULL; o insert do item não falha)."""
+    for chave in ("materialOuServico", "materialOuServicoNome"):
+        v = it.get(chave)
+        if v is None:
+            continue
+        chave_norm = unicodedata.normalize("NFKD", str(v)).encode("ascii", "ignore").decode().strip().lower()
+        if chave_norm in _MS_NOMES:
+            return _MS_NOMES[chave_norm]
+    return None
+
+
 def _data(v):
     if not v:
         return None
@@ -286,15 +311,34 @@ def _data(v):
         return None
 
 
+# Categorias de equipamento/material de academia: item marcado como serviço ('S') no PNCP não conta nelas
+# (piso/obra_piso/borracha continuam: execução de piso ou gramado interessa pela borracha do vencedor).
+CATEGORIAS_SO_MATERIAL = ("forte", "fraco", "catmat")
+
+
 def avaliar(compra: dict, itens: list[dict]) -> tuple[str | None, bool, dict[int, tuple[str | None, bool]]]:
-    """Classifica a compra pelo objeto e pelos itens. Retorna (categoria, interesse_borracha, por_item)."""
+    """Classifica a compra pelo objeto e pelos itens. Retorna (categoria, interesse_borracha, por_item).
+
+    Só o TEXTO do objeto e dos itens classifica: o termo de busca que achou a compra não entra (30/09/2026:
+    id 229 tinha termos_busca ["treinamento funcional"] e virou "forte" pelos itens de oficineiro, não pelo termo).
+    Compra cujo objeto é só serviço de pessoas (credenciamento de oficineiros, aulas, instrutores, vagas em
+    academia) fica fora inteira; item marcado como serviço ('S') sem fornecimento de material no texto não conta
+    como equipamento. Compra de academia ao ar livre (ATI) só entra pelo piso/grama/borracha."""
     objeto = compra.get("description") or compra.get("title") or ""
-    if excluir_compra(objeto):
+    if excluir_compra(objeto) or servico_sem_material(objeto):
         return None, False, {it["numeroItem"]: (None, False) for it in itens}
+    # Academia ao ar livre (ATI) está fora do escopo: numa compra dessas só o piso/grama/borracha conta;
+    # "LEG PRESS DUPLO" ou "SIMULADOR DE CAVALGADA" de uma ATI não fazem a compra virar "forte".
+    ar_livre = academia_ar_livre(objeto)
     por_item = {}
     for it in itens:
-        cat = classificar(it.get("descricao") or "")
-        por_item[it["numeroItem"]] = (cat, interesse_borracha(it.get("descricao") or "", cat))
+        desc = it.get("descricao") or ""
+        cat = classificar(desc)
+        if cat in CATEGORIAS_SO_MATERIAL and material_ou_servico(it) == "S" and not PRODUTO.search(normalizar(desc)):
+            cat = None
+        if ar_livre and cat in CATEGORIAS_SO_MATERIAL:
+            cat = None
+        por_item[it["numeroItem"]] = (cat, interesse_borracha(desc, cat))
     cat_obj = classificar(objeto)
     prioridade = ["borracha", "obra_piso", "piso", "catmat", "forte", "fraco"]
     candidatas = [cat_obj] + [c for c, _ in por_item.values()]
@@ -653,7 +697,7 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
     if itens:
         sb.upsert("licitacao_itens", [{
             "licitacao_id": lic_id, "numero_item": it["numeroItem"], "descricao": it.get("descricao"),
-            "material_ou_servico": it.get("materialOuServicoNome"), "quantidade": _num(it.get("quantidade")),
+            "material_ou_servico": material_ou_servico(it), "quantidade": _num(it.get("quantidade")),
             "unidade_medida": it.get("unidadeMedida"), "valor_unitario_estimado": _num(it.get("valorUnitarioEstimado")),
             "valor_total_estimado": _num(it.get("valorTotal")),
             "catalogo_codigo_item": str(it["catalogoCodigoItem"]) if it.get("catalogoCodigoItem") else None,

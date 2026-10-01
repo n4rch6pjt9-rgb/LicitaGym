@@ -201,10 +201,13 @@ def pdms_cobertos_por_termo(termo: str) -> list[int]:
     return [p for p, tlist in TERMOS_POR_PDM.items() if any(normalizar(t) == t_norm for t in tlist)]
 
 _FORTE = (
-    r"(equipamentos?|materia(l|is)|aparelhos?|artigos?)\s+(\w+\s+){0,2}(de|para)\s+academia|academia\s+(de\s+ginastica|ao\s+ar\s+livre|da\s+saude|popular|de\s+musculacao)|"
+    r"(equipamentos?|materia(l|is)|aparelhos?|artigos?)\s+(\w+\s+){0,2}(de|para)\s+academia|academia\s+(de\s+ginastica|da\s+saude|de\s+musculacao)|"
     r"para\s+(a\s+)?academia|muscula|condicionamento\s+fisico|ginastic|ergometric|esteira\s+(eletric|ergom|profission)|"
-    r"\bcardio\b|eliptic|spinning|halter|anilha|kettlebell|barra\s+olimpica|crossfit|pilates|funcional|"
-    r"leg\s*press|supino|puxador|cross\s*over|estacao\s+de\s+musculacao|tatame|colchonete|"
+    r"\bcardio\b|eliptic|spinning|halter|anilha|kettlebell|barra\s+olimpica|crossfit|pilates|"
+    # "funcional" solto casava "impressora multifuncional", "mesa funcional", "design funcional" (30/09/2026)
+    r"(treinamento|treino)\s+funcional|funcional\s+training|(circuito|estacao|rack|gaiola|kit|acessorios?|"
+    r"equipamentos?|materia(l|is)|aparelhos?)\s+(de\s+|para\s+)?(treinamento\s+|treino\s+)?funcional\b|"
+    r"leg\s*press|supino|estacao\s+de\s+musculacao|tatame|"
     r"saco\s+(de\s+)?pancada|banco\s+sueco|corda\s+de\s+pular|rolo\s+(de\s+)?espuma|bambole|"
     r"cama\s+elastica|raia\s+antimarola|parque\s+infantil|playground|brinquedos?\s+(para\s+)?(praca|parque|playground)|escorregador|gangorra|balanco\s+infantil"
 )
@@ -243,18 +246,83 @@ EXCLUSAO_PAISAGISMO = re.compile(r"paisagis|jardinagem", re.I)
 
 
 def _excluida(t: str) -> bool:
-    return bool(EXCLUSAO_COMPRA.search(t) or (EXCLUSAO_PAISAGISMO.search(t) and not BORRACHA.search(t)))
+    return bool(EXCLUSAO_COMPRA.search(t) or (EXCLUSAO_PAISAGISMO.search(t) and not borracha(t)))
 
 
 def excluir_compra(objeto: str) -> bool:
     return _excluida(normalizar(objeto))
 
 
+# Serviço de pessoas sem fornecimento de material (30/09/2026, pedido do Marcelo: ele vende produtos do CATMAT,
+# não serviços). Ex.: id 229 (Angatuba/SP, credenciamento de oficineiros) virou "forte" pelos itens
+# "OFICINEIRO (A) DE GINASTICA" e "OFICINEIRO (A) DE TREINAMENTO FUNCIONAL"; Jaguariúna/SP marca "AULA MINISTRADA
+# Pilates" como material. Aulas, oficinas, instrutores, professores, educador físico e vagas em academia ficam fora,
+# salvo quando o mesmo texto também fala em compra/fornecimento de material ou equipamento.
+SERVICO_PESSOAL = re.compile(
+    r"\baulas?\b|hora[\s/-]*aula|oficineir|instrutor|"
+    # "oficina" sozinha é também oficina mecânica/de marcenaria: só conta como atividade (oficina de ginástica,
+    # oficinas esportivas/presenciais) ou quando alguém vai realizar/conduzir/ministrar oficinas
+    r"\boficinas?\s+(\w+\s+){0,2}?(ginastic|danca|esportiv|cultur|pedagog|artistic|artes|music|capoeira|treinamento|"
+    r"atividades?|presencia|socio|lutas?|ballet|bale|teatro|zumba|recreativ|ludic)|"
+    r"(realizacao|conducao|execucao|ministrar|realizar|conduzir)\s+(\w+\s+){0,3}oficinas?\b|\bprofessor(a|es|as)?\b|educador(a|es)?\s+fisic|"
+    r"profissiona(l|is)\s+(de\s+educacao\s+fisica|para\s+(exercer|ministrar|atuar|realizar|conduzir)|habilitad|"
+    r"especializad|interessad)|contratacao\s+de\s+profissiona|personal\s*trainer|treinador|"
+    r"\bministra(r|cao|da|do|das|dos)\b|vagas?\s+(subsidiadas?\s+)?(em|de|para)\s+(academias?|estudios?)|mensalidades?|"
+    r"(estabelecimentos?|empresas?|pessoas?\s+juridicas?)\s+prestador\w*\s+de\s+servic|"
+    r"servicos?\s+(profissiona|de\s+educador|de\s+atividades?\s+fisicas?|de\s+instrut|de\s+saude)", re.I)
+PRODUTO = re.compile(
+    r"aquisic|\bcompras?\s+de\b|\binsumos?\b|fornecimento\s+(e\s+instalacao\s+)?(de\s+)?(materia|equipament|aparelh|produt|pecas?|kits?|"
+    r"brinquedo|piso|grama|borracha)|com\s+fornecimento\s+de\s+(materia|equipament|pecas?)|\bmateria(l|is)\b|"
+    r"equipamentos?\b|aparelhos?\b|\bkits?\b", re.I)
+
+
+# Academia ao ar livre (ATI, academia da terceira idade, aparelhos de ginástica ao ar livre) está FORA do escopo
+# (30/09/2026, decisão do Marcelo). Única exceção: o mesmo texto cita piso/grama da linha Playfit (piso
+# emborrachado, piso de borracha, piso para academia ao ar livre, grama sintética, borracha): aí entra pelo piso
+# (piso, obra_piso ou borracha), nunca como "forte". Vocabulário do dicionario-aparelhos-v0.3 (academia_ar_livre).
+ACADEMIA_AR_LIVRE = re.compile(
+    r"academias?\s+(publicas?\s+)?(ao\s+|a\s+)?ar\s+livre|academias?\s+(da|de|para\s+a)\s+(terceira|melhor)\s+idade|"
+    r"academias?\s+(de\s+|em\s+)?pracas?|academias?\s+populares|academia\s+popular|"
+    r"(ginastica|musculacao|fitness|exercicios?(\s+fisicos?)?)\s+(\w+\s+){0,2}ao\s+ar\s+livre", re.I)
+# Siglas só valem com contexto de aparelho ("ATI" e "APE" também são siglas de outras coisas).
+ACADEMIA_AR_LIVRE_SIGLA = re.compile(r"\bati\b|\bape\b", re.I)
+ACADEMIA_AR_LIVRE_SIGLA_CONTEXTO = re.compile(r"academia|aparelh|equipament|ginastic|exercic|praca|galvaniz", re.I)
+
+
+def academia_ar_livre(texto: str | None) -> bool:
+    """Texto fala de academia ao ar livre / ATI (fora do escopo, salvo o piso)."""
+    t = normalizar(texto or "")
+    return bool(ACADEMIA_AR_LIVRE.search(t) or
+                (ACADEMIA_AR_LIVRE_SIGLA.search(t) and ACADEMIA_AR_LIVRE_SIGLA_CONTEXTO.search(t)))
+
+
+def servico_sem_material(texto: str | None) -> bool:
+    """Texto de serviço de pessoas (aulas, oficinas, instrutores, vagas em academia) sem compra de material.
+    Execução de piso/grama/borracha por profissional não conta (entra pelo piso: interesse na borracha)."""
+    t = normalizar(texto or "")
+    return bool(SERVICO_PESSOAL.search(t) and not PRODUTO.search(t)
+                and not (borracha(t) or PISO.search(t) or _piso_in_loco(t)))
+
+
 # Borracha para infill/piso: raspa, granulado, SBR, EPDM, pneu triturado
 BORRACHA = re.compile(
-    r"(raspa|granulad[oa]s?|granulos?|triturad[oa]s?|reciclad[oa]s?|po)\s+(de\s+)?borracha|borracha\s+(granulad|triturad|reciclad|moid|sbr|epdm)|"
-    r"\bsbr\b|\bepdm\b|pneus?\s+(triturad|inserviv|reciclad)|(granulos?|graos?)\s+de\s+pneus?|preenchimento\s+(com|de)\s+borracha|"
+    r"(raspa|granulad[oa]s?|granulos?|triturad[oa]s?|reciclad[oa]s?|po)\s+(de\s+)?borracha|borracha\s+(granulad|triturad|reciclad|moid)|"
+    r"pneus?\s+(triturad|inserviv|reciclad)|(granulos?|graos?)\s+de\s+pneus?|preenchimento\s+(com|de)\s+borracha|"
     r"mulch\s+de\s+borracha", re.I)
+# SBR/EPDM sozinhos são ambíguos (30/09/2026): "adesivo/aditivo SBR" para argamassa e chapisco, "manta EPDM" de
+# impermeabilização, perfil/gaxeta/mangueira de EPDM. Só contam como borracha da linha Playfit com contexto de
+# piso/grama/infill/granulado e sem contexto de construção civil, vedação ou esquadria (ver borracha()).
+SBR_EPDM = re.compile(r"\bsbr\b|\bepdm\b", re.I)
+SBR_EPDM_CONTEXTO = re.compile(
+    r"\bpisos?\b|grama|gramado|infill|preenchimento|granul|graos?\b|raspa|triturad|reciclad|moid|pneu|"
+    r"emborrachad|playground|parque\s+infantil|quadra|pista\s+(de\s+)?(atletismo|caminhada|corrida|skate)|"
+    r"campo\s+(de\s+futebol|society|sintetic)|society|academia|crossfit|amortec|tatame|placas?\s+de\s+borracha", re.I)
+SBR_EPDM_FORA = re.compile(
+    r"argamassa|chapisco|reboco|concreto|cimento|graute|adesivo|aditivo|adesao|ponte\s+de\s+aderencia|"
+    r"impermeabiliz|telhado|cobertura|calha|laje|vedac|vedant|gaxeta|guarnic|\bo[\s-]*ring|\baneis?\b|\banel\b|"
+    r"retentor|mangueira|perfil|esquadri|janela|\bportas?\b|vidro|junta|tubo|conexao|valvula|diafragma|"
+    r"\bcabos?\b|isolament|automotiv|veicul|pneumatic", re.I)
+
 # Obra de quadra/campo: entra quando envolve grama sintética, piso emborrachado ou borracha
 # "substitui" é genérico ("edital que substitui o anterior... campo"): só conta com o objeto logo em seguida
 # ("substituição do gramado", "substituir o piso", "substituição da quadra").
@@ -277,12 +345,89 @@ def _piso_in_loco(t: str) -> bool:
     return bool(PISO_IN_LOCO.search(t) and PISO_PALAVRA.search(t) and not PISO_NAO_ESPORTIVO.search(t))
 
 
+def borracha(t: str) -> bool:
+    """Texto (já normalizado) cita borracha da linha Playfit: raspa/granulado/pneu triturado, ou SBR/EPDM com
+    contexto de piso/grama/infill e sem contexto de construção, vedação ou esquadria."""
+    if BORRACHA.search(t):
+        return True
+    return bool(SBR_EPDM.search(t) and SBR_EPDM_CONTEXTO.search(t) and not SBR_EPDM_FORA.search(t))
+
+
+# ---------------- termos ambíguos (rodada de produção de 30/09/2026) ----------------
+# "puxador" sozinho é ferragem de porta/gaveta/armário: 284 dos 507 leads da rodada de 30/09/2026 vieram de itens
+# como "PUXADOR DE ALUMINIO PARA PORTA" e "puxador para gaveta inox". Só é aparelho de academia com contexto
+# (puxador alto/baixo/costas/remada/triângulo, polia, pulley, estação de musculação, academia, cross over) e
+# nunca com contexto de porta, gaveta, armário, móvel, ferragem, janela ou marcenaria.
+PUXADOR = re.compile(r"\bpuxador(es)?\b", re.I)
+# Nome de aparelho (equipamento, não peça): também marca a posição do equipamento em e_peca().
+PUXADOR_APARELHO = re.compile(
+    r"\bpuxador(es)?\s+(\w+\s+){0,2}?(alto|baixo|triangul\w*|remada|costas|dorsal|articulad\w*|"
+    r"polia|pulley|graviton|musculac\w*|academia|ginastic\w*|cross\s*over|crossover)\b", re.I)
+PUXADOR_CONTEXTO = re.compile(
+    r"musculac|academia|ginastic|fitness|crossfit|cross\s*over|crossover|\bpolias?\b|pulley|remada|anilha|halter|"
+    r"graviton|leg\s*press|supino|peck\s*deck|voador|aparelhos?\s+de\s+(ginastica|musculacao)", re.I)
+# "porta" de "porta-anilhas", "porta halteres", "porta toalha" (acessório de academia) não conta como porta.
+PUXADOR_FORA = re.compile(
+    r"\bportas?\b(?!\s*[-/]?\s*(anilhas?|halteres?|pesos?|barras?|toalhas?|squeeze|garrafas?|bolas?)\b)|portao|portoes|"
+    r"gavetas?|gaveteir|armari|\bmove(l|is)\b|moveleir|mobiliari|ferrage|janelas?|esquadri|marcenari|dobradic|"
+    r"fechadur|macaneta|cozinha|guarda[\s-]*roupa|gabinete|criado[\s-]*mudo|escrivaninha|box\s+(de\s+|para\s+)?banheiro|vidro|"
+    # utilidades com puxador ("CAIXA PLASTICA 372 LITROS COM TAMPA E PUXADOR FRONTAL", rodada de 30/09/2026)
+    r"\bcaixas?\b|tampa|rodizi|lixeir|contain|contein|\bmalas?\b|\bbolsas?\b|carrinho", re.I)
+# "cross over" também é cabo de rede (cabo crossover) e divisor de frequência de áudio.
+CROSS_OVER = re.compile(r"cross\s*over", re.I)
+CROSS_OVER_FORA = re.compile(
+    r"cabos?\s+(de\s+)?(rede|utp|lan|crossover|cross\s*over)|\bcat\.?\s*[5-7]e?\b|\butp\b|rj[\s-]*45|ethernet|patch|"
+    r"rede\s+de\s+(dados|computadores)|\baudio\b|\bsom\b|acustic|alto[\s-]*falante|divisor|amplificad|automovel|"
+    r"veicul|\bsuv\b", re.I)
+
+
+# "colchonete" sozinho é colchonete de creche/repouso/trocador (22 compras da rodada de 30/09/2026): só é
+# colchonete de ginástica (PDM 5341) com contexto de exercício e sem contexto de repouso/creche/hospital.
+COLCHONETE = re.compile(r"\bcolchonetes?\b", re.I)
+COLCHONETE_CONTEXTO = re.compile(
+    r"ginastic|academia|exercic|pilates|\byoga\b|\bioga\b|abdominal|alongamento|educacao\s+fisica|esportiv|treino|"
+    r"treinamento|fitness|muscula|funcional|\bjudo\b|lutas?\b|capoeira|tatame", re.I)
+COLCHONETE_FORA = re.compile(
+    r"repouso|descanso|dormir|soneca|creche|berc|trocador|bebe|maca\b|hospital|enfermaria|acolhimento|abrigo|"
+    r"casa\s+de\s+passagem|camping|acampamento|colchao|colchoes|travesseiro|lencol|desabrigad|defesa\s+civil", re.I)
+
+
+def _colchonete_academia(t: str) -> bool:
+    return bool(COLCHONETE.search(t) and COLCHONETE_CONTEXTO.search(t) and not COLCHONETE_FORA.search(t))
+
+
+def _puxador_academia(t: str) -> bool:
+    return bool(PUXADOR.search(t) and not PUXADOR_FORA.search(t)
+                and (PUXADOR_APARELHO.search(t) or PUXADOR_CONTEXTO.search(t)))
+
+
+def _cross_over_academia(t: str) -> bool:
+    return bool(CROSS_OVER.search(t) and not CROSS_OVER_FORA.search(t))
+
+
+def forte_ambiguo(t: str) -> bool:
+    """Termo ambíguo (puxador, cross over, colchonete) no texto normalizado conta como 'forte' só com o contexto
+    certo."""
+    return _puxador_academia(t) or _cross_over_academia(t) or _colchonete_academia(t)
+
+
+def _posicao_aparelho_ambiguo(t: str):
+    """Match do nome de aparelho ambíguo (puxador alto..., cross over) para e_peca(); None sem contexto."""
+    if _puxador_academia(t) and PUXADOR_APARELHO.search(t):
+        return PUXADOR_APARELHO.search(t)
+    return CROSS_OVER.search(t) if _cross_over_academia(t) else None
+
+
+def _forte(t: str) -> bool:
+    return bool(FORTE.search(t) or forte_ambiguo(t))
+
+
 # ---------------- nível de ITEM ----------------
 # Texto curto de catálogo do portal (ex.: "AI0300036-PECK DECK C/ CRUCIFIXO"). Só para itens: sem o
 # contexto do objeto, termos como "bola" ou "rede" são seguros aqui e perigosos no objeto.
 # Termos ambíguos na indústria (polia, step, espaldar, manete) exigem contexto de academia.
 _ITEM_FORTE = (
-    r"agachament|peck\s*deck|crucifixo|supino|puxador|leg\s*(press|\d+|curl)|hack\s*\d|"
+    r"agachament|peck\s*deck|crucifixo|supino|leg\s*(press|\d+|curl)|hack\s*\d|"
     r"banco\s+(para\s+)?(biceps|scott|supino|abdominal|extensor|adutor|abdutor|regulavel|grande\s+regulavel|romano)|"
     r"maquina\s+(p/?\s*|para\s+)?(peitoral|dorso|adutora|abdutora|desenvolvimento|panturrilha|de\s+agachamento|remada|gluteo|voador)|"
     r"adutora|abdutora|adutor/abdutor|adultor|flexo[\s-]*e?\s*extensor|cadeira\s+(extensora|flexora|adutora|abdutora)|mesa\s+flexora|"
@@ -346,7 +491,7 @@ def e_peca(t: str) -> bool:
     p = ITEM_MANUTENCAO.search(t)
     if not p:
         return False
-    eq = [m.start() for m in (ITEM_FORTE.search(t), ITEM_PISO.search(t)) if m]
+    eq = [m.start() for m in (ITEM_FORTE.search(t), ITEM_PISO.search(t), _posicao_aparelho_ambiguo(t)) if m]
     return not eq or p.start() < min(eq)
 
 
@@ -365,6 +510,8 @@ def classificar_texto_item(texto: str, contexto: bool = False) -> tuple[str | No
         return cat, "regra"
     if ITEM_PISO.search(t):
         return "piso", "regra_item"
+    if academia_ar_livre(t):
+        return None, "regra"
     if ITEM_FORTE.search(t):
         return "forte", "regra_item"
     if CATALOGO_ESPORTIVO.search(texto or ""):
@@ -395,9 +542,9 @@ def classificar(objeto: str, classes_catmat: set[int] | None = None,
     # paradigma.avaliar_processo. Por isso "Piso monolítico em EPDM moldado in loco" é "borracha", nunca
     # "obra_piso": a obra não se perde para o comercial, porque interesse_borracha() é True nos dois casos.
     # "obra_piso" fica para obra/execução de piso ou gramado sem material de borracha explícito no texto.
-    if BORRACHA.search(t):
+    if borracha(t):
         return "borracha"
-    if pdms and pdms & set(PDMS_CONDICIONAIS) and (PISO.search(t) or FRACO.search(t) or FORTE.search(t)):
+    if pdms and pdms & set(PDMS_CONDICIONAIS) and (PISO.search(t) or FRACO.search(t) or _forte(t)):
         return "catmat"
     if _piso_in_loco(t):
         return "obra_piso"
@@ -405,7 +552,11 @@ def classificar(objeto: str, classes_catmat: set[int] | None = None,
         return "obra_piso" if (OBRA_ESPORTIVA.search(t) or PISO_IN_LOCO.search(t)) else "piso"
     if FORA.search(t):
         return None
-    if FORTE.search(t):
+    if SERVICO_PESSOAL.search(t) and not PRODUTO.search(t):  # depois do piso: execução de piso continua
+        return None
+    if academia_ar_livre(t):  # piso/grama/borracha já saíram acima; aparelho de academia ao ar livre fica fora
+        return None
+    if _forte(t):
         return "forte"
     if FRACO.search(t) and EQUIP.search(t):
         return "fraco"
@@ -418,5 +569,5 @@ def interesse_borracha(objeto: str, categoria: str | None = None) -> bool:
     cat = categoria if categoria is not None else classificar(objeto)
     if cat in ("borracha", "piso", "obra_piso"):
         t = normalizar(objeto)
-        return bool(BORRACHA.search(t) or re.search(r"gram(a|ado)\s+sintetic|emborrachad|borracha|society|campo\s+sintetic", t))
+        return bool(borracha(t) or re.search(r"gram(a|ado)\s+sintetic|emborrachad|borracha|society|campo\s+sintetic", t))
     return False

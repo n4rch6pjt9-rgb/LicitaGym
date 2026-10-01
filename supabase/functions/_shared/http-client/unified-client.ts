@@ -59,9 +59,13 @@ export type UnifiedFetchOptions = {
  * Creates default HostLeaseRpc implementation backed by Supabase private RPCs.
  */
 export function createSupabaseHostLease(client: SupabaseClient): HostLeaseRpc {
+  // acquire_http_slot / report_http_rate_limit existem só em `private`;
+  // `client.rpc` direto mira `public` (PGRST202) e desligava o lease silenciosamente.
+  // Resolvido por chamada (lazy) para não tocar no client/mocks no construtor.
+  const privateRpc = () => client.schema("private");
   return {
     async acquireSlot(host: string, maxWaitMs = 10_000): Promise<SlotAcquisitionResult> {
-      const { data, error } = await client.rpc("acquire_http_slot", {
+      const { data, error } = await privateRpc().rpc("acquire_http_slot", {
         p_host: host,
         p_max_wait_ms: maxWaitMs,
       });
@@ -72,7 +76,7 @@ export function createSupabaseHostLease(client: SupabaseClient): HostLeaseRpc {
       return data as SlotAcquisitionResult;
     },
     async reportRateLimit(host: string, cooldownSeconds: number): Promise<void> {
-      const { error } = await client.rpc("report_http_rate_limit", {
+      const { error } = await privateRpc().rpc("report_http_rate_limit", {
         p_host: host,
         p_cooldown_seconds: cooldownSeconds,
       });

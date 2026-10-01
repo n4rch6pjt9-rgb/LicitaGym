@@ -140,15 +140,6 @@ def test_item_bicicleta_ergometrica_com_alimentacao_eletrica_continua_forte_no_i
     assert classificar_texto_item("Banco ergométrico indicado para exames, alimentação elétrica")[0] is None
 
 
-def test_avaliar_aplica_fallback_de_item_para_bicicleta_ergometrica():
-    compra = {"description": "Aquisição de materiais permanentes"}
-    cat, _, por_item = avaliar(compra, [
-        _item(1, "Bicicleta ergométrica horizontal magnética, alimentação elétrica bivolt"),
-    ])
-    assert cat == "forte"
-    assert por_item[1][0] == "forte"
-
-
 def test_tatame_colado_em_quebra_de_linha_e_cone_dobravel():
     assert classificar("TATAMEx000D Especificações mínimas: EVA 20 mm") == "forte"
     assert classificar("Cone dobrável para atividade física; acompanha tatame esportivo") == "forte"

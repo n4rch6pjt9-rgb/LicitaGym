@@ -38,8 +38,17 @@ def _pncp():
 
 
 def _sb(linhas):
+    """Supabase falso: compras sem itens embutidos; os itens vêm de licitacao_itens (filtro licitacao_id=in.(...))."""
     sb = MagicMock()
-    sb.selecionar.return_value = linhas
+
+    def selecionar(tabela, **f):
+        if tabela == "licitacoes_externas":
+            return [{k: v for k, v in ln.items() if k != "licitacao_itens"} for ln in linhas]
+        assert tabela == "licitacao_itens" and f["licitacao_id"].startswith("in.(")
+        ids = {int(x) for x in f["licitacao_id"][4:-1].split(",")}
+        return [dict(it, licitacao_id=ln["id"]) for ln in linhas if ln["id"] in ids
+                for it in (ln.get("licitacao_itens") or [])]
+    sb.selecionar.side_effect = selecionar
     return sb
 
 
@@ -150,3 +159,72 @@ def test_compra_de_academia_ao_ar_livre_sai_do_escopo_e_com_piso_vira_piso():
     p.itens.side_effect = lambda c: itens[c["numero_controle_pncp"]]
     r = R.reclassificar(R.SomenteLeitura(_sb([ati, ati_piso])), p, consultar_pncp=True, agora=AGORA)
     assert r["transicoes_categoria"] == {"forte->NULL": 1, "forte->piso": 1}
+
+
+def test_le_todos_os_itens_sem_o_corte_de_1000_do_embutido():
+    # #799 tinha 5357 itens; o embutido trazia só 1000. Agora os itens vêm paginados de licitacao_itens.
+    itens = [{"id": 10_000 + n, "numero_item": n, "descricao": "CIMENTO PORTLAND CP II", "categoria_escopo": None,
+              "interesse_borracha": False} for n in range(1, 2500)]
+    itens.append({"id": 99_999, "numero_item": 2500, "descricao": "Leg press 45 graus", "categoria_escopo": None,
+                  "interesse_borracha": False})
+    ln = _linha(901, "Aquisição de materiais diversos", cat=None, prio=None, itens=itens)
+    pagina = 1000
+    todos = [dict(it, licitacao_id=901) for it in itens]
+    sb = MagicMock()
+
+    def selecionar(tabela, **f):   # imita o PostgREST: no máximo 1000 por requisição, Supabase.selecionar pagina
+        if tabela == "licitacoes_externas":
+            return [{k: v for k, v in ln.items() if k != "licitacao_itens"}]
+        assert "material_ou_servico" in f["select"]
+        out, off = [], 0
+        while True:
+            lote = todos[off:off + pagina]
+            out += lote
+            off += pagina
+            if len(lote) < pagina:
+                return out
+    sb.selecionar.side_effect = selecionar
+    r = R.reclassificar(R.SomenteLeitura(sb), agora=AGORA)
+    assert r["itens_lidos"] == 2500
+    linha = r["linhas"][0]
+    assert linha["n_itens"] == 2500 and linha["categoria_depois"] == "forte"
+
+
+def test_item_de_servico_gravado_nao_conta_como_equipamento():
+    # material_ou_servico agora é lido: item 'S' sem fornecimento de material não vira "forte"
+    itens = [{"id": 1, "numero_item": 1, "descricao": "Leg press 45 graus", "material_ou_servico": "S",
+              "categoria_escopo": "forte", "interesse_borracha": False}]
+    ln = _linha(902, "Contratação de serviços diversos para a Secretaria de Esportes", itens=itens)
+    r = R.reclassificar(R.SomenteLeitura(_sb([ln])), agora=AGORA)
+    assert r["linhas"][0]["categoria_depois"] is None
+    itens[0]["material_ou_servico"] = "M"
+    ln = _linha(903, "Contratação de serviços diversos para a Secretaria de Esportes", itens=itens)
+    assert R.reclassificar(R.SomenteLeitura(_sb([ln])), agora=AGORA)["linhas"][0]["categoria_depois"] == "forte"
+
+
+def test_carregar_itens_entre_lotes_mapeia_cada_compra_e_compra_sem_itens_fica_vazia():
+    # lote de 2 compras por consulta: 5 compras = 3 consultas; a do meio não tem itens gravados
+    linhas = [_linha(i, f"Compra {i}", itens=[{"id": i * 100 + n, "numero_item": n, "descricao": f"item {n}"}
+                                              for n in range(1, i % 4 + 1)] if i != 3 else [])
+              for i in range(1, 6)]
+    sb = _sb(linhas)
+    sem_itens = [{k: v for k, v in ln.items() if k != "licitacao_itens"} for ln in linhas]
+    total = R.carregar_itens(sb, sem_itens, lote=2)
+    assert [c.kwargs["licitacao_id"] for c in sb.selecionar.call_args_list] == ["in.(1,2)", "in.(3,4)", "in.(5)"]
+    assert {ln["id"]: len(ln["licitacao_itens"]) for ln in sem_itens} == {1: 1, 2: 2, 3: 0, 4: 0, 5: 1}
+    assert total == 4
+    assert all(it["licitacao_id"] == ln["id"] for ln in sem_itens for it in ln["licitacao_itens"])
+
+
+def test_venda_de_bens_sem_itens_gravados_decide_pelo_objeto_sem_cache_nem_pncp():
+    # #240 (01/10/2026): "Alienação de bens móveis inservíveis", 0 itens no banco e 12 no cache antigo do PNCP.
+    # Com a regra de venda de bens o objeto decide (fora): n_itens=0 é esperado, não é item perdido.
+    ln = _linha(240, "Alienação de bens móveis inservíveis do Município de Guaramirim.", cat=None, prio=None,
+                codigo="83102475000116-1-000132/2026")
+    pncp = _pncp()
+    cache = {ln["codigo_externo"]: [{"numeroItem": 1, "descricao": "BICICLETA ERGOMÉTRICA usada"}]}
+    r = R.reclassificar(R.SomenteLeitura(_sb([ln])), pncp, consultar_pncp=True, agora=AGORA, cache_itens=cache)
+    pncp.itens.assert_not_called()
+    linha = r["linhas"][0]
+    assert linha["fonte_itens"] == "objeto" and linha["n_itens"] == 0 and linha["status"] == "sem_mudanca"
+    assert r["decididas_pelo_objeto"] == 1 and r["itens_pncp"] == 0

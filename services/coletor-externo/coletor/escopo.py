@@ -202,15 +202,15 @@ def pdms_cobertos_por_termo(termo: str) -> list[int]:
 
 _FORTE = (
     r"(equipamentos?|materia(l|is)|aparelhos?|artigos?)\s+(\w+\s+){0,2}(de|para)\s+academia|academia\s+(de\s+ginastica|da\s+saude|de\s+musculacao)|"
-    r"para\s+(a\s+)?academia|muscula|condicionamento\s+fisico|ginastic|esteira\s+(eletric|ergom|profission)|"
+    r"para\s+(a\s+)?academia|musculac|condicionamento\s+fisico|ginastic|esteira\s+(eletric|ergom|profission)|"
     # cardio, elíptico, ergométrico, tatame, rolo de espuma e escorregador: ambíguos, ver forte_ambiguo() (01/10/2026)
-    r"spinning|halter|anilha|kettlebell|barra\s+olimpica|crossfit|pilates|"
+    r"spinning|halter|kettlebell|barra\s+olimpica|crossfit|pilates|"
     # "funcional" solto casava "impressora multifuncional", "mesa funcional", "design funcional" (30/09/2026)
     r"(treinamento|treino)\s+funcional|funcional\s+training|(circuito|estacao|rack|gaiola|kit|acessorios?|"
     r"equipamentos?|materia(l|is)|aparelhos?)\s+(de\s+|para\s+)?(treinamento\s+|treino\s+)?funcional\b|"
     r"leg\s*press|supino|estacao\s+de\s+musculacao|"
     r"saco\s+(de\s+)?pancada|banco\s+sueco|corda\s+de\s+pular|bambole|"
-    r"cama\s+elastica|raia\s+antimarola|parque\s+infantil|playground|brinquedos?\s+(para\s+)?(praca|parque|playground)|gangorra|balanco\s+infantil"
+    r"cama\s+elastica|raia\s+antimarola|parque\s+infantil|playground|brinquedos?\s+(para\s+)?(praca|parque|playground)|balanco\s+infantil"
 )
 _FRACO = (
     r"esport|desport|poliesportiv|atletismo|natacao|piscina|futebol|volei|basquet|handebol|"
@@ -219,7 +219,7 @@ _FRACO = (
 )
 _EQUIPAMENTO = r"equipament|materia[il]|aparelh|acessori|artigos?|utensili|kit|brinquedo\s+inflav|rede|bola|mesa"
 _FORA = (
-    r"hospedagem|transporte|alimentac|veiculo|motocicleta|trofeu|medalha|uniforme|camiset|"
+    r"hospedagem|transporte|(?<!fonte de )alimentac(?!ao\s*(:\s*)?(eletric|bivolt|de\s+energia|por\s+(bateria|pilha|energia)|\d|\(|automatic))|veiculo|motocicleta|trofeu|medalha|uniforme|camiset|"
     r"producao\s+audiovisual|promocao\s+de\s+evento|organizacao.*evento|material\s+promocional|"
     r"\bobras?\b|reforma|construcao|engenharia|pavimenta|comunicacao\s+visual|aquecimento|concessao|parceria|"
     r"eletrocardiograf|ergoespirometr"
@@ -246,12 +246,20 @@ EXCLUSAO_COMPRA = re.compile(
 EXCLUSAO_PAISAGISMO = re.compile(r"paisagis|jardinagem", re.I)
 
 
+# Leilão/alienação de bens inservíveis é VENDA do órgão, não compra (01/10/2026: #794 "Alienação de 19 lotes de bens
+# inservíveis" virou "forte" por bicicletas ergométricas usadas no lote; #247 "EDITAL DE LEILÃO"; #251 alienação).
+VENDA_DE_BENS = re.compile(
+    r"\baliena(cao|coes|r)\b|\bleil(ao|oes)\b|bens\s+(moveis\s+)?(inserviveis|antieconomicos|ociosos)|"
+    r"venda\s+de\s+(bens|sucatas?|veiculos|materiais\s+inserviveis)|desfazimento", re.I)
+
+
 def _excluida(t: str) -> bool:
     return bool(EXCLUSAO_COMPRA.search(t) or (EXCLUSAO_PAISAGISMO.search(t) and not borracha(t)))
 
 
 def excluir_compra(objeto: str) -> bool:
-    return _excluida(normalizar(objeto))
+    t = normalizar(objeto)
+    return _excluida(t) or bool(VENDA_DE_BENS.search(t))
 
 
 # Serviço de pessoas sem fornecimento de material (30/09/2026, pedido do Marcelo: ele vende produtos do CATMAT,
@@ -270,7 +278,9 @@ SERVICO_PESSOAL = re.compile(
     r"especializad|interessad)|contratacao\s+de\s+profissiona|personal\s*trainer|treinador|"
     r"\bministra(r|cao|da|do|das|dos)\b|vagas?\s+(subsidiadas?\s+)?(em|de|para)\s+(academias?|estudios?)|mensalidades?|"
     r"(estabelecimentos?|empresas?|pessoas?\s+juridicas?)\s+prestador\w*\s+de\s+servic|"
-    r"servicos?\s+(profissiona|de\s+educador|de\s+atividades?\s+fisicas?|de\s+instrut|de\s+saude)", re.I)
+    r"servicos?\s+(profissiona|de\s+educador|de\s+atividades?\s+fisicas?|de\s+instrut|de\s+saude)|"
+    # contrato de mão de obra (#242 "prestação de serviço de mão de obra de serralheiro"), não "sem dedicação de mão de obra"
+    r"servicos?\s+de\s+mao\s+de\s+obra", re.I)
 PRODUTO = re.compile(
     r"aquisic|\bcompras?\s+de\b|\binsumos?\b|fornecimento\s+(e\s+instalacao\s+)?(de\s+)?(materia|equipament|aparelh|produt|pecas?|kits?|"
     r"brinquedo|piso|grama|borracha)|com\s+fornecimento\s+de\s+(materia|equipament|pecas?)|\bmateria(l|is)\b|"
@@ -468,7 +478,7 @@ _AMBIGUOS = {
     "ergometrico": (
         r"ergometric",
         r"bancos?\s+ergometric|cadeiras?\b[^.;]{0,30}?ergometric|teste\s+ergometric|exames?\s+(\w+\s+){0,2}?ergometric|"
-        r"ergometria|indicado\s+para\s+exa",
+        r"ergometria|indicado\s+para\s+exa|normas?\s+ergometric|certificac\w*\s+ergometric",
         r"bicicleta|\bbike\b|esteira|cicloergometr|eliptic|remo\s+ergometric|condicionamento\s+fisico|academia",
     ),
     "rolo_espuma": (
@@ -490,6 +500,34 @@ _AMBIGUOS = {
         r"(?<!anti)(?<!anti-)(?<!anti\s)escorregador",
         r"ingrediente|batedeira|liquidific|cozinha|alimento|antiderrapante",
         r"playground|parque|infantil|crianc|brinquedo|degraus|rampa|toboga|escalada|polietileno|rotomoldad",
+    ),
+    # Terceira rodada (01/10/2026, recoleta dos ids 50-556):
+    # - "muscular": "via intramuscular" (medicamentos), eletroestimulador neuromuscular, eletromiógrafo, balança de
+    #   bioimpedância ("massa muscular"), dinamômetro, treinador muscular respiratório, exercitador vaginal/perineal,
+    #   massageador. Fica: faixa exercitadora, exercitador de membro, fortalecimento muscular, caneleira, halter.
+    #   ("musculação" continua em _FORTE.)
+    "muscular": (
+        r"muscula(?!c)",
+        r"intramuscular|neuromuscular|injetav|ampolas?\b|eletroestimul|eletromiogra|bioimpedanc|massa\s+muscular|"
+        r"dinamometr|respirat|inspirat|expirat|vaginal|perine|pelvic|massag|relaxa|lesao|lesoes|fototerap|"
+        r"infravermelh|cirurg|bandagem|\bluvas?\b|medicament|comprimid",
+        r"exercitador\w*(?![^.;]{0,80}(vaginal|perine|pelvic))|faixas?\s+(elastic|exercitador)|"
+        r"fortalecimento\s+muscular|caneleira|tornozeleira|halter|hand\s*grip|bola\s+(suica|terapeutica|de\s+pilates)|"
+        r"academia|ginastic|pilates|treino\b|exercicios?\s+(fisicos|terapeuticos)",
+    ),
+    # - "anilha": anilha marcadora de cabo elétrico, anilha de vedação/pressão/latão (hidráulica). Fica: peso.
+    "anilha": (
+        r"anilha",
+        r"anilhas?\s+(\(?\s*marcador|de\s+identific|para\s+identific|numerad|de\s+vedac|de\s+pressao|lisa|de\s+latao|"
+        r"de\s+cobre|de\s+nylon|plastic)|marcador\w*\s+(de\s+|para\s+)?cabos?|identificac\w*\s+de\s+cabos?",
+        r"halter|academia|musculac|ginastic|ferro\s+fundido|olimpic|\d\s*kg\b|bonnet|"
+        r"anilhas?\s+(de\s+)?(peso|ferro|emborrachad|revestid|injetad|olimpic)",
+    ),
+    # - "gangorra": ferrolho/fecho/chave "tipo gangorra" (ferragem de armário, interruptor). Fica: brinquedo.
+    "gangorra": (
+        r"gangorra",
+        r"ferrolho|fecho|trinco|dobradic|fechadura|armario|interruptor|tecla|chave|tipo\s+gangorra",
+        r"crianc|infantil|playground|parque|brinquedo|lugares?\b|polietileno|cavalo|balanco|rotomold",
     ),
 }
 AMBIGUOS = {k: tuple(re.compile(p, re.I) for p in v) for k, v in _AMBIGUOS.items()}
@@ -622,6 +660,72 @@ def classificar_texto_item(texto: str, contexto: bool = False) -> tuple[str | No
     if CATALOGO_ESPORTIVO.search(texto or ""):
         return "forte", "catalogo"
     return None, "regra"
+
+
+# ---------------- terceira rodada: regras de ITEM do PNCP e de contexto do OBJETO (01/10/2026) ----------------
+# "piso de borracha"/"piso emborrachado" como característica de OUTRO produto: escada hospitalar "com piso de
+# borracha antiderrapante", balança "plataforma com piso de borracha", cadeira de alimentação, bancada, cera
+# "para piso de borracha", demolição/remoção de piso. O item começa pelo nome do outro produto.
+PISO_EM_OUTRO_PRODUTO = re.compile(
+    r"^\W*(\d+\W+)?(catmat\s+\d+\W+)?(cera|escadas?|escadinhas?|balancas?|cadeiras?|bancadas?|demolic\w*|remoc\w*|"
+    r"retirada|limpeza|mesas?|banquetas?|macas?|carrinhos?|andador\w*)\b", re.I)
+# Piso de borracha fino de obra civil (pastilhado/frisado/canelado/moeda, ou espessura abaixo de 10 mm), como nas
+# composições SINAPI de manutenção predial: a linha Playfit é placa de 10 a 99 mm (mesma régua de _ITEM_PISO).
+# Fica quando o mesmo texto fala de academia/esporte/playground/amortecimento.
+PISO_FINO = re.compile(
+    r"piso\s+(de\s+borracha|emborrachad\w*)\s+(\w+\s+)?(pastilhad|frisad|canelad|moeda)|"
+    r"piso\s+(de\s+borracha|emborrachad\w*)\b[^;]{0,60}?\b(espessura|esp\.|espressura)\s*(de\s*|:\s*|minima\s*(de\s*)?)?"
+    r"[1-9]([.,]\d+)?\s*mm\b", re.I)
+PISO_ESPORTIVO_CONTEXTO = re.compile(r"academia|esportiv|crossfit|playground|parque|quadra|amortec|ginastic", re.I)
+
+
+def piso_item_fora(texto: str | None) -> bool:
+    """Item do PNCP que casa piso mas não é piso da linha Playfit (outro produto, ou piso fino de obra)."""
+    t = normalizar(texto or "")
+    return bool(PISO_EM_OUTRO_PRODUTO.search(t) or (PISO_FINO.search(t) and not PISO_ESPORTIVO_CONTEXTO.search(t)))
+
+
+# Objeto de obra/construção/engenharia/manutenção predial ou compra de material de construção: os itens só contam
+# pelo piso/grama/borracha (interesse da Playfit), nunca como "forte"/"fraco" (01/10/2026: #303 construção de creche
+# com o item "Equipamentos esportivos"; #798 material de construção com "FERROLHO ... tipo gangorra"). O objeto já
+# ficava fora por _FORA; agora os itens desses objetos também não puxam a compra para equipamento.
+# Frases de obra, não palavras soltas: "Secretaria de Obras", "mão de obra", "Batalhão de Engenharia" e "reforma"
+# numa lista de serviços de manutenção de aparelhos não contam (#112, #165, #84, #246 são compras/serviços legítimos).
+OBRA_OBJETO = re.compile(
+    r"(execucao|construcao|reforma|ampliacao|edificacao|revitalizacao|requalificacao|recuperacao)\s+(\w+\s+){0,4}?"
+    r"(d[aoe]s?|na|no|em)\s+(\w+\s+){0,2}?(creche|escola|unidade|predio|sede|ponte|muro|calcad|edificio|edificac|ubs|"
+    r"posto|cmei|obras?|imovel|hospital|centro|ginasio|quadra|praca|campo|estadio|bairro|ruas?|avenida|estrada|rodovia|"
+    r"galeria|drenagem|rede)|\bobras?\s+(de\s+)?(engenharia|civil|construcao|reforma|pavimenta|infraestrutura)|"
+    r"materia(l|is)\s+(\w+\s+){0,3}?de\s+construcao|manutencao\s+predial|engenharia\s+civil|"
+    r"servicos?\s+(comuns\s+)?de\s+engenharia|empresa\s+(\w+\s+){0,2}?de\s+engenharia|pavimentac|\bempreitada", re.I)
+# Compra para creche/educação infantil: tatame de EVA ali é tapete infantil, não tatame de luta/academia.
+CRECHE_OBJETO = re.compile(r"creche|\bcmeis?\b|\bceis?\b|educacao\s+infantil|bercario|pre[\s-]*escola", re.I)
+
+
+# Serviço de manutenção de prédios (#799 "CREDENCIAMENTO ... SERVIÇOS DE MANUTENÇÃO PREDIAL DE EDIFICAÇÕES PÚBLICAS",
+# planilha SINAPI com "PISO DE BORRACHA ESPORTIVO 15MM"): decisão do Marcelo (01/10/2026), fica fora mesmo com o piso;
+# nenhum item conta, só o objeto. Manutenção de EQUIPAMENTOS de academia (#165, #246) não é predial.
+MANUTENCAO_PREDIAL = re.compile(
+    r"manutenc\w*\s+(\w+\s+){0,4}?predia|"
+    r"(manutenc|conservac|reparos?|adequac|intervenc)\w*\s+(\w+\s+|,\s*){0,8}?(em|de|d[aoe]s?|nos?|nas?)\s+"
+    r"(edificac|edificios?|imoveis|predios|bens\s+imoveis|proprios\s+(publicos|municipais))", re.I)
+
+
+def obra_ou_construcao(objeto: str | None) -> bool:
+    return bool(OBRA_OBJETO.search(normalizar(objeto or "")))
+
+
+def manutencao_predial(objeto: str | None) -> bool:
+    return bool(MANUTENCAO_PREDIAL.search(normalizar(objeto or "")))
+
+
+def so_tatame(texto: str | None) -> bool:
+    """O único sinal de academia do texto é "tatame" (para a regra de creche)."""
+    t = normalizar(texto or "")
+    if not _ambiguo_academia(t, "tatame") or FORTE.search(t):
+        return False
+    return not (_puxador_academia(t) or _cross_over_academia(t) or _colchonete_academia(t)
+                or any(_ambiguo_academia(t, k) for k in AMBIGUOS if k != "tatame"))
 
 
 def normalizar(t: str) -> str:

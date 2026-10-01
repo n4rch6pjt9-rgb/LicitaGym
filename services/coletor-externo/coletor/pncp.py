@@ -39,6 +39,7 @@ from urllib.parse import urljoin, urlsplit
 import requests
 
 from .destino import Armazenamento, Supabase, env, parece_html, sha256
+from . import escopo as _escopo
 from .escopo import (
     PRODUTO,
     TERMOS_ESCOPO_COMPLETO,
@@ -47,7 +48,10 @@ from .escopo import (
     excluir_compra,
     interesse_borracha,
     normalizar,
+    obra_ou_construcao,
+    piso_item_fora,
     servico_sem_material,
+    so_tatame,
 )
 from .portal import cnpj_ou_none
 
@@ -330,6 +334,11 @@ def avaliar(compra: dict, itens: list[dict]) -> tuple[str | None, bool, dict[int
     # Academia ao ar livre (ATI) está fora do escopo: numa compra dessas só o piso/grama/borracha conta;
     # "LEG PRESS DUPLO" ou "SIMULADOR DE CAVALGADA" de uma ATI não fazem a compra virar "forte".
     ar_livre = academia_ar_livre(objeto)
+    # Terceira rodada (01/10/2026): obra/construção no objeto limita o que os itens valem; creche no objeto tira o
+    # tatame de EVA; piso de borracha de outro produto/fino de obra não é piso.
+    obra = obra_ou_construcao(objeto)
+    predial = _escopo.manutencao_predial(objeto)
+    creche = bool(_escopo.CRECHE_OBJETO.search(normalizar(objeto)))
     por_item = {}
     for it in itens:
         desc = it.get("descricao") or ""
@@ -338,6 +347,15 @@ def avaliar(compra: dict, itens: list[dict]) -> tuple[str | None, bool, dict[int
             cat = None
         if ar_livre and cat in CATEGORIAS_SO_MATERIAL:
             cat = None
+        if cat in ("piso", "obra_piso") and piso_item_fora(desc):
+            cat = None
+        if obra and cat in CATEGORIAS_SO_MATERIAL:
+            cat = None
+        if creche and cat == "forte" and so_tatame(desc):
+            cat = None
+        if predial:   # manutenção predial: só o objeto decide (nem o piso da planilha SINAPI conta)
+            por_item[it["numeroItem"]] = (None, False)
+            continue
         por_item[it["numeroItem"]] = (cat, interesse_borracha(desc, cat))
     cat_obj = classificar(objeto)
     prioridade = ["borracha", "obra_piso", "piso", "catmat", "forte", "fraco"]

@@ -38,9 +38,15 @@ from .pncp import PNCP, avaliar, compra_de_codigo, motivo_prioridade
 
 log = logging.getLogger("coletor.reclassificar_escopo_pncp")
 
+# Os itens NÃO vêm embutidos no SELECT das compras: o PostgREST corta o recurso embutido em max-rows (1000) e as
+# compras com mais itens (#794: 2668, #799: 5357 em 01/10/2026) eram reavaliadas só pelos 1000 primeiros.
+# Os itens são lidos à parte, paginados (Supabase.selecionar pagina por offset), em lotes de compras.
 SELECT = ("id,codigo_externo,objeto,categoria_escopo,interesse_borracha,prioridade,situacao,data_homologacao,"
-          "data_fim,termos_busca,created_at,raw,"
-          "licitacao_itens(id,numero_item,descricao,situacao,tem_resultado,categoria_escopo,interesse_borracha)")
+          "data_fim,termos_busca,created_at,raw")
+# material_ou_servico entra para a regra de item de serviço ('S') de pncp.avaliar valer na reclassificação também.
+SELECT_ITENS = ("id,licitacao_id,numero_item,descricao,material_ou_servico,situacao,tem_resultado,categoria_escopo,"
+                "interesse_borracha")
+LOTE_COMPRAS_ITENS = 50
 
 
 class SomenteLeitura:
@@ -61,8 +67,29 @@ def _compra(ln: dict) -> dict:
     return {"description": ln.get("objeto") or raw.get("description") or "", "title": raw.get("title")}
 
 
+def carregar_itens(sb, linhas: list[dict], lote: int = LOTE_COMPRAS_ITENS) -> int:
+    """Preenche ln["licitacao_itens"] com TODOS os itens gravados de cada compra (sem o corte de 1000 do embutido).
+    Retorna o total de itens lidos."""
+    por_compra: dict[int, list[dict]] = {ln["id"]: [] for ln in linhas}
+    ids = list(por_compra)
+    total = 0
+    for i in range(0, len(ids), lote):
+        bloco = ids[i:i + lote]
+        itens = sb.selecionar("licitacao_itens", select=SELECT_ITENS,
+                              licitacao_id="in.(" + ",".join(str(x) for x in bloco) + ")",
+                              order="licitacao_id,numero_item,id")
+        for it in itens:
+            if it.get("licitacao_id") in por_compra:
+                por_compra[it["licitacao_id"]].append(it)
+                total += 1
+    for ln in linhas:
+        ln["licitacao_itens"] = por_compra[ln["id"]]
+    return total
+
+
 def _itens_gravados(ln: dict) -> list[dict]:
     return [{"numeroItem": it["numero_item"], "descricao": it.get("descricao"), "situacao": it.get("situacao"),
+             "materialOuServico": it.get("material_ou_servico"),
              "tem_resultado": it.get("tem_resultado"), "_id": it.get("id"),
              "_categoria": it.get("categoria_escopo"), "_interesse": it.get("interesse_borracha")}
             for it in (ln.get("licitacao_itens") or [])]
@@ -187,7 +214,9 @@ def reclassificar(sb, pncp=None, *, aplicar: bool = False, consultar_pncp: bool 
     `cache_itens`: codigo_externo -> itens do PNCP já consultados (lido antes e completado com as consultas novas)."""
     agora = agora or datetime.now(timezone.utc)
     linhas = sb.selecionar("licitacoes_externas", **_filtros(id_min, id_max, desde, termo, limite))
-    r = {"lidas": len(linhas), "itens_gravados": 0, "itens_pncp": 0, "decididas_pelo_objeto": 0, "falha_consulta": 0, "sem_itens": 0,
+    n_itens = carregar_itens(sb, linhas)
+    log.info("%d compra(s), %d item(ns) gravado(s) lidos", len(linhas), n_itens)
+    r = {"lidas": len(linhas), "itens_lidos": n_itens, "itens_gravados": 0, "itens_pncp": 0, "decididas_pelo_objeto": 0, "falha_consulta": 0, "sem_itens": 0,
          "sem_mudanca": 0, "sai_do_escopo": 0, "sai_dos_leads": 0, "muda": 0, "muda_categoria": 0,
          "muda_interesse": 0, "muda_prioridade": 0, "itens_mudariam": 0, "gravadas": 0,
          "trava_prioridade": {}, "transicoes_categoria": {}, "transicoes_prioridade": {},

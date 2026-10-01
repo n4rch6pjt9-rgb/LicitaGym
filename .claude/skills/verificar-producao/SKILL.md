@@ -5,6 +5,9 @@ description: Consultas somente leitura para conferir produção depois de merge/
 
 # Verificar produção (somente leitura)
 
+**Comece pela saúde consolidada:** `select verificacao, status, valor, mensagem from private.saude_operacional_resumo();`
+(ou a issue aberta com rótulo `alerta-operacional`). Os passos abaixo detalham cada área.
+
 Use `execute_sql` do MCP do Supabase (somente leitura). Não corrija nada em produção: reporte ao usuário com evidência.
 
 1. **Migrations aplicadas:** `list_migrations` do MCP, ou

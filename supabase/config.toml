@@ -126,6 +126,10 @@ verify_jwt = false
 [functions.api-catmat]
 verify_jwt = false
 
+# api-saude: cron secret (workflow saude.yml) ou usuário admin, validados no código
+[functions.api-saude]
+verify_jwt = false
+
 # discover-piso-pdm valida o JWT do usuário no código (authenticateUser): só usuário logado; anon key e cron → 401
 [functions.discover-piso-pdm]
 verify_jwt = false

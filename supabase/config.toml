@@ -151,11 +151,3 @@ verify_jwt = false
 # analyze-public-material (prod v5): verify_jwt = true em prod (gateway) + auth.getUser no código
 [functions.analyze-public-material]
 verify_jwt = true
-
-# smooth-api (prod v8): protótipo antigo de calculate-distance-webrouter; verify_jwt = true em prod
-[functions.smooth-api]
-verify_jwt = true
-
-# linear-health (prod v7): health-check da integração Linear; verify_jwt = true em prod
-[functions.linear-health]
-verify_jwt = true

@@ -373,7 +373,7 @@ def avaliar(compra: dict, itens: list[dict]) -> tuple[str | None, bool, dict[int
     # item core; em compra também de material esportivo o tatame conta como core.
     passagem = bool(_escopo.objeto_passagem(objeto))
     esportivo = passagem and _escopo.objeto_esportivo(objeto)
-    tem_core = False
+    tem_core = passagem and _escopo.item_core(objeto, esportivo)
     por_item = {}
     for it in itens:
         desc = it.get("descricao") or ""

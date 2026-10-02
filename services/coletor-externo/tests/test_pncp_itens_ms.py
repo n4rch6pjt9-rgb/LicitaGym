@@ -46,6 +46,12 @@ class SupabaseComCheck:
             return [{"id": 1, "status_processamento": "pendente", **x} for x in linhas]
         return linhas
 
+    def selecionar(self, tabela, **filtros):   # reconciliação de documentos removidos (nenhum gravado antes)
+        return []
+
+    def atualizar(self, tabela, id_, campos):
+        self.gravado.setdefault(f"{tabela}:atualizar", []).append((id_, campos))
+
 
 def test_coleta_grava_itens_resultados_e_documentos_com_ms_valido():
     itens = [dict(ITENS[0], materialOuServico="M", materialOuServicoNome="Material"),

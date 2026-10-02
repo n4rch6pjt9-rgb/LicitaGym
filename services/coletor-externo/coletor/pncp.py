@@ -24,14 +24,17 @@ compra passa pelo classificador de escopo (coletor/escopo.py) usando objeto + it
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import logging
+import mimetypes
 import os
 import re
 import sys
 import threading
 import time
 import unicodedata
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urljoin, urlsplit
@@ -793,13 +796,14 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
             conteudo, ctype = pncp.baixar(url, max_bytes)
             if parece_html(conteudo, ctype):
                 raise RuntimeError("PNCP devolveu HTML em vez do arquivo")
-            ext = (d.get("nome_original") or "").rsplit(".", 1)[-1][:5] if "." in (d.get("nome_original") or "") else "bin"
+            ext, mime = tipo_arquivo(conteudo, d.get("nome_original"), ctype)
             caminho = arm.caminho("pncp", 0, c["orgao_cnpj"] + "-" + str(c["ano"]) + "-" + str(c["numero_sequencial"]),
                                   "processo", f"{d['arquivo_origem']}.{ext}")
-            uri = arm.salvar(caminho, conteudo, ctype)
+            uri = arm.salvar(caminho, conteudo, mime)
             sb.atualizar("licitacao_documentos", d["id"], {
-                "storage_uri": uri, "mime_type": ctype, "tamanho_bytes": len(conteudo),
-                "sha256": sha256(conteudo), "status_processamento": "baixado", "erro": None})
+                "storage_uri": uri, "mime_type": mime, "tamanho_bytes": len(conteudo),
+                "sha256": sha256(conteudo), "baixado_em": datetime.now(timezone.utc).isoformat(),
+                "status_processamento": "baixado", "erro": None})
             log.info("    arquivo: %s (%.1f MB)", (d.get("nome_original") or "")[:70], len(conteudo) / 1048576)
         except Exception as e:
             sb.atualizar("licitacao_documentos", d["id"], {"status_processamento": "erro", "erro": str(e)[:300]})
@@ -861,6 +865,105 @@ def _compra_slug(lic: dict) -> str:
     return str(lic.get("id") or "0")
 
 
+_MIME_POR_EXTENSAO = {
+    "pdf": "application/pdf",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "zip": "application/zip",
+    "rar": "application/vnd.rar",
+    "7z": "application/x-7z-compressed",
+    "doc": "application/msword",
+}
+_EXTENSAO_POR_MIME = {mime: ext for ext, mime in _MIME_POR_EXTENSAO.items()}
+_EXTENSAO_POR_MIME.update({
+    "application/x-zip-compressed": "zip",
+    "application/x-rar-compressed": "rar",
+    "application/x-rar": "rar",
+})
+_OCTET_STREAM = "application/octet-stream"
+
+
+def _content_type_limpo(content_type: str | None) -> str | None:
+    ctype = (content_type or "").split(";")[0].strip().lower()
+    if not ctype or ctype == _OCTET_STREAM:
+        return None
+    return ctype
+
+
+def _extensao_do_nome(nome: str | None) -> str | None:
+    nome = (nome or "").strip()
+    if "." not in nome:
+        return None
+    ext = nome.rsplit(".", 1)[-1].lower()
+    if re.fullmatch(r"[a-z0-9]{1,5}", ext):
+        return ext
+    return None
+
+
+def _mime_da_extensao(ext: str) -> str:
+    return _MIME_POR_EXTENSAO.get(ext) or mimetypes.guess_type(f"arquivo.{ext}")[0] or _OCTET_STREAM
+
+
+def _extensao_do_mime(ctype: str) -> str | None:
+    ext = _EXTENSAO_POR_MIME.get(ctype)
+    if ext:
+        return ext
+    adivinhada = mimetypes.guess_extension(ctype, strict=False)
+    if not adivinhada:
+        return None
+    ext = adivinhada.removeprefix(".").lower()
+    if ext == "jpe":
+        ext = "jpg"
+    if re.fullmatch(r"[a-z0-9]{1,5}", ext):
+        return ext
+    return None
+
+
+def _tipo_zip(conteudo: bytes) -> tuple[str, str]:
+    """PK\\x03\\x04 é ZIP. DOCX/XLSX são o mesmo contêiner com um membro interno conhecido."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(conteudo)) as zf:
+            nomes = [n.replace("\\", "/") for n in zf.namelist()]
+    except Exception:
+        # Assinatura PK sem diretório central legível continua ZIP. A detecção não falha o download.
+        return "zip", _MIME_POR_EXTENSAO["zip"]
+    if any(n == "word/document.xml" or n.endswith("/word/document.xml") for n in nomes):
+        return "docx", _MIME_POR_EXTENSAO["docx"]
+    if any(n == "xl" or n.startswith("xl/") for n in nomes):
+        return "xlsx", _MIME_POR_EXTENSAO["xlsx"]
+    return "zip", _MIME_POR_EXTENSAO["zip"]
+
+
+def tipo_arquivo(conteudo: bytes, nome_original: str | None = None,
+                 content_type: str | None = None) -> tuple[str, str]:
+    """Extensão (sem ponto) e mime reais do anexo.
+
+    Magic numbers vencem a extensão de nome_original e o Content-Type. No piloto de
+    02/10/2026 o PNCP devolveu todo arquivo como application/octet-stream, e vários
+    títulos não têm extensão ('21 - Edital', 'ETP_E_TR'). Sem assinatura: extensão do
+    nome, senão Content-Type que não seja octet-stream, senão bin.
+    """
+    if conteudo.startswith(b"%PDF-"):
+        return "pdf", _MIME_POR_EXTENSAO["pdf"]
+    if conteudo.startswith(b"PK\x03\x04"):
+        return _tipo_zip(conteudo)
+    if conteudo.startswith(b"Rar!"):
+        return "rar", _MIME_POR_EXTENSAO["rar"]
+    if conteudo.startswith(b"7z\xbc\xaf"):
+        return "7z", _MIME_POR_EXTENSAO["7z"]
+    if conteudo.startswith(b"\xd0\xcf\x11\xe0"):
+        return "doc", _MIME_POR_EXTENSAO["doc"]
+    ext = _extensao_do_nome(nome_original)
+    if ext:
+        return ext, _mime_da_extensao(ext)
+    ctype = _content_type_limpo(content_type)
+    if ctype:
+        ext = _extensao_do_mime(ctype)
+        if ext:
+            return ext, ctype
+    return "bin", _OCTET_STREAM
+
+
 def baixar_pendentes(pncp: PNCP, sb: Supabase, arm: Armazenamento | None,
                      categorias: list[str] | set[str] | str | None = None,
                      max_bytes: int = 80 * 1048576,
@@ -871,7 +974,8 @@ def baixar_pendentes(pncp: PNCP, sb: Supabase, arm: Armazenamento | None,
     filtra por licitacoes_externas.categoria_escopo (por padrão exclui 'fraco')
     e opcionalmente por prioridade efetiva (view licitacoes_externas_prioridade_efetiva),
     baixa cada arquivo pela URL guardada, grava no storage (Armazenamento.do_ambiente: Supabase Storage, GCS ou local)
-    e atualiza status_processamento, sha256, mime_type, tamanho_bytes e erro,
+    e atualiza status_processamento, sha256, mime_type (assinatura do arquivo, não o
+    Content-Type octet-stream do PNCP), tamanho_bytes, baixado_em e erro,
     respeitando MAX_MB, o delay e o Retry-After.
     Idempotente: não baixa de novo o que já tem sha256; o caminho no storage é determinístico (sobrescreve).
     Só baixa URL https de PNCP_HOSTS_PERMITIDOS (cada redirecionamento também é validado).
@@ -1012,15 +1116,17 @@ def baixar_pendentes(pncp: PNCP, sb: Supabase, arm: Armazenamento | None,
             conteudo, ctype = pncp.baixar(url, max_bytes)
             if parece_html(conteudo, ctype):
                 raise ArquivoRecusado("PNCP devolveu HTML em vez do arquivo")
-            ext = (d.get("nome_original") or "").rsplit(".", 1)[-1][:5] if "." in (d.get("nome_original") or "") else "bin"
-            caminho = arm.caminho("pncp", 0, compra_slug, d.get("secao") or "processo", f"{d['arquivo_origem']}.{ext}")
-            uri = arm.salvar(caminho, conteudo, ctype)
+            ext, mime = tipo_arquivo(conteudo, d.get("nome_original"), ctype)
+            caminho = arm.caminho("pncp", 0, compra_slug, d.get("secao") or "processo",
+                                  f"{d['arquivo_origem']}.{ext}")
+            uri = arm.salvar(caminho, conteudo, mime)
             h = sha256(conteudo)
             sb.atualizar("licitacao_documentos", d["id"], {
                 "storage_uri": uri,
-                "mime_type": ctype,
+                "mime_type": mime,
                 "tamanho_bytes": len(conteudo),
                 "sha256": h,
+                "baixado_em": datetime.now(timezone.utc).isoformat(),
                 "status_processamento": "baixado",
                 "erro": None,
             })

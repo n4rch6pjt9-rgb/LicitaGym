@@ -16,7 +16,7 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, SupabaseClient } from "npm:@supabase/supabase-js@2";
-import { requireUserAuth } from "../_shared/http.ts";
+import { type AuthenticatedUser, requireUserAuth } from "../_shared/http.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -533,13 +533,21 @@ async function handleBalance(): Promise<Response> {
 
 export interface ApiFornecedoresContext {
   getDb?: () => SupabaseClient;
+  /** Só para teste. Produção usa requireUserAuth, que anexa o usuário em req.user. */
   requireAuth?: (req: Request) => Promise<Response | null>;
-  getUserId?: (req: Request) => Promise<string | null>;
 }
 
 export async function handleRequest(req: Request, ctx: ApiFornecedoresContext = {}): Promise<Response> {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "Use POST com corpo JSON { action }" }, 405);
+
+  // Autentica antes de ler o corpo: a função é publicada com --no-verify-jwt, então requisição sem sessão
+  // recebe 401 sem que o corpo seja lido ou validado.
+  const authError = await (ctx.requireAuth ?? requireUserAuth)(req);
+  if (authError) return authError;
+
+  const userId = (req as unknown as { user?: AuthenticatedUser }).user?.id;
+  if (!userId) return json({ error: "Unauthorized" }, 401);
 
   let p: Record<string, unknown>;
   try {
@@ -549,13 +557,6 @@ export async function handleRequest(req: Request, ctx: ApiFornecedoresContext = 
   } catch {
     return json({ error: "Corpo JSON inválido" }, 400);
   }
-
-  const authError = await (ctx.requireAuth ?? requireUserAuth)(req);
-  if (authError) return authError;
-
-  const userId = (req as unknown as { user?: { id: string } }).user?.id
-    ?? (await ctx.getUserId?.(req));
-  if (!userId) return json({ error: "Unauthorized" }, 401);
 
   try {
     const db = ctx.getDb ? ctx.getDb() : serviceClient();

@@ -3,8 +3,8 @@
 --
 -- Casos testados:
 -- 1. Deduplicação PNCP x Pesquisa de Preço (Compras.gov):
---    Uma venda homologada no PNCP com link_sistema_origem (?compra=16021105900032024)
---    que também aparece em precos_praticados_itens (id_compra=16021105900032024),
+--    Uma venda homologada no PNCP com link_sistema_origem (?compra=99999999900012026)
+--    que também aparece em precos_praticados_itens (id_compra=99999999900012026),
 --    SEM linha na 14.133 nem na ARP.
 --    Esperado: exatamente 1 venda homologada / 1 certame.
 --
@@ -46,8 +46,8 @@ declare
   v_itens_par jsonb;
 begin
   -- Limpeza prévia de execuções anteriores do teste
-  delete from public.precos_praticados_itens where id_compra = '16021105900032024';
-  delete from public.licitacoes_externas where codigo_externo = '00394429000100-1-000003/2024' or (id_externo = 42 and fonte in ('sestsenat', 'fiesc'));
+  delete from public.precos_praticados_itens where id_compra = '99999999900012026';
+  delete from public.licitacoes_externas where codigo_externo = '12345678000195-1-000003/2024' or (id_externo = 42 and fonte in ('sestsenat', 'fiesc'));
 
   -- Setup: Catálogo e escopo CATMAT (PDM 2640 e Item 480144)
   insert into public.catmat_grupos (codigo_grupo, nome, payload_hash)
@@ -82,7 +82,7 @@ begin
   -- Setup: Fornecedores
   insert into public.fornecedores (cnpj, cnpj_raiz, razao_social, cnae_principal, consulta_status)
   values
-    ('04372852000160', '04372852', 'W.E.V COMERCIAL LTDA', 4763602, 'ok'),
+    ('11222333000181', '11222333', 'COMERCIAL FICTICIA DE TESTE LTDA', 4763602, 'ok'),
     ('99999999000199', '99999999', 'FABRICANTE FITNESS BRASIL LTDA', 3230200, 'ok')
   on conflict (cnpj) do nothing;
 
@@ -93,12 +93,12 @@ begin
     fonte, codigo_externo, orgao_cnpj, orgao_nome, data_homologacao, prioridade, raw
   ) values (
     'pncp',
-    '00394429000100-1-000003/2024',
-    '00394429000100',
-    'GAP DO GALEAO - COMAER',
+    '12345678000195-1-000003/2024',
+    '12345678000195',
+    'ORGAO FICTICIO DE TESTE',
     '2026-09-18'::timestamptz,
     'historico',
-    jsonb_build_object('link_sistema_origem', 'https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/acompanhamento-compra?compra=16021105900032024')
+    jsonb_build_object('link_sistema_origem', 'https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/acompanhamento-compra?compra=99999999900012026')
   ) returning id into v_lic_pncp_id;
 
   insert into public.licitacao_itens (
@@ -111,7 +111,7 @@ begin
     licitacao_id, numero_item, sequencial_resultado, fornecedor_cnpj, fornecedor_nome,
     vencedor, quantidade_homologada, valor_unitario_homologado, valor_total_homologado, data_resultado
   ) values (
-    v_lic_pncp_id, 1, 1, '04372852000160', 'W.E.V COMERCIAL LTDA',
+    v_lic_pncp_id, 1, 1, '11222333000181', 'COMERCIAL FICTICIA DE TESTE LTDA',
     true, 2, 9000.0, 18000.0, '2026-09-18'::timestamptz
   );
 
@@ -121,9 +121,9 @@ begin
     ni_fornecedor, nome_fornecedor, preco_unitario, quantidade, marca, data_resultado,
     codigo_uasg, nome_uasg
   ) values (
-    '16021105900032024', 5858679, 1, 480144, '2640',
-    '04372852000160', 'W.E.V COMERCIAL LTDA', 9000.0, 2, 'FORTIX', '2026-09-18'::date,
-    '120645', 'GAP DO GALEAO'
+    '99999999900012026', 5858679, 1, 480144, '2640',
+    '11222333000181', 'COMERCIAL FICTICIA DE TESTE LTDA', 9000.0, 2, 'MARCA TESTE', '2026-09-18'::date,
+    '999001', 'UASG FICTICIA DE TESTE'
   );
 
   -- ---------------------------------------------------------------------------
@@ -208,20 +208,20 @@ begin
       into v_total_vendas_pncp, v_total_certames_pncp, v_itens_pncp,
            v_cobertura, v_valor_homologado, v_valor_ata
       from public.v_bi_fornecedor_historico
-     where cnpj = '04372852000160';
+     where cnpj = '11222333000181';
 
     raise notice 'CASO 1: total_vendas_homologadas = %, total_certames = %, cobertura = %, valor_homologado = %, valor_ata = %',
                  v_total_vendas_pncp, v_total_certames_pncp, v_cobertura, v_valor_homologado, v_valor_ata;
 
-    if v_total_vendas_pncp <> 1 then
+    if v_total_vendas_pncp is distinct from 1 then
       raise exception 'TESTE CASO 1 FALHOU: esperado 1 venda homologada, obtido %', v_total_vendas_pncp;
     end if;
 
-    if v_total_certames_pncp <> 1 then
+    if v_total_certames_pncp is distinct from 1 then
       raise exception 'TESTE CASO 1 FALHOU: esperado 1 certame, obtido %', v_total_certames_pncp;
     end if;
 
-    if v_cobertura <> 'catmat_oficial' then
+    if v_cobertura is distinct from 'catmat_oficial' then
       raise exception 'TESTE CASO 1 FALHOU: esperado cobertura catmat_oficial, obtido %', v_cobertura;
     end if;
   end;
@@ -238,11 +238,11 @@ begin
     raise notice 'CASO 2: total_vendas_homologadas = %, total_certames = %, cobertura = %',
                  v_total_vendas_par, v_total_certames_par, v_cobertura_par;
 
-    if v_total_vendas_par <> 3 then
+    if v_total_vendas_par is distinct from 3 then
       raise exception 'TESTE CASO 2 FALHOU: esperado 3 vendas homologadas Paradigma, obtido %', v_total_vendas_par;
     end if;
 
-    if v_total_certames_par <> 3 then
+    if v_total_certames_par is distinct from 3 then
       raise exception 'TESTE CASO 2 FALHOU: esperado 3 certames Paradigma, obtido %', v_total_certames_par;
     end if;
   end;
@@ -288,7 +288,7 @@ begin
 
     raise notice 'CASO 3 (pdm_palavra): cobertura = %', v_cobertura_palavra;
 
-    if v_cobertura_palavra <> 'pdm_palavra' then
+    if v_cobertura_palavra is distinct from 'pdm_palavra' then
       raise exception 'TESTE CASO 3 FALHOU: esperado cobertura pdm_palavra, obtido %', v_cobertura_palavra;
     end if;
   end;
@@ -331,7 +331,7 @@ begin
     select valor_registrado_ata, valor_homologado_contratacao into v_val_ata, v_val_contrato
       from public.v_bi_fornecedor_historico where cnpj = '77777777000171';
     raise notice 'CASO 4a (srp=true): valor_registrado_ata = %, valor_homologado_contratacao = %', v_val_ata, v_val_contrato;
-    if v_val_ata <> 1000.0 or v_val_contrato is not null then
+    if v_val_ata is distinct from 1000.0 or v_val_contrato is not null then
       raise exception 'TESTE CASO 4a FALHOU: esperado valor_registrado_ata = 1000 e valor_homologado_contratacao null';
     end if;
 
@@ -352,7 +352,7 @@ begin
     select valor_registrado_ata, valor_homologado_contratacao into v_val_ata, v_val_contrato
       from public.v_bi_fornecedor_historico where cnpj = '77777777000172';
     raise notice 'CASO 4b (srp nulo com texto): valor_registrado_ata = %, valor_homologado_contratacao = %', v_val_ata, v_val_contrato;
-    if v_val_ata <> 2000.0 or v_val_contrato is not null then
+    if v_val_ata is distinct from 2000.0 or v_val_contrato is not null then
       raise exception 'TESTE CASO 4b FALHOU: esperado valor_registrado_ata = 2000 e valor_homologado_contratacao null';
     end if;
 
@@ -373,7 +373,7 @@ begin
     select valor_registrado_ata, valor_homologado_contratacao into v_val_ata, v_val_contrato
       from public.v_bi_fornecedor_historico where cnpj = '77777777000173';
     raise notice 'CASO 4c (srp=false): valor_registrado_ata = %, valor_homologado_contratacao = %', v_val_ata, v_val_contrato;
-    if v_val_contrato <> 3000.0 or v_val_ata is not null then
+    if v_val_contrato is distinct from 3000.0 or v_val_ata is not null then
       raise exception 'TESTE CASO 4c FALHOU: esperado valor_homologado_contratacao = 3000 e valor_registrado_ata null';
     end if;
 
@@ -394,7 +394,7 @@ begin
     select valor_registrado_ata, valor_homologado_contratacao into v_val_ata, v_val_contrato
       from public.v_bi_fornecedor_historico where cnpj = '77777777000174';
     raise notice 'CASO 4d (paradigma modalidade SRP): valor_registrado_ata = %, valor_homologado_contratacao = %', v_val_ata, v_val_contrato;
-    if v_val_ata <> 4000.0 or v_val_contrato is not null then
+    if v_val_ata is distinct from 4000.0 or v_val_contrato is not null then
       raise exception 'TESTE CASO 4d FALHOU: esperado valor_registrado_ata = 4000 e valor_homologado_contratacao null';
     end if;
   end;

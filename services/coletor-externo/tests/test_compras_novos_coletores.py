@@ -353,3 +353,182 @@ def test_coletor_arp_falha_apos_retries(monkeypatch):
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# PDMs efetivos: sem fallback silencioso para PDMS_PADRAO (Copilot r4166612343 / r4166612405; PRs #126 e #129)
+# Sem setenv de Supabase: o cliente é injetado (coletar) ou Supabase/env são trocados por mocks (main).
+# ---------------------------------------------------------------------------
+from coletor import compras_pdms  # noqa: E402
+
+
+def test_carregar_pdms_efetivos_ok_e_sem_repeticao():
+    sb = MagicMock()
+    sb.rpc.return_value = [{"codigo_pdm": 2640}, {"codigo_pdm": "2638"}, {"codigo_pdm": 2640}]
+    assert compras_pdms.carregar_pdms_efetivos(sb) == [2640, 2638]
+    sb.rpc.assert_called_once_with("catalogo_catmat_pdms_efetivos", {})
+
+
+def test_carregar_pdms_efetivos_catalogo_vazio_e_valido():
+    sb = MagicMock()
+    sb.rpc.return_value = []
+    assert compras_pdms.carregar_pdms_efetivos(sb) == []
+
+
+@pytest.mark.parametrize("resposta", [None, {"codigo_pdm": 2640}, [{"codigo_pdm": None}], [{"codigo_pdm": "x"}],
+                                      [{"codigo_pdm": 0}], [{"codigo_pdm": True}], ["2640"]])
+def test_carregar_pdms_efetivos_resposta_invalida_falha(resposta):
+    sb = MagicMock()
+    sb.rpc.return_value = resposta
+    with pytest.raises(compras_pdms.CatalogoPdmsIndisponivel):
+        compras_pdms.carregar_pdms_efetivos(sb)
+
+
+def test_carregar_pdms_efetivos_rpc_com_erro_falha():
+    sb = MagicMock()
+    sb.rpc.side_effect = RuntimeError("Supabase rpc catalogo_catmat_pdms_efetivos: 500")
+    with pytest.raises(compras_pdms.CatalogoPdmsIndisponivel, match="500"):
+        compras_pdms.carregar_pdms_efetivos(sb)
+
+
+def test_coletar_precos_falha_se_rpc_de_pdms_falhar():
+    cliente = MagicMock()
+    sb = MagicMock()
+    sb.rpc.side_effect = RuntimeError("falha na RPC")
+
+    res = compras_precos.coletar(cliente, sb)
+
+    assert res["sucesso"] is False
+    assert res["erros"] == 1
+    cliente.consultar_material.assert_not_called()
+    sb.upsert.assert_not_called()
+
+
+def test_coletar_precos_falha_se_resposta_rpc_invalida():
+    cliente = MagicMock()
+    sb = MagicMock()
+    sb.rpc.return_value = {"codigo_pdm": 2640}
+
+    res = compras_precos.coletar(cliente, sb)
+
+    assert res["sucesso"] is False
+    cliente.consultar_material.assert_not_called()
+
+
+def test_coletar_precos_catalogo_vazio_nao_usa_pdms_padrao():
+    cliente = MagicMock()
+    sb = MagicMock()
+    sb.rpc.return_value = []
+
+    res = compras_precos.coletar(cliente, sb)
+
+    assert res["sucesso"] is True
+    assert res["total_coletados"] == 0
+    cliente.consultar_material.assert_not_called()
+
+
+def test_coletar_precos_usa_pdms_da_rpc():
+    cliente = MagicMock()
+    cliente.consultar_material.return_value = {"resultado": [], "totalRegistros": 0}
+    sb = MagicMock()
+    sb.rpc.return_value = [{"codigo_pdm": 9999}]
+
+    compras_precos.coletar(cliente, sb)
+
+    assert [c.args[:2] for c in cliente.consultar_material.call_args_list] == [("codigoPdm", 9999)]
+
+
+def _main_arp_com_sb(monkeypatch, sb):
+    monkeypatch.setattr(compras_arp, "Supabase", lambda *_a, **_k: sb)
+    monkeypatch.setattr(compras_arp, "env", lambda *_a, **_k: "valor-injetado-no-teste")
+    coletar = MagicMock(return_value={"sucesso": True, "total_coletados": 0, "total_gravados": 0,
+                                      "erros": 0, "amostras": []})
+    monkeypatch.setattr(compras_arp, "coletar", coletar)
+    return coletar
+
+
+def test_main_arp_falha_se_rpc_de_pdms_falhar(monkeypatch):
+    sb = MagicMock()
+    sb.rpc.side_effect = RuntimeError("RPC indisponível")
+    coletar = _main_arp_com_sb(monkeypatch, sb)
+
+    assert compras_arp.main([]) == 1
+    coletar.assert_not_called()
+
+
+def test_main_arp_falha_se_resposta_rpc_invalida(monkeypatch):
+    sb = MagicMock()
+    sb.rpc.return_value = {"erro": "inesperado"}
+    coletar = _main_arp_com_sb(monkeypatch, sb)
+
+    assert compras_arp.main([]) == 1
+    coletar.assert_not_called()
+
+
+def test_main_arp_catalogo_vazio_nao_usa_pdms_padrao(monkeypatch):
+    sb = MagicMock()
+    sb.rpc.return_value = []
+    coletar = _main_arp_com_sb(monkeypatch, sb)
+
+    assert compras_arp.main([]) == 0
+    assert coletar.call_args.kwargs["pdms"] == []
+
+
+def test_main_arp_usa_pdms_da_rpc(monkeypatch):
+    sb = MagicMock()
+    sb.rpc.return_value = [{"codigo_pdm": 7113}]
+    coletar = _main_arp_com_sb(monkeypatch, sb)
+
+    assert compras_arp.main([]) == 0
+    assert coletar.call_args.kwargs["pdms"] == [7113]
+
+
+# ---------------------------------------------------------------------------
+# Retry-After nos três coletores (Copilot r4166695447 / r4166695513 / r4166695581; PRs #125, #127 e #128)
+# ---------------------------------------------------------------------------
+def _resp(status, headers=None, corpo=None):
+    r = MagicMock()
+    r.status_code = status
+    r.headers = headers or {}
+    r.json.return_value = corpo if corpo is not None else {"resultado": [], "totalRegistros": 0}
+    return r
+
+
+def _sequencia(monkeypatch, modulo, cliente, respostas):
+    fila = list(respostas)
+    esperas = []
+    monkeypatch.setattr(cliente.s, "get", lambda *_a, **_k: fila.pop(0))
+    monkeypatch.setattr(modulo.time, "sleep", esperas.append)
+    return esperas
+
+
+@pytest.mark.parametrize("modulo,fabrica,chamar", [
+    (compras_arp, lambda: compras_arp.ClienteComprasARP(delay=0),
+     lambda c: c.consultar_itens_pdm(2640, "2026-01-01", "2026-12-31")),
+    (compras_pgc, lambda: compras_pgc.ClienteComprasPGC(delay=0), lambda c: c.consultar_classe(7830, 2026)),
+    (compras_precos, lambda: compras_precos.ClienteComprasPrecos(delay=0),
+     lambda c: c.consultar_material("codigoPdm", 2640)),
+])
+def test_coletores_compras_respeitam_retry_after(monkeypatch, modulo, fabrica, chamar):
+    cliente = fabrica()
+    esperas = _sequencia(monkeypatch, modulo, cliente, [_resp(429, {"Retry-After": "7"}), _resp(200)])
+
+    assert chamar(cliente) == {"resultado": [], "totalRegistros": 0}
+    # delay (1s mínimo) antes de cada GET + os 7s pedidos pelo servidor
+    assert esperas == [1.0, 7.0, 1.0]
+
+
+@pytest.mark.parametrize("modulo,fabrica,chamar", [
+    (compras_arp, lambda: compras_arp.ClienteComprasARP(delay=0),
+     lambda c: c.consultar_itens_pdm(2640, "2026-01-01", "2026-12-31")),
+    (compras_pgc, lambda: compras_pgc.ClienteComprasPGC(delay=0), lambda c: c.consultar_classe(7830, 2026)),
+    (compras_precos, lambda: compras_precos.ClienteComprasPrecos(delay=0),
+     lambda c: c.consultar_material("codigoPdm", 2640)),
+])
+def test_coletores_compras_nao_dormem_depois_da_ultima_tentativa(monkeypatch, modulo, fabrica, chamar):
+    cliente = fabrica()
+    esperas = _sequencia(monkeypatch, modulo, cliente, [_resp(429, {"Retry-After": "5"})] * 3)
+
+    with pytest.raises(RuntimeError, match="429"):
+        chamar(cliente)
+    assert esperas == [1.0, 5.0, 1.0, 5.0, 1.0]

@@ -136,13 +136,13 @@ Ranking de órgãos por volume planejado (PCA) e volume homologado no escopo fit
 | Coluna | Tipo | Descrição |
 |---|---|---|
 | `orgao_cnpj` | `text` | CNPJ do órgão |
-| `orgao_nome` | `text` | Razão social ou nome institucional |
+| `orgao_nome` | `text` | Nome em `public.orgaos` (nome_orgao/razão social); senão o nome de origem (licitação/PCA); senão `null` — nunca o CNPJ |
 | `esfera` | `text` | Esfera administrativa (`Federal`, `Estadual`, `Municipal` ou `null`) |
-| `uf` | `text` | Estado da sede do órgão |
+| `uf` | `text` | UF em `public.orgaos`; senão a UF de origem (licitação ou unidade 14.133) |
 | `qtd_itens_planejados` | `integer` | Itens planejados no PCA (PCA + PGC) |
-| `valor_planejado_pca` | `numeric(18,2)` | Valor total planejado para compras no escopo |
-| `qtd_itens_homologados` | `integer` | Itens já homologados/comprados |
-| `valor_homologado` | `numeric(18,2)` | Valor total já adquirido pelo órgão |
+| `valor_planejado_pca` | `numeric(18,2)` | Valor total planejado para compras no escopo (`null` se nenhum item tem valor) |
+| `qtd_itens_homologados` | `integer` | Resultados homologados (vários vencedores/cotas do mesmo item contam separado) |
+| `valor_homologado` | `numeric(18,2)` | Valor total já adquirido pelo órgão (`null` se nenhum resultado tem valor) |
 | `ultima_data_prevista` | `date` | Data mais recente de demanda prevista no PCA |
 | `ultima_data_homologada` | `date` | Data da homologação mais recente |
 
@@ -166,8 +166,8 @@ Visão de 360° por fornecedor, construída exclusivamente sobre certames **ence
 | `municipio_sede` | `text` | Município da sede |
 | `porte` | `text` | Porte da empresa (`ME`, `EPP`, `Demais`) |
 | `total_vendas_homologadas`| `integer` | Total de itens vencidos/homologados |
-| `total_certames` | `integer` | Total de licitações/compras distintas vencidas |
-| `total_orgaos` | `integer` | Total de órgãos compradores distintos atendidos |
+| `total_certames` | `integer` | Total de licitações/compras distintas vencidas (só as com identificador externo) |
+| `total_orgaos` | `integer` | Total de órgãos compradores distintos atendidos (órgão sem identificação não conta) |
 | `valor_registrado_ata` | `numeric(18,2)` | Total financeiro apurado exclusivamente em Atas de Registro de Preço (valor registrado) |
 | `valor_homologado_contratacao` | `numeric(18,2)` | Total financeiro apurado em contratações diretas / compras homologadas efetivas |
 | `valor_total_vendido` | `numeric(18,2)` | Faturamento total geral apurado em homologações (preserva NULL se não informado) |
@@ -223,12 +223,19 @@ $$\text{chave} = \text{cnpj} \parallel \text{compra\_id\_canonico} \parallel \te
    - As tabelas `resultados_itens_14133` e `atas_rp_itens` contêm simultaneamente `id_compra` e `numero_controle_pncp_compra`.
    - Nas compras do PNCP em `licitacoes_externas`, o `id_compra` de 17 dígitos é extraído de `link_sistema_origem` via regex `[?&]compra=(\d{17})`.
    - Essa ponte mapeia o `id_compra` de `precos_praticados_itens` diretamente para o `numero_controle_pncp_compra` do PNCP.
-2. **Deduplicação de Atas de Registro de Preço e Identificação de SRP**:
+2. **Escolha da fonte e Identificação de SRP** (migration `20261002160000`):
    - `eh_ata_rp`: determinado prioritariamente pelo booleano oficial `raw->>'srp'` do PNCP; na ausência, pelo regex seguro de fronteira `\y(arp|registro de pre[cç]os?)\y` sobre objeto ou modalidade.
    - Atas de Registro de Preço (`atas_rp_itens`) têm `eh_ata_rp = true` e `valor_origem = 'ata_rp'`.
-   - Como uma Ata de Registro de Preço nasce da homologação da compra correspondente, a resolução pelo número de controle PNCP + número do item colapsa o item da ata e o item da compra na mesma linha, evitando dupla contagem.
-3. **Preservação de Fontes Externas / Sistema S**:
-   - Linhas do Paradigma e SEST SENAT não possuem número de controle PNCP. Ao resolver como `'ext:' || fonte || ':' || licitacao_id`, essas compras recebem uma chave única e estável (ex.: `'ext:sestsenat:42'`), garantindo que **não são fundidas indevidamente nem descartadas**, mesmo que tenants diferentes compartilhem o mesmo `nCdProcesso`.
+   - Para cada chave escolhe-se **uma fonte**: ata RP primeiro; depois completude (código do item, preço, marca, quantidade), data mais recente, nome da fonte e id da linha de origem (desempate determinístico). **Todos os resultados da fonte escolhida entram**: vários resultados do mesmo item (vencedores, cotas, `sequencial_resultado`) não colapsam.
+   - Valor de venda é sempre o homologado/registrado (`valor_unitario_homologado`/`valor_total_homologado`, valor da ata, preço praticado), nunca o estimado.
+3. **Identidade do certame**:
+   - PNCP: número de controle (`codigo_externo`), o mesmo das fontes Compras.gov via ponte.
+   - Paradigma, SEST SENAT e demais portais: `'ext:' || fonte || ':' || modulo || '/' || id_externo` (ex.: `'ext:sestsenat:59/42'`), a chave única da origem; sem modulo/id_externo, `'ext:' || fonte || ':cod:' || codigo_externo`.
+   - Sem nenhum identificador externo: `null` (não conta em `total_certames` e não é deduplicada contra outra linha). A PK interna (`licitacoes_externas.id`) nunca é usada como identidade.
+4. **Órgão comprador (`orgao_identificador`)**:
+   - CNPJ (licitações), código UASG (Pesquisa de Preço, ARP) ou código da unidade / CNPJ (14.133).
+   - Sem esses, `'sem-cnpj:' || fonte || ':' || md5(nome normalizado)`, a mesma fórmula da `orgaos_compradores` (20260929181500); sem nome, `null` (não conta em `total_orgaos` nem aparece em `orgaos_clientes`). Nada de `org:<id>`, `uasg:desconhecida` ou `org:14133`.
+   - Na 14.133, `orgao_nome` é o nome oficial de `public.orgaos` pelo CNPJ ou `null`, nunca o CNPJ.
 
 ---
 

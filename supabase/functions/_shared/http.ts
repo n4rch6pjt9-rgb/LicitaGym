@@ -152,8 +152,15 @@ export function isLicitagymAdmin(user: AuthenticatedUser | null | undefined): bo
   return user?.app_metadata?.["licitagym_role"] === "admin";
 }
 
-export async function requireUserAuth(req: Request): Promise<Response | null> {
-  const user = await authenticateUser(req);
+/**
+ * Exige sessão de usuário (JWT do Supabase Auth). Em sucesso anexa o usuário em `req.user` e devolve null;
+ * sem sessão válida devolve 401. `authenticate` só existe para teste (injeção); produção usa authenticateUser.
+ */
+export async function requireUserAuth(
+  req: Request,
+  authenticate: (req: Request) => Promise<AuthenticatedUser | null> = authenticateUser,
+): Promise<Response | null> {
+  const user = await authenticate(req);
   if (!user) return jsonResponse({ error: "Unauthorized" }, 401);
   (req as unknown as { user?: AuthenticatedUser }).user = user;
   return null;

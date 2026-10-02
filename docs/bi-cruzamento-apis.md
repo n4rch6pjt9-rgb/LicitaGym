@@ -217,15 +217,18 @@ Visão de 360° por fornecedor, construída exclusivamente sobre certames **ence
 ### 4.6 Regra de Deduplicação Canônica de Vendas Homologadas
 Para garantir que a mesma contratação homologada não seja contabilizada mais de uma vez ao ser ingerida por diferentes trilhos oficiais (ex.: PNCP `licitacao_resultados`, Compras.gov `precos_praticados_itens`, Compras.gov `atas_rp_itens` e `resultados_itens_14133`), a view `v_bi_fornecedor_historico` utiliza uma **chave canônica de venda**:
 
-$$\text{chave} = \text{coalesce}(\text{numero\_controle\_pncp\_compra}, \text{'ext:'} \parallel \text{fonte} \parallel \text{':'} \parallel \text{licitacao\_id}) \parallel \text{':'} \parallel \text{numero\_item} \parallel \text{':'} \parallel \text{cnpj}$$
+$$\text{chave} = \text{cnpj} \parallel \text{compra\_id\_canonico} \parallel \text{coalesce}(\text{numero\_item}, \text{'cod:'} \parallel \text{coalesce}(\text{codigo\_item}, \text{'pdm:'} \parallel \text{coalesce}(\text{codigo\_pdm}, \text{'0'})))$$
 
 1. **Ponte Compras.gov $\leftrightarrow$ PNCP (`compras_pncp_bridge`)**:
    - As tabelas `resultados_itens_14133` e `atas_rp_itens` contêm simultaneamente `id_compra` e `numero_controle_pncp_compra`.
+   - Nas compras do PNCP em `licitacoes_externas`, o `id_compra` de 17 dígitos é extraído de `link_sistema_origem` via regex `[?&]compra=(\d{17})`.
    - Essa ponte mapeia o `id_compra` de `precos_praticados_itens` diretamente para o `numero_controle_pncp_compra` do PNCP.
-2. **Deduplicação de Atas de Registro de Preço**:
-   - Como uma Ata de Registro de Preço nasce da homologação da compra correspondente, a resolução pelo número de controle PNCP + número do item colapsa o item da ata e o item da compra na mesma linha, evitando dupla contagem de faturamento.
+2. **Deduplicação de Atas de Registro de Preço e Identificação de SRP**:
+   - `eh_ata_rp`: determinado prioritariamente pelo booleano oficial `raw->>'srp'` do PNCP; na ausência, pelo regex seguro de fronteira `\y(arp|registro de pre[cç]os?)\y` sobre objeto ou modalidade.
+   - Atas de Registro de Preço (`atas_rp_itens`) têm `eh_ata_rp = true` e `valor_origem = 'ata_rp'`.
+   - Como uma Ata de Registro de Preço nasce da homologação da compra correspondente, a resolução pelo número de controle PNCP + número do item colapsa o item da ata e o item da compra na mesma linha, evitando dupla contagem.
 3. **Preservação de Fontes Externas / Sistema S**:
-   - Linhas do Paradigma e SEST SENAT não possuem número de controle PNCP. Ao resolver como `'ext:' || fonte || ':' || licitacao_id`, essas compras recebem uma chave única e estável (ex.: `'ext:sestsenat:42:1:04372852000160'`), garantindo que **não são fundidas indevidamente nem descartadas**.
+   - Linhas do Paradigma e SEST SENAT não possuem número de controle PNCP. Ao resolver como `'ext:' || fonte || ':' || licitacao_id`, essas compras recebem uma chave única e estável (ex.: `'ext:sestsenat:42'`), garantindo que **não são fundidas indevidamente nem descartadas**, mesmo que tenants diferentes compartilhem o mesmo `nCdProcesso`.
 
 ---
 

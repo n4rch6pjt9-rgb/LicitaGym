@@ -277,10 +277,28 @@ f_resultados as (
       when kw.codigo_pdm is not null then 'pdm_palavra'
       else 'sem_pdm'
     end as cobertura,
-    case when l.modalidade ~* 'registro de pre[cç]o' or l.objeto ~* '\b(arp|registro de pre[cç]os?)\b' then true else false end as eh_ata_rp,
-    case when l.modalidade ~* 'registro de pre[cç]o' or l.objeto ~* '\b(arp|registro de pre[cç]os?)\b' then 'ata_rp' else 'contratacao_direta' end as valor_origem
+    coalesce(
+      case
+        when lower(le.raw->>'srp') in ('true', 't', '1', 'sim') then true
+        when lower(le.raw->>'srp') in ('false', 'f', '0', 'nao', 'não') then false
+      end,
+      l.modalidade ~* 'registro de pre[cç]o' or l.objeto ~* '\y(arp|registro de pre[cç]os?)\y',
+      false
+    ) as eh_ata_rp,
+    case
+      when coalesce(
+        case
+          when lower(le.raw->>'srp') in ('true', 't', '1', 'sim') then true
+          when lower(le.raw->>'srp') in ('false', 'f', '0', 'nao', 'não') then false
+        end,
+        l.modalidade ~* 'registro de pre[cç]o' or l.objeto ~* '\y(arp|registro de pre[cç]os?)\y',
+        false
+      ) then 'ata_rp'
+      else 'contratacao_direta'
+    end as valor_origem
   from public.licitacao_resultados r
   join public.licitacoes_externas_prioridade_efetiva l on l.id = r.licitacao_id
+  join public.licitacoes_externas le on le.id = r.licitacao_id
   left join public.licitacao_itens li on li.licitacao_id = r.licitacao_id and li.numero_item = r.numero_item
   left join public.catmat_itens ci on ci.codigo_item::text = li.catalogo_codigo_item
   left join lateral (

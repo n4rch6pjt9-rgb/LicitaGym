@@ -13,7 +13,24 @@
 --    - 2 de tenants diferentes (sestsenat e fiesc, modulo 59);
 --    - 1 do mesmo tenant de um deles, mas outro módulo (sestsenat, modulo 58).
 --    Esperado: exatamente 3 linhas Paradigma / 3 certames.
+--
+-- Proteção contra produção:
+--    - Envolvido em begin; ... rollback; para não persistir dados.
+--    - Trava aborta com EXCEPTION se licitacoes_externas tiver mais de 100 linhas.
 -- =============================================================================
+
+begin;
+
+-- Trava de segurança: impede execução se apontar acidentalmente para produção
+do $$
+declare
+  v_qtd_licitacoes int;
+begin
+  select count(*) into v_qtd_licitacoes from public.licitacoes_externas;
+  if v_qtd_licitacoes > 100 then
+    raise exception 'TRAVA DE SEGURANCA: licitacoes_externas contem % linhas (> 100). Abortando para proteger producao.', v_qtd_licitacoes;
+  end if;
+end $$;
 
 do $$
 declare
@@ -214,3 +231,5 @@ begin
 
   raise notice 'SUCESSO: Todos os testes reais contra v_bi_fornecedor_historico passaram com louvor!';
 end $$;
+
+rollback;

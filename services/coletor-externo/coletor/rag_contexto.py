@@ -49,7 +49,7 @@ def montar_contexto(trechos: list[dict]) -> str:
 
 def montar_prompt(pergunta: str, trechos: list[dict]) -> str:
     return (
-        "Responda à pergunta usando SOMENTE os blocos abaixo de licitações do SEST SENAT. "
+        "Responda à pergunta usando SOMENTE os blocos abaixo de licitações públicas (a fonte de cada uma está no cabeçalho do trecho). "
         "Se os blocos não bastarem, diga isso.\n\n"
         f"{REGRAS_CONTEXTO}\n\nPERGUNTA: {pergunta}\n\nBLOCOS:\n{montar_contexto(trechos)}"
     )

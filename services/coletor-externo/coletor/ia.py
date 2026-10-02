@@ -22,7 +22,7 @@ TIPOS = ["edital", "aviso", "termo_referencia", "esclarecimento", "impugnacao", 
          "analise_tecnica", "diligencia", "proposta", "habilitacao", "recurso", "contrarrazoes",
          "decisao_recurso", "adjudicacao", "homologacao", "revogacao", "contrato", "outro"]
 
-PROMPT_EXTRACAO = """Você analisa documentos de licitações públicas brasileiras (SEST SENAT).
+PROMPT_EXTRACAO = """Você analisa documentos de licitações públicas brasileiras ({fonte}).
 Documento: "{nome}" | seção do portal: {secao} | processo {processo}
 Responda SOMENTE um JSON com:
 {{
@@ -37,7 +37,6 @@ Responda SOMENTE um JSON com:
  "pontos_chave": ["até 5 fatos úteis para quem vai disputar licitações parecidas"]
 }}
 Não invente: use null ou [] quando não houver a informação.
-Não inclua CPF nem dados pessoais de pessoas físicas.
 
 TEXTO:
 {texto}"""
@@ -99,8 +98,8 @@ class Gemini:
                 log.info("      lote %s/%s (%s trechos) em %.1fs", n, len(lotes), len(parte), time.time() - t0)
         return vetores
 
-    def extrair_campos(self, texto: str, nome: str, secao: str, processo: str) -> dict:
-        prompt = PROMPT_EXTRACAO.format(nome=nome, secao=secao, processo=processo,
+    def extrair_campos(self, texto: str, nome: str, secao: str, processo: str, fonte: str = "licitação") -> dict:
+        prompt = PROMPT_EXTRACAO.format(fonte=fonte, nome=nome, secao=secao, processo=processo,
                                         tipos=TIPOS, texto=texto[:120_000])
         r = self._retry(lambda: self.client.models.generate_content(
             model=GEN_MODEL, contents=prompt,

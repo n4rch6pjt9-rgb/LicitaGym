@@ -95,14 +95,13 @@ def test_arquivo_sem_texto_fica_ignorado(tmp_path):
     assert r["status"] == "ignorado"
 
 
-def test_mascara_cpf_mas_mantem_cnpj():
+def test_cpf_e_cnpj_ficam_sem_mascara():
     from coletor.textos import limpar_texto
     t = limpar_texto("Sócio João, CPF 123.456.789-01; CPF: 12345678901. Empresa CNPJ 07.486.108/0001-85")
-    assert "123.456.789-01" not in t and "12345678901" not in t
-    assert "07.486.108/0001-85" in t
+    assert "123.456.789-01" in t and "12345678901" in t and "07.486.108/0001-85" in t
 
 
-def test_extracao_recebe_texto_com_cpf_mascarado(tmp_path):
+def test_extracao_recebe_texto_com_cpf_sem_mascara(tmp_path):
     arq = tmp_path / "habilitacao.pdf"
     arq.write_bytes(_pdf(["CPF 123.456.789-01\nEmpresa CNPJ 07.486.108/0001-85\n" + RECURSO]))
     docs = [{"id": 1, "licitacao_id": 1, "secao": "habilitacao", "nome_original": "habilitacao.pdf",
@@ -110,6 +109,31 @@ def test_extracao_recebe_texto_com_cpf_mascarado(tmp_path):
     ia = MagicMock()
     ia.extrair_campos.return_value = {"tipo_documento": "habilitacao"}
     ia.embed.side_effect = lambda ts, **k: [[0.1] * 768 for _ in ts]
-    IX.indexar_grupo(MagicMock(), ia, docs, {"numero_processo": "1/2026", "numero_edital": None}, True)
+    IX.indexar_grupo(MagicMock(), ia, docs, {"numero_processo": "1/2026", "numero_edital": None, "fonte": "sestsenat"}, True)
     texto_enviado = ia.extrair_campos.call_args.args[0]
-    assert "123.456.789-01" not in texto_enviado and "07.486.108/0001-85" in texto_enviado
+    assert "123.456.789-01" in texto_enviado and "07.486.108/0001-85" in texto_enviado
+
+
+def test_rotulo_fonte():
+    assert IX.rotulo_fonte({"fonte": "pncp", "orgao_nome": "Prefeitura de Lages"}) == "PNCP Prefeitura de Lages"
+    assert IX.rotulo_fonte({"fonte": "pncp"}) == "PNCP"
+    assert IX.rotulo_fonte({"fonte": "sestsenat", "entidade": None}) == "SEST SENAT"
+    assert IX.rotulo_fonte({"fonte": "fiesc", "entidade": "FIESC (SESI/SC, SENAI/SC, IEL/SC)"}).startswith("FIESC")
+    assert IX.rotulo_fonte({"fonte": "firjan"}).startswith("Firjan")
+
+
+def test_cabecalho_e_prompt_usam_a_fonte_real(tmp_path):
+    arq = tmp_path / "edital.pdf"; arq.write_bytes(_pdf([RECURSO]))
+    docs = [{"id": 9, "licitacao_id": 7, "secao": "processo", "nome_original": "edital.pdf",
+             "arquivo_origem": "edital.pdf", "fornecedor_nome": None, "sha256": "h", "storage_uri": str(arq)}]
+    ia = MagicMock()
+    ia.extrair_campos.return_value = {"tipo_documento": "edital"}
+    ia.embed.side_effect = lambda ts, **k: [[0.1] * 768 for _ in ts]
+    sb = MagicMock()
+    lic = {"numero_processo": "90001/2026", "numero_edital": None, "fonte": "pncp", "orgao_nome": "Prefeitura de Lages"}
+    IX.indexar_grupo(sb, ia, docs, lic, True)
+    linhas = sb.upsert.call_args.args[1]
+    assert all(l["texto"].startswith("PNCP Prefeitura de Lages") for l in linhas)
+    assert not any("SEST SENAT" in l["texto"] for l in linhas)
+    assert all(l["metadados"]["fonte"] == "pncp" for l in linhas)
+    assert ia.extrair_campos.call_args.args[4] == "PNCP Prefeitura de Lages"

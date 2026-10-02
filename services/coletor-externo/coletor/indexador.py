@@ -76,6 +76,20 @@ def escolher_canonico(docs: list[dict]) -> dict:
     return sorted(docs, key=lambda d: (PRIORIDADE.index(d["secao"]) if d["secao"] in PRIORIDADE else 99, d["id"]))[0]
 
 
+def rotulo_fonte(lic: dict) -> str:
+    """Rótulo da fonte para o cabeçalho dos trechos (antes era sempre "SEST SENAT")."""
+    fonte = (lic.get("fonte") or "").strip().lower()
+    if fonte == "pncp":
+        orgao = (lic.get("orgao_nome") or "").strip()
+        return f"PNCP {orgao}".strip()
+    if lic.get("entidade"):
+        return lic["entidade"].strip()
+    from .paradigma import FONTES
+    if fonte in FONTES:
+        return FONTES[fonte].entidade
+    return fonte.upper() or "LICITAÇÃO"
+
+
 def vetor_pg(v: list[float]) -> str:
     return "[" + ",".join(f"{x:.7f}" for x in v) + "]"
 
@@ -105,10 +119,10 @@ def indexar_grupo(sb: Supabase, ia, docs: list[dict], lic: dict, com_extracao: b
     extracao = {}
     if com_extracao:
         log.info("    %s: %s caracteres -> ficha com Gemini", nome[:60], len(texto_total))
-        extracao = ia.extrair_campos(texto_total, nome, secao, processo)
+        extracao = ia.extrair_campos(texto_total, nome, secao, processo, rotulo_fonte(lic))
     tipo = extracao.get("tipo_documento") or secao
     fornecedor = f" — {doc['fornecedor_nome']}" if doc.get("fornecedor_nome") else ""
-    cabecalho = f"SEST SENAT {processo} — {tipo.replace('_', ' ').upper()}{fornecedor} — {nome}"
+    cabecalho = f"{rotulo_fonte(lic)} {processo} — {tipo.replace('_', ' ').upper()}{fornecedor} — {nome}"
 
     trechos = dividir(paginas, cabecalho)
     if extracao.get("resumo"):
@@ -120,7 +134,7 @@ def indexar_grupo(sb: Supabase, ia, docs: list[dict], lic: dict, com_extracao: b
     linhas = [{
         "documento_id": doc["id"], "licitacao_id": doc["licitacao_id"], "secao": secao,
         "ordem": i, "pagina": t["pagina"], "texto": t["texto"], "embedding": vetor_pg(v),
-        "metadados": {"tipo_documento": tipo, "origem": t["origem"], "numero_processo": lic["numero_processo"],
+        "metadados": {"tipo_documento": tipo, "fonte": lic.get("fonte"), "origem": t["origem"], "numero_processo": lic["numero_processo"],
                       "numero_edital": lic.get("numero_edital"), "fornecedor": doc.get("fornecedor_nome"),
                       "chunk_kind": "resumo" if (i == 0 and extracao.get("resumo")) else "trecho"},
     } for i, (t, v) in enumerate(zip(trechos, vetores))]
@@ -159,7 +173,7 @@ def main(argv: list[str] | None = None) -> int:
     docs = sb.selecionar("licitacao_documentos", status_processamento=status, sha256="not.is.null",
                          storage_uri="not.is.null", order="id",
                          select="id,licitacao_id,secao,nome_original,arquivo_origem,fornecedor_nome,sha256,storage_uri")
-    lics = {l["id"]: l for l in sb.selecionar("licitacoes_externas", select="id,numero_processo,numero_edital")}
+    lics = {l["id"]: l for l in sb.selecionar("licitacoes_externas", select="id,numero_processo,numero_edital,fonte,entidade,orgao_nome")}
 
     grupos: dict[tuple, list[dict]] = {}
     for d in docs:

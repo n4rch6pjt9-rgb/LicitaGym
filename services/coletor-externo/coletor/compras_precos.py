@@ -184,16 +184,36 @@ def coletar(
         for p in pdms:
             consultas.append(("codigoPdm", p))
     if not consultas:
-        pdms_efetivos = None
-        if sb is not None:
+        if sb is None:
+            pdms_efetivos = PDMS_PADRAO
+        else:
             try:
                 res_rpc = sb.rpc("catalogo_catmat_pdms_efetivos", {})
-                if res_rpc and isinstance(res_rpc, list):
-                    pdms_efetivos = [int(r["codigo_pdm"]) for r in res_rpc if r.get("codigo_pdm")]
+                if not isinstance(res_rpc, list):
+                    raise RuntimeError("Resposta inválida da RPC de PDMs efetivos: esperado uma lista")
+                pdms_efetivos = []
+                for row in res_rpc:
+                    if not isinstance(row, dict):
+                        raise RuntimeError("Resposta inválida da RPC de PDMs efetivos: registro inválido")
+                    codigo_pdm = row.get("codigo_pdm")
+                    try:
+                        if codigo_pdm in (None, "") or isinstance(codigo_pdm, bool):
+                            raise ValueError("codigo_pdm ausente ou inválido")
+                        codigo_pdm_int = int(codigo_pdm)
+                        if codigo_pdm_int <= 0:
+                            raise ValueError("codigo_pdm deve ser positivo")
+                    except (TypeError, ValueError) as e:
+                        raise RuntimeError("Resposta inválida da RPC de PDMs efetivos: codigo_pdm inválido") from e
+                    pdms_efetivos.append(codigo_pdm_int)
+                if pdms_efetivos:
                     log.info("Carregados %d PDMs efetivos do catálogo da empresa via RPC", len(pdms_efetivos))
+                else:
+                    log.info("RPC retornou catálogo efetivo sem PDMs; nenhuma consulta será iniciada")
             except Exception as e:
-                log.warning("Não foi possível carregar catalogo_catmat_pdms_efetivos (fallback para PDMs padrão): %s", e)
-        for p in (pdms_efetivos or PDMS_PADRAO):
+                log.error("Não foi possível carregar catalogo_catmat_pdms_efetivos: %s", e)
+                pdms_efetivos = []
+                erros += 1
+        for p in pdms_efetivos:
             consultas.append(("codigoPdm", p))
 
     for tipo, cod in consultas:

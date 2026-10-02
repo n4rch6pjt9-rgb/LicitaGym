@@ -166,6 +166,44 @@ def test_coletar_precos_dry_run():
     sb.upsert.assert_not_called()
 
 
+def test_coletar_precos_falha_se_rpc_de_pdms_falhar():
+    cliente = MagicMock()
+    sb = MagicMock()
+    sb.rpc.side_effect = RuntimeError("falha na RPC")
+
+    res = compras_precos.coletar(cliente, sb)
+
+    assert res["sucesso"] is False
+    assert res["erros"] == 1
+    cliente.consultar_material.assert_not_called()
+
+
+@pytest.mark.parametrize("resposta", [{"codigo_pdm": 2640}, [{"codigo_pdm": None}]])
+def test_coletar_precos_falha_se_resposta_rpc_for_invalida(resposta):
+    cliente = MagicMock()
+    sb = MagicMock()
+    sb.rpc.return_value = resposta
+
+    res = compras_precos.coletar(cliente, sb)
+
+    assert res["sucesso"] is False
+    assert res["erros"] == 1
+    cliente.consultar_material.assert_not_called()
+
+
+def test_coletar_precos_nao_usa_pdms_padrao_com_catalogo_vazio():
+    cliente = MagicMock()
+    sb = MagicMock()
+    sb.rpc.return_value = []
+
+    res = compras_precos.coletar(cliente, sb)
+
+    assert res["sucesso"] is True
+    assert res["total_coletados"] == 0
+    assert res["erros"] == 0
+    cliente.consultar_material.assert_not_called()
+
+
 def test_coletar_arp_dry_run():
     cliente = MagicMock()
     cliente.consultar_itens_pdm.return_value = {
@@ -349,7 +387,6 @@ def test_coletor_arp_falha_apos_retries(monkeypatch):
 
     with pytest.raises(RuntimeError):
         cliente.consultar_itens_pdm(2640, "2026-01-01", "2026-12-31")
-
 
 
 

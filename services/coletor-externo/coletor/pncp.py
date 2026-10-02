@@ -355,7 +355,9 @@ def avaliar(compra: dict, itens: list[dict]) -> tuple[str | None, bool, dict[int
     id 229 tinha termos_busca ["treinamento funcional"] e virou "forte" pelos itens de oficineiro, não pelo termo).
     Compra cujo objeto é só serviço de pessoas (credenciamento de oficineiros, aulas, instrutores, vagas em
     academia) fica fora inteira; item marcado como serviço ('S') sem fornecimento de material no texto não conta
-    como equipamento. Compra de academia ao ar livre (ATI) só entra pelo piso/grama/borracha."""
+    como equipamento. Compra de academia ao ar livre (ATI) só entra pelo piso/grama/borracha.
+    Compra de mobiliário, brinquedos, material de expediente ou material hospitalar (escopo.objeto_passagem) só fica
+    "forte" com item core de equipamento (escopo.item_core); sem core, o forte cai para "fraco" (02/10/2026)."""
     objeto = compra.get("description") or compra.get("title") or ""
     if excluir_compra(objeto) or servico_sem_material(objeto):
         return None, False, {it["numeroItem"]: (None, False) for it in itens}
@@ -367,11 +369,20 @@ def avaliar(compra: dict, itens: list[dict]) -> tuple[str | None, bool, dict[int
     obra = obra_ou_construcao(objeto)
     predial = _escopo.manutencao_predial(objeto)
     creche = bool(_escopo.CRECHE_OBJETO.search(normalizar(objeto)))
+    # Quarta rodada (02/10/2026): compra de passagem (móveis, brinquedos, expediente, hospitalar) só é "forte" com
+    # item core; em compra também de material esportivo o tatame conta como core.
+    passagem = bool(_escopo.objeto_passagem(objeto))
+    esportivo = passagem and _escopo.objeto_esportivo(objeto)
+    tem_core = False
     por_item = {}
     for it in itens:
         desc = it.get("descricao") or ""
         cat = classificar(desc)
-        if cat in CATEGORIAS_SO_MATERIAL and material_ou_servico(it) == "S" and not PRODUTO.search(normalizar(desc)):
+        servico = material_ou_servico(it) == "S" and not PRODUTO.search(normalizar(desc))
+        # serviço ('S') nunca é core, nem quando o texto cita o aparelho ("manutenção de esteira ergométrica")
+        if passagem and not tem_core and material_ou_servico(it) != "S" and not ar_livre and not obra and not predial:
+            tem_core = _escopo.item_core(desc, esportivo)
+        if cat in CATEGORIAS_SO_MATERIAL and servico:
             cat = None
         if ar_livre and cat in CATEGORIAS_SO_MATERIAL:
             cat = None
@@ -386,6 +397,9 @@ def avaliar(compra: dict, itens: list[dict]) -> tuple[str | None, bool, dict[int
             continue
         por_item[it["numeroItem"]] = (cat, interesse_borracha(desc, cat))
     cat_obj = classificar(objeto)
+    if passagem and not tem_core:   # item de passagem (tatame, bola, banco, puxador...) não segura o forte
+        por_item = {n: ("fraco" if c == "forte" else c, b) for n, (c, b) in por_item.items()}
+        cat_obj = "fraco" if cat_obj == "forte" else cat_obj
     prioridade = ["borracha", "obra_piso", "piso", "catmat", "forte", "fraco"]
     candidatas = [cat_obj] + [c for c, _ in por_item.values()]
     categoria = next((p for p in prioridade if p in candidatas), None)

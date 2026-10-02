@@ -55,4 +55,7 @@ def test_compra_de_brinquedos_so_entra_pelos_itens_esportivos():
     so_brinquedo = [_item(1, "PISCINA DE BOLINHAS COM 1500 BOLINHAS"), _item(2, "Casinha de Brinquedo rotomoldada")]
     assert avaliar(compra, so_brinquedo)[0] is None
     assert avaliar(compra, so_brinquedo + [_item(3, "Bola de futebol de campo oficial")])[0] == "fraco"
-    assert avaliar(compra, so_brinquedo + [_item(3, "Cama elástica pula-pula 3,05 m")])[0] == "forte"
+    # 02/10/2026: compra de brinquedos é compra de passagem; cama elástica não é item core, fica no escopo como "fraco"
+    assert avaliar(compra, so_brinquedo + [_item(3, "Cama elástica pula-pula 3,05 m")])[0] == "fraco"
+    assert avaliar(compra, so_brinquedo + [_item(3, "Cama elástica pula-pula 3,05 m"),
+                                           _item(4, "Esteira ergométrica elétrica 2,5 HP")])[0] == "forte"

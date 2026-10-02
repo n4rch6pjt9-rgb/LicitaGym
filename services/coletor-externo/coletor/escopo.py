@@ -396,6 +396,22 @@ PUXADOR = re.compile(r"\bpuxador(es)?\b", re.I)
 PUXADOR_APARELHO = re.compile(
     r"\bpuxador(es)?\s+(\w+\s+){0,2}?(alto|baixo|triangul\w*|remada|costas|dorsal|articulad\w*|"
     r"polia|pulley|graviton|musculac\w*|academia|ginastic\w*|cross\s*over|crossover)\b", re.I)
+# Puxador como ACESSÓRIO fitness (02/10/2026, decisão do Marcelo: "puxador" é termo positivo da categoria acessórios,
+# não falso positivo). É o pegador de polia/crossover do dicionário de aparelhos v0.3 (nó pegador_polia, família
+# equipamentos_fitness.acessorios, refino "ambiguo:puxador"): "PUXADOR TRICEPS CORDA", "PUXADOR ROMANO", "barra para
+# puxador W", "puxador com pegada neutra". Continua valendo PUXADOR_FORA (porta, gaveta, móvel, ferragem...).
+# "pegada" só com o tipo de pegada de treino: "puxador tipo alça com pegada ergonômica" é ferragem de móvel.
+# "barra puxador ... com giro"/"... mosquetão" é a barra de polia (decisão do Marcelo, review do PR #124).
+# "corda" só colada ao puxador ("PUXADOR CORDA", "PUXADOR, CORDA TRANÇADA", "puxador de corda"): solta na frase é a
+# corda do puxador de partida de motor ("Puxador de partida retrátil com corda para motor", review do PR #124).
+PUXADOR_ACESSORIO = re.compile(
+    r"\bpuxador(es)?\b[^.;]{0,40}?(\btriceps\b|\bbiceps\b|\bromano\b|\bw\b|\bestribo\b|\bunilateral\b|"
+    r"pegada\s+(neutra|supinad\w*|pronad\w*|aberta|fechada|paralela|dupla)|\bpolias?\b|pulley)|"
+    r"\bpuxador(es)?[\s,:-]+((de|em)\s+)?corda\b|"
+    r"\b(barra|corda|triangulo|pegador)\s+(\w+\s+){0,2}?(para\s+|de\s+|p/\s*)?puxador"
+    r"(?=[^.;]{0,40}\b(triceps|biceps|romano|w|estribo|unilateral|neutra|supinad\w*|pronad\w*|aberta|fechada|"
+    r"paralela|alto|baixo|triangul\w*|remada|costas|dorsal|articulad\w*|polias?|pulley|graviton|musculac\w*|"
+    r"academia|ginastic\w*|fitness|cross\s*over|crossover|treino|giro|mosquet\w*)\b)", re.I)
 PUXADOR_CONTEXTO = re.compile(
     r"musculac|academia|ginastic|fitness|crossfit|cross\s*over|crossover|\bpolias?\b|pulley|remada|anilha|halter|"
     r"graviton|leg\s*press|supino|peck\s*deck|voador|aparelhos?\s+de\s+(ginastica|musculacao)", re.I)
@@ -405,7 +421,9 @@ PUXADOR_FORA = re.compile(
     r"gavetas?|gaveteir|armari|\bmove(l|is)\b|moveleir|mobiliari|ferrage|janelas?|esquadri|marcenari|dobradic|"
     r"fechadur|macaneta|cozinha|guarda[\s-]*roupa|gabinete|criado[\s-]*mudo|escrivaninha|box\s+(de\s+|para\s+)?banheiro|vidro|"
     # utilidades com puxador ("CAIXA PLASTICA 372 LITROS COM TAMPA E PUXADOR FRONTAL", rodada de 30/09/2026)
-    r"\bcaixas?\b|tampa|rodizi|lixeir|contain|contein|\bmalas?\b|\bbolsas?\b|carrinho", re.I)
+    r"\bcaixas?\b|tampa|rodizi|lixeir|contain|contein|\bmalas?\b|\bbolsas?\b|carrinho|"
+    # puxador de partida (retrátil) de motor, roçadeira, motosserra, gerador (review do PR #124)
+    r"\bpartida\b|retrat\w*|arranque|rocadeira|motosserra|motobomba|motopoda|\bgerador", re.I)
 # "cross over" também é cabo de rede (cabo crossover) e divisor de frequência de áudio.
 CROSS_OVER = re.compile(r"cross\s*over", re.I)
 CROSS_OVER_FORA = re.compile(
@@ -431,7 +449,7 @@ def _colchonete_academia(t: str) -> bool:
 
 def _puxador_academia(t: str) -> bool:
     return bool(PUXADOR.search(t) and not PUXADOR_FORA.search(t)
-                and (PUXADOR_APARELHO.search(t) or PUXADOR_CONTEXTO.search(t)))
+                and (PUXADOR_APARELHO.search(t) or PUXADOR_ACESSORIO.search(t) or PUXADOR_CONTEXTO.search(t)))
 
 
 def _cross_over_academia(t: str) -> bool:
@@ -466,8 +484,11 @@ _AMBIGUOS = {
         # Peça/forma: o substantivo vem colado ("tubo de aço elíptico", "seção elíptica"); "aço ... movimento elíptico"
         # e "forma"/"desenho" soltos casavam descrição de aparelho. Iluminação só como objeto de iluminação:
         # "lumin" solto casava "display iluminado"/"painel luminoso" do próprio elíptico (Codex, PR #114).
-        r"(secao|formato|cavidade|perfil|tubos?(\s+de\s+aco)?|travessa|tampo|furo|recorte|contorno)\s+(\w+\s+)?eliptic|"
-        r"eliptic\w*\s+(sae\b|\d+\s*x\s*\d+)|\bmesas?\b|\bcadeiras?\b|conjunto\s+escolar|\bcarteiras?\b|sextavad|hexagon|"
+        # "ponta elíptica" (torniquete "pode possuir a ponta elíptica vermelha", #1025), "em forma elíptica" e
+        # "canteiro elevado elíptico 3,65 x 6,80 m" (medida com decimal) também são forma (02/10/2026)
+        r"(secao|formato|formas?|cavidade|perfil|tubos?(\s+de\s+aco)?|travessa|tampo|furo|recorte|contorno|pontas?)\s+"
+        r"(\w+\s+)?eliptic|"
+        r"eliptic\w*\s+(sae\b|\d+([.,]\d+)?\s*x\s*\d+)|\bmesas?\b|\bcadeiras?\b|conjunto\s+escolar|\bcarteiras?\b|sextavad|hexagon|"
         r"mobiliari|porta[\s-]*lapis|\bespelhos?\b|"
         r"luminaria|\blustres?\b|arandela|plafon|refletor|\bspots?\b|lampada|abajur|pendente\s+(de\s+)?(teto|luz)",
         # "^eliptico...": item que começa pelo nome do aparelho ("Elíptico com display iluminado e monitor LCD")
@@ -531,6 +552,8 @@ _AMBIGUOS = {
     ),
 }
 AMBIGUOS = {k: tuple(re.compile(p, re.I) for p in v) for k, v in _AMBIGUOS.items()}
+# Veto duro (vale mesmo com o contexto "fica"): torniquete nunca é aparelho elíptico (#1025, 02/10/2026).
+AMBIGUOS_VETO = {"eliptico": re.compile(r"torniquete", re.I)}
 
 
 def _ambiguo_academia(t: str, nome: str):
@@ -538,6 +561,9 @@ def _ambiguo_academia(t: str, nome: str):
     termo, fora, fica = AMBIGUOS[nome]
     m = termo.search(t)
     if not m or (fora.search(t) and not fica.search(t)):
+        return None
+    veto = AMBIGUOS_VETO.get(nome)
+    if veto and veto.search(t):
         return None
     return m
 
@@ -726,6 +752,160 @@ def so_tatame(texto: str | None) -> bool:
         return False
     return not (_puxador_academia(t) or _cross_over_academia(t) or _colchonete_academia(t)
                 or any(_ambiguo_academia(t, k) for k in AMBIGUOS if k != "tatame"))
+
+
+# ---------------- quarta rodada: "forte" por item de passagem (02/10/2026) ----------------
+# Revisão do forte (leads+monitorar) de 02/10/2026: 99 linhas forte vinham de compras de mobiliário, brinquedos/
+# material pedagógico, material de expediente ou material hospitalar/de saúde em que só um item "de passagem"
+# (tatame EVA, colchonete, bola, banco, cama elástica, mesa de pebolim, puxador...) casava o vocabulário de academia.
+# Regra (decisão do Marcelo): nessas compras a linha só fica "forte" com item CORE de equipamento de fato (esteira,
+# bicicleta ergométrica/spinning, elíptico, equipamento de musculação, polia, espaldar, piso de borracha). Sem core, o item forte cai
+# para "fraco" (continua no escopo, sai do forte). Puxador nunca é core (ali é puxador de porta/gaveta).
+# Exceção: se o objeto também é de material esportivo, tatame continua valendo como core.
+# Brinquedo de playground/parque/praça (BRINQUEDO_INFANTIL_FICA) não é compra de passagem: o playground é escopo.
+OBJETO_PASSAGEM = {
+    "mobiliario": re.compile(r"mobiliari|\bmobilias?\b|(?<!bens\s)(?<!bem\s)\bmoveis\b", re.I),
+    "brinquedo": re.compile(
+        r"brinquedo|\bludic|pedagogic|didatic|\bjogos?\s+(\w+\s+){0,2}?(educativ|pedagogic|terapeutic|ludic)", re.I),
+    "expediente": re.compile(r"expediente|papelaria", re.I),
+    "hospitalar": re.compile(
+        r"hospitala|ambulatori|enfermagem|odontologic|fisioterap|reabilitac\w*\s+(fisic|fisioterap|motor)|"
+        r"insumos?\s+(\w+\s+)?(de\s+)?saude|(equipamentos?|materia(l|is))\s+(\w+\s+){0,2}?medic", re.I),
+}
+# Serviço de manutenção/reparo (#2053 "Manutenção e Reparo de Material Esportivo / Brinquedo", #2119 manutenção de
+# aparelhos de condicionamento físico) não é compra de móveis/brinquedos: a regra do item core não se aplica.
+OBJETO_MANUTENCAO = re.compile(
+    r"\bmanutenc\w*\s+(e\s+reparo|preventiva|corretiva)|"
+    r"\b(manutenc\w*|reparos?|conserto)\s+(\w+\s+){0,2}?(de|em|d[aoe]s?)\s+(\w+\s+){0,2}?"
+    r"(equipament|aparelh|materia|mobiliari|moveis|brinquedo|esteira|bicicleta)", re.I)
+# ...e só quando o objeto é o SERVIÇO de manutenção (começa por manutenção/reparo/conserto, ou serviço/empresa de
+# manutenção): "Aquisição de material médico-hospitalar para manutenção preventiva" continua compra de passagem
+# (review do PR #124).
+OBJETO_SERVICO_MANUTENCAO = re.compile(
+    r"^\W*(\[[^\]]*\]\s*-?\s*)?(manutenc|reparos?\b|conserto)|"
+    r"\bservic\w*\s+(\w+\s+){0,5}?(manutenc|reparos?\b|conserto)|"
+    r"\b(empresa|pessoa\s+juridica)\s+(\w+\s+){0,2}?(em|para|de|na)\s+(\w+\s+){0,2}?(manutenc|reparos?\b|conserto)",
+    re.I)
+OBJETO_ESPORTIVO = re.compile(r"esportiv|desportiv|educacao\s+fisica|\blutas?\b|\bjudo\b|artes\s+marciais", re.I)
+# Item core: equipamento de academia de fato. Halter/anilha/kettlebell contam como musculação (peso livre), como na
+# lista "core estrito" da revisão de 02/10/2026; elíptico só com o contexto de aparelho (_ambiguo_academia).
+ITEM_CORE = re.compile(
+    r"esteiras?\s+(\w+\s+)?(ergometr|eletric|elet\b|profission|rolante|mecanic|curva|de\s+caminhada|para\s+caminhada|"
+    r"de\s+corrida|motorizad)|"
+    r"bicicletas?\s+(\w+\s+){0,2}?(ergometr|spinning|estacionari|horizontal|vertical)|\bspinning\b|"
+    r"\bbikes?\s+(\w+\s+)?(spinning|indoor|ergometr|estacionari|horizontal|vertical)|cicloergometr|air\s*bike|"
+    r"musculac|leg\s*press|supino|peck\s*deck|crucifixo|cadeira\s+(extensora|flexora|adutora|abdutora)|mesa\s+flexora|"
+    r"maquina\s+(p/?\s*|para\s+)?(peitoral|dorso|adutora|abdutora|desenvolvimento|panturrilha|de\s+agachamento|remada|gluteo)|"
+    r"agachamento\s+(guiado|hack|livre|smith|maquina)|\bhack\b|\bsmith\b|graviton|"
+    r"puxada\s+(alta|frontal|articulad)|remada\s+(sentada|baixa|cavalinho|articulad)|multi[\s-]*estac|"
+    r"estac(ao|oes)\s+(\w+\s+)?(de\s+)?musculac|"
+    r"halter|dumbb?ells?|kettlebell|barra\s+olimpica|anilhas?\s+(de\s+)?(peso|ferro|emborrachad|revestid|injetad|olimpic|\d)|"
+    r"(equipamentos?|aparelhos?)\s+(\w+\s+){0,2}?(de\s+|para\s+)(academia|musculacao|ginastica\s+de\s+academia)", re.I)
+# "musculação"/"equipamento de academia" citados como uso ou aplicação de um acessório não fazem o item core:
+# caneleira "indicada para ... musculação" (#179), faixa elástica/sand bag do CATMAT "uso: equipamentos de academia
+# para treino funcional" (#1706, #1867), mosquetão "para aparelhos de musculação" (#2071, #2088), mini band "comparado
+# com aparelhos de musculação" (#2120). E "cabeça supino" é posição do paciente (protetor de posicionamento, #256).
+ITEM_CORE_USO = re.compile(
+    r"(\buso\b|aplicac\w*|indicad[oa]s?|utilizad[oa]s?|\bideal\b|comparad[oa]s?|"
+    r"\bpara\s+((os?|as?)\s+)?(aparelhos?|equipamentos?)\b)[^.;]{0,60}$|\bpara\s*$")
+ITEM_CORE_POSICAO = re.compile(r"(cabeca|decubito|posicao|paciente)\s*$")
+# Decisão do Marcelo (02/10/2026, v2): polia e espaldar são equipamento core e seguram o "forte". Pilates não é core
+# (nem o aparelho de Pilates com polia/escada), nem o "aparelho/equipamento para condicionamento físico" genérico.
+PILATES = re.compile(r"pilates|reformer|cadillac|\bbarrel\b|barril|step\s+chair|wunda", re.I)
+# "pulley" e "polia 2..." passam pela mesma validação (vetos de Pilates, acessório e máquina): no ITEM_CORE genérico
+# "Barra para pulley" e "Pilates Reformer com polia 2 posições" seguravam o forte (review do PR #124).
+POLIA = re.compile(r"\bpolias?\b|\bpulley")
+# polia de aparelho de exercício: conjugada, regulável, cross, de ombro, com torre/carga/peso... "pulley" já é o
+# aparelho de academia
+POLIA_CONTEXTO = re.compile(
+    r"pulley|conjugad|regulav|cross|ombro|musculac|academia|carga|\bpesos?\b|torre|exercic|condicionamento|ginastic|treino|"
+    r"fisioterap|reabilitac|gaiola|agachamento|\d\s*kg\b")
+# polia como peça de outra coisa (batedeira "polia variadora", #425), acessório "para puxadas em aparelho de polia"
+# (#2050) ou tração hospitalar
+POLIA_FORA = re.compile(
+    r"acessori\w*\s+(\w+\s+){0,4}?(para|de|em)\s+(\w+\s+){0,3}?polia|batedeira|liquidific|\bmotor\b|correia|"
+    r"cortina|persiana|varal|portao|elevador|guincho|tracao\s+(cervical|lombar)|balcanic")
+ACESSORIO_INICIO = re.compile(
+    r"^\W*(\(\w+\)\s*)?(puxador|pegador|barra|corda|triangulo|tornozeleira|mosquet|cabo|alca|manopla)")
+# acessório "para/de polia" fora do início do texto ("MC0600016-BARRA PARA PULLEY", "cabo de aço para polia")
+ACESSORIO_POLIA = re.compile(
+    r"\b(puxador|pegador|barra|corda|triangulo|tornozeleira|mosquet\w*|cabos?|alcas?|manopla|estribo)s?\s+"
+    r"(\w+\s+){0,3}?(para|de|p/|em)\s+(\w+\s+){0,2}?(polias?|pulley)\b")
+ESPALDAR = re.compile(r"\bespaldar\b")
+# espaldar de parede (barra de Ling) x espaldar de cadeira ("espaldar médio", "tipo espaldar: alto", #355/#492)
+ESPALDAR_PAREDE = re.compile(
+    r"barras?\s+(/\s*escada\s+)?de\s+lingu?e?|escada\s+de\s+ling|barras?\s+horizonta|barras?\s+de\s+apoio|"
+    r"\d+\s+barras|alongamento|fisioterap|ginastic|musculac|parede")
+ESPALDAR_CADEIRA = re.compile(
+    r"espaldar\s+(baixo|medio|alto)|(tipo|de|encosto)\s+espaldar|\b(cadeira|poltrona|longarina|banqueta|sofa)|"
+    r"assento|giratori")
+
+
+def objeto_passagem(objeto: str | None) -> list[str]:
+    """Grupos de compra "de passagem" (mobiliario, brinquedo, expediente, hospitalar) que o objeto cita. Vazio = a
+    regra do item core não se aplica."""
+    t = normalizar(objeto or "")
+    if OBJETO_MANUTENCAO.search(t) and OBJETO_SERVICO_MANUTENCAO.search(t):
+        return []
+    grupos = [g for g, rx in OBJETO_PASSAGEM.items() if rx.search(t)]
+    if grupos == ["brinquedo"] and BRINQUEDO_INFANTIL_FICA.search(t):
+        return []   # playground/parque infantil/praça é escopo, não compra de passagem
+    return grupos
+
+
+def objeto_esportivo(objeto: str | None) -> bool:
+    return bool(OBJETO_ESPORTIVO.search(normalizar(objeto or "")))
+
+
+def _core_de_fato(t: str, m: re.Match) -> bool:
+    g, antes = m.group(0), t[max(0, m.start() - 80):m.start()]
+    if g.startswith("anilha"):
+        return _ambiguo_academia(t, "anilha")
+    if g.startswith(("musculac", "equipament", "aparelh")):
+        return not ITEM_CORE_USO.search(antes)
+    if g.startswith("supino"):
+        return not ITEM_CORE_POSICAO.search(antes)
+    return True
+
+
+def item_core(texto: str | None, esportivo: bool = False) -> bool:
+    """Item é equipamento de academia de fato (esteira, bike ergométrica/spinning, elíptico, musculação, polia,
+    espaldar, piso de borracha). Pilates não é core. `esportivo`: compra também de material esportivo, onde tatame
+    também é core. Puxador nunca é core.
+    Só o texto: quem chama tira os itens de serviço ('S'), que nunca são core."""
+    t = normalizar(texto or "")
+    # ITEM_FORA não vale aqui: "bicicleta ergométrica ... display com cronômetro" é core (#1831, 02/10/2026); anilha de
+    # vedação/marcadora já fica de fora pelo _ambiguo_academia("anilha")
+    if any(_core_de_fato(t, m) for m in ITEM_CORE.finditer(t)):
+        return True
+    # piso de borracha: só quando o classificador já o lê como piso/borracha da linha Playfit (não "escada com piso de
+    # borracha", "placas de borracha (chinelo) artesanato", nem piso fino de obra)
+    if classificar(texto or "") in ("piso", "obra_piso", "borracha") and not piso_item_fora(texto):
+        return True
+    if _cross_over_academia(t) or _ambiguo_academia(t, "eliptico"):
+        return True
+    if _polia_core(t) or _espaldar_core(t):
+        return True
+    return bool(esportivo and _ambiguo_academia(t, "tatame"))
+
+
+def _polia_core(t: str) -> bool:
+    """Polia de aparelho de exercício (conjugada, regulável, mono cross, de ombro...). Não conta acessório de polia
+    (puxador, barra, corda), polia como peça de outro equipamento, uso citado ("uso em... sistemas de polia") nem
+    aparelho de Pilates."""
+    m = POLIA.search(t)
+    if not m or PILATES.search(t) or POLIA_FORA.search(t) or ACESSORIO_INICIO.search(t) or ACESSORIO_POLIA.search(t):
+        return False
+    if ITEM_CORE_USO.search(t[max(0, m.start() - 80):m.start()]):
+        return False
+    return bool(POLIA_CONTEXTO.search(t))
+
+
+def _espaldar_core(t: str) -> bool:
+    """Espaldar (barra de Ling) de parede. Não conta espaldar de cadeira nem a escada do Ladder Barrel (Pilates)."""
+    if not ESPALDAR.search(t) or PILATES.search(t):
+        return False
+    return bool(ESPALDAR_PAREDE.search(t) or not ESPALDAR_CADEIRA.search(t))
 
 
 def normalizar(t: str) -> str:

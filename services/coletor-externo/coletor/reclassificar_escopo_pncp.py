@@ -33,7 +33,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from .destino import Supabase, env
-from .escopo import classificar, excluir_compra, servico_sem_material
+from .escopo import classificar, excluir_compra, objeto_passagem, servico_sem_material
 from .pncp import PNCP, avaliar, compra_de_codigo, motivo_prioridade
 
 log = logging.getLogger("coletor.reclassificar_escopo_pncp")
@@ -171,10 +171,16 @@ def objeto_decide(ln: dict) -> bool:
     - o objeto, com o classificador atual, dá a mesma categoria gravada. As regras novas só restringem
       (puxador, cross over, SBR/EPDM, serviço, academia ao ar livre): a categoria nova fica entre a do objeto e a
       gravada (que já era o máximo de objeto + itens), então as duas iguais fecham a conta.
-    Sem consultar os itens a linha também não muda interesse_borracha (fica o gravado)."""
+    Sem consultar os itens a linha também não muda interesse_borracha (fica o gravado).
+    Exceção (02/10/2026): forte em compra de passagem (móveis, brinquedos, expediente, hospitalar) depende de haver
+    item core, então o objeto sozinho não decide; o puxador como acessório (regra que amplia) também só vem dos itens."""
     objeto = _compra(ln)["description"]
     if excluir_compra(objeto) or servico_sem_material(objeto):
         return True
+    if ln.get("categoria_escopo") == "forte" and objeto_passagem(objeto):
+        return False
+    if ln.get("categoria_escopo") == "fraco":
+        return False
     return ln.get("categoria_escopo") is not None and classificar(objeto) == ln.get("categoria_escopo")
 
 

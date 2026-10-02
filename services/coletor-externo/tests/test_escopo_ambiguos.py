@@ -18,7 +18,10 @@ PUXADOR_FERRAGEM = [
     "Puxador de porta de vidro temperado 30 cm",
     "PUXADOR PARA PORTÃO",
 ]
-PUXADOR_SEM_CONTEXTO = ["PUXADOR", "Puxador cromado 96mm", "puxador em aço inox escovado"]
+PUXADOR_SEM_CONTEXTO = [
+    "PUXADOR", "Puxador cromado 96mm", "puxador em aço inox escovado",
+    "Corda para puxador de partida retrátil de motor",
+]
 PUXADOR_ACADEMIA = [
     "Puxador alto e baixo",
     "PUXADOR ALTO COM POLIA, ESTRUTURA EM AÇO",

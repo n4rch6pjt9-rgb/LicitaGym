@@ -94,6 +94,9 @@ begin
   end loop;
 
   -- 4. Verifica colunas essenciais
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'v_bi_fornecedor_historico' and column_name = 'tipo_fornecedor_motivo') then
+    raise exception 'COLUNA CHECK FALHOU: v_bi_fornecedor_historico sem coluna tipo_fornecedor_motivo';
+  end if;
   if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'precos_praticados_itens' and column_name = 'marca') then
     raise exception 'COLUNA CHECK FALHOU: precos_praticados_itens sem coluna marca';
   end if;

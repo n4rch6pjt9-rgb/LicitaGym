@@ -35,12 +35,12 @@ Amostras reais das APIs oficiais (medidas em 02/10/2026):
 
 ## 3. Classificação Revenda x Fabricante
 
-A classificação do fornecedor na view `v_bi_fornecedor_historico` segue regras determinísticas auditáveis:
+A classificação do fornecedor na view `v_bi_fornecedor_historico` segue regras determinísticas auditáveis sem suposições ou inferências não fundamentadas:
 
-1. **CNAE Principal (Divisões 10 a 33)**: Indústria / Fabricação (ex.: CNAE `3230-2/00` Fabricação de artefatos para esporte). Classificado como `'fabricante'` com confiança `'alta_cnae_industria'`.
-2. **CNAE Principal (Divisões 45 a 47)**: Comércio Atacadista / Varejista (ex.: CNAE `4763-6/02` Comércio de artigos esportivos). Classificado como `'revenda'` com confiança `'alta_cnae_comercio'`.
-3. **Sinal de Coincidência de Marca**: Quando o CNAE não está categorizado, mas a marca que o fornecedor entrega coincide com tokens da sua própria Razão Social / Nome Fantasia (ex.: Fornecedor "Movement Artigos Esportivos" entregando marca "MOVEMENT"). Classificado como `'fabricante'` com confiança `'media_coincidencia_marca'`.
-4. **Sem dados / Desconhecido**: Quando não há CNAE cadastrado (ex.: fornecedor sem consulta pública prévia no `fornecedores`), a coluna permanece `'nao_classificado'` ou `'baixa_sem_cnae_especifico'`, sem qualquer valor inventado.
+1. **CNAE Principal (Divisões 10 a 33)**: Indústria / Fabricação (ex.: CNAE `3230-2/00` Fabricação de artefatos para esporte). Classificado como `'fabricante'`, `tipo_fornecedor_motivo = 'cnae_industria'` e confiança `'alta_cnae_industria'`.
+2. **CNAE Principal (Divisões 45 a 47)**: Comércio Atacadista / Varejista (ex.: CNAE `4763-6/02` Comércio de artigos esportivos). Classificado como `'revenda'`, `tipo_fornecedor_motivo = 'cnae_comercio'` e confiança `'alta_cnae_comercio'`.
+3. **Sinal de Coincidência de Marca**: Quando o CNAE não está nas faixas acima ou não é conhecido, mas a marca que o fornecedor entrega coincide com tokens da sua própria Razão Social / Nome Fantasia (ex.: Fornecedor "Movement Artigos Esportivos" entregando marca "MOVEMENT"). Classificado como `'fabricante'`, `tipo_fornecedor_motivo = 'marca_propria'` e confiança `'media_coincidencia_marca'`.
+4. **Sem dados / Desconhecido**: Quando não há CNAE cadastrado ou o CNAE está fora dessas faixas e não há marca própria coincidente, o campo permanece estritamente `'nao_classificado'`, `tipo_fornecedor_motivo = 'sem_fonte'` e confiança `'sem_dados'`. Não há inferência arbitrária de revenda apenas pela presença do CNPJ.
 5. **Integração Externa**: O enriquecimento cadastral público é realizado via BrasilAPI/Minha Receita (grátis) em `coletor/fornecedores.py`. Consultas pagas à Econodata pertencem exclusivamente à esteira CRM (`/crm/organizacoes`) e não são invocadas no pipeline de BI.
 
 ---
@@ -161,6 +161,7 @@ Visão de 360° por fornecedor, construída exclusivamente sobre certames **ence
 | `cnae_principal_descricao` | `text` | Descrição da atividade econômica principal |
 | `cnae_divisao` | `integer` | Divisão do CNAE (2 primeiros dígitos) |
 | `tipo_fornecedor` | `text` | `'fabricante'`, `'revenda'` ou `'nao_classificado'` |
+| `tipo_fornecedor_motivo` | `text` | `'cnae_industria'`, `'cnae_comercio'`, `'marca_propria'` ou `'sem_fonte'` |
 | `tipo_fornecedor_confianca`| `text` | Nível de evidência da classificação |
 | `uf_sede` | `text` | UF da sede do fornecedor |
 | `municipio_sede` | `text` | Município da sede |

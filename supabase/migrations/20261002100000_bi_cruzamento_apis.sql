@@ -526,7 +526,10 @@ homologado_por_orgao as (
   where r.vencedor is distinct from false
     and coalesce(r.situacao, '') <> 'Cancelado'
     and (l.data_homologacao is not null or l.situacao ~* '(homologad|adjudicad|encerrad|conclu[ií]d|finalizad)')
-    and coalesce(li.material_ou_servico, 'M') = 'M'
+    and (
+      li.material_ou_servico = 'M'
+      or (li.material_ou_servico is null and coalesce(ci.codigo_pdm::integer, w.codigo_pdm) in (select codigo_pdm from pdms_escopo))
+    )
     and coalesce(ci.codigo_pdm::integer, w.codigo_pdm) in (select codigo_pdm from pdms_escopo)
   group by regexp_replace(coalesce(l.orgao_cnpj, ''), '\D', '', 'g'), coalesce(l.orgao_nome, l.unidade_compradora), l.uf
 ),
@@ -601,7 +604,10 @@ f_resultados as (
     and r.vencedor is distinct from false
     and coalesce(r.situacao, '') <> 'Cancelado'
     and (l.data_homologacao is not null or l.situacao ~* '(homologad|adjudicad|encerrad|conclu[ií]d|finalizad)')
-    and coalesce(li.material_ou_servico, 'M') = 'M'
+    and (
+      li.material_ou_servico = 'M'
+      or (li.material_ou_servico is null and coalesce(ci.codigo_pdm::integer, kw.codigo_pdm) in (select codigo_pdm from pdms_escopo))
+    )
     and coalesce(ci.codigo_pdm::integer, kw.codigo_pdm) in (select codigo_pdm from pdms_escopo)
 ),
 -- Origem 2: precos_praticados_itens (módulo Pesquisa de Preço Compras.gov - já homologados de materiais)
@@ -797,6 +803,7 @@ select
   end as cnae_divisao,
   -- Regra oficial: divisões 10-33 = fabricante, 45-47 = revenda/comércio.
   -- Sinal adicional: se a marca entregue coincide com o próprio nome/razão social.
+  -- Sem inferência vazia quando falta fonte/CNAE.
   case
     when f.cnae_principal is not null and left(lpad(f.cnae_principal::text, 7, '0'), 2)::integer between 10 and 33 then 'fabricante'
     when f.cnae_principal is not null and left(lpad(f.cnae_principal::text, 7, '0'), 2)::integer between 45 and 47 then 'revenda'
@@ -804,9 +811,17 @@ select
       select 1 from unnest(t.marcas_entregues) m
       where m is not null and length(m) >= 4 and upper(coalesce(f.razao_social, t.nome_fornecedor)) like '%' || m || '%'
     ) then 'fabricante'
-    when f.cnpj is not null then 'revenda'
     else 'nao_classificado'
   end as tipo_fornecedor,
+  case
+    when f.cnae_principal is not null and left(lpad(f.cnae_principal::text, 7, '0'), 2)::integer between 10 and 33 then 'cnae_industria'
+    when f.cnae_principal is not null and left(lpad(f.cnae_principal::text, 7, '0'), 2)::integer between 45 and 47 then 'cnae_comercio'
+    when exists (
+      select 1 from unnest(t.marcas_entregues) m
+      where m is not null and length(m) >= 4 and upper(coalesce(f.razao_social, t.nome_fornecedor)) like '%' || m || '%'
+    ) then 'marca_propria'
+    else 'sem_fonte'
+  end as tipo_fornecedor_motivo,
   case
     when f.cnae_principal is not null and left(lpad(f.cnae_principal::text, 7, '0'), 2)::integer between 10 and 33 then 'alta_cnae_industria'
     when f.cnae_principal is not null and left(lpad(f.cnae_principal::text, 7, '0'), 2)::integer between 45 and 47 then 'alta_cnae_comercio'
@@ -814,7 +829,6 @@ select
       select 1 from unnest(t.marcas_entregues) m
       where m is not null and length(m) >= 4 and upper(coalesce(f.razao_social, t.nome_fornecedor)) like '%' || m || '%'
     ) then 'media_coincidencia_marca'
-    when f.cnpj is not null then 'baixa_sem_cnae_especifico'
     else 'sem_dados'
   end as tipo_fornecedor_confianca,
   f.uf as uf_sede,

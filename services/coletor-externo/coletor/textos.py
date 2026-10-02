@@ -87,18 +87,9 @@ def _docx(conteudo: bytes, nome: str, res: Resultado) -> None:
         res.ignorados.append(nome)
 
 
-_CPF_FORMATADO = re.compile(r"\b\d{3}\.\d{3}\.\d{3}-\d{2}\b")
-_CPF_ROTULADO = re.compile(r"(CPF\s*(?:n[º°o.]*\s*)?[:\-]?\s*)\d{11}\b", re.IGNORECASE)
-
-
-def mascarar_dados_pessoais(t: str) -> str:
-    """LGPD: remove CPFs (formatados, ou 11 dígitos logo após 'CPF'). CNPJs são mantidos."""
-    t = _CPF_FORMATADO.sub("***.***.***-**", t)
-    return _CPF_ROTULADO.sub(r"\1***********", t)
-
-
 def limpar_texto(t: str) -> str:
-    t = mascarar_dados_pessoais(t.replace("\x00", " "))
+    # CPF e CNPJ em editais são dados públicos: não mascarar (decisão do Marcelo, 01/10/2026).
+    t = t.replace("\x00", " ")
     t = re.sub(r"[ \t]+", " ", t)
     t = re.sub(r"\n{3,}", "\n\n", t)
     return t.strip()

@@ -291,9 +291,9 @@ de maior valor para o RAG. Ligue `proposta`/`negociacao` quando quiser preços.
   visitante antes de baixar anexos. O endpoint de download responde sem ele,
   mas o recomendado é fazer o cadastro com os dados da empresa responsável
   pelo LicitaGym para ficar em conformidade com o portal.
-- **LGPD:** só CNPJ é gravado; identificadores de pessoa física (CPF) são
-  descartados. Documentos de habilitação podem conter dados de sócios —
-  mascarar antes de indexar no RAG.
+- **LGPD:** nos cadastros estruturados só CNPJ é gravado. No RAG, CPF e CNPJ
+  que aparecem nos editais são dados públicos e são indexados sem máscara
+  (decisão de 01/10/2026).
 - **Limites de taxa:** mantenha `DELAY_SEGUNDOS` ≥ 1 e rode fora do horário comercial.
 
 ## 4. Indexar no RAG (texto → Gemini → embeddings)

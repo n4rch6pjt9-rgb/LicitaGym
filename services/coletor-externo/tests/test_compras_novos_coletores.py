@@ -339,6 +339,31 @@ def test_coletor_pgc_limite_tamanho_pagina(monkeypatch):
     assert chamada["params"]["tamanhoPagina"] == 500
 
 
+def test_coletor_pgc_429_respeita_retry_after(monkeypatch):
+    cliente = compras_pgc.ClienteComprasPGC(delay=0)
+    eventos = []
+    respostas = []
+
+    for status in (429, 200):
+        resposta = MagicMock()
+        resposta.status_code = status
+        resposta.headers = {"Retry-After": "7"} if status == 429 else {}
+        resposta.json.return_value = {"resultado": [], "totalRegistros": 0}
+        respostas.append(resposta)
+
+    def fake_get(*_, **__):
+        eventos.append(("get", len(eventos)))
+        return respostas.pop(0)
+
+    monkeypatch.setattr(cliente.s, "get", fake_get)
+    monkeypatch.setattr(compras_pgc.time, "sleep", lambda espera: eventos.append(("sleep", espera)))
+
+    cliente.consultar_classe(7830, 2026)
+
+    assert eventos[2] == ("sleep", 7.0)
+    assert [evento[0] for evento in eventos].count("get") == 2
+
+
 def test_coletor_arp_falha_apos_retries(monkeypatch):
     """Garante que falhas de rede persistentes em ARP levantam exceção e marcam o coletor como com falha."""
     cliente = compras_arp.ClienteComprasARP(delay=0)
@@ -349,7 +374,6 @@ def test_coletor_arp_falha_apos_retries(monkeypatch):
 
     with pytest.raises(RuntimeError):
         cliente.consultar_itens_pdm(2640, "2026-01-01", "2026-12-31")
-
 
 
 

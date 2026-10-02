@@ -13,10 +13,13 @@ import argparse
 import hashlib
 import json
 import logging
+import math
 import os
+import random
 import sys
 import time
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import requests
@@ -30,6 +33,25 @@ ENDPOINT = "/modulo-pgc/2_consultarPgcDetalheCatalogo"
 UA = "LicitaGym-Coletor/1.1 (pesquisa de licitacoes publicas)"
 
 CLASSES_PADRAO = [7830, 7220]
+
+
+def _calcular_espera_retry(tentativa: int, retry_after: str | None = None) -> float:
+    if retry_after:
+        try:
+            espera = float(retry_after)
+        except ValueError:
+            try:
+                data_retry = parsedate_to_datetime(retry_after)
+                if data_retry.tzinfo is None:
+                    data_retry = data_retry.replace(tzinfo=timezone.utc)
+                espera = (data_retry - datetime.now(timezone.utc)).total_seconds()
+            except (TypeError, ValueError, OverflowError):
+                espera = float("nan")
+        if math.isfinite(espera):
+            return min(60.0, max(0.0, espera))
+
+    backoff = min(60.0, 2 ** (tentativa - 1))
+    return random.uniform(backoff / 2, backoff)
 
 
 def normalizar_registro_pgc(item: dict[str, Any], ano_contexto: int | None = None) -> dict[str, Any] | None:
@@ -144,18 +166,19 @@ class ClienteComprasPGC:
                 if r.status_code == 404:
                     return {"resultado": [], "totalRegistros": 0}
                 if r.status_code in (429, 502, 503, 504):
-                    espera = tentativa * 3.0
-                    log.warning("HTTP %d em PGC classe %d (tentativa %d), esperando %.1fs...", r.status_code, classe, tentativa, espera)
-                    time.sleep(espera)
                     if tentativa == 3:
                         raise RuntimeError(f"HTTP {r.status_code} esgotado em PGC classe {classe}")
+                    retry_after = r.headers.get("Retry-After") if r.status_code == 429 else None
+                    espera = _calcular_espera_retry(tentativa, retry_after)
+                    log.warning("HTTP %d em PGC classe %d (tentativa %d), esperando %.1fs...", r.status_code, classe, tentativa, espera)
+                    time.sleep(espera)
                     continue
                 r.raise_for_status()
             except requests.RequestException as e:
                 log.warning("Falha de rede em PGC classe %d tentativa %d: %s", classe, tentativa, e)
                 if tentativa == 3:
                     raise
-                time.sleep(tentativa * 2.0)
+                time.sleep(_calcular_espera_retry(tentativa))
         raise RuntimeError(f"Falha ao consultar PGC classe {classe} após retries")
 
 

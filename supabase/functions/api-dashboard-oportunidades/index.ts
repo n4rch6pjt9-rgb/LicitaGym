@@ -306,14 +306,13 @@ async function handleGet(
  */
 /**
  * Teto de licitações resolvidas pelo recorte CATMAT antes do filtro por id (evita URL gigante no PostgREST).
- * licitacoes_ids_por_catmat não trunca (sem LIMIT), então r.ids é completo. Acima do teto, os ids são
+ * licitacoes_ids_por_catmat_unica não trunca (sem LIMIT nem paginação), então r.ids é completo. Acima do teto, os ids são
  * primeiro reduzidos ao escopo de Oportunidades (idsNoEscopo) e o teto vale sobre o que sobra.
  */
 export const MAX_IDS_CATMAT = 1000;
 
 /** Tamanho do lote de ids por consulta ao reduzir o recorte CATMAT ao escopo (URL curta no PostgREST). */
 export const CATMAT_ESCOPO_LOTE = 500;
-const CATMAT_RPC_PAGE_SIZE = 1000;
 
 export interface CatmatMatch {
   codigo_pdm: number;
@@ -325,7 +324,7 @@ export interface CatmatMatch {
 /** SQLSTATE do Postgres para statement_timeout (query_canceled). */
 export const PG_STATEMENT_TIMEOUT = "57014";
 
-/** Erro de banco por statement_timeout (ex.: licitacoes_ids_por_catmat acima do limite do PostgREST). */
+/** Erro de banco por statement_timeout (ex.: licitacoes_ids_por_catmat_unica acima do limite do PostgREST). */
 export function ehStatementTimeout(err: unknown): boolean {
   return typeof err === "object" && err !== null && (err as { code?: unknown }).code === PG_STATEMENT_TIMEOUT;
 }
@@ -334,34 +333,43 @@ export function temRecorteCatmat(f: LicitacaoFiltros): boolean {
   return !!(f.catmat_grupo || f.catmat_classe || f.catmat_pdm || f.catmat_item || f.catalogo === true);
 }
 
+/** RPC que resolve o recorte CATMAT numa chamada só (ids distintos + matches), sem paginação PostgREST. */
+export const CATMAT_RPC = "licitacoes_ids_por_catmat_unica";
+
+/** Linha devolvida por public.licitacoes_ids_por_catmat_unica (sempre uma). */
+interface CatmatRpcUnica {
+  ids: Array<number | string> | null;
+  matches: Array<{ licitacao_id: number | string; codigo_pdm: number; codigo_item: number | string | null; motivo: string }> | null;
+}
+
 /**
- * Resolve o recorte CATMAT em ids de licitacoes_externas via public.licitacoes_ids_por_catmat
- * (código numérico do item quando existe; senão padrões de texto do PDM no item e no objeto).
+ * Resolve o recorte CATMAT em ids de licitacoes_externas via public.licitacoes_ids_por_catmat_unica
+ * (código numérico do item quando existe; senão padrões de texto do PDM no item e no objeto, lidos de
+ * public.licitacao_match). Uma chamada só: a função devolve uma linha com os ids distintos (bigint[]) e os
+ * matches (jsonb), então o max_rows do PostgREST não pagina e o statement_timeout (8 s por chamada do
+ * role authenticator) vale uma vez.
  */
 async function resolverCatmat(
   client: SupabaseClient,
   filtros: LicitacaoFiltros,
 ): Promise<{ ids: number[]; porLicitacao: Map<number, CatmatMatch[]> }> {
-  const linhas: Array<{ licitacao_id: number; codigo_pdm: number; codigo_item: number | null; motivo: string }> = [];
-  for (let from = 0;; from += CATMAT_RPC_PAGE_SIZE) {
-    const { data, error } = await client
-      .rpc("licitacoes_ids_por_catmat", {
-        p_grupos: filtros.catmat_grupo ?? null,
-        p_classes: filtros.catmat_classe ?? null,
-        p_pdms: filtros.catmat_pdm ?? null,
-        p_itens: filtros.catmat_item ?? null,
-        p_somente_catalogo: filtros.catalogo === true,
-      })
-      .order("licitacao_id", { ascending: true })
-      .order("codigo_pdm", { ascending: true })
-      .order("codigo_item", { ascending: true, nullsFirst: true })
-      .order("motivo", { ascending: true })
-      .range(from, from + CATMAT_RPC_PAGE_SIZE - 1);
-    if (error) throw error;
-    const pagina = (data ?? []) as Array<{ licitacao_id: number; codigo_pdm: number; codigo_item: number | null; motivo: string }>;
-    linhas.push(...pagina);
-    if (pagina.length < CATMAT_RPC_PAGE_SIZE) break;
-  }
+  const { data, error } = await client
+    .rpc(CATMAT_RPC, {
+      p_grupos: filtros.catmat_grupo ?? null,
+      p_classes: filtros.catmat_classe ?? null,
+      p_pdms: filtros.catmat_pdm ?? null,
+      p_itens: filtros.catmat_item ?? null,
+      p_somente_catalogo: filtros.catalogo === true,
+    })
+    .single();
+  if (error) throw error;
+  const resultado = (data ?? { ids: [], matches: [] }) as CatmatRpcUnica;
+  const linhas = (resultado.matches ?? []).map((m) => ({
+    licitacao_id: Number(m.licitacao_id),
+    codigo_pdm: Number(m.codigo_pdm),
+    codigo_item: m.codigo_item === null || m.codigo_item === undefined ? null : Number(m.codigo_item),
+    motivo: m.motivo,
+  }));
 
   const pdms = [...new Set(linhas.map((l) => l.codigo_pdm))];
   const nomes = new Map<number, string>();
@@ -373,11 +381,11 @@ async function resolverCatmat(
 
   const porLicitacao = new Map<number, CatmatMatch[]>();
   for (const l of linhas) {
-    const lista = porLicitacao.get(Number(l.licitacao_id)) ?? [];
-    lista.push({ codigo_pdm: l.codigo_pdm, nome_pdm: nomes.get(l.codigo_pdm) ?? null, codigo_item: l.codigo_item ?? null, motivo: l.motivo });
-    porLicitacao.set(Number(l.licitacao_id), lista);
+    const lista = porLicitacao.get(l.licitacao_id) ?? [];
+    lista.push({ codigo_pdm: l.codigo_pdm, nome_pdm: nomes.get(l.codigo_pdm) ?? null, codigo_item: l.codigo_item, motivo: l.motivo });
+    porLicitacao.set(l.licitacao_id, lista);
   }
-  return { ids: [...porLicitacao.keys()], porLicitacao };
+  return { ids: (resultado.ids ?? []).map(Number), porLicitacao };
 }
 
 /**

@@ -7,9 +7,21 @@ import os
 import re
 from pathlib import Path
 
+import logging
+
 import requests
 
 POSTGREST_MAX_ROWS = int(os.environ.get("SUPABASE_PAGE_SIZE", "1000"))
+
+log = logging.getLogger(__name__)
+
+# public.licitacao_match (migration 20261002170000): texto gravado em licitacao_itens.descricao ou
+# licitacoes_externas.objeto vira pendência (trigger) e é recalculado por licitacao_match_atualizar.
+# O coletor drena a cada LICITACAO_MATCH_LOTE linhas de texto gravadas e no fim da execução, para a
+# pendência ficar pequena (a RPC do recorte CATMAT casa o texto pendente ao vivo, o que custa CPU).
+TABELAS_TEXTO_CATMAT = {"licitacao_itens": {"descricao", "licitacao_id"}, "licitacoes_externas": {"objeto"}}
+LICITACAO_MATCH_LOTE = int(os.environ.get("LICITACAO_MATCH_LOTE", "300"))
+LICITACAO_MATCH_MAX_LOTES = 200
 
 
 class Supabase:
@@ -22,6 +34,36 @@ class Supabase:
             "Authorization": f"Bearer {service_key}",
             "Content-Type": "application/json",
         }
+        self._textos_sem_drenar = 0
+
+    def _contar_textos(self, tabela: str, n: int) -> None:
+        """Conta linhas de texto CATMAT gravadas e drena licitacao_match ao passar de LICITACAO_MATCH_LOTE."""
+        self._textos_sem_drenar += n
+        if self._textos_sem_drenar >= LICITACAO_MATCH_LOTE:
+            self.drenar_licitacao_match()
+
+    def drenar_licitacao_match(self, limite: int | None = None, max_lotes: int = LICITACAO_MATCH_MAX_LOTES) -> int | None:
+        """Chama public.licitacao_match_atualizar em lotes até não sobrar pendência (ou max_lotes).
+
+        Devolve quantas pendências restam, ou None se a drenagem falhou. Falha não interrompe a coleta: a RPC do
+        recorte CATMAT continua correta com pendência (casa o texto pendente ao vivo), só fica mais lenta."""
+        lote = limite or LICITACAO_MATCH_LOTE
+        restantes = None
+        try:
+            for _ in range(max_lotes):
+                restantes = int(self.rpc("licitacao_match_atualizar", {"p_limite": lote}))
+                if restantes <= 0:
+                    break
+        except (requests.RequestException, RuntimeError, TypeError, ValueError) as e:
+            # Zera o contador: a próxima tentativa só depois de outras LICITACAO_MATCH_LOTE linhas (ou no fim da
+            # execução), sem repetir a RPC a cada upsert. A pendência continua em licitacao_match_pendente.
+            self._textos_sem_drenar = 0
+            log.warning("licitacao_match: drenagem falhou (%s); a pendência fica em licitacao_match_pendente", e)
+            return None
+        self._textos_sem_drenar = 0
+        if restantes:
+            log.warning("licitacao_match: %s pendência(s) após %s lotes", restantes, max_lotes)
+        return restantes
 
     def upsert(self, tabela: str, linhas: list[dict] | dict, conflito: str) -> list[dict]:
         r = requests.post(
@@ -33,6 +75,8 @@ class Supabase:
         )
         if r.status_code >= 300:
             raise RuntimeError(f"Supabase {tabela}: {r.status_code} {r.text[:500]}")
+        if tabela in TABELAS_TEXTO_CATMAT:
+            self._contar_textos(tabela, len(linhas) if isinstance(linhas, list) else 1)
         return r.json()
 
     def atualizar(self, tabela: str, id_: int, campos: dict) -> None:
@@ -42,6 +86,8 @@ class Supabase:
         )
         if r.status_code >= 300:
             raise RuntimeError(f"Supabase {tabela}#{id_}: {r.status_code} {r.text[:500]}")
+        if TABELAS_TEXTO_CATMAT.get(tabela, set()) & set(campos):
+            self._contar_textos(tabela, 1)
 
     def remover_pendentes_exceto(self, licitacao_id: int, manter_ids: list[int]) -> None:
         """Apaga linhas desta licitação que não correspondem mais a nenhum documento do
@@ -97,6 +143,13 @@ class Supabase:
             linhas.extend(lote)
             if len(lote) < limite_pagina:
                 return linhas
+
+
+def drenar_licitacao_match(sb) -> int | None:
+    """Fim de execução de coletor: drena licitacao_match se houver cliente Supabase (nada no --dry-run)."""
+    if isinstance(sb, Supabase):
+        return sb.drenar_licitacao_match()
+    return None
 
 
 class SupabaseStorage:

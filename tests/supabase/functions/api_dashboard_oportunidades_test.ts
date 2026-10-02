@@ -20,6 +20,7 @@ import {
   type FilterableQuery,
 } from "../../../supabase/functions/api-dashboard-oportunidades/query.ts";
 import {
+  CATMAT_RPC,
   handleRequest,
   OPORTUNIDADES_VIEW,
   PUBLIC_LICITACAO_COLUMNS,
@@ -675,6 +676,16 @@ function createRecordingMockClient(config: {
           const [from, to] = rpcRange ?? [0, Number.MAX_SAFE_INTEGER];
           const data = result.data?.slice(from, to + 1) ?? null;
           return Promise.resolve({ data, error: result.error }).then(onfulfilled, onrejected);
+        },
+        // licitacoes_ids_por_catmat_unica: uma linha { ids, matches } montada das linhas de rpcResult,
+        // como a função SQL (ids distintos em ordem crescente; matches na ordem recebida)
+        single() {
+          calls.push({ method: "rpc.single", args: [] });
+          const result = config.rpcResult ?? { data: [], error: null };
+          if (result.error) return Promise.resolve({ data: null, error: result.error });
+          const linhas = (result.data ?? []) as Array<{ licitacao_id: number }>;
+          const ids = [...new Set(linhas.map((l) => Number(l.licitacao_id)))].sort((a, b) => a - b);
+          return Promise.resolve({ data: { ids, matches: linhas }, error: null });
         },
       };
       return rpcQuery;
@@ -1375,9 +1386,13 @@ Deno.test("list com recorte CATMAT: resolve pela RPC, filtra por id e anexa catm
   assertEquals(res.status, 200);
   const body = await res.json();
 
-  const rpc = mockClient.calls.find((c) => c.method === "rpc");
-  assertEquals(rpc?.args[0], "licitacoes_ids_por_catmat");
-  assertEquals(rpc?.args[1], { p_grupos: null, p_classes: [7830], p_pdms: null, p_itens: null, p_somente_catalogo: true });
+  const rpcs = mockClient.calls.filter((c) => c.method === "rpc");
+  assertEquals(rpcs.length, 1);
+  assertEquals(rpcs[0].args[0], "licitacoes_ids_por_catmat_unica");
+  assertEquals(rpcs[0].args[0], CATMAT_RPC);
+  assertEquals(rpcs[0].args[1], { p_grupos: null, p_classes: [7830], p_pdms: null, p_itens: null, p_somente_catalogo: true });
+  assertEquals(mockClient.calls.filter((c) => c.method === "rpc.single").length, 1);
+  assertEquals(mockClient.calls.some((c) => c.method === "rpc.range" || c.method === "rpc.order"), false);
   const inId = mockClient.calls.find((c) => c.method === "in" && c.args[0] === "id");
   assertEquals((inId?.args[1] as number[]).sort(), [11, 12]);
   assertEquals(mockClient.calls.some((c) => c.method === "eq" && c.args[0] === "uf" && c.args[1] === "SP"), true);
@@ -1411,7 +1426,7 @@ Deno.test("list com recorte CATMAT: statement_timeout (57014) na RPC vira 503 'f
   const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
   assertEquals(res.status, 503);
   assertEquals(await res.json(), { error: "filtro de catálogo indisponível" });
-  assertEquals(mockClient.calls.some((c) => c.method === "rpc" && c.args[0] === "licitacoes_ids_por_catmat"), true);
+  assertEquals(mockClient.calls.filter((c) => c.method === "rpc" && c.args[0] === "licitacoes_ids_por_catmat_unica").length, 1);
   assertEquals(mockClient.calls.some((c) => c.method === "from" && c.args[0] === OPORTUNIDADES_VIEW), false);
 });
 
@@ -1422,6 +1437,35 @@ Deno.test("list com recorte CATMAT: outro erro da RPC continua 500 genérico", a
   const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
   assertEquals(res.status, 500);
   assertEquals(await res.json(), { error: "Erro interno no servidor" });
+});
+
+Deno.test("list com catalogo=true e 3098 casamentos (volume de prod): uma chamada à RPC única, sem range", async () => {
+  // 1103 licitações distintas, ~2,8 casamentos cada (como catalogo=true em prod em 02/10/2026; dados fictícios)
+  const data = Array.from({ length: 3098 }, (_, i) => ({
+    licitacao_id: String(1 + (i % 1103)),
+    codigo_pdm: 7115 + (i % 3),
+    codigo_item: i % 7 === 0 ? String(600000 + i) : null,
+    motivo: i % 7 === 0 ? "codigo" : "texto_item",
+  }));
+  const mockClient = createRecordingMockClient({
+    rpcResult: { data, error: null },
+    escopoIds: (ids) => ids.filter((id) => id <= 40),
+    listResult: { data: [{ id: 1 }], count: 40, error: null },
+  });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list&catalogo=true&limit=1", { method: "GET" });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(mockClient.calls.filter((c) => c.method === "rpc").map((c) => c.args[0]), [CATMAT_RPC]);
+  assertEquals(mockClient.calls.some((c) => c.method === "rpc.range" || c.method === "rpc.order"), false);
+  // 1103 ids > MAX_IDS_CATMAT: reduz ao escopo (3 lotes de até 500) e lista os 40 restantes
+  assertEquals(mockClient.calls.filter((c) => c.method === "escopo.in").map((c) => (c.args[1] as number[]).length), [500, 500, 103]);
+  assertEquals(body.total, 40);
+  // ids e codigo_item chegam como string (bigint no JSON) e viram number; casamentos da licitação 1 preservados
+  const casamentos1 = data.filter((d) => d.licitacao_id === "1").length;
+  assertEquals(body.items[0].catmat_match.length, casamentos1);
+  assertEquals(typeof body.items[0].catmat_match[0].codigo_item, "number");
 });
 
 Deno.test("list com recorte CATMAT acima de 1000 licitações: 422", async () => {
@@ -1615,7 +1659,9 @@ Deno.test("CATMAT: 1200 historico + 300 atuais não dá 422; lista só as atuais
   assertEquals(body.items[0].catmat_match.length, 1);
 
   // escopo: 3 lotes (500+500+500) na view, cada um com o or que exclui historico
-  assertEquals(mockClient.calls.filter((c) => c.method === "rpc.range").map((c) => c.args), [[0, 999], [1000, 1999]]);
+  // recorte resolvido numa chamada só, sem paginação PostgREST
+  assertEquals(mockClient.calls.filter((c) => c.method === "rpc").length, 1);
+  assertEquals(mockClient.calls.some((c) => c.method === "rpc.range"), false);
   const lotes = mockClient.calls.filter((c) => c.method === "escopo.in");
   assertEquals(lotes.map((c) => (c.args[1] as number[]).length), [500, 500, 500]);
   assertEquals(lotes.every((c) => c.args[0] === "id"), true);

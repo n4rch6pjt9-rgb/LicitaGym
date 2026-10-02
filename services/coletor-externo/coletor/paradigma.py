@@ -681,7 +681,7 @@ def coletar(portal: "PortalParadigma", sb, termos: list[str], paginas: int, dry_
 
 
 def main(argv: list[str] | None = None) -> int:
-    from .destino import Supabase, env
+    from .destino import Supabase, drenar_licitacao_match, env
     from .fornecedores import CadastroFornecedores
 
     ap = argparse.ArgumentParser(description="Coletor Paradigma (Sistema S)")
@@ -733,6 +733,7 @@ def main(argv: list[str] | None = None) -> int:
         docs = DocumentosParadigma(portal, sb, arm, visitante, int(float(env("MAX_MB", "50")) * 1048576), args.dry_run)
     r = coletar(portal, sb, termos, args.paginas, args.dry_run, not args.sem_resultados, produtos, forn, processos, anos,
                 docs)
+    drenar_licitacao_match(sb)  # recorte CATMAT por texto: zera a pendência de licitacao_match (sem efeito no dry-run)
     print(json.dumps(r, ensure_ascii=False))
     return 1 if r["erros"] and not r["no_escopo"] else 0
 

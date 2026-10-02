@@ -107,9 +107,11 @@ def test_expediente_e_brinquedos_sem_core_rebaixam():
     assert _avaliar(BRINQUEDOS, ["Cama elástica 3,05 m", "Esteira elétrica dobrável"])[0] == "forte"
 
 
-def test_objeto_com_core_segura_o_forte():
+def test_objeto_com_core_nao_substitui_item_core():
+    # o objeto citar musculação não basta: compra de passagem só fica forte com ITEM core (Copilot, PR #124)
     objeto = "Aquisição de mobiliário e equipamentos de musculação para o centro esportivo"
-    assert _avaliar(objeto, ["Cadeira fixa empilhável", "Colchonete para ginástica"])[0] == "forte"
+    assert _avaliar(objeto, ["Cadeira fixa empilhável", "Colchonete para ginástica"])[0] == "fraco"
+    assert _avaliar(objeto, ["Cadeira fixa empilhável", "Estação de musculação com 4 posições"])[0] == "forte"
 
 
 def test_academia_ao_ar_livre_em_compra_de_passagem_so_conta_pelo_piso():
@@ -288,3 +290,92 @@ def test_espaldar_avulso_segura_forte_mesmo_com_pilates_na_compra():
     itens = ["Aparelho de Pilates Reformer", "Espaldar barra de Ling, estrutura em madeira com 12 barras"]
     assert _avaliar(HOSPITALAR, itens[:1])[0] != "forte"
     assert _avaliar(HOSPITALAR, itens)[0] == "forte"
+
+
+# ---------------- review do PR #124 (02/10/2026) ----------------
+# corda solta na frase não faz o puxador de academia: é a corda do puxador de partida de motor
+@pytest.mark.parametrize("texto", [
+    "Puxador de partida retrátil com corda para motor",
+    "Corda para puxador de partida retrátil de motor",
+    "Puxador de partida para roçadeira com corda de nylon",
+])
+def test_puxador_de_partida_com_corda_nao_e_forte(texto):
+    assert classificar(texto) != "forte"
+    assert _avaliar("Aquisição de peças e acessórios para manutenção da frota", [texto])[0] != "forte"
+
+
+@pytest.mark.parametrize("texto", [
+    "PUXADOR CORDA", "Puxador de corda em nylon", "PUXADOR TRICEPS CORDA",
+    "PUXADOR, CORDA TRANÇADA POLIPROPILENO, ENCAIXE MOSQUETÃO AÇO CROMADO, 75 CM",
+])
+def test_puxador_corda_de_academia_continua_positivo(texto):
+    assert classificar(texto) == "forte"
+
+
+# pulley/polia numerada passam pela validação da polia: acessório e Pilates não são core
+@pytest.mark.parametrize("texto", [
+    "Barra para pulley",
+    "MC0600016-BARRA PARA PULLEY (BARRA DUPLA",
+    "Pilates Reformer com polia",
+    "Aparelho de Pilates Reformer com polia 2 posições",
+    "Reformer Pilates com polia 2 molas",
+    "Batedeira com polia 2 canaletas",
+    "Cabo de aço para polia 3 mm",
+])
+def test_pulley_e_polia_numerada_que_nao_sao_core(texto):
+    assert not item_core(texto)
+    assert _avaliar(MOVEIS, ["Tatame EVA 1x1 m 20 mm", texto])[0] != "forte"
+
+
+@pytest.mark.parametrize("texto", [
+    "Pulley alto e baixo",
+    "Estação de musculação com polia 2 posições",
+    "Polia regulável 70 kg com bateria de cargas de ferro emborrachada",
+    "Aparelho cross over com polias",
+])
+def test_polia_e_pulley_de_aparelho_continuam_core(texto):
+    assert item_core(texto)
+    assert _avaliar(MOVEIS, ["Tatame EVA 1x1 m 20 mm", texto])[0] == "forte"
+
+
+# a isenção de manutenção vale só para o SERVIÇO de manutenção; compra que só cita manutenção passa pelo filtro
+def test_compra_para_manutencao_continua_compra_de_passagem():
+    objeto = "Aquisição de material médico-hospitalar para manutenção preventiva"
+    assert objeto_passagem(objeto) == ["hospitalar"]
+    assert _avaliar(objeto, ["Luva de procedimento tamanho M", "Colchonete para ginástica e exercícios"])[0] == "fraco"
+    assert _avaliar(objeto, ["Luva de procedimento tamanho M", "Esteira ergométrica elétrica 2 HP"])[0] == "forte"
+
+
+@pytest.mark.parametrize("objeto", [
+    "Manutenção e Reparo de Material Esportivo / Brinquedo",
+    "Prestação de serviços para manutenção e reparo de equipamentos hospitalares e de fisioterapia",
+    "Contratação de serviço técnico especializado de manutenção preventiva e corretiva dos equipamentos de "
+    "musculação, pilates, ergometria e enfermagem",
+    "Contratação de Empresa Especializada para Prestação de Serviços para Manutenção e Reparo de Equipamentos e "
+    "Aparelhos de Musculação e Ergométricos do Ambulatório de Educação Física",
+])
+def test_servico_de_manutencao_continua_fora_da_passagem(objeto):
+    assert objeto_passagem(objeto) == []
+
+
+# "barra puxador ... com giro" é acessório de polia (decisão do Marcelo, 02/10/2026): o termo de academia exigido
+# depois de barra/corda/triângulo/pegador ... puxador inclui giro e mosquetão
+@pytest.mark.parametrize("texto", [
+    "BARRA PUXADOR CURVO COM GIRO",
+    "BARRA PUXADOR RETO COM GIRO",
+    "BARRA PUXADOR CURVO 50CM: ESPECIFICAÇÕES: BARRA PUXADOR CURVO COM GIRO, TAMANHO APROXIMADO DE 50CM",
+    "BARRA PUXADOR RETO COM GIRO 50cm. Possui giro integrado com rolamento; tamanho do furo para o mosquetão: 1,5cm.",
+    "Barra para puxador com mosquetão de aço",
+])
+def test_barra_puxador_com_giro_ou_mosquetao_e_forte(texto):
+    assert classificar(texto) == "forte"
+
+
+@pytest.mark.parametrize("texto", [
+    "Corda para puxador de partida retrátil de motor",
+    "Puxador de partida retrátil com corda para motor",
+    "Puxador de partida retrátil com giro para motor",
+    "Roldana com corda e puxador- Essencial para a recuperação da amplitude de movimento do ombro",
+])
+def test_puxador_de_partida_e_roldana_continuam_sem_forte(texto):
+    assert classificar(texto) != "forte"

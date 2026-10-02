@@ -401,13 +401,17 @@ PUXADOR_APARELHO = re.compile(
 # equipamentos_fitness.acessorios, refino "ambiguo:puxador"): "PUXADOR TRICEPS CORDA", "PUXADOR ROMANO", "barra para
 # puxador W", "puxador com pegada neutra". Continua valendo PUXADOR_FORA (porta, gaveta, móvel, ferragem...).
 # "pegada" só com o tipo de pegada de treino: "puxador tipo alça com pegada ergonômica" é ferragem de móvel.
+# "barra puxador ... com giro"/"... mosquetão" é a barra de polia (decisão do Marcelo, review do PR #124).
+# "corda" só colada ao puxador ("PUXADOR CORDA", "PUXADOR, CORDA TRANÇADA", "puxador de corda"): solta na frase é a
+# corda do puxador de partida de motor ("Puxador de partida retrátil com corda para motor", review do PR #124).
 PUXADOR_ACESSORIO = re.compile(
-    r"\bpuxador(es)?\b[^.;]{0,40}?(\btriceps\b|\bbiceps\b|\bcorda\b|\bromano\b|\bw\b|\bestribo\b|\bunilateral\b|"
+    r"\bpuxador(es)?\b[^.;]{0,40}?(\btriceps\b|\bbiceps\b|\bromano\b|\bw\b|\bestribo\b|\bunilateral\b|"
     r"pegada\s+(neutra|supinad\w*|pronad\w*|aberta|fechada|paralela|dupla)|\bpolias?\b|pulley)|"
+    r"\bpuxador(es)?[\s,:-]+((de|em)\s+)?corda\b|"
     r"\b(barra|corda|triangulo|pegador)\s+(\w+\s+){0,2}?(para\s+|de\s+|p/\s*)?puxador"
     r"(?=[^.;]{0,40}\b(triceps|biceps|romano|w|estribo|unilateral|neutra|supinad\w*|pronad\w*|aberta|fechada|"
     r"paralela|alto|baixo|triangul\w*|remada|costas|dorsal|articulad\w*|polias?|pulley|graviton|musculac\w*|"
-    r"academia|ginastic\w*|fitness|cross\s*over|crossover|treino)\b)", re.I)
+    r"academia|ginastic\w*|fitness|cross\s*over|crossover|treino|giro|mosquet\w*)\b)", re.I)
 PUXADOR_CONTEXTO = re.compile(
     r"musculac|academia|ginastic|fitness|crossfit|cross\s*over|crossover|\bpolias?\b|pulley|remada|anilha|halter|"
     r"graviton|leg\s*press|supino|peck\s*deck|voador|aparelhos?\s+de\s+(ginastica|musculacao)", re.I)
@@ -417,7 +421,9 @@ PUXADOR_FORA = re.compile(
     r"gavetas?|gaveteir|armari|\bmove(l|is)\b|moveleir|mobiliari|ferrage|janelas?|esquadri|marcenari|dobradic|"
     r"fechadur|macaneta|cozinha|guarda[\s-]*roupa|gabinete|criado[\s-]*mudo|escrivaninha|box\s+(de\s+|para\s+)?banheiro|vidro|"
     # utilidades com puxador ("CAIXA PLASTICA 372 LITROS COM TAMPA E PUXADOR FRONTAL", rodada de 30/09/2026)
-    r"\bcaixas?\b|tampa|rodizi|lixeir|contain|contein|\bmalas?\b|\bbolsas?\b|carrinho", re.I)
+    r"\bcaixas?\b|tampa|rodizi|lixeir|contain|contein|\bmalas?\b|\bbolsas?\b|carrinho|"
+    # puxador de partida (retrátil) de motor, roçadeira, motosserra, gerador (review do PR #124)
+    r"\bpartida\b|retrat\w*|arranque|rocadeira|motosserra|motobomba|motopoda|\bgerador", re.I)
 # "cross over" também é cabo de rede (cabo crossover) e divisor de frequência de áudio.
 CROSS_OVER = re.compile(r"cross\s*over", re.I)
 CROSS_OVER_FORA = re.compile(
@@ -772,6 +778,14 @@ OBJETO_MANUTENCAO = re.compile(
     r"\bmanutenc\w*\s+(e\s+reparo|preventiva|corretiva)|"
     r"\b(manutenc\w*|reparos?|conserto)\s+(\w+\s+){0,2}?(de|em|d[aoe]s?)\s+(\w+\s+){0,2}?"
     r"(equipament|aparelh|materia|mobiliari|moveis|brinquedo|esteira|bicicleta)", re.I)
+# ...e só quando o objeto é o SERVIÇO de manutenção (começa por manutenção/reparo/conserto, ou serviço/empresa de
+# manutenção): "Aquisição de material médico-hospitalar para manutenção preventiva" continua compra de passagem
+# (review do PR #124).
+OBJETO_SERVICO_MANUTENCAO = re.compile(
+    r"^\W*(\[[^\]]*\]\s*-?\s*)?(manutenc|reparos?\b|conserto)|"
+    r"\bservic\w*\s+(\w+\s+){0,5}?(manutenc|reparos?\b|conserto)|"
+    r"\b(empresa|pessoa\s+juridica)\s+(\w+\s+){0,2}?(em|para|de|na)\s+(\w+\s+){0,2}?(manutenc|reparos?\b|conserto)",
+    re.I)
 OBJETO_ESPORTIVO = re.compile(r"esportiv|desportiv|educacao\s+fisica|\blutas?\b|\bjudo\b|artes\s+marciais", re.I)
 # Item core: equipamento de academia de fato. Halter/anilha/kettlebell contam como musculação (peso livre), como na
 # lista "core estrito" da revisão de 02/10/2026; elíptico só com o contexto de aparelho (_ambiguo_academia).
@@ -782,7 +796,7 @@ ITEM_CORE = re.compile(
     r"\bbikes?\s+(\w+\s+)?(spinning|indoor|ergometr|estacionari|horizontal|vertical)|cicloergometr|air\s*bike|"
     r"musculac|leg\s*press|supino|peck\s*deck|crucifixo|cadeira\s+(extensora|flexora|adutora|abdutora)|mesa\s+flexora|"
     r"maquina\s+(p/?\s*|para\s+)?(peitoral|dorso|adutora|abdutora|desenvolvimento|panturrilha|de\s+agachamento|remada|gluteo)|"
-    r"agachamento\s+(guiado|hack|livre|smith|maquina)|\bhack\b|\bsmith\b|graviton|pulley|polia\s+\d|"
+    r"agachamento\s+(guiado|hack|livre|smith|maquina)|\bhack\b|\bsmith\b|graviton|"
     r"puxada\s+(alta|frontal|articulad)|remada\s+(sentada|baixa|cavalinho|articulad)|multi[\s-]*estac|"
     r"estac(ao|oes)\s+(\w+\s+)?(de\s+)?musculac|"
     r"halter|dumbb?ells?|kettlebell|barra\s+olimpica|anilhas?\s+(de\s+)?(peso|ferro|emborrachad|revestid|injetad|olimpic|\d)|"
@@ -798,10 +812,13 @@ ITEM_CORE_POSICAO = re.compile(r"(cabeca|decubito|posicao|paciente)\s*$")
 # Decisão do Marcelo (02/10/2026, v2): polia e espaldar são equipamento core e seguram o "forte". Pilates não é core
 # (nem o aparelho de Pilates com polia/escada), nem o "aparelho/equipamento para condicionamento físico" genérico.
 PILATES = re.compile(r"pilates|reformer|cadillac|\bbarrel\b|barril|step\s+chair|wunda", re.I)
-POLIA = re.compile(r"\bpolias?\b")
-# polia de aparelho de exercício: conjugada, regulável, cross, de ombro, com torre/carga/peso...
+# "pulley" e "polia 2..." passam pela mesma validação (vetos de Pilates, acessório e máquina): no ITEM_CORE genérico
+# "Barra para pulley" e "Pilates Reformer com polia 2 posições" seguravam o forte (review do PR #124).
+POLIA = re.compile(r"\bpolias?\b|\bpulley")
+# polia de aparelho de exercício: conjugada, regulável, cross, de ombro, com torre/carga/peso... "pulley" já é o
+# aparelho de academia
 POLIA_CONTEXTO = re.compile(
-    r"conjugad|regulav|cross|ombro|musculac|academia|carga|\bpesos?\b|torre|exercic|condicionamento|ginastic|treino|"
+    r"pulley|conjugad|regulav|cross|ombro|musculac|academia|carga|\bpesos?\b|torre|exercic|condicionamento|ginastic|treino|"
     r"fisioterap|reabilitac|gaiola|agachamento|\d\s*kg\b")
 # polia como peça de outra coisa (batedeira "polia variadora", #425), acessório "para puxadas em aparelho de polia"
 # (#2050) ou tração hospitalar
@@ -810,6 +827,10 @@ POLIA_FORA = re.compile(
     r"cortina|persiana|varal|portao|elevador|guincho|tracao\s+(cervical|lombar)|balcanic")
 ACESSORIO_INICIO = re.compile(
     r"^\W*(\(\w+\)\s*)?(puxador|pegador|barra|corda|triangulo|tornozeleira|mosquet|cabo|alca|manopla)")
+# acessório "para/de polia" fora do início do texto ("MC0600016-BARRA PARA PULLEY", "cabo de aço para polia")
+ACESSORIO_POLIA = re.compile(
+    r"\b(puxador|pegador|barra|corda|triangulo|tornozeleira|mosquet\w*|cabos?|alcas?|manopla|estribo)s?\s+"
+    r"(\w+\s+){0,3}?(para|de|p/|em)\s+(\w+\s+){0,2}?(polias?|pulley)\b")
 ESPALDAR = re.compile(r"\bespaldar\b")
 # espaldar de parede (barra de Ling) x espaldar de cadeira ("espaldar médio", "tipo espaldar: alto", #355/#492)
 ESPALDAR_PAREDE = re.compile(
@@ -824,7 +845,7 @@ def objeto_passagem(objeto: str | None) -> list[str]:
     """Grupos de compra "de passagem" (mobiliario, brinquedo, expediente, hospitalar) que o objeto cita. Vazio = a
     regra do item core não se aplica."""
     t = normalizar(objeto or "")
-    if OBJETO_MANUTENCAO.search(t):
+    if OBJETO_MANUTENCAO.search(t) and OBJETO_SERVICO_MANUTENCAO.search(t):
         return []
     grupos = [g for g, rx in OBJETO_PASSAGEM.items() if rx.search(t)]
     if grupos == ["brinquedo"] and BRINQUEDO_INFANTIL_FICA.search(t):
@@ -873,7 +894,7 @@ def _polia_core(t: str) -> bool:
     (puxador, barra, corda), polia como peça de outro equipamento, uso citado ("uso em... sistemas de polia") nem
     aparelho de Pilates."""
     m = POLIA.search(t)
-    if not m or PILATES.search(t) or POLIA_FORA.search(t) or ACESSORIO_INICIO.search(t):
+    if not m or PILATES.search(t) or POLIA_FORA.search(t) or ACESSORIO_INICIO.search(t) or ACESSORIO_POLIA.search(t):
         return False
     if ITEM_CORE_USO.search(t[max(0, m.start() - 80):m.start()]):
         return False

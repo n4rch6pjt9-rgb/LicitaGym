@@ -21,6 +21,7 @@ import logging
 import os
 import sys
 import time
+from email.utils import parsedate_to_datetime
 from datetime import datetime, timezone
 from typing import Any
 
@@ -34,9 +35,28 @@ BASE_URL = "https://dadosabertos.compras.gov.br"
 ENDPOINT_MATERIAL = "/modulo-pesquisa-preco/1_consultarMaterial"
 ENDPOINT_DETALHE = "/modulo-pesquisa-preco/2_consultarMaterialDetalhe"
 UA = "LicitaGym-Coletor/1.1 (pesquisa de licitacoes publicas)"
+MAX_RETRY_AFTER_S = 60
 
 # PDMs mais frequentes do catálogo fitness (ex.: 2640 aparelhos musculação, 2638 acessórios)
 PDMS_PADRAO = [2640, 2638, 7113, 3522, 5341, 8166, 18481, 10779]
+
+
+def _calcular_espera_retry(tentativa: int, response: requests.Response) -> float:
+    retry_after = (response.headers or {}).get("Retry-After")
+    if retry_after:
+        try:
+            espera = float(retry_after)
+        except (TypeError, ValueError):
+            try:
+                data_retry = parsedate_to_datetime(retry_after)
+                if data_retry.tzinfo is None:
+                    data_retry = data_retry.replace(tzinfo=timezone.utc)
+                espera = (data_retry - datetime.now(timezone.utc)).total_seconds()
+            except (TypeError, ValueError, OverflowError):
+                espera = None
+        if espera is not None:
+            return max(0.0, min(espera, MAX_RETRY_AFTER_S))
+    return tentativa * 3.0
 
 
 def normalizar_preco_praticado(item: dict[str, Any]) -> dict[str, Any] | None:
@@ -148,11 +168,11 @@ class ClienteComprasPrecos:
                 if r.status_code == 404:
                     return {"resultado": [], "totalRegistros": 0}
                 if r.status_code in (429, 502, 503, 504):
-                    espera = tentativa * 3.0
+                    espera = _calcular_espera_retry(tentativa, r)
                     log.warning("HTTP %d em Pesquisa Preco %s=%d (tentativa %d), aguardando %.1fs...", r.status_code, tipo, codigo, tentativa, espera)
-                    time.sleep(espera)
                     if tentativa == 3:
                         raise RuntimeError(f"HTTP {r.status_code} esgotado em Pesquisa Preco {tipo}={codigo}")
+                    time.sleep(espera)
                     continue
                 r.raise_for_status()
             except requests.RequestException as e:

@@ -312,12 +312,36 @@ def test_coletor_precos_falhas_e_retries(monkeypatch):
     cliente = compras_precos.ClienteComprasPrecos(delay=0)
     mock_resp = MagicMock()
     mock_resp.status_code = 429
+    mock_resp.headers = {}
     monkeypatch.setattr(cliente.s, "get", lambda *_, **__: mock_resp)
     monkeypatch.setattr(compras_precos.time, "sleep", lambda *_: None)
 
     with pytest.raises(RuntimeError) as exc_info:
         cliente.consultar_material("codigoPdm", 2640)
     assert "429" in str(exc_info.value) or "retries" in str(exc_info.value).lower()
+
+
+def test_coletor_precos_respeita_retry_after(monkeypatch):
+    cliente = compras_precos.ClienteComprasPrecos(delay=0)
+    resposta_429 = MagicMock(status_code=429, headers={"Retry-After": "7"})
+    resposta_ok = MagicMock(status_code=200)
+    resposta_ok.json.return_value = {"resultado": [], "totalRegistros": 0}
+    respostas = iter([resposta_429, resposta_ok])
+    esperas = []
+    chamadas = []
+
+    def fake_get(*args, **kwargs):
+        chamadas.append((args, kwargs))
+        return next(respostas)
+
+    monkeypatch.setattr(cliente.s, "get", fake_get)
+    monkeypatch.setattr(compras_precos.time, "sleep", esperas.append)
+
+    resultado = cliente.consultar_material("codigoPdm", 2640)
+
+    assert resultado == {"resultado": [], "totalRegistros": 0}
+    assert len(chamadas) == 2
+    assert 7.0 in esperas
 
 
 def test_coletor_pgc_limite_tamanho_pagina(monkeypatch):
@@ -349,7 +373,6 @@ def test_coletor_arp_falha_apos_retries(monkeypatch):
 
     with pytest.raises(RuntimeError):
         cliente.consultar_itens_pdm(2640, "2026-01-01", "2026-12-31")
-
 
 
 

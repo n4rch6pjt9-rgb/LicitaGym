@@ -215,9 +215,9 @@ de maior valor para o RAG. Ligue `proposta`/`negociacao` quando quiser preços.
   visitante antes de baixar anexos. O endpoint de download responde sem ele,
   mas o recomendado é fazer o cadastro com os dados da empresa responsável
   pelo LicitaGym para ficar em conformidade com o portal.
-- **LGPD:** só CNPJ é gravado; identificadores de pessoa física (CPF) são
-  descartados. Documentos de habilitação podem conter dados de sócios —
-  mascarar antes de indexar no RAG.
+- **LGPD:** nos cadastros estruturados só CNPJ é gravado. No RAG, CPF e CNPJ
+  que aparecem nos editais são dados públicos e são indexados sem máscara
+  (decisão de 01/10/2026).
 - **Limites de taxa:** mantenha `DELAY_SEGUNDOS` ≥ 1 e rode fora do horário comercial.
 
 ## 4. Indexar no RAG (texto → Gemini → embeddings)
@@ -231,11 +231,17 @@ python3 -m coletor.buscar "Por que a Freedom Motors recorreu e qual foi a decis�
 ```
 
 - Cada arquivo físico (sha256) é processado **uma vez**; cópias recebem o mesmo resultado.
-- PDF com texto → `pypdf`; PDF escaneado → OCR pelo Gemini; `.zip` é aberto (até 2 níveis);
-  `.docx` lido direto; `.rar` e imagens ficam listados em `extracao.arquivos_ignorados`.
+- O tipo do arquivo vem dos **bytes**, não da extensão (o PNCP entrega `.bin`/sem extensão):
+  `%PDF-` → PDF; `PK` → ZIP, ou DOCX se tiver `word/document.xml`, ou XLSX se tiver `xl/`.
+- PDF com texto → `pypdf`; PDF escaneado → OCR pelo Gemini; ZIP é aberto (até 2 níveis, nomes
+  internos em cp850/UTF-8 sem flag corrigidos); DOCX lido direto; XLSX vira texto simples
+  (uma linha por linha da planilha, células com " | ", sem datas formatadas, até 200 mil caracteres);
+  `.rar`, `.7z`, `.pptx`, `.doc`/`.xls` antigos e imagens ficam em `extracao.arquivos_ignorados`.
+  Arquivo com nome `.pdf` que não é PDF (ex.: página HTML de erro) é ignorado, não vai para o OCR.
 - Gemini gera um JSON por documento em `licitacao_documentos.extracao` (tipo, resumo,
   fornecedores, decisão, motivos, fundamentos legais, valores, pontos-chave) e um trecho-resumo.
 - Embeddings: `text-multilingual-embedding-002` (lotes de até 30 trechos, 1 chamada a cada 12,5 s), 768 dimensões, `RETRIEVAL_DOCUMENT` (consulta usa `RETRIEVAL_QUERY`).
+  Cada chunk grava o modelo em `licitacao_chunks.embedding_model` (padrão da coluna: o mesmo modelo).
 - Modelos configuráveis: `EMBED_MODEL`, `GEN_MODEL` (padrão `gemini-2.5-flash`), `GOOGLE_CLOUD_LOCATION` (padrão `us-central1`).
 
 **Cota do Vertex (projeto novo):** o modelo de embeddings começa com **5 requisições/min**

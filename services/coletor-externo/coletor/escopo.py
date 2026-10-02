@@ -475,8 +475,11 @@ _AMBIGUOS = {
         # Peça/forma: o substantivo vem colado ("tubo de aço elíptico", "seção elíptica"); "aço ... movimento elíptico"
         # e "forma"/"desenho" soltos casavam descrição de aparelho. Iluminação só como objeto de iluminação:
         # "lumin" solto casava "display iluminado"/"painel luminoso" do próprio elíptico (Codex, PR #114).
-        r"(secao|formato|cavidade|perfil|tubos?(\s+de\s+aco)?|travessa|tampo|furo|recorte|contorno)\s+(\w+\s+)?eliptic|"
-        r"eliptic\w*\s+(sae\b|\d+\s*x\s*\d+)|\bmesas?\b|\bcadeiras?\b|conjunto\s+escolar|\bcarteiras?\b|sextavad|hexagon|"
+        # "ponta elíptica" (torniquete "pode possuir a ponta elíptica vermelha", #1025), "em forma elíptica" e
+        # "canteiro elevado elíptico 3,65 x 6,80 m" (medida com decimal) também são forma (02/10/2026)
+        r"(secao|formato|formas?|cavidade|perfil|tubos?(\s+de\s+aco)?|travessa|tampo|furo|recorte|contorno|pontas?)\s+"
+        r"(\w+\s+)?eliptic|"
+        r"eliptic\w*\s+(sae\b|\d+([.,]\d+)?\s*x\s*\d+)|\bmesas?\b|\bcadeiras?\b|conjunto\s+escolar|\bcarteiras?\b|sextavad|hexagon|"
         r"mobiliari|porta[\s-]*lapis|\bespelhos?\b|"
         r"luminaria|\blustres?\b|arandela|plafon|refletor|\bspots?\b|lampada|abajur|pendente\s+(de\s+)?(teto|luz)",
         # "^eliptico...": item que começa pelo nome do aparelho ("Elíptico com display iluminado e monitor LCD")
@@ -540,6 +543,8 @@ _AMBIGUOS = {
     ),
 }
 AMBIGUOS = {k: tuple(re.compile(p, re.I) for p in v) for k, v in _AMBIGUOS.items()}
+# Veto duro (vale mesmo com o contexto "fica"): torniquete nunca é aparelho elíptico (#1025, 02/10/2026).
+AMBIGUOS_VETO = {"eliptico": re.compile(r"torniquete", re.I)}
 
 
 def _ambiguo_academia(t: str, nome: str):
@@ -547,6 +552,9 @@ def _ambiguo_academia(t: str, nome: str):
     termo, fora, fica = AMBIGUOS[nome]
     m = termo.search(t)
     if not m or (fora.search(t) and not fica.search(t)):
+        return None
+    veto = AMBIGUOS_VETO.get(nome)
+    if veto and veto.search(t):
         return None
     return m
 

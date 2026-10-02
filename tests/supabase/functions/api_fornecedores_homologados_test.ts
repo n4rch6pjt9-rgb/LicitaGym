@@ -8,6 +8,36 @@ function createMockDb(queryHandler: (table: string) => any): SupabaseClient {
   } as unknown as SupabaseClient;
 }
 
+Deno.test("api-fornecedores-homologados: sem JWT retorna 401", async () => {
+  const req = new Request("http://localhost", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "historico", cnpj: "123" }),
+  });
+
+  const res = await handleRequest(req);
+
+  assertEquals(res.status, 401);
+});
+
+Deno.test("api-fornecedores-homologados: usa req.user após autenticação", async () => {
+  const req = new Request("http://localhost", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "historico", cnpj: "123" }),
+  });
+
+  const res = await handleRequest(req, {
+    requireAuth: async (authenticatedReq) => {
+      (authenticatedReq as Request & { user?: { id: string } }).user = { id: "user-1" };
+      return null;
+    },
+    getDb: () => createMockDb(() => ({})),
+  });
+
+  assertEquals(res.status, 400);
+});
+
 Deno.test("api-fornecedores-homologados: acao historico com CNPJ invalido retorna 400", async () => {
   const req = new Request("http://localhost", {
     method: "POST",

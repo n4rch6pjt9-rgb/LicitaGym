@@ -1218,7 +1218,7 @@ Deno.test("acompanhamento: requer autenticação de usuário (401 sem token)", a
   assertEquals(body.error, "Unauthorized");
 });
 
-Deno.test("acompanhamento: validação de ID ausente retorna 400", async () => {
+Deno.test("acompanhamento: validação de ID ausente ou não-numérico retorna 400", async () => {
   const reqGet = new Request("http://localhost/api-dashboard-oportunidades?action=acompanhamento", {
     method: "GET",
   });
@@ -1232,6 +1232,17 @@ Deno.test("acompanhamento: validação de ID ausente retorna 400", async () => {
   });
   const resPost = await handleRequest(reqPost, { requireAuth: () => null });
   assertEquals(resPost.status, 400);
+
+  // ID não-numérico ou fora de /^\d{1,18}$/ deve retornar 400
+  for (const badId of ["abc", "123a", "-1", "0x12", "1234567890123456789", "1.5"]) {
+    const reqBad = new Request(`http://localhost/api-dashboard-oportunidades?action=acompanhamento&id=${badId}`, {
+      method: "GET",
+    });
+    const resBad = await handleRequest(reqBad, { requireAuth: () => null });
+    assertEquals(resBad.status, 400);
+    const bodyBad = await resBad.json();
+    assertEquals(bodyBad.error.includes("dígitos (1 a 18)"), true);
+  }
 });
 
 Deno.test("acompanhamento: oportunidade não encontrada retorna 404", async () => {

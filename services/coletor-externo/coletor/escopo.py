@@ -404,7 +404,10 @@ PUXADOR_APARELHO = re.compile(
 PUXADOR_ACESSORIO = re.compile(
     r"\bpuxador(es)?\b[^.;]{0,40}?(\btriceps\b|\bbiceps\b|\bcorda\b|\bromano\b|\bw\b|\bestribo\b|\bunilateral\b|"
     r"pegada\s+(neutra|supinad\w*|pronad\w*|aberta|fechada|paralela|dupla)|\bpolias?\b|pulley)|"
-    r"\b(barra|corda|triangulo|pegador)\s+(\w+\s+){0,2}?(para\s+|de\s+|p/\s*)?puxador", re.I)
+    r"\b(barra|corda|triangulo|pegador)\s+(\w+\s+){0,2}?(para\s+|de\s+|p/\s*)?puxador"
+    r"(?=[^.;]{0,40}\b(triceps|biceps|romano|w|estribo|unilateral|neutra|supinad\w*|pronad\w*|aberta|fechada|"
+    r"paralela|alto|baixo|triangul\w*|remada|costas|dorsal|articulad\w*|polias?|pulley|graviton|musculac\w*|"
+    r"academia|ginastic\w*|fitness|cross\s*over|crossover|treino)\b)", re.I)
 PUXADOR_CONTEXTO = re.compile(
     r"musculac|academia|ginastic|fitness|crossfit|cross\s*over|crossover|\bpolias?\b|pulley|remada|anilha|halter|"
     r"graviton|leg\s*press|supino|peck\s*deck|voador|aparelhos?\s+de\s+(ginastica|musculacao)", re.I)

@@ -20,6 +20,7 @@ Prioridades do produto, nesta ordem: **precisão > rastreabilidade > dados ofici
 | `.github/instructions/pncp.instructions.md` | arquivos de PNCP, contratações, PCA, IRP |
 | `.github/instructions/catmat.instructions.md` | CATMAT, PDM, catálogo, taxonomia |
 | `.github/instructions/python-ingestion.instructions.md` | `**/*.py` |
+| `.github/instructions/coletor.instructions.md` | `coletor/**`, `services/coletor-externo/**` |
 | `.github/instructions/document-pipeline.instructions.md` | editais, PDF, OCR, chunks, embeddings |
 | `.github/instructions/tests.instructions.md` | `tests/**` e arquivos de teste |
 | `docs/pncp/schemas-consultas-pncp.md`, `docs/compras-gov/schemas-consultas.md` | PR que cria/altera requisição HTTP |
@@ -83,7 +84,8 @@ Se este arquivo e as instruções acima divergirem, aplique a regra mais restrit
 
 ### Reuso e escopo
 - **[IMPORTANTE]** Segunda implementação de conceito que já existe em `supabase/functions/_shared/` (http, retry, idempotency, upsert, hash, checkpoint, lock, clients) ou `scripts/`.
-- **[IMPORTANTE]** Edge Function nova fora da lista `FUNCTIONS` de `.github/workflows/deploy-supabase-functions.yml` (nunca será publicada) ou fora do `deno check` de `.github/workflows/pr-quality.yml`.
+- **[Alto]** PR em `supabase/functions/**` ou `supabase/migrations/**`: merge na `main` aplica migrations e republica todas as Edge Functions em produção (integração Supabase ↔ GitHub).
+- **[IMPORTANTE]** Edge Function nova fora do `deno check` de `.github/workflows/pr-quality.yml`. A lista `FUNCTIONS` de `deploy-supabase-functions.yml` é smoke test, não a condição de publicação.
 - **[IMPORTANTE]** Refatoração fora do escopo; arquivo de dados/log > 5 MB ou `*_resultado.json` commitado.
 - **[BLOQUEANTE]** AWS Cognito/RDS/S3 ou Asaas introduzidos sem pedido explícito.
 
@@ -123,7 +125,7 @@ git diff origin/main...HEAD | grep -nE "service_role|sbp_[A-Za-z0-9]|eyJ[A-Za-z0
 
 | Tag | Significado | Merge |
 |---|---|---|
-| **[BLOQUEANTE]** | Dado inventado, erro virando vazio, falha de segurança, perda/corrupção de dado, schema sem migration | Não aprovar até corrigir |
+| **Alto** (o mesmo que [BLOQUEANTE]) | Dado inventado, erro virando vazio, falha de segurança, perda/corrupção de dado, schema sem migration, e os itens da seção "Sinalizar como Alto" em `.github/copilot-instructions.md` | Não aprovar até corrigir |
 | **[IMPORTANTE]** | Risco real e limitado: idempotência, paginação, timeout, reuso, teste faltando | Corrigir no PR ou abrir issue vinculada |
 | **[SUGESTÃO]** | Legibilidade, nomes, melhoria opcional | A critério do autor |
 

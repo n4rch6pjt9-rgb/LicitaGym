@@ -95,6 +95,99 @@ def test_status_e_acionabilidade():
     assert P.acionabilidade("aberta", None, agora) == "ACTIONABILITY_UNRESOLVED"  # prazo nulo nunca vira oportunidade
 
 
+def test_status_normalizado_textos_reais():
+    # Textos reais de portais Paradigma (SFIEC, FIESC, SEST SENAT, etc.)
+    # Recebendo proposta / aberta
+    for s in ("Em Andamento", "Recebendo Propostas", "Publicado", "Aberto para Propostas", "Aberto"):
+        assert P.status_normalizado(s) == "aberta", s
+    # Julgamento / disputa
+    for s in ("Em Julgamento", "Análise de Propostas", "Em Habilitação", "Em Negociação", "Disputa Aberta", "Fase de Lances"):
+        assert P.status_normalizado(s) == "em_julgamento", s
+    # Suspensa
+    for s in ("Suspenso", "Processo Suspenso", "Fase Suspensa"):
+        assert P.status_normalizado(s) == "suspensa", s
+    # Encerrada / Homologada / Adjudicada
+    for s in ("Homologado", "Encerrado", "Finalizado", "Adjudicado", "Concluído", "Concluido"):
+        assert P.status_normalizado(s) in ("homologada", "encerrada"), s
+    # Cancelada / Revogada / Anulada
+    for s in ("Cancelado", "Revogado", "Anulado"):
+        assert P.status_normalizado(s) == "cancelada", s
+    # Fracassada / Deserta
+    for s in ("Fracassado", "Deserto", "Homologado (Fracassado)", "Homologado (Deserto)"):
+        assert P.status_normalizado(s) == "sem_vencedor", s
+    # Homologado parcialmente fracassado / deserto -> homologada
+    for s in ("Homologado parcialmente fracassado", "Homologado parcialmente deserto",
+              "Homologado Parcialmente Fracassado", "Homologação Parcial"):
+        assert P.status_normalizado(s) == "homologada", s
+    # Desconhecida
+    for s in ("Status Inusitado XYZ", "Qualquer Outra Coisa", "", None):
+        assert P.status_normalizado(s) == "desconhecida", s
+
+
+def test_prioridade_da_compra_regras():
+    agora = datetime(2026, 10, 2, 12, 0, tzinfo=timezone.utc)
+    # 1. Aberta com prazo futuro -> leads
+    fim_futuro_utc = "2026-10-03T15:00:00+00:00"
+    prio, motivo = P.prioridade_da_compra("aberta", fim_futuro_utc, agora)
+    assert prio == "leads" and motivo == "recebendo proposta"
+
+    # Aberta com prazo passado -> monitorar
+    fim_passado_utc = "2026-10-01T15:00:00+00:00"
+    prio, motivo = P.prioridade_da_compra("aberta", fim_passado_utc, agora)
+    assert prio == "monitorar" and motivo == "prazo de proposta vencido"
+
+    # Aberta sem prazo -> monitorar
+    prio, motivo = P.prioridade_da_compra("aberta", None, agora)
+    assert prio == "monitorar" and motivo == "aberta sem prazo de proposta"
+
+    # 2. Em julgamento / suspensa -> monitorar
+    assert P.prioridade_da_compra("em_julgamento", fim_futuro_utc, agora)[0] == "monitorar"
+    assert P.prioridade_da_compra("suspensa", fim_futuro_utc, agora)[0] == "monitorar"
+
+    # 3. Encerrada, homologada, cancelada, sem_vencedor -> historico
+    for st in ("encerrada", "homologada", "cancelada", "sem_vencedor"):
+        assert P.prioridade_da_compra(st, fim_futuro_utc, agora)[0] == "historico"
+
+    # 4. Desconhecida -> None (com aviso no log)
+    prio, motivo = P.prioridade_da_compra("desconhecida", fim_futuro_utc, agora)
+    assert prio is None
+    assert "desconhecido" in motivo
+
+
+def test_prioridade_fuso_horario_brasilia():
+    # tDtFinal do Paradigma sem fuso (ex: 2026-10-02T13:00:00)
+    # Se agora for 12:00 BRT (15:00 UTC) e o fim for 13:00 BRT (16:00 UTC):
+    # fim no futuro em BRT -> leads
+    agora_brt = datetime(2026, 10, 2, 15, 0, tzinfo=timezone.utc)  # 12:00 BRT
+    fim_sem_fuso = "2026-10-02T13:00:00"  # 13:00 BRT = 16:00 UTC
+    prio, _ = P.prioridade_da_compra("aberta", fim_sem_fuso, agora_brt)
+    assert prio == "leads"
+
+    # Se agora for 14:00 BRT (17:00 UTC) e o fim for 13:00 BRT:
+    # fim no passado em BRT -> monitorar
+    agora_brt_depois = datetime(2026, 10, 2, 17, 0, tzinfo=timezone.utc)
+    prio, _ = P.prioridade_da_compra("aberta", fim_sem_fuso, agora_brt_depois)
+    assert prio == "monitorar"
+
+
+def test_dry_run_mostra_prioridade(capsys):
+    portal = MagicMock()
+    portal.fonte = P.FONTES["sfiec"]
+    d = {
+        "nCdProcesso": 103, "sNrEdital": "PE000192023", "sDsSituacao": "Homologado",
+        "sDsObjeto": "Aquisição de Equipamentos de Crossfit", "tDtFinal": None,
+        "nCdModulo": 18,
+    }
+    portal.detalhes.return_value = d
+    portal.itens.return_value = []
+    resumo = {"processos": 0, "no_escopo": 0, "itens_escopo": 0, "itens_catalogo": 0,
+              "resultados": 0, "itens_com_vencedor": 0, "alertas": 0, "erros": 0}
+    P.processar_processo(portal, None, 103, 18, resumo, dry_run=True, com_resultados=False,
+                       produtos=None, forcar=True)
+    out = capsys.readouterr().out
+    assert "Homologado | historico | Aquisição" in out
+
+
 def test_linha_licitacao_fiesc():
     li = P.linha_licitacao(P.FONTES["fiesc"], DETALHE_7752, "forte", False)
     assert li["fonte"] == "fiesc" and li["id_externo"] == 7752 and li["modulo"] == 59
@@ -102,7 +195,23 @@ def test_linha_licitacao_fiesc():
     assert li["valor_total"] is None  # Decimal.MinValue não vira número
     assert li["data_homologacao"].startswith("2026-09")
     assert li["status_normalizado"] == "homologada" and li["acionabilidade"] == "NOT_ACTIONABLE"
+    assert li["prioridade"] == "historico"
     assert li["escopo_estado"] == "CLASSIFICATION_CANDIDATE"
+
+
+def test_linha_licitacao_omite_prioridade_quando_desconhecida():
+    # Situação desconhecida -> prioridade é None e NÃO deve constar nas chaves do dict
+    # para não sobrescrever valor preexistente no Supabase (merge-duplicates)
+    d_desconhecido = dict(DETALHE_7752, sDsSituacao="Situação Desconhecida Inusitada")
+    li = P.linha_licitacao(P.FONTES["fiesc"], d_desconhecido, "forte", False)
+    assert "prioridade" not in li
+    assert li["status_normalizado"] == "desconhecida"
+
+    # Situação Homologado -> tem a chave prioridade com valor 'historico'
+    d_homologado = dict(DETALHE_7752, sDsSituacao="Homologado")
+    li_homolog = P.linha_licitacao(P.FONTES["fiesc"], d_homologado, "forte", False)
+    assert "prioridade" in li_homolog
+    assert li_homolog["prioridade"] == "historico"
 
 
 def test_linhas_itens_e_resultados():

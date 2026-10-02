@@ -31,7 +31,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import requests
@@ -107,12 +107,14 @@ def status_normalizado(situacao: str | None) -> str:
     s = normalizar(situacao or "")
     if not s:
         return "desconhecida"
-    if "homolog" in s and "fracass" not in s:
+    if "homolog" in s and "parcial" in s:
+        return "homologada"
+    if any(k in s for k in ("fracass", "desert")):
+        return "sem_vencedor"
+    if "homolog" in s:
         return "homologada"
     if any(k in s for k in ("cancel", "revog", "anul", "suspens")):
         return "cancelada" if "suspens" not in s else "suspensa"
-    if any(k in s for k in ("fracass", "desert")):
-        return "sem_vencedor"
     if any(k in s for k in ("julg", "analis", "habilit", "negocia", "disputa", "lance")):
         return "em_julgamento"
     if any(k in s for k in ("andamento", "public", "recebend", "aberto", "abert")):
@@ -120,6 +122,33 @@ def status_normalizado(situacao: str | None) -> str:
     if any(k in s for k in ("encerr", "finaliz", "adjudic", "conclu")):
         return "encerrada"
     return "desconhecida"
+
+
+FUSO_BRASILIA = timezone(timedelta(hours=-3))
+
+
+def prioridade_da_compra(status_norm: str, data_fim_iso: str | None, agora: datetime | None = None) -> tuple[str | None, str]:
+    """(prioridade, motivo) pelo estado da compra, alinhado à semântica do PNCP e à view de prioridade efetiva:
+    - leads: compra aberta e recebendo proposta (prazo data_fim futuro);
+    - monitorar: em julgamento, suspensa, ou aberta com prazo de proposta vencido;
+    - historico: encerrada, homologada, cancelada, sem vencedor (fracassada/deserta);
+    - None (desconhecida): padrão conservador, não vira lead, registra aviso no log."""
+    if status_norm in ("encerrada", "homologada", "cancelada", "sem_vencedor"):
+        return "historico", f"status {status_norm}"
+    if status_norm in ("em_julgamento", "suspensa"):
+        return "monitorar", f"status {status_norm}"
+    if status_norm == "aberta":
+        if not data_fim_iso:
+            return "monitorar", "aberta sem prazo de proposta"
+        agora = agora or datetime.now(timezone.utc)
+        fim = datetime.fromisoformat(data_fim_iso.replace("Z", "+00:00"))
+        if fim.tzinfo is None:
+            fim = fim.replace(tzinfo=FUSO_BRASILIA)
+        if fim > agora:
+            return "leads", "recebendo proposta"
+        return "monitorar", "prazo de proposta vencido"
+    log.warning("Situação desconhecida do portal não mapeada para lead: status=%s", status_norm)
+    return None, f"status {status_norm} desconhecido"
 
 
 def acionabilidade(status: str, data_fim_iso: str | None, agora: datetime | None = None) -> str:
@@ -333,8 +362,9 @@ def linha_licitacao(fonte: Fonte, d: dict, categoria: str | None, borracha: bool
             "dVlEstimado", "dVlNegociado", "dVlEconomia", "dPcEconomia", "tDtEncerrado", "nAnoFinalizacao")}}
     st = status_normalizado(d.get("sDsSituacao"))
     fim = parse_data(d.get("tDtFinal"))
+    prio, _ = prioridade_da_compra(st, fim, agora)
     modalidade = (d.get("sNmModalidadeTipo") or d.get("sNmModalidade") or "").strip() or None
-    return {
+    row = {
         "fonte": fonte.slug,
         "modulo": d.get("nCdModulo") or 59,
         "id_externo": d["nCdProcesso"],
@@ -362,6 +392,9 @@ def linha_licitacao(fonte: Fonte, d: dict, categoria: str | None, borracha: bool
         "escopo_estado": "CLASSIFICATION_CANDIDATE" if categoria else "OUT_OF_SCOPE",
         "raw": d,
     }
+    if prio is not None:
+        row["prioridade"] = prio
+    return row
 
 
 def linhas_itens(lic_id: int | None, itens: list[dict], produtos: dict[int, dict] | None = None,
@@ -541,8 +574,12 @@ def processar_processo(portal: "PortalParadigma", sb, pid: int, mod: int, resumo
     li = linhas_itens(None, its, produtos, contexto_academia(d.get("sDsObjeto")))
     resumo["itens_escopo"] += sum(1 for i in li if i["categoria_escopo"])
     resumo["itens_catalogo"] += sum(1 for i in li if i["escopo_metodo"] == "catalogo" and i["categoria_escopo"])
+    st = status_normalizado(d.get("sDsSituacao"))
+    fim = parse_data(d.get("tDtFinal"))
+    prio, _ = prioridade_da_compra(st, fim)
+    prio_tag = f" | {prio}" if prio else ""
     print(("★ " if borr else "  ") + f"{portal.fonte.slug} {pid}/m{mod} | {d.get('sNrEdital')} | {cat} | "
-          f"{d.get('sDsSituacao')} | {(d.get('sDsObjeto') or '')[:80]}")
+          f"{d.get('sDsSituacao')}{prio_tag} | {(d.get('sDsObjeto') or '')[:80]}")
     lic = None
     if not dry_run:
         lic = sb.upsert("licitacoes_externas", linha_licitacao(portal.fonte, d, cat, borr, listagem=listagem),

@@ -269,6 +269,27 @@ async function handleGet(db: SupabaseClient, p: Record<string, unknown>): Promis
   });
 }
 
+async function handleHistorico(db: SupabaseClient, p: Record<string, unknown>): Promise<Response> {
+  const cnpj = onlyDigits(p.cnpj);
+  if (!cnpj || cnpj.length !== 14) {
+    return json({ error: "CNPJ inválido (deve conter 14 dígitos)" }, 400);
+  }
+  const { data, error } = await db
+    .from("v_bi_fornecedor_historico")
+    .select("*")
+    .eq("cnpj", cnpj)
+    .maybeSingle();
+
+  if (error) {
+    console.error("[api-fornecedores-homologados] historico:", error);
+    return json({ error: "Falha ao consultar histórico de fornecedor no BI" }, 500);
+  }
+  if (!data) {
+    return json({ error: "Fornecedor não encontrado no histórico de compras homologadas" }, 404);
+  }
+  return json({ data });
+}
+
 // ---------------------------------------------------------------- órgãos compradores
 
 const ORGAO_ORDER: Record<string, { col: string; asc: boolean }> = {
@@ -552,7 +573,8 @@ export async function handleRequest(req: Request): Promise<Response> {
       case "balance": return await handleBalance();
       case "orgaos_list": return await handleOrgaosList(db, p);
       case "orgao_get": return await handleOrgaoGet(db, p);
-      default: return json({ error: "Ação não suportada (list, stats, get, enrich, balance, orgaos_list, orgao_get)" }, 400);
+      case "historico": return await handleHistorico(db, p);
+      default: return json({ error: "Ação não suportada (list, stats, get, enrich, balance, orgaos_list, orgao_get, historico)" }, 400);
     }
   } catch (err) {
     console.error("[api-fornecedores-homologados] erro:", err);

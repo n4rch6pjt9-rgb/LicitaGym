@@ -287,3 +287,156 @@ def test_detalhe_promove_a_leads_quando_o_prazo_gravado_esta_aberto():
     p.arquivos.return_value = []
     linha = R.reclassificar(R.SomenteLeitura(_sb([ln])), p, consultar_detalhe_pncp=True, agora=AGORA_R)["linhas"][0]
     assert linha["campos"] == {"prioridade": "leads", "fase": "Recebendo propostas"}
+
+
+# ================= 2ª rodada do Copilot sobre fa26946 (02/10/2026) =================
+# ---------- 2.1 trava de serviço também no ramo FORNECE_PRODUTO ----------
+@pytest.mark.parametrize("objeto,desc", [
+    ("Fornecimento de aparelhos de musculação em regime de locação mensal", "Locação mensal de esteira ergométrica"),
+    ("Fornecimento de aparelhos de musculação em regime de locação mensal",
+     "Fornecimento de aparelhos de musculação em regime de locação mensal"),
+    ("Manutenção de aparelhos de musculação com aquisição de peças de reposição",
+     "Manutenção de esteira com aquisição de peças"),
+    ("Manutenção de aparelhos de musculação com aquisição de peças de reposição",
+     "Manutenção de aparelhos de musculação com aquisição de peças de reposição"),
+    ("Contratação de empresa para manutenção corretiva de equipamentos de academia",
+     "Manutenção corretiva com fornecimento de materiais e peças"),
+    ("Aluguel de equipamentos de musculação", "Aquisição de equipamentos de musculação sob regime de aluguel"),
+    ("Troca de cabos de aparelhos de musculação", "Troca de cabos com aquisição de cabos de aço"),
+])
+def test_trava_de_servico_vale_para_fornece_produto(objeto, desc):
+    assert not P.fornece_produto(P.normalizar(desc))
+    assert P.avaliar({"description": objeto}, [_it(1, desc)])[0] is None
+
+
+@pytest.mark.parametrize("desc", [
+    "Aquisição de esteiras ergométricas com manutenção preventiva durante a garantia",
+    "Aquisição de equipamentos de musculação, incluindo instalação, treinamento e manutenção",
+    "Fornecimento e instalação de aparelhos de musculação com assistência técnica e manutenção no período de garantia",
+    "Compra de halteres e anilhas para substituição dos atuais",
+    # redação real da 1894 (dry-run de 02/10/2026): aquisição de equipamento novo junto com a manutenção
+    "Prestação de serviços de revitalização, manutenção e recuperação de equipamentos de academia, com fornecimento "
+    "de materiais, peças, componentes e acessórios, bem como aquisição de novos equipamentos e itens complementares",
+])
+def test_compra_com_manutencao_acessoria_continua_produto(desc):
+    assert P.fornece_produto(P.normalizar(desc))
+    assert P.avaliar({"description": "Implantação de academia no ginásio"}, [_it(1, desc)])[0] == "forte"
+
+
+# ---------- 2.2 veto de etapa também na homologação/adjudicação ----------
+@pytest.mark.parametrize("titulo", [
+    "Pedido de adjudicação",
+    "Recurso contra a homologação",
+    "Impugnação da homologação",
+    "Solicitação de homologação",
+    "Esclarecimento sobre os critérios de adjudicação e homologação",
+    "Contrarrazões ao recurso contra a adjudicação",
+    "Requerimento de adjudicação parcial",
+    "Adjudicação preliminar",
+    "Homologação da amostra",
+    "Minuta do termo de homologação",
+])
+def test_etapa_nao_conta_como_homologacao(titulo):
+    assert P.sinal_documental(_arq(titulo)) is None
+
+
+@pytest.mark.parametrize("titulo", [
+    "Termo de homologação", "Termo de adjudicação e homologação", "Adjudicação e homologação do pregão",
+    "Termo de homologação e habilitação", "TERMO_DE_HOMOLOGACAO_PE_35_2026.pdf",
+])
+def test_ato_conclusivo_de_homologacao_continua_resultado(titulo):
+    assert P.sinal_documental(_arq(titulo)) == "resultado"
+
+
+def test_fase_da_compra_aberta_com_pedido_de_adjudicacao_continua_oportunidade():
+    c = {"description": "Aquisição de esteiras", "situacao_nome": "Divulgada no PNCP",
+         "data_fim_vigencia": "2026-10-13T09:30"}
+    fase, prio, _ = P.fase_da_compra(c, False, agora=AGORA, documentos=_arq("Pedido de adjudicação"))
+    assert prio == "leads" and fase != "Homologada (documento)"
+
+
+# ---------- 2.3 fallback status_busca=encerradas depois dos documentos ----------
+SEM_PRAZO = {"description": "Aquisição de esteiras", "situacao_nome": "Divulgada no PNCP"}
+
+
+def test_busca_encerradas_sem_prazo_com_suspensao_vigente_vai_para_monitorar():
+    assert P.motivo_prioridade(SEM_PRAZO, False, agora=AGORA, status_busca="encerradas")[0] == "historico"
+    fase, prio, _ = P.fase_da_compra(SEM_PRAZO, False, agora=AGORA, status_busca="encerradas",
+                                     documentos=[SUSPENSAO], retificada_em="2026-09-20T10:00:00")
+    assert (fase, prio) == ("Suspensa (documento)", "monitorar")
+
+
+def test_busca_encerradas_sem_prazo_suspensao_retificada_ou_sem_documento_segue_historico():
+    assert P.fase_da_compra(SEM_PRAZO, False, agora=AGORA, status_busca="encerradas", documentos=[])[1] == "historico"
+    retificada = P.fase_da_compra(SEM_PRAZO, False, agora=AGORA, status_busca="encerradas", documentos=[SUSPENSAO],
+                                  retificada_em="2026-09-29T10:00:00")
+    assert retificada[1] == "historico"
+
+
+def test_busca_encerradas_sem_prazo_homologacao_documental_da_fase():
+    fase, prio, _ = P.fase_da_compra(SEM_PRAZO, False, agora=AGORA, status_busca="encerradas",
+                                     documentos=_arq("Termo de homologação"))
+    assert (fase, prio) == ("Homologada (documento)", "historico")
+
+
+def test_sinal_oficial_continua_antes_do_documento():
+    homologada = dict(SEM_PRAZO, existeResultado=True)
+    fase, prio, _ = P.fase_da_compra(homologada, True, agora=AGORA, status_busca="encerradas", documentos=[SUSPENSAO])
+    assert prio == "historico" and fase != "Suspensa (documento)"
+
+
+# ---------- 2.4 410 tratado mesmo quando itens/resultados falham ----------
+def _sb_com_linha(codigo, prio="leads"):
+    sb = _FakeSbIdempotente()
+    sb.upsert("licitacoes_externas", [{"fonte": "pncp", "codigo_externo": codigo, "prioridade": prio,
+                                       "fase": None, "categoria_escopo": "forte"}], "fonte,codigo_externo")
+    return sb
+
+
+@pytest.mark.parametrize("falha", ["itens", "resultados"])
+def test_coletor_410_com_itens_ou_resultados_falhando_marca_linha_gravada(falha):
+    codigo = ABERTA_BUSCA["numero_controle_pncp"]
+    sb = _sb_com_linha(codigo)
+    p = _pncp_aberto([ABERTA_BUSCA])
+    p.itens.return_value = [dict(it, temResultado=True) for it in p.itens.return_value]   # resultados é consultado
+    getattr(p, falha).side_effect = requests.Timeout(f"{falha} timeout")
+    p.compra.side_effect = RuntimeError("PNCP detalhe: 410 Gone")
+    r = _coletar(p, sb)
+    linha = next(iter(sb.tabelas["licitacoes_externas"].values()))
+    assert linha["prioridade"] == "historico" and linha["fase"] == "Excluída do PNCP"
+    assert linha["categoria_escopo"] == "forte"                      # dados anteriores preservados
+    assert r["erros"] == 0 and r["excluidas_sem_itens"] == 1 and r["excluidas_marcadas"] == 1
+    assert set(sb.tabelas) == {"licitacoes_externas"}                # nada de itens/resultados/documentos
+    p.arquivos.assert_not_called()
+
+
+def test_coletor_410_sem_linha_gravada_nao_insere_nada():
+    sb = _FakeSbIdempotente()
+    p = _pncp_aberto([ABERTA_BUSCA])
+    p.itens.side_effect = requests.Timeout("itens")
+    p.compra.side_effect = RuntimeError("PNCP detalhe: 410 Gone")
+    r = _coletar(p, sb)
+    assert sb.tabelas.get("licitacoes_externas", {}) == {} and r["erros"] == 0 and "excluidas_marcadas" not in r
+
+
+def test_coletor_itens_falhando_sem_410_nao_decide_nem_grava():
+    codigo = ABERTA_BUSCA["numero_controle_pncp"]
+    sb = _sb_com_linha(codigo, prio="monitorar")
+    for compra in ({"side_effect": None, "return_value": DETALHE},
+                   {"side_effect": requests.Timeout("detalhe"), "return_value": None}):
+        p = _pncp_aberto([ABERTA_BUSCA])
+        p.itens.side_effect = requests.Timeout("itens")
+        p.compra.side_effect, p.compra.return_value = compra["side_effect"], compra["return_value"]
+        r = _coletar(p, sb)
+        linha = next(iter(sb.tabelas["licitacoes_externas"].values()))
+        assert linha["prioridade"] == "monitorar" and linha["fase"] is None
+        assert r["erros"] == 1 and not any(k.startswith("prioridade_") for k in r)
+
+
+def test_coletor_dry_run_410_sem_itens_so_conta():
+    sb = MagicMock()
+    p = _pncp_aberto([ABERTA_BUSCA])
+    p.itens.side_effect = requests.Timeout("itens")
+    p.compra.side_effect = RuntimeError("PNCP detalhe: 410 Gone")
+    r = _coletar(p, sb, dry_run=True)
+    assert r["excluidas_sem_itens"] == 1 and not sb.atualizar.called and not sb.upsert.called

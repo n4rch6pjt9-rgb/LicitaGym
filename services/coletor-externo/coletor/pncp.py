@@ -364,14 +364,50 @@ _FORNECIMENTO_NOMEADO = re.compile(
     r"(?!((todo|toda)s?\s+)?((o|a)s?\s+)?(respectiv\w*\s+)?(pecas?\b|componentes\s+de\s+reposicao|mao\s+de\s+obra|"
     r"pessoal\b|profissiona|instrutor|oficineir|professor|servic|manutenc|reposic|tecnicos?\b|equipe\b))\w", re.I)
 _SERVICO_SOBRE_PRODUTO = re.compile(
-    r"manutenc|\breparos?\b|\bconsert|\btrocas?\s+de\b|substituic|\blocac|\baluguel|credenciament|recuperac|"
-    r"\brevisao", re.I)
+    r"manutenc|\breparos?\b|\bconsert|\btrocas?\s+de\b|substituic|credenciament|recuperac|\brevisao", re.I)
+# Locação/aluguel/comodato nunca é aquisição do equipamento ("Fornecimento de aparelhos de musculação em regime de
+# locação mensal"; Copilot, PR #134, 2ª rodada).
+_LOCACAO = re.compile(r"\blocac|\baluguel|\balugar\b|comodato", re.I)
+# O sinal de produto que é só peça/mão de obra ("aquisição de peças de reposição", "fornecimento das respectivas
+# peças") não é aquisição do equipamento.
+_SO_PECAS_DEPOIS = re.compile(
+    r"^\w*\s+(de|do|da|dos|das)\s+((todo|toda)s?\s+)?((o|a)s?\s+)?(respectiv\w*\s+)?(novas?\s+)?"
+    r"(pecas?\b|componentes\s+de\s+reposicao|mao\s+de\s+obra)", re.I)
+
+# Aquisição efetiva de equipamento/aparelho vale mesmo depois do serviço ("serviços de revitalização, manutenção e
+# recuperação de equipamentos de academia ... bem como aquisição de novos equipamentos", 1894): não é peça.
+_AQUISICAO_DE_EQUIPAMENTO = re.compile(
+    r"\b(aquisic\w*|compras?)\s+(de|do|da|dos|das)\s+((novos?|novas?|outros?|demais)\s+)?(equipament|aparelh)", re.I)
+
+
+def _inicio_do_produto(t: str) -> int | None:
+    """Posição do primeiro sinal de fornecimento de produto (FORNECE_PRODUTO ou _FORNECIMENTO_NOMEADO) que não seja
+    de peça/mão de obra; None = nenhum."""
+    pos = [m.start() for m in FORNECE_PRODUTO.finditer(t) if not _SO_PECAS_DEPOIS.search(t[m.start():])]
+    m = _FORNECIMENTO_NOMEADO.search(t)
+    if m:
+        pos.append(m.start())
+    return min(pos) if pos else None
 
 
 def fornece_produto(texto: str | None) -> bool:
-    """O texto (já normalizado) fornece produto? Ver FORNECE_PRODUTO e _FORNECIMENTO_NOMEADO."""
+    """O texto (já normalizado) fornece produto? Ver FORNECE_PRODUTO e _FORNECIMENTO_NOMEADO, com a mesma trava de
+    serviço nos dois ramos (Copilot, PR #134, 2ª rodada):
+    - locação/aluguel/comodato no texto: não é aquisição;
+    - fornecimento/aquisição só de peças ou mão de obra: não conta como produto;
+    - manutenção/reparo/troca/substituição/credenciamento/recuperação/revisão ANTES do sinal de produto: o texto é o
+      serviço e o produto é acessório ("Manutenção de aparelhos com aquisição de peças", "Reparo ... incluído
+      fornecimento de acolchoamento"); DEPOIS do sinal, a manutenção é acessória da compra e o produto vale
+      ("Aquisição de esteiras ergométricas com manutenção preventiva durante a garantia"). Exceção: aquisição
+      explícita de equipamento/aparelho (não de peça) vale em qualquer posição (_AQUISICAO_DE_EQUIPAMENTO)."""
     t = texto or ""
-    return bool(FORNECE_PRODUTO.search(t) or (_FORNECIMENTO_NOMEADO.search(t) and not _SERVICO_SOBRE_PRODUTO.search(t)))
+    if _LOCACAO.search(t):
+        return False
+    inicio = _inicio_do_produto(t)
+    if inicio is None:
+        return False
+    servico = _SERVICO_SOBRE_PRODUTO.search(t)
+    return servico is None or inicio < servico.start() or bool(_AQUISICAO_DE_EQUIPAMENTO.search(t))
 
 
 def compra_so_de_servico(itens: list[dict] | None) -> bool:
@@ -581,7 +617,14 @@ _DOC_HOMOLOGACAO = re.compile(r"\bhomologa|\badjudica")
 # esclarecimento", "Resultado preliminar" e "Resultado da amostra" não encerram a compra.
 _DOC_RESULTADO_FINAL = re.compile(r"\baviso\s+de\s+resultado\b|\bresultado\s+(final|definitivo|do\s+julgamento|"
                                   r"da\s+licitacao|do\s+certame|do\s+pregao|da\s+concorrencia|da\s+dispensa)\b")
-_DOC_RESULTADO_ETAPA = re.compile(r"preliminar|provisori|impugna|esclarec|recurso|amostra|habilitac|\bpedido|parcial")
+_DOC_RESULTADO_ETAPA = re.compile(r"preliminar|provisori|impugna|esclarec|recurso|amostra|habilitac|\bpedido|parcial|"
+                                  r"solicitac|requeriment|contrarraz")
+# Homologação/adjudicação também só como ato conclusivo (Copilot, PR #134, 2ª rodada): "Pedido de adjudicação",
+# "Recurso contra a homologação", "Impugnação da homologação", "Solicitação de homologação", "Esclarecimento sobre
+# os critérios de adjudicação e homologação", "Contrarrazões" não encerram a compra. Mais estrito que o do resultado
+# ("habilitação" fica de fora: "Termo de homologação e habilitação" é ato conclusivo).
+_DOC_HOMOLOGACAO_ETAPA = re.compile(r"\bpedido|solicitac|requeriment|recurso|impugna|esclarec|preliminar|provisori|"
+                                    r"amostra|contrarraz|\bminuta")
 _DOC_REVOGACAO = re.compile(r"\brevoga|\banula")
 _DOC_SUSPENSAO = re.compile(r"\bsuspens")
 # Suspensão publicada até 10 min antes da última retificação da compra ainda vale (o PNCP grava os dois juntos,
@@ -620,8 +663,8 @@ def sinal_documental(documentos: list[dict] | None, retificada_em=None) -> str |
         t = normalizar(" ".join(str(d.get(k) or "") for k in _CHAVES_TEXTO_DOC)).replace("_", " ").strip()
         if not t or _DOC_DE_CONTRATO.search(t):
             continue
-        if (_DOC_HOMOLOGACAO.search(t) or (_DOC_RESULTADO_FINAL.search(t) and not _DOC_RESULTADO_ETAPA.search(t))) \
-                and "amostra" not in t:
+        if (_DOC_HOMOLOGACAO.search(t) and not _DOC_HOMOLOGACAO_ETAPA.search(t)) or \
+                (_DOC_RESULTADO_FINAL.search(t) and not _DOC_RESULTADO_ETAPA.search(t)):
             resultado = True
         if _DOC_REVOGACAO.search(t) and "parcial" not in t:
             revogacao = True
@@ -675,7 +718,10 @@ def fase_da_compra(compra: dict, tem_resultado: bool | None = None, *, agora: da
         return FASE_EXCLUIDA, "historico", "compra excluída do PNCP (HTTP 410)"
     prioridade, motivo = motivo_prioridade(compra, tem_resultado, agora=agora, status_busca=status_busca,
                                            itens=itens)
-    if prioridade == "historico" or (prioridade == "monitorar" and motivo.startswith("situação ")):
+    # Só sinal oficial retorna antes dos documentos: o último recurso "sem prazo; status da busca" (P10) fica depois da
+    # análise documental (Copilot, PR #134, 2ª rodada: busca "encerradas" + aviso de suspensão vigente = monitorar).
+    pela_busca = motivo.startswith("sem prazo de proposta; busca")
+    if not pela_busca and (prioridade == "historico" or (prioridade == "monitorar" and motivo.startswith("situação "))):
         return _fase_do_motivo(prioridade, motivo), prioridade, motivo
     sinal = sinal_documental(documentos, retificada_em)
     if sinal == "resultado":
@@ -854,7 +900,12 @@ def _raw_resultado(r: dict) -> dict:
 
 def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_bytes, dry_run, resumo,
                modo=None, status_busca=None, agora=None):
-    itens = pncp.itens(c)
+    try:
+        itens = pncp.itens(c)
+    except Exception as e:
+        if _excluida_sem_hidratacao(pncp, sb, c, e, dry_run, resumo):
+            return
+        raise
     categoria, interesse, por_item = avaliar(c, itens)
     rotulo = f"{c.get('municipio_nome')}/{c.get('uf')} | {(c.get('description') or '').strip()[:80]}"
     if not categoria:
@@ -864,7 +915,12 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
     _inc(resumo, "no_escopo")
     _inc(resumo, "interesse_borracha", int(interesse))
 
-    pares = _resultados_relevantes(pncp, c, itens, por_item) if com_resultados else []
+    try:
+        pares = _resultados_relevantes(pncp, c, itens, por_item) if com_resultados else []
+    except Exception as e:
+        if _excluida_sem_hidratacao(pncp, sb, c, e, dry_run, resumo):
+            return
+        raise
     datas = [d for d in (_dt(r.get("dataResultado")) for _, r in pares) if d]
     data_homologacao = max(datas) if datas else None
     tem_resultado = (bool(pares) or data_homologacao is not None) if com_resultados else None
@@ -1022,6 +1078,35 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
             log.info("    arquivo: %s (%.1f MB)", (d.get("nome_original") or "")[:70], len(conteudo) / 1048576)
         except Exception as e:
             sb.atualizar("licitacao_documentos", d["id"], {"status_processamento": "erro", "erro": str(e)[:300]})
+
+
+def _excluida_sem_hidratacao(pncp, sb, c: dict, erro: Exception, dry_run: bool, resumo: dict) -> bool:
+    """itens()/resultados falharam: o detalhe é consultado mesmo assim (Copilot, PR #134, 2ª rodada), porque uma
+    compra excluída do PNCP costuma falhar justamente nesses endpoints e, sem isso, a linha já gravada como
+    leads/monitorar ficaria em Oportunidades. Com 410 confirmado, a linha JÁ GRAVADA (fonte pncp, mesmo código)
+    recebe só prioridade=historico e fase="Excluída do PNCP"; categoria, interesse, itens e resultados ficam como
+    estão e nada é inserido (sem itens não dá para saber se a compra é do escopo). True = resolvida (não vai para
+    a segunda passada). Sem 410 (detalhe ok ou falhou): False, e quem chama relança o erro original: sem itens ou
+    resultados nada é decidido nem gravado (regra do achado 1 da 1ª rodada)."""
+    try:
+        consultar_detalhe(pncp, c)
+    except CompraExcluida:
+        pass
+    except ConsultaFalhou:
+        return False
+    else:
+        return False
+    codigo = c.get("numero_controle_pncp")
+    _inc(resumo, "excluidas_do_pncp")
+    _inc(resumo, "excluidas_sem_itens")
+    log.info("  excluída  | %s | itens/resultados indisponíveis (%s); detalhe HTTP 410", codigo, str(erro)[:80])
+    if dry_run or not codigo:
+        return True
+    linhas = sb.selecionar("licitacoes_externas", select="id", fonte="eq.pncp", codigo_externo=f"eq.{codigo}")
+    for ln in linhas or []:
+        sb.atualizar("licitacoes_externas", ln["id"], {"prioridade": "historico", "fase": FASE_EXCLUIDA})
+        _inc(resumo, "excluidas_marcadas")
+    return True
 
 
 def _marcar_documentos_removidos(sb, lic_id, ativos: set[str], agora: str, resumo: dict) -> None:

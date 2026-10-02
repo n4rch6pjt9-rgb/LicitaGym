@@ -115,6 +115,10 @@ def test_status_normalizado_textos_reais():
     # Fracassada / Deserta
     for s in ("Fracassado", "Deserto", "Homologado (Fracassado)", "Homologado (Deserto)"):
         assert P.status_normalizado(s) == "sem_vencedor", s
+    # Homologado parcialmente fracassado / deserto -> homologada
+    for s in ("Homologado parcialmente fracassado", "Homologado parcialmente deserto",
+              "Homologado Parcialmente Fracassado", "Homologação Parcial"):
+        assert P.status_normalizado(s) == "homologada", s
     # Desconhecida
     for s in ("Status Inusitado XYZ", "Qualquer Outra Coisa", "", None):
         assert P.status_normalizado(s) == "desconhecida", s
@@ -193,6 +197,21 @@ def test_linha_licitacao_fiesc():
     assert li["status_normalizado"] == "homologada" and li["acionabilidade"] == "NOT_ACTIONABLE"
     assert li["prioridade"] == "historico"
     assert li["escopo_estado"] == "CLASSIFICATION_CANDIDATE"
+
+
+def test_linha_licitacao_omite_prioridade_quando_desconhecida():
+    # Situação desconhecida -> prioridade é None e NÃO deve constar nas chaves do dict
+    # para não sobrescrever valor preexistente no Supabase (merge-duplicates)
+    d_desconhecido = dict(DETALHE_7752, sDsSituacao="Situação Desconhecida Inusitada")
+    li = P.linha_licitacao(P.FONTES["fiesc"], d_desconhecido, "forte", False)
+    assert "prioridade" not in li
+    assert li["status_normalizado"] == "desconhecida"
+
+    # Situação Homologado -> tem a chave prioridade com valor 'historico'
+    d_homologado = dict(DETALHE_7752, sDsSituacao="Homologado")
+    li_homolog = P.linha_licitacao(P.FONTES["fiesc"], d_homologado, "forte", False)
+    assert "prioridade" in li_homolog
+    assert li_homolog["prioridade"] == "historico"
 
 
 def test_linhas_itens_e_resultados():

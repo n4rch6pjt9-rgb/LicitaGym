@@ -107,6 +107,8 @@ def status_normalizado(situacao: str | None) -> str:
     s = normalizar(situacao or "")
     if not s:
         return "desconhecida"
+    if "homolog" in s and "parcial" in s:
+        return "homologada"
     if any(k in s for k in ("fracass", "desert")):
         return "sem_vencedor"
     if "homolog" in s:
@@ -362,7 +364,7 @@ def linha_licitacao(fonte: Fonte, d: dict, categoria: str | None, borracha: bool
     fim = parse_data(d.get("tDtFinal"))
     prio, _ = prioridade_da_compra(st, fim, agora)
     modalidade = (d.get("sNmModalidadeTipo") or d.get("sNmModalidade") or "").strip() or None
-    return {
+    row = {
         "fonte": fonte.slug,
         "modulo": d.get("nCdModulo") or 59,
         "id_externo": d["nCdProcesso"],
@@ -379,7 +381,6 @@ def linha_licitacao(fonte: Fonte, d: dict, categoria: str | None, borracha: bool
         "fase": d.get("sDsFase"),
         "situacao": d.get("sDsSituacao"),
         "status_normalizado": st,
-        "prioridade": prio,
         "acionabilidade": acionabilidade(st, fim, agora),
         "data_inicio": parse_data(d.get("tDtInicial")),
         "data_fim": fim,
@@ -391,6 +392,9 @@ def linha_licitacao(fonte: Fonte, d: dict, categoria: str | None, borracha: bool
         "escopo_estado": "CLASSIFICATION_CANDIDATE" if categoria else "OUT_OF_SCOPE",
         "raw": d,
     }
+    if prio is not None:
+        row["prioridade"] = prio
+    return row
 
 
 def linhas_itens(lic_id: int | None, itens: list[dict], produtos: dict[int, dict] | None = None,

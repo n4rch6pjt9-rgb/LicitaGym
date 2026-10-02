@@ -322,6 +322,14 @@ export interface CatmatMatch {
   motivo: string;
 }
 
+/** SQLSTATE do Postgres para statement_timeout (query_canceled). */
+export const PG_STATEMENT_TIMEOUT = "57014";
+
+/** Erro de banco por statement_timeout (ex.: licitacoes_ids_por_catmat acima do limite do PostgREST). */
+export function ehStatementTimeout(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as { code?: unknown }).code === PG_STATEMENT_TIMEOUT;
+}
+
 export function temRecorteCatmat(f: LicitacaoFiltros): boolean {
   return !!(f.catmat_grupo || f.catmat_classe || f.catmat_pdm || f.catmat_item || f.catalogo === true);
 }
@@ -414,7 +422,17 @@ async function handleList(
     // Recorte CATMAT: resolve em ids antes da consulta principal
     let matches: Map<number, CatmatMatch[]> | null = null;
     if (temRecorteCatmat(filtros)) {
-      const r = await resolverCatmat(client, filtros);
+      let r: Awaited<ReturnType<typeof resolverCatmat>>;
+      try {
+        r = await resolverCatmat(client, filtros);
+      } catch (err: unknown) {
+        // statement_timeout na resolução do recorte: indisponibilidade temporária (503), não erro interno (500)
+        if (ehStatementTimeout(err)) {
+          console.error("[api-dashboard-oportunidades] Timeout ao resolver o recorte CATMAT:", err);
+          return jsonResponse({ error: "filtro de catálogo indisponível" }, 503);
+        }
+        throw err;
+      }
       if (r.ids.length === 0) {
         return jsonResponse({ action: "list", page, limit, total: 0, order_by, order_direction, items: [] });
       }

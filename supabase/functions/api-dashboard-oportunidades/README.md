@@ -212,6 +212,7 @@ Com recorte CATMAT:
 - a resolução não trunca (sem `LIMIT` na função); o teto é o de licitações abaixo;
 - sem nenhuma licitação: `200` com `items: []` e `total: 0`;
 - acima de 1.000 licitações: os ids são antes reduzidos ao escopo pedido na view da prioridade efetiva (sem filtro, sem `historico`; com `prioridade`, só ela), em lotes de 500; o `422` pedindo um recorte mais restrito só vale se ainda sobrarem mais de 1.000 oportunidades (se não sobrar nenhuma, 200 vazio).
+- statement_timeout do Postgres (`57014`) ao resolver o recorte: `503` com `{"error": "filtro de catálogo indisponível"}` (outros erros seguem `500`).
 
 #### Resposta de Sucesso (HTTP 200)
 *Nota: Lista vazia é retornada com HTTP 200 e `items: []`, sem gerar erro.*

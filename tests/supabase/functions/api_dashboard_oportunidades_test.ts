@@ -1402,6 +1402,28 @@ Deno.test("list com recorte CATMAT sem nenhuma licitação: 200 vazio, sem consu
   assertEquals(mockClient.calls.some((c) => c.method === "from" && c.args[0] === "licitacoes_externas"), false);
 });
 
+Deno.test("list com recorte CATMAT: statement_timeout (57014) na RPC vira 503 'filtro de catálogo indisponível'", async () => {
+  const mockClient = createRecordingMockClient({
+    rpcResult: { data: null, error: { code: "57014", message: "canceling statement due to statement timeout" } },
+  });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list&catalogo=true", { method: "GET" });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
+  assertEquals(res.status, 503);
+  assertEquals(await res.json(), { error: "filtro de catálogo indisponível" });
+  assertEquals(mockClient.calls.some((c) => c.method === "rpc" && c.args[0] === "licitacoes_ids_por_catmat"), true);
+  assertEquals(mockClient.calls.some((c) => c.method === "from" && c.args[0] === OPORTUNIDADES_VIEW), false);
+});
+
+Deno.test("list com recorte CATMAT: outro erro da RPC continua 500 genérico", async () => {
+  const mockClient = createRecordingMockClient({ rpcResult: { data: null, error: { code: "42P01", message: "x" } } });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list&catalogo=true", { method: "GET" });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
+  assertEquals(res.status, 500);
+  assertEquals(await res.json(), { error: "Erro interno no servidor" });
+});
+
 Deno.test("list com recorte CATMAT acima de 1000 licitações: 422", async () => {
   const data = Array.from({ length: 1001 }, (_, i) => ({ licitacao_id: i + 1, codigo_pdm: 7115, codigo_item: null, motivo: "texto_item" }));
   const mockClient = createRecordingMockClient({ rpcResult: { data, error: null } });

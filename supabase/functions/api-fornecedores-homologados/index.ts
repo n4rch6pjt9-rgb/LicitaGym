@@ -541,6 +541,9 @@ export async function handleRequest(req: Request, ctx: ApiFornecedoresContext = 
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "Use POST com corpo JSON { action }" }, 405);
 
+  const authError = await (ctx.requireAuth ?? requireUserAuth)(req);
+  if (authError) return authError;
+
   let p: Record<string, unknown>;
   try {
     const b = await req.json();
@@ -549,9 +552,6 @@ export async function handleRequest(req: Request, ctx: ApiFornecedoresContext = 
   } catch {
     return json({ error: "Corpo JSON inválido" }, 400);
   }
-
-  const authError = await (ctx.requireAuth ?? requireUserAuth)(req);
-  if (authError) return authError;
 
   const userId = (req as unknown as { user?: { id: string } }).user?.id
     ?? (await ctx.getUserId?.(req));

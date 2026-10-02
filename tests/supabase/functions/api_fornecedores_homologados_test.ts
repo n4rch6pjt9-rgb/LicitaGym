@@ -8,6 +8,20 @@ function createMockDb(queryHandler: (table: string) => any): SupabaseClient {
   } as unknown as SupabaseClient;
 }
 
+Deno.test("api-fornecedores-homologados: autentica antes de processar JSON invalido", async () => {
+  const req = new Request("http://localhost", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{",
+  });
+
+  const res = await handleRequest(req, {
+    requireAuth: () => Promise.resolve(new Response(null, { status: 401 })),
+  });
+
+  assertEquals(res.status, 401);
+});
+
 Deno.test("api-fornecedores-homologados: acao historico com CNPJ invalido retorna 400", async () => {
   const req = new Request("http://localhost", {
     method: "POST",

@@ -133,3 +133,21 @@ verify_jwt = false
 # discover-piso-pdm valida o JWT do usuário no código (authenticateUser): só usuário logado; anon key e cron → 401
 [functions.discover-piso-pdm]
 verify_jwt = false
+
+# --- Edge Functions que existiam só em produção (versionadas a partir do código deployado) ---
+
+# api-fornecedores-homologados (prod v4): valida o JWT do usuário no código (authUser); cron secret → 401
+[functions.api-fornecedores-homologados]
+verify_jwt = false
+
+# sync-pncp-contratacoes-itens (prod v7): Bearer SYNC_CRON_SECRET validado no código
+[functions.sync-pncp-contratacoes-itens]
+verify_jwt = false
+
+# link-pca-edital (prod v5): Bearer SYNC_CRON_SECRET validado no código
+[functions.link-pca-edital]
+verify_jwt = false
+
+# analyze-public-material (prod v5): verify_jwt = true em prod (gateway) + auth.getUser no código
+[functions.analyze-public-material]
+verify_jwt = true

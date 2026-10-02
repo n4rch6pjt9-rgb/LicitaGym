@@ -1,4 +1,5 @@
 """Testes offline do coletor PNCP com respostas no formato real (compra de Carapicuíba, 24/09/2026)."""
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from coletor import pncp as P
@@ -929,16 +930,24 @@ def test_main_baixar_pendentes_passa_prioridades(monkeypatch):
     capturado = {}
     def falso_baixar_pendentes(pncp, sb, arm, **kw):
         capturado.update(kw)
+        capturado["sb"] = sb
+        capturado["arm"] = arm
         return {"elegiveis": 0}
 
+    falso_sb = MagicMock()
+    falso_arm = MagicMock()
     monkeypatch.setattr(P, "baixar_pendentes", falso_baixar_pendentes)
-    monkeypatch.setenv("SUPABASE_URL", "http://fake")
-    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "fake")
+    monkeypatch.setattr(P, "Supabase", lambda *a, **kw: falso_sb)
+    monkeypatch.setattr(P, "Armazenamento", SimpleNamespace(do_ambiente=lambda: falso_arm))
+    monkeypatch.setattr(P, "env", lambda nome, padrao=None, obrigatorio=False: padrao or "0")
 
-    P.main(["--baixar-pendentes", "--prioridades", "leads,monitorar", "--dry-run", "--limite-download", "10"])
+    P.main(["--baixar-pendentes", "--prioridades", "leads,monitorar", "--dry-run", "--limite-download", "10", "--categorias", "borracha"])
     assert capturado["prioridades"] == "leads,monitorar"
+    assert capturado["categorias"] == "borracha"
     assert capturado["limite"] == 10
     assert capturado["dry_run"] is True
+    assert capturado["sb"] is falso_sb
+    assert capturado["arm"] is None
 
 
 def test_validar_prioridades_funcao():

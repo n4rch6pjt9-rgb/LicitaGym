@@ -233,9 +233,8 @@ def test_backfill_apply_grava_so_a_coluna_prioridade():
 
 def test_backfill_main_padrao_e_dry_run(monkeypatch, capsys):
     sb = _SbSomenteLeitura(_linhas())
-    monkeypatch.setenv("SUPABASE_URL", "https://exemplo.invalid")
-    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "chave-de-teste")
-    monkeypatch.setattr(B, "Supabase", lambda url, key: sb)
+    monkeypatch.setattr(B, "Supabase", lambda *a, **kw: sb)
+    monkeypatch.setattr(B, "env", lambda *a, **kw: "0")
     monkeypatch.setattr(B, "PNCP", lambda **k: pytest.fail("sem --consultar-pncp não cria cliente PNCP"))
     assert B.main([]) == 0
     assert sb.atualizacoes == []

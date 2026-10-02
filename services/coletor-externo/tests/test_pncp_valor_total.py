@@ -185,10 +185,9 @@ def test_backfill_limit():
 
 def test_backfill_main_sem_apply_nao_grava(monkeypatch):
     sb = _FakeSbBackfill(LINHAS)
-    monkeypatch.setenv("SUPABASE_URL", "http://exemplo.invalid")
-    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "chave-de-teste")
-    monkeypatch.setattr(B, "Supabase", lambda url, chave: sb)
+    monkeypatch.setattr(B, "Supabase", lambda *a, **kw: sb)
     monkeypatch.setattr(B, "PNCP", lambda **kw: _pncp_backfill())
+    monkeypatch.setattr(B, "env", lambda *a, **kw: "0")
     assert B.main(["--limit", "3"]) == 0 and sb.atualizacoes == []
     assert B.main(["--apply"]) == 0
     assert sb.atualizacoes == [("licitacoes_externas", 1, {"valor_total": 5571821.29})]

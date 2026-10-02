@@ -180,6 +180,29 @@ def test_coletar_arp_dry_run():
     sb.upsert.assert_not_called()
 
 
+def test_main_arp_propagates_effective_pdms_rpc_failure(monkeypatch):
+    sb = MagicMock()
+    sb.rpc.side_effect = RuntimeError("RPC indisponível")
+    monkeypatch.setattr(compras_arp, "Supabase", lambda *_: sb)
+    monkeypatch.setattr(compras_arp, "env", lambda *_args, **_kwargs: "config")
+
+    with pytest.raises(RuntimeError, match="RPC indisponível"):
+        compras_arp.main([])
+
+
+def test_main_arp_does_not_use_defaults_for_empty_catalog(monkeypatch):
+    sb = MagicMock()
+    sb.rpc.return_value = []
+    monkeypatch.setattr(compras_arp, "Supabase", lambda *_: sb)
+    monkeypatch.setattr(compras_arp, "env", lambda *_args, **_kwargs: "config")
+    monkeypatch.setattr(compras_arp, "ClienteComprasARP", MagicMock)
+    coletar = MagicMock(return_value={"sucesso": True, "total_coletados": 0})
+    monkeypatch.setattr(compras_arp, "coletar", coletar)
+
+    assert compras_arp.main([]) == 0
+    assert coletar.call_args.kwargs["pdms"] == []
+
+
 def test_filtro_material_ou_servico_apenas_produtos():
     """Garante que itens de serviço (ex.: Lubritech serviços de lubrificação) são recusados."""
     # Simula linhas 14.133 com material x servico
@@ -349,7 +372,4 @@ def test_coletor_arp_falha_apos_retries(monkeypatch):
 
     with pytest.raises(RuntimeError):
         cliente.consultar_itens_pdm(2640, "2026-01-01", "2026-12-31")
-
-
-
 

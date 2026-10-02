@@ -256,13 +256,14 @@ def main(argv: list[str] | None = None) -> int:
 
     pdms_finais = pdms
     if not args.pdms and sb is not None:
-        try:
-            res_rpc = sb.rpc("catalogo_catmat_pdms_efetivos", {})
-            if res_rpc and isinstance(res_rpc, list):
-                pdms_finais = [int(r["codigo_pdm"]) for r in res_rpc if r.get("codigo_pdm")]
-                log.info("Carregados %d PDMs efetivos para ARP", len(pdms_finais))
-        except Exception as e:
-            log.warning("Falha ao carregar PDMs efetivos para ARP (usando padrão): %s", e)
+        res_rpc = sb.rpc("catalogo_catmat_pdms_efetivos", {})
+        if not isinstance(res_rpc, list):
+            raise RuntimeError("RPC de PDMs efetivos para ARP retornou uma resposta inválida")
+        pdms_finais = [int(r["codigo_pdm"]) for r in res_rpc if r.get("codigo_pdm")]
+        if pdms_finais:
+            log.info("Carregados %d PDMs efetivos para ARP", len(pdms_finais))
+        else:
+            log.info("Catálogo de PDMs efetivos vazio; nenhuma consulta ARP será feita")
 
     res = coletar(cliente, sb, pdms=pdms_finais, data_min=data_min, data_max=data_max, limite=args.limite, dry_run=args.dry_run)
     print(json.dumps(res, indent=2, ensure_ascii=False))

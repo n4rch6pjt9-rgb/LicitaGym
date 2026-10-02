@@ -55,7 +55,10 @@ class Supabase:
                 if restantes <= 0:
                     break
         except (requests.RequestException, RuntimeError, TypeError, ValueError) as e:
-            log.warning("licitacao_match: drenagem falhou (%s); a pendência fica para a próxima execução", e)
+            # Zera o contador: a próxima tentativa só depois de outras LICITACAO_MATCH_LOTE linhas (ou no fim da
+            # execução), sem repetir a RPC a cada upsert. A pendência continua em licitacao_match_pendente.
+            self._textos_sem_drenar = 0
+            log.warning("licitacao_match: drenagem falhou (%s); a pendência fica em licitacao_match_pendente", e)
             return None
         self._textos_sem_drenar = 0
         if restantes:

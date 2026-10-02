@@ -1,9 +1,11 @@
 -- Verificação da migration 20261002170000_licitacao_match_rpc_unica.
 -- Executar após aplicar as migrations (ex.: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/tests/licitacao_match_check.sql):
---   1. licitacao_match, licitacao_match_pendente e licitacao_match_estado com RLS e acesso só de service_role;
+--   1. licitacao_match, licitacao_match_pendente e licitacao_match_estado com RLS; anon/authenticated sem nada;
+--      service_role só SELECT (quem escreve são as funções SECURITY DEFINER);
 --   2. RPCs e drenagem executáveis só por service_role; recálculo completo e carga só pelo owner; RPCs STABLE e
---      SECURITY INVOKER; recálculo/drenagem/carga/triggers SECURITY DEFINER;
---   3. os 10 triggers de manutenção existem;
+--      SECURITY INVOKER; recálculo/drenagem/carga/triggers SECURITY DEFINER com search_path fixo;
+--   3. os 10 triggers de manutenção existem; recálculo, drenagem e carga pegam o mesmo advisory lock de
+--      transação (20261002), o que serializa a drenagem com a edição de padrões;
 --   4. com fixture (desfeita no fim):
 --      a) sem carga (carregado_em null): triggers e drenagem inertes, nada gravado em licitacao_match, e a RPC
 --         responde pelo caminho ao vivo (fallback) com o casamento certo;
@@ -28,16 +30,24 @@ declare
   v_exp text;
   v_ids bigint[];
   v_matches jsonb;
+  v_priv text;
+  v_role text;
 begin
   -- 1
   foreach v_fn in array array['public.licitacao_match', 'public.licitacao_match_pendente', 'public.licitacao_match_estado'] loop
     if not (select relrowsecurity from pg_class where oid = v_fn::regclass) then
       raise exception '% sem RLS', v_fn;
     end if;
-    if has_table_privilege('anon', v_fn, 'SELECT') or has_table_privilege('authenticated', v_fn, 'SELECT')
-       or has_table_privilege('authenticated', v_fn, 'INSERT') or not has_table_privilege('service_role', v_fn, 'SELECT') then
-      raise exception '%: acesso deveria ser só de service_role', v_fn;
+    if not has_table_privilege('service_role', v_fn, 'SELECT') then
+      raise exception '%: service_role sem SELECT', v_fn;
     end if;
+    foreach v_role in array array['anon', 'authenticated', 'service_role'] loop
+      foreach v_priv in array array['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER'] loop
+        if (v_role <> 'service_role' or v_priv <> 'SELECT') and has_table_privilege(v_role, v_fn, v_priv) then
+          raise exception '%: % não deveria ter % (só SELECT de service_role)', v_fn, v_role, v_priv;
+        end if;
+      end loop;
+    end loop;
   end loop;
 
   -- 2
@@ -56,6 +66,9 @@ begin
     if (select prosecdef from pg_proc where oid = v_fn::regprocedure) <> (v_fn not like '%ids_por_catmat%') then
       raise exception '%: SECURITY DEFINER/INVOKER inesperado', v_fn;
     end if;
+    if not coalesce((select 'search_path=public, pg_temp' = any (proconfig) from pg_proc where oid = v_fn::regprocedure), false) then
+      raise exception '%: search_path deveria ser fixo (public, pg_temp)', v_fn;
+    end if;
   end loop;
   if exists (select 1 from pg_proc where proname in ('licitacoes_ids_por_catmat', 'licitacoes_ids_por_catmat_unica')
               and pronamespace = 'public'::regnamespace and provolatile <> 's') then
@@ -68,6 +81,26 @@ begin
      and tgrelid in ('public.licitacao_itens'::regclass, 'public.licitacoes_externas'::regclass,
                      'public.catmat_pdm_palavras'::regclass, 'public.catmat_pdm_exclusoes'::regclass);
   if v_n <> 10 then raise exception 'esperados 10 triggers licitacao_match_*, há %', v_n; end if;
+
+  -- 3b: cada função, num sub-bloco desfeito, deixa o advisory lock 20261002 com esta transação
+  foreach v_fn in array array['select public.licitacao_match_recalcular_pdms(array[-1])',
+                              'select public.licitacao_match_atualizar(1)',
+                              'select public.licitacao_match_carregar()'] loop
+    if exists (select 1 from pg_locks where locktype = 'advisory' and pid = pg_backend_pid()
+                and classid = 0 and objid = 20261002 and objsubid = 1) then
+      raise exception 'advisory lock 20261002 já estava com a sessão antes de: %', v_fn;
+    end if;
+    begin
+      execute v_fn;
+      if not exists (select 1 from pg_locks where locktype = 'advisory' and pid = pg_backend_pid() and granted
+                      and mode = 'ExclusiveLock' and classid = 0 and objid = 20261002 and objsubid = 1) then
+        raise exception 'sem o advisory lock 20261002 depois de: %', v_fn;
+      end if;
+      raise exception using errcode = 'LG002', message = 'desfaz';
+    exception when sqlstate 'LG002' then
+      null;
+    end;
+  end loop;
 
   -- 4 e 5: fixture num sub-bloco desfeito no fim (exceção LG001)
   begin

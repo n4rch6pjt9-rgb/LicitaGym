@@ -80,8 +80,12 @@ comment on table public.licitacao_match_pendente is
 
 alter table public.licitacao_match enable row level security;
 alter table public.licitacao_match_pendente enable row level security;
+-- ACL das 3 tabelas (licitacao_match_estado abaixo): só SELECT para service_role, que a RPC (SECURITY INVOKER) usa.
+-- Quem escreve são as funções SECURITY DEFINER (triggers, drenagem, recálculo, carga). Revoga primeiro também de
+-- service_role, porque a default ACL do schema dá ALL (padrão da 20260930130000_compras_orgaos_uasgs.sql).
 revoke all on table public.licitacao_match, public.licitacao_match_pendente from PUBLIC, anon, authenticated;
-grant all on table public.licitacao_match, public.licitacao_match_pendente to service_role;
+revoke all on table public.licitacao_match, public.licitacao_match_pendente from service_role;
+grant select on table public.licitacao_match, public.licitacao_match_pendente to service_role;
 
 -- 2b) Estado da carga: uma linha; carregado_em null = ainda sem backfill (tudo inerte, RPC no caminho ao vivo).
 create table if not exists public.licitacao_match_estado (
@@ -93,7 +97,14 @@ comment on table public.licitacao_match_estado is
   'carregado_em: quando licitacao_match_carregar() rodou. Null = sem backfill: triggers e drenagem inertes, licitacoes_ids_por_catmat no caminho ao vivo (fallback).';
 alter table public.licitacao_match_estado enable row level security;
 revoke all on table public.licitacao_match_estado from PUBLIC, anon, authenticated;
+revoke all on table public.licitacao_match_estado from service_role;
 grant select on table public.licitacao_match_estado to service_role;
+
+-- Serialização: recálculo de PDMs (trigger de padrões e carga) e drenagem pegam o mesmo advisory lock de
+-- transação, chave fixa 20261002 (global; o volume atual não justifica lock por PDM). Sem ele, uma drenagem
+-- concorrente com a edição de um padrão poderia ler a regra antiga (MVCC), gravar um casamento obsoleto depois do
+-- recálculo e apagar a pendência. Com o lock, quem chega depois espera o commit do outro e, em READ COMMITTED,
+-- cada comando seguinte já enxerga a regra e os casamentos novos.
 
 -- 3) Recálculo ---------------------------------------------------------------------------------------------------------
 -- PDMs inteiros (null = todos com padrão ativo), pelo caminho GIN: cada ramo de topo do padrão num lateral.
@@ -104,6 +115,7 @@ security definer
 set search_path = public, pg_temp
 as $$
 begin
+  perform pg_advisory_xact_lock(20261002);
   delete from public.licitacao_match m
    where p_pdms is null or m.codigo_pdm = any (p_pdms);
 
@@ -155,6 +167,7 @@ declare
   v_itens   bigint[];
   v_objetos bigint[];
 begin
+  perform pg_advisory_xact_lock(20261002);  -- antes de ler padrões/pendências (ver Serialização)
   if not exists (select 1 from public.licitacao_match_estado where carregado_em is not null) then
     return 0;  -- sem carga: nada a drenar (e nada é marcado)
   end if;
@@ -553,8 +566,11 @@ security definer
 set search_path = public, pg_temp
 as $$
 begin
+  -- tabelas antes do advisory lock: uma edição de padrão em curso segura a tabela e depois pede o advisory lock;
+  -- na ordem inversa as duas transações se travariam
   lock table public.licitacao_itens, public.licitacoes_externas,
              public.catmat_pdm_palavras, public.catmat_pdm_exclusoes in share row exclusive mode;
+  perform pg_advisory_xact_lock(20261002);
   perform public.licitacao_match_recalcular_pdms(null);
   delete from public.licitacao_match_pendente;
   update public.licitacao_match_estado set carregado_em = now() where id;

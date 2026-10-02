@@ -93,3 +93,21 @@ def test_drenar_no_fim_da_execucao_ignora_dry_run(monkeypatch):
     assert drenar_licitacao_match(object()) is None
     assert drenar_licitacao_match(Supabase(URL_LOCAL, "")) == 0
     assert len(rpcs(chamadas)) == 1
+
+
+def test_falha_na_drenagem_zera_o_contador_e_nao_repete_a_cada_upsert(monkeypatch, caplog):
+    monkeypatch.setattr(Destino, "LICITACAO_MATCH_LOTE", 300)
+    falha = Resp({"message": "canceling statement due to statement timeout"}, 500)
+    chamadas = instalar(monkeypatch, [falha, 0])
+    sb = Supabase(URL_LOCAL, "")
+    itens = [{"licitacao_id": 1, "numero_item": i, "descricao": "x"} for i in range(300)]
+    with caplog.at_level("WARNING", logger="coletor.destino"):
+        sb.upsert("licitacao_itens", itens, "licitacao_id,numero_item")  # chega ao lote: drena e falha
+    assert len(rpcs(chamadas)) == 1
+    assert "drenagem falhou" in caplog.text
+    assert sb._textos_sem_drenar == 0
+    for i in range(299):  # abaixo de outro lote: não tenta de novo
+        sb.upsert("licitacao_itens", [itens[i]], "licitacao_id,numero_item")
+    assert len(rpcs(chamadas)) == 1
+    sb.upsert("licitacao_itens", [itens[0]], "licitacao_id,numero_item")  # 300 de novo: tenta (e agora zera)
+    assert len(rpcs(chamadas)) == 2

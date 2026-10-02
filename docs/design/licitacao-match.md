@@ -31,7 +31,7 @@ Só juntar as chamadas não dá folga: uma chamada continua levando 7 a 8,3 s. A
 | `licitacoes_ids_por_catmat` | Mesma assinatura, `STABLE` e `SECURITY INVOKER`. Depois da carga, os ramos de texto leem `licitacao_match`; antes dela, usam o caminho ao vivo. O estado é um InitPlan, então o ramo que não vale não executa. O texto pendente fica fora do materializado e é casado ao vivo, então **o resultado não depende de a drenagem estar em dia**: só o tempo depende. |
 | `licitacoes_ids_por_catmat_unica` | A mesma resolução numa linha só: `ids bigint[]` (distintos, em ordem crescente) e `matches jsonb`. A Edge Function chama esta função uma vez, sem paginação. |
 
-Tudo fica restrito a `service_role`. O recálculo completo e a carga ficam só com o owner: tabelas com RLS e sem grant para `anon`/`authenticated`, e EXECUTE só para `service_role`.
+As tabelas dão só SELECT a `service_role`, que a RPC usa; quem escreve são as funções SECURITY DEFINER, com `search_path` fixo. `anon` e `authenticated` não têm acesso. O EXECUTE da RPC e da drenagem fica com `service_role`; o recálculo completo e a carga, só com o owner.
 
 ## Quem atualiza (depois do backfill)
 
@@ -49,6 +49,8 @@ Tudo fica restrito a `service_role`. O recálculo completo e a carga ficam só c
    `select public.licitacao_match_recalcular_pdms(null);`. Leva ~8 s no PG17 local, estimados em 30-40 s em prod.
 5. **Nenhum cron nem job novo.** Se algum dia houver escrita de texto fora de `destino.Supabase`, quem escreve chama
    `select public.licitacao_match_atualizar(300)` até devolver 0. Até lá, a RPC continua correta, só fica mais lenta.
+
+Recálculo de PDMs (trigger de padrões e carga) e drenagem pegam o mesmo advisory lock de transação (`pg_advisory_xact_lock(20261002)`, global). Assim, uma drenagem não lê a regra antiga enquanto um padrão está sendo editado, nem grava casamento obsoleto depois do recálculo. A carga pega as tabelas antes desse lock para não travar com uma edição de padrão em curso.
 
 A marcação usa `on conflict ... do update`. Se uma drenagem estiver segurando a pendência, a escrita espera e remarca
 depois; com `do nothing`, a drenagem poderia apagar a pendência tendo lido o texto antigo.

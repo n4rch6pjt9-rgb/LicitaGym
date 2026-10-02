@@ -1,5 +1,4 @@
 """Testes offline do coletor PNCP com respostas no formato real (compra de Carapicuíba, 24/09/2026)."""
-from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from coletor import pncp as P
@@ -938,7 +937,7 @@ def test_main_baixar_pendentes_passa_prioridades(monkeypatch):
     falso_arm = MagicMock()
     monkeypatch.setattr(P, "baixar_pendentes", falso_baixar_pendentes)
     monkeypatch.setattr(P, "Supabase", lambda *a, **kw: falso_sb)
-    monkeypatch.setattr(P, "Armazenamento", SimpleNamespace(do_ambiente=lambda: falso_arm))
+    monkeypatch.setattr(P.Armazenamento, "do_ambiente", classmethod(lambda cls: falso_arm))
     monkeypatch.setattr(P, "env", lambda nome, padrao=None, obrigatorio=False: padrao or "0")
 
     P.main(["--baixar-pendentes", "--prioridades", "leads,monitorar", "--dry-run", "--limite-download", "10", "--categorias", "borracha"])

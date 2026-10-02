@@ -179,6 +179,8 @@ def objeto_decide(ln: dict) -> bool:
         return True
     if ln.get("categoria_escopo") == "forte" and objeto_passagem(objeto):
         return False
+    if ln.get("categoria_escopo") == "fraco":
+        return False
     return ln.get("categoria_escopo") is not None and classificar(objeto) == ln.get("categoria_escopo")
 
 

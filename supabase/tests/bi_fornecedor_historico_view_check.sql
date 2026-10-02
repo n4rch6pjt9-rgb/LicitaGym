@@ -75,7 +75,8 @@ begin
   values
     ('pncp', 'PNCP', 'pncp', 'https://pncp.gov.br', 'automatico'),
     ('sestsenat', 'SEST SENAT', 'paradigma', 'https://compras.sestsenat.org.br', 'automatico'),
-    ('fiesc', 'FIESC', 'paradigma', 'https://portaldecompras.fiesc.com.br', 'automatico')
+    ('fiesc', 'FIESC', 'paradigma', 'https://portaldecompras.fiesc.com.br', 'automatico'),
+    ('paradigma_teste', 'PARADIGMA TESTE', 'paradigma', 'https://paradigma.test.org.br', 'automatico')
   on conflict (slug) do nothing;
 
   -- Setup: Fornecedores
@@ -196,38 +197,207 @@ begin
   -- ---------------------------------------------------------------------------
 
   -- Verificação Caso 1 (Deduplicação Federal PNCP x Compras.gov):
-  select total_vendas_homologadas, total_certames, itens_praticados
-    into v_total_vendas_pncp, v_total_certames_pncp, v_itens_pncp
-    from public.v_bi_fornecedor_historico
-   where cnpj = '04372852000160';
+  declare
+    v_cobertura text;
+    v_eh_ata boolean;
+    v_valor_homologado numeric;
+    v_valor_ata numeric;
+  begin
+    select total_vendas_homologadas, total_certames, itens_praticados,
+           cobertura_predominante, valor_homologado_contratacao, valor_registrado_ata
+      into v_total_vendas_pncp, v_total_certames_pncp, v_itens_pncp,
+           v_cobertura, v_valor_homologado, v_valor_ata
+      from public.v_bi_fornecedor_historico
+     where cnpj = '04372852000160';
 
-  raise notice 'CASO 1: total_vendas_homologadas = %, total_certames = %',
-               v_total_vendas_pncp, v_total_certames_pncp;
+    raise notice 'CASO 1: total_vendas_homologadas = %, total_certames = %, cobertura = %, valor_homologado = %, valor_ata = %',
+                 v_total_vendas_pncp, v_total_certames_pncp, v_cobertura, v_valor_homologado, v_valor_ata;
 
-  if v_total_vendas_pncp <> 1 then
-    raise exception 'TESTE CASO 1 FALHOU: esperado 1 venda homologada, obtido %', v_total_vendas_pncp;
-  end if;
+    if v_total_vendas_pncp <> 1 then
+      raise exception 'TESTE CASO 1 FALHOU: esperado 1 venda homologada, obtido %', v_total_vendas_pncp;
+    end if;
 
-  if v_total_certames_pncp <> 1 then
-    raise exception 'TESTE CASO 1 FALHOU: esperado 1 certame, obtido %', v_total_certames_pncp;
-  end if;
+    if v_total_certames_pncp <> 1 then
+      raise exception 'TESTE CASO 1 FALHOU: esperado 1 certame, obtido %', v_total_certames_pncp;
+    end if;
+
+    if v_cobertura <> 'catmat_oficial' then
+      raise exception 'TESTE CASO 1 FALHOU: esperado cobertura catmat_oficial, obtido %', v_cobertura;
+    end if;
+  end;
 
   -- Verificação Caso 2 (Paradigma 3 certames sem colisão):
-  select total_vendas_homologadas, total_certames, itens_praticados
-    into v_total_vendas_par, v_total_certames_par, v_itens_par
-    from public.v_bi_fornecedor_historico
-   where cnpj = '99999999000199';
+  declare
+    v_cobertura_par text;
+  begin
+    select total_vendas_homologadas, total_certames, itens_praticados, cobertura_predominante
+      into v_total_vendas_par, v_total_certames_par, v_itens_par, v_cobertura_par
+      from public.v_bi_fornecedor_historico
+     where cnpj = '99999999000199';
 
-  raise notice 'CASO 2: total_vendas_homologadas = %, total_certames = %',
-               v_total_vendas_par, v_total_certames_par;
+    raise notice 'CASO 2: total_vendas_homologadas = %, total_certames = %, cobertura = %',
+                 v_total_vendas_par, v_total_certames_par, v_cobertura_par;
 
-  if v_total_vendas_par <> 3 then
-    raise exception 'TESTE CASO 2 FALHOU: esperado 3 vendas homologadas Paradigma, obtido %', v_total_vendas_par;
-  end if;
+    if v_total_vendas_par <> 3 then
+      raise exception 'TESTE CASO 2 FALHOU: esperado 3 vendas homologadas Paradigma, obtido %', v_total_vendas_par;
+    end if;
 
-  if v_total_certames_par <> 3 then
-    raise exception 'TESTE CASO 2 FALHOU: esperado 3 certames Paradigma, obtido %', v_total_certames_par;
-  end if;
+    if v_total_certames_par <> 3 then
+      raise exception 'TESTE CASO 2 FALHOU: esperado 3 certames Paradigma, obtido %', v_total_certames_par;
+    end if;
+  end;
+
+  -- Verificação Caso 3 (Cobertura pdm_palavra via catmat_pdm_palavras):
+  declare
+    v_lic_palavra_id bigint;
+    v_cobertura_palavra text;
+  begin
+    -- Insere regra de palavra para PDM 2640 se não existir
+    insert into public.catmat_pdm_palavras (codigo_pdm, padrao, ativo)
+    values (2640, 'halteres? especiais', true)
+    on conflict do nothing;
+
+    insert into public.licitacoes_externas (
+      fonte, codigo_externo, orgao_cnpj, orgao_nome, data_homologacao, prioridade
+    ) values (
+      'pncp',
+      '11111111000111-1-000001/2026',
+      '11111111000111',
+      'ORGAO TESTE PALAVRA',
+      '2026-09-20'::timestamptz,
+      'historico'
+    ) returning id into v_lic_palavra_id;
+
+    insert into public.licitacao_itens (
+      licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade, descricao
+    ) values (
+      v_lic_palavra_id, 1, null, 'M', 10, 'HALTERES ESPECIAIS EMBORRACHADOS'
+    );
+
+    insert into public.licitacao_resultados (
+      licitacao_id, numero_item, sequencial_resultado, fornecedor_cnpj, fornecedor_nome,
+      vencedor, quantidade_homologada, valor_unitario_homologado, valor_total_homologado, data_resultado
+    ) values (
+      v_lic_palavra_id, 1, 1, '88888888000188', 'FORNECEDOR PALAVRA LTDA',
+      true, 10, 50.0, 500.0, '2026-09-20'::timestamptz
+    );
+
+    select cobertura_predominante into v_cobertura_palavra
+      from public.v_bi_fornecedor_historico
+     where cnpj = '88888888000188';
+
+    raise notice 'CASO 3 (pdm_palavra): cobertura = %', v_cobertura_palavra;
+
+    if v_cobertura_palavra <> 'pdm_palavra' then
+      raise exception 'TESTE CASO 3 FALHOU: esperado cobertura pdm_palavra, obtido %', v_cobertura_palavra;
+    end if;
+  end;
+
+  -- ---------------------------------------------------------------------------
+  -- CASO 4: Validação da regra do eh_ata_rp / valor_origem (a, b, c, d)
+  -- ---------------------------------------------------------------------------
+  declare
+    v_lic_srp_a bigint;
+    v_lic_srp_b bigint;
+    v_lic_srp_c bigint;
+    v_lic_srp_d bigint;
+    v_val_origem text;
+    v_val_ata numeric;
+    v_val_contrato numeric;
+  begin
+    -- Setup fornecedor do teste de SRP
+    insert into public.fornecedores (cnpj, cnpj_raiz, razao_social, cnae_principal, consulta_status)
+    values
+      ('77777777000171', '77777777', 'FORNECEDOR SRP A LTDA', 4763602, 'ok'),
+      ('77777777000172', '77777777', 'FORNECEDOR SRP B LTDA', 4763602, 'ok'),
+      ('77777777000173', '77777777', 'FORNECEDOR SRP C LTDA', 4763602, 'ok'),
+      ('77777777000174', '77777777', 'FORNECEDOR SRP D LTDA', 4763602, 'ok')
+    on conflict (cnpj) do nothing;
+
+    -- (a) srp=true com objeto sem o texto, esperando ata_rp
+    insert into public.licitacoes_externas (
+      fonte, codigo_externo, orgao_cnpj, orgao_nome, data_homologacao, prioridade, raw, modalidade, objeto
+    ) values (
+      'pncp', '77777777000171-1-000001/2026', '77777777000171', 'ORGAO A', '2026-09-21'::timestamptz,
+      'historico', jsonb_build_object('srp', true), 'Pregão Eletrônico', 'Aquisição de esteiras para ginásio'
+    ) returning id into v_lic_srp_a;
+
+    insert into public.licitacao_itens (licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade)
+    values (v_lic_srp_a, 1, '480144', 'M', 1);
+
+    insert into public.licitacao_resultados (licitacao_id, numero_item, sequencial_resultado, fornecedor_cnpj, vencedor, valor_unitario_homologado, valor_total_homologado, data_resultado)
+    values (v_lic_srp_a, 1, 1, '77777777000171', true, 1000.0, 1000.0, '2026-09-21'::timestamptz);
+
+    select valor_registrado_ata, valor_homologado_contratacao into v_val_ata, v_val_contrato
+      from public.v_bi_fornecedor_historico where cnpj = '77777777000171';
+    raise notice 'CASO 4a (srp=true): valor_registrado_ata = %, valor_homologado_contratacao = %', v_val_ata, v_val_contrato;
+    if v_val_ata <> 1000.0 or v_val_contrato is not null then
+      raise exception 'TESTE CASO 4a FALHOU: esperado valor_registrado_ata = 1000 e valor_homologado_contratacao null';
+    end if;
+
+    -- (b) srp nulo com objeto "REGISTRO DE PREÇOS para aquisição de esteira", esperando ata_rp
+    insert into public.licitacoes_externas (
+      fonte, codigo_externo, orgao_cnpj, orgao_nome, data_homologacao, prioridade, raw, modalidade, objeto
+    ) values (
+      'pncp', '77777777000172-1-000001/2026', '77777777000172', 'ORGAO B', '2026-09-22'::timestamptz,
+      'historico', '{}'::jsonb, 'Pregão Eletrônico', 'REGISTRO DE PREÇOS para aquisição de esteira'
+    ) returning id into v_lic_srp_b;
+
+    insert into public.licitacao_itens (licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade)
+    values (v_lic_srp_b, 1, '480144', 'M', 1);
+
+    insert into public.licitacao_resultados (licitacao_id, numero_item, sequencial_resultado, fornecedor_cnpj, vencedor, valor_unitario_homologado, valor_total_homologado, data_resultado)
+    values (v_lic_srp_b, 1, 1, '77777777000172', true, 2000.0, 2000.0, '2026-09-22'::timestamptz);
+
+    select valor_registrado_ata, valor_homologado_contratacao into v_val_ata, v_val_contrato
+      from public.v_bi_fornecedor_historico where cnpj = '77777777000172';
+    raise notice 'CASO 4b (srp nulo com texto): valor_registrado_ata = %, valor_homologado_contratacao = %', v_val_ata, v_val_contrato;
+    if v_val_ata <> 2000.0 or v_val_contrato is not null then
+      raise exception 'TESTE CASO 4b FALHOU: esperado valor_registrado_ata = 2000 e valor_homologado_contratacao null';
+    end if;
+
+    -- (c) srp=false com o texto no objeto, esperando contratacao_direta
+    insert into public.licitacoes_externas (
+      fonte, codigo_externo, orgao_cnpj, orgao_nome, data_homologacao, prioridade, raw, modalidade, objeto
+    ) values (
+      'pncp', '77777777000173-1-000001/2026', '77777777000173', 'ORGAO C', '2026-09-23'::timestamptz,
+      'historico', jsonb_build_object('srp', false), 'Pregão Eletrônico', 'REGISTRO DE PREÇOS para aquisição de esteira'
+    ) returning id into v_lic_srp_c;
+
+    insert into public.licitacao_itens (licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade)
+    values (v_lic_srp_c, 1, '480144', 'M', 1);
+
+    insert into public.licitacao_resultados (licitacao_id, numero_item, sequencial_resultado, fornecedor_cnpj, vencedor, valor_unitario_homologado, valor_total_homologado, data_resultado)
+    values (v_lic_srp_c, 1, 1, '77777777000173', true, 3000.0, 3000.0, '2026-09-23'::timestamptz);
+
+    select valor_registrado_ata, valor_homologado_contratacao into v_val_ata, v_val_contrato
+      from public.v_bi_fornecedor_historico where cnpj = '77777777000173';
+    raise notice 'CASO 4c (srp=false): valor_registrado_ata = %, valor_homologado_contratacao = %', v_val_ata, v_val_contrato;
+    if v_val_contrato <> 3000.0 or v_val_ata is not null then
+      raise exception 'TESTE CASO 4c FALHOU: esperado valor_homologado_contratacao = 3000 e valor_registrado_ata null';
+    end if;
+
+    -- (d) certame ext: (fonte paradigma) com raw sem a chave srp, modalidade 'Pregão Eletrônico - Registro de Preços' e objeto sem o texto, esperando ata_rp
+    insert into public.licitacoes_externas (
+      fonte, modulo, id_externo, orgao_nome, data_homologacao, prioridade, raw, modalidade, objeto
+    ) values (
+      'paradigma_teste', 59, 999, 'SESI TESTE SRP', '2026-09-24'::timestamptz,
+      'historico', '{}'::jsonb, 'Pregão Eletrônico - Registro de Preços', 'Aquisição de esteiras esportivas'
+    ) returning id into v_lic_srp_d;
+
+    insert into public.licitacao_itens (licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade)
+    values (v_lic_srp_d, 1, '480144', 'M', 1);
+
+    insert into public.licitacao_resultados (licitacao_id, numero_item, sequencial_resultado, fornecedor_cnpj, vencedor, valor_unitario_homologado, valor_total_homologado, data_resultado)
+    values (v_lic_srp_d, 1, 1, '77777777000174', true, 4000.0, 4000.0, '2026-09-24'::timestamptz);
+
+    select valor_registrado_ata, valor_homologado_contratacao into v_val_ata, v_val_contrato
+      from public.v_bi_fornecedor_historico where cnpj = '77777777000174';
+    raise notice 'CASO 4d (paradigma modalidade SRP): valor_registrado_ata = %, valor_homologado_contratacao = %', v_val_ata, v_val_contrato;
+    if v_val_ata <> 4000.0 or v_val_contrato is not null then
+      raise exception 'TESTE CASO 4d FALHOU: esperado valor_registrado_ata = 4000 e valor_homologado_contratacao null';
+    end if;
+  end;
 
   raise notice 'SUCESSO: Todos os testes reais contra v_bi_fornecedor_historico passaram com louvor!';
 end $$;

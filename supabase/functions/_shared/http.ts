@@ -153,8 +153,10 @@ export function isLicitagymAdmin(user: AuthenticatedUser | null | undefined): bo
 }
 
 export async function requireUserAuth(req: Request): Promise<Response | null> {
-  if ((await authenticateUserJwt(req)) === "USER_AUTHENTICATED") return null;
-  return jsonResponse({ error: "Unauthorized" }, 401);
+  const user = await authenticateUser(req);
+  if (!user) return jsonResponse({ error: "Unauthorized" }, 401);
+  (req as unknown as { user?: AuthenticatedUser }).user = user;
+  return null;
 }
 
 /**

@@ -72,6 +72,7 @@ SAMPLE_ARP_ITEM = {
 
 def test_normalizar_registro_pgc():
     norm = compras_pgc.normalizar_registro_pgc(SAMPLE_PGC_ITEM)
+    assert norm is not None
     assert norm["orgao_cnpj"] == "00394429000100"
     assert norm["codigo_uasg"] == "120006"
     assert norm["codigo_classe_material"] == 7830
@@ -82,6 +83,15 @@ def test_normalizar_registro_pgc():
     assert norm["numero_item_pncp"] == 45
     assert norm["payload_hash"] is not None
     assert len(norm["payload_hash"]) == 64
+
+
+def test_normalizar_registro_pgc_sem_ano_rejeita():
+    item_sem_ano = {**SAMPLE_PGC_ITEM, "anoPcaProjetoCompra": None}
+    assert compras_pgc.normalizar_registro_pgc(item_sem_ano) is None
+    # Com ano_contexto explícito aceita
+    norm = compras_pgc.normalizar_registro_pgc(item_sem_ano, ano_contexto=2027)
+    assert norm is not None
+    assert norm["ano_pca_projeto_compra"] == 2027
 
 
 def test_normalizar_preco_praticado():
@@ -295,5 +305,51 @@ def test_deduplicacao_venda_multiplas_fontes_e_paradigma():
     assert len(dedup) == 2
     assert dedup[chave_pncp]["codigo_item"] == 480144
     assert dedup[chave_paradigma]["preco_unitario"] == 8500.0
+
+
+def test_coletor_precos_falhas_e_retries(monkeypatch):
+    """Garante que 429/503 esgotado após 3 tentativas levanta RuntimeError e não devolve sucesso vazio."""
+    cliente = compras_precos.ClienteComprasPrecos(delay=0)
+    mock_resp = MagicMock()
+    mock_resp.status_code = 429
+    monkeypatch.setattr(cliente.s, "get", lambda *_, **__: mock_resp)
+    monkeypatch.setattr(compras_precos.time, "sleep", lambda *_: None)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        cliente.consultar_material("codigoPdm", 2640)
+    assert "429" in str(exc_info.value) or "retries" in str(exc_info.value).lower()
+
+
+def test_coletor_pgc_limite_tamanho_pagina(monkeypatch):
+    """Garante que tamanhoPagina enviado à API PGC respeita o teto de 500."""
+    cliente = compras_pgc.ClienteComprasPGC(delay=0)
+    chamada = {}
+
+    def fake_get(url, params=None, timeout=None):
+        chamada["params"] = params
+        m = MagicMock()
+        m.status_code = 200
+        m.json.return_value = {"resultado": [], "totalRegistros": 0}
+        return m
+
+    monkeypatch.setattr(cliente.s, "get", fake_get)
+    monkeypatch.setattr(compras_pgc.time, "sleep", lambda *_: None)
+
+    cliente.consultar_classe(7830, 2026, tamanho_pagina=1000)
+    assert chamada["params"]["tamanhoPagina"] == 500
+
+
+def test_coletor_arp_falha_apos_retries(monkeypatch):
+    """Garante que falhas de rede persistentes em ARP levantam exceção e marcam o coletor como com falha."""
+    cliente = compras_arp.ClienteComprasARP(delay=0)
+    mock_resp = MagicMock()
+    mock_resp.status_code = 503
+    monkeypatch.setattr(cliente.s, "get", lambda *_, **__: mock_resp)
+    monkeypatch.setattr(compras_arp.time, "sleep", lambda *_: None)
+
+    with pytest.raises(RuntimeError):
+        cliente.consultar_itens_pdm(2640, "2026-01-01", "2026-12-31")
+
+
 
 

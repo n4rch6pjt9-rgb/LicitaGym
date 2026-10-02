@@ -53,6 +53,7 @@ jobs:
             supabase/functions/api-dashboard-oportunidades/acompanhamento.ts \
             supabase/functions/api-dashboard-oportunidades/index.ts \
             supabase/functions/api-catmat/index.ts \
+            supabase/functions/api-fornecedores-homologados/index.ts \
             supabase/functions/api-saude/index.ts
 
       # deno test descobre *_test.ts / *.test.ts e já faz typecheck dos testes.

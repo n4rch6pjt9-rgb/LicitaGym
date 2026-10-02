@@ -16,6 +16,7 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, SupabaseClient } from "npm:@supabase/supabase-js@2";
+import { requireUserAuth } from "../_shared/http.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -56,23 +57,6 @@ function serviceClient(): SupabaseClient {
   const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   if (!url || !key) throw new Error("SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY ausentes");
   return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
-}
-
-/** Valida o JWT do usuário (fail-closed). Retorna o id do usuário ou null. */
-async function authUser(req: Request): Promise<string | null> {
-  const auth = req.headers.get("Authorization")?.trim() ?? "";
-  if (!auth.toLowerCase().startsWith("bearer ")) return null;
-  const token = auth.slice(7).trim();
-  if (!token) return null;
-  const cron = Deno.env.get("SYNC_CRON_SECRET")?.trim();
-  if (cron && cron.split(",").map((s) => s.trim()).includes(token)) return null;
-  const url = Deno.env.get("SUPABASE_URL");
-  const anon = Deno.env.get("SUPABASE_ANON_KEY") || Deno.env.get("SUPABASE_PUBLISHABLE_KEY");
-  if (!url || !anon) return null;
-  const client = createClient(url, anon, { auth: { persistSession: false, autoRefreshToken: false } });
-  const { data, error } = await client.auth.getUser(token);
-  if (error || !data.user) return null;
-  return data.user.id;
 }
 
 const onlyDigits = (v: unknown) => String(v ?? "").replace(/\D/g, "");
@@ -547,7 +531,13 @@ async function handleBalance(): Promise<Response> {
 
 // ---------------------------------------------------------------- servidor
 
-export async function handleRequest(req: Request): Promise<Response> {
+export interface ApiFornecedoresContext {
+  getDb?: () => SupabaseClient;
+  requireAuth?: (req: Request) => Promise<Response | null>;
+  getUserId?: (req: Request) => Promise<string | null>;
+}
+
+export async function handleRequest(req: Request, ctx: ApiFornecedoresContext = {}): Promise<Response> {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "Use POST com corpo JSON { action }" }, 405);
 
@@ -560,11 +550,15 @@ export async function handleRequest(req: Request): Promise<Response> {
     return json({ error: "Corpo JSON inválido" }, 400);
   }
 
-  const userId = await authUser(req);
+  const authError = await (ctx.requireAuth ?? requireUserAuth)(req);
+  if (authError) return authError;
+
+  const userId = (req as unknown as { user?: { id: string } }).user?.id
+    ?? (await ctx.getUserId?.(req));
   if (!userId) return json({ error: "Unauthorized" }, 401);
 
   try {
-    const db = serviceClient();
+    const db = ctx.getDb ? ctx.getDb() : serviceClient();
     switch (p.action) {
       case "list": return await handleList(db, p);
       case "stats": return await handleStats(db);
@@ -582,4 +576,4 @@ export async function handleRequest(req: Request): Promise<Response> {
   }
 }
 
-if (import.meta.main) Deno.serve(handleRequest);
+if (import.meta.main) Deno.serve((req) => handleRequest(req));

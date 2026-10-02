@@ -137,7 +137,7 @@ class ClienteComprasPrecos:
             "tipo": tipo,
             "codigo": codigo,
             "pagina": pagina,
-            "tamanhoPagina": max(10, tamanho_pagina),
+            "tamanhoPagina": min(500, max(10, tamanho_pagina)),
         }
         for tentativa in range(1, 4):
             try:
@@ -151,6 +151,8 @@ class ClienteComprasPrecos:
                     espera = tentativa * 3.0
                     log.warning("HTTP %d em Pesquisa Preco %s=%d (tentativa %d), aguardando %.1fs...", r.status_code, tipo, codigo, tentativa, espera)
                     time.sleep(espera)
+                    if tentativa == 3:
+                        raise RuntimeError(f"HTTP {r.status_code} esgotado em Pesquisa Preco {tipo}={codigo}")
                     continue
                 r.raise_for_status()
             except requests.RequestException as e:
@@ -158,7 +160,7 @@ class ClienteComprasPrecos:
                 if tentativa == 3:
                     raise
                 time.sleep(tentativa * 2.0)
-        return {"resultado": [], "totalRegistros": 0}
+        raise RuntimeError(f"Falha ao consultar Pesquisa Preco {tipo}={codigo} após retries")
 
 
 def coletar(
@@ -182,7 +184,16 @@ def coletar(
         for p in pdms:
             consultas.append(("codigoPdm", p))
     if not consultas:
-        for p in PDMS_PADRAO:
+        pdms_efetivos = None
+        if sb is not None:
+            try:
+                res_rpc = sb.rpc("catalogo_catmat_pdms_efetivos", {})
+                if res_rpc and isinstance(res_rpc, list):
+                    pdms_efetivos = [int(r["codigo_pdm"]) for r in res_rpc if r.get("codigo_pdm")]
+                    log.info("Carregados %d PDMs efetivos do catálogo da empresa via RPC", len(pdms_efetivos))
+            except Exception as e:
+                log.warning("Não foi possível carregar catalogo_catmat_pdms_efetivos (fallback para PDMs padrão): %s", e)
+        for p in (pdms_efetivos or PDMS_PADRAO):
             consultas.append(("codigoPdm", p))
 
     for tipo, cod in consultas:

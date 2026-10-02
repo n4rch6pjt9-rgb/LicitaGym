@@ -162,14 +162,20 @@ Visão de 360° por fornecedor, construída exclusivamente sobre certames **ence
 | `tipo_fornecedor` | `text` | `'fabricante'`, `'revenda'` ou `'nao_classificado'` |
 | `tipo_fornecedor_motivo` | `text` | `'cnae_industria'`, `'cnae_comercio'`, `'marca_propria'` ou `'sem_fonte'` |
 | `tipo_fornecedor_confianca`| `text` | Nível de evidência da classificação |
-| `cobertura` | `text` | Grau de cobertura do catálogo (`'catmat_oficial'`, `'pdm_oficial'`, `'catmat_e_pdm'`, `'sem_pdm'`) |
 | `uf_sede` | `text` | UF da sede do fornecedor |
 | `municipio_sede` | `text` | Município da sede |
 | `porte` | `text` | Porte da empresa (`ME`, `EPP`, `Demais`) |
 | `total_vendas_homologadas`| `integer` | Total de itens vencidos/homologados |
 | `total_certames` | `integer` | Total de licitações/compras distintas vencidas |
 | `total_orgaos` | `integer` | Total de órgãos compradores distintos atendidos |
-| `valor_total_vendido` | `numeric(18,2)` | Faturamento total apurado em homologações |
+| `valor_registrado_ata` | `numeric(18,2)` | Total financeiro apurado exclusivamente em Atas de Registro de Preço (valor registrado) |
+| `valor_homologado_contratacao` | `numeric(18,2)` | Total financeiro apurado em contratações diretas / compras homologadas efetivas |
+| `valor_total_vendido` | `numeric(18,2)` | Faturamento total geral apurado em homologações (preserva NULL se não informado) |
+| `cobertura_predominante` | `text` | Grau de cobertura do catálogo (`'catmat_oficial'`, `'pdm_oficial'`, `'pdm_palavra'`, `'sem_pdm'`) |
+| `qtd_itens_catmat_oficial` | `integer` | Total de itens com código CATMAT oficial no cadastro `catmat_itens` |
+| `qtd_itens_pdm_oficial` | `integer` | Total de itens com código PDM oficial |
+| `qtd_itens_pdm_palavra` | `integer` | Total de itens classificados por palavra-chave (`catmat_pdm_palavras`) |
+| `qtd_itens_sem_pdm` | `integer` | Total de itens sem vínculo com PDM |
 | `marcas_entregues` | `text[]` | Lista de marcas efetivamente entregues |
 | `fabricantes_entregues` | `text[]` | Lista de fabricantes entregues |
 | `itens_praticados` | `jsonb` | Array de itens CATMAT/PDM com preços mín, mediana e máx |
@@ -211,15 +217,18 @@ Visão de 360° por fornecedor, construída exclusivamente sobre certames **ence
 ### 4.6 Regra de Deduplicação Canônica de Vendas Homologadas
 Para garantir que a mesma contratação homologada não seja contabilizada mais de uma vez ao ser ingerida por diferentes trilhos oficiais (ex.: PNCP `licitacao_resultados`, Compras.gov `precos_praticados_itens`, Compras.gov `atas_rp_itens` e `resultados_itens_14133`), a view `v_bi_fornecedor_historico` utiliza uma **chave canônica de venda**:
 
-$$\text{chave} = \text{coalesce}(\text{numero\_controle\_pncp\_compra}, \text{'ext:'} \parallel \text{fonte} \parallel \text{':'} \parallel \text{licitacao\_id}) \parallel \text{':'} \parallel \text{numero\_item} \parallel \text{':'} \parallel \text{cnpj}$$
+$$\text{chave} = \text{cnpj} \parallel \text{compra\_id\_canonico} \parallel \text{coalesce}(\text{numero\_item}, \text{'cod:'} \parallel \text{coalesce}(\text{codigo\_item}, \text{'pdm:'} \parallel \text{coalesce}(\text{codigo\_pdm}, \text{'0'})))$$
 
 1. **Ponte Compras.gov $\leftrightarrow$ PNCP (`compras_pncp_bridge`)**:
    - As tabelas `resultados_itens_14133` e `atas_rp_itens` contêm simultaneamente `id_compra` e `numero_controle_pncp_compra`.
+   - Nas compras do PNCP em `licitacoes_externas`, o `id_compra` de 17 dígitos é extraído de `link_sistema_origem` via regex `[?&]compra=(\d{17})`.
    - Essa ponte mapeia o `id_compra` de `precos_praticados_itens` diretamente para o `numero_controle_pncp_compra` do PNCP.
-2. **Deduplicação de Atas de Registro de Preço**:
-   - Como uma Ata de Registro de Preço nasce da homologação da compra correspondente, a resolução pelo número de controle PNCP + número do item colapsa o item da ata e o item da compra na mesma linha, evitando dupla contagem de faturamento.
+2. **Deduplicação de Atas de Registro de Preço e Identificação de SRP**:
+   - `eh_ata_rp`: determinado prioritariamente pelo booleano oficial `raw->>'srp'` do PNCP; na ausência, pelo regex seguro de fronteira `\y(arp|registro de pre[cç]os?)\y` sobre objeto ou modalidade.
+   - Atas de Registro de Preço (`atas_rp_itens`) têm `eh_ata_rp = true` e `valor_origem = 'ata_rp'`.
+   - Como uma Ata de Registro de Preço nasce da homologação da compra correspondente, a resolução pelo número de controle PNCP + número do item colapsa o item da ata e o item da compra na mesma linha, evitando dupla contagem.
 3. **Preservação de Fontes Externas / Sistema S**:
-   - Linhas do Paradigma e SEST SENAT não possuem número de controle PNCP. Ao resolver como `'ext:' || fonte || ':' || licitacao_id`, essas compras recebem uma chave única e estável (ex.: `'ext:sestsenat:42:1:04372852000160'`), garantindo que **não são fundidas indevidamente nem descartadas**.
+   - Linhas do Paradigma e SEST SENAT não possuem número de controle PNCP. Ao resolver como `'ext:' || fonte || ':' || licitacao_id`, essas compras recebem uma chave única e estável (ex.: `'ext:sestsenat:42'`), garantindo que **não são fundidas indevidamente nem descartadas**, mesmo que tenants diferentes compartilhem o mesmo `nCdProcesso`.
 
 ---
 
@@ -258,3 +267,17 @@ Conforme identificado na auditoria do schema:
   - Endpoint seguro que recebe `{ action: 'historico', cnpj: '...' }`.
   - Valida JWT de usuário logado (fail-closed) sem chaves em código.
   - Acessa `public.v_bi_fornecedor_historico` via `service_role` e retorna o raio-x completo do fornecedor para o Dashboard.
+
+---
+
+## 7. Itens de Escopo Limítrofes (Grama Sintética / Obras de Campo)
+
+Conforme conferência em produção e levantamento do catálogo CATMAT/PNCP, determinados itens com grande volume financeiro situam-se na fronteira entre fornecimento de produto (escopo da Playfit / LicitaGym) e obras de engenharia civil/construção de campos esportivos:
+
+| Código PDM | Nome PDM / CATMAT | Casos Típicos / Exemplo de Fornecedor | Volume / Observação |
+|---|---|---|---|
+| **18481** | `GRAMA SINTÉTICA` (Classe 7220) | Fornecimento e instalação de grama sintética para campo society (ex.: Construtora Possamai, R$ 4,78 mi) | PDM de produto, mas frequentemente licitado em certames mistos com base e drenagem |
+| **10779** | `PISO SINTÉTICO` (Classe 7220) | Piso modular em polipropileno (PP/TPE) x piso emborrachado EPDM/SBR moldado | Condicional: regulado pelas exclusões de `catmat_pdm_exclusoes` (ex.: piso modular de concorrente fica fora) |
+| **9461** / item **150846** | `BORRACHA GRANULADA` (Classe 9320) | Infill / raspa de borracha reciclada para gramados sintéticos e pistas | Núcleo do produto industrial da Playfit, fornecido aos construtores/instaladores |
+
+*Nota de Produto: Conforme diretriz do projeto, a decisão de inclusão/exclusão definitiva de certames do tipo "obra de campo com grama" cabe exclusivamente ao Dono do Produto via Dashboard & Pipeline (`catmat_pdm_exclusoes` / regras de escopo). O BI reflete com precisão o que for delimitado pelas regras ativas do catálogo.*

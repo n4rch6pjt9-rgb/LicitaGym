@@ -59,6 +59,7 @@ log = logging.getLogger("pncp")
 BASE = "https://pncp.gov.br"
 MAX_RETRY_AFTER_S = 60
 CATEGORIAS_PADRAO_DOWNLOAD = "catmat,forte,borracha,piso,obra_piso"
+PRIORIDADES_VALIDAS = frozenset({"leads", "monitorar", "historico"})
 # Downloads só de https nestes hosts (match exato, sem subdomínio). A URL vem do banco
 # (licitacao_documentos.raw.url): sem a allowlist o coletor buscaria qualquer endereço (SSRF).
 PNCP_HOSTS_PERMITIDOS = tuple(h.strip().lower() for h in
@@ -99,6 +100,33 @@ def _retry_after_s(r) -> float | None:
     except (TypeError, ValueError, AttributeError):
         return None
     return max(0.0, min(v, MAX_RETRY_AFTER_S))
+
+
+def validar_prioridades(prioridades: list[str] | set[str] | str | None) -> set[str] | None:
+    """Valida e normaliza o conjunto de prioridades permitidas.
+    Aceita lista, conjunto ou string separada por vírgula (case-insensitive, ignora espaços).
+    Retorna set[str] normalizado em minúsculas ou None se prioridades for None.
+    Levanta ValueError se contiver valor inválido ou se resultar em lista vazia quando fornecido."""
+    if prioridades is None:
+        return None
+    if isinstance(prioridades, str):
+        itens = [p.strip().lower() for p in prioridades.split(",")]
+        # Remove vazios mas confere se sobrou algo
+        candidatos = [p for p in itens if p]
+    else:
+        candidatos = [p.strip().lower() if isinstance(p, str) else str(p).lower() for p in prioridades if str(p).strip()]
+
+    if not candidatos:
+        permitidas = ", ".join(sorted(PRIORIDADES_VALIDAS))
+        raise ValueError(f"Nenhuma prioridade válida informada. Valores permitidos: {permitidas}")
+
+    invalidos = [c for c in candidatos if c not in PRIORIDADES_VALIDAS]
+    if invalidos:
+        permitidas = ", ".join(sorted(PRIORIDADES_VALIDAS))
+        invalidos_str = ", ".join(sorted(set(invalidos)))
+        raise ValueError(f"Prioridade(s) inválida(s): {invalidos_str}. Valores permitidos: {permitidas}")
+
+    return set(candidatos)
 
 # Detalhe da compra e atalho (o edital e a fonte principal): nao gastar 10 min nele.
 DETALHE_TIMEOUT = int(os.environ.get("PNCP_DETALHE_TIMEOUT", "20"))
@@ -852,12 +880,7 @@ def baixar_pendentes(pncp: PNCP, sb: Supabase, arm: Armazenamento | None,
     else:
         cat_set = {c.strip().lower() for c in CATEGORIAS_PADRAO_DOWNLOAD.split(",") if c.strip()}
 
-    if isinstance(prioridades, str):
-        prio_set = {p.strip().lower() for p in prioridades.split(",") if p.strip()}
-    elif prioridades is not None:
-        prio_set = {p.strip().lower() for p in prioridades if p.strip()}
-    else:
-        prio_set = None
+    prio_set = validar_prioridades(prioridades)
 
     log.info("baixar_pendentes: buscando licitações externas fonte=pncp e categorias=%s prioridades=%s",
              sorted(cat_set), sorted(prio_set) if prio_set is not None else "todas")
@@ -1034,6 +1057,16 @@ def fatiar_lote(termos: list[str], lote: str) -> list[str]:
     return termos[(k - 1) * tam:k * tam]
 
 
+def _cli_prioridades(valor: str) -> str:
+    """Validador do tipo de --prioridades no argparse. Valida contra PRIORIDADES_VALIDAS
+    e levanta ArgumentTypeError se houver valor inválido ou vazio."""
+    try:
+        validar_prioridades(valor)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from e
+    return valor
+
+
 def criar_parser() -> argparse.ArgumentParser:
     """Parser da linha de comando (também usado por coletor.pncp_cloud_run para ler as opções já canônicas,
     com as abreviações do argparse resolvidas)."""
@@ -1063,8 +1096,8 @@ def criar_parser() -> argparse.ArgumentParser:
                     help="baixa arquivos pendentes do PNCP gravados em licitacao_documentos")
     ap.add_argument("--categorias",
                     help="categorias de escopo permitidas no download de pendentes (padrão: catmat,forte,borracha,piso,obra_piso)")
-    ap.add_argument("--prioridades",
-                    help="prioridades efetivas permitidas no download de pendentes (ex.: leads,monitorar)")
+    ap.add_argument("--prioridades", type=_cli_prioridades,
+                    help="prioridades efetivas permitidas no download de pendentes (valores: leads, monitorar, historico)")
     ap.add_argument("--limite-download", type=int, default=None,
                     help="limite máximo de documentos para baixar no modo --baixar-pendentes")
     ap.add_argument("--dry-run", action="store_true")

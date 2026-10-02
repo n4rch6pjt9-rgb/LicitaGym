@@ -939,3 +939,63 @@ def test_main_baixar_pendentes_passa_prioridades(monkeypatch):
     assert capturado["prioridades"] == "leads,monitorar"
     assert capturado["limite"] == 10
     assert capturado["dry_run"] is True
+
+
+def test_validar_prioridades_funcao():
+    import pytest
+    # Normalização e sucesso
+    assert P.validar_prioridades("leads") == {"leads"}
+    assert P.validar_prioridades(" LEADS , Monitorar ") == {"leads", "monitorar"}
+    assert P.validar_prioridades(["leads", "historico"]) == {"leads", "historico"}
+    assert P.validar_prioridades({"MONITORAR"}) == {"monitorar"}
+    assert P.validar_prioridades(None) is None
+
+    # Inválidos
+    with pytest.raises(ValueError, match="Prioridade\\(s\\) inválida\\(s\\): lead"):
+        P.validar_prioridades("lead")
+    with pytest.raises(ValueError, match="Prioridade\\(s\\) inválida\\(s\\): xyz"):
+        P.validar_prioridades("leads,xyz")
+    with pytest.raises(ValueError, match="Nenhuma prioridade válida informada"):
+        P.validar_prioridades("")
+    with pytest.raises(ValueError, match="Nenhuma prioridade válida informada"):
+        P.validar_prioridades(" , ")
+    with pytest.raises(ValueError, match="Nenhuma prioridade válida informada"):
+        P.validar_prioridades([])
+
+
+def test_baixar_pendentes_prioridade_invalida_levanta_sem_ler_supabase():
+    import pytest
+    sb = MagicMock()
+    pncp = MagicMock()
+    arm = MagicMock()
+
+    with pytest.raises(ValueError, match="Prioridade\\(s\\) inválida\\(s\\): lead"):
+        P.baixar_pendentes(pncp, sb, arm, prioridades=["lead"])
+
+    # Garante que NENHUMA leitura no Supabase foi feita antes de abortar
+    sb.selecionar.assert_not_called()
+    pncp.baixar.assert_not_called()
+
+
+def test_cli_prioridades_validacao_argparse(monkeypatch):
+    import pytest
+    parser = P.criar_parser()
+
+    # Inválido único (lead) -> erro 2
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["--baixar-pendentes", "--prioridades", "lead"])
+    assert exc.value.code == 2
+
+    # Misto válido + inválido (leads,xyz) -> erro 2
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["--baixar-pendentes", "--prioridades", "leads,xyz"])
+    assert exc.value.code == 2
+
+    # Apenas vírgula / vazio -> erro 2
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["--baixar-pendentes", "--prioridades", " , "])
+    assert exc.value.code == 2
+
+    # Maiúsculas e espaços aceitos normalmente
+    args = parser.parse_args(["--baixar-pendentes", "--prioridades", " LEADS , Monitorar "])
+    assert args.prioridades == " LEADS , Monitorar "

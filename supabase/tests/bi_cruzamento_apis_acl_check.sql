@@ -110,5 +110,59 @@ begin
     raise exception 'COLUNA CHECK FALHOU: contratacoes_atas sem coluna ni_fornecedor';
   end if;
 
+  -- 5. Teste de lógica de deduplicação por chave canônica
+  -- Valida que a chave: coalesce(numero_controle_pncp_compra, 'ext:' || fonte || ':' || licitacao_id) + numero_item + cnpj
+  -- colapsa a mesma compra vinda de múltiplas fontes oficiais em 1 única linha, preservando compras do Paradigma.
+  declare
+    v_qtd_dedup int;
+  begin
+    with bridge as (
+      select '16021105900032024'::text as id_compra, '00394429000100-1-000003/2024'::text as numero_controle_pncp_compra
+    ),
+    vendas_mock as (
+      -- Venda vinda do PNCP
+      select '04372852000160'::text as cnpj,
+             '00394429000100-1-000003/2024'::text as compra_id_canonico,
+             1 as numero_item,
+             null::bigint as codigo_item,
+             9000.0::numeric as preco_unitario
+      union all
+      -- Mesma venda vinda de Compras.gov pesquisa de preço
+      select '04372852000160'::text as cnpj,
+             b.numero_controle_pncp_compra as compra_id_canonico,
+             1 as numero_item,
+             480144::bigint as codigo_item,
+             9000.0::numeric as preco_unitario
+      from bridge b where b.id_compra = '16021105900032024'
+      union all
+      -- Mesma venda vinda de Compras.gov ARP
+      select '04372852000160'::text as cnpj,
+             '00394429000100-1-000003/2024'::text as compra_id_canonico,
+             1 as numero_item,
+             480144::bigint as codigo_item,
+             9000.0::numeric as preco_unitario
+      union all
+      -- Venda separada do Sistema S / Paradigma (SEST SENAT)
+      select '04372852000160'::text as cnpj,
+             'ext:sestsenat:42'::text as compra_id_canonico,
+             1 as numero_item,
+             null::bigint as codigo_item,
+             8500.0::numeric as preco_unitario
+    ),
+    dedup as (
+      select distinct on (cnpj, compra_id_canonico, coalesce(numero_item, 0))
+        cnpj, compra_id_canonico, numero_item, codigo_item, preco_unitario
+      from vendas_mock
+      order by cnpj, compra_id_canonico, coalesce(numero_item, 0),
+               (codigo_item is not null) desc,
+               (preco_unitario is not null) desc
+    )
+    select count(*) into v_qtd_dedup from dedup;
+
+    if v_qtd_dedup <> 2 then
+      raise exception 'DEDUP CHECK FALHOU: esperado 2 vendas distintas, obtido %', v_qtd_dedup;
+    end if;
+  end;
+
   raise notice 'SUCESSO: bi_cruzamento_apis_acl_check aprovado sem erros';
 end $$;

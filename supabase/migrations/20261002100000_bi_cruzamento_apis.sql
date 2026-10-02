@@ -296,11 +296,11 @@ alter table public.contratacoes_atas
 -- 6.1 v_bi_pca_radar
 -- Demanda planejada por órgão, PDM e mês previsto, unificando PNCP pca_itens e Compras.gov pca_pgc_itens.
 -- Regra de deduplicação documentada:
---   - Quando o órgão/item do PGC possui correspondência exata no PNCP por (orgao_cnpj, ano, numero_item_pncp),
+--   - Deduplica PGC contra o PNCP por órgão + UASG + ano + item, para não descartar item de outra unidade.
+--   - Quando o órgão/uasg/item do PGC possui correspondência exata no PNCP por (orgao_cnpj, codigo_uasg, ano, numero_item_pncp),
 --     prioriza-se o registro do PGC (fonte rica com CATMAT completo).
---   - Se o PNCP tem item com numero_item correspondente ao PGC, o PNCP é deduplicado (descartado).
 --   - Casamento marcado com casamento_confirmado = true para PGC (dado oficial estruturado) e para PNCP com PDM confirmado;
---     casamento por numero_item_pncp é auditável na coluna casamento_pncp_num_item.
+--     cast seguro (case when x ~ '^\d+$' then x::integer end) evita falhas com texto não numérico.
 create or replace view public.v_bi_pca_radar
 with (security_invoker = true) as
 with pdms_escopo as (
@@ -314,7 +314,10 @@ pgc_normalizado as (
     p.codigo_uasg,
     coalesce(nullif(p.nome_uasg, ''), o.nome_orgao, o.razao_social, p.orgao_cnpj) as orgao_nome,
     p.ano_pca_projeto_compra as ano_pca,
-    coalesce(nullif(p.codigo_pdm_material, '')::integer, nullif(ci.codigo_pdm, '')::integer) as codigo_pdm,
+    coalesce(
+      case when p.codigo_pdm_material ~ '^\d+$' then p.codigo_pdm_material::integer end,
+      case when ci.codigo_pdm ~ '^\d+$' then ci.codigo_pdm::integer end
+    ) as codigo_pdm,
     p.codigo_item_catalogo as codigo_item,
     p.descricao_item_catalogo as descricao_item,
     p.quantidade_item as quantidade,
@@ -330,7 +333,10 @@ pgc_normalizado as (
   from public.pca_pgc_itens p
   left join public.orgaos o on o.cnpj = p.orgao_cnpj
   left join public.catmat_itens ci on ci.codigo_item = p.codigo_item_catalogo
-  where coalesce(nullif(p.codigo_pdm_material, '')::integer, nullif(ci.codigo_pdm, '')::integer) in (select codigo_pdm from pdms_escopo)
+  where coalesce(
+    case when p.codigo_pdm_material ~ '^\d+$' then p.codigo_pdm_material::integer end,
+    case when ci.codigo_pdm ~ '^\d+$' then ci.codigo_pdm::integer end
+  ) in (select codigo_pdm from pdms_escopo)
 ),
 pncp_itens_norm as (
   select
@@ -341,8 +347,8 @@ pncp_itens_norm as (
     pl.ano_exercicio as ano_pca,
     coalesce(
       pip.codigo_pdm,
-      nullif(i.pdm_codigo_origem, '')::integer,
-      nullif(ci.codigo_pdm, '')::integer
+      case when i.pdm_codigo_origem ~ '^\d+$' then i.pdm_codigo_origem::integer end,
+      case when ci.codigo_pdm ~ '^\d+$' then ci.codigo_pdm::integer end
     ) as codigo_pdm,
     case when i.codigo_item_origem ~ '^\d+$' then i.codigo_item_origem::bigint else null end as codigo_item,
     i.descricao as descricao_item,
@@ -369,13 +375,14 @@ pncp_itens_norm as (
   where i.ativo = true and pl.ativo = true
     and coalesce(
       pip.codigo_pdm,
-      nullif(i.pdm_codigo_origem, '')::integer,
-      nullif(ci.codigo_pdm, '')::integer
+      case when i.pdm_codigo_origem ~ '^\d+$' then i.pdm_codigo_origem::integer end,
+      case when ci.codigo_pdm ~ '^\d+$' then ci.codigo_pdm::integer end
     ) in (select codigo_pdm from pdms_escopo)
-    -- Deduplicação: descarta item do PNCP que já consta no PGC para o mesmo orgao, ano e numero_item_pncp
+    -- Deduplicação: descarta item do PNCP que já consta no PGC para o mesmo orgao, uasg, ano e numero_item_pncp
     and not exists (
       select 1 from public.pca_pgc_itens pgc
       where pgc.orgao_cnpj = pl.orgao_cnpj
+        and pgc.codigo_uasg = pl.unidade_codigo
         and pgc.ano_pca_projeto_compra = pl.ano_exercicio
         and pgc.numero_item_pncp = i.numero_item
     )
@@ -384,7 +391,7 @@ select * from pgc_normalizado
 union all
 select * from pncp_itens_norm;
 
-comment on view public.v_bi_pca_radar is 'Radar consolidado de demanda planejada (PCA PNCP + PGC Compras.gov) no escopo de produtos fitness, deduplicado por orgao+ano+numero_item_pncp.';
+comment on view public.v_bi_pca_radar is 'Radar consolidado de demanda planejada (PCA PNCP + PGC Compras.gov) no escopo de produtos fitness, deduplicado por orgao+uasg+ano+numero_item_pncp.';
 
 -- 6.2 v_bi_precos_praticados
 -- Estatísticas de preços efetivamente praticados por PDM e item CATMAT: mediana, p25, p75, min, max, n e detecção de outliers.
@@ -396,7 +403,10 @@ with pdms_escopo as (
 ),
 base_precos as (
   select
-    coalesce(nullif(p.codigo_pdm, '')::integer, ci.codigo_pdm::integer) as codigo_pdm,
+    coalesce(
+      case when p.codigo_pdm ~ '^\d+$' then p.codigo_pdm::integer end,
+      case when ci.codigo_pdm ~ '^\d+$' then ci.codigo_pdm::integer end
+    ) as codigo_pdm,
     p.codigo_item_catalogo as codigo_item,
     max(coalesce(p.nome_pdm, ci.nome_pdm)) as nome_pdm,
     max(p.descricao_item) as descricao_item,
@@ -430,8 +440,14 @@ base_precos as (
   left join public.catmat_itens ci on ci.codigo_item = p.codigo_item_catalogo
   where p.preco_unitario is not null
     and p.preco_unitario > 0
-    and coalesce(nullif(p.codigo_pdm, '')::integer, ci.codigo_pdm::integer) in (select codigo_pdm from pdms_escopo)
-  group by coalesce(nullif(p.codigo_pdm, '')::integer, ci.codigo_pdm::integer), p.codigo_item_catalogo
+    and coalesce(
+      case when p.codigo_pdm ~ '^\d+$' then p.codigo_pdm::integer end,
+      case when ci.codigo_pdm ~ '^\d+$' then ci.codigo_pdm::integer end
+    ) in (select codigo_pdm from pdms_escopo)
+  group by coalesce(
+    case when p.codigo_pdm ~ '^\d+$' then p.codigo_pdm::integer end,
+    case when ci.codigo_pdm ~ '^\d+$' then ci.codigo_pdm::integer end
+  ), p.codigo_item_catalogo
 )
 select * from base_precos;
 
@@ -450,7 +466,10 @@ select
   a.numero_ata_registro_preco,
   a.codigo_unidade_gerenciadora,
   a.nome_unidade_gerenciadora,
-  coalesce(nullif(a.codigo_pdm, '')::integer, ci.codigo_pdm::integer) as codigo_pdm,
+  coalesce(
+    case when a.codigo_pdm ~ '^\d+$' then a.codigo_pdm::integer end,
+    case when ci.codigo_pdm ~ '^\d+$' then ci.codigo_pdm::integer end
+  ) as codigo_pdm,
   coalesce(a.nome_pdm, ci.nome_pdm) as nome_pdm,
   a.codigo_item,
   a.descricao_item,
@@ -471,13 +490,19 @@ left join public.catmat_itens ci on ci.codigo_item = a.codigo_item
 where a.data_vigencia_final is not null
   and a.data_vigencia_final >= current_date
   and a.data_vigencia_final <= current_date + interval '180 days'
-  and coalesce(nullif(a.codigo_pdm, '')::integer, ci.codigo_pdm::integer) in (select codigo_pdm from pdms_escopo);
+  and coalesce(
+    case when a.codigo_pdm ~ '^\d+$' then a.codigo_pdm::integer end,
+    case when ci.codigo_pdm ~ '^\d+$' then ci.codigo_pdm::integer end
+  ) in (select codigo_pdm from pdms_escopo);
 
 comment on view public.v_bi_atas_vencendo is 'Atas de registro de preço no escopo com vigência expirando nos próximos 180 dias (janela de oportunidade de relicitação e carona).';
 
 -- 6.4 v_bi_orgaos_match
--- Ranking de órgãos por valor planejado (PCA) + valor homologado/pago em compras no escopo fitness.
+-- Ranking de órgãos por valor planejado (PCA) e valor homologado em compras no escopo fitness.
 -- Apenas materiais/produtos do escopo CATMAT (nunca serviços).
+-- Sem score inventado: colunas separadas para valor_planejado_pca e valor_homologado.
+-- Sem default 'Federal' quando órgão não estiver na tabela orgaos.
+-- Lateral limit 1 no casamento de palavras para evitar duplicação do sum.
 create or replace view public.v_bi_orgaos_match
 with (security_invoker = true) as
 with pdms_escopo as (
@@ -488,49 +513,39 @@ planejado_por_orgao as (
   select
     r.orgao_cnpj,
     count(*)::integer as qtd_itens_planejados,
-    coalesce(sum(r.valor_total), 0)::numeric(18,2) as valor_total_planejado,
+    coalesce(sum(r.valor_total), 0)::numeric(18,2) as valor_planejado_pca,
     max(r.data_prevista) as ultima_data_prevista
   from public.v_bi_pca_radar r
   group by r.orgao_cnpj
 ),
-pago_por_orgao as (
-  -- Compras.gov preços praticados no escopo
-  select
-    regexp_replace(coalesce(p.codigo_uasg, ''), '\D', '', 'g') as codigo_uasg,
-    p.nome_orgao,
-    p.estado as uf,
-    count(*)::integer as qtd_itens_pagos,
-    coalesce(sum(p.quantidade * p.preco_unitario), 0)::numeric(18,2) as valor_total_pago,
-    max(p.data_resultado) as ultima_data_paga
-  from public.precos_praticados_itens p
-  left join public.catmat_itens ci on ci.codigo_item = p.codigo_item_catalogo
-  where coalesce(nullif(p.codigo_pdm, '')::integer, ci.codigo_pdm::integer) in (select codigo_pdm from pdms_escopo)
-  group by regexp_replace(coalesce(p.codigo_uasg, ''), '\D', '', 'g'), p.nome_orgao, p.estado
-),
 homologado_por_orgao as (
-  -- Resultados homologados do LicitaGym (licitacoes_externas x licitacao_resultados)
-  -- Apenas produtos/materiais (material_ou_servico = 'M' ou nulo de compras de produtos)
+  -- Resultados homologados do LicitaGym (licitacoes_externas_prioridade_efetiva x licitacao_resultados)
+  -- Apenas produtos/materiais (material_ou_servico = 'M' ou nulo comprovado de material do escopo)
   select
     regexp_replace(coalesce(l.orgao_cnpj, ''), '\D', '', 'g') as orgao_cnpj,
     coalesce(l.orgao_nome, l.unidade_compradora) as orgao_nome,
     l.uf,
     count(distinct r.licitacao_id)::integer as qtd_licitacoes_homologadas,
     count(distinct r.id)::integer as qtd_itens_homologados,
-    coalesce(sum(r.valor_total_homologado), 0)::numeric(18,2) as valor_total_homologado,
+    coalesce(sum(r.valor_total_homologado), 0)::numeric(18,2) as valor_homologado,
     max(r.data_resultado::date) as ultima_data_homologada
   from public.licitacao_resultados r
-  join public.licitacoes_externas l on l.id = r.licitacao_id
+  join public.licitacoes_externas_prioridade_efetiva l on l.id = r.licitacao_id
   left join public.licitacao_itens li on li.licitacao_id = r.licitacao_id and li.numero_item = r.numero_item
   left join public.catmat_itens ci on ci.codigo_item::text = li.catalogo_codigo_item
-  left join public.catmat_pdm_palavras w on ci.codigo_pdm is null and w.ativo and public.norm_txt(li.descricao) ~ w.padrao
+  left join lateral (
+    select w.codigo_pdm from public.catmat_pdm_palavras w
+    where ci.codigo_pdm is null and w.ativo and public.norm_txt(li.descricao) ~ w.padrao
+    order by length(w.padrao) desc limit 1
+  ) kw on true
   where r.vencedor is distinct from false
     and coalesce(r.situacao, '') <> 'Cancelado'
-    and (l.data_homologacao is not null or l.situacao ~* '(homologad|adjudicad|encerrad|conclu[ií]d|finalizad)')
+    and l.prioridade = 'historico'
     and (
       li.material_ou_servico = 'M'
-      or (li.material_ou_servico is null and coalesce(ci.codigo_pdm::integer, w.codigo_pdm) in (select codigo_pdm from pdms_escopo))
+      or (li.material_ou_servico is null and coalesce(case when ci.codigo_pdm ~ '^\d+$' then ci.codigo_pdm::integer end, kw.codigo_pdm) in (select codigo_pdm from pdms_escopo))
     )
-    and coalesce(ci.codigo_pdm::integer, w.codigo_pdm) in (select codigo_pdm from pdms_escopo)
+    and coalesce(case when ci.codigo_pdm ~ '^\d+$' then ci.codigo_pdm::integer end, kw.codigo_pdm) in (select codigo_pdm from pdms_escopo)
   group by regexp_replace(coalesce(l.orgao_cnpj, ''), '\D', '', 'g'), coalesce(l.orgao_nome, l.unidade_compradora), l.uf
 ),
 todos_cnpjs as (
@@ -541,32 +556,54 @@ todos_cnpjs as (
 select
   c.orgao_cnpj,
   coalesce(o.nome_orgao, o.razao_social, h.orgao_nome, c.orgao_cnpj) as orgao_nome,
-  coalesce(o.esfera_canon, o.esfera, 'Federal') as esfera,
+  coalesce(o.esfera_canon, o.esfera) as esfera,
   coalesce(o.uf, h.uf) as uf,
   coalesce(pl.qtd_itens_planejados, 0) as qtd_itens_planejados,
-  coalesce(pl.valor_total_planejado, 0) as valor_total_planejado,
+  coalesce(pl.valor_planejado_pca, 0) as valor_planejado_pca,
   coalesce(h.qtd_itens_homologados, 0) as qtd_itens_homologados,
-  coalesce(h.valor_total_homologado, 0) as valor_total_homologado,
-  (coalesce(pl.valor_total_planejado, 0) + coalesce(h.valor_total_homologado, 0)) as score_demanda_total,
+  coalesce(h.valor_homologado, 0) as valor_homologado,
   pl.ultima_data_prevista,
   h.ultima_data_homologada
 from todos_cnpjs c
 left join public.orgaos o on o.cnpj = c.orgao_cnpj
 left join planejado_por_orgao pl on pl.orgao_cnpj = c.orgao_cnpj
 left join homologado_por_orgao h on h.orgao_cnpj = c.orgao_cnpj
-order by score_demanda_total desc;
+order by coalesce(h.valor_homologado, 0) desc, coalesce(pl.valor_planejado_pca, 0) desc;
 
 comment on view public.v_bi_orgaos_match is 'Ranking consolidado de órgãos por volume de demanda planejada (PCA) e compras homologadas no catálogo fitness.';
 
 -- 6.5 v_bi_fornecedor_historico
 -- Visão central de inteligência de concorrentes e fornecedores históricos no escopo fitness.
--- Apenas resultados de certames ENCERRADOS/HOMOLOGADOS (prioridade = historico).
+-- Apenas resultados de certames ENCERRADOS/HOMOLOGADOS (prioridade_efetiva = 'historico').
 -- Apenas produtos/materiais (nunca serviços).
+-- Deduplicação com chave canônica: número de controle PNCP da compra + número do item + CNPJ.
+-- Ponte de id_compra (Compras.gov) para numero_controle_pncp_compra através de resultados_itens_14133 e atas_rp_itens.
 create or replace view public.v_bi_fornecedor_historico
 with (security_invoker = true) as
 with pdms_escopo as (
   select codigo_pdm
   from public.catalogo_catmat_pdms_efetivos()
+),
+compras_pncp_bridge as (
+  -- Ponte de id_compra (Compras.gov) para numero_controle_pncp_compra (PNCP)
+  select distinct on (id_compra)
+    id_compra,
+    numero_controle_pncp_compra
+  from (
+    select id_compra, numero_controle_pncp_compra, 1 as prio
+    from public.resultados_itens_14133
+    where id_compra is not null and numero_controle_pncp_compra is not null
+    union all
+    select id_compra, numero_controle_pncp_compra, 2 as prio
+    from public.atas_rp_itens
+    where id_compra is not null and numero_controle_pncp_compra is not null
+    union all
+    select coalesce(raw->>'idCompra', raw->>'id_compra') as id_compra, codigo_externo as numero_controle_pncp_compra, 3 as prio
+    from public.licitacoes_externas
+    where codigo_externo is not null and (raw->>'idCompra' is not null or raw->>'id_compra' is not null)
+  ) m
+  where id_compra is not null and numero_controle_pncp_compra is not null
+  order by id_compra, prio
 ),
 -- Origem 1: licitacao_resultados homologados do banco (PNCP e Paradigma/SEST)
 f_resultados as (
@@ -574,8 +611,9 @@ f_resultados as (
     regexp_replace(r.fornecedor_cnpj, '\D', '', 'g') as cnpj,
     r.fornecedor_nome as nome_fornecedor,
     'licitacao_resultados'::text as fonte_origem,
-    r.licitacao_id::text as id_certame_origem,
-    coalesce(ci.codigo_pdm::integer, kw.codigo_pdm) as codigo_pdm,
+    coalesce(nullif(l.codigo_externo, ''), 'ext:' || l.fonte || ':' || l.id::text) as compra_id_canonico,
+    r.numero_item,
+    coalesce(case when ci.codigo_pdm ~ '^\d+$' then ci.codigo_pdm::integer end, kw.codigo_pdm) as codigo_pdm,
     case when li.catalogo_codigo_item ~ '^\d+$' then li.catalogo_codigo_item::bigint else null end as codigo_item,
     coalesce(r.marca_normalizada, r.marca) as marca,
     null::text as fabricante,
@@ -587,12 +625,12 @@ f_resultados as (
     coalesce(l.orgao_cnpj, '') as orgao_identificador,
     coalesce(l.orgao_nome, l.unidade_compradora) as orgao_nome,
     case
-      when ci.codigo_pdm is not null then 'catmat_oficial'
-      when kw.codigo_pdm is not null then 'pdm_palavra_chave'
+      when li.catalogo_codigo_item ~ '^\d+$' then 'catmat_oficial'
+      when coalesce(case when ci.codigo_pdm ~ '^\d+$' then ci.codigo_pdm::integer end, kw.codigo_pdm) is not null then 'pdm_oficial'
       else 'sem_pdm'
     end as cobertura
   from public.licitacao_resultados r
-  join public.licitacoes_externas l on l.id = r.licitacao_id
+  join public.licitacoes_externas_prioridade_efetiva l on l.id = r.licitacao_id
   left join public.licitacao_itens li on li.licitacao_id = r.licitacao_id and li.numero_item = r.numero_item
   left join public.catmat_itens ci on ci.codigo_item::text = li.catalogo_codigo_item
   left join lateral (
@@ -603,12 +641,12 @@ f_resultados as (
   where r.fornecedor_cnpj is not null
     and r.vencedor is distinct from false
     and coalesce(r.situacao, '') <> 'Cancelado'
-    and (l.data_homologacao is not null or l.situacao ~* '(homologad|adjudicad|encerrad|conclu[ií]d|finalizad)')
+    and l.prioridade = 'historico'
     and (
       li.material_ou_servico = 'M'
-      or (li.material_ou_servico is null and coalesce(ci.codigo_pdm::integer, kw.codigo_pdm) in (select codigo_pdm from pdms_escopo))
+      or (li.material_ou_servico is null and coalesce(case when ci.codigo_pdm ~ '^\d+$' then ci.codigo_pdm::integer end, kw.codigo_pdm) in (select codigo_pdm from pdms_escopo))
     )
-    and coalesce(ci.codigo_pdm::integer, kw.codigo_pdm) in (select codigo_pdm from pdms_escopo)
+    and coalesce(case when ci.codigo_pdm ~ '^\d+$' then ci.codigo_pdm::integer end, kw.codigo_pdm) in (select codigo_pdm from pdms_escopo)
 ),
 -- Origem 2: precos_praticados_itens (módulo Pesquisa de Preço Compras.gov - já homologados de materiais)
 f_precos as (
@@ -616,8 +654,9 @@ f_precos as (
     regexp_replace(p.ni_fornecedor, '\D', '', 'g') as cnpj,
     p.nome_fornecedor,
     'compras_pesquisa_preco'::text as fonte_origem,
-    p.id_compra as id_certame_origem,
-    coalesce(nullif(p.codigo_pdm, '')::integer, ci.codigo_pdm::integer) as codigo_pdm,
+    coalesce(b.numero_controle_pncp_compra, 'ext:compras_gov:' || p.id_compra) as compra_id_canonico,
+    p.numero_item_compra as numero_item,
+    coalesce(case when p.codigo_pdm ~ '^\d+$' then p.codigo_pdm::integer end, case when ci.codigo_pdm ~ '^\d+$' then ci.codigo_pdm::integer end) as codigo_pdm,
     p.codigo_item_catalogo::bigint as codigo_item,
     p.marca,
     p.fabricante,
@@ -630,15 +669,16 @@ f_precos as (
     p.nome_uasg as orgao_nome,
     case
       when p.codigo_item_catalogo is not null then 'catmat_oficial'
-      when p.codigo_pdm is not null then 'pdm_oficial'
+      when coalesce(case when p.codigo_pdm ~ '^\d+$' then p.codigo_pdm::integer end, case when ci.codigo_pdm ~ '^\d+$' then ci.codigo_pdm::integer end) is not null then 'pdm_oficial'
       else 'sem_pdm'
     end as cobertura
   from public.precos_praticados_itens p
+  left join compras_pncp_bridge b on b.id_compra = p.id_compra
   left join public.catmat_itens ci on ci.codigo_item = p.codigo_item_catalogo
   where p.ni_fornecedor is not null
     and p.preco_unitario is not null
     and p.preco_unitario > 0
-    and coalesce(nullif(p.codigo_pdm, '')::integer, ci.codigo_pdm::integer) in (select codigo_pdm from pdms_escopo)
+    and coalesce(case when p.codigo_pdm ~ '^\d+$' then p.codigo_pdm::integer end, case when ci.codigo_pdm ~ '^\d+$' then ci.codigo_pdm::integer end) in (select codigo_pdm from pdms_escopo)
 ),
 -- Origem 3: atas_rp_itens (módulo ARP Compras.gov - homologadas de materiais)
 f_atas as (
@@ -646,8 +686,9 @@ f_atas as (
     regexp_replace(a.ni_fornecedor, '\D', '', 'g') as cnpj,
     a.nome_fornecedor,
     'compras_arp'::text as fonte_origem,
-    a.numero_ata_registro_preco as id_certame_origem,
-    coalesce(nullif(a.codigo_pdm, '')::integer, ci.codigo_pdm::integer) as codigo_pdm,
+    coalesce(nullif(a.numero_controle_pncp_compra, ''), b.numero_controle_pncp_compra, 'ext:compras_gov:' || nullif(a.id_compra, ''), 'ext:arp:' || a.numero_ata_registro_preco) as compra_id_canonico,
+    case when a.numero_item ~ '^\d+$' then a.numero_item::integer end as numero_item,
+    coalesce(case when a.codigo_pdm ~ '^\d+$' then a.codigo_pdm::integer end, case when ci.codigo_pdm ~ '^\d+$' then ci.codigo_pdm::integer end) as codigo_pdm,
     a.codigo_item::bigint as codigo_item,
     a.marca,
     a.fabricante,
@@ -660,14 +701,15 @@ f_atas as (
     a.nome_unidade_gerenciadora as orgao_nome,
     case
       when a.codigo_item is not null then 'catmat_oficial'
-      when a.codigo_pdm is not null then 'pdm_oficial'
+      when coalesce(case when a.codigo_pdm ~ '^\d+$' then a.codigo_pdm::integer end, case when ci.codigo_pdm ~ '^\d+$' then ci.codigo_pdm::integer end) is not null then 'pdm_oficial'
       else 'sem_pdm'
     end as cobertura
   from public.atas_rp_itens a
+  left join compras_pncp_bridge b on b.id_compra = a.id_compra
   left join public.catmat_itens ci on ci.codigo_item = a.codigo_item
   where a.ni_fornecedor is not null
     and coalesce(a.tipo_item, 'Material') ~* 'material'
-    and coalesce(nullif(a.codigo_pdm, '')::integer, ci.codigo_pdm::integer) in (select codigo_pdm from pdms_escopo)
+    and coalesce(case when a.codigo_pdm ~ '^\d+$' then a.codigo_pdm::integer end, case when ci.codigo_pdm ~ '^\d+$' then ci.codigo_pdm::integer end) in (select codigo_pdm from pdms_escopo)
 ),
 -- Origem 4: resultados_itens_14133 (Apenas materiais/produtos)
 f_14133 as (
@@ -675,8 +717,9 @@ f_14133 as (
     regexp_replace(res.ni_fornecedor, '\D', '', 'g') as cnpj,
     res.nome_fornecedor,
     'compras_14133'::text as fonte_origem,
-    coalesce(res.numero_controle_pncp_compra, res.id_compra, res.id_contratacao_pncp) as id_certame_origem,
-    coalesce(nullif(res.codigo_pdm, '')::integer, ci.codigo_pdm::integer) as codigo_pdm,
+    coalesce(nullif(res.numero_controle_pncp_compra, ''), nullif(res.id_contratacao_pncp, ''), b.numero_controle_pncp_compra, 'ext:compras_14133:' || res.id_compra) as compra_id_canonico,
+    res.numero_item_pncp as numero_item,
+    coalesce(case when res.codigo_pdm ~ '^\d+$' then res.codigo_pdm::integer end, case when ci.codigo_pdm ~ '^\d+$' then ci.codigo_pdm::integer end) as codigo_pdm,
     res.codigo_item_catalogo::bigint as codigo_item,
     res.marca,
     res.fabricante,
@@ -689,16 +732,17 @@ f_14133 as (
     res.orgao_entidade_cnpj as orgao_nome,
     case
       when res.codigo_item_catalogo is not null then 'catmat_oficial'
-      when res.codigo_pdm is not null then 'pdm_oficial'
+      when coalesce(case when res.codigo_pdm ~ '^\d+$' then res.codigo_pdm::integer end, case when ci.codigo_pdm ~ '^\d+$' then ci.codigo_pdm::integer end) is not null then 'pdm_oficial'
       else 'sem_pdm'
     end as cobertura
   from public.resultados_itens_14133 res
+  left join compras_pncp_bridge b on b.id_compra = res.id_compra
   left join public.catmat_itens ci on ci.codigo_item = res.codigo_item_catalogo
   where res.ni_fornecedor is not null
     and coalesce(res.situacao_compra_item_resultado_nome, '') <> 'Cancelado'
     -- Filtro estrito: somente produtos/materiais, nunca servicos
     and coalesce(res.material_ou_servico, res.tipo_item, 'M') ~* '^(m|material)'
-    and coalesce(nullif(res.codigo_pdm, '')::integer, ci.codigo_pdm::integer) in (select codigo_pdm from pdms_escopo)
+    and coalesce(case when res.codigo_pdm ~ '^\d+$' then res.codigo_pdm::integer end, case when ci.codigo_pdm ~ '^\d+$' then ci.codigo_pdm::integer end) in (select codigo_pdm from pdms_escopo)
 ),
 todas_vendas as (
   select * from f_resultados
@@ -710,12 +754,33 @@ todas_vendas as (
   select * from f_14133
 ),
 vendas_dedup as (
-  -- Deduplica quando a mesma compra/resultado é ingerido por mais de uma fonte (PNCP e Compras.gov)
-  select distinct on (cnpj, id_certame_origem, coalesce(codigo_item, 0), coalesce(codigo_pdm, 0))
-    *
+  -- Deduplica vendas: chave canônica (compra_id_canonico + numero_item + cnpj)
+  -- Número de controle PNCP da compra + número do item + CNPJ colapsa PNCP, Compras.gov e ARP na mesma venda
+  select distinct on (cnpj, compra_id_canonico, coalesce(numero_item, 0))
+    cnpj,
+    nome_fornecedor,
+    fonte_origem,
+    compra_id_canonico,
+    numero_item,
+    codigo_pdm,
+    codigo_item,
+    marca,
+    fabricante,
+    modelo,
+    quantidade,
+    preco_unitario,
+    valor_total,
+    data_venda,
+    orgao_identificador,
+    orgao_nome,
+    cobertura
   from todas_vendas
-  order by cnpj, id_certame_origem, coalesce(codigo_item, 0), coalesce(codigo_pdm, 0),
-           (preco_unitario is not null) desc, (marca is not null) desc
+  order by cnpj, compra_id_canonico, coalesce(numero_item, 0),
+           (codigo_item is not null) desc,
+           (preco_unitario is not null) desc,
+           (marca is not null) desc,
+           (quantidade is not null) desc,
+           data_venda desc nulls last
 ),
 fornecedor_itens as (
   select
@@ -781,11 +846,12 @@ fornecedor_totais as (
     v.cnpj,
     (array_agg(v.nome_fornecedor order by v.data_venda desc nulls last) filter (where v.nome_fornecedor is not null))[1] as nome_fornecedor,
     count(*)::integer as total_vendas_homologadas,
-    count(distinct v.id_certame_origem)::integer as total_certames,
-    count(distinct v.orgao_identificador)::integer as total_orgaos,
+    count(distinct v.compra_id_canonico)::integer as total_certames,
+    count(distinct v.orgao_identificador) filter (where v.orgao_identificador is not null and v.orgao_identificador <> '')::integer as total_orgaos,
     coalesce(sum(v.valor_total), 0)::numeric(18,2) as valor_total_vendido,
     array_agg(distinct upper(trim(v.marca))) filter (where v.marca is not null and trim(v.marca) <> '') as marcas_entregues,
     array_agg(distinct upper(trim(v.fabricante))) filter (where v.fabricante is not null and trim(v.fabricante) <> '') as fabricantes_entregues,
+    array_agg(distinct v.cobertura) filter (where v.cobertura is not null) as coberturas,
     min(v.data_venda) as primeira_venda,
     max(v.data_venda) as ultima_venda
   from vendas_dedup v
@@ -831,6 +897,12 @@ select
     ) then 'media_coincidencia_marca'
     else 'sem_dados'
   end as tipo_fornecedor_confianca,
+  case
+    when 'catmat_oficial' = any(t.coberturas) and 'pdm_oficial' = any(t.coberturas) then 'catmat_e_pdm'
+    when 'catmat_oficial' = any(t.coberturas) then 'catmat_oficial'
+    when 'pdm_oficial' = any(t.coberturas) then 'pdm_oficial'
+    else 'sem_pdm'
+  end as cobertura,
   f.uf as uf_sede,
   f.municipio as municipio_sede,
   f.porte,

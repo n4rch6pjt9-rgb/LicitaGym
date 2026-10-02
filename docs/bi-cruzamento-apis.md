@@ -137,13 +137,12 @@ Ranking de órgãos por volume planejado (PCA) e volume homologado no escopo fit
 |---|---|---|
 | `orgao_cnpj` | `text` | CNPJ do órgão |
 | `orgao_nome` | `text` | Razão social ou nome institucional |
-| `esfera` | `text` | Esfera administrativa (`Federal`, `Estadual`, `Municipal`) |
+| `esfera` | `text` | Esfera administrativa (`Federal`, `Estadual`, `Municipal` ou `null`) |
 | `uf` | `text` | Estado da sede do órgão |
 | `qtd_itens_planejados` | `integer` | Itens planejados no PCA (PCA + PGC) |
-| `valor_total_planejado` | `numeric(18,2)` | Valor total planejado para compras no escopo |
+| `valor_planejado_pca` | `numeric(18,2)` | Valor total planejado para compras no escopo |
 | `qtd_itens_homologados` | `integer` | Itens já homologados/comprados |
-| `valor_total_homologado` | `numeric(18,2)` | Valor total já adquirido pelo órgão |
-| `score_demanda_total` | `numeric(18,2)` | Soma do valor planejado + homologado |
+| `valor_homologado` | `numeric(18,2)` | Valor total já adquirido pelo órgão |
 | `ultima_data_prevista` | `date` | Data mais recente de demanda prevista no PCA |
 | `ultima_data_homologada` | `date` | Data da homologação mais recente |
 
@@ -163,6 +162,7 @@ Visão de 360° por fornecedor, construída exclusivamente sobre certames **ence
 | `tipo_fornecedor` | `text` | `'fabricante'`, `'revenda'` ou `'nao_classificado'` |
 | `tipo_fornecedor_motivo` | `text` | `'cnae_industria'`, `'cnae_comercio'`, `'marca_propria'` ou `'sem_fonte'` |
 | `tipo_fornecedor_confianca`| `text` | Nível de evidência da classificação |
+| `cobertura` | `text` | Grau de cobertura do catálogo (`'catmat_oficial'`, `'pdm_oficial'`, `'catmat_e_pdm'`, `'sem_pdm'`) |
 | `uf_sede` | `text` | UF da sede do fornecedor |
 | `municipio_sede` | `text` | Município da sede |
 | `porte` | `text` | Porte da empresa (`ME`, `EPP`, `Demais`) |
@@ -207,6 +207,19 @@ Visão de 360° por fornecedor, construída exclusivamente sobre certames **ence
   }
 ]
 ```
+
+### 4.6 Regra de Deduplicação Canônica de Vendas Homologadas
+Para garantir que a mesma contratação homologada não seja contabilizada mais de uma vez ao ser ingerida por diferentes trilhos oficiais (ex.: PNCP `licitacao_resultados`, Compras.gov `precos_praticados_itens`, Compras.gov `atas_rp_itens` e `resultados_itens_14133`), a view `v_bi_fornecedor_historico` utiliza uma **chave canônica de venda**:
+
+$$\text{chave} = \text{coalesce}(\text{numero\_controle\_pncp\_compra}, \text{'ext:'} \parallel \text{fonte} \parallel \text{':'} \parallel \text{licitacao\_id}) \parallel \text{':'} \parallel \text{numero\_item} \parallel \text{':'} \parallel \text{cnpj}$$
+
+1. **Ponte Compras.gov $\leftrightarrow$ PNCP (`compras_pncp_bridge`)**:
+   - As tabelas `resultados_itens_14133` e `atas_rp_itens` contêm simultaneamente `id_compra` e `numero_controle_pncp_compra`.
+   - Essa ponte mapeia o `id_compra` de `precos_praticados_itens` diretamente para o `numero_controle_pncp_compra` do PNCP.
+2. **Deduplicação de Atas de Registro de Preço**:
+   - Como uma Ata de Registro de Preço nasce da homologação da compra correspondente, a resolução pelo número de controle PNCP + número do item colapsa o item da ata e o item da compra na mesma linha, evitando dupla contagem de faturamento.
+3. **Preservação de Fontes Externas / Sistema S**:
+   - Linhas do Paradigma e SEST SENAT não possuem número de controle PNCP. Ao resolver como `'ext:' || fonte || ':' || licitacao_id`, essas compras recebem uma chave única e estável (ex.: `'ext:sestsenat:42:1:04372852000160'`), garantindo que **não são fundidas indevidamente nem descartadas**.
 
 ---
 

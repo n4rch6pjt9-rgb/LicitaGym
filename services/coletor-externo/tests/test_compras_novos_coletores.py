@@ -193,3 +193,107 @@ def test_filtro_material_ou_servico_apenas_produtos():
     assert eh_material_ou_produto(item_servico) is False
     assert eh_material_ou_produto(item_material) is True
 
+
+def test_deduplicacao_venda_multiplas_fontes_e_paradigma():
+    """Valida a chave canônica:
+    coalesce(numero_controle_pncp_compra, 'ext:' || fonte || ':' || licitacao_id) + numero_item + cnpj
+    Mesma venda vinda de PNCP, Compras.gov pesquisa de preço e ARP colapsa em 1 linha.
+    Certame Paradigma (Sistema S) sai como linha própria e não é fundido nem descartado.
+    """
+    # 1. Simula a ponte de id_compra -> numero_controle_pncp_compra
+    bridge = {
+        "16021105900032024": "00394429000100-1-000003/2024"
+    }
+
+    # 2. Venda 1 vinda do PNCP (licitacao_resultados)
+    venda_pncp = {
+        "fonte_origem": "licitacao_resultados",
+        "fonte": "pncp",
+        "licitacao_id": 101,
+        "codigo_externo": "00394429000100-1-000003/2024",
+        "numero_item": 1,
+        "cnpj": "04372852000160",
+        "codigo_item": None,
+        "preco_unitario": 9000.0,
+    }
+
+    # 3. Mesma venda vinda do Compras.gov Pesquisa de Preço (precos_praticados_itens)
+    venda_compras_preco = {
+        "fonte_origem": "compras_pesquisa_preco",
+        "id_compra": "16021105900032024",
+        "numero_item": 1,
+        "cnpj": "04372852000160",
+        "codigo_item": 480144,
+        "preco_unitario": 9000.0,
+    }
+
+    # 4. Mesma venda vinda do Compras.gov ARP (atas_rp_itens)
+    venda_compras_arp = {
+        "fonte_origem": "compras_arp",
+        "id_compra": "16021105900032024",
+        "numero_controle_pncp_compra": "00394429000100-1-000003/2024",
+        "numero_item": 1,
+        "cnpj": "04372852000160",
+        "codigo_item": 480144,
+        "preco_unitario": 9000.0,
+    }
+
+    # 5. Certame Paradigma (Sistema S / SEST SENAT) do mesmo fornecedor
+    venda_paradigma = {
+        "fonte_origem": "licitacao_resultados",
+        "fonte": "sestsenat",
+        "licitacao_id": 42,
+        "codigo_externo": None,
+        "numero_item": 1,
+        "cnpj": "04372852000160",
+        "codigo_item": None,
+        "preco_unitario": 8500.0,
+    }
+
+    def calcular_compra_canonico(row: dict) -> str:
+        origem = row.get("fonte_origem")
+        if origem == "licitacao_resultados":
+            cod_ext = row.get("codigo_externo")
+            if cod_ext:
+                return cod_ext
+            return f"ext:{row.get('fonte')}:{row.get('licitacao_id')}"
+        elif origem == "compras_pesquisa_preco":
+            id_c = row.get("id_compra")
+            return bridge.get(id_c, f"ext:compras_gov:{id_c}")
+        elif origem == "compras_arp":
+            return row.get("numero_controle_pncp_compra") or bridge.get(row.get("id_compra"), f"ext:compras_gov:{row.get('id_compra')}")
+        return "desconhecido"
+
+    def chave_canonica(row: dict) -> tuple[str, str, int]:
+        compra_id = calcular_compra_canonico(row)
+        return (row["cnpj"], compra_id, row["numero_item"])
+
+    chave_pncp = chave_canonica(venda_pncp)
+    chave_preco = chave_canonica(venda_compras_preco)
+    chave_arp = chave_canonica(venda_compras_arp)
+    chave_paradigma = chave_canonica(venda_paradigma)
+
+    # PNCP, Compras.gov e ARP devem produzir exatamente a mesma chave
+    assert chave_pncp == ("04372852000160", "00394429000100-1-000003/2024", 1)
+    assert chave_preco == chave_pncp
+    assert chave_arp == chave_pncp
+
+    # Paradigma deve produzir sua própria chave distinta
+    assert chave_paradigma == ("04372852000160", "ext:sestsenat:42", 1)
+    assert chave_paradigma != chave_pncp
+
+    # Deduplicação (simulando DISTINCT ON por chave)
+    todas = [venda_pncp, venda_compras_preco, venda_compras_arp, venda_paradigma]
+    dedup = {}
+    for v in todas:
+        k = chave_canonica(v)
+        # Prioriza linha com código CATMAT preenchido
+        if k not in dedup or (v.get("codigo_item") and not dedup[k].get("codigo_item")):
+            dedup[k] = v
+
+    # Exatamente 2 vendas: 1 da compra pública federal (deduplicada) e 1 do SEST SENAT (preservada)
+    assert len(dedup) == 2
+    assert dedup[chave_pncp]["codigo_item"] == 480144
+    assert dedup[chave_paradigma]["preco_unitario"] == 8500.0
+
+

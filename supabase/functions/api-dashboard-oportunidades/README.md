@@ -199,7 +199,7 @@ Lista oportunidades com suporte a paginação, ordenação configurável e múlt
 | `valor_min` | number | `valor_total >= valor_min` |
 | `valor_max` | number | `valor_total <= valor_max` |
 | `busca` (ou `q`) | string | Busca textual livre em `objeto`, `numero_processo` e `numero_edital` |
-| `catmat_grupo`, `catmat_classe`, `catmat_pdm`, `catmat_item` | int[] (CSV ou array, até 50 cada) | Recorte CATMAT em cascata, resolvido por `public.licitacoes_ids_por_catmat`: casa pelo código numérico do item (`licitacao_itens.catalogo_codigo_item`) ou, sem código, pelos padrões de texto do PDM (`catmat_pdm_palavras`) na descrição do item e no objeto |
+| `catmat_grupo`, `catmat_classe`, `catmat_pdm`, `catmat_item` | int[] (CSV ou array, até 50 cada) | Recorte CATMAT em cascata, resolvido por `public.licitacoes_ids_por_catmat_unica` (wrapper de `public.licitacoes_ids_por_catmat`): casa pelo código numérico do item (`licitacao_itens.catalogo_codigo_item`) ou, sem código, pelos padrões de texto do PDM (`catmat_pdm_palavras`) na descrição do item e no objeto |
 | `catalogo` | boolean | `true` restringe ao catálogo CATMAT da empresa (herança e exclusões de `catalogo_empresa_catmat`) |
 
 Com recorte CATMAT:
@@ -210,6 +210,7 @@ Com recorte CATMAT:
   - `texto_item_aprox` / `taxonomia_aprox`: recorte por item (`catmat_item`) casado por texto ou taxonomia, que identificam o PDM, não o item;
 - com `catalogo=true`, item avulso do catálogo (registrado sem o PDM inteiro) casa só por código: não expande para o texto/taxonomia do PDM;
 - a resolução não trunca (sem `LIMIT` na função); o teto é o de licitações abaixo;
+- uma chamada só por requisição: `licitacoes_ids_por_catmat_unica` devolve uma linha `{ids: bigint[], matches: jsonb}` (ids distintos em ordem crescente e os casamentos), então o `max_rows` do PostgREST não pagina e o `statement_timeout` de 8 s (por chamada, do role `authenticator`) vale uma vez. O casamento por texto vem de `public.licitacao_match`, materializado, depois do backfill; até lá vem do caminho ao vivo, como antes (ver `docs/design/licitacao-match.md`);
 - sem nenhuma licitação: `200` com `items: []` e `total: 0`;
 - acima de 1.000 licitações: os ids são antes reduzidos ao escopo pedido na view da prioridade efetiva (sem filtro, sem `historico`; com `prioridade`, só ela), em lotes de 500; o `422` pedindo um recorte mais restrito só vale se ainda sobrarem mais de 1.000 oportunidades (se não sobrar nenhuma, 200 vazio).
 - statement_timeout do Postgres (`57014`) ao resolver o recorte: `503` com `{"error": "filtro de catálogo indisponível"}` (outros erros seguem `500`).

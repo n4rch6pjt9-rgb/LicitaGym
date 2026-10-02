@@ -19,7 +19,7 @@ import argparse
 import logging
 import sys
 
-from .destino import Armazenamento, Supabase, env, parece_html, sha256
+from .destino import Armazenamento, Supabase, drenar_licitacao_match, env, parece_html, sha256
 from .portal import (SECOES_CONTRATACAO, ArquivoGrande, PortalSestSenat, encerrado, no_escopo_fitness,
                      processo_para_linha)
 
@@ -169,6 +169,7 @@ def main(argv: list[str] | None = None) -> int:
         if not args.ids and vazios >= args.parar_apos_vazios:
             log.info("%s IDs vazios seguidos; fim da varredura.", vazios)
             break
+    drenar_licitacao_match(sb)  # recorte CATMAT por texto: zera a pendência de licitacao_match (sem efeito no dry-run)
     return 1 if falhas_operacionais else 0
 
 

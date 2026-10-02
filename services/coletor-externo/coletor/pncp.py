@@ -38,7 +38,7 @@ from urllib.parse import urljoin, urlsplit
 
 import requests
 
-from .destino import Armazenamento, Supabase, env, parece_html, sha256
+from .destino import Armazenamento, Supabase, drenar_licitacao_match, env, parece_html, sha256
 from . import escopo as _escopo
 from .escopo import (
     PRODUTO,
@@ -1180,6 +1180,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.tam, not args.sem_resultados, args.baixar_arquivos,
                 int(float(env("MAX_MB", "80")) * 1048576), args.dry_run,
                 modo=args.modo, workers=workers)
+    drenar_licitacao_match(sb)  # recorte CATMAT por texto: zera a pendência de licitacao_match (sem efeito no dry-run)
     log.info("RESUMO: %s", r)
     if r.get("falha_busca"):
         log.error("%s busca(s) falharam: %s. Rode de novo o mesmo comando (os upserts são idempotentes).",

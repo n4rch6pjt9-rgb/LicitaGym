@@ -129,10 +129,11 @@ python3 -m coletor.pncp --termos-padrao                    # execução rápida 
 
 Documentos PNCP pendentes (`licitacao_documentos.status_processamento = 'pendente'`): `--baixar-pendentes` baixa pela
 URL guardada, só das licitações nas categorias do escopo (padrão atual do CLI: `catmat,forte,borracha,piso,obra_piso`; `fraco` fica
-fora). Obra não vira lead: `obra_piso` neste filtro de download não promove contrato de obra a `leads`. e opcionalmente filtrando por prioridade efetiva (`--prioridades leads,monitorar`, valores aceitos: `leads`, `monitorar`,
+fora) e opcionalmente filtrando por prioridade efetiva (`--prioridades leads,monitorar`, valores aceitos: `leads`, `monitorar`,
 `historico`, lendo a view `licitacoes_externas_prioridade_efetiva`), grava pelo mesmo destino do coletor
 (`Armazenamento.do_ambiente()`: Supabase Storage com `SUPABASE_STORAGE_BUCKET`, senão GCS, senão local), respeita `MAX_MB`
 e `Retry-After`, e não baixa de novo o que já tem `sha256`. Em 30/09/2026 eram 141 pendentes do PNCP (108 borracha, 22 piso, 2 forte, 9 fraco).
+Obra não vira lead: a categoria `obra_piso` nesse filtro de download não promove contrato de obra a `leads`.
 
 ```bash
 python3 -m coletor.pncp --baixar-pendentes --dry-run                         # lista os elegíveis e detalha por prioridade

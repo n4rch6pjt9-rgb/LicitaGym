@@ -16,8 +16,8 @@
 -- Segurança & ACL:
 -- - RLS ligado em todas as tabelas novas.
 -- - Sem grant para anon em nenhuma tabela ou view.
--- - Tabelas novas: authenticated com SELECT, escrita apenas service_role.
--- - Views de BI: security_invoker = true, sem grant para anon nem authenticated;
+-- - Tabelas novas: SEM grant para authenticated (apenas service_role).
+-- - Views de BI: security_invoker = true, SEM grant para anon nem authenticated;
 --   acesso apenas service_role (via Edge Functions dedicadas).
 -- =============================================================================
 
@@ -85,16 +85,14 @@ create index if not exists idx_pca_pgc_ano on public.pca_pgc_itens (ano_pca_proj
 
 alter table public.pca_pgc_itens enable row level security;
 drop policy if exists pca_pgc_itens_select on public.pca_pgc_itens;
-create policy pca_pgc_itens_select on public.pca_pgc_itens for select to authenticated using (true);
 
 revoke all on table public.pca_pgc_itens from anon, authenticated, PUBLIC;
-grant select on table public.pca_pgc_itens to authenticated;
 grant all on table public.pca_pgc_itens to service_role;
 
 revoke all on sequence public.pca_pgc_itens_id_seq from anon, authenticated, PUBLIC;
 grant all on sequence public.pca_pgc_itens_id_seq to service_role;
 
-comment on table public.pca_pgc_itens is 'Itens do Plano de Contratações Anual do Compras.gov (módulo PGC Detalhe Catálogo). Escrita só service_role; leitura authenticated.';
+comment on table public.pca_pgc_itens is 'Itens do Plano de Contratações Anual do Compras.gov (módulo PGC Detalhe Catálogo). Escrita e leitura restritas a service_role.';
 
 -- -----------------------------------------------------------------------------
 -- 2. precos_praticados_itens (Compras.gov - Pesquisa de Preço)
@@ -160,13 +158,11 @@ create index if not exists precos_praticados_fornecedor_idx on public.precos_pra
 
 alter table public.precos_praticados_itens enable row level security;
 drop policy if exists precos_praticados_itens_select on public.precos_praticados_itens;
-create policy precos_praticados_itens_select on public.precos_praticados_itens for select to authenticated using (true);
 
 revoke all on table public.precos_praticados_itens from anon, authenticated, PUBLIC;
-grant select on table public.precos_praticados_itens to authenticated;
 grant all on table public.precos_praticados_itens to service_role;
 
-comment on table public.precos_praticados_itens is 'Preços efetivamente praticados (homologados) do módulo 03 Pesquisa de Preço do Compras.gov. Escrita só service_role; leitura authenticated.';
+comment on table public.precos_praticados_itens is 'Preços efetivamente praticados (homologados) do módulo 03 Pesquisa de Preço do Compras.gov. Escrita e leitura restritas a service_role.';
 
 -- -----------------------------------------------------------------------------
 -- 3. atas_rp_itens (Compras.gov - Módulo ARP)
@@ -220,16 +216,14 @@ create index if not exists idx_atas_rp_vigencia on public.atas_rp_itens (data_vi
 
 alter table public.atas_rp_itens enable row level security;
 drop policy if exists atas_rp_itens_select on public.atas_rp_itens;
-create policy atas_rp_itens_select on public.atas_rp_itens for select to authenticated using (true);
 
 revoke all on table public.atas_rp_itens from anon, authenticated, PUBLIC;
-grant select on table public.atas_rp_itens to authenticated;
 grant all on table public.atas_rp_itens to service_role;
 
 revoke all on sequence public.atas_rp_itens_id_seq from anon, authenticated, PUBLIC;
 grant all on sequence public.atas_rp_itens_id_seq to service_role;
 
-comment on table public.atas_rp_itens is 'Itens de atas de registro de preço do Compras.gov (módulo ARP). Escrita só service_role; leitura authenticated.';
+comment on table public.atas_rp_itens is 'Itens de atas de registro de preço do Compras.gov (módulo ARP). Escrita e leitura restritas a service_role.';
 
 -- -----------------------------------------------------------------------------
 -- 4. resultados_itens_14133 (Compras.gov - Contratações 14.133)
@@ -250,6 +244,8 @@ create table if not exists public.resultados_itens_14133 (
   nome_fornecedor text,
   porte_fornecedor text,
   natureza_juridica_nome text,
+  material_ou_servico text,
+  tipo_item text,
   quantidade_homologada numeric,
   valor_unitario_homologado numeric(18,4),
   valor_total_homologado numeric(18,4),
@@ -277,16 +273,14 @@ create index if not exists idx_res_14133_data on public.resultados_itens_14133 (
 
 alter table public.resultados_itens_14133 enable row level security;
 drop policy if exists resultados_itens_14133_select on public.resultados_itens_14133;
-create policy resultados_itens_14133_select on public.resultados_itens_14133 for select to authenticated using (true);
 
 revoke all on table public.resultados_itens_14133 from anon, authenticated, PUBLIC;
-grant select on table public.resultados_itens_14133 to authenticated;
 grant all on table public.resultados_itens_14133 to service_role;
 
 revoke all on sequence public.resultados_itens_14133_id_seq from anon, authenticated, PUBLIC;
 grant all on sequence public.resultados_itens_14133_id_seq to service_role;
 
-comment on table public.resultados_itens_14133 is 'Resultados homologados por item da Lei 14.133 (Compras.gov / PNCP). Escrita só service_role; leitura authenticated.';
+comment on table public.resultados_itens_14133 is 'Resultados homologados por item da Lei 14.133 (Compras.gov / PNCP). Escrita e leitura restritas a service_role.';
 
 -- -----------------------------------------------------------------------------
 -- 5. Extensão de contratacoes_atas (adiciona ni_fornecedor e colunas úteis)
@@ -483,6 +477,7 @@ comment on view public.v_bi_atas_vencendo is 'Atas de registro de preço no esco
 
 -- 6.4 v_bi_orgaos_match
 -- Ranking de órgãos por valor planejado (PCA) + valor homologado/pago em compras no escopo fitness.
+-- Apenas materiais/produtos do escopo CATMAT (nunca serviços).
 create or replace view public.v_bi_orgaos_match
 with (security_invoker = true) as
 with pdms_escopo as (
@@ -514,6 +509,7 @@ pago_por_orgao as (
 ),
 homologado_por_orgao as (
   -- Resultados homologados do LicitaGym (licitacoes_externas x licitacao_resultados)
+  -- Apenas produtos/materiais (material_ou_servico = 'M' ou nulo de compras de produtos)
   select
     regexp_replace(coalesce(l.orgao_cnpj, ''), '\D', '', 'g') as orgao_cnpj,
     coalesce(l.orgao_nome, l.unidade_compradora) as orgao_nome,
@@ -530,6 +526,7 @@ homologado_por_orgao as (
   where r.vencedor is distinct from false
     and coalesce(r.situacao, '') <> 'Cancelado'
     and (l.data_homologacao is not null or l.situacao ~* '(homologad|adjudicad|encerrad|conclu[ií]d|finalizad)')
+    and coalesce(li.material_ou_servico, 'M') = 'M'
     and coalesce(ci.codigo_pdm::integer, w.codigo_pdm) in (select codigo_pdm from pdms_escopo)
   group by regexp_replace(coalesce(l.orgao_cnpj, ''), '\D', '', 'g'), coalesce(l.orgao_nome, l.unidade_compradora), l.uf
 ),
@@ -561,6 +558,7 @@ comment on view public.v_bi_orgaos_match is 'Ranking consolidado de órgãos por
 -- 6.5 v_bi_fornecedor_historico
 -- Visão central de inteligência de concorrentes e fornecedores históricos no escopo fitness.
 -- Apenas resultados de certames ENCERRADOS/HOMOLOGADOS (prioridade = historico).
+-- Apenas produtos/materiais (nunca serviços).
 create or replace view public.v_bi_fornecedor_historico
 with (security_invoker = true) as
 with pdms_escopo as (
@@ -603,9 +601,10 @@ f_resultados as (
     and r.vencedor is distinct from false
     and coalesce(r.situacao, '') <> 'Cancelado'
     and (l.data_homologacao is not null or l.situacao ~* '(homologad|adjudicad|encerrad|conclu[ií]d|finalizad)')
+    and coalesce(li.material_ou_servico, 'M') = 'M'
     and coalesce(ci.codigo_pdm::integer, kw.codigo_pdm) in (select codigo_pdm from pdms_escopo)
 ),
--- Origem 2: precos_praticados_itens (módulo Pesquisa de Preço Compras.gov - já homologados)
+-- Origem 2: precos_praticados_itens (módulo Pesquisa de Preço Compras.gov - já homologados de materiais)
 f_precos as (
   select
     regexp_replace(p.ni_fornecedor, '\D', '', 'g') as cnpj,
@@ -635,7 +634,7 @@ f_precos as (
     and p.preco_unitario > 0
     and coalesce(nullif(p.codigo_pdm, '')::integer, ci.codigo_pdm::integer) in (select codigo_pdm from pdms_escopo)
 ),
--- Origem 3: atas_rp_itens (módulo ARP Compras.gov - homologadas)
+-- Origem 3: atas_rp_itens (módulo ARP Compras.gov - homologadas de materiais)
 f_atas as (
   select
     regexp_replace(a.ni_fornecedor, '\D', '', 'g') as cnpj,
@@ -661,9 +660,10 @@ f_atas as (
   from public.atas_rp_itens a
   left join public.catmat_itens ci on ci.codigo_item = a.codigo_item
   where a.ni_fornecedor is not null
+    and coalesce(a.tipo_item, 'Material') ~* 'material'
     and coalesce(nullif(a.codigo_pdm, '')::integer, ci.codigo_pdm::integer) in (select codigo_pdm from pdms_escopo)
 ),
--- Origem 4: resultados_itens_14133
+-- Origem 4: resultados_itens_14133 (Apenas materiais/produtos)
 f_14133 as (
   select
     regexp_replace(res.ni_fornecedor, '\D', '', 'g') as cnpj,
@@ -690,6 +690,8 @@ f_14133 as (
   left join public.catmat_itens ci on ci.codigo_item = res.codigo_item_catalogo
   where res.ni_fornecedor is not null
     and coalesce(res.situacao_compra_item_resultado_nome, '') <> 'Cancelado'
+    -- Filtro estrito: somente produtos/materiais, nunca servicos
+    and coalesce(res.material_ou_servico, res.tipo_item, 'M') ~* '^(m|material)'
     and coalesce(nullif(res.codigo_pdm, '')::integer, ci.codigo_pdm::integer) in (select codigo_pdm from pdms_escopo)
 ),
 todas_vendas as (

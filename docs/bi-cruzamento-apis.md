@@ -233,6 +233,14 @@ Para manter a consistência relacional e alimentar o BI sem inconsistências, a 
 ## 6. Diagnóstico de Governança e Permissões Pré-existentes
 
 Conforme identificado na auditoria do schema:
-- As tabelas e views pré-existentes `v_bi_resultados_itens`, `v_fornecedor_participacoes` e `contratacoes_*` possuem privilégio `SELECT` atribuído à role `authenticated` por migrations históricas.
-- Em respeito aos limites rígidos do PR (não revogar permissões históricas em produção sem aprovação prévia), essas políticas foram mantidas inalteradas.
-- **Todas as novas views criadas neste PR (`v_bi_*`) seguem o padrão fechado de segurança: `security_invoker = true`, sem grant para `anon` e sem grant para `authenticated`, acessíveis exclusivamente por `service_role`**.
+- **Tabelas e views novas deste PR (`pca_pgc_itens`, `precos_praticados_itens`, `atas_rp_itens`, `resultados_itens_14133` e `v_bi_*`)**:
+  - RLS ativado.
+  - **SEM grant para `anon` e SEM grant para `authenticated`**.
+  - Acesso estrito e exclusivo por `service_role`.
+- **Tabelas e views legadas/históricas**:
+  - `v_bi_resultados_itens`, `v_fornecedor_participacoes` e `contratacoes_*` possuem privilégio `SELECT` atribuído à role `authenticated` por migrations históricas.
+  - Conforme os limites rígidos do PR (não revogar permissões históricas em produção sem aprovação prévia), essas políticas foram mantidas inalteradas e registradas como pendência para futura sanitização.
+- **Ação `historico` na Edge Function `api-fornecedores-homologados`**:
+  - Endpoint seguro que recebe `{ action: 'historico', cnpj: '...' }`.
+  - Valida JWT de usuário logado (fail-closed) sem chaves em código.
+  - Acessa `public.v_bi_fornecedor_historico` via `service_role` e retorna o raio-x completo do fornecedor para o Dashboard.

@@ -1,8 +1,8 @@
 -- Verificação de integridade e ACL da migration 20261002100000_bi_cruzamento_apis.sql
 -- Valida:
--- 1. Tabelas novas criadas com RLS ligado e sem grant para anon
--- 2. Views novas criadas com security_invoker = true e sem grant para anon nem authenticated
--- 3. Sequence grants restritos a service_role
+-- 1. Tabelas novas criadas com RLS ligado, SEM grant para anon e SEM grant para authenticated (apenas service_role)
+-- 2. Views novas criadas com security_invoker = true, SEM grant para anon e SEM grant para authenticated (apenas service_role)
+-- 3. Sequence grants restritos a service_role (anon e authenticated sem privilégios)
 -- 4. Colunas de fornecedor/marca/fabricante/modelo presentes nas tabelas
 
 do $$
@@ -28,7 +28,7 @@ declare
   v_obj text;
   v_priv text;
 begin
-  -- 1. Verifica tabelas
+  -- 1. Verifica tabelas novas: RLS ligado, nenhum privilégio para anon nem authenticated, CRUD total para service_role
   foreach v_obj in array v_tabelas loop
     if to_regclass(v_obj) is null then
       raise exception 'ACL CHECK FALHOU: tabela % não existe', v_obj;
@@ -42,17 +42,10 @@ begin
       if has_table_privilege('anon', v_obj, v_priv) then
         raise exception 'ACL CHECK FALHOU: anon possui % em %', v_priv, v_obj;
       end if;
-    end loop;
-
-    foreach v_priv in array array['INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER'] loop
       if has_table_privilege('authenticated', v_obj, v_priv) then
-        raise exception 'ACL CHECK FALHOU: authenticated possui % em %', v_priv, v_obj;
+        raise exception 'ACL CHECK FALHOU: authenticated possui % em % (tabelas devem ser exclusivas de service_role)', v_priv, v_obj;
       end if;
     end loop;
-
-    if not has_table_privilege('authenticated', v_obj, 'SELECT') then
-      raise exception 'ACL CHECK FALHOU: authenticated sem SELECT em %', v_obj;
-    end if;
 
     if not (has_table_privilege('service_role', v_obj, 'SELECT')
             and has_table_privilege('service_role', v_obj, 'INSERT')
@@ -62,7 +55,7 @@ begin
     end if;
   end loop;
 
-  -- 2. Verifica views de BI
+  -- 2. Verifica views de BI: security_invoker = true, nenhum privilégio para anon nem authenticated, SELECT apenas para service_role
   foreach v_obj in array v_views loop
     if to_regclass(v_obj) is null then
       raise exception 'ACL CHECK FALHOU: view % não existe', v_obj;
@@ -78,7 +71,7 @@ begin
         raise exception 'ACL CHECK FALHOU: anon possui % na view %', v_priv, v_obj;
       end if;
       if has_table_privilege('authenticated', v_obj, v_priv) then
-        raise exception 'ACL CHECK FALHOU: authenticated possui % na view % (deve ser restrita a service_role)', v_priv, v_obj;
+        raise exception 'ACL CHECK FALHOU: authenticated possui % na view % (views de BI devem ser exclusivas de service_role)', v_priv, v_obj;
       end if;
     end loop;
 
@@ -87,7 +80,7 @@ begin
     end if;
   end loop;
 
-  -- 3. Verifica sequences
+  -- 3. Verifica sequences: sem grant para anon nem authenticated
   foreach v_obj in array v_seqs loop
     if to_regclass(v_obj) is not null then
       if has_sequence_privilege('anon', v_obj, 'USAGE') or has_sequence_privilege('anon', v_obj, 'SELECT')
@@ -106,6 +99,9 @@ begin
   end if;
   if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'atas_rp_itens' and column_name = 'ni_fornecedor') then
     raise exception 'COLUNA CHECK FALHOU: atas_rp_itens sem coluna ni_fornecedor';
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'resultados_itens_14133' and column_name = 'material_ou_servico') then
+    raise exception 'COLUNA CHECK FALHOU: resultados_itens_14133 sem coluna material_ou_servico';
   end if;
   if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'contratacoes_atas' and column_name = 'ni_fornecedor') then
     raise exception 'COLUNA CHECK FALHOU: contratacoes_atas sem coluna ni_fornecedor';

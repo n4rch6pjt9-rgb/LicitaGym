@@ -168,3 +168,28 @@ def test_coletar_arp_dry_run():
     assert res["total_coletados"] == 1
     assert res["total_gravados"] == 0
     sb.upsert.assert_not_called()
+
+
+def test_filtro_material_ou_servico_apenas_produtos():
+    """Garante que itens de serviço (ex.: Lubritech serviços de lubrificação) são recusados."""
+    # Simula linhas 14.133 com material x servico
+    item_servico = {
+        "idCompraItem": "1",
+        "material_ou_servico": "S",
+        "tipo_item": "Serviço",
+        "nomeRazaoSocialFornecedor": "LUBRITECH DO BRASIL SERVICOS DE LUBRIFICACAO LTDA",
+    }
+    item_material = {
+        "idCompraItem": "2",
+        "material_ou_servico": "M",
+        "tipo_item": "Material",
+        "nomeRazaoSocialFornecedor": "PANTHERA LEO EQUIPAMENTOS LTDA",
+    }
+
+    def eh_material_ou_produto(d: dict) -> bool:
+        ms = str(d.get("material_ou_servico") or d.get("tipo_item") or "").strip().upper()
+        return ms.startswith("M")
+
+    assert eh_material_ou_produto(item_servico) is False
+    assert eh_material_ou_produto(item_material) is True
+

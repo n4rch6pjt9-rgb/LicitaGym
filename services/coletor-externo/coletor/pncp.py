@@ -54,10 +54,10 @@ from .escopo import (
     so_tatame,
 )
 from .portal import cnpj_ou_none
+from .retry import MAX_RETRY_AFTER_S, retry_after_s as _retry_after_s  # noqa: F401 (reexport)
 
 log = logging.getLogger("pncp")
 BASE = "https://pncp.gov.br"
-MAX_RETRY_AFTER_S = 60
 CATEGORIAS_PADRAO_DOWNLOAD = "catmat,forte,borracha,piso,obra_piso"
 PRIORIDADES_VALIDAS = frozenset({"leads", "monitorar", "historico"})
 # Downloads só de https nestes hosts (match exato, sem subdomínio). A URL vem do banco
@@ -92,14 +92,6 @@ def url_permitida(url: str | None, hosts: tuple[str, ...] | None = None) -> bool
 class ConsultaFalhou(RuntimeError):
     """Consulta ao PNCP falhou (timeout, 429/5xx esgotados, resposta inválida).
     Diferente de resposta válida sem o dado: quem recebe não deve gravar nada."""
-
-
-def _retry_after_s(r) -> float | None:
-    try:
-        v = float((r.headers or {}).get("Retry-After", ""))
-    except (TypeError, ValueError, AttributeError):
-        return None
-    return max(0.0, min(v, MAX_RETRY_AFTER_S))
 
 
 def validar_prioridades(prioridades: list[str] | set[str] | str | None) -> set[str] | None:

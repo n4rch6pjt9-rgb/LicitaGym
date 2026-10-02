@@ -22,6 +22,7 @@ from typing import Any
 import requests
 
 from .destino import Supabase, env
+from .retry import espera_retry
 
 log = logging.getLogger("coletor.compras_pgc")
 
@@ -144,18 +145,18 @@ class ClienteComprasPGC:
                 if r.status_code == 404:
                     return {"resultado": [], "totalRegistros": 0}
                 if r.status_code in (429, 502, 503, 504):
-                    espera = tentativa * 3.0
-                    log.warning("HTTP %d em PGC classe %d (tentativa %d), esperando %.1fs...", r.status_code, classe, tentativa, espera)
-                    time.sleep(espera)
                     if tentativa == 3:
                         raise RuntimeError(f"HTTP {r.status_code} esgotado em PGC classe {classe}")
+                    espera = espera_retry(r, tentativa, base=3.0)
+                    log.warning("HTTP %d em PGC classe %d (tentativa %d), esperando %.1fs...", r.status_code, classe, tentativa, espera)
+                    time.sleep(espera)
                     continue
                 r.raise_for_status()
             except requests.RequestException as e:
                 log.warning("Falha de rede em PGC classe %d tentativa %d: %s", classe, tentativa, e)
                 if tentativa == 3:
                     raise
-                time.sleep(tentativa * 2.0)
+                time.sleep(espera_retry(None, tentativa, base=2.0))
         raise RuntimeError(f"Falha ao consultar PGC classe {classe} após retries")
 
 

@@ -26,7 +26,9 @@ from typing import Any
 
 import requests
 
+from .compras_pdms import CatalogoPdmsIndisponivel, carregar_pdms_efetivos
 from .destino import Supabase, env
+from .retry import espera_retry
 
 log = logging.getLogger("coletor.compras_precos")
 
@@ -148,18 +150,18 @@ class ClienteComprasPrecos:
                 if r.status_code == 404:
                     return {"resultado": [], "totalRegistros": 0}
                 if r.status_code in (429, 502, 503, 504):
-                    espera = tentativa * 3.0
-                    log.warning("HTTP %d em Pesquisa Preco %s=%d (tentativa %d), aguardando %.1fs...", r.status_code, tipo, codigo, tentativa, espera)
-                    time.sleep(espera)
                     if tentativa == 3:
                         raise RuntimeError(f"HTTP {r.status_code} esgotado em Pesquisa Preco {tipo}={codigo}")
+                    espera = espera_retry(r, tentativa, base=3.0)
+                    log.warning("HTTP %d em Pesquisa Preco %s=%d (tentativa %d), aguardando %.1fs...", r.status_code, tipo, codigo, tentativa, espera)
+                    time.sleep(espera)
                     continue
                 r.raise_for_status()
             except requests.RequestException as e:
                 log.warning("Falha de rede em Pesquisa Preco %s=%d tentativa %d: %s", tipo, codigo, tentativa, e)
                 if tentativa == 3:
                     raise
-                time.sleep(tentativa * 2.0)
+                time.sleep(espera_retry(None, tentativa, base=2.0))
         raise RuntimeError(f"Falha ao consultar Pesquisa Preco {tipo}={codigo} após retries")
 
 
@@ -184,16 +186,26 @@ def coletar(
         for p in pdms:
             consultas.append(("codigoPdm", p))
     if not consultas:
-        pdms_efetivos = None
-        if sb is not None:
+        if sb is None:
+            # Sem banco (dry-run sem --pdms/--itens): única situação em que a lista fixa é usada.
+            pdms_efetivos = list(PDMS_PADRAO)
+        else:
+            # Com banco, só o catálogo efetivo: falha/resposta inválida da RPC falha a coleta, sem PDMS_PADRAO.
             try:
-                res_rpc = sb.rpc("catalogo_catmat_pdms_efetivos", {})
-                if res_rpc and isinstance(res_rpc, list):
-                    pdms_efetivos = [int(r["codigo_pdm"]) for r in res_rpc if r.get("codigo_pdm")]
-                    log.info("Carregados %d PDMs efetivos do catálogo da empresa via RPC", len(pdms_efetivos))
-            except Exception as e:
-                log.warning("Não foi possível carregar catalogo_catmat_pdms_efetivos (fallback para PDMs padrão): %s", e)
-        for p in (pdms_efetivos or PDMS_PADRAO):
+                pdms_efetivos = carregar_pdms_efetivos(sb)
+            except CatalogoPdmsIndisponivel as e:
+                log.error("Coleta de Pesquisa de Preço abortada: %s", e)
+                return {
+                    "sucesso": False,
+                    "erro": str(e),
+                    "total_coletados": 0,
+                    "total_gravados": 0,
+                    "erros": 1,
+                    "amostras": [],
+                }
+            if not pdms_efetivos:
+                log.warning("Catálogo de PDMs efetivos vazio: coleta de Pesquisa de Preço sem consultas")
+        for p in pdms_efetivos:
             consultas.append(("codigoPdm", p))
 
     for tipo, cod in consultas:

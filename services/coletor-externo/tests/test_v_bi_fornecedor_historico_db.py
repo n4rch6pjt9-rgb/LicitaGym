@@ -7,7 +7,7 @@ import pytest
 
 def test_v_bi_fornecedor_historico_dedup_real():
     """Valida a view v_bi_fornecedor_historico contra banco PostgreSQL local:
-    1. Deduplicação federal PNCP + Compras.gov (link_sistema_origem -> 16021105900032024): 1 venda / 1 certame.
+    1. Deduplicação federal PNCP + Compras.gov (link_sistema_origem -> 99999999900012026): 1 venda / 1 certame.
     2. Sistema S / Paradigma (3 certames com mesmo nCdProcesso e CNPJ: 2 tenants + 1 mesmo tenant outro módulo): 3 vendas / 3 certames.
     """
     if shutil.which("psql") is None:

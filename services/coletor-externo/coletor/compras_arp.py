@@ -21,7 +21,9 @@ from typing import Any
 
 import requests
 
+from .compras_pdms import CatalogoPdmsIndisponivel, carregar_pdms_efetivos
 from .destino import Supabase, env
+from .retry import espera_retry
 
 log = logging.getLogger("coletor.compras_arp")
 
@@ -138,18 +140,18 @@ class ClienteComprasARP:
                 if r.status_code == 404:
                     return {"resultado": [], "totalRegistros": 0}
                 if r.status_code in (429, 502, 503, 504):
-                    espera = tentativa * 4.0
-                    log.warning("HTTP %d em ARP PDM %d (tentativa %d), aguardando %.1fs...", r.status_code, codigo_pdm, tentativa, espera)
-                    time.sleep(espera)
                     if tentativa == 3:
                         raise RuntimeError(f"HTTP {r.status_code} esgotado em ARP PDM {codigo_pdm}")
+                    espera = espera_retry(r, tentativa, base=4.0)
+                    log.warning("HTTP %d em ARP PDM %d (tentativa %d), aguardando %.1fs...", r.status_code, codigo_pdm, tentativa, espera)
+                    time.sleep(espera)
                     continue
                 r.raise_for_status()
             except requests.RequestException as e:
                 log.warning("Falha de rede em ARP PDM %d tentativa %d: %s", codigo_pdm, tentativa, e)
                 if tentativa == 3:
                     raise
-                time.sleep(tentativa * 3.0)
+                time.sleep(espera_retry(None, tentativa, base=3.0))
         raise RuntimeError(f"Falha ao consultar ARP PDM {codigo_pdm} após retries")
 
 
@@ -256,13 +258,16 @@ def main(argv: list[str] | None = None) -> int:
 
     pdms_finais = pdms
     if not args.pdms and sb is not None:
+        # Com banco, a lista vem só do catálogo efetivo: falha da RPC encerra o job com erro (sem PDMS_PADRAO).
         try:
-            res_rpc = sb.rpc("catalogo_catmat_pdms_efetivos", {})
-            if res_rpc and isinstance(res_rpc, list):
-                pdms_finais = [int(r["codigo_pdm"]) for r in res_rpc if r.get("codigo_pdm")]
-                log.info("Carregados %d PDMs efetivos para ARP", len(pdms_finais))
-        except Exception as e:
-            log.warning("Falha ao carregar PDMs efetivos para ARP (usando padrão): %s", e)
+            pdms_finais = carregar_pdms_efetivos(sb)
+        except CatalogoPdmsIndisponivel as e:
+            log.error("Coleta ARP abortada: %s", e)
+            print(json.dumps({"sucesso": False, "erro": str(e), "total_coletados": 0, "total_gravados": 0,
+                              "erros": 1, "amostras": []}, indent=2, ensure_ascii=False))
+            return 1
+        if not pdms_finais:
+            log.warning("Catálogo de PDMs efetivos vazio: coleta ARP sem consultas")
 
     res = coletar(cliente, sb, pdms=pdms_finais, data_min=data_min, data_max=data_max, limite=args.limite, dry_run=args.dry_run)
     print(json.dumps(res, indent=2, ensure_ascii=False))

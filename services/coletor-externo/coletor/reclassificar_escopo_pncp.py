@@ -17,11 +17,20 @@ backfill_prioridade_pncp: sem o detalhe do PNCP não sai de historico e nunca pr
 Compra que sai do escopo: categoria_escopo=NULL, interesse_borracha=false e prioridade=NULL (sai de
 Oportunidades/leads sem apagar a linha nem os itens/documentos; nada é deletado).
 
+Fase (02/10/2026): licitacoes_externas.fase recebe a fase real (coletor.pncp.fase_da_compra): homologação,
+revogação/anulação e suspensão publicadas só como documento da compra (licitacao_documentos gravados; documento
+de contrato/ata não conta), prazo implausível (2604, 9999 -> monitorar, nunca leads) e, com --consultar-detalhe,
+compra excluída do PNCP (detalhe HTTP 410 -> historico). `situacao` continua a oficial do PNCP. A fase só é
+gravada quando a prioridade nova passa pelas travas (senão ficaria rótulo de uma prioridade que não foi gravada).
+Com --consultar-detalhe (GET público no detalhe, só das linhas leads/monitorar no escopo) o estado do detalhe
+entra na conta e as travas "sem detalhe" deixam de valer, como no coletor.
+
 Padrão: DRY-RUN (só SELECT; o cliente do Supabase fica embrulhado em modo somente leitura). Para gravar: --apply.
   export SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=...     # nunca no código
   python -m coletor.reclassificar_escopo_pncp --consultar-pncp                       # dry-run, todas as PNCP
   python -m coletor.reclassificar_escopo_pncp --consultar-pncp --id-min 50 --id-max 556 --termo puxador
   python -m coletor.reclassificar_escopo_pncp --consultar-pncp --apply               # grava
+  python -m coletor.reclassificar_escopo_pncp --consultar-pncp --consultar-detalhe   # + 410/estado do detalhe
 """
 from __future__ import annotations
 
@@ -34,19 +43,21 @@ from datetime import datetime, timezone
 
 from .destino import Supabase, env
 from .escopo import classificar, excluir_compra, objeto_passagem, servico_sem_material
-from .pncp import PNCP, avaliar, compra_de_codigo, motivo_prioridade
+from .pncp import (PNCP, CompraExcluida, avaliar, compra_com_detalhe, compra_de_codigo, consultar_detalhe,
+                   fase_da_compra)
 
 log = logging.getLogger("coletor.reclassificar_escopo_pncp")
 
 # Os itens NÃO vêm embutidos no SELECT das compras: o PostgREST corta o recurso embutido em max-rows (1000) e as
 # compras com mais itens (#794: 2668, #799: 5357 em 01/10/2026) eram reavaliadas só pelos 1000 primeiros.
 # Os itens são lidos à parte, paginados (Supabase.selecionar pagina por offset), em lotes de compras.
-SELECT = ("id,codigo_externo,objeto,categoria_escopo,interesse_borracha,prioridade,situacao,data_homologacao,"
+SELECT = ("id,codigo_externo,objeto,categoria_escopo,interesse_borracha,prioridade,situacao,fase,data_homologacao,"
           "data_fim,termos_busca,created_at,raw")
 # material_ou_servico entra para a regra de item de serviço ('S') de pncp.avaliar valer na reclassificação também.
 SELECT_ITENS = ("id,licitacao_id,numero_item,descricao,material_ou_servico,situacao,tem_resultado,categoria_escopo,"
                 "interesse_borracha")
 LOTE_COMPRAS_ITENS = 50
+SELECT_DOCUMENTOS = "licitacao_id,nome_original,data_documento,raw"
 
 
 class SomenteLeitura:
@@ -87,6 +98,29 @@ def carregar_itens(sb, linhas: list[dict], lote: int = LOTE_COMPRAS_ITENS) -> in
     return total
 
 
+def carregar_documentos(sb, linhas: list[dict], lote: int = LOTE_COMPRAS_ITENS) -> int:
+    """Preenche ln["_documentos"] com os documentos gravados da compra (só título, tipo e data: o sinal de
+    fase vem do nome). data_documento foi gravado com o horário de Brasília rotulado como UTC (pncp._data),
+    então o fuso é descartado e a data volta a ser lida como Brasília, igual a data_atualizacao_pncp."""
+    por_compra: dict[int, list[dict]] = {ln["id"]: [] for ln in linhas}
+    ids = list(por_compra)
+    total = 0
+    for i in range(0, len(ids), lote):
+        bloco = ids[i:i + lote]
+        docs = sb.selecionar("licitacao_documentos", select=SELECT_DOCUMENTOS,
+                             licitacao_id="in.(" + ",".join(str(x) for x in bloco) + ")", order="licitacao_id,id")
+        for d in docs:
+            if d.get("licitacao_id") in por_compra:
+                raw = d.get("raw") if isinstance(d.get("raw"), dict) else {}
+                por_compra[d["licitacao_id"]].append({
+                    "nome_original": d.get("nome_original"), "tipo_documento": raw.get("tipo_documento"),
+                    "data_documento": str(d["data_documento"])[:19] if d.get("data_documento") else None})
+                total += 1
+    for ln in linhas:
+        ln["_documentos"] = por_compra[ln["id"]]
+    return total
+
+
 def _itens_gravados(ln: dict) -> list[dict]:
     return [{"numeroItem": it["numero_item"], "descricao": it.get("descricao"), "situacao": it.get("situacao"),
              "materialOuServico": it.get("material_ou_servico"),
@@ -95,21 +129,30 @@ def _itens_gravados(ln: dict) -> list[dict]:
             for it in (ln.get("licitacao_itens") or [])]
 
 
-def _nova_prioridade(ln: dict, itens: list[dict] | None, agora: datetime) -> tuple[str | None, str, str | None]:
-    """(prioridade a gravar ou None = não mexe, motivo, trava aplicada)."""
+def _nova_prioridade(ln: dict, itens: list[dict] | None, agora: datetime, det: dict | None = None,
+                     excluida: bool = False) -> tuple[str | None, str, str | None, str | None]:
+    """(prioridade a gravar ou None = não mexe, motivo, trava aplicada, fase a gravar ou None = não mexe).
+    Sem o detalhe: nunca sai de historico nem promove a leads (fail-closed). Com o detalhe (--consultar-detalhe),
+    como no coletor, o estado do detalhe vence e as travas não se aplicam."""
     atual = ln.get("prioridade")
-    base = {k: v for k, v in ln.items() if k not in ("prioridade", "licitacao_itens")}
-    nova, motivo = motivo_prioridade(base, agora=agora, itens=itens or None)
+    base = {k: v for k, v in ln.items() if k not in ("prioridade", "fase", "licitacao_itens", "_documentos")}
+    raw = ln.get("raw") if isinstance(ln.get("raw"), dict) else {}
+    fase, nova, motivo = fase_da_compra(
+        compra_com_detalhe(base, det), agora=agora, itens=itens or None, documentos=ln.get("_documentos"),
+        retificada_em=(det or {}).get("dataAtualizacao") or raw.get("data_atualizacao_pncp"), excluida=excluida)
     if nova is None:
-        return None, motivo, "indeterminada"
-    if atual == "historico" and nova != "historico":
-        return None, motivo, "historico_mantido_sem_detalhe"
-    if nova == "leads" and atual != "leads":
-        return None, motivo, "leads_sem_detalhe"
-    return (nova if nova != atual else None), motivo, None
+        return None, motivo, "indeterminada", None
+    if det is None and not excluida:
+        if atual == "historico" and nova != "historico":
+            return None, motivo, "historico_mantido_sem_detalhe", None
+        if nova == "leads" and atual != "leads":
+            return None, motivo, "leads_sem_detalhe", None
+    fase_nova = fase if fase is not None and fase != ln.get("fase") else None
+    return (nova if nova != atual else None), motivo, None, fase_nova
 
 
-def reavaliar(ln: dict, itens_pncp: list[dict] | None, agora: datetime) -> dict:
+def reavaliar(ln: dict, itens_pncp: list[dict] | None, agora: datetime, det: dict | None = None,
+              excluida: bool = False) -> dict:
     """Resultado para UMA linha: {status, categoria, interesse, prioridade, campos, itens_campos, ...}.
     status: sem_itens | sem_mudanca | sai_do_escopo | muda."""
     atual_cat, atual_ib, atual_prio = ln.get("categoria_escopo"), bool(ln.get("interesse_borracha")), ln.get("prioridade")
@@ -157,10 +200,13 @@ def reavaliar(ln: dict, itens_pncp: list[dict] | None, agora: datetime) -> dict:
         campos["categoria_escopo"] = cat
     if bool(ib) != atual_ib:
         campos["interesse_borracha"] = bool(ib)
-    prio, motivo, trava = _nova_prioridade(ln, itens, agora)
+    prio, motivo, trava, fase = _nova_prioridade(ln, itens, agora, det, excluida)
     if prio is not None:
         campos["prioridade"] = prio
+    if fase is not None:
+        campos["fase"] = fase
     out.update(prioridade_depois=prio or atual_prio, motivo=motivo, trava_prioridade=trava, campos=campos,
+               fase_antes=ln.get("fase"), fase_depois=fase or ln.get("fase"),
                status="muda" if campos or out["itens_campos"] else "sem_mudanca")
     return out
 
@@ -194,6 +240,19 @@ def _buscar_itens(pncp, ln: dict) -> tuple[list[dict] | None, str | None]:
         return None, str(e)[:160]
 
 
+def _buscar_detalhe(pncp, ln: dict) -> tuple[dict | None, bool, str | None]:
+    """(detalhe, excluída do PNCP, erro). Falha comum: (None, False, erro) e a linha segue sem o detalhe."""
+    c = compra_de_codigo(ln.get("codigo_externo"))
+    if not c:
+        return None, False, f"codigo_externo inválido: {ln.get('codigo_externo')!r}"
+    try:
+        return consultar_detalhe(pncp, c), False, None
+    except CompraExcluida as e:
+        return None, True, None
+    except Exception as e:  # ConsultaFalhou: segue com as travas de "sem detalhe"
+        return None, False, str(e)[:160]
+
+
 def _filtros(id_min, id_max, desde, termo, limite) -> dict:
     f = {"select": SELECT, "fonte": "eq.pncp", "order": "id"}
     ids = [f"gte.{id_min}"] if id_min is not None else []
@@ -212,7 +271,8 @@ def _filtros(id_min, id_max, desde, termo, limite) -> dict:
     return f
 
 
-def reclassificar(sb, pncp=None, *, aplicar: bool = False, consultar_pncp: bool = False, id_min: int | None = None,
+def reclassificar(sb, pncp=None, *, aplicar: bool = False, consultar_pncp: bool = False,
+                  consultar_detalhe_pncp: bool = False, id_min: int | None = None,
                   id_max: int | None = None, desde: str | None = None, termo: str | None = None,
                   limite: int | None = None, amostra: int = 5, agora: datetime | None = None,
                   workers: int = 1, cache_itens: dict | None = None, salvar_cache=None) -> dict:
@@ -221,10 +281,12 @@ def reclassificar(sb, pncp=None, *, aplicar: bool = False, consultar_pncp: bool 
     agora = agora or datetime.now(timezone.utc)
     linhas = sb.selecionar("licitacoes_externas", **_filtros(id_min, id_max, desde, termo, limite))
     n_itens = carregar_itens(sb, linhas)
-    log.info("%d compra(s), %d item(ns) gravado(s) lidos", len(linhas), n_itens)
+    n_docs = carregar_documentos(sb, linhas)
+    log.info("%d compra(s), %d item(ns) e %d documento(s) gravado(s) lidos", len(linhas), n_itens, n_docs)
     r = {"lidas": len(linhas), "itens_lidos": n_itens, "itens_gravados": 0, "itens_pncp": 0, "decididas_pelo_objeto": 0, "falha_consulta": 0, "sem_itens": 0,
          "sem_mudanca": 0, "sai_do_escopo": 0, "sai_dos_leads": 0, "muda": 0, "muda_categoria": 0,
          "muda_interesse": 0, "muda_prioridade": 0, "itens_mudariam": 0, "gravadas": 0,
+         "muda_fase": 0, "transicoes_fase": {}, "excluidas_do_pncp": 0, "falha_detalhe": 0, "detalhes_consultados": 0,
          "trava_prioridade": {}, "transicoes_categoria": {}, "transicoes_prioridade": {},
          "sai_do_escopo_por_categoria": {}, "amostra": {}, "linhas": []}
 
@@ -248,6 +310,21 @@ def reclassificar(sb, pncp=None, *, aplicar: bool = False, consultar_pncp: bool 
                 if salvar_cache and n % 10 == 0:
                     salvar_cache(cache_itens)
 
+    # Detalhe só das linhas que hoje aparecem em Oportunidades (leads/monitorar) e seguem no escopo: é onde
+    # um 410 ou o estado do detalhe muda o que o Marcelo vê. ~1 req/s; o PNCP devolve 429 em rajada.
+    detalhes: dict[int, tuple[dict | None, bool, str | None]] = {}
+    if consultar_detalhe_pncp and pncp is not None:
+        alvo = [ln for ln in linhas if ln.get("prioridade") in ("leads", "monitorar") and ln.get("categoria_escopo")]
+        log.info("consultando o detalhe no PNCP de %d compra(s) leads/monitorar", len(alvo))
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
+            for ln, res in zip(alvo, ex.map(lambda ln: _buscar_detalhe(pncp, ln), alvo)):
+                detalhes[ln["id"]] = res
+                r["detalhes_consultados"] += 1
+                if res[1]:
+                    r["excluidas_do_pncp"] += 1
+                elif res[2] is not None:
+                    r["falha_detalhe"] += 1
+
     for ln in linhas:
         ip = None
         if ln["id"] in itens_pncp:
@@ -262,7 +339,8 @@ def reclassificar(sb, pncp=None, *, aplicar: bool = False, consultar_pncp: bool 
             r["itens_pncp"] += 1
         elif ln.get("licitacao_itens"):
             r["itens_gravados"] += 1
-        res = reavaliar(ln, ip, agora)
+        det, excluida, _ = detalhes.get(ln["id"], (None, False, None))
+        res = reavaliar(ln, ip, agora, det, excluida)
         if res.get("fonte_itens") == "objeto":
             r["decididas_pelo_objeto"] += 1
         r["linhas"].append(res)
@@ -287,6 +365,10 @@ def reclassificar(sb, pncp=None, *, aplicar: bool = False, consultar_pncp: bool 
                 ex_.append((res["id"], res["codigo_externo"], res["objeto"][:90]))
         if "interesse_borracha" in campos:
             r["muda_interesse"] += 1
+        if "fase" in campos:
+            r["muda_fase"] += 1
+            k = f"{res.get('fase_antes') or 'NULL'}->{campos['fase']}"
+            r["transicoes_fase"][k] = r["transicoes_fase"].get(k, 0) + 1
         if "prioridade" in campos:
             r["muda_prioridade"] += 1
             k = f"{res['prioridade_antes'] or 'NULL'}->{campos['prioridade'] or 'NULL'}"
@@ -311,6 +393,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--apply", action="store_true", help="grava no Supabase (sem isto: dry-run, só SELECT)")
     ap.add_argument("--consultar-pncp", action="store_true",
                     help="busca no PNCP (GET) os itens das compras sem itens gravados")
+    ap.add_argument("--consultar-detalhe", action="store_true",
+                    help="consulta (GET) o detalhe das compras leads/monitorar: 410 = excluída do PNCP (historico)")
     ap.add_argument("--id-min", type=int)
     ap.add_argument("--id-max", type=int)
     ap.add_argument("--desde", help="só linhas com created_at >= este instante ISO (ex.: 2026-09-30T23:08:00Z)")
@@ -326,7 +410,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.apply:
         sb = SomenteLeitura(sb)
     pncp = None
-    if args.consultar_pncp:
+    if args.consultar_pncp or args.consultar_detalhe:
         # mesmo ritmo do coletor com lista ampla (~1 req/s; ver pncp.main)
         pncp = PNCP(delay=float(env("DELAY_SEGUNDOS", "1.0")), timeout=int(env("PNCP_TIMEOUT", "60")),
                     tentativas=int(env("PNCP_TENTATIVAS", "4")))
@@ -341,7 +425,8 @@ def main(argv: list[str] | None = None) -> int:
         def salvar(c):
             with open(args.cache_itens, "w", encoding="utf-8") as fh:
                 json.dump(c, fh, ensure_ascii=False)
-    r = reclassificar(sb, pncp, aplicar=args.apply, consultar_pncp=args.consultar_pncp, id_min=args.id_min,
+    r = reclassificar(sb, pncp, aplicar=args.apply, consultar_pncp=args.consultar_pncp,
+                      consultar_detalhe_pncp=args.consultar_detalhe, id_min=args.id_min,
                       id_max=args.id_max, desde=args.desde, termo=args.termo, limite=args.limit,
                       amostra=args.amostra, workers=int(env("PNCP_WORKERS", "1")), cache_itens=cache,
                       salvar_cache=salvar)

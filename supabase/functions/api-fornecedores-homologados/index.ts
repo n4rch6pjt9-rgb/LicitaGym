@@ -16,6 +16,7 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, SupabaseClient } from "npm:@supabase/supabase-js@2";
+import { requireUserAuth, extractBearerToken } from "../_shared/http.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -547,7 +548,13 @@ async function handleBalance(): Promise<Response> {
 
 // ---------------------------------------------------------------- servidor
 
-export async function handleRequest(req: Request): Promise<Response> {
+export interface ApiFornecedoresContext {
+  getDb?: () => SupabaseClient;
+  requireAuth?: (req: Request) => Promise<Response | null>;
+  getUserId?: (req: Request) => Promise<string | null>;
+}
+
+export async function handleRequest(req: Request, ctx: ApiFornecedoresContext = {}): Promise<Response> {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "Use POST com corpo JSON { action }" }, 405);
 
@@ -560,11 +567,13 @@ export async function handleRequest(req: Request): Promise<Response> {
     return json({ error: "Corpo JSON inválido" }, 400);
   }
 
-  const userId = await authUser(req);
-  if (!userId) return json({ error: "Unauthorized" }, 401);
+  const authError = await (ctx.requireAuth ?? requireUserAuth)(req);
+  if (authError) return authError;
+
+  const userId = await (ctx.getUserId ?? authUser)(req) ?? "authenticated";
 
   try {
-    const db = serviceClient();
+    const db = ctx.getDb ? ctx.getDb() : serviceClient();
     switch (p.action) {
       case "list": return await handleList(db, p);
       case "stats": return await handleStats(db);

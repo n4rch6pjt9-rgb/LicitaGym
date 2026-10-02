@@ -127,7 +127,7 @@ class ClienteComprasARP:
             "dataVigenciaInicialMax": data_max,
             "codigoPdm": codigo_pdm,
             "pagina": pagina,
-            "tamanhoPagina": max(10, tamanho_pagina),
+            "tamanhoPagina": min(500, max(10, tamanho_pagina)),
         }
         for tentativa in range(1, 4):
             try:
@@ -141,6 +141,8 @@ class ClienteComprasARP:
                     espera = tentativa * 4.0
                     log.warning("HTTP %d em ARP PDM %d (tentativa %d), aguardando %.1fs...", r.status_code, codigo_pdm, tentativa, espera)
                     time.sleep(espera)
+                    if tentativa == 3:
+                        raise RuntimeError(f"HTTP {r.status_code} esgotado em ARP PDM {codigo_pdm}")
                     continue
                 r.raise_for_status()
             except requests.RequestException as e:
@@ -148,7 +150,7 @@ class ClienteComprasARP:
                 if tentativa == 3:
                     raise
                 time.sleep(tentativa * 3.0)
-        return {"resultado": [], "totalRegistros": 0}
+        raise RuntimeError(f"Falha ao consultar ARP PDM {codigo_pdm} após retries")
 
 
 def coletar(
@@ -252,7 +254,17 @@ def main(argv: list[str] | None = None) -> int:
     if not args.dry_run:
         sb = Supabase(env("SUPABASE_URL", obrigatorio=True), env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True))
 
-    res = coletar(cliente, sb, pdms=pdms, data_min=data_min, data_max=data_max, limite=args.limite, dry_run=args.dry_run)
+    pdms_finais = pdms
+    if not args.pdms and sb is not None:
+        try:
+            res_rpc = sb.rpc("catalogo_catmat_pdms_efetivos", {})
+            if res_rpc and isinstance(res_rpc, list):
+                pdms_finais = [int(r["codigo_pdm"]) for r in res_rpc if r.get("codigo_pdm")]
+                log.info("Carregados %d PDMs efetivos para ARP", len(pdms_finais))
+        except Exception as e:
+            log.warning("Falha ao carregar PDMs efetivos para ARP (usando padrão): %s", e)
+
+    res = coletar(cliente, sb, pdms=pdms_finais, data_min=data_min, data_max=data_max, limite=args.limite, dry_run=args.dry_run)
     print(json.dumps(res, indent=2, ensure_ascii=False))
     return 0 if res["sucesso"] else 1
 

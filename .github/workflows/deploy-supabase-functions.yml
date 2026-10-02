@@ -75,6 +75,7 @@ jobs:
             api-pncp-irp
             api-dashboard-oportunidades
             api-catmat
+            api-fornecedores-homologados
             api-saude
             calculate-distance-webrouter
           )

@@ -32,8 +32,10 @@ UA = "LicitaGym-Coletor/1.1 (pesquisa de licitacoes publicas)"
 CLASSES_PADRAO = [7830, 7220]
 
 
-def normalizar_registro_pgc(item: dict[str, Any]) -> dict[str, Any]:
-    """Mapeia item retornado pela API para o schema da tabela public.pca_pgc_itens."""
+def normalizar_registro_pgc(item: dict[str, Any], ano_contexto: int | None = None) -> dict[str, Any] | None:
+    """Mapeia item retornado pela API para o schema da tabela public.pca_pgc_itens.
+    Se o ano do PCA não estiver presente no item nem for fornecido no contexto,
+    retorna None para não fabricar ano fictício e evitar contaminação do radar."""
     def _int(val: Any) -> int | None:
         if val in (None, ""):
             return None
@@ -63,7 +65,11 @@ def normalizar_registro_pgc(item: dict[str, Any]) -> dict[str, Any]:
 
     orgao_cnpj = str(item.get("orgao") or "").strip()
     codigo_uasg = str(item.get("codigoUasg") or "").strip()
-    ano_pca = _int(item.get("anoPcaProjetoCompra")) or 2026
+    ano_pca = _int(item.get("anoPcaProjetoCompra")) or ano_contexto
+    if not ano_pca:
+        log.warning("Item PGC ignorado: anoPcaProjetoCompra ausente e sem ano_contexto")
+        return None
+
     num_item_pncp = _int(item.get("numeroItemPncp"))
     cod_item_cat = _int(item.get("codigoItemCatalogo"))
 
@@ -127,7 +133,7 @@ class ClienteComprasPGC:
             "tipo": "Material",
             "codigo": classe,
             "pagina": pagina,
-            "tamanhoPagina": max(10, tamanho_pagina),
+            "tamanhoPagina": min(500, max(10, tamanho_pagina)),
         }
         for tentativa in range(1, 4):
             try:
@@ -141,6 +147,8 @@ class ClienteComprasPGC:
                     espera = tentativa * 3.0
                     log.warning("HTTP %d em PGC classe %d (tentativa %d), esperando %.1fs...", r.status_code, classe, tentativa, espera)
                     time.sleep(espera)
+                    if tentativa == 3:
+                        raise RuntimeError(f"HTTP {r.status_code} esgotado em PGC classe {classe}")
                     continue
                 r.raise_for_status()
             except requests.RequestException as e:
@@ -148,7 +156,7 @@ class ClienteComprasPGC:
                 if tentativa == 3:
                     raise
                 time.sleep(tentativa * 2.0)
-        return {"resultado": [], "totalRegistros": 0}
+        raise RuntimeError(f"Falha ao consultar PGC classe {classe} após retries")
 
 
 def coletar(
@@ -182,8 +190,8 @@ def coletar(
 
                 linhas_norm = []
                 for it in itens:
-                    norm = normalizar_registro_pgc(it)
-                    if norm.get("orgao_cnpj") and norm.get("codigo_uasg"):
+                    norm = normalizar_registro_pgc(it, ano_contexto=ano)
+                    if norm and norm.get("orgao_cnpj") and norm.get("codigo_uasg"):
                         linhas_norm.append(norm)
                         total_coletados += 1
                         if len(amostras) < 5:

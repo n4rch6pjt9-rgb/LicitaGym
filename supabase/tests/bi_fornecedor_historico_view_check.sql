@@ -196,38 +196,101 @@ begin
   -- ---------------------------------------------------------------------------
 
   -- Verificação Caso 1 (Deduplicação Federal PNCP x Compras.gov):
-  select total_vendas_homologadas, total_certames, itens_praticados
-    into v_total_vendas_pncp, v_total_certames_pncp, v_itens_pncp
-    from public.v_bi_fornecedor_historico
-   where cnpj = '04372852000160';
+  declare
+    v_cobertura text;
+    v_eh_ata boolean;
+    v_valor_homologado numeric;
+    v_valor_ata numeric;
+  begin
+    select total_vendas_homologadas, total_certames, itens_praticados,
+           cobertura_predominante, valor_homologado_contratacao, valor_registrado_ata
+      into v_total_vendas_pncp, v_total_certames_pncp, v_itens_pncp,
+           v_cobertura, v_valor_homologado, v_valor_ata
+      from public.v_bi_fornecedor_historico
+     where cnpj = '04372852000160';
 
-  raise notice 'CASO 1: total_vendas_homologadas = %, total_certames = %',
-               v_total_vendas_pncp, v_total_certames_pncp;
+    raise notice 'CASO 1: total_vendas_homologadas = %, total_certames = %, cobertura = %, valor_homologado = %, valor_ata = %',
+                 v_total_vendas_pncp, v_total_certames_pncp, v_cobertura, v_valor_homologado, v_valor_ata;
 
-  if v_total_vendas_pncp <> 1 then
-    raise exception 'TESTE CASO 1 FALHOU: esperado 1 venda homologada, obtido %', v_total_vendas_pncp;
-  end if;
+    if v_total_vendas_pncp <> 1 then
+      raise exception 'TESTE CASO 1 FALHOU: esperado 1 venda homologada, obtido %', v_total_vendas_pncp;
+    end if;
 
-  if v_total_certames_pncp <> 1 then
-    raise exception 'TESTE CASO 1 FALHOU: esperado 1 certame, obtido %', v_total_certames_pncp;
-  end if;
+    if v_total_certames_pncp <> 1 then
+      raise exception 'TESTE CASO 1 FALHOU: esperado 1 certame, obtido %', v_total_certames_pncp;
+    end if;
+
+    if v_cobertura <> 'catmat_oficial' then
+      raise exception 'TESTE CASO 1 FALHOU: esperado cobertura catmat_oficial, obtido %', v_cobertura;
+    end if;
+  end;
 
   -- Verificação Caso 2 (Paradigma 3 certames sem colisão):
-  select total_vendas_homologadas, total_certames, itens_praticados
-    into v_total_vendas_par, v_total_certames_par, v_itens_par
-    from public.v_bi_fornecedor_historico
-   where cnpj = '99999999000199';
+  declare
+    v_cobertura_par text;
+  begin
+    select total_vendas_homologadas, total_certames, itens_praticados, cobertura_predominante
+      into v_total_vendas_par, v_total_certames_par, v_itens_par, v_cobertura_par
+      from public.v_bi_fornecedor_historico
+     where cnpj = '99999999000199';
 
-  raise notice 'CASO 2: total_vendas_homologadas = %, total_certames = %',
-               v_total_vendas_par, v_total_certames_par;
+    raise notice 'CASO 2: total_vendas_homologadas = %, total_certames = %, cobertura = %',
+                 v_total_vendas_par, v_total_certames_par, v_cobertura_par;
 
-  if v_total_vendas_par <> 3 then
-    raise exception 'TESTE CASO 2 FALHOU: esperado 3 vendas homologadas Paradigma, obtido %', v_total_vendas_par;
-  end if;
+    if v_total_vendas_par <> 3 then
+      raise exception 'TESTE CASO 2 FALHOU: esperado 3 vendas homologadas Paradigma, obtido %', v_total_vendas_par;
+    end if;
 
-  if v_total_certames_par <> 3 then
-    raise exception 'TESTE CASO 2 FALHOU: esperado 3 certames Paradigma, obtido %', v_total_certames_par;
-  end if;
+    if v_total_certames_par <> 3 then
+      raise exception 'TESTE CASO 2 FALHOU: esperado 3 certames Paradigma, obtido %', v_total_certames_par;
+    end if;
+  end;
+
+  -- Verificação Caso 3 (Cobertura pdm_palavra via catmat_pdm_palavras):
+  declare
+    v_lic_palavra_id bigint;
+    v_cobertura_palavra text;
+  begin
+    -- Insere regra de palavra para PDM 2640 se não existir
+    insert into public.catmat_pdm_palavras (codigo_pdm, padrao, ativo)
+    values (2640, 'halteres? especiais', true)
+    on conflict do nothing;
+
+    insert into public.licitacoes_externas (
+      fonte, codigo_externo, orgao_cnpj, orgao_nome, data_homologacao, prioridade
+    ) values (
+      'pncp',
+      '11111111000111-1-000001/2026',
+      '11111111000111',
+      'ORGAO TESTE PALAVRA',
+      '2026-09-20'::timestamptz,
+      'historico'
+    ) returning id into v_lic_palavra_id;
+
+    insert into public.licitacao_itens (
+      licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade, descricao
+    ) values (
+      v_lic_palavra_id, 1, null, 'M', 10, 'HALTERES ESPECIAIS EMBORRACHADOS'
+    );
+
+    insert into public.licitacao_resultados (
+      licitacao_id, numero_item, sequencial_resultado, fornecedor_cnpj, fornecedor_nome,
+      vencedor, quantidade_homologada, valor_unitario_homologado, valor_total_homologado, data_resultado
+    ) values (
+      v_lic_palavra_id, 1, 1, '88888888000188', 'FORNECEDOR PALAVRA LTDA',
+      true, 10, 50.0, 500.0, '2026-09-20'::timestamptz
+    );
+
+    select cobertura_predominante into v_cobertura_palavra
+      from public.v_bi_fornecedor_historico
+     where cnpj = '88888888000188';
+
+    raise notice 'CASO 3 (pdm_palavra): cobertura = %', v_cobertura_palavra;
+
+    if v_cobertura_palavra <> 'pdm_palavra' then
+      raise exception 'TESTE CASO 3 FALHOU: esperado cobertura pdm_palavra, obtido %', v_cobertura_palavra;
+    end if;
+  end;
 
   raise notice 'SUCESSO: Todos os testes reais contra v_bi_fornecedor_historico passaram com louvor!';
 end $$;

@@ -13,9 +13,12 @@ import argparse
 import hashlib
 import json
 import logging
+import math
 import os
+import random
 import sys
 import time
+from email.utils import parsedate_to_datetime
 from datetime import datetime, timezone
 from typing import Any
 
@@ -30,6 +33,29 @@ ENDPOINT = "/modulo-arp/2_consultarARPItem"
 UA = "LicitaGym-Coletor/1.1 (pesquisa de licitacoes publicas)"
 
 PDMS_PADRAO = [2640, 2638, 7113, 3522, 5341, 8166, 18481, 10779]
+MAX_BACKOFF_SECONDS = 60.0
+
+
+def _calcular_espera_retry(tentativa: int, resposta: requests.Response | None = None) -> float:
+    if resposta is not None and resposta.status_code == 429:
+        retry_after = (resposta.headers or {}).get("Retry-After")
+        if retry_after:
+            try:
+                segundos = float(retry_after)
+                if math.isfinite(segundos):
+                    return max(0.0, segundos)
+            except (TypeError, ValueError):
+                try:
+                    data_retry = parsedate_to_datetime(retry_after)
+                    if data_retry.tzinfo is None:
+                        data_retry = data_retry.replace(tzinfo=timezone.utc)
+                    return max(0.0, (data_retry - datetime.now(timezone.utc)).total_seconds())
+                except (TypeError, ValueError, OverflowError):
+                    pass
+
+    backoff = min(MAX_BACKOFF_SECONDS, 2.0 ** tentativa)
+    jitter = random.uniform(0.0, min(1.0, MAX_BACKOFF_SECONDS - backoff))
+    return backoff + jitter
 
 
 def normalizar_ata_item(item: dict[str, Any]) -> dict[str, Any] | None:
@@ -138,7 +164,7 @@ class ClienteComprasARP:
                 if r.status_code == 404:
                     return {"resultado": [], "totalRegistros": 0}
                 if r.status_code in (429, 502, 503, 504):
-                    espera = tentativa * 4.0
+                    espera = _calcular_espera_retry(tentativa, r)
                     log.warning("HTTP %d em ARP PDM %d (tentativa %d), aguardando %.1fs...", r.status_code, codigo_pdm, tentativa, espera)
                     time.sleep(espera)
                     if tentativa == 3:
@@ -149,7 +175,7 @@ class ClienteComprasARP:
                 log.warning("Falha de rede em ARP PDM %d tentativa %d: %s", codigo_pdm, tentativa, e)
                 if tentativa == 3:
                     raise
-                time.sleep(tentativa * 3.0)
+                time.sleep(_calcular_espera_retry(tentativa))
         raise RuntimeError(f"Falha ao consultar ARP PDM {codigo_pdm} após retries")
 
 

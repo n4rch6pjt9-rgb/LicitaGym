@@ -351,5 +351,36 @@ def test_coletor_arp_falha_apos_retries(monkeypatch):
         cliente.consultar_itens_pdm(2640, "2026-01-01", "2026-12-31")
 
 
+def test_coletor_arp_429_respeita_retry_after(monkeypatch):
+    cliente = compras_arp.ClienteComprasARP(delay=0)
+    respostas = iter([
+        MagicMock(status_code=429, headers={"Retry-After": "7"}),
+        MagicMock(status_code=200, json=lambda: {"resultado": [], "totalRegistros": 0}),
+    ])
+    esperas = []
+    monkeypatch.setattr(cliente.s, "get", lambda *_, **__: next(respostas))
+    monkeypatch.setattr(compras_arp.time, "sleep", esperas.append)
+
+    resultado = cliente.consultar_itens_pdm(2640, "2026-01-01", "2026-12-31")
+
+    assert resultado == {"resultado": [], "totalRegistros": 0}
+    assert esperas == [1.0, 7.0, 1.0]
+
+
+def test_coletor_arp_usa_backoff_exponencial_com_jitter(monkeypatch):
+    cliente = compras_arp.ClienteComprasARP(delay=0)
+    respostas = iter([
+        MagicMock(status_code=503),
+        MagicMock(status_code=200, json=lambda: {"resultado": [], "totalRegistros": 0}),
+    ])
+    esperas = []
+    monkeypatch.setattr(cliente.s, "get", lambda *_, **__: next(respostas))
+    monkeypatch.setattr(compras_arp.time, "sleep", esperas.append)
+    monkeypatch.setattr(compras_arp.random, "uniform", lambda *_: 0.5)
+
+    cliente.consultar_itens_pdm(2640, "2026-01-01", "2026-12-31")
+
+    assert esperas == [1.0, 2.5, 1.0]
+
 
 

@@ -141,13 +141,15 @@ python3 -m coletor.pncp --termos-padrao                    # execução rápida 
 
 Documentos PNCP pendentes (`licitacao_documentos.status_processamento = 'pendente'`): `--baixar-pendentes` baixa pela
 URL guardada, só das licitações nas categorias do escopo (padrão `catmat,forte,borracha,piso,obra_piso`; `fraco` fica
-fora), grava pelo mesmo destino do coletor (`Armazenamento.do_ambiente()`: Supabase Storage com
-`SUPABASE_STORAGE_BUCKET`, senão GCS, senão local), respeita `MAX_MB` e `Retry-After`, e não baixa de novo o que já tem
-`sha256`. Em 30/09/2026 eram 141 pendentes do PNCP (108 borracha, 22 piso, 2 forte, 9 fraco).
+fora) e opcionalmente filtrando por prioridade efetiva (`--prioridades leads,monitorar`, lendo a view
+`licitacoes_externas_prioridade_efetiva`), grava pelo mesmo destino do coletor (`Armazenamento.do_ambiente()`:
+Supabase Storage com `SUPABASE_STORAGE_BUCKET`, senão GCS, senão local), respeita `MAX_MB` e `Retry-After`, e não
+baixa de novo o que já tem `sha256`. Em 30/09/2026 eram 141 pendentes do PNCP (108 borracha, 22 piso, 2 forte, 9 fraco).
 
 ```bash
-python3 -m coletor.pncp --baixar-pendentes --dry-run                         # lista os elegíveis
-python3 -m coletor.pncp --baixar-pendentes --limite-download 20              # lote pequeno primeiro
+python3 -m coletor.pncp --baixar-pendentes --dry-run                         # lista os elegíveis e detalha por prioridade
+python3 -m coletor.pncp --baixar-pendentes --prioridades leads,monitorar     # baixa apenas leads e monitorar
+python3 -m coletor.pncp --baixar-pendentes --prioridades leads --limite-download 20  # lote pequeno de leads
 python3 -m coletor.pncp --baixar-pendentes --categorias catmat,forte,borracha,piso,obra_piso
 python3 scripts/gerar_relatorio_termos.py                                    # docs/coletor-pncp-termos.md (PDM x termo)
 ```

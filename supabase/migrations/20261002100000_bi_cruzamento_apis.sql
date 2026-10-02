@@ -598,9 +598,14 @@ compras_pncp_bridge as (
     from public.atas_rp_itens
     where id_compra is not null and numero_controle_pncp_compra is not null
     union all
-    select coalesce(raw->>'idCompra', raw->>'id_compra') as id_compra, codigo_externo as numero_controle_pncp_compra, 3 as prio
+    select substring(raw->>'link_sistema_origem' from '[?&]compra=(\d{17})') as id_compra,
+           codigo_externo as numero_controle_pncp_compra,
+           3 as prio
     from public.licitacoes_externas
-    where codigo_externo is not null and (raw->>'idCompra' is not null or raw->>'id_compra' is not null)
+    where fonte = 'pncp'
+      and codigo_externo is not null
+      and raw->>'link_sistema_origem' is not null
+      and substring(raw->>'link_sistema_origem' from '[?&]compra=(\d{17})') is not null
   ) m
   where id_compra is not null and numero_controle_pncp_compra is not null
   order by id_compra, prio
@@ -611,7 +616,7 @@ f_resultados as (
     regexp_replace(r.fornecedor_cnpj, '\D', '', 'g') as cnpj,
     r.fornecedor_nome as nome_fornecedor,
     'licitacao_resultados'::text as fonte_origem,
-    coalesce(nullif(l.codigo_externo, ''), 'ext:' || l.fonte || ':' || l.id::text) as compra_id_canonico,
+    coalesce(case when l.fonte = 'pncp' then nullif(l.codigo_externo, '') end, 'ext:' || l.fonte || ':' || l.id::text) as compra_id_canonico,
     r.numero_item,
     coalesce(case when ci.codigo_pdm ~ '^\d+$' then ci.codigo_pdm::integer end, kw.codigo_pdm) as codigo_pdm,
     case when li.catalogo_codigo_item ~ '^\d+$' then li.catalogo_codigo_item::bigint else null end as codigo_item,
@@ -754,9 +759,9 @@ todas_vendas as (
   select * from f_14133
 ),
 vendas_dedup as (
-  -- Deduplica vendas: chave canônica (compra_id_canonico + numero_item + cnpj)
-  -- Número de controle PNCP da compra + número do item + CNPJ colapsa PNCP, Compras.gov e ARP na mesma venda
-  select distinct on (cnpj, compra_id_canonico, coalesce(numero_item, 0))
+  -- Deduplica vendas: chave canônica (compra_id_canonico + numero_item + codigo_item + cnpj)
+  -- Quando numero_item é nulo, desempata por codigo_item para não juntar itens diferentes
+  select distinct on (cnpj, compra_id_canonico, coalesce(numero_item::text, 'cod:' || coalesce(codigo_item::text, '0')))
     cnpj,
     nome_fornecedor,
     fonte_origem,
@@ -775,7 +780,7 @@ vendas_dedup as (
     orgao_nome,
     cobertura
   from todas_vendas
-  order by cnpj, compra_id_canonico, coalesce(numero_item, 0),
+  order by cnpj, compra_id_canonico, coalesce(numero_item::text, 'cod:' || coalesce(codigo_item::text, '0')),
            (codigo_item is not null) desc,
            (preco_unitario is not null) desc,
            (marca is not null) desc,

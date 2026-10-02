@@ -548,6 +548,84 @@ def test_baixar_pendentes_filtro_categoria():
     assert pncp.baixar.call_count == 2
 
 
+def test_baixar_pendentes_filtro_prioridade():
+    sb = MagicMock()
+    arm = MagicMock()
+    pncp = MagicMock()
+
+    lics = [
+        {"id": 1, "codigo_externo": "111-1-1/2026", "orgao_cnpj": "111", "categoria_escopo": "borracha"},
+        {"id": 2, "codigo_externo": "222-1-2/2026", "orgao_cnpj": "222", "categoria_escopo": "piso"},
+        {"id": 3, "codigo_externo": "333-1-3/2026", "orgao_cnpj": "333", "categoria_escopo": "forte"},
+        {"id": 4, "codigo_externo": "444-1-4/2026", "orgao_cnpj": "444", "categoria_escopo": "fraco"},
+    ]
+    prio_lics = [
+        {"id": 1, "prioridade": "leads"},
+        {"id": 2, "prioridade": "monitorar"},
+        {"id": 3, "prioridade": "historico"},
+        {"id": 4, "prioridade": "leads"},
+    ]
+    docs = [
+        {"id": 101, "licitacao_id": 1, "arquivo_origem": "pncp-1", "nome_original": "ed1.pdf", "raw": {"url": "https://pncp.gov.br/pncp-api/v1/orgaos/111/compras/2026/1/arquivos/1"}, "sha256": None, "status_processamento": "pendente"},
+        {"id": 102, "licitacao_id": 2, "arquivo_origem": "pncp-2", "nome_original": "ed2.pdf", "raw": {"url": "https://pncp.gov.br/pncp-api/v1/orgaos/111/compras/2026/1/arquivos/2"}, "sha256": None, "status_processamento": "pendente"},
+        {"id": 103, "licitacao_id": 3, "arquivo_origem": "pncp-3", "nome_original": "ed3.pdf", "raw": {"url": "https://pncp.gov.br/pncp-api/v1/orgaos/111/compras/2026/1/arquivos/3"}, "sha256": None, "status_processamento": "pendente"},
+        {"id": 104, "licitacao_id": 4, "arquivo_origem": "pncp-4", "nome_original": "ed4.pdf", "raw": {"url": "https://pncp.gov.br/pncp-api/v1/orgaos/111/compras/2026/1/arquivos/4"}, "sha256": None, "status_processamento": "pendente"},
+    ]
+
+    def mock_selecionar(t, **kw):
+        if t == "licitacoes_externas":
+            return lics
+        if t == "licitacoes_externas_prioridade_efetiva":
+            return prio_lics
+        return docs
+
+    sb.selecionar.side_effect = mock_selecionar
+    pncp.baixar.return_value = (b"%PDF-edital", "application/pdf")
+    arm.salvar.return_value = "gs://bucket/pncp/0/111-2026-1/processo/pncp-1.pdf"
+
+    # 1. Sem prioridades (no arg = unchanged): baixa todos nas categorias padrão (1, 2, 3 = 3 docs; doc 4 é fraco)
+    res_sem_filtro = P.baixar_pendentes(pncp, sb, arm)
+    assert res_sem_filtro["baixados"] == 3
+    assert res_sem_filtro["ignorados_categoria"] == 1
+    assert res_sem_filtro["ignorados_prioridade"] == 0
+    assert pncp.baixar.call_count == 3
+
+    # 2. Apenas 'leads': somente doc 101 elegível (doc 104 é leads mas categoria fraco)
+    pncp.baixar.reset_mock()
+    res_leads = P.baixar_pendentes(pncp, sb, arm, prioridades="leads")
+    assert res_leads["baixados"] == 1
+    assert res_leads["ignorados_categoria"] == 1
+    assert res_leads["ignorados_prioridade"] == 2
+    assert pncp.baixar.call_count == 1
+
+    # 3. 'leads,monitorar': docs 101 e 102
+    pncp.baixar.reset_mock()
+    res_leads_mon = P.baixar_pendentes(pncp, sb, arm, prioridades="leads,monitorar")
+    assert res_leads_mon["baixados"] == 2
+    assert res_leads_mon["ignorados_categoria"] == 1
+    assert res_leads_mon["ignorados_prioridade"] == 1
+    assert pncp.baixar.call_count == 2
+
+    # 4. Combinação com --categorias (ex: categorias="borracha", prioridades="leads,monitorar")
+    # doc 101: borracha + leads (passa)
+    # doc 102: piso + monitorar (ignorado por categoria)
+    # doc 103: forte + historico (ignorado por categoria)
+    pncp.baixar.reset_mock()
+    res_combo = P.baixar_pendentes(pncp, sb, arm, categorias="borracha", prioridades="leads,monitorar")
+    assert res_combo["baixados"] == 1
+    assert res_combo["ignorados_categoria"] == 3
+    assert res_combo["ignorados_prioridade"] == 0
+    assert pncp.baixar.call_count == 1
+
+    # 5. Dry-run com por_prioridade
+    res_dry = P.baixar_pendentes(pncp, sb, None, dry_run=True, prioridades="leads,monitorar")
+    assert res_dry["elegiveis"] == 2
+    assert res_dry["baixados"] == 0
+    assert res_dry["por_prioridade"] == {"leads": 1, "monitorar": 1}
+    assert res_dry["detalhes"][0]["prioridade"] == "leads"
+    assert res_dry["detalhes"][1]["prioridade"] == "monitorar"
+
+
 def test_baixar_pendentes_idempotencia_e_dry_run():
     sb = MagicMock()
     arm = MagicMock()
@@ -845,3 +923,87 @@ def test_coletar_isola_falha_de_busca_e_main_sai_com_1(monkeypatch):
     visto = {"resumo": {"falha_busca": 1, "termos_com_falha": ["x [s] pág. 1"]}}
     monkeypatch.setattr(P, "coletar", lambda *a, **kw: visto["resumo"])
     assert P.main(["--dry-run"]) == 1
+
+
+def test_main_baixar_pendentes_passa_prioridades(monkeypatch):
+    capturado = {}
+    def falso_baixar_pendentes(pncp, sb, arm, **kw):
+        capturado.update(kw)
+        capturado["sb"] = sb
+        capturado["arm"] = arm
+        return {"elegiveis": 0}
+
+    falso_sb = MagicMock()
+    falso_arm = MagicMock()
+    monkeypatch.setattr(P, "baixar_pendentes", falso_baixar_pendentes)
+    monkeypatch.setattr(P, "Supabase", lambda *a, **kw: falso_sb)
+    monkeypatch.setattr(P.Armazenamento, "do_ambiente", classmethod(lambda cls: falso_arm))
+    monkeypatch.setattr(P, "env", lambda nome, padrao=None, obrigatorio=False: padrao or "0")
+
+    P.main(["--baixar-pendentes", "--prioridades", "leads,monitorar", "--dry-run", "--limite-download", "10", "--categorias", "borracha"])
+    assert capturado["prioridades"] == "leads,monitorar"
+    assert capturado["categorias"] == "borracha"
+    assert capturado["limite"] == 10
+    assert capturado["dry_run"] is True
+    assert capturado["sb"] is falso_sb
+    assert capturado["arm"] is None
+
+
+def test_validar_prioridades_funcao():
+    import pytest
+    # Normalização e sucesso
+    assert P.validar_prioridades("leads") == {"leads"}
+    assert P.validar_prioridades(" LEADS , Monitorar ") == {"leads", "monitorar"}
+    assert P.validar_prioridades(["leads", "historico"]) == {"leads", "historico"}
+    assert P.validar_prioridades({"MONITORAR"}) == {"monitorar"}
+    assert P.validar_prioridades(None) is None
+
+    # Inválidos
+    with pytest.raises(ValueError, match="Prioridade\\(s\\) inválida\\(s\\): lead"):
+        P.validar_prioridades("lead")
+    with pytest.raises(ValueError, match="Prioridade\\(s\\) inválida\\(s\\): xyz"):
+        P.validar_prioridades("leads,xyz")
+    with pytest.raises(ValueError, match="Nenhuma prioridade válida informada"):
+        P.validar_prioridades("")
+    with pytest.raises(ValueError, match="Nenhuma prioridade válida informada"):
+        P.validar_prioridades(" , ")
+    with pytest.raises(ValueError, match="Nenhuma prioridade válida informada"):
+        P.validar_prioridades([])
+
+
+def test_baixar_pendentes_prioridade_invalida_levanta_sem_ler_supabase():
+    import pytest
+    sb = MagicMock()
+    pncp = MagicMock()
+    arm = MagicMock()
+
+    with pytest.raises(ValueError, match="Prioridade\\(s\\) inválida\\(s\\): lead"):
+        P.baixar_pendentes(pncp, sb, arm, prioridades=["lead"])
+
+    # Garante que NENHUMA leitura no Supabase foi feita antes de abortar
+    sb.selecionar.assert_not_called()
+    pncp.baixar.assert_not_called()
+
+
+def test_cli_prioridades_validacao_argparse(monkeypatch):
+    import pytest
+    parser = P.criar_parser()
+
+    # Inválido único (lead) -> erro 2
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["--baixar-pendentes", "--prioridades", "lead"])
+    assert exc.value.code == 2
+
+    # Misto válido + inválido (leads,xyz) -> erro 2
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["--baixar-pendentes", "--prioridades", "leads,xyz"])
+    assert exc.value.code == 2
+
+    # Apenas vírgula / vazio -> erro 2
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["--baixar-pendentes", "--prioridades", " , "])
+    assert exc.value.code == 2
+
+    # Maiúsculas e espaços aceitos normalmente
+    args = parser.parse_args(["--baixar-pendentes", "--prioridades", " LEADS , Monitorar "])
+    assert args.prioridades == " LEADS , Monitorar "

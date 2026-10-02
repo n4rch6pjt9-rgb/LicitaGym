@@ -59,6 +59,7 @@ log = logging.getLogger("pncp")
 BASE = "https://pncp.gov.br"
 MAX_RETRY_AFTER_S = 60
 CATEGORIAS_PADRAO_DOWNLOAD = "catmat,forte,borracha,piso,obra_piso"
+PRIORIDADES_VALIDAS = frozenset({"leads", "monitorar", "historico"})
 # Downloads só de https nestes hosts (match exato, sem subdomínio). A URL vem do banco
 # (licitacao_documentos.raw.url): sem a allowlist o coletor buscaria qualquer endereço (SSRF).
 PNCP_HOSTS_PERMITIDOS = tuple(h.strip().lower() for h in
@@ -99,6 +100,33 @@ def _retry_after_s(r) -> float | None:
     except (TypeError, ValueError, AttributeError):
         return None
     return max(0.0, min(v, MAX_RETRY_AFTER_S))
+
+
+def validar_prioridades(prioridades: list[str] | set[str] | str | None) -> set[str] | None:
+    """Valida e normaliza o conjunto de prioridades permitidas.
+    Aceita lista, conjunto ou string separada por vírgula (case-insensitive, ignora espaços).
+    Retorna set[str] normalizado em minúsculas ou None se prioridades for None.
+    Levanta ValueError se contiver valor inválido ou se resultar em lista vazia quando fornecido."""
+    if prioridades is None:
+        return None
+    if isinstance(prioridades, str):
+        itens = [p.strip().lower() for p in prioridades.split(",")]
+        # Remove vazios mas confere se sobrou algo
+        candidatos = [p for p in itens if p]
+    else:
+        candidatos = [p.strip().lower() if isinstance(p, str) else str(p).lower() for p in prioridades if str(p).strip()]
+
+    if not candidatos:
+        permitidas = ", ".join(sorted(PRIORIDADES_VALIDAS))
+        raise ValueError(f"Nenhuma prioridade válida informada. Valores permitidos: {permitidas}")
+
+    invalidos = [c for c in candidatos if c not in PRIORIDADES_VALIDAS]
+    if invalidos:
+        permitidas = ", ".join(sorted(PRIORIDADES_VALIDAS))
+        invalidos_str = ", ".join(sorted(set(invalidos)))
+        raise ValueError(f"Prioridade(s) inválida(s): {invalidos_str}. Valores permitidos: {permitidas}")
+
+    return set(candidatos)
 
 # Detalhe da compra e atalho (o edital e a fonte principal): nao gastar 10 min nele.
 DETALHE_TIMEOUT = int(os.environ.get("PNCP_DETALHE_TIMEOUT", "20"))
@@ -831,9 +859,11 @@ def baixar_pendentes(pncp: PNCP, sb: Supabase, arm: Armazenamento | None,
                      categorias: list[str] | set[str] | str | None = None,
                      max_bytes: int = 80 * 1048576,
                      dry_run: bool = False,
-                     limite: int | None = None) -> dict:
+                     limite: int | None = None,
+                     prioridades: list[str] | set[str] | str | None = None) -> dict:
     """Lê de licitacao_documentos os registros da fonte pncp com status 'pendente',
-    filtra por licitacoes_externas.categoria_escopo (por padrão exclui 'fraco'),
+    filtra por licitacoes_externas.categoria_escopo (por padrão exclui 'fraco')
+    e opcionalmente por prioridade efetiva (view licitacoes_externas_prioridade_efetiva),
     baixa cada arquivo pela URL guardada, grava no storage (Armazenamento.do_ambiente: Supabase Storage, GCS ou local)
     e atualiza status_processamento, sha256, mime_type, tamanho_bytes e erro,
     respeitando MAX_MB, o delay e o Retry-After.
@@ -850,12 +880,33 @@ def baixar_pendentes(pncp: PNCP, sb: Supabase, arm: Armazenamento | None,
     else:
         cat_set = {c.strip().lower() for c in CATEGORIAS_PADRAO_DOWNLOAD.split(",") if c.strip()}
 
-    log.info("baixar_pendentes: buscando licitações externas fonte=pncp e categorias=%s", sorted(cat_set))
+    prio_set = validar_prioridades(prioridades)
+
+    log.info("baixar_pendentes: buscando licitações externas fonte=pncp e categorias=%s prioridades=%s",
+             sorted(cat_set), sorted(prio_set) if prio_set is not None else "todas")
     lics = sb.selecionar("licitacoes_externas", fonte="eq.pncp", order="id.asc",
                          select="id,codigo_externo,orgao_cnpj,categoria_escopo,raw")
-    lic_map = {l["id"]: l for l in lics if (l.get("categoria_escopo") or "").lower() in cat_set}
+
+    # Mapeamento de prioridade efetiva a partir da view licitacoes_externas_prioridade_efetiva
+    prio_map: dict[int, str | None] = {}
+    if prio_set is not None or dry_run:
+        prio_lics = sb.selecionar("licitacoes_externas_prioridade_efetiva", fonte="eq.pncp", order="id.asc",
+                                  select="id,prioridade")
+        for pl in prio_lics:
+            prio_map[pl["id"]] = pl.get("prioridade")
+
+    def _lic_elegivel(l: dict) -> bool:
+        if (l.get("categoria_escopo") or "").lower() not in cat_set:
+            return False
+        if prio_set is not None:
+            prio = prio_map.get(l["id"])
+            if prio is None or prio.lower() not in prio_set:
+                return False
+        return True
+
+    lic_map = {l["id"]: l for l in lics if _lic_elegivel(l)}
     lic_todas_pncp = {l["id"] for l in lics}
-    log.info("licitacoes_externas pncp: %d total, %d nas categorias selecionadas",
+    log.info("licitacoes_externas pncp: %d total, %d nas categorias/prioridades selecionadas",
              len(lic_todas_pncp), len(lic_map))
 
     docs = sb.selecionar("licitacao_documentos", status_processamento="eq.pendente", order="id.asc",
@@ -868,12 +919,16 @@ def baixar_pendentes(pncp: PNCP, sb: Supabase, arm: Armazenamento | None,
         "baixados": 0,
         "ja_baixados": 0,
         "ignorados_categoria": 0,
+        "ignorados_prioridade": 0,
         "ignorados_sem_url": 0,
         "bloqueados_host": 0,
         "erros": 0,
         "erros_transitorios": 0,
+        "por_prioridade": {},
         "detalhes": [],
     }
+
+    lics_orig_map = {l["id"]: l for l in lics}
 
     for d in docs:
         lic_id = d.get("licitacao_id")
@@ -881,13 +936,24 @@ def baixar_pendentes(pncp: PNCP, sb: Supabase, arm: Armazenamento | None,
             # Não é documento de licitação do PNCP
             continue
 
-        if lic_id not in lic_map:
+        lic_orig = lics_orig_map.get(lic_id)
+        if lic_orig and (lic_orig.get("categoria_escopo") or "").lower() not in cat_set:
             # Excluído pelo filtro de categoria (ex.: fraco)
             resumo["ignorados_categoria"] += 1
             continue
 
+        if prio_set is not None:
+            prio_efetiva = prio_map.get(lic_id)
+            if prio_efetiva is None or prio_efetiva.lower() not in prio_set:
+                resumo["ignorados_prioridade"] += 1
+                continue
+
+        if lic_id not in lic_map:
+            continue
+
         lic = lic_map[lic_id]
         cat = lic.get("categoria_escopo")
+        prio = prio_map.get(lic_id)
 
         # Idempotência: não baixar de novo se já tem sha256
         if d.get("sha256"):
@@ -917,16 +983,20 @@ def baixar_pendentes(pncp: PNCP, sb: Supabase, arm: Armazenamento | None,
             break
 
         resumo["elegiveis"] += 1
+        if prio_set is not None or dry_run:
+            prio_chave = prio or "sem_prioridade"
+            resumo["por_prioridade"][prio_chave] = resumo["por_prioridade"].get(prio_chave, 0) + 1
         compra_slug = _compra_slug(lic)
         nome_orig = d.get("nome_original") or d.get("arquivo_origem") or "arquivo"
 
         if dry_run:
-            log.info("  [dry-run] doc #%s | %s | lic #%s (cat: %s) -> %s",
-                     d["id"], nome_orig[:60], lic_id, cat, url)
+            log.info("  [dry-run] doc #%s | %s | lic #%s (cat: %s, prio: %s) -> %s",
+                     d["id"], nome_orig[:60], lic_id, cat, prio, url)
             resumo["detalhes"].append({
                 "doc_id": d["id"],
                 "licitacao_id": lic_id,
                 "categoria": cat,
+                "prioridade": prio,
                 "nome_original": nome_orig,
                 "url": url,
             })
@@ -987,6 +1057,16 @@ def fatiar_lote(termos: list[str], lote: str) -> list[str]:
     return termos[(k - 1) * tam:k * tam]
 
 
+def _cli_prioridades(valor: str) -> str:
+    """Validador do tipo de --prioridades no argparse. Valida contra PRIORIDADES_VALIDAS
+    e levanta ArgumentTypeError se houver valor inválido ou vazio."""
+    try:
+        validar_prioridades(valor)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from e
+    return valor
+
+
 def criar_parser() -> argparse.ArgumentParser:
     """Parser da linha de comando (também usado por coletor.pncp_cloud_run para ler as opções já canônicas,
     com as abreviações do argparse resolvidas)."""
@@ -1016,6 +1096,8 @@ def criar_parser() -> argparse.ArgumentParser:
                     help="baixa arquivos pendentes do PNCP gravados em licitacao_documentos")
     ap.add_argument("--categorias",
                     help="categorias de escopo permitidas no download de pendentes (padrão: catmat,forte,borracha,piso,obra_piso)")
+    ap.add_argument("--prioridades", type=_cli_prioridades,
+                    help="prioridades efetivas permitidas no download de pendentes (valores: leads, monitorar, historico)")
     ap.add_argument("--limite-download", type=int, default=None,
                     help="limite máximo de documentos para baixar no modo --baixar-pendentes")
     ap.add_argument("--dry-run", action="store_true")
@@ -1040,6 +1122,7 @@ def main(argv: list[str] | None = None) -> int:
         r = baixar_pendentes(
             pncp, sb, arm,
             categorias=args.categorias,
+            prioridades=args.prioridades,
             max_bytes=int(float(env("MAX_MB", "80")) * 1048576),
             dry_run=args.dry_run,
             limite=args.limite_download,

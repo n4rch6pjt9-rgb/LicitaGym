@@ -103,6 +103,12 @@ function comTipo(linhas: unknown, tipo: TipoPalavra): CatmatPalavra[] {
   return ((linhas ?? []) as Omit<CatmatPalavra, "tipo">[]).map((l) => ({ ...l, tipo }));
 }
 
+/** Tabela/coluna/função ainda não criada (migration 20261003200000 não aplicada): Postgres 42P01/42703/42883, PostgREST PGRST202/PGRST204/PGRST205. */
+export function semMigrationTaxonomia(error: unknown): boolean {
+  const code = (error as { code?: string })?.code ?? "";
+  return ["42P01", "42703", "42883", "PGRST202", "PGRST204", "PGRST205"].includes(code);
+}
+
 function falha(contexto: string, error: unknown): never {
   const msg = (error as { message?: string })?.message ?? String(error);
   throw new Error(`[api-catmat] ${contexto}: ${msg}`);
@@ -173,22 +179,30 @@ export function createSupabaseRepo(client: SupabaseClient): CatmatRepo {
       let total = 0;
       for (let i = 0; i < codigosItem.length; i += 1000) {
         const { data, error } = await client.rpc("catmat_item_atributo_sincronizar", { p_itens: codigosItem.slice(i, i + 1000) });
+        if (error && semMigrationTaxonomia(error)) return 0; // deploy antes da migration: catálogo segue funcionando
         if (error) falha("sincronizar atributos", error);
         total += Number(data ?? 0);
       }
       return total;
     },
     async itensDoPdmComAtributos(codigoPdm) {
-      const { data, error } = await client.from("catmat_item_pdm")
-        .select("codigo_item,codigo_pdm,codigo_classe,codigo_grupo,descricao,nome_item,status_item")
+      const ler = (colunas: string) => client.from("catmat_item_pdm").select(colunas)
         .eq("codigo_pdm", codigoPdm).order("codigo_item").limit(5000);
+      let { data, error } = await ler("codigo_item,codigo_pdm,codigo_classe,codigo_grupo,descricao,nome_item,status_item");
+      let semTaxonomia = false;
+      if (error && semMigrationTaxonomia(error)) {
+        // sem a coluna nome_item: lê sem ela; catalog.ts calcula nome/atributos da descrição
+        semTaxonomia = true;
+        ({ data, error } = await ler("codigo_item,codigo_pdm,codigo_classe,codigo_grupo,descricao,status_item"));
+      }
       if (error) falha("itens do PDM", error);
-      const itens = (data ?? []) as Omit<ItemCatalogoLinha, "atributos">[];
+      const itens = ((data ?? []) as unknown as Omit<ItemCatalogoLinha, "atributos">[]).map((i) => ({ ...i, nome_item: i.nome_item ?? null }));
       const porItem = new Map<number, AtributoItem[]>();
-      const codigos = itens.map((i) => i.codigo_item);
+      const codigos = semTaxonomia ? [] : itens.map((i) => i.codigo_item);
       for (let i = 0; i < codigos.length; i += 500) {
         const { data: at, error: e2 } = await client.from("catmat_item_atributo")
           .select("codigo_item,ordem,atributo,valor").in("codigo_item", codigos.slice(i, i + 500)).order("codigo_item").order("ordem");
+        if (e2 && semMigrationTaxonomia(e2)) break;
         if (e2) falha("atributos dos itens", e2);
         for (const a of (at ?? []) as Array<AtributoItem & { codigo_item: number }>) {
           const l = porItem.get(a.codigo_item) ?? [];

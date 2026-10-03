@@ -11,7 +11,11 @@ import logging
 
 import requests
 
-POSTGREST_MAX_ROWS = int(os.environ.get("SUPABASE_PAGE_SIZE", "1000"))
+from .paginacao import avaliar_pagina, interpretar_content_range
+
+# PostgREST do projeto aceita até 1000, mas a leitura paginada pede no máximo 100
+# (regra de 03/10/2026). SUPABASE_PAGE_SIZE acima de 100 é cortado aqui.
+POSTGREST_MAX_ROWS = max(1, min(100, int(os.environ.get("SUPABASE_PAGE_SIZE", "100"))))
 
 log = logging.getLogger(__name__)
 
@@ -121,10 +125,18 @@ class Supabase:
         return int(valor)
 
     def selecionar(self, tabela: str, **filtros: str) -> list[dict]:
+        """Lê a tabela em páginas de no máximo 100.
+
+        Para quando o `Content-Range` (`Prefer: count=exact`) confirma que os
+        registros já lidos cobrem o total, ou quando chega uma página vazia.
+        Página curta sem total segue até a página vazia, com aviso.
+        """
         params_base = dict(filtros)
         limite_total = self._int_param(params_base.pop("limit", None))
         offset_inicial = self._int_param(params_base.pop("offset", None)) or 0
         linhas: list[dict] = []
+        anterior: list | None = None
+        avisou_sem_total = False
         while True:
             restante = None if limite_total is None else limite_total - len(linhas)
             if restante is not None and restante <= 0:
@@ -135,13 +147,48 @@ class Supabase:
                 "limit": str(limite_pagina),
                 "offset": str(offset_inicial + len(linhas)),
             }
-            r = requests.get(f"{self.base}/{tabela}", params=params, headers=self.h, timeout=60)
+            r = requests.get(
+                f"{self.base}/{tabela}",
+                params=params,
+                headers={**self.h, "Prefer": "count=exact"},
+                timeout=60,
+            )
+            if getattr(r, "status_code", None) == 404:
+                log.warning("Supabase %s: HTTP 404 ao selecionar (offset %s); não é fim de coleta",
+                            tabela, params["offset"])
             r.raise_for_status()
             lote = r.json()
             if not isinstance(lote, list):
                 raise RuntimeError(f"Supabase {tabela}: resposta inesperada ao selecionar")
+            if lote and anterior is not None and lote == anterior:
+                log.warning("Supabase %s: página repetida no offset %s; não é fim de coleta",
+                            tabela, params["offset"])
+                raise RuntimeError(
+                    f"Supabase {tabela}: página repetida no offset {params['offset']}; não é fim de coleta"
+                )
+            anterior = lote
+            cabecalho = getattr(r, "headers", None)
+            bruto = cabecalho.get("Content-Range") if cabecalho is not None else None
+            total, ilegivel = interpretar_content_range(bruto)
+            if ilegivel:
+                log.warning("Supabase %s: Content-Range ilegível (%r); seguindo até página vazia",
+                            tabela, bruto)
+                total = None
             linhas.extend(lote)
-            if len(lote) < limite_pagina:
+            corpo = {"totalRegistros": total} if total is not None else {}
+            decisao = avaliar_pagina(
+                lote, tamanho=limite_pagina, pagina=1, corpo=corpo,
+                acumulado=offset_inicial + len(linhas),
+            )
+            if decisao.aviso:
+                log.warning("Supabase %s: %s", tabela, decisao.aviso)
+            elif total is None and lote and len(lote) < limite_pagina and not avisou_sem_total:
+                log.warning(
+                    "Supabase %s: página com %s itens (pedido %s) sem Content-Range; seguindo até página vazia",
+                    tabela, len(lote), limite_pagina,
+                )
+                avisou_sem_total = True
+            if decisao.encerrar:
                 return linhas
 
 

@@ -238,17 +238,23 @@ class CadastroFornecedores:
         return resumo
 
 
-def cnpjs_de_resultados(sb, pagina: int = 1000) -> list[str]:
-    """CNPJs distintos já gravados em licitacao_resultados (serve PNCP e Paradigma)."""
+def cnpjs_de_resultados(sb, pagina: int = 100) -> list[str]:
+    """CNPJs distintos já gravados em licitacao_resultados (serve PNCP e Paradigma).
+
+    Cada chamada pede no máximo 100 linhas. `selecionar` para pelo Content-Range
+    ou por página vazia; aqui a varredura só para quando a página volta vazia,
+    para uma página curta sem total não encerrar a leitura.
+    """
+    pagina = max(1, min(100, int(pagina)))
     vistos: set[str] = set()
     ini = 0
     while True:
         rows = sb.selecionar("licitacao_resultados", select="fornecedor_cnpj", fornecedor_cnpj="not.is.null",
                              order="id", offset=str(ini), limit=str(pagina))
-        vistos |= {r["fornecedor_cnpj"] for r in rows}
-        if len(rows) < pagina:
+        if not rows:
             return sorted(vistos)
-        ini += pagina
+        vistos |= {r["fornecedor_cnpj"] for r in rows}
+        ini += len(rows)
 
 
 def main(argv: list[str] | None = None) -> int:

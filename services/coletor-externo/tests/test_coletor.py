@@ -192,8 +192,11 @@ def test_supabase_selecionar_pagina_automaticamente(monkeypatch):
     chamadas = []
 
     class Resp:
-        def __init__(self, payload):
+        def __init__(self, payload, total):
             self._payload = payload
+            inicio = 0
+            fim = max(len(payload) - 1, 0)
+            self.headers = {"Content-Range": f"{inicio}-{fim}/{total}"}
 
         def raise_for_status(self):
             return None
@@ -203,7 +206,9 @@ def test_supabase_selecionar_pagina_automaticamente(monkeypatch):
 
     def fake_get(url, params, headers, timeout):
         chamadas.append(params.copy())
-        return Resp([{"id": 1}, {"id": 2}] if params["offset"] == "0" else [{"id": 3}])
+        if params["offset"] == "0":
+            return Resp([{"id": 1}, {"id": 2}], 3)
+        return Resp([{"id": 3}], 3)
 
     monkeypatch.setattr(Destino, "POSTGREST_MAX_ROWS", 2)
     monkeypatch.setattr("coletor.destino.requests.get", fake_get)

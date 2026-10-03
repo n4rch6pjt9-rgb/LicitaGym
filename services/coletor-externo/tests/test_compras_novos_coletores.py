@@ -321,7 +321,7 @@ def test_coletor_precos_falhas_e_retries(monkeypatch):
 
 
 def test_coletor_pgc_limite_tamanho_pagina(monkeypatch):
-    """Garante que tamanhoPagina enviado à API PGC respeita o teto de 500."""
+    """Garante que tamanhoPagina enviado à API PGC respeita o teto de 100."""
     cliente = compras_pgc.ClienteComprasPGC(delay=0)
     chamada = {}
 
@@ -336,7 +336,7 @@ def test_coletor_pgc_limite_tamanho_pagina(monkeypatch):
     monkeypatch.setattr(compras_pgc.time, "sleep", lambda *_: None)
 
     cliente.consultar_classe(7830, 2026, tamanho_pagina=1000)
-    assert chamada["params"]["tamanhoPagina"] == 500
+    assert chamada["params"]["tamanhoPagina"] == 100
 
 
 def test_coletor_arp_falha_apos_retries(monkeypatch):

@@ -10,7 +10,33 @@ Precisão > rastreabilidade > dados oficiais > auditabilidade > segurança. Não
 ## Como revisar um PR
 Siga `.github/skills/code-review/SKILL.md` em toda revisão de pull request.
 
-Classifique cada comentário: **[BLOQUEANTE]**, **[IMPORTANTE]** ou **[SUGESTÃO]**. Não comente estilo que um linter resolveria. Seja específico: aponte a linha e proponha a correção.
+Classifique cada comentário: **Alto**, **[IMPORTANTE]** ou **[SUGESTÃO]**. **Alto** é a severidade alta do review (o que antes era [BLOQUEANTE]). Não comente estilo que um linter resolveria. Seja específico: aponte a linha, a regra e a correção.
+
+## Sinalizar como Alto
+
+Produto (o cliente vende produtos que casam com o CATMAT dele, equipamentos fitness — não serviços):
+
+- Contrato de serviço nunca vira lead: credenciamento, locação, manutenção (inclusive manutenção com fornecimento de peças), obra, oficineiros.
+- Um termo de busca sozinho não torna a linha `forte`.
+- Polia e espaldar são `forte`. Pilates, "aparelho para condicionamento físico" genérico e colchonete são `fraco`. `Puxador` é positivo só na categoria acessórios. Academia ao ar livre só conta junto com piso.
+- Prioridade: `leads` = recebendo proposta; `monitorar` = em julgamento, suspensa, adjudicação ou recurso; `historico` = encerrada ou homologada. Status desconhecido nunca vira lead.
+- Fallback silencioso que troca a prioridade (ex.: cair para `encerradas` ignorando documento ou falha de API).
+- O pipeline do Dashboard nunca é alimentado automaticamente. Só entra pelo botão explícito "Enviar para pipeline".
+- Histórico e mapa de fornecedor (marca, preço por item CATMAT, revenda ou fabricante) só de certames homologados, só no BI, rastreáveis pelo certame.
+- CPF e CNPJ em documentos de edital são dados públicos: não mascarar no RAG.
+- RAG usa `text-multilingual-embedding-002` com 768 dimensões. Trocar o modelo de embedding sem plano de reindex aprovado no PR.
+- Alteração de classificação sem dry-run (contagem antes e depois) no texto do PR.
+
+Engenharia e deploy:
+
+- Merge na `main` republica **todas** as Edge Functions pela integração Supabase ↔ GitHub e aplica migrations em produção. PR que mexe em `supabase/functions/**` ou `supabase/migrations/**` é alto risco.
+- Migration com timestamp menor ou igual à última da `main`, ou não idempotente (`IF NOT EXISTS` / `CREATE OR REPLACE`). Já houve quebra de deploy por migration aplicada só em produção.
+- `DROP` ou `DELETE` destrutivo sem backup e sem dizer isso no PR.
+- Chave ou segredo no código. `SUPABASE_SERVICE_ROLE_KEY` e credenciais GCP só em secret.
+- `wrangler deploy`.
+- Coletor não idempotente, `DELAY_SEGUNDOS` < 1, ou tipo de arquivo pela extensão em vez dos bytes.
+
+Os itens [BLOQUEANTE] abaixo também são Alto.
 
 Se a descrição citar issue (`#123`), check do Actions ou outro pull request, consulte o GitHub MCP (somente leitura) antes de comentar. Se a ferramenta falhar, declare o contexto como não verificado. Não use o MCP do Supabase nesta revisão: o servidor em `.cursor/mcp.json` exige OAuth, e o Copilot code review não suporta MCP remoto com OAuth.
 

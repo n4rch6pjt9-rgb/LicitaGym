@@ -3,6 +3,11 @@ applyTo: "docs/agente-editais/**,docs/agente-juridico-ml/**,**/*document*,**/*pd
 ---
 # Pipeline documental e agentes (editais, jurídico)
 
+## Alto
+- CPF e CNPJ em documentos de edital são dados públicos. Mascarar, descartar ou redact esses identificadores antes do RAG é Alto.
+- Embedding do RAG: `text-multilingual-embedding-002`, 768 dimensões. Trocar modelo ou dimensão sem plano de reindex aprovado no PR é Alto.
+- Histórico de preço e mapa de fornecedor não nascem deste pipeline documental solto: só de certame homologado, só no BI, com o certame rastreável.
+
 ## Ao revisar
 - **Original preservado**: documento oficial não é sobrescrito; SHA-256 do conteúdo original. Mesmo documento + mesmo hash = mesma versão; hash diferente = nova versão com histórico.
 - **Idempotência**: reprocessar o mesmo hash não cria versão, página, chunk ou embedding duplicado.

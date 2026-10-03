@@ -94,7 +94,16 @@ begin
           ('SECRETARIA MUNICIPAL DE TURISMO E LAZER', null, 'M', 12, 'secretaria_municipal'),
           ('SECRETARIA MUNICIPAL DA JUVENTUDE', null, 'M', 12, 'secretaria_municipal'),
           ('ASSOCIAÇÃO DESPORTIVA FICTÍCIA', null, 'M', null, 'outros'),
-          ('ESPORTE CLUBE FICTÍCIO', null, 'M', null, 'outros')) x(nome, natureza, esfera, tipo_adm, esperado)
+          ('ESPORTE CLUBE FICTÍCIO', null, 'M', null, 'outros'),
+          -- OSC/OSCIP sem tipo de administração nem natureza (review Codex P2 no #184): exclusão OSC(IP)?S?
+          ('OSCIP ESPORTE PARA TODOS', null, null, null, 'outros'),
+          ('OSCIP ESPORTE PARA TODOS FICTÍCIA', null, 'M', null, 'outros'),
+          ('OSC ESPORTE E CIDADANIA FICTÍCIA', null, null, null, 'outros'),
+          ('OSCIPS DE ESPORTE FICTÍCIAS', null, null, null, 'outros'),
+          -- controles positivos: secretaria de esporte sem sufixo e município com OSCAR no nome (não é OSC)
+          ('SECRETARIA MUNICIPAL DE ESPORTES', null, 'M', 12, 'secretaria_esporte'),
+          ('SECRETARIA MUNICIPAL DE ESPORTES', null, null, null, 'secretaria_esporte'),
+          ('SECRETARIA MUNICIPAL DE ESPORTES DE OSCARLÂNDIA FICTÍCIA', null, 'M', 12, 'secretaria_esporte')) x(nome, natureza, esfera, tipo_adm, esperado)
       union all
       select 'comportamento', 'fn_classifica_uasg(' || x.nome || ' / ' || x.pai || ')', x.esperado,
              (public.fn_classifica_uasg(x.nome, x.pai)).tipo_orgao
@@ -108,7 +117,13 @@ begin
           ('SECRETARIA NACIONAL DE ESPORTE', 'ministerio_orgao_federal', 'ministerio_orgao_federal'),
           ('CENTRO DE EDUCACAO FISICA E DESPORTOS', 'universidade_federal', 'universidade_federal'),
           ('COMISSAO DE DESPORTOS DA MARINHA', 'forcas_armadas_marinha', 'forcas_armadas_marinha'),
-          ('QUALQUER UNIDADE', 'secretaria_esporte', 'secretaria_esporte')) x(nome, pai, esperado)
+          ('QUALQUER UNIDADE', 'secretaria_esporte', 'secretaria_esporte'),
+          -- OSC/OSCIP sob prefeitura/governo (lookahead OSC(IP)?S?) e controles positivos
+          ('OSCIP ESPORTE PARA TODOS', 'prefeitura', 'prefeitura'),
+          ('OSCIP ESPORTE PARA TODOS', 'governo_estadual', 'governo_estadual'),
+          ('OSC ESPORTE E CIDADANIA FICTICIA', 'prefeitura', 'prefeitura'),
+          ('SECRETARIA MUNICIPAL DE ESPORTES', 'prefeitura', 'secretaria_esporte'),
+          ('SECRETARIA MUNICIPAL DE ESPORTES DE OSCARLANDIA FICTICIA', 'prefeitura', 'secretaria_esporte')) x(nome, pai, esperado)
       union all
       select 'comportamento', 'fn_esfera_canon(M/E/F) e fn_poder_canon de secretaria_esporte', 'M/E/F/E',
              public.fn_esfera_canon('1031', 'M', null, 'SP', 'secretaria_esporte') || '/' ||

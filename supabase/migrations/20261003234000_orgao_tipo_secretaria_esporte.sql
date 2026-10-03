@@ -19,9 +19,11 @@
 --                 municipal/estadual (970-1060). Casa ESPORTE(S), ESPORTIVO(A), DESPORTO(S), PARADESPORTO,
 --                 PARAESPORTE, abreviação "ESPORT" e "ESP(.) (E) LAZER"/"ES LAZER" sobre fn_norm_nome(nome).
 --                 Exclui nome de entidade privada (ASSOCIAÇÃO, CLUBE, LIGA, FEDERAÇÃO, GRÊMIO, SOCIEDADE, COMITÊ,
---                 ONG/OSC, EMPRESA, COMPANHIA), loteria, ensino (EDU*, ESCOLA, COLÉGIO, UNIVERSIDADE, FACULDADE) e
+--                 ONG/OSC/OSCIP, EMPRESA, COMPANHIA), loteria, ensino (EDU*, ESCOLA, COLÉGIO, UNIVERSIDADE, FACULDADE) e
 --                 SAÚDE: secretaria mista de educação e esporte continua secretaria_educacao (por extenso já vencia
 --                 na 640; abreviada, "SEC. EST. EDUC. CULTURA E ESPORTE", não vira esporte e fica como hoje).
+--                 OSC/OSCIP entra como OSC(IP)?S? (OSC, OSCS, OSCIP, OSCIPS; review do Codex no #184) e não como
+--                 OSC\w*, que tiraria também nome de município com OSCAR (ex.: OSCAR BRESSANE-SP, que está na carga).
 --                 Entram fundação, autarquia, fundo, superintendência e instituto públicos de esporte (FUNDAÇÃO
 --                 MUNICIPAL DE ESPORTES, PARANÁ ESPORTE, FUNDESPORTE): são o comprador da política de esporte no
 --                 município/estado (mesma demanda de material esportivo e academia) e o tipo é único por órgão; a
@@ -79,11 +81,11 @@ on conflict (tipo_orgao) do nothing;
 INSERT INTO public.orgao_tipo_regras (prioridade, nivel, tipo_orgao, nome_regex, nome_regex_exclui, codigos_orgao, codigos_orgao_vinculado, tipos_administracao, aceita_tipo_adm_nulo, naturezas, natureza_regex, esferas, grupos_orgao_pai, aceita_grupo_pai_nulo, observacao) VALUES
   (645, 'orgao', 'secretaria_esporte',
    '\y(PARA)?D?ESPORT|\yESP?( E)? LAZER\y',
-   '\y(ASSOC\w*|CLUBE|LIGA|FEDERAC\w*|CONFEDERAC\w*|GREMIO|AGREMIACAO|SOCIEDADE|COMITE|ONG|OSC|EMPRESA|COMPANHIA|LOTERIA\w*|EDU\w*|ESCOLA|COLEGIO|UNIVERSIDADE|FACULDADE|SAUDE)\y',
+   '\y(ASSOC\w*|CLUBE|LIGA|FEDERAC\w*|CONFEDERAC\w*|GREMIO|AGREMIACAO|SOCIEDADE|COMITE|ONG|OSC(IP)?S?|EMPRESA|COMPANHIA|LOTERIA\w*|EDU\w*|ESCOLA|COLEGIO|UNIVERSIDADE|FACULDADE|SAUDE)\y',
    NULL, NULL, NULL, false, NULL, NULL, NULL, NULL, false,
    'secretaria/fundacao/autarquia/fundo/ministerio de esporte; depois de saude (630) e educacao (640), antes das genericas de secretaria (970-1060)'),
   (1170, 'uasg', 'secretaria_esporte',
-   '^(?!.*\y(ASSOC\w*|CLUBE|LIGA|FEDERAC\w*|CONFEDERAC\w*|GREMIO|AGREMIACAO|SOCIEDADE|COMITE|ONG|OSC|EMPRESA|COMPANHIA|LOTERIA\w*|EDU\w*|ESCOLA|COLEGIO|UNIVERSIDADE|FACULDADE|SAUDE)\y).*(\y(PARA)?D?ESPORT|\yESP?( E)? LAZER\y)',
+   '^(?!.*\y(ASSOC\w*|CLUBE|LIGA|FEDERAC\w*|CONFEDERAC\w*|GREMIO|AGREMIACAO|SOCIEDADE|COMITE|ONG|OSC(IP)?S?|EMPRESA|COMPANHIA|LOTERIA\w*|EDU\w*|ESCOLA|COLEGIO|UNIVERSIDADE|FACULDADE|SAUDE)\y).*(\y(PARA)?D?ESPORT|\yESP?( E)? LAZER\y)',
    NULL, NULL, NULL, NULL, false, NULL, NULL, NULL, ARRAY['executivo_municipal','executivo_estadual']::text[], false,
    'UASG de esporte sob prefeitura/governo/secretaria (nao federal: convenentes SICONV); exclusao no lookahead')
 on conflict (nivel, prioridade) do nothing;

@@ -295,7 +295,7 @@ begin
                (select md5(string_agg(format('%s|%s|%s|%s|%s|%s', tipo_orgao, grupo_tipo, rotulo, grupo_rotulo, ordem_grupo, ordem),
                                       E'\n' order by tipo_orgao)) from public.orgao_tipos)
         union all
-        select 'seed', 'md5 orgao_tipo_regras', '738367b91a90a28381952441bb9f14a4',
+        select 'seed', 'md5 orgao_tipo_regras', '8d7fb852271530bd96f68940fd124635',
                (select md5(string_agg(format('%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s', nivel, prioridade, tipo_orgao,
                                              nome_regex, nome_regex_exclui, codigos_orgao, codigos_orgao_vinculado,
                                              tipos_administracao, aceita_tipo_adm_nulo, naturezas, natureza_regex, esferas,

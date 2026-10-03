@@ -23,6 +23,13 @@
 --     U41 "SECRETARIA MUNICIPAL DE ESPORTES E LAZER"     -> secretaria_esporte (1170, origem regra_uasg)
 --     U42 "ASSOCIACAO DESPORTIVA FICTICIA"               -> herda prefeitura (exclusão de entidade privada no lookahead)
 --   O5  órgão federal (natureza 1015), UASG de esporte -> U51 herda ministerio_orgao_federal (1170 fora do federal)
+--   O6  "OSCIP ESPORTE PARA TODOS FICTÍCIA", sem tipo de administração nem natureza -> outros|padrao (exclusão OSC(IP)?S?)
+--   O7  "OSC ESPORTE E CIDADANIA FICTÍCIA", idem          -> outros|padrao
+--   O8  "SECRETARIA MUNICIPAL DE ESPORTES" (controle +)  -> secretaria_esporte|regra
+--     U43 "OSCIP ESPORTE PARA TODOS FICTICIA" sob O4     -> herda prefeitura (lookahead OSC(IP)?S?)
+--     U44 "OSC ESPORTE E CIDADANIA FICTICIA" sob O4      -> herda prefeitura
+--     U45 "SECRETARIA MUNICIPAL DE ESPORTES" sob O4      -> secretaria_esporte (controle +, regra_uasg)
+--     U46 "SEC MUN DE ESPORTES DE OSCARLANDIA FICTICIA"  -> secretaria_esporte (OSCAR não é OSC)
 --   I   2ª chamada de fn_orgaos_uasgs_classificar()      -> 0/0 (idempotente)
 --   G   secretaria_esporte com grupo esporte_lazer e poder E
 -- =============================================================================
@@ -49,7 +56,10 @@ begin
     (9999902, 'FUNDAÇÃO MUNICIPAL DE ESPORTES FICTÍCIA', '1120', 'M', 14, '{}'::jsonb, 'fixture'),
     (9999903, 'SECRETARIA MUNICIPAL DE EDUCAÇÃO E ESPORTES FICTÍCIA', null, 'M', 12, '{}'::jsonb, 'fixture'),
     (9999904, 'PREFEITURA MUNICIPAL DE CIDADE FICTÍCIA', null, 'M', 12, '{}'::jsonb, 'fixture'),
-    (9999905, 'ÓRGÃO FEDERAL FICTÍCIO', '1015', 'F', 1, '{}'::jsonb, 'fixture');
+    (9999905, 'ÓRGÃO FEDERAL FICTÍCIO', '1015', 'F', 1, '{}'::jsonb, 'fixture'),
+    (9999906, 'OSCIP ESPORTE PARA TODOS FICTÍCIA', null, null, null, '{}'::jsonb, 'fixture'),
+    (9999907, 'OSC ESPORTE E CIDADANIA FICTÍCIA', null, null, null, '{}'::jsonb, 'fixture'),
+    (9999908, 'SECRETARIA MUNICIPAL DE ESPORTES', null, 'M', 12, '{}'::jsonb, 'fixture');
 
   insert into public.uasgs (codigo_uasg, nome_uasg, orgao_id, sigla_uf, ativo, raw, payload_hash)
   select x.codigo, x.nome, o.id, 'SP', true, '{}'::jsonb, 'fixture'
@@ -62,6 +72,10 @@ begin
       ('999931', 'COORDENACAO DE ESPORTES FICTICIA', 9999903),
       ('999941', 'SECRETARIA MUNICIPAL DE ESPORTES E LAZER FICTICIA', 9999904),
       ('999942', 'ASSOCIACAO DESPORTIVA FICTICIA', 9999904),
+      ('999943', 'OSCIP ESPORTE PARA TODOS FICTICIA', 9999904),
+      ('999944', 'OSC ESPORTE E CIDADANIA FICTICIA', 9999904),
+      ('999945', 'SECRETARIA MUNICIPAL DE ESPORTES', 9999904),
+      ('999946', 'SEC MUN DE ESPORTES DE OSCARLANDIA FICTICIA', 9999904),
       ('999951', 'COORDENACAO DE ESPORTES FICTICIA FEDERAL', 9999905)) x(codigo, nome, codigo_orgao)
     join public.orgaos o on o.codigo_orgao = x.codigo_orgao;
 
@@ -78,6 +92,9 @@ begin
       ('orgao', '9999903', 'secretaria_educacao|regra'),
       ('orgao', '9999904', 'prefeitura|regra'),
       ('orgao', '9999905', 'ministerio_orgao_federal|regra'),
+      ('orgao', '9999906', 'outros|padrao'),
+      ('orgao', '9999907', 'outros|padrao'),
+      ('orgao', '9999908', 'secretaria_esporte|regra'),
       ('uasg',  '999911',  'secretaria_esporte|herdado'),
       ('uasg',  '999912',  'hospital|regra_uasg'),
       ('uasg',  '999913',  'secretaria_esporte|herdado'),
@@ -86,6 +103,10 @@ begin
       ('uasg',  '999931',  'secretaria_educacao|herdado'),
       ('uasg',  '999941',  'secretaria_esporte|regra_uasg'),
       ('uasg',  '999942',  'prefeitura|herdado'),
+      ('uasg',  '999943',  'prefeitura|herdado'),
+      ('uasg',  '999944',  'prefeitura|herdado'),
+      ('uasg',  '999945',  'secretaria_esporte|regra_uasg'),
+      ('uasg',  '999946',  'secretaria_esporte|regra_uasg'),
       ('uasg',  '999951',  'ministerio_orgao_federal|herdado')) x(nivel, chave, esperado)
   loop
     n := n + 1;

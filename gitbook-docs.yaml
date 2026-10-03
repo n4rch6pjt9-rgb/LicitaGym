@@ -2,10 +2,29 @@ $schema: https://api.gitbook.com/gitbook-docs.yaml
 site:
   title: Licitagym Docs
   structure:
-    - type: space
-      key: space-1
-      title: Untitled
-      path: untitled
+    - type: section
+      key: section-1
+      title: Licitagym Docs
+      path: licitagym-docs
       default: true
-      content:
-        directory: ./untitled
+      children:
+        - type: space
+          key: space-1
+          title: Untitled
+          path: untitled
+          default: true
+          content:
+            directory: ./untitled
+    - type: section
+      key: section-2
+      title: Product Docs
+      path: product-docs
+      children:
+        - type: space
+          key: space-2
+          title: Product Docs
+          path: product-docs
+          default: true
+          draft: true
+          content:
+            directory: ./product-docs

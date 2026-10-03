@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from coletor import paradigma as P
 from coletor import relatorio_ano as R
 
@@ -50,6 +52,14 @@ def _portal():
     portal.detalhes.return_value = None
     portal.itens.return_value = []
     return portal
+
+
+def test_coletar_ano_envelope_invalido_nao_vira_fim(tmp_path):
+    """relatorio_ano não interpreta envelope: usa paginar_intervalo, que levanta."""
+    portal = _portal()
+    portal.listar_encerrados.return_value = {"mensagem": "indisponível"}
+    with pytest.raises(RuntimeError, match="sem lista reconhecida"):
+        R.coletar_ano(portal, 2024, ["academia"], None, tmp_path)
 
 
 def test_coletar_ano_pagina_curta_sem_total_segue_ate_vazia(tmp_path):

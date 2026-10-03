@@ -607,6 +607,56 @@ def test_disputa_aberta_2025_sem_trofeu_vence_classificada():
 
 # ---------------- paginação (regra de 03/10/2026) e CPF sem máscara ----------------
 
+@pytest.mark.parametrize("resp,trecho", [
+    ({"mensagem": "indisponível"}, "indisponível"),
+    (None, "null"),
+    ("indisponível", "indisponível"),
+    ({"d": {"mensagem": "indisponível"}}, "indisponível"),
+    ({"nCdProcesso": 1}, "nCdProcesso"),
+])
+def test_envelope_200_sem_lista_levanta(resp, trecho):
+    with pytest.raises(RuntimeError, match="sem lista reconhecida") as exc:
+        P.paginar_intervalo(lambda de, ate: resp, rotulo="sfiec termo academia")
+    msg = str(exc.value)
+    assert "sfiec termo academia" in msg and trecho in msg
+
+
+def test_envelope_invalido_trunca_o_trecho():
+    bruto = "x" * 5000
+    with pytest.raises(RuntimeError, match="sem lista reconhecida") as exc:
+        P.paginar_intervalo(lambda de, ate: bruto, rotulo="longo")
+    assert "longo" in str(exc.value) and len(str(exc.value)) < 400
+
+
+def test_lista_vazia_encerra_normalmente():
+    chamadas = []
+
+    def buscar(de, ate):
+        chamadas.append((de, ate))
+        return []
+
+    itens, avisos = P.paginar_intervalo(buscar, rotulo="vazio")
+    assert chamadas == [(1, 100)] and itens == [] and avisos == []
+
+
+def test_objeto_com_lista_vazia_encerra_normalmente():
+    def buscar(de, ate):
+        return {"resultado": [], "totalRegistros": 0}
+
+    itens, avisos = P.paginar_intervalo(buscar, rotulo="obj-vazio")
+    assert itens == [] and avisos == []
+
+
+def test_pagina_seguinte_invalida_nao_encerra_com_sucesso():
+    def buscar(de, ate):
+        if de == 1:
+            return [{"n": 1}]
+        return {"mensagem": "indisponível"}
+
+    with pytest.raises(RuntimeError, match="sem lista reconhecida"):
+        P.paginar_intervalo(buscar, rotulo="meio")
+
+
 def test_paginar_para_pelo_total():
     faixas = []
 

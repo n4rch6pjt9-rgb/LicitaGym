@@ -119,15 +119,27 @@ def _intervalo(pagina_de: int, pagina_ate: int) -> tuple[int, int]:
     return de, de + tamanho - 1
 
 
-def _itens_e_total(resp: Any) -> tuple[list, dict]:
+def _trecho_resposta(resp: Any, limite: int = 200) -> str:
+    """Trecho curto do corpo para a mensagem de erro. Não despeja a página inteira."""
+    try:
+        texto = json.dumps(resp, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        texto = repr(resp)
+    if len(texto) <= limite:
+        return texto
+    return texto[:limite] + "…"
+
+
+def _itens_e_total(resp: Any, *, rotulo: str) -> tuple[list, dict]:
     """Separa a lista e o total, se a API informar.
 
-    O webservice observado devolve `d` como lista, sem total. Se `d` vier como objeto
-    com a lista (`resultado`, `itens`, `lista` ou `d`) e um total conhecido, o total
-    entra na decisão de parada.
+    Página vazia só com lista (`[]` inclusive) ou com objeto cuja chave reconhecida
+    (`resultado`, `itens`, `lista` ou `d`) seja uma lista, ainda que vazia. HTTP 200
+    com `d` nulo, string, ou objeto sem essa lista não é fim: levanta erro.
+    O webservice observado devolve `d` como lista, sem total. Se o objeto trouxer
+    `totalRegistros`, `totalPaginas`, `paginasRestantes` ou `total`, o total entra
+    na decisão de parada.
     """
-    if resp is None:
-        return [], {}
     if isinstance(resp, list):
         return resp, {}
     if isinstance(resp, dict):
@@ -135,8 +147,8 @@ def _itens_e_total(resp: Any) -> tuple[list, dict]:
         for chave in ("resultado", "itens", "lista", "d"):
             if isinstance(resp.get(chave), list):
                 return resp[chave], corpo
-        return [], corpo
-    raise RuntimeError(f"página Paradigma em formato inesperado: {type(resp).__name__}")
+    raise RuntimeError(
+        f"{rotulo}: resposta sem lista reconhecida; não é fim de coleta ({_trecho_resposta(resp)})")
 
 
 def paginar_intervalo(buscar, *, tamanho: int = TAMANHO_PAGINA, max_paginas: int | None = None,
@@ -144,7 +156,9 @@ def paginar_intervalo(buscar, *, tamanho: int = TAMANHO_PAGINA, max_paginas: int
     """Percorre faixas inclusivas de no máximo 100 itens.
 
     `buscar(de, ate)` devolve a página. Sem total, só uma página vazia encerra; página
-    curta não. Com total no corpo, `avaliar_pagina` encerra quando o total confirma o fim.
+    curta não. Lista vazia, ou objeto com lista reconhecida vazia, é página vazia.
+    Envelope sem essa lista (nulo, string, objeto só com mensagem) levanta erro.
+    Com total no corpo, `avaliar_pagina` encerra quando o total confirma o fim.
     `max_paginas` e `max_itens` são tetos opcionais (avisam se cortarem antes do fim).
     Sem eles, o corte é `MAX_PAGINAS_SEGURANCA` ou página de conteúdo repetido: os dois
     param com aviso e não são fim confirmado. A faixa seguinte começa depois do último
@@ -180,10 +194,7 @@ def paginar_intervalo(buscar, *, tamanho: int = TAMANHO_PAGINA, max_paginas: int
         pedido = tamanho if falta is None else min(tamanho, falta)
         ate = de + pedido - 1
         resp = buscar(de, ate)
-        if resp is not None and not isinstance(resp, (list, dict)):
-            _aviso(f"{rotulo} página {pagina}: resposta inesperada; não é fim de coleta")
-            break
-        itens, corpo = _itens_e_total(resp)
+        itens, corpo = _itens_e_total(resp, rotulo=f"{rotulo} página {pagina}")
         if pagina_repetida(itens, vistas) and itens:
             _aviso(f"{rotulo} página {pagina} ({de}–{ate}): conteúdo repetido; "
                    "interrompendo para não laçar (não é fim confirmado)")

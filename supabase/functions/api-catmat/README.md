@@ -21,8 +21,12 @@ Tabelas e funções: `supabase/migrations/20260930100000_catalogo_empresa_catmat
 | `palavras_listar` | `codigo_pdm` | `palavras` (padrões do PDM com `tipo`: primeiro as inclusões, depois as exclusões) e `nos_taxonomia` (nós do dicionário de aparelhos e da taxonomia de pisos que apontam para o PDM, só leitura) |
 | `palavras_salvar` | `codigo_pdm`, `padrao`, `ativo?`, `tipo` (`inclui`\|`exclui`; `exclui` = texto que casar não conta para o PDM; **obrigatório com `id`**, ao criar ausente = `inclui`), `id?` (para editar) | o padrão |
 | `palavras_remover` | `id`, `tipo` (obrigatório) | — |
+| `catalogo_itens` | `codigo_pdm` | `hidratado`, `itens[]` do banco (`catmat_item_pdm` + `catmat_item_atributo`): `descricao` completa, `nome_item` (cabeça), `atributos[]` (`ordem`, `atributo`, `valor`), `estado`/`regra_id`/`origem_nivel` |
+| `catalogo_hidratar_itens` (admin) | `apos_pdm?` (cursor), `limite_pdms?` (1–20, padrão 8) | hidrata `catmat_item_pdm` e `catmat_item_atributo` dos PDMs do catálogo (efetivos + PDMs dos itens avulsos) em lotes: `total_pdms`, `processados[]` (`codigo_pdm`, `itens`, `atributos`), `proximo_pdm` (null = fim) |
 
 Inclusões ficam em `catmat_pdm_palavras` e exclusões em `catmat_pdm_exclusoes` (migration `20260930120000_taxonomia_pisos.sql`). O `id` só é único dentro do tipo, por isso editar/remover sem `tipo` responde `400` (evita mexer na inclusão de mesmo id quando a intenção era a exclusão); para trocar o tipo de um padrão, remova e crie de novo. Exclusão não conta como cobertura de texto (`palavras` em `opcoes.pdms`, `pdms_sem_palavras`).
+
+Em `arvore` com `nivel: itens`, cada nó traz também `nome_item` e `atributos` (quebra da descrição, `_shared/compras-gov/descricao-parser.ts`, igual a `catmat_atributos_da_descricao` da migration `20261003200000`). O `nome` do item é a descrição completa do Compras.gov, sem corte.
 
 `nivel` em `arvore` pede os **filhos** do código informado: `classes` + `78` devolve 7810, 7820 e 7830; `pdms` + `7830`; `itens` + `7115`.
 
@@ -34,7 +38,8 @@ Inclusões ficam em `catmat_pdm_palavras` e exclusões em `catmat_pdm_exclusoes`
   - valida o nó no Compras.gov (`404` se não existir);
   - grava grupo, classe e PDM em `catmat_grupos`, `catmat_classes` e `catmat_pdms` (sem `last_seen_sync_id`);
   - ao incluir grupo ou classe, materializa os PDMs descendentes;
-  - em PDM ou item, hidrata `catmat_item_pdm`.
+  - em PDM ou item, hidrata `catmat_item_pdm` e `catmat_item_atributo` (rpc `catmat_item_atributo_sincronizar`);
+  - grupo/classe não hidratam itens (seriam dezenas de PDMs numa chamada): use `catalogo_hidratar_itens`.
 - **Padrões (`catmat_pdm_palavras`):**
   - regex do Postgres aplicada ao texto em minúsculas e sem acento (`lg_normalizar`), com até 300 caracteres;
   - validada com `catmat_regex_valido` (`400` se for inválida);

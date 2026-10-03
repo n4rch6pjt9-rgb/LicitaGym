@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { upsertByNaturalKey } from "../_shared/compras-gov/upsert-natural.ts";
-import type { CatmatPalavra, CatmatRegra, NivelRegra, TipoPalavra } from "./types.ts";
+import type { AtributoItem, CatmatPalavra, CatmatRegra, NivelRegra, TipoPalavra } from "./types.ts";
 
 /** Linha nova ou alterada de regra (chave, id e datas são do banco). */
 export interface RegraInput {
@@ -22,6 +22,18 @@ export interface ItemPdmInput {
   codigo_grupo: number;
   descricao: string | null;
   status_item: boolean | null;
+}
+
+/** Item do catálogo lido do banco (catmat_item_pdm + catmat_item_atributo), com a descrição completa. */
+export interface ItemCatalogoLinha {
+  codigo_item: number;
+  codigo_pdm: number;
+  codigo_classe: number;
+  codigo_grupo: number;
+  descricao: string | null;
+  nome_item: string | null;
+  status_item: boolean | null;
+  atributos: AtributoItem[];
 }
 
 export interface CacheLinha {
@@ -51,6 +63,10 @@ export interface CatmatRepo {
   upsertClasse(row: { codigo_grupo: number; codigo_classe: number; nome: string; status: boolean }): Promise<void>;
   upsertPdm(row: { codigo_pdm: number; codigo_grupo: number; codigo_classe: number; nome_pdm: string; status: boolean }): Promise<void>;
   upsertItensPdm(rows: ItemPdmInput[]): Promise<void>;
+  /** (Re)gera catmat_item_atributo dos itens (rpc catmat_item_atributo_sincronizar). Devolve linhas gravadas. */
+  sincronizarAtributos(codigosItem: number[]): Promise<number>;
+  /** Itens hidratados de um PDM com atributos, ordenados por código. */
+  itensDoPdmComAtributos(codigoPdm: number): Promise<ItemCatalogoLinha[]>;
   pdmExiste(codigoPdm: number): Promise<boolean>;
 
   pdmsEfetivos(): Promise<Array<{ codigo_pdm: number; codigo_classe: number; codigo_grupo: number; origem_nivel: string; regra_id: number }>>;
@@ -152,6 +168,35 @@ export function createSupabaseRepo(client: SupabaseClient): CatmatRepo {
         const { error } = await client.from("catmat_item_pdm").upsert(lote, { onConflict: "codigo_item" });
         if (error) falha("gravar itens", error);
       }
+    },
+    async sincronizarAtributos(codigosItem) {
+      let total = 0;
+      for (let i = 0; i < codigosItem.length; i += 1000) {
+        const { data, error } = await client.rpc("catmat_item_atributo_sincronizar", { p_itens: codigosItem.slice(i, i + 1000) });
+        if (error) falha("sincronizar atributos", error);
+        total += Number(data ?? 0);
+      }
+      return total;
+    },
+    async itensDoPdmComAtributos(codigoPdm) {
+      const { data, error } = await client.from("catmat_item_pdm")
+        .select("codigo_item,codigo_pdm,codigo_classe,codigo_grupo,descricao,nome_item,status_item")
+        .eq("codigo_pdm", codigoPdm).order("codigo_item").limit(5000);
+      if (error) falha("itens do PDM", error);
+      const itens = (data ?? []) as Omit<ItemCatalogoLinha, "atributos">[];
+      const porItem = new Map<number, AtributoItem[]>();
+      const codigos = itens.map((i) => i.codigo_item);
+      for (let i = 0; i < codigos.length; i += 500) {
+        const { data: at, error: e2 } = await client.from("catmat_item_atributo")
+          .select("codigo_item,ordem,atributo,valor").in("codigo_item", codigos.slice(i, i + 500)).order("codigo_item").order("ordem");
+        if (e2) falha("atributos dos itens", e2);
+        for (const a of (at ?? []) as Array<AtributoItem & { codigo_item: number }>) {
+          const l = porItem.get(a.codigo_item) ?? [];
+          l.push({ ordem: a.ordem, atributo: a.atributo, valor: a.valor });
+          porItem.set(a.codigo_item, l);
+        }
+      }
+      return itens.map((i) => ({ ...i, atributos: porItem.get(i.codigo_item) ?? [] }));
     },
     async pdmExiste(codigoPdm) {
       const { data, error } = await client.from("catmat_pdms").select("codigo_pdm").eq("codigo_pdm", codigoPdm).maybeSingle();

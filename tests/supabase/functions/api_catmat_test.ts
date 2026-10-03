@@ -3,6 +3,7 @@ import { type ApiCatmatContext, handleRequest } from "../../../supabase/function
 import { estadoDoNo, indexarRegras } from "../../../supabase/functions/api-catmat/catalog.ts";
 import type { CatmatRepo, ItemPdmInput, RegraInput } from "../../../supabase/functions/api-catmat/repo.ts";
 import { limparCacheMemoria } from "../../../supabase/functions/api-catmat/tree.ts";
+import { quebrarDescricaoItem } from "../../../supabase/functions/_shared/compras-gov/descricao-parser.ts";
 import type { CatmatPalavra, CatmatRegra } from "../../../supabase/functions/api-catmat/types.ts";
 
 // ------------------------------------------------------------------------------------------------
@@ -16,6 +17,7 @@ function repoMemoria() {
   const classes = new Map<number, { nome: string; grupo: number }>();
   const pdms = new Map<number, { nome: string; classe: number; grupo: number }>();
   const itens = new Map<number, ItemPdmInput>();
+  const atributos = new Map<number, Array<{ ordem: number; atributo: string; valor: string }>>();
   const cache = new Map<string, { payload: unknown; total: number | null; expira_em: string }>();
   const palavras: CatmatPalavra[] = [];
   const seqPalavra = { inclui: 0, exclui: 0 };
@@ -45,6 +47,19 @@ function repoMemoria() {
     upsertClasse: (r) => (classes.set(r.codigo_classe, { nome: r.nome, grupo: r.codigo_grupo }), Promise.resolve()),
     upsertPdm: (r) => (pdms.set(r.codigo_pdm, { nome: r.nome_pdm, classe: r.codigo_classe, grupo: r.codigo_grupo }), Promise.resolve()),
     upsertItensPdm: (rows) => (rows.forEach((r) => itens.set(r.codigo_item, r)), Promise.resolve()),
+    // Mesmo efeito de catmat_item_atributo_sincronizar: atributos a partir da descrição
+    sincronizarAtributos: (cs) => {
+      let n = 0;
+      for (const c of cs) {
+        const a = quebrarDescricaoItem(itens.get(c)?.descricao).atributos;
+        atributos.set(c, a);
+        n += a.length;
+      }
+      return Promise.resolve(n);
+    },
+    itensDoPdmComAtributos: (c) =>
+      Promise.resolve([...itens.values()].filter((i) => i.codigo_pdm === c).sort((a, b) => a.codigo_item - b.codigo_item)
+        .map((i) => ({ ...i, nome_item: quebrarDescricaoItem(i.descricao).nome, atributos: atributos.get(i.codigo_item) ?? [] }))),
     pdmExiste: (c) => Promise.resolve(pdms.has(c)),
     pdmsEfetivos: () => {
       // Mesma herança da função SQL: regra mais específica vence, só incluídos
@@ -103,7 +118,7 @@ function repoMemoria() {
       }
     },
   };
-  return { repo, regras, grupos, classes, pdms, itens, cache, palavras };
+  return { repo, regras, grupos, classes, pdms, itens, atributos, cache, palavras };
 }
 
 const G78 = { codigoGrupo: 78, nomeGrupo: "EQUIPAMENTOS PARA RECREAÇÃO E DESPORTOS", statusGrupo: true };
@@ -120,6 +135,13 @@ const PDMS_7830 = [
 const ITENS_7115 = [
   { codigoItem: 373980, codigoGrupo: 78, codigoClasse: 7830, codigoPdm: 7115, descricaoItem: "ESTEIRA ELÉTRICA 150 KG", statusItem: true },
   { codigoItem: 319134, codigoGrupo: 78, codigoClasse: 7830, codigoPdm: 7115, descricaoItem: "ESTEIRA ELÉTRICA 18 KM/H", statusItem: true },
+];
+// Descrição real (API pública, 03/10/2026), longa de propósito: a árvore não pode cortar
+const DESCRICAO_2638 =
+  "APARELHO / ACESSÓRIO - ACONDICIONAMENTO FÍSICO, TIPO: BOLSA (POWER BAG/SAND BAG) , MATERIAL: LONA DE PVC , PESO: 10 KG, " +
+  "CARACTERÍSTICAS ADICIONAIS: ALÇAS LATERAIS, ENCHIMENTO DE AREIA E SERRAGEM , APLICAÇÃO: TREINAMENTO FUNCIONAL ";
+const ITENS_2638 = [
+  { codigoItem: 470001, codigoGrupo: 78, codigoClasse: 7830, codigoPdm: 2638, descricaoItem: DESCRICAO_2638, statusItem: true },
 ];
 
 /** Compras.gov falso: responde por endpoint e parâmetro; registra as URLs chamadas. */
@@ -140,7 +162,8 @@ function comprasGovFalso(opts: { falhar?: boolean; paginarPdms?: boolean } = {})
       return corpo(PDMS_7830);
     }
     if (url.pathname.endsWith("4_consultarItemMaterial")) {
-      return corpo(url.searchParams.get("codigoPdm") === "7115" ? ITENS_7115 : []);
+      const pdm = url.searchParams.get("codigoPdm");
+      return corpo(pdm === "7115" ? ITENS_7115 : pdm === "2638" ? ITENS_2638 : []);
     }
     return Promise.resolve(new Response("{}", { status: 404 }));
   }) as typeof fetch;
@@ -476,3 +499,69 @@ Deno.test("api-catmat: taxonomia conta como cobertura de texto; palavras_listar 
   const pal = await (await handleRequest(post({ action: "palavras_listar", codigo_pdm: 7115 }), ctx(mem, comprasGovFalso(), COMUM))).json();
   assertEquals(pal.nos_taxonomia, ["esteira_eletrica", "esteira_ergometrica"]);
 });
+
+// ------------------------------------------------------------------------------------------------
+// Taxonomia dos itens: atributos, descrição completa, hidratação do catálogo
+// ------------------------------------------------------------------------------------------------
+
+Deno.test("descricao-parser: nome + atributos na ordem; vírgula decimal não quebra", () => {
+  const r = quebrarDescricaoItem("ANILHA, MATERIAL: FERRO , ACABAMENTO SUPERFICIAL: EMBORRACHADO , COR: PRETA , PESO: 2,0 KG");
+  assertEquals(r.nome, "ANILHA");
+  assertEquals(r.atributos, [
+    { ordem: 1, atributo: "MATERIAL", valor: "FERRO" },
+    { ordem: 2, atributo: "ACABAMENTO SUPERFICIAL", valor: "EMBORRACHADO" },
+    { ordem: 3, atributo: "COR", valor: "PRETA" },
+    { ordem: 4, atributo: "PESO", valor: "2,0 KG" },
+  ]);
+  const b = quebrarDescricaoItem(DESCRICAO_2638);
+  assertEquals(b.nome, "APARELHO / ACESSÓRIO - ACONDICIONAMENTO FÍSICO");
+  assertEquals(b.atributos[0], { ordem: 1, atributo: "TIPO", valor: "BOLSA (POWER BAG/SAND BAG)" });
+  assertEquals(b.atributos[3].valor, "ALÇAS LATERAIS, ENCHIMENTO DE AREIA E SERRAGEM");
+  assertEquals(quebrarDescricaoItem(null), { nome: null, atributos: [] });
+  assertEquals(quebrarDescricaoItem("ESTEIRA ELÉTRICA 150 KG"), { nome: "ESTEIRA ELÉTRICA 150 KG", atributos: [] });
+});
+
+Deno.test("api-catmat: arvore itens traz descrição completa, nome_item e atributos", async () => {
+  limparCacheMemoria();
+  const mem = repoMemoria();
+  const res = await handleRequest(post({ action: "arvore", nivel: "itens", codigo: 2638 }), ctx(mem));
+  assertEquals(res.status, 200);
+  const no = (await res.json()).nos[0];
+  assertEquals(no.nome, DESCRICAO_2638.trim());
+  assertEquals(no.nome_item, "APARELHO / ACESSÓRIO - ACONDICIONAMENTO FÍSICO");
+  assertEquals(no.atributos.length, 5);
+});
+
+Deno.test("api-catmat: catalogo_hidratar_itens hidrata os PDMs do grupo incluído em lotes; catalogo_itens lê do banco", async () => {
+  limparCacheMemoria();
+  const mem = repoMemoria();
+  const gov = comprasGovFalso();
+  const c = ctx(mem, gov);
+  assertEquals((await handleRequest(post({ action: "catalogo_salvar", nivel: "grupo", codigo_grupo: 78, incluido: true }), c)).status, 201);
+  // grupo incluído só materializa PDMs (era a causa dos 38 PDMs sem itens)
+  assertEquals(mem.itens.size, 0);
+
+  // comum não hidrata
+  assertEquals((await handleRequest(post({ action: "catalogo_hidratar_itens" }), ctx(mem, gov, COMUM))).status, 403);
+  assertEquals((await handleRequest(post({ action: "catalogo_hidratar_itens", limite_pdms: 0 }), c)).status, 400);
+
+  const r1 = await (await handleRequest(post({ action: "catalogo_hidratar_itens", limite_pdms: 2 }), c)).json();
+  assertEquals(r1.total_pdms, 3);
+  assertEquals(r1.processados.map((p: { codigo_pdm: number }) => p.codigo_pdm), [2638, 2746]);
+  assertEquals(r1.proximo_pdm, 2746);
+  const r2 = await (await handleRequest(post({ action: "catalogo_hidratar_itens", apos_pdm: r1.proximo_pdm, limite_pdms: 2 }), c)).json();
+  assertEquals(r2.processados, [{ codigo_pdm: 7115, itens: 2, atributos: 0 }]);
+  assertEquals(r2.proximo_pdm, null);
+  assertEquals(mem.itens.size, 3);
+  assertEquals(mem.atributos.get(470001)?.length, 5);
+
+  const lista = await (await handleRequest(post({ action: "catalogo_itens", codigo_pdm: 2638 }), ctx(mem, gov, COMUM))).json();
+  assertEquals(lista.hidratado, true);
+  assertEquals(lista.itens[0].descricao, DESCRICAO_2638.trim());
+  assertEquals(lista.itens[0].estado, "herdado");
+  assertEquals(lista.itens[0].origem_nivel, "grupo");
+  assertEquals(lista.itens[0].atributos[0].atributo, "TIPO");
+  const vazio = await (await handleRequest(post({ action: "catalogo_itens", codigo_pdm: 9999 }), c)).json();
+  assertEquals(vazio, { action: "catalogo_itens", codigo_pdm: 9999, hidratado: false, itens: [] });
+});
+

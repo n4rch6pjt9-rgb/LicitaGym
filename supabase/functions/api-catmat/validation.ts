@@ -126,6 +126,22 @@ export function parseActionFromBody(body: Record<string, unknown>): ActionParams
       return { action, id: id as number | null, codigo_pdm: p as number, padrao, ativo: booleano(body.ativo, true), tipo };
     }
 
+    case "catalogo_itens": {
+      const p = codigo(body.codigo_pdm, "codigo_pdm", true);
+      if (isErro(p)) return p;
+      return { action, codigo_pdm: p as number };
+    }
+
+    case "catalogo_hidratar_itens": {
+      const apos = codigo(body.apos_pdm, "apos_pdm", false);
+      if (isErro(apos)) return apos;
+      const lim = body.limite_pdms === undefined || body.limite_pdms === null ? 8 : Number(body.limite_pdms);
+      if (!Number.isInteger(lim) || lim < 1 || lim > 20) {
+        return { error: "Parâmetro 'limite_pdms' deve ser inteiro de 1 a 20." };
+      }
+      return { action, apos_pdm: apos as number | null, limite_pdms: lim };
+    }
+
     default:
       return { error: "Ação não suportada." };
   }

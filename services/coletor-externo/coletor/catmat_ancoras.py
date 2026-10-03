@@ -13,7 +13,7 @@ e atributos ("ANILHA, MATERIAL: FERRO, COR: PRETA" -> ANILHA + MATERIAL=FERRO, C
   - atributo_tipo: o TIPO, quando a cabeça é genérica ("APARELHO / EQUIPAMENTO ..."), ex.: "cadeira extensora";
   - atributo_nome: o atributo NOME;
   - item_avulso: item incluído de PDM fora do catálogo: cabeça + MATERIAL (ex.: "piso sintetico borracha").
-Mesma regra de catmat_ancoras_geradas() da migration 20261003200000 (não aplicada) e do TAXONOMIA-DRYRUN.sql.
+Mesma regra de catmat_ancoras_geradas() da migration 20261004005000 (não aplicada) e do TAXONOMIA-DRYRUN.sql.
 
 Casamento (casar): tokens da descrição do item sem o enchimento inicial ("ITEM 1 -", "LOTE", "KIT", "CATMAT 123");
 o 1º token tem de ser o núcleo da âncora (com plural); as demais palavras da âncora entre os 11 tokens seguintes

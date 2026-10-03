@@ -46,15 +46,21 @@
 --                               órgão) e já classificado (classificado_em não nulo);
 --                        UASG:  nome casa o termo (a 1170 exige o mesmo termo) ou o órgão pai é candidato (o tipo do
 --                               pai muda), e já classificada.
+--                      Só grava a linha que ENTRA em secretaria_esporte ou SAI dela (tipo novo ou gravado =
+--                      secretaria_esporte). Nunca faz reclassificação lateral: candidata cujo tipo gravado difere da
+--                      regra atual por outro motivo (drift; em prod, órgãos do espelho dos 191 classificados antes da
+--                      carga, com a razão social e sem esfera/tipo de administração) fica como está e vai para o job.
 --                      Linha ainda não classificada fica para o job diário licitagym-orgaos-classificar (05:03 BRT,
---                      fn_orgaos_uasgs_classificar() completa). A esfera usa orgaos.uf já gravado pela última
---                      classificação (o tipo novo não muda a localização). Equivalência: depois desta migration,
---                      fn_orgaos_uasgs_classificar() completa altera 0 linhas (teste local sobre a carga real).
---                      seguranca_defesa_uasgs é recalculado só nos órgãos pais das UASGs candidatas.
+--                      fn_orgaos_uasgs_classificar() completa, com a regra que estiver em prod). A esfera usa
+--                      orgaos.uf já gravado pela última classificação (o tipo novo não muda a localização).
+--                      Equivalência: sem drift, depois desta migration fn_orgaos_uasgs_classificar() completa altera
+--                      0 linhas (teste local sobre a carga real). seguranca_defesa_uasgs não é recalculado: conta
+--                      uasgs.seguranca_defesa/ativo, que esta migration não altera (recalcular só corrigiria drift).
 --
 -- Não toca estrutura, função, grant, supabase/functions/** nem escopo_termos/orgao_tipo_override. Idempotente: o
 -- remanejamento de ordem só roda se o tipo ainda não existe; seeds com "on conflict do nothing"; a 2ª chamada de
--- reaplicação altera 0 linhas, e a 1ª chamada seguinte de fn_orgaos_uasgs_classificar() também.
+-- reaplicação altera 0 linhas, e (sem drift) a 1ª chamada seguinte de fn_orgaos_uasgs_classificar() também.
+-- Guarda entra/sai e drift: fase 2 de supabase/tests/orgao_tipo_secretaria_esporte_fixtures_check.sql (banco local).
 -- Verificação (só leitura; erra se algo falhar): supabase/tests/orgao_tipo_secretaria_esporte_check.sql e
 -- supabase/tests/orgaos_uasgs_filtros_check.sql (contagens e md5 dos dicionários atualizados aqui).
 
@@ -92,6 +98,7 @@ INSERT INTO public.orgao_tipo_regras (prioridade, nivel, tipo_orgao, nome_regex,
 on conflict (nivel, prioridade) do nothing;
 
 -- 3) Reclassifica só as candidatas (mesma lógica de fn_orgaos_uasgs_classificar; override > regras > padrão) -------
+--    e só grava quem entra em ou sai de secretaria_esporte (sem reclassificação lateral; drift fica para o job).
 -- 3a) órgãos candidatos: termo de esporte no nome (condição positiva da regra 645), já classificados
 with c as (
   select o.id,
@@ -115,10 +122,11 @@ update public.orgaos o
        esfera_canon = n.esf, poder_canon = n.pod, classificado_em = now()
   from n
  where o.id = n.id
+   and (n.tipo = 'secretaria_esporte' or o.tipo_orgao = 'secretaria_esporte')
    and (o.tipo_orgao, o.grupo_tipo, o.tipo_orgao_origem, o.tipo_orgao_regra_id, o.esfera_canon, o.poder_canon)
        is distinct from (n.tipo, n.grupo_tipo, n.origem, n.regra_id, n.esf, n.pod);
 
--- 3b) UASGs candidatas: termo no nome ou pai candidato (o tipo do pai já é o novo, gravado em 3a), já classificadas
+-- 3b) UASGs candidatas: termo no nome ou pai candidato (tipo do pai = o gravado depois de 3a), já classificadas
 with cand as (
   select u.id from public.uasgs u
    where u.classificado_em is not null and public.fn_norm_nome(u.nome_uasg) ~ '\y(PARA)?D?ESPORT|\yESP?( E)? LAZER\y'
@@ -147,17 +155,8 @@ update public.uasgs u
        esfera_canon = n.esf, poder_canon = n.pod, classificado_em = now()
   from n
  where u.id = n.id
+   and (n.tipo = 'secretaria_esporte' or u.tipo_orgao = 'secretaria_esporte')
    and (u.tipo_orgao, u.grupo_tipo, u.tipo_orgao_origem, u.tipo_orgao_regra_id, u.esfera_canon, u.poder_canon)
        is distinct from (n.tipo, n.grupo_tipo, n.origem, n.regra_id, n.esf, n.pod);
-
--- 3c) seguranca_defesa_uasgs só dos órgãos pais das UASGs candidatas (UASG de segurança pode passar a herdar esporte)
-update public.orgaos o set seguranca_defesa_uasgs = s.n
-  from (select o2.id, count(u.id) filter (where u.seguranca_defesa and u.ativo)::int as n
-          from public.orgaos o2 left join public.uasgs u on u.orgao_id = o2.id
-         where o2.id in (select u3.orgao_id from public.uasgs u3
-                          where u3.orgao_id is not null and public.fn_norm_nome(u3.nome_uasg) ~ '\y(PARA)?D?ESPORT|\yESP?( E)? LAZER\y')
-            or public.fn_norm_nome(coalesce(o2.nome_orgao, o2.razao_social)) ~ '\y(PARA)?D?ESPORT|\yESP?( E)? LAZER\y'
-         group by o2.id) s
- where o.id = s.id and o.seguranca_defesa_uasgs is distinct from s.n;
 
 commit;

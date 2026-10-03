@@ -304,7 +304,7 @@ begin
                (select md5(string_agg(format('%s|%s|%s', nivel, chave, tipo_orgao), E'\n' order by nivel, chave))
                   from public.orgao_tipo_override)
         union all
-        select 'seed', 'md5 escopo_termos', 'dc1bfe078cb071e702fca856d884218f',
+        select 'seed', 'md5 escopo_termos', 'fe18977d4c81dd9a395d3310367146f8',
                (select md5(string_agg(format('%s|%s|%s|%s|%s|%s', prioridade, nivel, familia, padrao, janela_caracteres, ativo),
                                       E'\n' order by prioridade)) from public.escopo_termos)
 
@@ -349,6 +349,9 @@ begin
             ('BOLA DE FUTEBOL DE CAMPO OFICIAL', 'nucleo/material_esportivo'),
             ('GRAMA SINTÉTICA 12 MM', 'adjacente/superficie_esportiva'),
             ('<p>Halter  sextavado</p> 5kg', 'nucleo/musculacao_academia'),
+            ('ACADEMIA DE GINÁSTICA', 'nucleo/musculacao_academia'),
+            ('ACADEMIA AO AR LIVRE', 'sem match'),
+            ('PISO EMBORRACHADO PARA ACADEMIA AO AR LIVRE', 'nucleo/piso_emborrachado'),
             ('RELÓGIO DESPERTADOR DIGITAL', 'sem match'),
             ('PAPEL A4 BRANCO', 'sem match'),
             ('', 'sem match')) x(d, esperado)

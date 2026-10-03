@@ -20,6 +20,7 @@ site:
       key: section-2
       title: Product Docs
       path: product-docs
+      description: ""
       children:
         - type: space
           key: space-2

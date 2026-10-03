@@ -7,7 +7,11 @@
 --   D. mesma venda em Pesquisa de Preço e ARP: ARP vence (valor_registrado_ata)
 --   E. 14.133: orgao_nome oficial (public.orgaos) ou NULL, nunca o CNPJ; sem unidade/CNPJ: NULL
 --   F. v_bi_orgaos_match: nome/UF de origem preservados; dinheiro ausente = NULL; resultados não colapsam
---   G. constraints: NULLS NOT DISTINCT nas 3 tabelas e id_compra_item obrigatório
+--   G. constraints: NULLS NOT DISTINCT em uq_pca_pgc_item e uq_resultados_14133; id_compra_item obrigatório;
+--      atas_rp_itens com a chave da 20261003020000 (#142), uq_atas_rp_itens_lote_fornecedor =
+--      (ata, UASG gerenciadora, numero_grupo, item, ni_fornecedor) NULLS NOT DISTINCT, sem a uq_atas_rp_itens antiga:
+--      vencedores diferentes do mesmo item coexistem, lote diferente não colide, mesma chave (lote NULL) colide,
+--      upsert pelo alvo do coletor compras_arp atualiza a linha certa, ni_fornecedor NOT NULL, numero_grupo NULL ou > 0
 -- =============================================================================
 begin;
 
@@ -158,10 +162,63 @@ begin
   end if;
 
   -- ---------------------------------------------------------------- G
-  select bool_and(pg_get_constraintdef(c.oid) like 'UNIQUE NULLS NOT DISTINCT%') and count(*) = 3 into v_ok
+  select bool_and(pg_get_constraintdef(c.oid) like 'UNIQUE NULLS NOT DISTINCT%') and count(*) = 2 into v_ok
     from pg_constraint c
-   where c.conname in ('uq_pca_pgc_item', 'uq_atas_rp_itens', 'uq_resultados_14133');
-  if v_ok is distinct from true then raise exception 'CASO G FALHOU: constraints sem NULLS NOT DISTINCT'; end if;
+   where c.conname in ('uq_pca_pgc_item', 'uq_resultados_14133');
+  if v_ok is distinct from true then raise exception 'CASO G FALHOU: uq_pca_pgc_item/uq_resultados_14133 sem NULLS NOT DISTINCT'; end if;
+
+  -- atas_rp_itens: chave da 20261003020000 (#142). A uq_atas_rp_itens antiga (ata, UASG, item) ignorava o fornecedor.
+  select pg_get_constraintdef(c.oid) into v_txt
+    from pg_constraint c
+   where c.conrelid = 'public.atas_rp_itens'::regclass and c.conname = 'uq_atas_rp_itens_lote_fornecedor';
+  if v_txt is distinct from
+     'UNIQUE NULLS NOT DISTINCT (numero_ata_registro_preco, codigo_unidade_gerenciadora, numero_grupo, numero_item, ni_fornecedor)' then
+    raise exception 'CASO G FALHOU: uq_atas_rp_itens_lote_fornecedor ausente ou com outra definição: %', v_txt;
+  end if;
+  if exists (select 1 from pg_constraint where conrelid = 'public.atas_rp_itens'::regclass and conname = 'uq_atas_rp_itens') then
+    raise exception 'CASO G FALHOU: a chave antiga uq_atas_rp_itens (sem fornecedor) ainda existe';
+  end if;
+
+  -- Dois vencedores do mesmo item da mesma ata (lote NULL): coexistem (com a chave antiga o 2º colidia).
+  insert into public.atas_rp_itens (numero_ata_registro_preco, codigo_unidade_gerenciadora, numero_item, ni_fornecedor, valor_unitario)
+  values ('00077/2026', 999077, '1', '77777777000101', 100), ('00077/2026', 999077, '1', '77777777000102', 110);
+  -- Mesmo fornecedor e item em lotes diferentes: não colidem.
+  insert into public.atas_rp_itens (numero_ata_registro_preco, codigo_unidade_gerenciadora, numero_grupo, numero_item, ni_fornecedor, valor_unitario)
+  values ('00077/2026', 999077, 1, '2', '77777777000101', 200), ('00077/2026', 999077, 2, '2', '77777777000101', 210);
+  -- Mesma chave com lote NULL: colide (NULLS NOT DISTINCT; sem isso o NULL duplicaria a linha).
+  begin
+    insert into public.atas_rp_itens (numero_ata_registro_preco, codigo_unidade_gerenciadora, numero_item, ni_fornecedor, valor_unitario)
+    values ('00077/2026', 999077, '1', '77777777000101', 999);
+    raise exception 'CASO G FALHOU: aceitou chave repetida em atas_rp_itens com numero_grupo NULL';
+  exception when unique_violation then null;
+  end;
+  -- Upsert com o alvo do coletor (compras_arp.CONFLITO_ARP) atualiza só a linha daquele fornecedor.
+  insert into public.atas_rp_itens (numero_ata_registro_preco, codigo_unidade_gerenciadora, numero_item, ni_fornecedor, valor_unitario)
+  values ('00077/2026', 999077, '1', '77777777000102', 120)
+  on conflict (numero_ata_registro_preco, codigo_unidade_gerenciadora, numero_grupo, numero_item, ni_fornecedor)
+  do update set valor_unitario = excluded.valor_unitario;
+  select count(*), sum(valor_unitario) into v_n, v_num
+    from public.atas_rp_itens where numero_ata_registro_preco = '00077/2026' and codigo_unidade_gerenciadora = 999077;
+  select valor_unitario into v_num2
+    from public.atas_rp_itens where numero_ata_registro_preco = '00077/2026' and numero_item = '1' and ni_fornecedor = '77777777000102';
+  raise notice 'G: atas_rp_itens linhas = %, soma = %, fornecedor 2 = %', v_n, v_num, v_num2;
+  if v_n is distinct from 4 or v_num is distinct from 630 or v_num2 is distinct from 120 then
+    raise exception 'CASO G FALHOU: esperado 4 linhas, soma 630 e fornecedor 2 = 120 após upsert; obtido %, %, %', v_n, v_num, v_num2;
+  end if;
+  -- Sem fornecedor a linha não tem chave; lote 0 não pode virar chave diferente de "sem lote" (NULL).
+  begin
+    insert into public.atas_rp_itens (numero_ata_registro_preco, codigo_unidade_gerenciadora, numero_item, ni_fornecedor)
+    values ('00077/2026', 999077, '3', null);
+    raise exception 'CASO G FALHOU: atas_rp_itens aceitou ni_fornecedor NULL';
+  exception when not_null_violation then null;
+  end;
+  begin
+    insert into public.atas_rp_itens (numero_ata_registro_preco, codigo_unidade_gerenciadora, numero_grupo, numero_item, ni_fornecedor)
+    values ('00077/2026', 999077, 0, '3', '77777777000101');
+    raise exception 'CASO G FALHOU: atas_rp_itens aceitou numero_grupo = 0';
+  exception when check_violation then null;
+  end;
+
   if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'resultados_itens_14133'
                   and column_name = 'id_compra_item' and is_nullable = 'NO') then
     raise exception 'CASO G FALHOU: resultados_itens_14133.id_compra_item deveria ser NOT NULL';

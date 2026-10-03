@@ -1,5 +1,5 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { ComprasGovMaterialClient } from "../_shared/compras-gov/material-client.ts";
+import { COMPRAS_GOV_PAGE_SIZE, ComprasGovMaterialClient } from "../_shared/compras-gov/material-client.ts";
 import { upsertCatalogoItemFromCompras } from "../_shared/compras-gov/catalogo-upsert.ts";
 import {
   normalizeCaracteristica,
@@ -286,7 +286,7 @@ async function ingestOneCatmatClass(body: SyncBody): Promise<Response> {
         codigoGrupo,
         codigoClasse,
         ...(incluirInativos ? {} : { statusPdm: true }),
-      }, { maxPaginas });
+      }, { maxPaginas, tamanhoPagina: COMPRAS_GOV_PAGE_SIZE.default });
       for (const page of pdmPages) {
         await logAndStore(
           client,
@@ -317,7 +317,7 @@ async function ingestOneCatmatClass(body: SyncBody): Promise<Response> {
         codigoGrupo,
         codigoClasse,
         ...(incluirInativos ? {} : { statusItem: true }),
-      }, { maxPaginas });
+      }, { maxPaginas, tamanhoPagina: COMPRAS_GOV_PAGE_SIZE.default });
       for (const page of itemPages) {
         await logAndStore(
           client,

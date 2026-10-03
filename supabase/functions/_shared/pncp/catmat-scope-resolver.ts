@@ -1,8 +1,12 @@
 /**
  * TRANSITIONAL fitness scope.
  * Uma definição, consumida pelo resolver. Não é tabela e não é migration.
- * 7830 e 7220 são dados desta configuração, não regras espalhadas nos consumidores.
- * Persistir isso em tabela administrativa fica para um passo posterior.
+ * 7830 (CORE), 7220, 7810 e 9320 são dados desta configuração, não regras
+ * espalhadas nos consumidores. 7810 e 9320 são extensão curada: entram no
+ * sync CATMAT, no link CATMAT×PCA, no pcaItemScope e no sync de órgãos.
+ * O download do PCA continua só na classe CORE (7830), salvo
+ * PNCP_PCA_CLASSIFICACOES. Persistir isso em tabela administrativa fica
+ * para um passo posterior.
  */
 
 import {
@@ -32,6 +36,18 @@ export const TRANSITIONAL_FITNESS_SCOPE: readonly ScopeClassRule[] = [
   {
     grupo: "72",
     classe: "7220",
+    priority: "CURATED_EXTENSION",
+    provenance: "transitional_fitness_scope",
+  },
+  {
+    grupo: "78",
+    classe: "7810",
+    priority: "CURATED_EXTENSION",
+    provenance: "transitional_fitness_scope",
+  },
+  {
+    grupo: "93",
+    classe: "9320",
     priority: "CURATED_EXTENSION",
     provenance: "transitional_fitness_scope",
   },

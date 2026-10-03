@@ -41,18 +41,18 @@ DEFAULT_ALLOWED_HOSTS: Set[str] = {
     "supabase.co",
 }
 
-# Aligned with Edge clampComprasGovPageSize (10 to 500, default 500)
+# Aligned with Edge clampComprasGovPageSize (10 to 500, default 100)
 COMPRAS_GOV_PAGE_SIZE = {
     "min": 10,
     "max": 500,
-    "default": 500,
+    "default": 100,
 }
 
 DEFAULT_TRANSIENT_STATUS_CODES: Set[int] = {502, 503, 504}
 
 
 def clamp_compras_gov_page_size(page_size: Optional[int] = None) -> int:
-    """Clamp page size to Compras.gov allowed bounds (10-500, default 500)."""
+    """Clamp page size to Compras.gov allowed bounds (10-500, default 100)."""
     min_size = COMPRAS_GOV_PAGE_SIZE["min"]
     max_size = COMPRAS_GOV_PAGE_SIZE["max"]
     default_size = COMPRAS_GOV_PAGE_SIZE["default"]

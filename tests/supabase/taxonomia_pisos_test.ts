@@ -59,7 +59,7 @@ Deno.test("taxonomia de pisos: exclusões em tabela própria e respeitadas no ca
   assertEquals(sql.includes("revoke execute on function public.licitacoes_ids_por_catmat(int[], int[], int[], int[], boolean) from PUBLIC, anon, authenticated;"), true);
 });
 
-Deno.test("taxonomia de pisos v0.2: PDM 9461 materializado por curadoria, sem ampliar a política de escopo", async () => {
+Deno.test("taxonomia de pisos v0.2: a migration só materializa o PDM 9461; a lista de escopo é outra camada", async () => {
   const sql = await Deno.readTextFile(MIGRATION_VIGENTE);
   for (const trecho of [
     "insert into public.catmat_grupos (codigo_grupo, nome, status, payload_hash)",
@@ -83,5 +83,6 @@ Deno.test("taxonomia de pisos v0.2: PDM 9461 materializado por curadoria, sem am
   // ACL e política intactas: a migration não mexe em grants nem na lista de classes do escopo
   assertEquals(/\b(grant|revoke|create policy|alter table)\b/i.test(sql), false, "sem mudança de ACL/esquema");
   const escopo = await Deno.readTextFile(ESCOPO);
-  assertEquals(escopo.includes('classe: "9320"'), false, "9320 fora de TRANSITIONAL_FITNESS_SCOPE");
+  assertEquals(escopo.includes('classe: "9320"'), true, "9320 está na lista fixa como extensão curada");
+  assertEquals(escopo.includes('classe: "7810"'), true, "7810 está na lista fixa como extensão curada");
 });

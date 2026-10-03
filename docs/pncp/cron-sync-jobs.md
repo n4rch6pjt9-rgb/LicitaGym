@@ -1,6 +1,6 @@
 # Jobs pg_cron dos syncs (Edge Functions)
 
-Migration: `supabase/migrations/20260930180000_cron_sync_jobs.sql`. Horários em BRT (UTC-3); o `cron.timezone` do projeto é GMT, então as expressões do pg_cron estão em UTC.
+Migration: `supabase/migrations/20260930180000_cron_sync_jobs.sql`. As classes 7810 e 9320 entram em `supabase/migrations/20261003231000_cron_sync_catmat_classes_7810_9320.sql`. Horários em BRT (UTC-3); o `cron.timezone` do projeto é GMT, então as expressões do pg_cron estão em UTC.
 
 ## 2. Edge Functions que são jobs
 
@@ -8,7 +8,7 @@ Todas as `sync-*` e a `link-catmat-pca` autenticam com `validateCronAuth`: **`Au
 
 | Função | Parâmetros (body JSON) | Duração | API externa | Decisão |
 |---|---|---|---|---|
-| `sync-compras-catmat` | `codigo_grupo`+`codigo_classe` (escopo 78/7830 e 72/7220), `max_paginas` (500), `incluir_caracteristicas`, `async` | 32–97 s por classe | dadosabertos.compras.gov.br | **agendar**, 1 classe por job |
+| `sync-compras-catmat` | `codigo_grupo`+`codigo_classe` (78/7830, 72/7220, 78/7810, 93/9320), `max_paginas`, `incluir_inativos` (padrão false), `tamanhoPagina` 100, `async` | 32–97 s por classe nas classes já medidas; 7810 e 9320 sem medição | dadosabertos.compras.gov.br | **agendar**, 1 classe por job |
 | `sync-pncp-pca` | `ano` (ano UTC corrente), `codigos_classificacao` (7830), `max_paginas` (100), `verificar_periodo`, `somente_verificacao`, `forcar`, `async` | p50 134 s; orçamento interno de 110 s, depois retoma | pncp.gov.br (consulta + search) | **agendar** com gate e `async` |
 | `link-catmat-pca` | `limite` (500, máx. 1000), `offset`, `classe_catmat`, `limiar_similaridade` | até 27 s por lote de 500 | nenhuma (só banco) | **agendar** em lotes |
 | `sync-pncp-orgaos` | nenhum | 21–27 s (191 CNPJs) | pncp.gov.br (integração) | **agendar** |
@@ -28,6 +28,8 @@ Janela fora de pico: 02:00–06:00 BRT. Os minutos quebrados espalham a carga. O
 |---|---|---|---|---|---|---|---|
 | 1 | `licitagym-sync-compras-catmat-7830` | `sync-compras-catmat` | dom 02:07 | `7 5 * * 0` | `{"codigo_grupo":78,"codigo_classe":7830}` | 150 s | Catálogo muda devagar. Uma classe por chamada cabe em 150 s (máx. visto: 97 s). |
 | 2 | `licitagym-sync-compras-catmat-7220` | `sync-compras-catmat` | dom 02:27 | `27 5 * * 0` | `{"codigo_grupo":72,"codigo_classe":7220}` | 150 s | Idem; 20 min depois, para não disputar o host. |
+| 2b | `licitagym-sync-compras-catmat-7810` | `sync-compras-catmat` | dom 02:47 | `47 5 * * 0` | `{"codigo_grupo":78,"codigo_classe":7810,"async":true}` | 150 s | Classe inteira, não só os PDMs do catálogo. `async` devolve 202; a carga segue em background. Página 100 aumenta o número de chamadas. |
+| 2c | `licitagym-sync-compras-catmat-9320` | `sync-compras-catmat` | dom 03:07 | `7 6 * * 0` | `{"codigo_grupo":93,"codigo_classe":9320,"async":true}` | 150 s | Classe inteira de artigos de borracha. `async` para não estourar o timeout do pg_net. O PCA diário começa 03:13 e pode coincidir com essa carga. |
 | 3 | `licitagym-sync-pncp-pca` | `sync-pncp-pca` | diário 03:13 | `13 6 * * *` | `{"verificar_periodo":true,"async":true}` | 150 s | O PCA é a fonte da demanda. O gate de período pula a carga quando nada mudou. `async` devolve 202 e a carga roda em background. |
 | 4 | `licitagym-sync-pncp-pca-continuacao` | `sync-pncp-pca` | diário 03:43 | `43 6 * * *` | igual ao 3 | 150 s | Retoma as páginas pendentes do lock `pca-sync:<ano>:7830` quando a 1ª execução esgota o orçamento de 110 s. Se estiver tudo em dia, devolve `ignorado`. |
 | 5 | `licitagym-link-catmat-pca` | `link-catmat-pca` | diário 04:23 | `23 7 * * *` | `{"limite":500,"offset":N}`, N = 0, 500, … até o total de `pca_itens` (7 lotes para 3.331, calculado na hora) | 120 s | Liga PCA a CATMAT depois do PCA. Não chama API externa. Lote de 500 levou no máximo 27 s. |
@@ -43,12 +45,13 @@ Sobre o job 5: o `pg_net` dispara os 7 lotes do `link-catmat-pca` quase ao mesmo
 ### Ordem de dependência
 
 ```
-dom: compras-catmat 7830 (02:07) → compras-catmat 7220 (02:27)
+dom: compras-catmat 7830 (02:07) → 7220 (02:27) → 7810 (02:47) → 9320 (03:07)
 diário: pca (03:13) → pca-continuacao (03:43) → link-catmat-pca (04:23) → orgaos (04:43) → classificar/escopo (05:03)
 independentes: legislation (seg 05:27), catalogo (dia 1 05:37), respostas (:11), limpeza (dom 05:51)
 ```
 
-- `link-catmat-pca` precisa do catálogo CATMAT (domingo) e do PCA do dia.
+- `link-catmat-pca` precisa do catálogo CATMAT (domingo) e do PCA do dia. Sem `classe_catmat` no corpo, a função agora liga também 7810 e 9320. O `generate_series` do job continua contando só `pca_itens` de 7830 e 7220: o número de lotes não cresce com as classes novas, e o rabo de 7810/9320 pode ficar de fora.
+- `sync-pncp-orgaos` lê `pca_itens.codigo_classe_catmat` das quatro classes. CNPJs novos viram chamada a `/orgaos/{cnpj}`. O volume depende de quantos planos PCA dessas classes já estão no banco; este repositório não tem essa contagem.
 - `sync-pncp-orgaos` lê os CNPJs de `pca_planos`.
 - As rotinas SQL usam órgãos, UASGs, PCA e licitações.
 - Entre um passo e o seguinte há pelo menos 20 min. É mais que a duração observada, e cada job é idempotente, com lock no `private.pncp_sync_run`.

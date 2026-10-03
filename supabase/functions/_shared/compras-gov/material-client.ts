@@ -4,8 +4,12 @@ import type { ComprasGovPage } from "./material-types.ts";
 import { UnifiedHttpClient } from "../http-client/index.ts";
 
 const BASE_URL = "https://dadosabertos.compras.gov.br";
-/** Swagger Dados Abertos: tamanhoPagina tipicamente 10–500. */
-export const COMPRAS_GOV_PAGE_SIZE = { min: 10, max: 500, default: 500 } as const;
+/**
+ * Swagger Dados Abertos: tamanhoPagina 10–500.
+ * O sync CATMAT e a árvore usam 100 (regra do projeto). O teto 500 continua
+ * disponível para quem passar o tamanho na chamada.
+ */
+export const COMPRAS_GOV_PAGE_SIZE = { min: 10, max: 500, default: 100 } as const;
 const PAGE_DELAY_MS = 350;
 const PDM_REQUEST_DELAY_MS = 250;
 
@@ -153,22 +157,22 @@ export class ComprasGovMaterialClient {
     return this.fetchPage("/modulo-material/2_consultarClasseMaterial", params, options);
   }
 
-  fetchPdms(params: MaterialListParams, options?: { maxPaginas?: number } & ComprasGovFetchOptions) {
+  fetchPdms(params: MaterialListParams, options?: { maxPaginas?: number; tamanhoPagina?: number } & ComprasGovFetchOptions) {
     return this.fetchAllPages("/modulo-material/3_consultarPdmMaterial", params, options);
   }
 
-  fetchItens(params: MaterialListParams, options?: { maxPaginas?: number } & ComprasGovFetchOptions) {
+  fetchItens(params: MaterialListParams, options?: { maxPaginas?: number; tamanhoPagina?: number } & ComprasGovFetchOptions) {
     return this.fetchAllPages("/modulo-material/4_consultarItemMaterial", params, options);
   }
 
-  async fetchNaturezasDespesa(codigoPdm: number, options?: { maxPaginas?: number } & ComprasGovFetchOptions) {
+  async fetchNaturezasDespesa(codigoPdm: number, options?: { maxPaginas?: number; tamanhoPagina?: number } & ComprasGovFetchOptions) {
     await new Promise((r) => setTimeout(r, PDM_REQUEST_DELAY_MS));
     return await this.fetchAllPages("/modulo-material/5_consultarMaterialNaturezaDespesa", {
       codigoPdm,
     }, options);
   }
 
-  async fetchUnidadesFornecimento(codigoPdm: number, options?: { maxPaginas?: number } & ComprasGovFetchOptions) {
+  async fetchUnidadesFornecimento(codigoPdm: number, options?: { maxPaginas?: number; tamanhoPagina?: number } & ComprasGovFetchOptions) {
     await new Promise((r) => setTimeout(r, PDM_REQUEST_DELAY_MS));
     return await this.fetchAllPages("/modulo-material/6_consultarMaterialUnidadeFornecimento", {
       codigoPdm,

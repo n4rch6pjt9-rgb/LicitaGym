@@ -4,7 +4,7 @@ Referência para montar queries SQL e chamadas à API **Dados Abertos Compras.go
 
 - **Fonte Swagger (DTOs):** `compras_gov_schemas.json` (OpenAPI components)
 - **Base URL:** `https://dadosabertos.compras.gov.br`
-- **Escopo LicitaGym:** CATMAT material grupo **78** / classe **7830** (equipamentos fitness). Catálogo também aceita grupo **72** / classe **7220** (revestimentos para pisos) para curadoria. PCA e `PNCP_PCA_CLASSIFICACOES` permanecem só **7830**.
+- **Escopo LicitaGym:** classe CORE **78/7830**. Extensões curadas na mesma lista: **72/7220**, **78/7810** e **93/9320**. Essa lista alimenta o sync CATMAT, o `link-catmat-pca`, o `pcaItemScope` e o sync de órgãos. O download do PCA (`defaultPcaClassificacoes` / `PNCP_PCA_CLASSIFICACOES`) permanece só **7830**.
 - **Matriz de contratos:** [`docs/pncp/contract-matrix.md`](../pncp/contract-matrix.md)
 - **Mapa de cruzamentos:** [`docs/pncp/cruzamentos.md`](../pncp/cruzamentos.md)
 
@@ -24,7 +24,7 @@ Referência para montar queries SQL e chamadas à API **Dados Abertos Compras.go
 | Param | Tipo | Observação |
 |-------|------|------------|
 | `pagina` | int | Obrigatório em vários endpoints |
-| `tamanhoPagina` | int | Intervalo **10–500**; sync LicitaGym usa default **500** (`clampComprasGovPageSize`) |
+| `tamanhoPagina` | int | Intervalo **10–500**; sync LicitaGym e a árvore usam default **100** (`clampComprasGovPageSize`) |
 | `statusGrupo` / `statusClasse` / `statusPdm` / `statusItem` | boolean | `true` = somente ativos (padrão do sync LicitaGym) |
 
 **Contagens validadas (classe 7830, mar/2026)**
@@ -40,7 +40,9 @@ Referência para montar queries SQL e chamadas à API **Dados Abertos Compras.go
 |--------|------|-------|
 | Somente ativos (`status*=true`) | 14 | ~1133 |
 
-Classe 7220 = REVESTIMENTOS PARA PISOS (grupo 72). Entra no catálogo para curadoria; **não** amplia o gate de PCA.
+Classe 7220 = REVESTIMENTOS PARA PISOS (grupo 72). Entra no catálogo para curadoria; **não** amplia o download do PCA.
+
+Classes **7810** (grupo 78) e **9320** (grupo 93) estão na mesma lista fixa, como extensão curada. O sync CATMAT por classe, o link e o sync de órgãos passam a considerá-las. O download do PCA não. Não há, neste repositório, contagem oficial de PDMs ou itens da classe inteira: a conferência de 03/10/2026 mediu o catálogo da empresa (15 PDMs em 7810, com 209 itens ativos faltando no espelho; em 9320 só o PDM 9461 está no catálogo). O job por classe puxa a classe inteira, inclusive PDM excluído do catálogo.
 
 ---
 

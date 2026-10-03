@@ -250,14 +250,14 @@ Deno.test("api-catmat: cache em memória e no banco; Compras.gov fora do ar usa 
   assertEquals(res.status, 504);
 });
 
-Deno.test("api-catmat: percorre todas as páginas do Compras.gov (tamanhoPagina 500)", async () => {
+Deno.test("api-catmat: percorre todas as páginas do Compras.gov (tamanhoPagina 100)", async () => {
   limparCacheMemoria();
   const mem = repoMemoria();
   const gov = comprasGovFalso({ paginarPdms: true });
   const body = await (await handleRequest(post({ action: "arvore", nivel: "pdms", codigo: 7830, incluir_inativos: true }), ctx(mem, gov))).json();
   assertEquals(body.total, 3);
   assertEquals(gov.chamadas.filter((c) => c.includes("3_consultarPdmMaterial")).length, 2);
-  assertEquals(gov.chamadas.every((c) => c.includes("tamanhoPagina=500")), true);
+  assertEquals(gov.chamadas.every((c) => c.includes("tamanhoPagina=100")), true);
 });
 
 // ------------------------------------------------------------------------------------------------
@@ -273,6 +273,8 @@ Deno.test("api-catmat: registrar a classe 7830 grava ancestrais, materializa os 
   assertEquals(body.regra.chave, "classe:7830");
   assertEquals(body.regra.created_by, "u-admin");
   assertEquals(body.pdms_materializados, 3);
+  assertEquals(body.itens_hidratados, 2);
+  assertEquals([...mem.itens.keys()].sort(), [319134, 373980]);
   assertEquals(mem.grupos.has(78), true);
   assertEquals(mem.classes.has(7830), true);
   assertEquals([...mem.pdms.keys()].sort(), [2638, 2746, 7115]);
@@ -288,6 +290,17 @@ Deno.test("api-catmat: registrar a classe 7830 grava ancestrais, materializa os 
   const de_novo = await handleRequest(post({ action: "catalogo_salvar", nivel: "classe", codigo_grupo: 78, codigo_classe: 7830, incluido: true, observacao: "núcleo" }), ctx(mem));
   assertEquals(de_novo.status, 200);
   assertEquals(mem.regras.length, 1);
+});
+
+Deno.test("api-catmat: registrar o grupo hidrata os itens dos PDMs materializados", async () => {
+  limparCacheMemoria();
+  const mem = repoMemoria();
+  const res = await handleRequest(post({ action: "catalogo_salvar", nivel: "grupo", codigo_grupo: 78, incluido: true }), ctx(mem));
+  assertEquals(res.status, 201);
+  const body = await res.json();
+  assertEquals(body.pdms_materializados, 3);
+  assertEquals(body.itens_hidratados, 2);
+  assertEquals([...mem.itens.keys()].sort(), [319134, 373980]);
 });
 
 Deno.test("api-catmat: catalogo_salvar recusa árvore vencida (stale) com 503 e não grava nada", async () => {

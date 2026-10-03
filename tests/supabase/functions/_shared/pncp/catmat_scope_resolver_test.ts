@@ -31,26 +31,30 @@ const itens = [
   { codigo_item: 50, codigo_pdm: 2, status_item: true },
 ];
 
-Deno.test("escopo transitório devolve 7830 CORE e 7220 CURATED_EXTENSION", () => {
+Deno.test("escopo transitório: 7830 CORE e extensões 7220, 7810 e 9320", () => {
   assertEquals(SCOPE_CONFIG_STATUS, "TRANSITIONAL");
   const classes = effectiveClasses();
-  assertEquals(classes.map((rule) => rule.classe), ["7830", "7220"]);
+  assertEquals(classes.map((rule) => rule.classe), ["7830", "7220", "7810", "9320"]);
   assertEquals(classes[0].priority, "CORE");
   assertEquals(classes[0].grupo, "78");
   assertEquals(classes[0].provenance, "transitional_fitness_scope");
   assertEquals(classes[1].priority, "CURATED_EXTENSION");
   assertEquals(classes[1].grupo, "72");
+  assertEquals(classes[2].grupo, "78");
+  assertEquals(classes[2].priority, "CURATED_EXTENSION");
+  assertEquals(classes[3].grupo, "93");
+  assertEquals(classes[3].priority, "CURATED_EXTENSION");
   assertEquals(classes.map((rule) => rule.classe).includes("1111"), false);
 });
 
-Deno.test("seed PCA padrão é só CORE 7830; org sync e link mantêm 7220", () => {
+Deno.test("seed PCA padrão é só CORE 7830; org sync e link incluem as extensões", () => {
   Deno.env.delete("PNCP_PCA_CLASSIFICACOES");
   assertEquals(defaultPcaClassificacoes(), ["7830"]);
   assertEquals(resolvePcaClassificacoes({}), ["7830"]);
-  assertEquals(orgSyncClasses(), ["7830", "7220"]);
+  assertEquals(orgSyncClasses(), ["7830", "7220", "7810", "9320"]);
   const link = linkTargetClasses({});
   assertEquals(link.ok, true);
-  if (link.ok) assertEquals(link.classes, ["7830", "7220"]);
+  if (link.ok) assertEquals(link.classes, ["7830", "7220", "7810", "9320"]);
 });
 
 Deno.test("PCA rejeita classe fora do seed; env explícito libera 7220", () => {
@@ -58,6 +62,8 @@ Deno.test("PCA rejeita classe fora do seed; env explícito libera 7220", () => {
   assertEquals(assertPcaClassificacoesInScope(["7830"]), null);
   assertEquals(assertPcaClassificacoesInScope(["7830", "1111"])?.includes("1111"), true);
   assertEquals(assertPcaClassificacoesInScope(["7220"])?.includes("7220"), true);
+  assertEquals(assertPcaClassificacoesInScope(["7810"])?.includes("7810"), true);
+  assertEquals(assertPcaClassificacoesInScope(["9320"])?.includes("9320"), true);
   Deno.env.set("PNCP_PCA_CLASSIFICACOES", "7830,7220");
   try {
     assertEquals(assertPcaClassificacoesInScope(["7830", "7220"]), null);
@@ -78,8 +84,13 @@ Deno.test("link e ingest usam a mesma política", () => {
     assertEquals(both.pairs, [
       { grupo: 78, classe: 7830 },
       { grupo: 72, classe: 7220 },
+      { grupo: 78, classe: 7810 },
+      { grupo: 93, classe: 9320 },
     ]);
   }
+  assertEquals(resolveCatmatIngestTargets({ codigo_grupo: 78, codigo_classe: 7810 }).ok, true);
+  assertEquals(resolveCatmatIngestTargets({ codigo_grupo: 93, codigo_classe: 9320 }).ok, true);
+  assertEquals(resolveCatmatIngestTargets({ codigo_grupo: 78, codigo_classe: 9320 }).ok, false);
   assertEquals(resolveCatmatIngestTargets({ codigo_grupo: 99, codigo_classe: 1111 }).ok, false);
   assertEquals(resolveCatmatIngestTargets({ codigo_grupo: 78 }).ok, false);
 });
@@ -102,6 +113,12 @@ Deno.test("item PCA sem codigoItem permanece IN_SCOPE", () => {
   }), "IN_SCOPE");
   assertEquals(pcaItemScope({
     codigo_classe_catmat: "7220",
+  }), "IN_SCOPE");
+  assertEquals(pcaItemScope({
+    codigo_classe_catmat: 7810,
+  }), "IN_SCOPE");
+  assertEquals(pcaItemScope({
+    codigo_classe_catmat: "9320",
   }), "IN_SCOPE");
   assertEquals(pcaItemScope({
     codigo_classe_catmat: 1111,
@@ -138,7 +155,7 @@ Deno.test("carga de itens filtra classe no PDM e não pede codigo_classe do item
   };
   const rows = await loadEffectiveMaterialItems(client);
   assertEquals(calls[0].table, "catmat_pdms");
-  assertEquals(calls[0].values.map(String), ["7830", "7220"]);
+  assertEquals(calls[0].values.map(String), ["7830", "7220", "7810", "9320"]);
   assertEquals(calls[1].table, "catmat_itens");
   assertEquals(calls[1].columns.includes("codigo_classe"), false);
   assertEquals(rows.map((row) => row.codigo_item), ["628785", "27634"]);

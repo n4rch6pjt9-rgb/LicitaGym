@@ -1,30 +1,30 @@
 ---
-description: >-
-  Everything you need to build, deploy, and manage your projects on the
-  platform.
+description: Seu roteiro de primeiros passos no LicitaGym.
 icon: hand-wave
 ---
 
-# Welcome
+# Comece aqui
 
-Welcome to the platform. These docs cover everything from your first project to advanced workflows — pick a starting point below or ask the Assistant to jump straight to what you need.
+Bem-vindo ao LicitaGym!
 
-<button type="button" class="button primary" data-action="ask" data-icon="gitbook-assistant">Ask a question…</button>
+Este guia ajuda você a preparar seu primeiro acesso e organizar os primeiros passos na plataforma.
 
-<button type="button" class="button secondary" data-action="ask" data-query="How do I deploy my first project" data-icon="rocket-launch">Deploy your first project</button><button type="button" class="button secondary" data-action="ask" data-query="How do I set up a custom domain" data-icon="globe">Set up a custom domain</button><button type="button" class="button secondary" data-action="ask" data-query="How do I invite my team" data-icon="user-group">Invite your team</button>
+Antes de começar
 
-***
+Tenha em mãos o acesso fornecido pela equipe responsável e uma tarefa concreta que deseja realizar. Escolha um exemplo da sua rotina para acompanhar as orientações.
 
-{% hint style="success" icon="sparkles" %}
-**New: scheduled deploys and team-level audit logs.** Schedule deploys for any future date and review every action taken in your workspace.
+Seu roteiro de onboarding
 
-<a href="https://gitbook.com/docs/changelog" class="button secondary">See what's new</a>
-{% endhint %}
+1. Primeiro acesso: confirme o endereço da plataforma e a conta que deve utilizar.
+2. Defina seu objetivo: descreva o resultado que pretende alcançar na primeira sessão.
+3. Prepare um exemplo: reúna as informações necessárias para realizar essa tarefa.
+4. Realize a atividade: siga as orientações da equipe e confira o resultado obtido.
+5. Tire suas dúvidas: registre em qual etapa teve dificuldade e qual mensagem apareceu.
 
-## Where to start
+Primeira leitura
 
-<table data-card-size="large" data-view="cards"><thead><tr><th></th><th></th><th></th><th data-hidden data-card-target data-type="content-ref"></th></tr></thead><tbody><tr><td><h4><i class="fa-rocket-launch" style="color:$primary;">:rocket-launch:</i></h4></td><td><h4>Getting started</h4></td><td>Set up your account and ship your first project in minutes.</td><td><a href="https://app.gitbook.com/s/oWTetAklPJa9ITioda9q/getting-started">Getting Started</a></td></tr><tr><td><h4><i class="fa-book" style="color:$primary;">:book:</i></h4></td><td><h4>Core concepts</h4></td><td>Understand workspaces, projects, and how permissions work.</td><td><a href="https://app.gitbook.com/s/oWTetAklPJa9ITioda9q/core-concepts">Core concepts</a></td></tr><tr><td><h4><i class="fa-graduation-cap" style="color:$primary;">:graduation-cap:</i></h4></td><td><h4>Guides</h4></td><td>Walkthroughs for common tasks like custom domains and automations.</td><td><a href="https://app.gitbook.com/s/oWTetAklPJa9ITioda9q/guides">Guides</a></td></tr><tr><td><h4><i class="fa-book-open" style="color:$primary;">:book-open:</i></h4></td><td><h4>Reference</h4></td><td>Detailed configuration options, limits, and terminology.</td><td><a href="https://app.gitbook.com/s/oWTetAklPJa9ITioda9q/reference">Reference</a></td></tr></tbody></table>
+Continue pela página Primeiro acesso, disponível no menu desta documentação.
 
-## Popular tasks
+Como pedir ajuda
 
-<table data-view="cards"><thead><tr><th></th><th data-type="content-ref"></th><th data-type="content-ref"></th><th data-type="content-ref"></th></tr></thead><tbody><tr><td><h4>For builders</h4></td><td><a href="getting-started/quickstart.md">quickstart.md</a></td><td><a href="getting-started/your-first-project.md">your-first-project.md</a></td><td><a href="guides/custom-domains.md">custom-domains.md</a></td></tr><tr><td><h4>For admins</h4></td><td><a href="core-concepts/permissions.md">permissions.md</a></td><td><a href="reference/configuration.md">configuration.md</a></td><td><a href="core-concepts/workspaces-and-projects.md">workspaces-and-projects.md</a></td></tr><tr><td><h4>For developers</h4></td><td><a href="guides/automations.md">automations.md</a></td><td><a href="reference/glossary.md">glossary.md</a></td><td><a href="reference/configuration.md">configuration.md</a></td></tr></tbody></table>
+Ao falar com a equipe responsável, informe a tarefa, a etapa em que ocorreu a dúvida e a mensagem exibida. Oculte informações confidenciais em capturas de tela. Nunca envie senhas ou códigos de verificação.

@@ -1,5 +1,5 @@
 -- Verificação (SOMENTE LEITURA) do estado esperado após a migration 20260930130100_orgaos_uasgs_filtros
--- (seeds dos dicionários conforme 20261003234000_orgao_tipo_secretaria_esporte).
+-- (seeds dos dicionários conforme 20261004003000_orgao_tipo_secretaria_esporte).
 -- Só SELECT em catálogo, funções has_*_privilege, leitura dos dicionários e chamadas das funções PURAS
 -- (imutáveis/estáveis, sem escrita) sobre literais sintéticos. Não chama fn_orgaos_uasgs_classificar() nem
 -- fn_escopo_match_atualizar(), não faz REFRESH, não cria tabela temporária.
@@ -12,7 +12,7 @@
 -- O que confere:
 --   dicionários:   4 tabelas, colunas/tipos, PK/UNIQUE/FK/CHECK, RLS ligado, nenhuma policy, seeds
 --                  (54 tipos em 16 grupos, 9 de Segurança e Defesa; 118 regras = 109 órgão + 9 UASG, com
---                  secretaria_esporte da 20261003234000;
+--                  secretaria_esporte da 20261004003000;
 --                  5 overrides; 232 termos) e impressão digital md5 do conteúdo (muda se alguém editar fora
 --                  de migration; atualizar aqui quando uma migration nova mudar os seeds).
 --   colunas:       19 novas em orgaos e 15 em uasgs, tipos e geradas; 19 constraints nomeadas (CHECK e FK).

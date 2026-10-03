@@ -1,4 +1,4 @@
--- Verificação (SOMENTE LEITURA) do estado esperado após a migration 20261003234000_orgao_tipo_secretaria_esporte.
+-- Verificação (SOMENTE LEITURA) do estado esperado após a migration 20261004003000_orgao_tipo_secretaria_esporte.
 -- Só SELECT nos dicionários, em orgaos/uasgs e chamadas das funções PURAS (fn_classifica_orgao, fn_classifica_uasg,
 -- fn_esfera_canon, fn_poder_canon, fn_norm_nome) sobre literais sintéticos. Não chama fn_orgaos_uasgs_classificar().
 -- Executar após aplicar a migration (1a e 1b também aplicadas), ex.:

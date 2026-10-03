@@ -1,5 +1,5 @@
 -- =============================================================================
--- Casos sintéticos PONTA A PONTA da migration 20261003234000_orgao_tipo_secretaria_esporte (banco LOCAL de teste).
+-- Casos sintéticos PONTA A PONTA da migration 20261004003000_orgao_tipo_secretaria_esporte (banco LOCAL de teste).
 --
 -- Roda a rotina de escrita real, public.fn_orgaos_uasgs_classificar(), sobre órgãos/UASGs 100% fictícios (códigos
 -- 99999xx, nomes "FICTÍCIO") e overrides fictícios. Tudo fica dentro de begin; ... rollback;. Tem uma trava: aborta se
@@ -47,7 +47,7 @@ begin
     raise exception 'orgao_tipo_secretaria_esporte_fixtures_check: public.orgaos tem mais de 100 linhas; só roda em banco local de teste';
   end if;
   if not exists (select 1 from public.orgao_tipos where tipo_orgao = 'secretaria_esporte') then
-    raise exception 'orgao_tipo_secretaria_esporte_fixtures_check: migration 20261003234000 não aplicada';
+    raise exception 'orgao_tipo_secretaria_esporte_fixtures_check: migration 20261004003000 não aplicada';
   end if;
 
   insert into public.orgaos (codigo_orgao, nome_orgao, natureza_juridica, esfera, codigo_tipo_administracao, compras_raw, compras_payload_hash)

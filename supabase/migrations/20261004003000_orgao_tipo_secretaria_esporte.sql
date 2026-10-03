@@ -1,8 +1,9 @@
 -- LicitaGym: tipo de órgão secretaria_esporte (grupo "Esporte e lazer") no filtro "Tipo de órgão".
--- Aprovado pelo Marcelo em 02/10/2026. Número: rascunho 20261002235000 -> 20261003203000 -> 20261003234000 (03/10, depois
--- de 20261003230000_orgaos_classificar_escopo_separado (#185, já em prod) e de 20261003233000 (#148)). Nenhuma migration
--- posterior a 20260930130100 alterou fn_classifica_orgao/fn_classifica_uasg/fn_orgaos_uasgs_classificar nem os
--- dicionários usados aqui (a 20261003230000 só separa os jobs e mexe no escopo).
+-- Aprovado pelo Marcelo em 02/10/2026. Número: rascunho 20261002235000 -> 20261003203000 -> 20261003234000 ->
+-- 20261004003000 (03/10, numeração fechada: a maior versão em prod é 20261004001000, do #215; fila #148 20261004002000,
+-- #184 20261004003000, #213 20261004004000). Fica depois de 20261003230000_orgaos_classificar_escopo_separado (#185, em
+-- prod). Nenhuma migration posterior a 20260930130100 alterou fn_classifica_orgao/fn_classifica_uasg/
+-- fn_orgaos_uasgs_classificar nem os dicionários usados aqui (a 20261003230000 só separa os jobs e mexe no escopo).
 -- Roda DEPOIS de 20260930130100_orgaos_uasgs_filtros (PR 1b), que criou os
 -- dicionários orgao_tipos/orgao_tipo_regras e as funções fn_classifica_orgao/fn_classifica_uasg/
 -- fn_orgaos_uasgs_classificar usadas aqui. Não muda estrutura nem função: só dicionário + reclassificação das candidatas.

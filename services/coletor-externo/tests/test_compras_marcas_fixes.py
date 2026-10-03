@@ -103,20 +103,20 @@ def _pagina(n: int, inicio: int, ni: str = "11222333000181") -> list[dict[str, A
     return [_item_pp(idItemCompra=inicio + i, niFornecedor=ni) for i in range(n)]
 
 
-def test_coletar_pede_500_e_para_na_pagina_certa():
-    assert compras_precos.TAMANHO_PAGINA == 500
-    cli = _ClienteFalso([_pagina(500, 0), _pagina(120, 500)], total=620)
+def test_coletar_pede_100_e_para_na_pagina_certa():
+    assert compras_precos.TAMANHO_PAGINA == 100
+    cli = _ClienteFalso([_pagina(100, 0), _pagina(20, 100)], total=120)
     res = compras_precos.coletar(cli, None, pdms=[2640], dry_run=True)
-    assert cli.pedidos == [(1, 500), (2, 500)]
-    assert res["total_coletados"] == 620
+    assert cli.pedidos == [(1, 100), (2, 100)]
+    assert res["total_coletados"] == 120
 
 
-def test_coletar_nao_para_cedo_com_pagina_de_100():
-    # antes: tamanho fixo 100 na condição de parada; com 500 por página, 100 itens não podem encerrar a coleta
-    cli = _ClienteFalso([_pagina(500, 0), _pagina(500, 500), _pagina(1, 1000)], total=1001)
+def test_coletar_continua_com_pagina_cheia_de_100():
+    # página cheia (100) com totalRegistros maior segue; a página curta final encerra
+    cli = _ClienteFalso([_pagina(100, 0), _pagina(100, 100), _pagina(1, 200)], total=201)
     res = compras_precos.coletar(cli, None, pdms=[2640], dry_run=True)
-    assert len(cli.pedidos) == 3
-    assert res["total_coletados"] == 1001
+    assert cli.pedidos == [(1, 100), (2, 100), (3, 100)]
+    assert res["total_coletados"] == 201
 
 
 def test_coletar_conta_cpf_no_resumo():

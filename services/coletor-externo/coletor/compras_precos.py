@@ -51,9 +51,8 @@ UA = "LicitaGym-Coletor/1.1 (pesquisa de licitacoes publicas)"
 PDMS_PADRAO = [2640, 2638, 7113, 7115, 3522, 5341, 8166, 18481, 10779]
 
 TIPOS_CONSULTA = ("codigoPdm", "codigoItemCatalogo")
-# A API aceita tamanhoPagina de 10 a 500 neste módulo (plugin comprasgov-dados-abertos 0.3.1; varredura dos 40 PDMs
-# efetivos com 500 fez 80 requisições em 02/10/2026).
-TAMANHO_PAGINA = 500
+# A API aceita tamanhoPagina de 10 a 500 neste módulo. O script pede 100.
+TAMANHO_PAGINA = 100
 
 
 def validar_parametros_consulta(tipo: Any, codigo: Any) -> int:

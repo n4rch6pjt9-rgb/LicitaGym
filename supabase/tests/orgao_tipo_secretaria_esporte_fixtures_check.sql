@@ -153,6 +153,15 @@ begin
 end $$;
 
 -- ===================== fase 2: guarda entra/sai da reclassificação da migration =====================
+-- Lê o arquivo da migration no cliente (psql). Se o arquivo não estiver legível (ex.: psql dentro de um container sem
+-- o repo, como no scripts/validar-migrations.sh), a fase 2 é pulada com NOTICE e a fase 1 continua valendo.
+\if :{?mig_file}
+\else
+\set mig_file supabase/migrations/20261004003000_orgao_tipo_secretaria_esporte.sql
+\endif
+\set mig_sql `test -r :mig_file && sed -e '/^begin;$/d' -e '/^commit;$/d' :mig_file || true`
+select length(:'mig_sql') > 0 as fx_tem_mig \gset
+\if :fx_tem_mig
 do $$
 begin
   insert into public.orgaos (codigo_orgao, nome_orgao, natureza_juridica, esfera, codigo_tipo_administracao, compras_raw, compras_payload_hash)
@@ -178,12 +187,8 @@ begin
     select 'uasg', codigo_uasg, tipo_orgao, grupo_tipo from public.uasgs where payload_hash = 'fixture';
 end $$;
 
+
 -- passo 3 da migration (o arquivo real, sem begin/commit; os set local valem até o rollback)
-\if :{?mig_file}
-\else
-\set mig_file supabase/migrations/20261004003000_orgao_tipo_secretaria_esporte.sql
-\endif
-\set mig_sql `sed -e '/^begin;$/d' -e '/^commit;$/d' :mig_file`
 :mig_sql
 
 do $$
@@ -230,5 +235,8 @@ begin
     raise exception 'orgao_tipo_secretaria_esporte_fixtures_check fase 2 FALHOU: % de % checagens', f, n;
   end if;
 end $$;
+\else
+do $$ begin raise notice 'orgao_tipo_secretaria_esporte_fixtures_check fase 2 PULADA: arquivo da migration não legível pelo psql (rode da raiz do repo ou -v mig_file=...)'; end $$;
+\endif
 
 rollback;

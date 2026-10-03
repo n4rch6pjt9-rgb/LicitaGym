@@ -10,7 +10,9 @@ import logging
 from pathlib import Path
 import time
 from typing import Any, Dict, List, Optional
+from scripts.lib.http_client import clamp_compras_gov_page_size
 from scripts.lib.http_fetch import fetch_json, HttpFetchError
+from scripts.lib.paginacao import acao_pagina
 from scripts.lib.sync_state import SyncStateManager, is_sync_resume_enabled
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -26,10 +28,11 @@ def fetch_caracteristicas(
     codigo_item: int,
     codigo_caracteristica: Optional[int] = None,
     pagina: int = 1,
-    tamanho_pagina: int = 500,
+    tamanho_pagina: int = 100,
     max_retries: int = 3
 ) -> Dict[str, Any]:
     """Consulta Características por Item (golden rule: E7 ignora grupo/classe)."""
+    tamanho_pagina = clamp_compras_gov_page_size(tamanho_pagina)
     url = f"{BASE_URL}{ENDPOINT}"
 
     params = {
@@ -94,13 +97,16 @@ def collect_caracteristicas_por_item(
 
     pagina = (state.last_page + 1) if (should_resume and state.last_page > 0) else 1
     pages_coletadas = 0
+    tamanho = clamp_compras_gov_page_size(100)
+    vistos: set[str] = set()
+    lidos = 0
 
     while True:
         try:
             resp = fetch_caracteristicas(
                 codigo_item=codigo_item,
                 pagina=pagina,
-                tamanho_pagina=500
+                tamanho_pagina=tamanho
             )
         except Exception as e:
             sync_manager.record_partial_failure(
@@ -112,11 +118,17 @@ def collect_caracteristicas_por_item(
             sync_manager.save_accumulated_data(todas_caracteristicas)
             raise
 
-        caracteristicas = resp.get("resultado", [])
-
+        caracteristicas = resp.get("resultado") if isinstance(resp, dict) else None
+        parar, incluir = acao_pagina(
+            caracteristicas, resp if isinstance(resp, dict) else {},
+            tamanho=tamanho, pagina=pagina, vistos=vistos, logger=logger, ja_lidos=lidos,
+        )
+        if not incluir:
+            break
         if not caracteristicas:
             logger.info(f"  Página {pagina}: vazio")
             break
+        lidos += len(caracteristicas)
 
         logger.info(f"  Página {pagina}: {len(caracteristicas)} características")
         todas_caracteristicas.extend(caracteristicas)
@@ -128,10 +140,10 @@ def collect_caracteristicas_por_item(
         )
         sync_manager.save_accumulated_data(todas_caracteristicas)
 
-        if max_pages and pages_coletadas >= max_pages:
+        if parar:
             break
-
-        if resp.get("paginasRestantes", 0) == 0:
+        if max_pages and pages_coletadas >= max_pages:
+            logger.warning("teto de %s páginas atingido sem o total confirmar o fim", max_pages)
             break
 
         pagina += 1

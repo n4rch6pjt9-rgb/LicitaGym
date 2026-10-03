@@ -8,7 +8,9 @@ import json
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from scripts.lib.http_client import clamp_compras_gov_page_size
 from scripts.lib.http_fetch import fetch_json, HttpFetchError
+from scripts.lib.paginacao import acao_pagina
 from scripts.lib.sync_state import SyncStateManager, is_sync_resume_enabled
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -19,8 +21,9 @@ ENDPOINT = "/modulo-material/1_consultarGrupoMaterial"
 TIMEOUT = 30
 GRUPOS_PERMITIDOS = [72, 78]
 
-def fetch_grupos(pagina: int = 1, tamanho_pagina: int = 500, max_retries: int = 3) -> Dict[str, Any]:
+def fetch_grupos(pagina: int = 1, tamanho_pagina: int = 100, max_retries: int = 3) -> Dict[str, Any]:
     """Consulta Grupos de Material com retry exponencial."""
+    tamanho_pagina = clamp_compras_gov_page_size(tamanho_pagina)
     url = f"{BASE_URL}{ENDPOINT}?pagina={pagina}&tamanhoPagina={tamanho_pagina}"
     return fetch_json(
         url,
@@ -69,10 +72,13 @@ def collect_grupos(
 
     pagina = (state.last_page + 1) if (should_resume and state.last_page > 0) else 1
     pages_coletadas = 0
+    tamanho = clamp_compras_gov_page_size(100)
+    vistos: set[str] = set()
+    lidos = 0
 
     while True:
         try:
-            resp = fetch_grupos(pagina=pagina)
+            resp = fetch_grupos(pagina=pagina, tamanho_pagina=tamanho)
         except Exception as e:
             sync_manager.record_partial_failure(
                 e,
@@ -82,11 +88,17 @@ def collect_grupos(
             sync_manager.save_accumulated_data(todos_grupos)
             raise
 
-        registros = resp.get("resultado", [])
-
+        registros = resp.get("resultado") if isinstance(resp, dict) else None
+        parar, incluir = acao_pagina(
+            registros, resp if isinstance(resp, dict) else {},
+            tamanho=tamanho, pagina=pagina, vistos=vistos, logger=logger, ja_lidos=lidos,
+        )
+        if not incluir:
+            break
         if not registros:
             logger.info("Fim da paginação")
             break
+        lidos += len(registros)
 
         filtrados = 0
         for reg in registros:
@@ -104,8 +116,10 @@ def collect_grupos(
         )
         sync_manager.save_accumulated_data(todos_grupos)
 
+        if parar:
+            break
         if max_pages and pages_coletadas >= max_pages:
-            logger.info(f"Limite de {max_pages} página(s) atingido")
+            logger.warning(f"Limite de {max_pages} página(s) atingido sem o total confirmar o fim")
             break
 
         pagina += 1

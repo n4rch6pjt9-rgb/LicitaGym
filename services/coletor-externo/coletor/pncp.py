@@ -368,22 +368,28 @@ _SERVICO_SOBRE_PRODUTO = re.compile(
 # Locação/aluguel/comodato nunca é aquisição do equipamento ("Fornecimento de aparelhos de musculação em regime de
 # locação mensal"; Copilot, PR #134, 2ª rodada).
 _LOCACAO = re.compile(r"\blocac|\baluguel|\balugar\b|comodato", re.I)
-# O sinal de produto que é só peça/mão de obra ("aquisição de peças de reposição", "fornecimento das respectivas
-# peças") não é aquisição do equipamento.
-_SO_PECAS_DEPOIS = re.compile(
+# O sinal de produto cujo objeto é peça, mão de obra ou o próprio serviço ("aquisição de peças de reposição",
+# "fornecimento das respectivas peças", "Aquisição de serviços de manutenção preventiva de aparelhos", "compra de
+# serviço de instalação"; Copilot, PR #134, 3ª rodada) não é aquisição do equipamento.
+_NAO_PRODUTO_DEPOIS = re.compile(
     r"^\w*\s+(de|do|da|dos|das)\s+((todo|toda)s?\s+)?((o|a)s?\s+)?(respectiv\w*\s+)?(novas?\s+)?"
-    r"(pecas?\b|componentes\s+de\s+reposicao|mao\s+de\s+obra)", re.I)
+    r"(pecas?\b|componentes\s+de\s+reposicao|mao\s+de\s+obra|servic|prestac|manutenc|contratac|empresa\b|"
+    r"pessoa\s+juridica)", re.I)
 
 # Aquisição efetiva de equipamento/aparelho vale mesmo depois do serviço ("serviços de revitalização, manutenção e
-# recuperação de equipamentos de academia ... bem como aquisição de novos equipamentos", 1894): não é peça.
+# recuperação de equipamentos de academia ... bem como aquisição de novos equipamentos", 1894): não é peça. Só
+# quando o objeto da aquisição É o equipamento: "aquisição de [novos|outros|demais] equipamentos/aparelhos" logo em
+# seguida (não "aquisição de serviços ... de aparelhos", nem "aquisição de peças de equipamentos"), e não
+# equipamento de proteção/segurança/EPI/informática/limpeza (insumo do serviço).
 _AQUISICAO_DE_EQUIPAMENTO = re.compile(
-    r"\b(aquisic\w*|compras?)\s+(de|do|da|dos|das)\s+((novos?|novas?|outros?|demais)\s+)?(equipament|aparelh)", re.I)
+    r"\b(aquisic\w*|compras?)\s+(de|do|da|dos|das)\s+((novos?|novas?|outros?|demais)\s+)?(equipament|aparelh)[a-z]*\b"
+    r"(?!\s+(de\s+|para\s+)?(protecao|seguranca|epis?\b|informatica|limpeza|medicao))", re.I)
 
 
 def _inicio_do_produto(t: str) -> int | None:
     """Posição do primeiro sinal de fornecimento de produto (FORNECE_PRODUTO ou _FORNECIMENTO_NOMEADO) que não seja
     de peça/mão de obra; None = nenhum."""
-    pos = [m.start() for m in FORNECE_PRODUTO.finditer(t) if not _SO_PECAS_DEPOIS.search(t[m.start():])]
+    pos = [m.start() for m in FORNECE_PRODUTO.finditer(t) if not _NAO_PRODUTO_DEPOIS.search(t[m.start():])]
     m = _FORNECIMENTO_NOMEADO.search(t)
     if m:
         pos.append(m.start())
@@ -394,12 +400,13 @@ def fornece_produto(texto: str | None) -> bool:
     """O texto (já normalizado) fornece produto? Ver FORNECE_PRODUTO e _FORNECIMENTO_NOMEADO, com a mesma trava de
     serviço nos dois ramos (Copilot, PR #134, 2ª rodada):
     - locação/aluguel/comodato no texto: não é aquisição;
-    - fornecimento/aquisição só de peças ou mão de obra: não conta como produto;
+    - fornecimento/aquisição de peças, mão de obra ou serviço ("Aquisição de serviços de manutenção"): não conta;
     - manutenção/reparo/troca/substituição/credenciamento/recuperação/revisão ANTES do sinal de produto: o texto é o
       serviço e o produto é acessório ("Manutenção de aparelhos com aquisição de peças", "Reparo ... incluído
       fornecimento de acolchoamento"); DEPOIS do sinal, a manutenção é acessória da compra e o produto vale
       ("Aquisição de esteiras ergométricas com manutenção preventiva durante a garantia"). Exceção: aquisição
-      explícita de equipamento/aparelho (não de peça) vale em qualquer posição (_AQUISICAO_DE_EQUIPAMENTO)."""
+      explícita de equipamento/aparelho (o objeto da aquisição é o equipamento) vale em qualquer posição
+      (_AQUISICAO_DE_EQUIPAMENTO)."""
     t = texto or ""
     if _LOCACAO.search(t):
         return False
@@ -617,16 +624,35 @@ _DOC_HOMOLOGACAO = re.compile(r"\bhomologa|\badjudica")
 # esclarecimento", "Resultado preliminar" e "Resultado da amostra" não encerram a compra.
 _DOC_RESULTADO_FINAL = re.compile(r"\baviso\s+de\s+resultado\b|\bresultado\s+(final|definitivo|do\s+julgamento|"
                                   r"da\s+licitacao|do\s+certame|do\s+pregao|da\s+concorrencia|da\s+dispensa)\b")
-_DOC_RESULTADO_ETAPA = re.compile(r"preliminar|provisori|impugna|esclarec|recurso|amostra|habilitac|\bpedido|parcial|"
-                                  r"solicitac|requeriment|contrarraz")
-# Homologação/adjudicação também só como ato conclusivo (Copilot, PR #134, 2ª rodada): "Pedido de adjudicação",
-# "Recurso contra a homologação", "Impugnação da homologação", "Solicitação de homologação", "Esclarecimento sobre
-# os critérios de adjudicação e homologação", "Contrarrazões" não encerram a compra. Mais estrito que o do resultado
-# ("habilitação" fica de fora: "Termo de homologação e habilitação" é ato conclusivo).
-_DOC_HOMOLOGACAO_ETAPA = re.compile(r"\bpedido|solicitac|requeriment|recurso|impugna|esclarec|preliminar|provisori|"
-                                    r"amostra|contrarraz|\bminuta")
+# Filtro ÚNICO de etapa / documento não conclusivo (pedido do Marcelo; Copilot, PR #134, 2ª e 3ª rodadas), aplicado
+# a TODOS os sinais documentais (homologação, adjudicação, resultado, revogação, anulação e suspensão): pedido,
+# solicitação, requerimento, recurso, impugnação, esclarecimento, preliminar, provisório, amostra, contrarrazões,
+# minuta, indeferimento, intenção, "proposta de", parecer e despacho não são o ato ("Pedido de revogação",
+# "Minuta do termo de revogação", "Pedido de suspensão", "Indeferimento do pedido de suspensão", "Parecer de
+# revogação", "Recurso contra a homologação"). Os radicais aceitam o nome de arquivo do PNCP sem os acentos
+# ("SOLICITAO_DE_REVOGAO_PARCIAL"). Despacho que É o ato ("DESPACHO DE SUSPENSAO PE 0262026", "Despacho de
+# Adjudicação e Homologação") continua valendo: só o "despacho" sozinho é etapa (_DOC_DESPACHO_ATO).
+_DOC_ETAPA = re.compile(
+    r"\bpedido|\bsolicita(c|o\b)|requeriment|\brecurso|impugna|esclarec|preliminar|\bprovis(o)?ri|amostra|contrarraz|"
+    r"\bminuta|indefer|\binten(c|ao\b|o\b)|\bproposta\s+de\b|\bparecer|\bdespacho")
+_DOC_DESPACHO_ATO = re.compile(r"\bdespacho\s+((de|da|do)\s+)?(homologa|adjudica|revoga|anula|suspens)|"
+                               r"\bdespacho\s+homologatori")
+# Além do filtro único, por sinal: resultado de habilitação ou parcial não encerra a compra; revogação/anulação e
+# suspensão parciais (de um lote) também não. "Termo de homologação e habilitação" é ato conclusivo.
+_DOC_RESULTADO_NAO_FINAL = re.compile(r"habilitac|parcial")
 _DOC_REVOGACAO = re.compile(r"\brevoga|\banula")
 _DOC_SUSPENSAO = re.compile(r"\bsuspens")
+# Fim da suspensão não é suspensão nem revogação da compra ("Revogação da suspensão", "Aviso de reabertura após
+# suspensão", "Retomada do certame suspenso", "Levantamento da suspensão").
+_DOC_FIM_SUSPENSAO = re.compile(r"\b(revoga|anula)\w*\s+((de|da|do)\s+)?((ato|aviso|termo|decisao)\s+(de\s+)?)?suspens|"
+                                r"\breabert|\bretomad|\blevantament\w*\s+((de|da|do)\s+)?suspens|"
+                                r"\bsuspens\w*\s+(revogad|anulad|sem\s+efeito|cancelad)")
+
+
+def documento_de_etapa(texto: str | None) -> bool:
+    """O título (já normalizado) é de etapa/documento não conclusivo? Ver _DOC_ETAPA."""
+    return bool(_DOC_ETAPA.search(_DOC_DESPACHO_ATO.sub(" ", texto or "")))
+
 # Suspensão publicada até 10 min antes da última retificação da compra ainda vale (o PNCP grava os dois juntos,
 # ex.: 135); retificação depois dela reabriu a compra (77: suspensa em agosto, retificada em 24/09 com prazo novo).
 TOLERANCIA_RETIFICACAO = timedelta(minutes=10)
@@ -650,8 +676,10 @@ def sinal_documental(documentos: list[dict] | None, retificada_em=None) -> str |
     Aceita /arquivos do PNCP (titulo, tipoDocumentoNome, dataPublicacaoPncp) e licitacao_documentos
     (nome_original, tipo_documento, data_documento). Documento com statusAtivo False (inativo no PNCP ou removido
     do portal) não conta. Resultado só com título conclusivo (homologação, adjudicação, resultado final/do
-    julgamento/da licitação/do certame, aviso de resultado); "Resultado da amostra/impugnação/de esclarecimento",
-    "resultado preliminar" e "revogação parcial" não contam; contrato/ata/aditivo/empenho não contam (contratação sim);
+    julgamento/da licitação/do certame, aviso de resultado). Documento de etapa ou não conclusivo (documento_de_etapa:
+    pedido, minuta, recurso, indeferimento, parecer...) não conta para NENHUM sinal; resultado de habilitação/parcial,
+    revogação/suspensão parcial e fim de suspensão (revogação da suspensão, reabertura) também não;
+    contrato/ata/aditivo/empenho não contam (contratação sim);
     suspensão só vale se não houve retificação da compra depois dela (retificada_em: dataAtualizacao do detalhe
     ou data_atualizacao_pncp da busca, horário de Brasília)."""
     resultado = revogacao = False
@@ -661,14 +689,14 @@ def sinal_documental(documentos: list[dict] | None, retificada_em=None) -> str |
             continue
         # nome de arquivo usa "_" como espaço ("AVISO_SUSPENSAO_P_E_35_2026.pdf"), e "_" é letra para o \b
         t = normalizar(" ".join(str(d.get(k) or "") for k in _CHAVES_TEXTO_DOC)).replace("_", " ").strip()
-        if not t or _DOC_DE_CONTRATO.search(t):
+        if not t or _DOC_DE_CONTRATO.search(t) or documento_de_etapa(t):
             continue
-        if (_DOC_HOMOLOGACAO.search(t) and not _DOC_HOMOLOGACAO_ETAPA.search(t)) or \
-                (_DOC_RESULTADO_FINAL.search(t) and not _DOC_RESULTADO_ETAPA.search(t)):
+        fim_suspensao = bool(_DOC_FIM_SUSPENSAO.search(t))
+        if _DOC_HOMOLOGACAO.search(t) or (_DOC_RESULTADO_FINAL.search(t) and not _DOC_RESULTADO_NAO_FINAL.search(t)):
             resultado = True
-        if _DOC_REVOGACAO.search(t) and "parcial" not in t:
+        if _DOC_REVOGACAO.search(t) and "parcial" not in t and not fim_suspensao:
             revogacao = True
-        if _DOC_SUSPENSAO.search(t):
+        if _DOC_SUSPENSAO.search(t) and "parcial" not in t and not fim_suspensao:
             dt = _instante(next((d[k] for k in _CHAVES_DATA_DOC if d.get(k)), None))
             if dt and (ultima_suspensao is None or dt > ultima_suspensao):
                 ultima_suspensao = dt
@@ -981,16 +1009,17 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
     if dry_run:
         return
 
+    raw = raw_com_prazo_do_detalhe(c, det)
     linha = {
         "fonte": "pncp", "codigo_externo": c["numero_controle_pncp"], **ident,
         "objeto": (c.get("description") or "").strip() or None,
         "unidade_compradora": c.get("unidade_nome"), "orgao_nome": c.get("orgao_nome"),
         "orgao_cnpj": c.get("orgao_cnpj"), "municipio": c.get("municipio_nome"), "uf": c.get("uf"),
         "modalidade": c.get("modalidade_licitacao_nome"), "situacao": c.get("situacao_nome"), "fase": fase,
-        "data_publicacao": _data(c.get("data_publicacao_pncp")), "data_fim": _data(c.get("data_fim_vigencia")),
+        "data_publicacao": _data(c.get("data_publicacao_pncp")), "data_fim": _data(raw.get("data_fim_vigencia")),
         "data_homologacao": data_homologacao.isoformat() if data_homologacao else None,
         "prioridade": prioridade, "categoria_escopo": categoria,
-        "interesse_borracha": interesse, "termos_busca": [termo], "raw": c,
+        "interesse_borracha": interesse, "termos_busca": [termo], "raw": raw,
     }
     # valor_total: detalhe (valorTotalEstimado, via identificacao_do_detalhe) > valor_global da busca
     # (vazio em editais). Sem nenhum dos dois a chave fica fora: o upsert (merge-duplicates) atualiza
@@ -1078,6 +1107,20 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
             log.info("    arquivo: %s (%.1f MB)", (d.get("nome_original") or "")[:70], len(conteudo) / 1048576)
         except Exception as e:
             sb.atualizar("licitacao_documentos", d["id"], {"status_processamento": "erro", "erro": str(e)[:300]})
+
+
+def raw_com_prazo_do_detalhe(c: dict, det: dict | None) -> dict:
+    """raw gravado = item da busca, com o prazo de proposta do DETALHE quando ele existe e difere (Copilot, PR #134,
+    3ª rodada). A fase e a prioridade são decididas com o prazo do detalhe (compra_com_detalhe), e a view
+    licitacoes_externas_prioridade_efetiva lê raw.data_fim_vigencia (senão data_fim): gravar o prazo da busca
+    defasada fazia a view rebaixar a "Recebendo propostas"/leads reaberta pelo detalhe. Sem migration: o prazo do
+    detalhe vai em raw.data_fim_vigencia (e data_fim), e o da busca fica preservado em raw.data_fim_vigencia_busca,
+    com raw.data_fim_vigencia_fonte = "detalhe". Sem detalhe (ou sem prazo nele), o raw é a busca, como antes."""
+    prazo = (det or {}).get("dataEncerramentoProposta")
+    if not prazo or prazo == c.get("data_fim_vigencia"):
+        return c
+    return {**c, "data_fim_vigencia": prazo, "data_fim_vigencia_busca": c.get("data_fim_vigencia"),
+            "data_fim_vigencia_fonte": "detalhe"}
 
 
 def _excluida_sem_hidratacao(pncp, sb, c: dict, erro: Exception, dry_run: bool, resumo: dict) -> bool:

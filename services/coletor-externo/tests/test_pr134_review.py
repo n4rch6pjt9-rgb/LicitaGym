@@ -315,8 +315,8 @@ def test_trava_de_servico_vale_para_fornece_produto(objeto, desc):
     "Fornecimento e instalação de aparelhos de musculação com assistência técnica e manutenção no período de garantia",
     "Compra de halteres e anilhas para substituição dos atuais",
     # redação real da 1894 (dry-run de 02/10/2026): aquisição de equipamento novo junto com a manutenção
-    "Prestação de serviços de revitalização, manutenção e recuperação de equipamentos de academia, com fornecimento "
-    "de materiais, peças, componentes e acessórios, bem como aquisição de novos equipamentos e itens complementares",
+    ("Prestação de serviços de revitalização, manutenção e recuperação de equipamentos de academia, com fornecimento "
+     "de materiais, peças, componentes e acessórios, bem como aquisição de novos equipamentos e itens complementares"),
 ])
 def test_compra_com_manutencao_acessoria_continua_produto(desc):
     assert P.fornece_produto(P.normalizar(desc))
@@ -440,3 +440,101 @@ def test_coletor_dry_run_410_sem_itens_so_conta():
     p.compra.side_effect = RuntimeError("PNCP detalhe: 410 Gone")
     r = _coletar(p, sb, dry_run=True)
     assert r["excluidas_sem_itens"] == 1 and not sb.atualizar.called and not sb.upsert.called
+
+
+# ================= 3ª rodada do Copilot sobre 0eec5b0 (02/10/2026) =================
+# ---------- 3.1 "aquisição de serviço(s)" não fornece produto; exceção só com o equipamento como objeto ----------
+@pytest.mark.parametrize("desc", [
+    "Aquisição de serviços de manutenção preventiva de aparelhos de musculação",
+    "Aquisição de serviço de manutenção corretiva de esteiras ergométricas",
+    "Compra de serviços de instalação de equipamentos de academia",
+    "Aquisição de prestação de serviços de reparo em aparelhos de ginástica",
+    "Manutenção de aparelhos de musculação com aquisição de equipamentos de proteção individual",
+    "Serviço de manutenção de esteiras com aquisição de peças de equipamentos",
+])
+def test_aquisicao_de_servico_nao_fornece_produto(desc):
+    assert not P.fornece_produto(P.normalizar(desc))
+    assert P.avaliar({"description": desc}, [_it(1, desc)])[0] is None
+
+
+@pytest.mark.parametrize("desc", [
+    "Aquisição de aparelhos de musculação com manutenção preventiva no período de garantia",
+    "Aquisição de equipamentos de academia, incluindo serviços de instalação e manutenção",
+    "Manutenção dos aparelhos existentes e aquisição de novos equipamentos de musculação",
+])
+def test_aquisicao_do_equipamento_com_servico_acessorio_continua_produto(desc):
+    assert P.fornece_produto(P.normalizar(desc))
+    assert P.avaliar({"description": "Implantação de academia no ginásio"}, [_it(1, desc)])[0] == "forte"
+
+
+# ---------- 3.2 filtro único de etapa em TODOS os sinais documentais ----------
+@pytest.mark.parametrize("titulo", [
+    "Pedido de revogação da licitação", "Minuta do termo de revogação", "Pedido de suspensão do pregão",
+    "Indeferimento do pedido de suspensão do pregão", "Parecer de Revogação", "Parecer jurídico sobre a homologação",
+    "Despacho - encaminha para homologação", "Intenção de recurso contra a adjudicação",
+    "Proposta de anulação do certame", "Solicitação de suspensão", "SOLICITAO_DE_REVOGAO",
+    "Requerimento de anulação", "Recurso administrativo - suspensão", "Impugnação - pedido de suspensão",
+    "Esclarecimento sobre suspensão", "Contrarrazões à revogação", "Revogação provisória (minuta)",
+    "Homologação - minuta", "Resultado de habilitação", "AVISO_DE_SUSPENSAO_PARCIAL_LOTE_4",
+    "Revogação da suspensão do pregão", "Aviso de reabertura após suspensão", "Suspensão revogada",
+])
+def test_documento_de_etapa_nao_aciona_nenhum_sinal(titulo):
+    assert P.sinal_documental(_arq(titulo)) is None
+
+
+@pytest.mark.parametrize("titulo,sinal", [
+    ("Termo de revogação", "revogacao"), ("Aviso de revogação da licitação", "revogacao"),
+    ("Decisão de anulação do certame", "revogacao"), ("TERMO_DE_REVOGAO_DE_LICITAO__AVISO", "revogacao"),
+    ("Revogação do pregão suspenso", "revogacao"),
+    ("Aviso de suspensão", "suspensao"), ("DESPACHO DE SUSPENSAO PE 0262026", "suspensao"),
+    ("COMUNICADO SUSPENSAO", "suspensao"), ("Termo de suspensão assinado", "suspensao"),
+    ("Despacho de Adjudicação e Homologação", "resultado"), ("Termo de homologação", "resultado"),
+    ("Despacho homologatório", "resultado"), ("Aviso de resultado", "resultado"),
+])
+def test_ato_efetivo_continua_valendo(titulo, sinal):
+    assert P.sinal_documental(_arq(titulo)) == sinal
+
+
+def test_compra_aberta_com_pedido_de_revogacao_ou_suspensao_continua_lead():
+    c = {"description": "Aquisição de esteiras", "situacao_nome": "Divulgada no PNCP",
+         "data_fim_vigencia": "2026-10-13T09:30"}
+    for titulo in ("Pedido de revogação da licitação", "Indeferimento do pedido de suspensão do pregão"):
+        fase, prio, _ = P.fase_da_compra(c, False, agora=AGORA, documentos=_arq(titulo))
+        assert (fase, prio) == ("Recebendo propostas", "leads"), titulo
+
+
+# ---------- 3.4 prazo do detalhe também no raw/data_fim que a view lê ----------
+def test_busca_defasada_grava_prazo_do_detalhe_e_preserva_o_da_busca():
+    vencida = dict(ABERTA_BUSCA, data_fim_vigencia="2026-09-20T09:30")      # busca: prazo já passou
+    p = _pncp_aberto([vencida])
+    p.compra.return_value = dict(DETALHE, dataEncerramentoProposta="2026-10-20T09:30:00")   # detalhe: reaberta
+    p.arquivos.return_value = []
+    sb = _sb_coleta()
+    _coletar(p, sb)
+    lic = _lic(sb)
+    assert lic["prioridade"] == "leads" and lic["fase"] == "Recebendo propostas"
+    assert lic["raw"]["data_fim_vigencia"] == "2026-10-20T09:30:00"
+    assert lic["raw"]["data_fim_vigencia_busca"] == "2026-09-20T09:30"
+    assert lic["raw"]["data_fim_vigencia_fonte"] == "detalhe"
+    assert lic["data_fim"].startswith("2026-10-20")
+    # a regra da view (raw.data_fim_vigencia em BRT, senão data_fim) lê o mesmo prazo: não rebaixa
+    assert P._instante(lic["raw"]["data_fim_vigencia"]) > AGORA
+    assert vencida["data_fim_vigencia"] == "2026-09-20T09:30"                # item da busca não é alterado
+
+
+def test_detalhe_com_prazo_vencido_e_busca_aberta_grava_o_vencido():
+    p = _pncp_aberto([ABERTA_BUSCA])
+    p.compra.return_value = dict(DETALHE, dataEncerramentoProposta="2026-09-25T09:30:00")
+    p.arquivos.return_value = []
+    sb = _sb_coleta()
+    _coletar(p, sb)
+    lic = _lic(sb)
+    assert lic["prioridade"] == "monitorar" and lic["fase"] == "Em julgamento"
+    assert lic["raw"]["data_fim_vigencia"] == "2026-09-25T09:30:00"
+
+
+def test_sem_prazo_no_detalhe_ou_igual_o_raw_e_a_busca():
+    assert P.raw_com_prazo_do_detalhe(ABERTA_BUSCA, None) is ABERTA_BUSCA
+    assert P.raw_com_prazo_do_detalhe(ABERTA_BUSCA, DETALHE) is ABERTA_BUSCA
+    igual = {"dataEncerramentoProposta": ABERTA_BUSCA["data_fim_vigencia"]}
+    assert P.raw_com_prazo_do_detalhe(ABERTA_BUSCA, igual) is ABERTA_BUSCA

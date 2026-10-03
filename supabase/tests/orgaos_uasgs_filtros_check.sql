@@ -1,4 +1,5 @@
--- Verificação (SOMENTE LEITURA) do estado esperado após a migration 20260930130100_orgaos_uasgs_filtros.
+-- Verificação (SOMENTE LEITURA) do estado esperado após a migration 20260930130100_orgaos_uasgs_filtros
+-- (seeds dos dicionários conforme 20261003203000_orgao_tipo_secretaria_esporte).
 -- Só SELECT em catálogo, funções has_*_privilege, leitura dos dicionários e chamadas das funções PURAS
 -- (imutáveis/estáveis, sem escrita) sobre literais sintéticos. Não chama fn_orgaos_uasgs_classificar() nem
 -- fn_escopo_match_atualizar(), não faz REFRESH, não cria tabela temporária.
@@ -10,7 +11,8 @@
 --
 -- O que confere:
 --   dicionários:   4 tabelas, colunas/tipos, PK/UNIQUE/FK/CHECK, RLS ligado, nenhuma policy, seeds
---                  (53 tipos em 15 grupos, 9 de Segurança e Defesa; 116 regras = 108 órgão + 8 UASG;
+--                  (54 tipos em 16 grupos, 9 de Segurança e Defesa; 118 regras = 109 órgão + 9 UASG, com
+--                  secretaria_esporte da 20261003203000;
 --                  5 overrides; 232 termos) e impressão digital md5 do conteúdo (muda se alguém editar fora
 --                  de migration; atualizar aqui quando uma migration nova mudar os seeds).
 --   colunas:       19 novas em orgaos e 15 em uasgs, tipos e geradas; 19 constraints nomeadas (CHECK e FK).
@@ -271,14 +273,14 @@ begin
   else
     for v_chk in execute $q$
       with checks(grupo, objeto, esperado, atual) as (
-        select 'seed', 'orgao_tipos: tipos/grupos/seg_defesa', '53/15/9',
+        select 'seed', 'orgao_tipos: tipos/grupos/seg_defesa', '54/16/9',
                (select count(*) || '/' || count(distinct grupo_tipo) || '/' || count(*) filter (where seguranca_defesa)
                   from public.orgao_tipos)
         union all
         select 'seed', 'orgao_tipos: Segurança e Defesa', 'corpo_bombeiros_militar,forcas_armadas_aeronautica,forcas_armadas_exercito,forcas_armadas_marinha,ministerio_defesa,policia_civil,policia_federal,policia_militar,policia_rodoviaria_federal',
                (select string_agg(tipo_orgao, ',' order by tipo_orgao) from public.orgao_tipos where seguranca_defesa)
         union all
-        select 'seed', 'orgao_tipo_regras: total/orgao/uasg', '116/108/8',
+        select 'seed', 'orgao_tipo_regras: total/orgao/uasg', '118/109/9',
                (select count(*) || '/' || count(*) filter (where nivel = 'orgao') || '/' || count(*) filter (where nivel = 'uasg')
                   from public.orgao_tipo_regras)
         union all
@@ -289,11 +291,11 @@ begin
                        || count(*) filter (where nivel = 'nucleo') || '/' || count(*) filter (where nivel = 'recreacao_pca')
                   from public.escopo_termos)
         union all
-        select 'seed', 'md5 orgao_tipos', 'b9c23d4def774b5177ea4fc256a2137f',
+        select 'seed', 'md5 orgao_tipos', 'd7c84b1e75827c9d931c8d2894ef14cb',
                (select md5(string_agg(format('%s|%s|%s|%s|%s|%s', tipo_orgao, grupo_tipo, rotulo, grupo_rotulo, ordem_grupo, ordem),
                                       E'\n' order by tipo_orgao)) from public.orgao_tipos)
         union all
-        select 'seed', 'md5 orgao_tipo_regras', '06862e5336e59fb83ea27769c97bd68a',
+        select 'seed', 'md5 orgao_tipo_regras', '738367b91a90a28381952441bb9f14a4',
                (select md5(string_agg(format('%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s', nivel, prioridade, tipo_orgao,
                                              nome_regex, nome_regex_exclui, codigos_orgao, codigos_orgao_vinculado,
                                              tipos_administracao, aceita_tipo_adm_nulo, naturezas, natureza_regex, esferas,

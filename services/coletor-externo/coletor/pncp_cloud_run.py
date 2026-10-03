@@ -44,7 +44,8 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--lote vem de CLOUD_RUN_TASK_INDEX/CLOUD_RUN_TASK_COUNT; não passe --lote aqui")
     # Estes modos ignoram --lote e percorrem a tabela inteira: com várias tasks, cada uma repetiria tudo.
     modos_inteiros = [nome for nome, ligado in (("--baixar-pendentes", opcoes.baixar_pendentes),
-                                                 ("--corrigir-processos", opcoes.corrigir_processos)) if ligado]
+                                                 ("--corrigir-processos", opcoes.corrigir_processos),
+                                                 ("--recoletar-atualizadas", opcoes.recoletar_atualizadas)) if ligado]
     if modos_inteiros and int(lote.split("/")[1]) > 1:
         raise SystemExit(f"{', '.join(modos_inteiros)} não divide em lotes: use um job com --tasks=1")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")

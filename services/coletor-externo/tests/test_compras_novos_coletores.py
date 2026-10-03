@@ -59,7 +59,6 @@ SAMPLE_ARP_ITEM = {
     "descricaoItem": "APARELHO CONDICIONAMENTO FISICO BICEPS",
     "niFornecedor": "40962266000130",
     "nomeRazaoSocialFornecedor": "PANTHERA LEO EQUIPAMENTOS LTDA",
-    "marca": "PANTHERA",
     "quantidadeHomologadaItem": 1.0,
     "valorUnitario": 8500.0,
     "valorTotal": 8500.0,
@@ -117,7 +116,8 @@ def test_normalizar_ata_item():
     assert norm["codigo_item"] == 472025
     assert norm["ni_fornecedor"] == "40962266000130"
     assert norm["nome_fornecedor"] == "PANTHERA LEO EQUIPAMENTOS LTDA"
-    assert norm["marca"] == "PANTHERA"
+    # O item de ARP não tem marca na fonte (só a Pesquisa de Preço tem): NULL explícito.
+    assert norm["marca"] is None
     assert norm["valor_unitario"] == 8500.0
     assert norm["data_vigencia_final"] == "2027-06-02"
 

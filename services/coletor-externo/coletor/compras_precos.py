@@ -11,6 +11,12 @@ Enriquecimento opcional (detalhes):
     ?codigoItemCatalogo={codigo_item}&pagina=1&tamanhoPagina=100
 
 Grava em public.precos_praticados_itens via PostgREST (upsert idempotente em (id_compra, id_item_compra)).
+
+Campos reais (conferidos ao vivo em 02/10/2026 e no schema FtPesqPrecoCompraMaterialDTO do OpenAPI): a fonte traz
+`marca` (única fonte de marca entre os módulos do Compras.gov), mas não tem fabricante, modelo nem lote/grupo.
+`idCompra` chega como NÚMERO JSON e perde o zero à esquerda (UASG 090181 => 16 dígitos); `idCompraItem` chega como
+string de 22 dígitos = idCompra (17) + número do item (5) e preserva o zero.
+Parâmetros obrigatórios da API: tipo e codigo (sem eles a API responde 404).
 """
 from __future__ import annotations
 
@@ -19,6 +25,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -26,6 +33,7 @@ from typing import Any
 
 import requests
 
+from .compras_api import ErroApiCompras, ParametroInvalido, corpo_json, erro_http, validar_codigo
 from .compras_pdms import CatalogoPdmsIndisponivel, carregar_pdms_efetivos
 from .destino import Supabase, env
 from .retry import espera_retry
@@ -37,8 +45,51 @@ ENDPOINT_MATERIAL = "/modulo-pesquisa-preco/1_consultarMaterial"
 ENDPOINT_DETALHE = "/modulo-pesquisa-preco/2_consultarMaterialDetalhe"
 UA = "LicitaGym-Coletor/1.1 (pesquisa de licitacoes publicas)"
 
-# PDMs mais frequentes do catálogo fitness (ex.: 2640 aparelhos musculação, 2638 acessórios)
-PDMS_PADRAO = [2640, 2638, 7113, 3522, 5341, 8166, 18481, 10779]
+# PDMs mais frequentes do catálogo fitness (ex.: 2640 aparelhos musculação, 2638 acessórios).
+# 7115 ESTEIRA ELÉTRICA concentra a maior parte dos preços de esteira (206 registros em 02/10/2026, contra 48 do
+# 7113 ESTEIRA ERGONOMICA, que segue ativo no catálogo).
+PDMS_PADRAO = [2640, 2638, 7113, 7115, 3522, 5341, 8166, 18481, 10779]
+
+TIPOS_CONSULTA = ("codigoPdm", "codigoItemCatalogo")
+TAMANHO_PAGINA = 100
+
+
+def validar_parametros_consulta(tipo: Any, codigo: Any) -> int:
+    """Obrigatórios do 1_consultarMaterial: sem tipo/codigo a API responde 404 (não é 'sem resultado')."""
+    if tipo not in TIPOS_CONSULTA:
+        raise ParametroInvalido(f"'tipo' deve ser um de {TIPOS_CONSULTA} (recebido {tipo!r})")
+    return validar_codigo("codigo", codigo)
+
+
+def id_compra_de(item: dict[str, Any]) -> str | None:
+    """idCompra como string de 17 dígitos.
+
+    A API manda idCompra como número JSON: UASG com zero à esquerda (ex.: 090181) chega com 16 dígitos. O
+    idCompraItem (string de 22 dígitos = idCompra[17] + item[5]) preserva o zero e é a fonte preferida; sem ele,
+    completa idCompra numérico com zeros à esquerda até 17 dígitos.
+    """
+    id_compra_item = str(item.get("idCompraItem") or "").strip()
+    bruto = item.get("idCompra")
+    id_compra = str(bruto).strip() if bruto not in (None, "") else ""
+    if re.fullmatch(r"\d{22}", id_compra_item):
+        derivado = id_compra_item[:17]
+        if id_compra and id_compra.isdigit() and id_compra.zfill(17) != derivado:
+            log.warning("idCompra %s diverge do prefixo de idCompraItem %s; usando idCompraItem", id_compra, id_compra_item)
+        return derivado
+    if id_compra.isdigit() and len(id_compra) <= 17:
+        return id_compra.zfill(17)
+    return id_compra or None
+
+
+def deduplicar_por_chave(linhas: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    """Mesma (id_compra, id_item_compra) duas vezes no mesmo upsert faz o Postgres recusar o lote inteiro."""
+    escolhidas: dict[tuple, dict[str, Any]] = {}
+    for linha in linhas:
+        k = (linha["id_compra"], linha["id_item_compra"])
+        atual = escolhidas.get(k)
+        if atual is None or str(linha.get("data_hora_atualizacao_item") or "") >= str(atual.get("data_hora_atualizacao_item") or ""):
+            escolhidas[k] = linha
+    return list(escolhidas.values()), len(linhas) - len(escolhidas)
 
 
 def normalizar_preco_praticado(item: dict[str, Any]) -> dict[str, Any] | None:
@@ -67,7 +118,7 @@ def normalizar_preco_praticado(item: dict[str, Any]) -> dict[str, Any] | None:
             return v[:10]
         return None
 
-    id_compra = str(item.get("idCompra") or "").strip()
+    id_compra = id_compra_de(item)
     id_item_compra = _int(item.get("idItemCompra"))
     if not id_compra or id_item_compra is None:
         return None
@@ -91,9 +142,11 @@ def normalizar_preco_praticado(item: dict[str, Any]) -> dict[str, Any] | None:
         "percentual_maior_desconto": _num(item.get("percentualMaiorDesconto")),
         "descricao_item": item.get("descricaoItem"),
         "descricao_detalhada_item": item.get("descricaoDetalhadaItem"),
-        "marca": item.get("marca"),
-        "fabricante": item.get("fabricante"),
-        "modelo": item.get("modelo"),
+        # Única fonte de marca do Compras.gov. Fabricante e modelo não existem na fonte: NULL de propósito
+        # (colunas mantidas porque as views de BI as leem). Não inventar.
+        "marca": (str(item.get("marca")).strip() or None) if item.get("marca") is not None else None,
+        "fabricante": None,
+        "modelo": None,
         "data_resultado": _date(item.get("dataResultado")),
         "data_hora_atualizacao_item": item.get("dataHoraAtualizacaoItem"),
         "sigla_unidade_fornecimento": item.get("siglaUnidadeFornecimento"),
@@ -134,6 +187,7 @@ class ClienteComprasPrecos:
 
     def consultar_material(self, tipo: str, codigo: int, pagina: int = 1, tamanho_pagina: int = 100) -> dict[str, Any]:
         """tipo deve ser 'codigoPdm' ou 'codigoItemCatalogo'."""
+        codigo = validar_parametros_consulta(tipo, codigo)
         url = f"{BASE_URL}{ENDPOINT_MATERIAL}"
         params = {
             "tipo": tipo,
@@ -141,28 +195,29 @@ class ClienteComprasPrecos:
             "pagina": pagina,
             "tamanhoPagina": min(500, max(10, tamanho_pagina)),
         }
+        contexto = f"Pesquisa Preco {tipo}={codigo} pagina {pagina}"
         for tentativa in range(1, 4):
             try:
                 time.sleep(self.delay)
                 r = self.s.get(url, params=params, timeout=self.timeout)
-                if r.status_code == 200:
-                    return r.json()
-                if r.status_code == 404:
-                    return {"resultado": [], "totalRegistros": 0}
-                if r.status_code in (429, 502, 503, 504):
-                    if tentativa == 3:
-                        raise RuntimeError(f"HTTP {r.status_code} esgotado em Pesquisa Preco {tipo}={codigo}")
-                    espera = espera_retry(r, tentativa, base=3.0)
-                    log.warning("HTTP %d em Pesquisa Preco %s=%d (tentativa %d), aguardando %.1fs...", r.status_code, tipo, codigo, tentativa, espera)
-                    time.sleep(espera)
-                    continue
-                r.raise_for_status()
             except requests.RequestException as e:
                 log.warning("Falha de rede em Pesquisa Preco %s=%d tentativa %d: %s", tipo, codigo, tentativa, e)
                 if tentativa == 3:
                     raise
                 time.sleep(espera_retry(None, tentativa, base=2.0))
-        raise RuntimeError(f"Falha ao consultar Pesquisa Preco {tipo}={codigo} após retries")
+                continue
+            if r.status_code == 200:
+                return corpo_json(r, contexto)
+            if r.status_code in (429, 502, 503, 504):
+                if tentativa == 3:
+                    raise ErroApiCompras(f"HTTP {r.status_code} esgotado em Pesquisa Preco {tipo}={codigo}", status=r.status_code)
+                espera = espera_retry(r, tentativa, base=3.0)
+                log.warning("HTTP %d em Pesquisa Preco %s=%d (tentativa %d), aguardando %.1fs...", r.status_code, tipo, codigo, tentativa, espera)
+                time.sleep(espera)
+                continue
+            # 404 (parâmetro obrigatório faltando), 400 (codigo inválido) e demais: erro sem retry, nunca lista vazia.
+            raise erro_http(r, contexto)
+        raise ErroApiCompras(f"Falha ao consultar Pesquisa Preco {tipo}={codigo} após retries")
 
 
 def coletar(
@@ -176,6 +231,8 @@ def coletar(
     total_coletados = 0
     total_gravados = 0
     erros = 0
+    descartados = 0
+    duplicados_removidos = 0
     amostras = []
 
     consultas: list[tuple[str, int]] = []
@@ -213,7 +270,7 @@ def coletar(
         while True:
             log.info("Consultando Pesquisa Preco %s=%d pagina %d...", tipo, cod, pagina)
             try:
-                resp = cliente.consultar_material(tipo, cod, pagina=pagina, tamanho_pagina=100)
+                resp = cliente.consultar_material(tipo, cod, pagina=pagina, tamanho_pagina=TAMANHO_PAGINA)
             except Exception as e:
                 log.error("Erro ao consultar %s=%d pagina %d: %s", tipo, cod, pagina, e)
                 erros += 1
@@ -239,6 +296,12 @@ def coletar(
                             "preco_unitario": norm["preco_unitario"],
                             "data_resultado": norm["data_resultado"],
                         })
+                else:
+                    descartados += 1
+                    log.warning("Preço sem idCompra/idItemCompra descartado: idCompraItem=%s", it.get("idCompraItem"))
+
+            linhas_norm, dup = deduplicar_por_chave(linhas_norm)
+            duplicados_removidos += dup
 
             if not dry_run and sb is not None and linhas_norm:
                 try:
@@ -252,15 +315,17 @@ def coletar(
             if limite and total_coletados >= limite:
                 log.info("Limite de %d itens atingido", limite)
                 return {
-                    "sucesso": True,
+                    "sucesso": erros == 0,
                     "total_coletados": total_coletados,
                     "total_gravados": total_gravados,
                     "erros": erros,
+                    "descartados": descartados,
+                    "duplicados_removidos": duplicados_removidos,
                     "amostras": amostras,
                 }
 
             total_regs = resp.get("totalRegistros") or 0
-            if pagina * 100 >= total_regs or len(items_raw) < 100:
+            if pagina * TAMANHO_PAGINA >= total_regs or len(items_raw) < TAMANHO_PAGINA:
                 break
             pagina += 1
 
@@ -269,6 +334,8 @@ def coletar(
         "total_coletados": total_coletados,
         "total_gravados": total_gravados,
         "erros": erros,
+        "descartados": descartados,
+        "duplicados_removidos": duplicados_removidos,
         "amostras": amostras,
     }
 

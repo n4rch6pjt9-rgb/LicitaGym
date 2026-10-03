@@ -77,13 +77,19 @@ as $$
       case when right(w, 2) = 'ao' then left(w, -2) || 'aes' end,
       case when right(w, 1) = 's' and length(w) > 3 then left(w, -1) end,
       case when right(w, 1) = 'e' and length(w) > 4 and substr(w, length(w) - 1, 1) in ('r', 't', 'l') then left(w, -1) end,
-      case when right(w, 1) = 'e' and length(w) > 4 and substr(w, length(w) - 1, 1) in ('r', 't', 'l') then left(w, -1) || 'es' end
+      case when right(w, 1) = 'e' and length(w) > 4 and substr(w, length(w) - 1, 1) in ('r', 't', 'l') then left(w, -1) || 'es' end,
+      -- sinônimo (Marcelo, 03/10/2026 19:47 BRT): catálogo "ESTEIRA ERGONÔMICA" ~ licitação "esteira ergométrica"
+      case when w ~ '^ergonomic[ao]s?$' then regexp_replace(w, '^ergonomic([ao])s?$', 'ergometric\1') end,
+      case when w ~ '^ergonomic[ao]s?$' then regexp_replace(w, '^ergonomic([ao])s?$', 'ergometric\1s') end,
+      case when w ~ '^ergometric[ao]s?$' then regexp_replace(w, '^ergometric([ao])s?$', 'ergonomic\1') end,
+      case when w ~ '^ergometric[ao]s?$' then regexp_replace(w, '^ergometric([ao])s?$', 'ergonomic\1s') end
     ]) v
    where v is not null and v <> ''
 $$;
 
 -- Tokens do texto de um item de licitação para o casamento ancorado: minúsculas, sem acento, sem o enchimento
--- inicial ("LOTE ÚNICO -", "Item 3", "kit 10", "par de", "CATMAT 12345", números), quebrado em [a-z0-9]+.
+-- inicial ("LOTE ÚNICO -", "Item 3", "kit 10", "par de", "CATMAT 12345", "MAT. ESPORTIVO -", "(ID131043)", números),
+-- quebrado em [a-z0-9]+.
 -- Um único regex fixo (fica no cache de regex do Postgres); as âncoras não viram regex.
 create or replace function public.catmat_texto_tokens(p text)
 returns text[]
@@ -96,8 +102,8 @@ as $$
     from regexp_matches(
            regexp_replace(public.lg_normalizar(p),
              '^[^a-z0-9]*(?:(?:item|itens|lote|lotes|cota|catmat|kit|kits|par|pares|jogo|jogos|conjunto|conjuntos|unico'
-             '|principal|reservada|ampla|material|materiais|esportivo|esportivos|contendo|unidades|unidade|pecas|no|n|com|de'
-             '|[ivxl]+|[0-9]+[a-z]{0,2}|[a-z]{2}[0-9]{7})[^a-z0-9]+)*', ''),
+             '|principal|reservada|ampla|mat(?=\.)|material|materiais|esportivo|esportivos|contendo|unidades|unidade|pecas'
+             '|no|n|com|de|id[0-9]+|[ivxl]+|[0-9]+[a-z]{0,2}|[a-z]{2}[0-9]{7})[^a-z0-9]+)*', ''),
            '[a-z0-9]+', 'g') with ordinality m(t, o)
 $$;
 
@@ -277,6 +283,8 @@ as $$
     select * from cand
      where length(ancora) >= 4 and ancora !~ '^[0-9 ]+$'
        and ancora <> all (array['bola','mesa','estante','suporte','corda','cinto'])
+       -- Marcelo, 03/10/2026 19:47 BRT: 'gangorra' (TIPO do item 353216, plataforma vibratória) não é âncora
+       and ancora <> all (array['gangorra'])
        and not (fase = 1 and ancora ~ '^(aparelho|equipamento)( |$)')
   ),
   unicas as (

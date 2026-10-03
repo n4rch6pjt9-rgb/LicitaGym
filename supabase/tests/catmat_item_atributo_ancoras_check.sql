@@ -4,7 +4,8 @@
 --   A. estrutura: tabelas com RLS, view catmat_pdm_ancoras_nucleo com security_invoker, catmat_item_pdm.nome_item gerada
 --   B. ACL: anon nada; authenticated só lê as duas tabelas (não a view); funções só service_role
 --   C. funções puras: cabeça e atributos da descrição ("2,0 KG" não quebra), variantes de plural, tokens sem o
---      enchimento inicial ("LOTE ÚNICO - Item 3 -", "MAT.", "kit 10"), palavras da âncora sem conectivos
+--      enchimento inicial ("LOTE ÚNICO - Item 3 -", "MAT.", "(ID131043)", "kit 10"), sinônimo ergonômica ~ ergométrica
+--      (decisão de 03/10/2026 19:47 BRT), palavras da âncora sem conectivos
 --   D. catmat_item_atributo_sincronizar: descrição vira linhas; característica do Compras.gov tem precedência
 --   E. catmat_itens_ancorados: 1ª palavra do item = núcleo (com plural), demais palavras nas 11 seguintes;
 --      item de serviço ('S') e núcleo em outra posição não casam
@@ -89,17 +90,25 @@ begin
   end if;
   if public.catmat_palavra_variantes('haltere') is distinct from array['halter', 'haltere', 'halteres']
      or not ('cinturoes' = any (public.catmat_palavra_variantes('cinturao')))
-     or public.catmat_palavra_variantes('elastica') is distinct from array['elastica', 'elasticas'] then
+     or public.catmat_palavra_variantes('elastica') is distinct from array['elastica', 'elasticas']
+     or not ('ergometrica' = any (public.catmat_palavra_variantes('ergonomica')))
+     or not ('ergonomicas' = any (public.catmat_palavra_variantes('ergometrica'))) then
     raise exception 'TESTE C FALHOU: variantes de plural';
   end if;
   if public.catmat_texto_tokens('LOTE ÚNICO - Item 3 - Haltere emborrachado 2 kg') is distinct from array['haltere', 'emborrachado', '2', 'kg']
      or public.catmat_texto_tokens('MAT. ERGONÔMICA colchonete') is distinct from array['ergonomica', 'colchonete']
-     or public.catmat_texto_tokens('kit 10 cordas de pular') is distinct from array['cordas', 'de', 'pular'] then
+     or public.catmat_texto_tokens('kit 10 cordas de pular') is distinct from array['cordas', 'de', 'pular']
+     or public.catmat_texto_tokens('(ID131043) Esteira ergométrica') is distinct from array['esteira', 'ergometrica']
+     or public.catmat_texto_tokens('Material esportivo - matéria prima') is distinct from array['materia', 'prima'] then
     raise exception 'TESTE C FALHOU: tokens do item';
   end if;
   if public.catmat_ancora_palavras('Corda de pular para uso') is distinct from array['corda', 'pular']
      or public.catmat_norm_ancora('Bola de Futsal - Nº 4') is distinct from 'bola de futsal n 4' then
     raise exception 'TESTE C FALHOU: palavras/normalização da âncora';
+  end if;
+
+  if strpos(pg_get_functiondef('public.catmat_ancoras_geradas()'::regprocedure), 'ancora <> all (array[''gangorra''])') = 0 then
+    raise exception 'TESTE C FALHOU: catmat_ancoras_geradas sem o veto de ''gangorra'' (decisão de 03/10/2026 19:47 BRT)';
   end if;
 
   -- D (item fictício 999990001 / PDM 999901)

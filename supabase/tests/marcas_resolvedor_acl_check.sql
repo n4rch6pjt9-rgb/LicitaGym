@@ -1,4 +1,4 @@
--- Verificação (SOMENTE LEITURA) do estado esperado após a migration 20261003030000_marcas_resolvedor_fornecedor.
+-- Verificação (SOMENTE LEITURA) do estado esperado após a migration 20261003200000_marcas_resolvedor_fornecedor.
 -- Só SELECT em catálogo, funções has_*_privilege e chamadas às funções IMMUTABLE/STABLE do resolvedor
 -- (nenhuma escrita, nenhuma tabela temporária). Executar após aplicar a migration, ex.:
 --   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/tests/marcas_resolvedor_acl_check.sql

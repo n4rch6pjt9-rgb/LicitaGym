@@ -1,4 +1,4 @@
--- Rollback da 20261003230000_cron_edge_chamadas_request_id.sql
+-- Rollback da 20261004001000_cron_edge_chamadas_request_id.sql
 --
 -- Devolve a PK para request_id e o corpo antigo das funções (on conflict do nothing, casamento só por id).
 -- Isso reintroduz o bug da issue #152: não rode em produção se o objetivo for manter o monitoramento.

@@ -62,7 +62,7 @@ A migration cria `private.cron_chamar_edge(job, funcao, corpo, timeout_ms)`. Só
    `select btrim(decrypted_secret) from vault.decrypted_secrets where name = 'sync_cron_secret'`;
 2. se o segredo não existe ou está vazio, faz **`raise exception`** antes de qualquer `net.http_post`. O job fica `failed` em `cron.job_run_details` com a mensagem `Vault sem o segredo "sync_cron_secret"…` e **nenhuma requisição sai com token vazio**;
 3. chama `net.http_post(url := 'https://ifaiagegyicjzlpskafh.supabase.co/functions/v1/<funcao>', body := <corpo>, headers := {"Authorization": "Bearer <token>", "Content-Type": "application/json"}, timeout_milliseconds := <timeout>)`;
-4. grava uma linha em `private.cron_edge_chamadas` (`id` próprio, `request_id` do pg_net, job, função e corpo), **sem o token**. O `request_id` não é chave: as tabelas do pg_net são unlogged e a sequência volta a 1 quando o banco reinicia. O retorno da função continua sendo esse `request_id`.
+4. grava uma linha em `private.cron_edge_chamadas` (`id` próprio, `request_id` do pg_net, job, função e corpo), **sem o token**. O `request_id` não é chave (`supabase/migrations/20261004001000_cron_edge_chamadas_request_id.sql`): as tabelas do pg_net são unlogged e a sequência volta a 1 quando o banco reinicia. O retorno da função continua sendo esse `request_id`.
 
 O valor do segredo não aparece na migration, no `cron.job.command` nem no log. Num branch de preview do Supabase não há segredo no Vault, então os jobs falham sem chamar produção.
 

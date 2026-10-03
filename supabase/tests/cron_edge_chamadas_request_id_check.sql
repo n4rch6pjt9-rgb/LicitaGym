@@ -1,4 +1,4 @@
--- Colisão do request_id do pg_net (issue #152, migration 20261003230000).
+-- Colisão do request_id do pg_net (issue #152, migration 20261004001000).
 --
 -- Reproduz o restart: a tabela já tem os ids 1..17 e o próximo net.http_post devolve 1 de novo.
 -- A linha nova tem de ser gravada, a antiga tem de ficar como estava, e a resposta HTTP nova

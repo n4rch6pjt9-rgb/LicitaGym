@@ -23,7 +23,7 @@
 --
 -- Troca de PK e o índice único que ela carregava. Não há DELETE, DROP COLUMN nem SET NOT NULL em dado novo:
 -- request_id já era NOT NULL por ser PK; se o drop da PK tirar o NOT NULL, ele é reaplicado (as linhas atuais
--- não têm NULL). Rollback: supabase/rollback/20261003230000_cron_edge_chamadas_request_id.sql
+-- não têm NULL). Rollback: supabase/rollback/20261004001000_cron_edge_chamadas_request_id.sql
 -- (aborta se já existir request_id repetido, para não apagar histórico).
 --
 -- Idempotente. Verificação: supabase/tests/cron_edge_chamadas_request_id_check.sql

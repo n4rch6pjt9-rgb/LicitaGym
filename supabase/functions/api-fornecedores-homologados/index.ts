@@ -67,6 +67,15 @@ const int = (v: unknown, def: number, min: number, max: number) => {
   return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : def;
 };
 
+// ---------------------------------------------------------------- resultado que conta como venda
+// Mesma regra das views (fornecedores_homologados, orgaos_compradores, homologacoes_itens, v_bi_*):
+//   vencedor is distinct from false  → entra true e NULL (PNCP não preenche); sai o lance perdedor do Paradigma
+//   coalesce(situacao, '') <> 'Cancelado' → resultado PNCP cancelado não conta; situacao NULL conta
+export const SITUACAO_CANCELADO = "Cancelado";
+export function contaComoVenda(r: { vencedor?: boolean | null; situacao?: string | null }): boolean {
+  return r.vencedor !== false && (r.situacao ?? "") !== SITUACAO_CANCELADO;
+}
+
 // ---------------------------------------------------------------- filtro CATMAT (PDM / item / UF)
 
 /**
@@ -198,6 +207,8 @@ async function handleGet(db: SupabaseClient, p: Record<string, unknown>): Promis
     db.from("licitacao_resultados")
       .select("licitacao_id,numero_item,valor_total_homologado,valor_unitario_homologado,quantidade_homologada,marca,modelo,data_resultado,licitacoes_externas(id,fonte,codigo_externo,numero_edital,numero_processo,objeto,modalidade,orgao_nome,uf,municipio,data_homologacao,valor_total)")
       .eq("fornecedor_cnpj", cnpj)
+      .not("vencedor", "is", false) // vencedor is distinct from false (NULL do PNCP entra)
+      .or(`situacao.is.null,situacao.neq.${SITUACAO_CANCELADO}`) // coalesce(situacao,'') <> 'Cancelado'
       .order("data_resultado", { ascending: false })
       .limit(500),
     db.from("homologacoes_itens")
@@ -322,7 +333,7 @@ async function handleOrgaoGet(db: SupabaseClient, p: Record<string, unknown>): P
   if (!orgao) return json({ error: "Órgão não encontrado" }, 404);
 
   let lq = db.from("licitacoes_externas")
-    .select("id,fonte,codigo_externo,numero_edital,numero_processo,objeto,modalidade,situacao,status_normalizado,unidade_compradora,valor_total,data_publicacao,data_homologacao,licitacao_resultados(fornecedor_cnpj,fornecedor_nome,valor_total_homologado)")
+    .select("id,fonte,codigo_externo,numero_edital,numero_processo,objeto,modalidade,situacao,status_normalizado,unidade_compradora,valor_total,data_publicacao,data_homologacao,licitacao_resultados(fornecedor_cnpj,fornecedor_nome,valor_total_homologado,vencedor,situacao)")
     .order("data_publicacao", { ascending: false, nullsFirst: false })
     .limit(200);
   lq = orgao.cnpj ? lq.eq("orgao_cnpj", orgao.cnpj) : lq.is("orgao_cnpj", null);
@@ -334,7 +345,12 @@ async function handleOrgaoGet(db: SupabaseClient, p: Record<string, unknown>): P
   const fornecedores = new Map<string, { cnpj: string; nome: string; valor: number; editais: Set<number> }>();
   // deno-lint-ignore no-explicit-any
   const licitacoes = (lics ?? []).map((l: any) => {
-    const res = (l.licitacao_resultados ?? []) as Array<{ fornecedor_cnpj: string; fornecedor_nome: string; valor_total_homologado: number }>;
+    // Só resultado que conta como venda (sem lance perdedor nem resultado cancelado) entra em valor, vencedores e
+    // fornecedores. O filtro é aqui (e não no embed) para a licitação continuar listada mesmo sem vencedor válido.
+    const res = ((l.licitacao_resultados ?? []) as Array<{
+      fornecedor_cnpj: string; fornecedor_nome: string; valor_total_homologado: number;
+      vencedor: boolean | null; situacao: string | null;
+    }>).filter(contaComoVenda);
     for (const r of res) {
       if (!r.fornecedor_cnpj) continue;
       const f = fornecedores.get(r.fornecedor_cnpj) ?? { cnpj: r.fornecedor_cnpj, nome: r.fornecedor_nome, valor: 0, editais: new Set<number>() };

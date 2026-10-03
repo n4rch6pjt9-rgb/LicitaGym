@@ -1,18 +1,21 @@
--- Verificação (SOMENTE LEITURA) da migration 20260929170537_views_valor_nulo_orgao_sem_cnpj.
+-- Verificação (SOMENTE LEITURA) das migrations 20260929181500_views_valor_nulo_orgao_sem_cnpj e
+-- 20261002205000_views_resultado_cancelado.
 -- Só SELECT; não grava nada. O único estado tocado é um parâmetro de sessão (set_config 'views_check.*', some ao
 -- fechar a conexão) que leva o resultado da consulta 1 até o bloco 2. Roda como postgres ou service_role (usa
 -- public.norm_txt, cujo EXECUTE é só desses papéis desde a 20260929145232). Ex.:
 --   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/tests/views_valor_nulo_orgao_sem_cnpj_check.sql
--- Também roda inteiro no SQL Editor do Supabase. A consulta 1 lista as 13 regras (falhas primeiro); o bloco 2
+-- Também roda inteiro no SQL Editor do Supabase. A consulta 1 lista as 14 regras (falhas primeiro); o bloco 2
 -- levanta EXCEPTION se alguma falhou (psql com ON_ERROR_STOP=1 sai com código != 0).
 --
 -- As regras são invariantes calculados a partir das tabelas, então valem para qualquer conteúdo (inclusive banco
 -- vazio, onde só as regras de definição têm efeito). Nenhum dado real é citado aqui.
--- "Resultado válido" = linha de licitacao_resultados com vencedor distinto de false (true ou NULL); lance
--- perdedor = vencedor = false (coletor Paradigma), que não pode contar em nenhuma das três views.
+-- "Resultado válido" = linha de licitacao_resultados com vencedor distinto de false (true ou NULL) e situacao
+-- distinta de 'Cancelado' (NULL conta); lance perdedor = vencedor = false (coletor Paradigma) e resultado PNCP
+-- cancelado não podem contar em nenhuma das três views.
 --   D1  orgaos_compradores, fornecedores_homologados e homologacoes_itens com security_invoker=true
 --   D2  nem orgaos_compradores nem fornecedores_homologados têm "COALESCE(sum(" nem "COALESCE(res.valor_homologado"
 --   D3  as três definições têm "vencedor IS DISTINCT FROM false" (o filtro não depende de haver dado de teste)
+--   D4  as três definições excluem situacao 'Cancelado' tratando NULL ("COALESCE(r.situacao, ''::text) <> 'Cancelado'")
 --   O1  cada grupo sem CNPJ esperado (fonte + nome normalizado, nome = orgao_nome ou unidade_compradora) aparece
 --       em exatamente uma linha da view, com id 'sem-cnpj:<fonte>:<md5>' e qtd_licitacoes igual à contagem
 --   O2  a view não tem linha sem CNPJ além das esperadas (grupos diferentes não colapsam num id só)
@@ -26,7 +29,7 @@
 --       válido do fornecedor tem valor; igual à soma dos resultados válidos
 --   W1  fornecedores_homologados: exatamente os CNPJs com ao menos um resultado válido (fornecedor só com lances
 --       perdedores não aparece), com qtd_itens e qtd_editais contados só sobre resultados válidos
---   W2  homologacoes_itens: nenhuma linha de resultado com vencedor = false; todo resultado válido aparece
+--   W2  homologacoes_itens: nenhuma linha de resultado com vencedor = false ou cancelado; todo resultado válido aparece
 --   W3  orgaos_compradores: qtd_homologadas e qtd_fornecedores_vencedores contados só sobre resultados válidos
 
 -- 0) Zera o resultado de uma execução anterior na mesma sessão.
@@ -44,7 +47,8 @@ base as (
   from public.licitacoes_externas le
 ),
 res_valido as (
-  select r.* from public.licitacao_resultados r where r.vencedor is distinct from false
+  select r.* from public.licitacao_resultados r
+   where r.vencedor is distinct from false and coalesce(r.situacao, '') <> 'Cancelado'
 ),
 esperado_sem_cnpj as (
   select 'sem-cnpj:' || fonte || ':' || md5(btrim(regexp_replace(public.norm_txt(nome_org), '\s+', ' ', 'g'))) as id,
@@ -97,6 +101,11 @@ checks(regra, descricao, falhas) as (
           where to_regclass(v.o) is null
              or pg_get_viewdef(to_regclass(v.o), true) not ilike '%vencedor is distinct from false%')
   union all
+  select 'D4', 'definição sem o filtro de situacao Cancelado com NULL tratado',
+         (select count(*) from views3 v
+          where to_regclass(v.o) is null
+             or pg_get_viewdef(to_regclass(v.o), true) not ilike '%coalesce(r.situacao, ''''::text) <> ''Cancelado''::text%')
+  union all
   select 'O1', 'grupo sem CNPJ esperado ausente ou com qtd_licitacoes diferente',
          (select count(*) from esperado_sem_cnpj e
            where (select count(*) from oc where oc.id = e.id and oc.cnpj is null and oc.qtd_licitacoes = e.n) <> 1)
@@ -131,10 +140,10 @@ checks(regra, descricao, falhas) as (
            where fh.cnpj is null or f.cnpj is null
               or fh.qtd_itens is distinct from f.qtd_itens or fh.qtd_editais is distinct from f.qtd_editais)
   union all
-  select 'W2', 'homologacoes_itens: linha de lance perdedor (vencedor = false) ou resultado válido ausente',
+  select 'W2', 'homologacoes_itens: linha de lance perdedor (vencedor = false) ou cancelado, ou resultado válido ausente',
          (select count(*) from public.homologacoes_itens hi
             join public.licitacao_resultados r on r.id = hi.resultado_id
-           where r.vencedor = false)
+           where r.vencedor = false or coalesce(r.situacao, '') = 'Cancelado')
          + (select count(*) from res_valido r
              where not exists (select 1 from public.homologacoes_itens hi where hi.resultado_id = r.id))
   union all
@@ -161,11 +170,11 @@ begin
   if v_regras is null then
     raise exception 'VIEWS CHECK: consulta 1 não rodou nesta sessão';
   end if;
-  if v_regras <> 13 then
-    raise exception 'VIEWS CHECK FALHOU: % regras em vez de 13', v_regras;
+  if v_regras <> 14 then
+    raise exception 'VIEWS CHECK FALHOU: % regras em vez de 14', v_regras;
   end if;
   if coalesce(v_falhas, '') <> '' then
     raise exception 'VIEWS CHECK FALHOU: regras violadas: % (ver consulta 1)', v_falhas;
   end if;
-  raise notice 'VIEWS CHECK OK: 13/13 regras (lance perdedor não conta; órgão sem CNPJ separado por fonte/nome; valor ausente = NULL)';
+  raise notice 'VIEWS CHECK OK: 14/14 regras (lance perdedor e resultado cancelado não contam; órgão sem CNPJ separado por fonte/nome; valor ausente = NULL)';
 end $$;

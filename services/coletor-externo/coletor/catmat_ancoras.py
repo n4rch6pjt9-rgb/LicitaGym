@@ -63,7 +63,7 @@ _SINONIMOS.update({v: k for k, v in list(_SINONIMOS.items())})
 _CONECTIVOS = frozenset({"a", "com", "da", "das", "de", "do", "dos", "e", "em", "o", "p", "para", "uso"})
 # "MAT. ESPORTIVO - APITO" (compra 88) e "(ID131043) LEG PRESS" (compra 2213): decisão de 03/10/2026 19:47 BRT
 _ENCHIMENTO = ("item|itens|lote|lotes|cota|catmat|kit|kits|par|pares|jogo|jogos|conjunto|conjuntos|unico|principal|"
-               "reservada|ampla|mat(?=\.)|material|materiais|esportivo|esportivos|contendo|unidades|unidade|pecas|no|n|com|"
+               "reservada|ampla|mat(?=\\.)|material|materiais|esportivo|esportivos|contendo|unidades|unidade|pecas|no|n|com|"
                "de|id[0-9]+|[ivxl]+|[0-9]+[a-z]{0,2}|[a-z]{2}[0-9]{7}")
 _PREFIXO = re.compile(r"^[^a-z0-9]*(?:(?:" + _ENCHIMENTO + r")[^a-z0-9]+)*")
 JANELA = 11

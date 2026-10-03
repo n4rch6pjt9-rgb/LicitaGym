@@ -11,7 +11,9 @@ from pathlib import Path
 import sys
 import time
 from typing import Any, Dict, List, Optional
+from scripts.lib.http_client import clamp_compras_gov_page_size
 from scripts.lib.http_fetch import fetch_json, HttpFetchError
+from scripts.lib.paginacao import acao_pagina
 from scripts.lib.sync_state import SyncStateManager, is_sync_resume_enabled
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -37,10 +39,10 @@ def load_items_e4():
     except Exception as e:
         logger.error(f"Erro ao carregar E4: {e}")
 
-def fetch_material(codigo_item: Optional[int] = None, pagina: int = 1) -> Dict[str, Any]:
+def fetch_material(codigo_item: Optional[int] = None, pagina: int = 1, tamanho_pagina: int = 100) -> Dict[str, Any]:
     """Consulta Material em Pesquisa de Preço"""
     url = f"{BASE_URL}{ENDPOINT_MATERIAL}"
-    params = {"pagina": pagina, "tamanhoPagina": 500}
+    params = {"pagina": pagina, "tamanhoPagina": clamp_compras_gov_page_size(tamanho_pagina)}
 
     if codigo_item:
         params["codigoItem"] = codigo_item
@@ -67,6 +69,28 @@ def fetch_detalhe(codigo_material: int) -> Dict[str, Any]:
         raise_for_status=True,
         legacy_empty_envelope_key="resultado",
     )
+
+def _paginar_materiais(codigo_item: int) -> List[Dict]:
+    """Pesquisa de preço não traz total em toda resposta: segue até página vazia ou total confirmado."""
+    materiais: List[Dict] = []
+    pagina = 1
+    tamanho = clamp_compras_gov_page_size(100)
+    vistos: set[str] = set()
+    lidos = 0
+    while True:
+        resp = fetch_material(codigo_item=codigo_item, pagina=pagina, tamanho_pagina=tamanho)
+        lote = resp.get("resultado") if isinstance(resp, dict) else None
+        parar, incluir = acao_pagina(
+            lote, resp if isinstance(resp, dict) else {},
+            tamanho=tamanho, pagina=pagina, vistos=vistos, logger=logger, ja_lidos=lidos,
+        )
+        if incluir and lote:
+            lidos += len(lote)
+            materiais.extend(lote)
+        if not incluir or parar:
+            return materiais
+        pagina += 1
+
 
 def collect_pesquisa_preco(
     items_e4: Optional[List[int]] = None,
@@ -126,7 +150,7 @@ def collect_pesquisa_preco(
             logger.info(f"[{i}/{total_items}] processando item {codigo_item}...")
 
         try:
-            resp = fetch_material(codigo_item=codigo_item)
+            materiais = _paginar_materiais(codigo_item)
         except Exception as e:
             sync_manager.record_partial_failure(
                 e,
@@ -145,7 +169,6 @@ def collect_pesquisa_preco(
             })
             raise
 
-        materiais = resp.get("resultado", [])
         novos_detalhes_count = 0
 
         if materiais:

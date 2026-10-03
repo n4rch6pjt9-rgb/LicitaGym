@@ -1,4 +1,4 @@
--- Checagem dos jobs do sync CATMAT por catálogo (migration 20261003230000).
+-- Checagem dos jobs do sync CATMAT por catálogo (migration 20261004000000).
 -- pg_cron não existe no Postgres descartável da validação: nesse caso a checagem
 -- só avisa. No Supabase (depois de aplicar a migration) os jobs precisam existir
 -- e o comando não pode carregar segredo.

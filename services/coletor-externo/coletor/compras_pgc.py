@@ -21,7 +21,9 @@ from typing import Any
 
 import requests
 
+from .compras_api import corpo_json, erro_http
 from .destino import Supabase, env
+from .paginacao import TAMANHO_PAGINA_MAX, avaliar_pagina, clamp_tamanho, pagina_repetida
 from .retry import espera_retry
 
 log = logging.getLogger("coletor.compras_pgc")
@@ -127,23 +129,26 @@ class ClienteComprasPGC:
         self.s = sessao or requests.Session()
         self.s.headers.update({"User-Agent": UA, "Accept": "application/json"})
 
-    def consultar_classe(self, classe: int, ano: int, pagina: int = 1, tamanho_pagina: int = 500) -> dict[str, Any]:
+    def consultar_classe(self, classe: int, ano: int, pagina: int = 1, tamanho_pagina: int = TAMANHO_PAGINA_MAX) -> dict[str, Any]:
         url = f"{BASE_URL}{ENDPOINT}"
         params = {
             "anoPcaProjetoCompra": ano,
             "tipo": "Material",
             "codigo": classe,
             "pagina": pagina,
-            "tamanhoPagina": min(500, max(10, tamanho_pagina)),
+            "tamanhoPagina": clamp_tamanho(tamanho_pagina, padrao=TAMANHO_PAGINA_MAX, minimo=10,
+                                           maximo=TAMANHO_PAGINA_MAX),
         }
+        contexto = f"PGC classe {classe} ano {ano} pagina {pagina}"
         for tentativa in range(1, 4):
             try:
                 time.sleep(self.delay)
                 r = self.s.get(url, params=params, timeout=self.timeout)
                 if r.status_code == 200:
-                    return r.json()
+                    return corpo_json(r, contexto)
                 if r.status_code == 404:
-                    return {"resultado": [], "totalRegistros": 0}
+                    log.warning("HTTP 404 em %s; não é fim de coleta", contexto)
+                    raise erro_http(r, contexto)
                 if r.status_code in (429, 502, 503, 504):
                     if tentativa == 3:
                         raise RuntimeError(f"HTTP {r.status_code} esgotado em PGC classe {classe}")
@@ -176,17 +181,27 @@ def coletar(
     for ano in anos:
         for classe in classes:
             pagina = 1
+            paginas_vistas: set[str] = set()
+            lidos = 0
             while True:
                 log.info("Consultando PGC classe %d ano %d pagina %d...", classe, ano, pagina)
                 try:
-                    resp = cliente.consultar_classe(classe, ano, pagina=pagina, tamanho_pagina=500)
+                    resp = cliente.consultar_classe(classe, ano, pagina=pagina, tamanho_pagina=TAMANHO_PAGINA_MAX)
                 except Exception as e:
                     log.error("Erro ao buscar classe %d ano %d pagina %d: %s", classe, ano, pagina, e)
                     erros += 1
                     break
 
-                itens = resp.get("resultado") or []
-                if not itens:
+                if not isinstance(resp, dict) or not isinstance(resp.get("resultado"), list):
+                    log.warning("PGC classe %d ano %d página %d: resposta inesperada; não é fim de coleta",
+                                classe, ano, pagina)
+                    erros += 1
+                    break
+                itens = resp["resultado"]
+                if pagina_repetida(itens, paginas_vistas) and itens:
+                    log.warning("PGC classe %d ano %d página %d: conteúdo repetido; não é fim de coleta",
+                                classe, ano, pagina)
+                    erros += 1
                     break
 
                 linhas_norm = []
@@ -223,8 +238,13 @@ def coletar(
                         "amostras": amostras,
                     }
 
-                total_regs = resp.get("totalRegistros") or 0
-                if pagina * 500 >= total_regs or len(itens) < 500:
+                lidos += len(itens)
+                decisao = avaliar_pagina(
+                    itens, tamanho=TAMANHO_PAGINA_MAX, pagina=pagina, corpo=resp, acumulado=lidos,
+                )
+                if decisao.aviso:
+                    log.warning("PGC classe %d ano %d página %d: %s", classe, ano, pagina, decisao.aviso)
+                if decisao.encerrar:
                     break
                 pagina += 1
 

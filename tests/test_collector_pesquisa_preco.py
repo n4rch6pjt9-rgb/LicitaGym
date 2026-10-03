@@ -119,7 +119,7 @@ def test_collect_pesquisa_preco_partial_failure_and_resume(tmp_path):
     assert checkpoint.total_records == 1
 
     # Resume item 2: returns material and detail, verifying accumulation
-    payload_mat_2 = {"resultado": [{"codigoMaterial": 200, "codigoItem": 2}]}
+    payload_mat_2 = {"resultado": [{"codigoMaterial": 200, "codigoItem": 2}], "totalRegistros": 1}
     payload_det_2 = {"resultado": [{"codigoMaterial": 200, "preco": 500.0}]}
     with patch("urllib.request.urlopen", side_effect=[DummyHttpResponse(payload_mat_2), DummyHttpResponse(payload_det_2)]):
         with patch("time.sleep"):

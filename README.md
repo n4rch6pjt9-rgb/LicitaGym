@@ -60,24 +60,17 @@ python3 -m coletor.processo_edital --dry-run    # completa processos curtos ("4"
 Busca nacional no PNCP por frase exata (por padrão os 160 termos de `TERMOS_ESCOPO_COMPLETO`; `--termos-padrao` = 12 termos), classifica cada compra
 pelo objeto **e pelos itens** (`coletor/escopo.py`) e grava compra, itens, **vencedores** e arquivos.
 
-Três modos, em ordem de prioridade comercial (o modo só escolhe o filtro `status` da busca):
+Três modos. O modo só escolhe o filtro `status` da busca no PNCP; não define sozinho a prioridade gravada.
 
-| Modo | Status da busca | Uso |
+| Modo | Filtro PNCP | Prioridade |
 |---|---|---|
-| `leads` (padrão) | `recebendo_proposta` | certame aberto: ainda dá para disputar |
-| `monitorar` | `em_julgamento` | propostas encerradas, sem resultado: acompanhar até sair o vencedor |
-| `historico` | `encerradas` | homologadas/com resultado/revogadas/anuladas/desertas: preço, vencedor e RAG |
+| `leads` (padrão) | `recebendo_proposta` | recebendo proposta |
+| `monitorar` | `em_julgamento` | em julgamento, suspensa, adjudicação ou recurso |
+| `historico` | `encerradas` | encerrada ou homologada |
 
-**`licitacoes_externas.prioridade` vem do estado de cada compra, não do modo** (decisão do owner, 29/09/2026 —
-**compra homologada não é lead**). `prioridade_da_compra()` em `coletor/pncp.py`:
-`historico` se há homologação/resultado (`data_homologacao`, `tem_resultado`/`existeResultado`, item homologado,
-`valorTotalHomologado`) ou a compra está encerrada (revogada, anulada, cancelada, deserta, fracassada, todos os
-itens finalizados); `monitorar` se suspensa ou se o prazo de proposta (`data_fim_vigencia` /
-`dataEncerramentoProposta`) já passou sem resultado; `leads` se o prazo ainda está aberto. Sem prazo nem
-resultado, vale o status da busca; sem isso a coluna não é gravada. O estado derivado vence: uma compra
-encerrada vira `historico` mesmo que já estivesse gravada como lead. O filtro `status` do PNCP é ruidoso
-(`em_julgamento` devolve compras ainda abertas, com resultado e anuladas), por isso ele é só o último recurso.
-A janela de 120 dias de homologação do antigo modo `leads` saiu; `--dias`/`--margem-publicacao` são aceitos e ignorados.
+**Prioridade** (owner, 02/10/2026): `leads` = recebendo proposta; `monitorar` = em julgamento, suspensa, adjudicação ou recurso; `historico` = encerrada ou homologada. Status desconhecido nunca vira lead. Falha de API ou documento ausente não pode gravar `encerradas`/`historico` nem promover a `leads`. Compra homologada não é lead.
+
+Preço por item CATMAT, marca e mapa de fornecedor (revenda ou fabricante) saem só de certames homologados, ficam só no BI e são rastreáveis pelo certame. Revogada, anulada, deserta ou fracassada não alimentam esse mapa.
 
 ```bash
 # schema: supabase/migrations/20260924100000_pncp_itens_resultados.sql (via supabase db push)
@@ -140,12 +133,14 @@ Também entram:
 - **Grama sintética** (classe 7220, PDM 18481) e **piso sintético esportivo** (PDM 10779, só com texto
   esportivo/borracha — o PDM é majoritariamente piso vinílico comum);
 - **Borracha granulada** (classe 9320, PDM 9461, item CATMAT 150846) — raspa, granulado, SBR, EPDM;
-- **Obras de quadra/campo society/academia ao ar livre com grama sintética ou piso emborrachado**
-  (categoria `obra_piso`). A borracha do infill costuma vir na especificação técnica da obra.
+- Academia ao ar livre só conta junto com piso (o produto). Obra, credenciamento, locação, manutenção
+  (inclusive com fornecimento de peças) e oficineiros nunca viram lead.
 - Recreação infantil (parque infantil, playground).
 
 `interesse_borracha(objeto)` marca as licitações onde o vencedor vai precisar de raspa/granulado.
-Obras sem grama/piso (ex.: cobertura de quadra), serviços de evento, uniformes e troféus ficam fora.
+Serviço de evento, uniforme e troféu ficam fora. Um termo de busca sozinho não torna a linha `forte`.
+Polia e espaldar são `forte`. Pilates, "aparelho para condicionamento físico" genérico e colchonete são `fraco`.
+`Puxador` é positivo só na categoria acessórios.
 O coletor usa `--escopo fitness` por padrão (`--escopo tudo` desliga o filtro).
 
 ## 1. Criar as tabelas (uma vez)
@@ -220,7 +215,7 @@ de maior valor para o RAG. Ligue `proposta`/`negociacao` quando quiser preços.
   mas o recomendado é fazer o cadastro com os dados da empresa responsável
   pelo LicitaGym para ficar em conformidade com o portal.
 - **LGPD:** nos cadastros estruturados só CNPJ é gravado. No RAG, CPF e CNPJ
-  que aparecem nos editais são dados públicos e são indexados sem máscara
+  que aparecem nos editais são dados públicos e são indexados sem máscara, nem descartados
   (decisão de 01/10/2026).
 - **Limites de taxa:** mantenha `DELAY_SEGUNDOS` ≥ 1 e rode fora do horário comercial.
 
@@ -246,7 +241,7 @@ python3 -m coletor.buscar "Por que a Freedom Motors recorreu e qual foi a decis�
   fornecedores, decisão, motivos, fundamentos legais, valores, pontos-chave) e um trecho-resumo.
 - Embeddings: `text-multilingual-embedding-002` (lotes de até 30 trechos, 1 chamada a cada 12,5 s), 768 dimensões, `RETRIEVAL_DOCUMENT` (consulta usa `RETRIEVAL_QUERY`).
   Cada chunk grava o modelo em `licitacao_chunks.embedding_model` (padrão da coluna: o mesmo modelo).
-- Modelos configuráveis: `EMBED_MODEL`, `GEN_MODEL` (padrão `gemini-2.5-flash`), `GOOGLE_CLOUD_LOCATION` (padrão `us-central1`).
+- `GEN_MODEL` (padrão `gemini-2.5-flash`) e `GOOGLE_CLOUD_LOCATION` (padrão `us-central1`) são configuráveis. O embedding do RAG permanece `text-multilingual-embedding-002` com 768 dimensões; trocar o modelo exige um plano de reindex aprovado. Não apontar `EMBED_MODEL` para outro modelo sem esse plano.
 
 **Cota do Vertex (projeto novo):** o modelo de embeddings começa com **5 requisições/min**
 por região. O indexador já respeita isso (`EMBED_INTERVALO=12.5`). Para acelerar, peça aumento em

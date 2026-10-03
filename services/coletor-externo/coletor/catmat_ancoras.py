@@ -31,6 +31,7 @@ log = logging.getLogger("coletor.catmat_ancoras")
 
 TABELA_ITENS = "catmat_item_pdm"
 PAGINA = 100   # regra dos coletores Python: no máximo 100 linhas por página
+MAX_PAGINAS = 200   # 20 mil itens por bloco de PDMs: muito acima dos ~660 do catálogo de hoje
 MODOS = ("nucleo", "estrito")
 
 _MAI = "A-ZÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÛÜÇ0-9"
@@ -231,10 +232,11 @@ def _inteiro(v) -> int | None:
 
 def ler_itens_catalogo(sb, pdms: Iterable[int], itens_avulsos: Iterable[int] = ()) -> list[dict]:
     """codigo_item, codigo_pdm, descricao de catmat_item_pdm dos PDMs do catálogo e dos itens avulsos (GET, 100 por
-    página). Falha de leitura ou linha fora do contrato -> AncorasIndisponiveis."""
+    página). Falha de leitura ou linha fora do contrato -> AncorasIndisponiveis.
+    Só a página vazia encerra (página curta não, como em coletor/paginacao.py, PR #211); teto de páginas contra laço."""
     def paginar(**filtro) -> list[dict]:
         linhas: list[dict] = []
-        while True:
+        for _ in range(MAX_PAGINAS):
             try:
                 lote = sb.selecionar(TABELA_ITENS, select="codigo_item,codigo_pdm,descricao", order="codigo_item.asc",
                                      limit=str(PAGINA), offset=str(len(linhas)), **filtro)
@@ -242,9 +244,12 @@ def ler_itens_catalogo(sb, pdms: Iterable[int], itens_avulsos: Iterable[int] = (
                 raise AncorasIndisponiveis(f"{TABELA_ITENS} falhou: {e}") from e
             if not isinstance(lote, list):
                 raise AncorasIndisponiveis(f"{TABELA_ITENS} respondeu {type(lote).__name__}, esperado lista")
-            linhas.extend(lote)
-            if len(lote) < PAGINA:
+            if not lote:
                 return linhas
+            if len(lote) > PAGINA:
+                raise AncorasIndisponiveis(f"{TABELA_ITENS}: página com {len(lote)} linhas (máximo {PAGINA})")
+            linhas.extend(lote)
+        raise AncorasIndisponiveis(f"{TABELA_ITENS}: passou de {MAX_PAGINAS} páginas sem página vazia")
 
     pdms, avulsos = sorted(set(pdms)), sorted(set(itens_avulsos))
     brutos = []

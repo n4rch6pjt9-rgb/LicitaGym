@@ -103,7 +103,8 @@ class _SB:
                 raise self.erro_regras
             return self.regras_item
         if tabela == "catmat_item_pdm":
-            return self.itens_catalogo
+            o = int(filtros.get("offset", 0))
+            return self.itens_catalogo[o:o + int(filtros.get("limit", 100))]
         return self.mapa
 
     def rpc(self, funcao, params):
@@ -201,7 +202,7 @@ def test_leitura_mapa_catmat_so_le():
         with pytest.raises(PermissionError):
             getattr(leitor, escrita)
     assert [c[0] for c in sb.chamadas] == ["rpc/catmat_itens_mapa", "catalogo_catmat_pdms_efetivos",
-                                           "catalogo_empresa_catmat", "catmat_item_pdm"]
+                                           "catalogo_empresa_catmat", "catmat_item_pdm", "catmat_item_pdm"]
 
 
 # --- main: o mapa é carregado antes de gravar; dry-run usa a mesma regra; falha com banco aborta ---

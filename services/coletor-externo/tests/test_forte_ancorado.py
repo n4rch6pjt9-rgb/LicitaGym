@@ -120,8 +120,25 @@ def test_le_itens_100_por_pagina_e_pdms_em_blocos_de_50():
     out = A.ler_itens_catalogo(sb, range(1, 61))
     assert len(out) == 250
     assert all(f["limit"] == "100" for _, f in sb.chamadas)
-    assert [f["offset"] for _, f in sb.chamadas] == ["0", "100", "200", "0"]   # 1º bloco (50 PDMs): 3 páginas
+    # 1º bloco (PDMs 1-50, 210 itens): 3 páginas + a vazia; 2º bloco (PDMs 51-60, 40 itens): 1 + a vazia
+    assert [f["offset"] for _, f in sb.chamadas] == ["0", "100", "200", "210", "0", "40"]
     assert all(t == "catmat_item_pdm" for t, _ in sb.chamadas)
+
+
+def test_pagina_maior_que_100_ou_sem_fim_falha_fechado(monkeypatch):
+    class _Cheio:
+        def selecionar(self, tabela, **f):
+            return [{"codigo_item": i, "codigo_pdm": 1, "descricao": "X"} for i in range(int(f["limit"]) + 1)]
+
+    class _SemFim:
+        def selecionar(self, tabela, **f):
+            o = int(f["offset"])
+            return [{"codigo_item": o + i + 1, "codigo_pdm": 1, "descricao": "X"} for i in range(100)]
+    with pytest.raises(A.AncorasIndisponiveis, match="máximo 100"):
+        A.ler_itens_catalogo(_Cheio(), [1])
+    monkeypatch.setattr(A, "MAX_PAGINAS", 3)
+    with pytest.raises(A.AncorasIndisponiveis, match="sem página vazia"):
+        A.ler_itens_catalogo(_SemFim(), [1])
 
 
 def test_pdm_efetivo_sem_itens_falha_fechado():

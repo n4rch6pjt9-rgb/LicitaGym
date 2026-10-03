@@ -5,8 +5,9 @@ NÚCLEO, uma âncora de PDM ou de item incluído no catálogo da empresa. As lis
 promover a "forte" (no máximo "fraco"); piso, borracha e obra_piso seguem como estão. Dry-run em produção
 (TAXONOMIA-DRYRUN-RESULTADOS.md, 18:44-18:51 BRT): 529 das 632 compras leads/monitorar casam no modo núcleo.
 
-De onde vêm as âncoras: dos itens CATMAT do catálogo efetivo gravados em catmat_item_pdm (tabela que a api-catmat
-já hidrata; nenhuma tabela nova), mais os itens incluídos avulsos. A descrição do item é quebrada em nome (cabeça)
+De onde vêm as âncoras: dos itens CATMAT do catálogo efetivo segundo catmat_itens_mapa() (catmat_item_pdm + espelho
+catalogo_itens + catmat_itens; nenhuma tabela nova), mais os itens incluídos avulsos; texto de catmat_itens ou do
+espelho (ler_itens_catalogo). A descrição do item é quebrada em nome (cabeça)
 e atributos ("ANILHA, MATERIAL: FERRO, COR: PRETA" -> ANILHA + MATERIAL=FERRO, COR=PRETA), e cada item gera:
   - cabeca: o nome do item (e as partes de "A / B" e "A - B"), ex.: "corda de pular", "caneleira";
   - atributo_tipo: o TIPO, quando a cabeça é genérica ("APARELHO / EQUIPAMENTO ..."), ex.: "cadeira extensora";
@@ -29,7 +30,9 @@ from dataclasses import dataclass, field
 
 log = logging.getLogger("coletor.catmat_ancoras")
 
-TABELA_ITENS = "catmat_item_pdm"
+RPC_ITENS = "rpc/catmat_itens_mapa"   # quais itens (codigo_item, codigo_pdm); GET na RPC, como o MapaCatmat
+# de onde vem a descrição (a RPC não traz): (tabela, coluna do código, coluna do texto), em ordem de preferência
+FONTES_DESCRICAO = (("catmat_itens", "codigo_item", "descricao_item"), ("catalogo_itens", "codigo_catmat", "descricao"))
 PAGINA = 100   # regra dos coletores Python: no máximo 100 linhas por página
 MAX_PAGINAS = 200   # 20 mil itens por bloco de PDMs: muito acima dos ~660 do catálogo de hoje
 MODOS = ("nucleo", "estrito")
@@ -49,10 +52,19 @@ _TIPO_FRACO = frozenset({
 GENERICOS = frozenset({
     "bola", "mesa", "corda", "cinto", "estante", "suporte", "esteira", "banco", "escada", "aparelho", "equipamento",
     "piso", "grama", "borracha", "cama", "bicicleta", "cadeira", "extensor", "material"})
+# Decisões do Marcelo (03/10/2026, 19:47 BRT), sem gravar no banco:
+# - âncoras que não dão "forte": "gangorra" (TIPO do item 353216, "APARELHO ... TIPO: GANGORRA, MODELO: PLATAFORMA
+#   VIBRATÓRIA") casava gangorra de parquinho (compras 331, 1024, 1359, 1380, 2264);
+ANCORAS_EXCLUIDAS = frozenset({"gangorra"})
+# - sinônimos de palavra da âncora: o catálogo diz "ESTEIRA ERGONÔMICA", a licitação diz "esteira ergométrica"
+#   (compras 790 e 1612). Vale nos dois sentidos.
+_SINONIMOS = {"ergonomica": "ergometrica", "ergonomico": "ergometrico"}
+_SINONIMOS.update({v: k for k, v in list(_SINONIMOS.items())})
 _CONECTIVOS = frozenset({"a", "com", "da", "das", "de", "do", "dos", "e", "em", "o", "p", "para", "uso"})
+# "MAT. ESPORTIVO - APITO" (compra 88) e "(ID131043) LEG PRESS" (compra 2213): decisão de 03/10/2026 19:47 BRT
 _ENCHIMENTO = ("item|itens|lote|lotes|cota|catmat|kit|kits|par|pares|jogo|jogos|conjunto|conjuntos|unico|principal|"
-               "reservada|ampla|material|materiais|esportivo|esportivos|contendo|unidades|unidade|pecas|no|n|com|de|"
-               "[ivxl]+|[0-9]+[a-z]{0,2}|[a-z]{2}[0-9]{7}")
+               "reservada|ampla|mat(?=\.)|material|materiais|esportivo|esportivos|contendo|unidades|unidade|pecas|no|n|com|"
+               "de|id[0-9]+|[ivxl]+|[0-9]+[a-z]{0,2}|[a-z]{2}[0-9]{7}")
 _PREFIXO = re.compile(r"^[^a-z0-9]*(?:(?:" + _ENCHIMENTO + r")[^a-z0-9]+)*")
 JANELA = 11
 _TR = str.maketrans("áàâãäéèêëíìîïóòôõöúùûüçÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÛÜÇ",
@@ -60,7 +72,7 @@ _TR = str.maketrans("áàâãäéèêëíìîïóòôõöúùûüçÁÀÂÃÄÉ�
 
 
 class AncorasIndisponiveis(RuntimeError):
-    """Itens do catálogo ilegíveis ou PDM efetivo sem itens em catmat_item_pdm (as âncoras ficariam incompletas)."""
+    """Itens do catálogo ilegíveis ou PDM efetivo sem itens (as âncoras ficariam incompletas)."""
 
 
 def _norm(s: str | None) -> str:
@@ -102,6 +114,9 @@ def variantes(w: str) -> frozenset[str]:
         v.add(w[:-1])
     if w.endswith("e") and len(w) > 4 and w[-2] in "rtl":
         v |= {w[:-1], w[:-1] + "es"}
+    for x in list(v):
+        if x in _SINONIMOS:
+            v |= {_SINONIMOS[x], _SINONIMOS[x] + "s"}
     return frozenset(x for x in v if x)
 
 
@@ -143,7 +158,7 @@ class Ancora:
 
 def gerar_ancoras(itens: Iterable[Mapping], pdms_catalogo: Iterable[int], itens_avulsos: Iterable[int] = (),
                   itens_excluidos: Iterable[int] = ()) -> list[Ancora]:
-    """itens: {codigo_item, codigo_pdm, descricao} de catmat_item_pdm. Só PDMs do catálogo efetivo (fora os itens
+    """itens: {codigo_item, codigo_pdm, descricao} (ler_itens_catalogo). Só PDMs do catálogo efetivo (fora os itens
     excluídos) e itens avulsos. Inativos entram (a licitação descreve o produto, não o status no Compras.gov)."""
     efetivos, avulsos, excluidos = set(pdms_catalogo), set(itens_avulsos), set(itens_excluidos)
     sel = sorted((it for it in itens if it["codigo_item"] not in excluidos
@@ -152,7 +167,7 @@ def gerar_ancoras(itens: Iterable[Mapping], pdms_catalogo: Iterable[int], itens_
 
     def add(pdm, a, origem, item):
         a = a.strip()
-        if len(a) >= 4 and not a.isdigit():
+        if len(a) >= 4 and not a.isdigit() and a not in ANCORAS_EXCLUIDAS:
             res.setdefault((pdm, a), (origem, item))
 
     cabecas: dict[str, set[int]] = {}
@@ -230,53 +245,81 @@ def _inteiro(v) -> int | None:
     return int(s) if s.isdigit() and int(s) > 0 else None
 
 
-def ler_itens_catalogo(sb, pdms: Iterable[int], itens_avulsos: Iterable[int] = ()) -> list[dict]:
-    """codigo_item, codigo_pdm, descricao de catmat_item_pdm dos PDMs do catálogo e dos itens avulsos (GET, 100 por
-    página). Falha de leitura ou linha fora do contrato -> AncorasIndisponiveis.
-    Só a página vazia encerra (página curta não, como em coletor/paginacao.py, PR #211); teto de páginas contra laço."""
-    def paginar(**filtro) -> list[dict]:
-        linhas: list[dict] = []
-        for _ in range(MAX_PAGINAS):
-            try:
-                lote = sb.selecionar(TABELA_ITENS, select="codigo_item,codigo_pdm,descricao", order="codigo_item.asc",
-                                     limit=str(PAGINA), offset=str(len(linhas)), **filtro)
-            except Exception as e:
-                raise AncorasIndisponiveis(f"{TABELA_ITENS} falhou: {e}") from e
-            if not isinstance(lote, list):
-                raise AncorasIndisponiveis(f"{TABELA_ITENS} respondeu {type(lote).__name__}, esperado lista")
-            if not lote:
-                return linhas
-            if len(lote) > PAGINA:
-                raise AncorasIndisponiveis(f"{TABELA_ITENS}: página com {len(lote)} linhas (máximo {PAGINA})")
-            linhas.extend(lote)
-        raise AncorasIndisponiveis(f"{TABELA_ITENS}: passou de {MAX_PAGINAS} páginas sem página vazia")
+def _paginar(sb, tabela: str, **filtros) -> list[dict]:
+    """GET em páginas de 100 (limit/offset explícitos); só a página vazia encerra (página curta não, como em
+    coletor/paginacao.py, PR #211). Página com mais de 100 linhas ou mais de MAX_PAGINAS páginas -> falha."""
+    linhas: list[dict] = []
+    for _ in range(MAX_PAGINAS):
+        try:
+            lote = sb.selecionar(tabela, limit=str(PAGINA), offset=str(len(linhas)), **filtros)
+        except Exception as e:
+            raise AncorasIndisponiveis(f"{tabela} falhou: {e}") from e
+        if not isinstance(lote, list):
+            raise AncorasIndisponiveis(f"{tabela} respondeu {type(lote).__name__}, esperado lista")
+        if not lote:
+            return linhas
+        if len(lote) > PAGINA:
+            raise AncorasIndisponiveis(f"{tabela}: página com {len(lote)} linhas (máximo {PAGINA})")
+        if not all(isinstance(ln, dict) for ln in lote):
+            raise AncorasIndisponiveis(f"{tabela}: linha fora do contrato")
+        linhas.extend(lote)
+    raise AncorasIndisponiveis(f"{tabela}: passou de {MAX_PAGINAS} páginas sem página vazia")
 
+
+def _em(codigos) -> str:
+    return "in.(" + ",".join(str(c) for c in codigos) + ")"
+
+
+def ler_itens_catalogo(sb, pdms: Iterable[int], itens_avulsos: Iterable[int] = ()) -> list[dict]:
+    """[{codigo_item, codigo_pdm, descricao}] dos PDMs do catálogo e dos itens avulsos.
+    Quais itens: RPC catmat_itens_mapa() (GET rpc/catmat_itens_mapa, filtrada por codigo_pdm/codigo_item; junta
+    catmat_item_pdm, o espelho catalogo_itens e catmat_itens). A função só devolve (codigo_item, codigo_pdm), então a
+    descrição vem de FONTES_DESCRICAO, na ordem: catmat_itens.descricao_item (texto oficial da API do Compras.gov.br),
+    depois catalogo_itens.descricao (espelho). Decisão de 03/10/2026 (19:41 BRT): catmat_item_pdm não é lido direto
+    (em prod faltavam 11 PDMs nele). Tudo em GET de 100 por página. descricao None = item sem texto em nenhuma fonte
+    (não gera âncora; carregar_ancoras aborta se um PDM inteiro ficar assim)."""
     pdms, avulsos = sorted(set(pdms)), sorted(set(itens_avulsos))
-    brutos = []
+    brutos: list[dict] = []
     for i in range(0, len(pdms), 50):
-        brutos += paginar(codigo_pdm="in.(" + ",".join(map(str, pdms[i:i + 50])) + ")")
+        brutos += _paginar(sb, RPC_ITENS, select="codigo_item,codigo_pdm", codigo_pdm=_em(pdms[i:i + 50]),
+                           order="codigo_item.asc")
     for i in range(0, len(avulsos), 50):
-        brutos += paginar(codigo_item="in.(" + ",".join(map(str, avulsos[i:i + 50])) + ")")
-    vistos: dict[int, dict] = {}
+        brutos += _paginar(sb, RPC_ITENS, select="codigo_item,codigo_pdm", codigo_item=_em(avulsos[i:i + 50]),
+                           order="codigo_item.asc")
+    membros: dict[int, int] = {}
     for ln in brutos:
-        item, pdm = (_inteiro(ln.get(k)) if isinstance(ln, dict) else None for k in ("codigo_item", "codigo_pdm"))
+        item, pdm = _inteiro(ln.get("codigo_item")), _inteiro(ln.get("codigo_pdm"))
         if item is None or pdm is None:
-            raise AncorasIndisponiveis(f"{TABELA_ITENS}: linha inválida: {ln!r}")
-        vistos[item] = {"codigo_item": item, "codigo_pdm": pdm, "descricao": ln.get("descricao")}
-    return [vistos[k] for k in sorted(vistos)]
+            raise AncorasIndisponiveis(f"{RPC_ITENS}: linha inválida: {ln!r}")
+        membros[item] = pdm
+    descricao: dict[int, str] = {}
+    for tabela, col_codigo, col_texto in FONTES_DESCRICAO:
+        faltam = [c for c in sorted(membros) if c not in descricao]
+        for i in range(0, len(faltam), PAGINA):
+            for ln in _paginar(sb, tabela, select=f"{col_codigo},{col_texto}", order=f"{col_codigo}.asc",
+                               **{col_codigo: _em(faltam[i:i + PAGINA])}):
+                c, texto = _inteiro(ln.get(col_codigo)), ln.get(col_texto)
+                if c in membros and c not in descricao and isinstance(texto, str) and texto.strip():
+                    descricao[c] = texto
+    sem_texto = len(membros) - len(descricao)
+    if sem_texto:
+        log.warning("%d item(ns) do catálogo sem descrição em %s", sem_texto, ", ".join(f[0] for f in FONTES_DESCRICAO))
+    return [{"codigo_item": c, "codigo_pdm": membros[c], "descricao": descricao.get(c)} for c in sorted(membros)]
 
 
 def carregar_ancoras(sb, pdms_catalogo: Iterable[int], itens_avulsos: Iterable[int] = (),
                      itens_excluidos: Iterable[int] = (), modo: str = "nucleo") -> AncorasCatalogo:
-    """Lê os itens e gera as âncoras. PDM efetivo sem nenhum item em catmat_item_pdm -> AncorasIndisponiveis
-    (fail-closed: sem os itens o PDM inteiro deixaria de ser forte em silêncio; rode a carga dos itens antes)."""
+    """Lê os itens e gera as âncoras. PDM efetivo sem nenhum item com descrição em catmat_itens_mapa() ->
+    AncorasIndisponiveis (fail-closed: sem os itens o PDM inteiro deixaria de ser forte em silêncio)."""
     pdms = set(pdms_catalogo)
     itens = ler_itens_catalogo(sb, pdms, itens_avulsos)
-    com_itens = {it["codigo_pdm"] for it in itens}
+    com_itens = {it["codigo_pdm"] for it in itens if it["descricao"]}
     sem = sorted(pdms - com_itens)
     if sem:
-        raise AncorasIndisponiveis(f"{len(sem)} PDM(s) do catálogo efetivo sem itens em {TABELA_ITENS}: "
-                                   f"{', '.join(map(str, sem[:20]))}{'...' if len(sem) > 20 else ''}")
+        raise AncorasIndisponiveis(f"{len(sem)} PDM(s) do catálogo efetivo sem itens com descrição em "
+                                   f"catmat_itens_mapa(): {', '.join(map(str, sem[:20]))}"
+                                   f"{'...' if len(sem) > 20 else ''}")
+    itens = [it for it in itens if it["descricao"]]
     anc = gerar_ancoras(itens, pdms, itens_avulsos, itens_excluidos)
     log.info("Âncoras do catálogo: %d itens, %d âncoras em %d PDMs (modo %s)", len(itens), len(anc),
              len({a.codigo_pdm for a in anc}), modo)

@@ -9,10 +9,13 @@ Arquivos do diretório (cabeçalho na 1ª linha; vazio = NULL; booleanos t/f/tru
                           interesse_borracha, prioridade, fase, situacao (title vai para raw.title)
   itens.csv            -> licitacao_itens: id, licitacao_id, numero_item, descricao, material_ou_servico, situacao,
                           tem_resultado, categoria_escopo, interesse_borracha, catalogo_codigo_item, catalogo_id
-  mapa.csv             -> rpc/catmat_itens_mapa: codigo_item, codigo_pdm
+  mapa.csv             -> rpc/catmat_itens_mapa: codigo_item, codigo_pdm (dos PDMs efetivos e itens avulsos: é de
+                          onde saem os itens das âncoras)
   pdms_efetivos.csv    -> rpc catalogo_catmat_pdms_efetivos: codigo_pdm
   regras_item.csv      -> catalogo_empresa_catmat (nivel item): codigo_item, codigo_pdm, incluido
-  itens_catalogo.csv   -> catmat_item_pdm: codigo_item, codigo_pdm, descricao
+  catmat_itens.csv     -> catmat_itens: codigo_item, descricao_item (texto dos itens do mapa)
+  catalogo_itens.csv   -> catalogo_itens: codigo_catmat, descricao (espelho; texto de quem faltar em catmat_itens)
+Outros arquivos do diretório (E0_*.csv, _q/, itens_catalogo.csv antigo) são ignorados.
 """
 from __future__ import annotations
 
@@ -26,11 +29,14 @@ ARQUIVOS = {
     "rpc/catmat_itens_mapa": "mapa.csv",
     "catalogo_catmat_pdms_efetivos": "pdms_efetivos.csv",
     "catalogo_empresa_catmat": "regras_item.csv",
-    "catmat_item_pdm": "itens_catalogo.csv",
+    "catmat_itens": "catmat_itens.csv",
+    "catalogo_itens": "catalogo_itens.csv",
 }
 _INTEIROS = {"id", "licitacao_id", "numero_item", "codigo_item", "codigo_pdm", "catalogo_id"}
 _BOOLEANOS = {"interesse_borracha", "tem_resultado", "incluido"}
 _VAZIO_OK = {"licitacao_documentos"}   # sem documentos no export: só escopo (--so-escopo)
+# espelho catalogo_itens: só texto de reserva (catmat_itens vem antes); se faltar, as âncoras abortam pelo PDM sem texto
+OPCIONAIS = frozenset({"catalogo_itens"})
 
 
 def _valor(coluna: str, v: str | None):
@@ -68,6 +74,9 @@ class ClienteArquivos:
         for tabela, nome in ARQUIVOS.items():
             caminho = os.path.join(diretorio, nome)
             if not os.path.exists(caminho):
+                if tabela in OPCIONAIS:   # fonte só de reserva: sem o arquivo, nada vem dela
+                    self._tabelas[tabela] = []
+                    continue
                 raise FileNotFoundError(f"dry-run offline: falta {caminho}")
             with open(caminho, encoding="utf-8", newline="") as fh:
                 linhas = [{k: _valor(k, v) for k, v in ln.items()} for ln in csv.DictReader(fh)]

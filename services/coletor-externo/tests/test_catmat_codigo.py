@@ -83,16 +83,16 @@ def test_travas_do_objeto_valem_para_o_codigo():
     assert P.avaliar(obra, [_it(1, "ZZ ITEM 7", 480144, COMPRAS_GOV)], MAPA)[2][1][0] is None
 
 
-# itens do catálogo em catmat_item_pdm (âncoras do forte ancorado): um item por PDM efetivo dos testes
-ITENS_CATALOGO = [{"codigo_item": 480144, "codigo_pdm": 2640, "descricao": "ESTEIRA ERGOMÉTRICA, TIPO: ELÉTRICA"}]
+# texto dos itens do catálogo (âncoras do forte ancorado): catmat_itens.descricao_item dos itens do mapa
+DESCRICOES = {480144: "ESTEIRA ERGOMÉTRICA, TIPO: ELÉTRICA", 230525: "CESTO, MATERIAL: PLÁSTICO"}
 
 
 class _SB:
-    def __init__(self, mapa=None, pdms=None, erro=None, regras_item=None, erro_regras=None, itens_catalogo=None):
+    def __init__(self, mapa=None, pdms=None, erro=None, regras_item=None, erro_regras=None, descricoes=None):
         self.mapa, self.pdms, self.erro, self.chamadas = mapa, pdms, erro, []
         self.regras_item = [] if regras_item is None else regras_item
         self.erro_regras = erro_regras
-        self.itens_catalogo = ITENS_CATALOGO if itens_catalogo is None else itens_catalogo
+        self.descricoes = DESCRICOES if descricoes is None else descricoes
 
     def selecionar(self, tabela, **filtros):
         self.chamadas.append((tabela, filtros))
@@ -102,10 +102,20 @@ class _SB:
             if self.erro_regras:
                 raise self.erro_regras
             return self.regras_item
-        if tabela == "catmat_item_pdm":
-            o = int(filtros.get("offset", 0))
-            return self.itens_catalogo[o:o + int(filtros.get("limit", 100))]
-        return self.mapa
+        if tabela in ("catmat_itens", "catalogo_itens"):
+            col = "codigo_item" if tabela == "catmat_itens" else "codigo_catmat"
+            pedidos = {int(x) for x in filtros[col][4:-1].split(",")}
+            linhas = [{col: c, ("descricao_item" if tabela == "catmat_itens" else "descricao"): d}
+                      for c, d in sorted(self.descricoes.items()) if c in pedidos and tabela == "catmat_itens"]
+        else:
+            linhas = self.mapa
+            if "codigo_pdm" in filtros and isinstance(linhas, list):   # GET da RPC filtrado (âncoras)
+                alvo = {int(x) for x in filtros["codigo_pdm"][4:-1].split(",")}
+                linhas = [ln for ln in linhas if int(ln.get("codigo_pdm") or 0) in alvo]
+        if "offset" not in filtros:
+            return linhas
+        o = int(filtros["offset"])
+        return linhas[o:o + int(filtros.get("limit", 100))]
 
     def rpc(self, funcao, params):
         self.chamadas.append((funcao, params))
@@ -148,7 +158,8 @@ def test_avaliar_respeita_item_excluido_e_avulso():
 def test_carregar_mapa_le_regras_de_item():
     sb = _SB(mapa=[{"codigo_item": 480145, "codigo_pdm": 2640}], pdms=[{"codigo_pdm": 2640}],
              regras_item=[{"codigo_item": 230525, "codigo_pdm": 121, "incluido": True},
-                          {"codigo_item": "480145", "codigo_pdm": "2640", "incluido": False}])
+                          {"codigo_item": "480145", "codigo_pdm": "2640", "incluido": False}],
+             descricoes={480145: "ESTEIRA, TIPO: ELÉTRICA"})
     m = C.carregar_mapa_catmat(sb)
     assert m.itens_avulsos == {230525: 121} and m.itens_excluidos == {480145}
 
@@ -202,7 +213,8 @@ def test_leitura_mapa_catmat_so_le():
         with pytest.raises(PermissionError):
             getattr(leitor, escrita)
     assert [c[0] for c in sb.chamadas] == ["rpc/catmat_itens_mapa", "catalogo_catmat_pdms_efetivos",
-                                           "catalogo_empresa_catmat", "catmat_item_pdm", "catmat_item_pdm"]
+                                           "catalogo_empresa_catmat", "rpc/catmat_itens_mapa", "rpc/catmat_itens_mapa",
+                                           "catmat_itens", "catmat_itens"]
 
 
 # --- main: o mapa é carregado antes de gravar; dry-run usa a mesma regra; falha com banco aborta ---

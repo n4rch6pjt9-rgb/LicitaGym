@@ -160,8 +160,9 @@ def modo_forte(valor: str | None = None) -> str:
 def carregar_mapa_catmat(sb, modo: str | None = None) -> MapaCatmat:
     """Lê as duas RPCs (GET paginado em rpc/catmat_itens_mapa; as duas são STABLE e só service_role executa), as
     regras de item do catálogo (GET em catalogo_empresa_catmat) e, salvo FORTE_ANCORADO=desligado, as âncoras dos
-    itens do catálogo (GET em catmat_item_pdm, 100 por página). Qualquer falha -> MapaCatmatIndisponivel, inclusive
-    PDM efetivo sem itens em catmat_item_pdm (sem os itens o PDM inteiro deixaria de ser forte em silêncio)."""
+    itens do catálogo (catmat_ancoras.ler_itens_catalogo: itens por GET em rpc/catmat_itens_mapa e texto de
+    catmat_itens/catalogo_itens, 100 por página). Qualquer falha -> MapaCatmatIndisponivel, inclusive PDM efetivo sem
+    itens com descrição (sem os itens o PDM inteiro deixaria de ser forte em silêncio)."""
     modo = modo_forte(modo)
     try:
         linhas = sb.selecionar(f"rpc/{RPC_ITENS_MAPA}", select="codigo_item,codigo_pdm", order="codigo_item.asc")

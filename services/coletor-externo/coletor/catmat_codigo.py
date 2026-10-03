@@ -12,6 +12,11 @@ Regra (categoria_por_codigo):
     o texto não reabre);
   - sem código CATMAT válido, ou código fora do mapa (19 dos 41 PDMs do catálogo não têm itens nas tabelas CATMAT
     em 03/10/2026): não decide, quem chama usa o texto (escopo.classificar), como antes.
+
+Carga do mapa (carregar_mapa_catmat_se_houver_banco): sem banco nenhum -> None (só texto). Com banco, o mapa é
+obrigatório: falha levanta MapaCatmatIndisponivel e o coletor/reclassificador aborta ANTES de gravar (erro de
+infraestrutura não pode mudar a classificação em silêncio). O dry-run lê o mapa como a execução real, por um
+cliente só leitura (LeituraMapaCatmat), para prever as mesmas transições.
 """
 from __future__ import annotations
 
@@ -20,7 +25,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-from .compras_pdms import carregar_pdms_efetivos
+from .compras_pdms import RPC_PDMS_EFETIVOS, carregar_pdms_efetivos
 
 log = logging.getLogger("coletor.catmat_codigo")
 
@@ -32,6 +37,27 @@ _CODIGO = re.compile(r"\d{1,15}")
 
 class MapaCatmatIndisponivel(RuntimeError):
     """Uma das RPCs do mapa falhou ou respondeu fora do contrato."""
+
+
+class LeituraMapaCatmat:
+    """Cliente só leitura para carregar o mapa no dry-run: passa selecionar (GET) e a RPC STABLE do catálogo
+    efetivo; qualquer outra chamada (upsert, atualizar, outra RPC...) levanta PermissionError."""
+
+    RPCS_PERMITIDAS = frozenset({RPC_PDMS_EFETIVOS})
+
+    def __init__(self, sb):
+        self._sb = sb
+
+    def selecionar(self, tabela: str, **filtros):
+        return self._sb.selecionar(tabela, **filtros)
+
+    def rpc(self, funcao: str, params: dict):
+        if funcao not in self.RPCS_PERMITIDAS:
+            raise PermissionError(f"dry-run: rpc {funcao} bloqueada (cliente somente leitura do mapa CATMAT)")
+        return self._sb.rpc(funcao, params)
+
+    def __getattr__(self, nome):
+        raise PermissionError(f"dry-run: {nome} bloqueado (cliente somente leitura do mapa CATMAT)")
 
 
 @dataclass(frozen=True)
@@ -102,13 +128,10 @@ def carregar_mapa_catmat(sb) -> MapaCatmat:
     return MapaCatmat(item_pdm=item_pdm, pdms_catalogo=pdms)
 
 
-def carregar_mapa_catmat_ou_texto(sb) -> MapaCatmat | None:
-    """Para os coletores: sem o mapa (RPC fora do ar), a classificação fica só pelo texto, como antes do código."""
+def carregar_mapa_catmat_se_houver_banco(sb) -> MapaCatmat | None:
+    """Para o coletor e o reclassificador. sb None (sem banco nenhum): None, classificação só pelo texto.
+    Com banco: o mapa é obrigatório; falha levanta MapaCatmatIndisponivel (quem chama aborta antes de gravar)."""
     if sb is None:
-        log.info("Sem Supabase (dry-run): classificação só pelo texto, sem código CATMAT")
+        log.warning("Sem Supabase: classificação só pelo texto, sem código CATMAT")
         return None
-    try:
-        return carregar_mapa_catmat(sb)
-    except MapaCatmatIndisponivel as e:
-        log.warning("Mapa CATMAT indisponível, classificação só pelo texto: %s", str(e)[:200])
-        return None
+    return carregar_mapa_catmat(sb)

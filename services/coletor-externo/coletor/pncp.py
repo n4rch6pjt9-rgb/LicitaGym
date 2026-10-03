@@ -50,7 +50,14 @@ import requests
 
 from .destino import Armazenamento, Supabase, drenar_licitacao_match, env, parece_html, sha256
 from . import escopo as _escopo
-from .catmat_codigo import MapaCatmat, carregar_mapa_catmat_ou_texto, catalogo_id, categoria_por_codigo
+from .catmat_codigo import (
+    LeituraMapaCatmat,
+    MapaCatmat,
+    MapaCatmatIndisponivel,
+    carregar_mapa_catmat_se_houver_banco,
+    catalogo_id,
+    categoria_por_codigo,
+)
 from .escopo import (
     PRODUTO,
     TERMOS_ESCOPO_COMPLETO,
@@ -501,7 +508,7 @@ def avaliar(compra: dict, itens: list[dict], mapa_catmat: MapaCatmat | None = No
     Catálogo do Compras.gov.br (catalogo.id = 1) presente no mapa CATMAT é classificado pelo código: PDM no catálogo
     efetivo da empresa -> "catmat", fora -> None. Sem código desse catálogo (Outros = código do órgão, CATSER) ou com
     código fora do mapa, vale o texto, como antes. As travas abaixo (obra, ar livre, passagem...) valem igual.
-    `mapa_catmat` None = só texto (dry-run sem banco, RPC indisponível, testes antigos)."""
+    `mapa_catmat` None = só texto (sem banco nenhum, testes antigos); com banco e RPC fora do ar, main aborta."""
     objeto = compra.get("description") or compra.get("title") or ""
     if excluir_compra(objeto) or servico_sem_material(objeto):
         return None, False, {it["numeroItem"]: (None, False) for it in itens}
@@ -1789,6 +1796,27 @@ def criar_parser() -> argparse.ArgumentParser:
     return ap
 
 
+def _leitor_mapa_catmat_dry_run() -> LeituraMapaCatmat | None:
+    """Dry-run: lê o mapa CATMAT por um cliente só leitura, para classificar como a coleta real. None só quando não
+    há banco nenhum (SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY ausentes); só uma das duas é erro de configuração."""
+    url, chave = env("SUPABASE_URL"), env("SUPABASE_SERVICE_ROLE_KEY")
+    if not url and not chave:
+        return None
+    if not (url and chave):
+        raise MapaCatmatIndisponivel("SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY: só uma das duas está definida")
+    return LeituraMapaCatmat(Supabase(url, chave))
+
+
+def _mapa_catmat_ou_abortar(obter_leitor) -> tuple[bool, MapaCatmat | None]:
+    """(ok, mapa). ok=False: banco configurado e mapa indisponível; quem chama aborta antes de gravar."""
+    try:
+        return True, carregar_mapa_catmat_se_houver_banco(obter_leitor())
+    except MapaCatmatIndisponivel as e:
+        log.error("Mapa CATMAT indisponível com o banco configurado; abortando antes de gravar "
+                  "(sem o código a classificação mudaria em silêncio): %s", str(e)[:300])
+        return False, None
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = criar_parser()
     args = ap.parse_args(argv)
@@ -1800,12 +1828,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.recoletar_atualizadas:
         sb = Supabase(env("SUPABASE_URL", obrigatorio=True), env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True))
+        ok, mapa = _mapa_catmat_ou_abortar(lambda: sb)
+        if not ok:
+            return 1
         r = recoletar_atualizadas(PNCP(delay=float(env("DELAY_SEGUNDOS", "1.0"))), sb, None,
                                   prioridades=args.prioridades or PRIORIDADES_RECOLETA_PADRAO,
                                   com_resultados=not args.sem_resultados,
                                   max_bytes=int(float(env("MAX_MB", "80")) * 1048576),
-                                  dry_run=args.dry_run, limite=args.limite_recoleta,
-                                  mapa_catmat=carregar_mapa_catmat_ou_texto(sb))
+                                  dry_run=args.dry_run, limite=args.limite_recoleta, mapa_catmat=mapa)
         if not args.dry_run:
             drenar_licitacao_match(sb)
         log.info("RESUMO RECOLETA: %s", r)
@@ -1851,6 +1881,10 @@ def main(argv: list[str] | None = None) -> int:
     if not args.dry_run:
         sb = Supabase(env("SUPABASE_URL", obrigatorio=True), env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True))
         arm = Armazenamento.do_ambiente()
+    # mapa CATMAT antes de qualquer gravação: na coleta real pelo próprio cliente; no dry-run por um só leitura
+    ok, mapa = _mapa_catmat_ou_abortar(lambda: sb if sb is not None else _leitor_mapa_catmat_dry_run())
+    if not ok:
+        return 1
     if args.dias is not None or args.margem_publicacao is not None:
         log.warning("--dias/--margem-publicacao não têm mais efeito: leads = recebendo proposta "
                     "(compra homologada não é lead; decisão de 29/09/2026)")
@@ -1861,7 +1895,7 @@ def main(argv: list[str] | None = None) -> int:
     r = coletar(PNCP(delay=delay), sb, arm, termos, status, paginas,
                 args.tam, not args.sem_resultados, args.baixar_arquivos,
                 int(float(env("MAX_MB", "80")) * 1048576), args.dry_run,
-                modo=args.modo, workers=workers, mapa_catmat=carregar_mapa_catmat_ou_texto(sb))
+                modo=args.modo, workers=workers, mapa_catmat=mapa)
     drenar_licitacao_match(sb)  # recorte CATMAT por texto: zera a pendência de licitacao_match (sem efeito no dry-run)
     log.info("RESUMO: %s", r)
     if r.get("falha_busca"):

@@ -70,6 +70,12 @@ begin
   values (480144, '2640', 'APARELHO MUSCULACAO CROSS OVER')
   on conflict (codigo_item) do nothing;
 
+  -- Paradigma não grava catalogo_id (só o PNCP manda catalogo.id): o código 480144 dos certames Paradigma não casa
+  -- com catmat_itens (20261003180000) e o item entra pela palavra-chave do PDM, como em produção.
+  insert into public.catmat_pdm_palavras (codigo_pdm, padrao, ativo)
+  values (2640, 'cross ?over', true)
+  on conflict do nothing;
+
   -- Setup: Fontes externas
   insert into public.fontes_externas (slug, entidade, plataforma, base_url, modo_coleta)
   values
@@ -139,7 +145,7 @@ begin
   insert into public.licitacao_itens (
     licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade, descricao, catalogo_id
   ) values (
-    v_lic_par1_id, 1, '480144', 'M', 1, 'APARELHO CROSS OVER', 1
+    v_lic_par1_id, 1, '480144', 'M', 1, 'APARELHO CROSS OVER', null
   );
 
   insert into public.licitacao_resultados (
@@ -160,7 +166,7 @@ begin
   insert into public.licitacao_itens (
     licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade, descricao, catalogo_id
   ) values (
-    v_lic_par2_id, 1, '480144', 'M', 1, 'APARELHO CROSS OVER', 1
+    v_lic_par2_id, 1, '480144', 'M', 1, 'APARELHO CROSS OVER', null
   );
 
   insert into public.licitacao_resultados (
@@ -181,7 +187,7 @@ begin
   insert into public.licitacao_itens (
     licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade, descricao, catalogo_id
   ) values (
-    v_lic_par3_id, 1, '480144', 'M', 1, 'APARELHO CROSS OVER', 1
+    v_lic_par3_id, 1, '480144', 'M', 1, 'APARELHO CROSS OVER', null
   );
 
   insert into public.licitacao_resultados (
@@ -244,6 +250,11 @@ begin
 
     if v_total_certames_par is distinct from 3 then
       raise exception 'TESTE CASO 2 FALHOU: esperado 3 certames Paradigma, obtido %', v_total_certames_par;
+    end if;
+
+    -- catalogo_id NULL (Paradigma): o código não vale como CATMAT, a cobertura vem da palavra-chave
+    if v_cobertura_par is distinct from 'pdm_palavra' then
+      raise exception 'TESTE CASO 2 FALHOU: esperado cobertura pdm_palavra (Paradigma sem catalogo_id), obtido %', v_cobertura_par;
     end if;
   end;
 
@@ -385,8 +396,9 @@ begin
       'historico', '{}'::jsonb, 'Pregão Eletrônico - Registro de Preços', 'Aquisição de esteiras esportivas'
     ) returning id into v_lic_srp_d;
 
-    insert into public.licitacao_itens (licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade, catalogo_id)
-    values (v_lic_srp_d, 1, '480144', 'M', 1, 1);
+    -- Paradigma: catalogo_id NULL, entra pela palavra-chave (descricao)
+    insert into public.licitacao_itens (licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade, catalogo_id, descricao)
+    values (v_lic_srp_d, 1, '480144', 'M', 1, null, 'APARELHO CROSS OVER');
 
     insert into public.licitacao_resultados (licitacao_id, numero_item, sequencial_resultado, fornecedor_cnpj, vencedor, valor_unitario_homologado, valor_total_homologado, data_resultado)
     values (v_lic_srp_d, 1, 1, '77777777000174', true, 4000.0, 4000.0, '2026-09-24'::timestamptz);

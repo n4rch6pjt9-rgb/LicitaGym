@@ -106,11 +106,137 @@ def test_carregar_mapa_le_as_duas_rpcs():
     assert sb.chamadas[0] == ("rpc/catmat_itens_mapa", {"select": "codigo_item,codigo_pdm", "order": "codigo_item.asc"})
 
 
-def test_carregar_mapa_falha_vira_so_texto():
-    assert C.carregar_mapa_catmat_ou_texto(_SB(erro=RuntimeError("503"))) is None
-    assert C.carregar_mapa_catmat_ou_texto(None) is None
+MAPA_RPC = [{"codigo_item": 230525, "codigo_pdm": 121}, {"codigo_item": 480144, "codigo_pdm": 2640}]
+PDMS_RPC = [{"codigo_pdm": 2640}]
+
+
+def test_sem_banco_so_texto_com_banco_falha_levanta():
+    # só sem banco nenhum a classificação fica no texto; com banco, falha do mapa não vira "só texto" em silêncio
+    assert C.carregar_mapa_catmat_se_houver_banco(None) is None
+    with pytest.raises(C.MapaCatmatIndisponivel):
+        C.carregar_mapa_catmat_se_houver_banco(_SB(erro=RuntimeError("503")))
+    with pytest.raises(C.MapaCatmatIndisponivel):
+        C.carregar_mapa_catmat_se_houver_banco(_SB(mapa=MAPA_RPC, pdms={"erro": "fora do contrato"}))
     with pytest.raises(C.MapaCatmatIndisponivel):
         C.carregar_mapa_catmat(_SB(mapa=[{"codigo_item": None, "codigo_pdm": 1}], pdms=[]))
+    assert C.carregar_mapa_catmat_se_houver_banco(_SB(mapa=MAPA_RPC, pdms=PDMS_RPC)).pdms_catalogo == {2640}
+
+
+def test_leitura_mapa_catmat_so_le():
+    sb = _SB(mapa=MAPA_RPC, pdms=PDMS_RPC)
+    leitor = C.LeituraMapaCatmat(sb)
+    m = C.carregar_mapa_catmat(leitor)
+    assert m.item_pdm == {230525: 121, 480144: 2640} and m.pdms_catalogo == {2640}
+    with pytest.raises(PermissionError):
+        leitor.rpc("drenar_licitacao_match", {})
+    for escrita in ("upsert", "atualizar", "inserir", "drenar_licitacao_match"):
+        with pytest.raises(PermissionError):
+            getattr(leitor, escrita)
+    assert [c[0] for c in sb.chamadas] == ["rpc/catmat_itens_mapa", "catalogo_catmat_pdms_efetivos"]
+
+
+# --- main: o mapa é carregado antes de gravar; dry-run usa a mesma regra; falha com banco aborta ---
+
+def _env_banco(monkeypatch, url="https://x.supabase.co", chave="k"):
+    for nome, valor in (("SUPABASE_URL", url), ("SUPABASE_SERVICE_ROLE_KEY", chave)):
+        if valor is None:
+            monkeypatch.delenv(nome, raising=False)
+        else:
+            monkeypatch.setenv(nome, valor)
+
+
+def _coletor_capturando(monkeypatch, sb_fake, argv):
+    criados, visto = [], {}
+
+    def fabrica(url, chave):
+        criados.append((url, chave))
+        return sb_fake
+
+    def falso_coletar(pncp, sb, arm, termos, *a, **kw):
+        visto.update(sb=sb, arm=arm, mapa=kw["mapa_catmat"], dry_run=a[-1])
+        return {"encontradas": 0}
+    monkeypatch.setattr(P, "Supabase", fabrica)
+    monkeypatch.setattr(P, "coletar", falso_coletar)
+    monkeypatch.setattr(P, "drenar_licitacao_match", lambda sb: None)
+    monkeypatch.setattr(P.Armazenamento, "do_ambiente", classmethod(lambda cls: "arm"))
+    return P.main(argv + ["--termos", "x"]), criados, visto
+
+
+def test_coletor_dry_run_le_o_mapa_por_cliente_so_leitura(monkeypatch):
+    _env_banco(monkeypatch)
+    sb = _SB(mapa=MAPA_RPC, pdms=PDMS_RPC)
+    rc, criados, visto = _coletor_capturando(monkeypatch, sb, ["--dry-run"])
+    assert rc == 0 and criados == [("https://x.supabase.co", "k")]
+    assert visto["sb"] is None and visto["arm"] is None  # coletar continua sem cliente de escrita
+    assert visto["mapa"].item_pdm == {230525: 121, 480144: 2640} and visto["mapa"].pdms_catalogo == {2640}
+
+
+def test_coletor_dry_run_sem_banco_fica_so_no_texto(monkeypatch):
+    _env_banco(monkeypatch, None, None)
+    rc, criados, visto = _coletor_capturando(monkeypatch, _SB(), ["--dry-run"])
+    assert rc == 0 and criados == [] and visto["mapa"] is None
+
+
+@pytest.mark.parametrize("argv", [["--dry-run"], []])
+def test_coletor_aborta_antes_de_gravar_se_o_mapa_falha(monkeypatch, argv):
+    _env_banco(monkeypatch)
+    rc, _, visto = _coletor_capturando(monkeypatch, _SB(erro=RuntimeError("503")), argv)
+    assert rc == 1 and visto == {}
+
+
+def test_coletor_dry_run_com_banco_pela_metade_aborta(monkeypatch):
+    _env_banco(monkeypatch, chave=None)
+    rc, criados, visto = _coletor_capturando(monkeypatch, _SB(), ["--dry-run"])
+    assert rc == 1 and criados == [] and visto == {}
+
+
+def test_coletor_real_passa_o_mapa_para_coletar(monkeypatch):
+    _env_banco(monkeypatch)
+    sb = _SB(mapa=MAPA_RPC, pdms=PDMS_RPC)
+    rc, _, visto = _coletor_capturando(monkeypatch, sb, [])
+    assert rc == 0 and visto["sb"] is sb and visto["mapa"].pdms_catalogo == {2640}
+
+
+def test_recoleta_aborta_se_o_mapa_falha_e_passa_o_mapa_se_carrega(monkeypatch):
+    _env_banco(monkeypatch)
+    visto = {}
+
+    def falso_recoletar(pncp, sb, arm, **kw):
+        visto.update(kw)
+        return {}
+    monkeypatch.setattr(P, "recoletar_atualizadas", falso_recoletar)
+    monkeypatch.setattr(P, "drenar_licitacao_match", lambda sb: None)
+    monkeypatch.setattr(P, "Supabase", lambda url, chave: _SB(erro=RuntimeError("503")))
+    assert P.main(["--recoletar-atualizadas"]) == 1 and visto == {}
+    monkeypatch.setattr(P, "Supabase", lambda url, chave: _SB(mapa=MAPA_RPC, pdms=PDMS_RPC))
+    assert P.main(["--recoletar-atualizadas", "--dry-run"]) == 0 and visto["mapa_catmat"].pdms_catalogo == {2640}
+
+
+def _reclassificador_capturando(monkeypatch, sb_fake, argv):
+    _env_banco(monkeypatch)
+    visto = {}
+
+    def falso_reclassificar(sb, pncp, **kw):
+        visto.update(sb=sb, mapa=kw["mapa_catmat"], aplicar=kw["aplicar"])
+        return {"linhas": [], "amostra": {}, "transicoes_categoria": {}}
+    monkeypatch.setattr(R, "Supabase", lambda url, chave: sb_fake)
+    monkeypatch.setattr(R, "reclassificar", falso_reclassificar)
+    return R.main(argv), visto
+
+
+def test_reclassificador_dry_run_le_o_mapa_antes_de_embrulhar(monkeypatch):
+    rc, visto = _reclassificador_capturando(monkeypatch, _SB(mapa=MAPA_RPC, pdms=PDMS_RPC), [])
+    assert rc == 0 and visto["aplicar"] is False
+    assert isinstance(visto["sb"], R.SomenteLeitura)  # o dry-run segue só leitura...
+    assert visto["mapa"].item_pdm == {230525: 121, 480144: 2640}  # ...mas com o mesmo mapa do --apply
+    rc, visto = _reclassificador_capturando(monkeypatch, _SB(mapa=MAPA_RPC, pdms=PDMS_RPC), ["--apply"])
+    assert rc == 0 and visto["aplicar"] is True and visto["mapa"].pdms_catalogo == {2640}
+
+
+@pytest.mark.parametrize("argv", [[], ["--apply"]])
+def test_reclassificador_aborta_se_o_mapa_falha(monkeypatch, argv):
+    rc, visto = _reclassificador_capturando(monkeypatch, _SB(erro=RuntimeError("503")), argv)
+    assert rc == 1 and visto == {}
 
 
 def test_coletor_grava_catalogo_id():

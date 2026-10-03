@@ -45,7 +45,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
-from .catmat_codigo import MapaCatmat, carregar_mapa_catmat_ou_texto
+from .catmat_codigo import MapaCatmat, MapaCatmatIndisponivel, carregar_mapa_catmat_se_houver_banco
 from .destino import Supabase, env
 from .escopo import classificar, excluir_compra, objeto_passagem, servico_sem_material
 from .pncp import (FASE_EXCLUIDA, PNCP, CompraExcluida, _instante, atualizacao_da_compra, avaliar, compra_com_detalhe,
@@ -486,6 +486,14 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     sb = Supabase(env("SUPABASE_URL", obrigatorio=True), env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True))
+    # mapa CATMAT pelo cliente original, ANTES de embrulhar em SomenteLeitura (que bloqueia rpc): o dry-run usa a
+    # mesma regra de código que o --apply. Falha com o banco configurado aborta antes de qualquer gravação.
+    try:
+        mapa = carregar_mapa_catmat_se_houver_banco(sb)
+    except MapaCatmatIndisponivel as e:
+        log.error("Mapa CATMAT indisponível; abortando antes de reclassificar "
+                  "(sem o código a classificação mudaria em silêncio): %s", str(e)[:300])
+        return 1
     if not args.apply:
         sb = SomenteLeitura(sb)
     pncp = None
@@ -508,7 +516,7 @@ def main(argv: list[str] | None = None) -> int:
                       consultar_detalhe_pncp=args.consultar_detalhe, id_min=args.id_min,
                       id_max=args.id_max, desde=args.desde, termo=args.termo, limite=args.limit,
                       amostra=args.amostra, workers=int(env("PNCP_WORKERS", "1")), cache_itens=cache,
-                      salvar_cache=salvar, mapa_catmat=carregar_mapa_catmat_ou_texto(sb))
+                      salvar_cache=salvar, mapa_catmat=mapa)
     if salvar is not None:
         salvar(cache)
     linhas = r.pop("linhas")

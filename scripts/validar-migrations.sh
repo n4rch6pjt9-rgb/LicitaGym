@@ -32,6 +32,7 @@ for _ in $(seq 1 30); do echo 'select 1' | psql_ >/dev/null 2>&1 && break; sleep
 falhas=0
 aplicar() { # $1 arquivo, $2 rótulo
   local saida
+  case " $PULAR " in *" $(basename "$1") "*) echo "pulada $2 $(basename "$1") (extensão só no Supabase)"; return;; esac
   if saida=$(psql_ < "$1" 2>&1); then
     echo "ok     $2 $(basename "$1") $(grep -o 'SUCESSO.*' <<<"$saida" | head -1)"
   else
@@ -40,10 +41,7 @@ aplicar() { # $1 arquivo, $2 rótulo
 }
 
 aplicar supabase/tests/pre.sql "stubs "
-for f in $(ls supabase/migrations/2*.sql | sort); do
-  case " $PULAR " in *" $(basename "$f") "*) echo "pulada $(basename "$f") (extensão só no Supabase)"; continue;; esac
-  aplicar "$f" "migr  "
-done
+for f in $(ls supabase/migrations/2*.sql | sort); do aplicar "$f" "migr  "; done
 echo "migrations novas/alteradas vs $BASE: $(wc -w <<<"$NOVAS")"
 for f in $(sort <<<"$NOVAS"); do
   aplicar "$f" "2a vez"

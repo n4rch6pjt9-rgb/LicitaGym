@@ -9,7 +9,9 @@ import json
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from scripts.lib.http_client import clamp_compras_gov_page_size
 from scripts.lib.http_fetch import fetch_json, HttpFetchError
+from scripts.lib.paginacao import acao_pagina
 from scripts.lib.sync_state import SyncStateManager, is_sync_resume_enabled
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -28,9 +30,10 @@ def fetch_pdms(
     codigo_pdm: Optional[int] = None,
     status_pdm: Optional[bool] = None,
     pagina: int = 1,
-    tamanho_pagina: int = 500
+    tamanho_pagina: int = 100
 ) -> Dict[str, Any]:
     """Consulta PDMs (Produtos Descritivos Básicos)"""
+    tamanho_pagina = clamp_compras_gov_page_size(tamanho_pagina)
     url = f"{BASE_URL}{ENDPOINT}"
 
     params = {
@@ -102,6 +105,9 @@ def collect_pdms_por_grupo_classe(
 
     pagina = (state.last_page + 1) if (should_resume and state.last_page > 0) else 1
     pages_coletadas = 0
+    tamanho = clamp_compras_gov_page_size(100)
+    vistos: set[str] = set()
+    lidos = 0
 
     while True:
         try:
@@ -109,7 +115,7 @@ def collect_pdms_por_grupo_classe(
                 codigo_grupo=codigo_grupo,
                 codigo_classe=codigo_classe,
                 pagina=pagina,
-                tamanho_pagina=500
+                tamanho_pagina=tamanho
             )
         except Exception as e:
             sync_manager.record_partial_failure(
@@ -121,22 +127,26 @@ def collect_pdms_por_grupo_classe(
             sync_manager.save_accumulated_data(todos_pdms)
             raise
 
-        pdms = resp.get("resultado", [])
-
-        logger.info(f"  Página {pagina}: {len(pdms)} PDMs")
-        todos_pdms.extend(pdms)
-        pages_coletadas += 1
-        sync_manager.record_page_success(
-            page=pagina,
-            records_in_page=len(pdms),
-            cursor={"pdms": todos_pdms},
+        pdms = resp.get("resultado") if isinstance(resp, dict) else None
+        parar, incluir = acao_pagina(
+            pdms, resp if isinstance(resp, dict) else {},
+            tamanho=tamanho, pagina=pagina, vistos=vistos, logger=logger, ja_lidos=lidos,
         )
-        sync_manager.save_accumulated_data(todos_pdms)
-
-        if max_pages and pages_coletadas >= max_pages:
+        if incluir and pdms:
+            lidos += len(pdms)
+            logger.info(f"  Página {pagina}: {len(pdms)} PDMs")
+            todos_pdms.extend(pdms)
+            pages_coletadas += 1
+            sync_manager.record_page_success(
+                page=pagina,
+                records_in_page=len(pdms),
+                cursor={"pdms": todos_pdms},
+            )
+            sync_manager.save_accumulated_data(todos_pdms)
+        if not incluir or parar:
             break
-
-        if resp.get("paginasRestantes", 0) == 0:
+        if max_pages and pages_coletadas >= max_pages:
+            logger.warning("teto de %s páginas atingido sem o total confirmar o fim", max_pages)
             break
 
         pagina += 1

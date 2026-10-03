@@ -242,8 +242,12 @@ def test_cli_recoletar_atualizadas(monkeypatch):
     monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "k")
     monkeypatch.setattr(P, "recoletar_atualizadas", lambda pncp, sb, arm, **kw: chamado.update(kw) or {})
     monkeypatch.setattr(P, "drenar_licitacao_match", lambda sb: None)
+    # o mapa CATMAT é obrigatório com banco configurado (falha aborta); aqui um mapa fixo, sem rede
+    mapa = P.MapaCatmat(item_pdm={480144: 2640}, pdms_catalogo=frozenset({2640}))
+    monkeypatch.setattr(P, "carregar_mapa_catmat_se_houver_banco", lambda sb: mapa)
     assert P.main(["--recoletar-atualizadas", "--dry-run", "--limite-recoleta", "5"]) == 0
     assert chamado["prioridades"] == "leads,monitorar" and chamado["dry_run"] and chamado["limite"] == 5
+    assert chamado["mapa_catmat"] is mapa
 
 
 def test_cloud_run_recusa_recoleta_com_varias_tasks(monkeypatch):

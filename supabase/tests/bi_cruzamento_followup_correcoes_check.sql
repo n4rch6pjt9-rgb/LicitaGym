@@ -7,7 +7,11 @@
 --   D. mesma venda em Pesquisa de Preço e ARP: ARP vence (valor_registrado_ata)
 --   E. 14.133: orgao_nome oficial (public.orgaos) ou NULL, nunca o CNPJ; sem unidade/CNPJ: NULL
 --   F. v_bi_orgaos_match: nome/UF de origem preservados; dinheiro ausente = NULL; resultados não colapsam
---   G. constraints: NULLS NOT DISTINCT nas 3 tabelas e id_compra_item obrigatório
+--   G. constraints: NULLS NOT DISTINCT em uq_pca_pgc_item e uq_resultados_14133; id_compra_item obrigatório;
+--      atas_rp_itens com a chave da 20261003020000 (#142), uq_atas_rp_itens_lote_fornecedor =
+--      (ata, UASG gerenciadora, numero_grupo, item, ni_fornecedor) NULLS NOT DISTINCT, sem a uq_atas_rp_itens antiga:
+--      vencedores diferentes do mesmo item coexistem, lote diferente não colide, mesma chave (lote NULL) colide,
+--      upsert pelo alvo do coletor compras_arp atualiza a linha certa, ni_fornecedor NOT NULL, numero_grupo NULL ou > 0
 -- =============================================================================
 begin;
 
@@ -38,6 +42,8 @@ begin
   insert into public.catalogo_empresa_catmat (nivel, codigo_grupo, codigo_classe, codigo_pdm, nome_snapshot, incluido)
   values ('pdm', 78, 7830, 2640, 'PDM TESTE', true) on conflict do nothing;
   insert into public.catmat_itens (codigo_item, codigo_pdm, descricao_item) values (480144, '2640', 'ITEM TESTE') on conflict (codigo_item) do nothing;
+  -- portal_teste (Paradigma) não grava catalogo_id: o item entra pela palavra-chave do PDM (20261003180000)
+  insert into public.catmat_pdm_palavras (codigo_pdm, padrao, ativo) values (2640, 'aparelho teste portal', true) on conflict do nothing;
   insert into public.fontes_externas (slug, entidade, plataforma, base_url, modo_coleta) values
     ('pncp', 'PNCP', 'pncp', 'https://pncp.gov.br', 'automatico'),
     ('portal_teste', 'PORTAL TESTE', 'paradigma', 'https://portal.teste.invalid', 'automatico')
@@ -50,20 +56,20 @@ begin
   --   cert 1 tem 2 resultados do mesmo item (sequencial 1 e 2)                -> não colapsam
   insert into public.licitacoes_externas (fonte, modulo, id_externo, unidade_compradora, data_homologacao, prioridade)
   values ('portal_teste', 59, 501, 'Unidade  Teste São João', '2026-09-01', 'historico') returning id into v_id;
-  insert into public.licitacao_itens (licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade) values (v_id, 1, '480144', 'M', 2);
+  insert into public.licitacao_itens (licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade, catalogo_id, descricao) values (v_id, 1, '480144', 'M', 2, null, 'APARELHO TESTE PORTAL');
   insert into public.licitacao_resultados (licitacao_id, numero_item, sequencial_resultado, fornecedor_cnpj, fornecedor_nome, vencedor, quantidade_homologada, valor_unitario_homologado, valor_total_homologado, data_resultado)
   values (v_id, 1, 1, '21111111000101', 'FORNECEDOR A TESTE LTDA', true, 1, 100, 100, '2026-09-01'),
          (v_id, 1, 2, '21111111000101', 'FORNECEDOR A TESTE LTDA', true, 1, 110, 110, '2026-09-01');
 
   insert into public.licitacoes_externas (fonte, modulo, id_externo, orgao_nome, data_homologacao, prioridade)
   values ('portal_teste', 59, 502, 'UNIDADE TESTE SAO JOAO ', '2026-09-02', 'historico') returning id into v_id2;
-  insert into public.licitacao_itens (licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade) values (v_id2, 1, '480144', 'M', 1);
+  insert into public.licitacao_itens (licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade, catalogo_id, descricao) values (v_id2, 1, '480144', 'M', 1, null, 'APARELHO TESTE PORTAL');
   insert into public.licitacao_resultados (licitacao_id, numero_item, sequencial_resultado, fornecedor_cnpj, fornecedor_nome, vencedor, quantidade_homologada, valor_unitario_homologado, valor_total_homologado, data_resultado)
   values (v_id2, 1, 1, '21111111000101', 'FORNECEDOR A TESTE LTDA', true, 1, 120, 120, '2026-09-02');
 
   insert into public.licitacoes_externas (fonte, data_homologacao, prioridade)
   values ('portal_teste', '2026-09-03', 'historico') returning id into v_id3;
-  insert into public.licitacao_itens (licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade) values (v_id3, 1, '480144', 'M', 1);
+  insert into public.licitacao_itens (licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade, catalogo_id, descricao) values (v_id3, 1, '480144', 'M', 1, null, 'APARELHO TESTE PORTAL');
   insert into public.licitacao_resultados (licitacao_id, numero_item, sequencial_resultado, fornecedor_cnpj, fornecedor_nome, vencedor, quantidade_homologada, valor_unitario_homologado, valor_total_homologado, data_resultado)
   values (v_id3, 1, 1, '21111111000101', 'FORNECEDOR A TESTE LTDA', true, 1, 130, 130, '2026-09-03');
 
@@ -72,6 +78,11 @@ begin
     from public.v_bi_fornecedor_historico where cnpj = '21111111000101';
   raise notice 'A/B/C: vendas = %, certames = %, orgaos = %, valor = %, orgaos_clientes = %', v_n, v_id, v_id2, v_num, v_j;
   if v_n is distinct from 4 then raise exception 'CASO C FALHOU: esperado 4 vendas (2 resultados do mesmo item + 2), obtido %', v_n; end if;
+  -- portal_teste sem catalogo_id: o código 480144 não vale como CATMAT, a cobertura vem da palavra-chave
+  if (select cobertura_predominante from public.v_bi_fornecedor_historico where cnpj = '21111111000101') is distinct from 'pdm_palavra' then
+    raise exception 'CASO C FALHOU: esperado cobertura pdm_palavra (portal_teste sem catalogo_id), obtido %',
+      (select cobertura_predominante from public.v_bi_fornecedor_historico where cnpj = '21111111000101');
+  end if;
   if v_num is distinct from 460 then raise exception 'CASO C FALHOU: esperado valor 460, obtido %', v_num; end if;
   if v_id is distinct from 2 then raise exception 'CASO B FALHOU: esperado 2 certames identificados (59/501, 59/502), obtido %', v_id; end if;
   if v_id2 is distinct from 1 then raise exception 'CASO A FALHOU: esperado 1 órgão (sem-cnpj, mesmo nome), obtido %', v_id2; end if;
@@ -131,7 +142,7 @@ begin
   -- -> qtd_itens_homologados 2 e valor_homologado NULL.
   insert into public.licitacoes_externas (fonte, codigo_externo, orgao_cnpj, orgao_nome, uf, data_homologacao, prioridade)
   values ('pncp', '44444444000104-1-000001/2026', '44444444000104', 'ORGAO ORIGEM TESTE F', 'SC', '2026-09-15', 'historico') returning id into v_id;
-  insert into public.licitacao_itens (licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade) values (v_id, 1, '480144', 'M', 2);
+  insert into public.licitacao_itens (licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade, catalogo_id) values (v_id, 1, '480144', 'M', 2, 1);
   insert into public.licitacao_resultados (licitacao_id, numero_item, sequencial_resultado, fornecedor_cnpj, fornecedor_nome, vencedor, quantidade_homologada, valor_unitario_homologado, valor_total_homologado, data_resultado)
   values (v_id, 1, 1, '24444444000104', 'FORNECEDOR F1 TESTE LTDA', true, 1, null, null, '2026-09-15'),
          (v_id, 1, 2, '25555555000105', 'FORNECEDOR F2 TESTE LTDA', true, 1, null, null, '2026-09-15');
@@ -158,10 +169,63 @@ begin
   end if;
 
   -- ---------------------------------------------------------------- G
-  select bool_and(pg_get_constraintdef(c.oid) like 'UNIQUE NULLS NOT DISTINCT%') and count(*) = 3 into v_ok
+  select bool_and(pg_get_constraintdef(c.oid) like 'UNIQUE NULLS NOT DISTINCT%') and count(*) = 2 into v_ok
     from pg_constraint c
-   where c.conname in ('uq_pca_pgc_item', 'uq_atas_rp_itens', 'uq_resultados_14133');
-  if v_ok is distinct from true then raise exception 'CASO G FALHOU: constraints sem NULLS NOT DISTINCT'; end if;
+   where c.conname in ('uq_pca_pgc_item', 'uq_resultados_14133');
+  if v_ok is distinct from true then raise exception 'CASO G FALHOU: uq_pca_pgc_item/uq_resultados_14133 sem NULLS NOT DISTINCT'; end if;
+
+  -- atas_rp_itens: chave da 20261003020000 (#142). A uq_atas_rp_itens antiga (ata, UASG, item) ignorava o fornecedor.
+  select pg_get_constraintdef(c.oid) into v_txt
+    from pg_constraint c
+   where c.conrelid = 'public.atas_rp_itens'::regclass and c.conname = 'uq_atas_rp_itens_lote_fornecedor';
+  if v_txt is distinct from
+     'UNIQUE NULLS NOT DISTINCT (numero_ata_registro_preco, codigo_unidade_gerenciadora, numero_grupo, numero_item, ni_fornecedor)' then
+    raise exception 'CASO G FALHOU: uq_atas_rp_itens_lote_fornecedor ausente ou com outra definição: %', v_txt;
+  end if;
+  if exists (select 1 from pg_constraint where conrelid = 'public.atas_rp_itens'::regclass and conname = 'uq_atas_rp_itens') then
+    raise exception 'CASO G FALHOU: a chave antiga uq_atas_rp_itens (sem fornecedor) ainda existe';
+  end if;
+
+  -- Dois vencedores do mesmo item da mesma ata (lote NULL): coexistem (com a chave antiga o 2º colidia).
+  insert into public.atas_rp_itens (numero_ata_registro_preco, codigo_unidade_gerenciadora, numero_item, ni_fornecedor, valor_unitario)
+  values ('00077/2026', 999077, '1', '77777777000101', 100), ('00077/2026', 999077, '1', '77777777000102', 110);
+  -- Mesmo fornecedor e item em lotes diferentes: não colidem.
+  insert into public.atas_rp_itens (numero_ata_registro_preco, codigo_unidade_gerenciadora, numero_grupo, numero_item, ni_fornecedor, valor_unitario)
+  values ('00077/2026', 999077, 1, '2', '77777777000101', 200), ('00077/2026', 999077, 2, '2', '77777777000101', 210);
+  -- Mesma chave com lote NULL: colide (NULLS NOT DISTINCT; sem isso o NULL duplicaria a linha).
+  begin
+    insert into public.atas_rp_itens (numero_ata_registro_preco, codigo_unidade_gerenciadora, numero_item, ni_fornecedor, valor_unitario)
+    values ('00077/2026', 999077, '1', '77777777000101', 999);
+    raise exception 'CASO G FALHOU: aceitou chave repetida em atas_rp_itens com numero_grupo NULL';
+  exception when unique_violation then null;
+  end;
+  -- Upsert com o alvo do coletor (compras_arp.CONFLITO_ARP) atualiza só a linha daquele fornecedor.
+  insert into public.atas_rp_itens (numero_ata_registro_preco, codigo_unidade_gerenciadora, numero_item, ni_fornecedor, valor_unitario)
+  values ('00077/2026', 999077, '1', '77777777000102', 120)
+  on conflict (numero_ata_registro_preco, codigo_unidade_gerenciadora, numero_grupo, numero_item, ni_fornecedor)
+  do update set valor_unitario = excluded.valor_unitario;
+  select count(*), sum(valor_unitario) into v_n, v_num
+    from public.atas_rp_itens where numero_ata_registro_preco = '00077/2026' and codigo_unidade_gerenciadora = 999077;
+  select valor_unitario into v_num2
+    from public.atas_rp_itens where numero_ata_registro_preco = '00077/2026' and numero_item = '1' and ni_fornecedor = '77777777000102';
+  raise notice 'G: atas_rp_itens linhas = %, soma = %, fornecedor 2 = %', v_n, v_num, v_num2;
+  if v_n is distinct from 4 or v_num is distinct from 630 or v_num2 is distinct from 120 then
+    raise exception 'CASO G FALHOU: esperado 4 linhas, soma 630 e fornecedor 2 = 120 após upsert; obtido %, %, %', v_n, v_num, v_num2;
+  end if;
+  -- Sem fornecedor a linha não tem chave; lote 0 não pode virar chave diferente de "sem lote" (NULL).
+  begin
+    insert into public.atas_rp_itens (numero_ata_registro_preco, codigo_unidade_gerenciadora, numero_item, ni_fornecedor)
+    values ('00077/2026', 999077, '3', null);
+    raise exception 'CASO G FALHOU: atas_rp_itens aceitou ni_fornecedor NULL';
+  exception when not_null_violation then null;
+  end;
+  begin
+    insert into public.atas_rp_itens (numero_ata_registro_preco, codigo_unidade_gerenciadora, numero_grupo, numero_item, ni_fornecedor)
+    values ('00077/2026', 999077, 0, '3', '77777777000101');
+    raise exception 'CASO G FALHOU: atas_rp_itens aceitou numero_grupo = 0';
+  exception when check_violation then null;
+  end;
+
   if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'resultados_itens_14133'
                   and column_name = 'id_compra_item' and is_nullable = 'NO') then
     raise exception 'CASO G FALHOU: resultados_itens_14133.id_compra_item deveria ser NOT NULL';

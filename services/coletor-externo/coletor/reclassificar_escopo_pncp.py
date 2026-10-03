@@ -45,6 +45,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
+from .catmat_codigo import MapaCatmat, MapaCatmatIndisponivel, carregar_mapa_catmat_se_houver_banco
 from .destino import Supabase, env
 from .escopo import classificar, excluir_compra, objeto_passagem, servico_sem_material
 from .pncp import (FASE_EXCLUIDA, PNCP, CompraExcluida, _instante, atualizacao_da_compra, avaliar, compra_com_detalhe,
@@ -58,8 +59,9 @@ log = logging.getLogger("coletor.reclassificar_escopo_pncp")
 SELECT = ("id,codigo_externo,objeto,categoria_escopo,interesse_borracha,prioridade,situacao,fase,data_homologacao,"
           "data_fim,termos_busca,created_at,raw")
 # material_ou_servico entra para a regra de item de serviço ('S') de pncp.avaliar valer na reclassificação também.
+# catalogo_codigo_item/catalogo_id: código CATMAT antes do texto (pncp.avaliar com mapa_catmat; 03/10/2026).
 SELECT_ITENS = ("id,licitacao_id,numero_item,descricao,material_ou_servico,situacao,tem_resultado,categoria_escopo,"
-                "interesse_borracha")
+                "interesse_borracha,catalogo_codigo_item,catalogo_id")
 LOTE_COMPRAS_ITENS = 50
 # removido_do_portal_em: documento que o PNCP inativou ou tirou de /arquivos (marcado pelo coletor a cada recoleta;
 # antes do PR #134 nenhuma linha PNCP era marcada). Removido não decide a fase (statusAtivo=False no detector).
@@ -133,6 +135,7 @@ def carregar_documentos(sb, linhas: list[dict], lote: int = LOTE_COMPRAS_ITENS) 
 def _itens_gravados(ln: dict) -> list[dict]:
     return [{"numeroItem": it["numero_item"], "descricao": it.get("descricao"), "situacao": it.get("situacao"),
              "materialOuServico": it.get("material_ou_servico"),
+             "catalogoCodigoItem": it.get("catalogo_codigo_item"), "catalogoId": it.get("catalogo_id"),
              "tem_resultado": it.get("tem_resultado"), "_id": it.get("id"),
              "_categoria": it.get("categoria_escopo"), "_interesse": it.get("interesse_borracha")}
             for it in (ln.get("licitacao_itens") or [])]
@@ -169,7 +172,7 @@ def _nova_prioridade(ln: dict, itens: list[dict] | None, agora: datetime, det: d
 
 
 def reavaliar(ln: dict, itens_pncp: list[dict] | None, agora: datetime, det: dict | None = None,
-              excluida: bool = False) -> dict:
+              excluida: bool = False, mapa_catmat: MapaCatmat | None = None) -> dict:
     """Resultado para UMA linha: {status, categoria, interesse, prioridade, campos, itens_campos, ...}.
     status: sem_itens | sem_mudanca | sai_do_escopo | muda."""
     atual_cat, atual_ib, atual_prio = ln.get("categoria_escopo"), bool(ln.get("interesse_borracha")), ln.get("prioridade")
@@ -193,7 +196,7 @@ def reavaliar(ln: dict, itens_pncp: list[dict] | None, agora: datetime, det: dic
             cat, ib = atual_cat, atual_ib   # objeto confirma a categoria gravada; interesse fica o gravado
         por_item = {}
     else:
-        cat, ib, por_item = avaliar(compra, itens)
+        cat, ib, por_item = avaliar(compra, itens, mapa_catmat)
     out["categoria_depois"], out["interesse_depois"] = cat, ib
     # itens gravados cuja categoria/interesse mudaria
     for it in gravados:
@@ -326,9 +329,11 @@ def reclassificar(sb, pncp=None, *, aplicar: bool = False, consultar_pncp: bool 
                   consultar_detalhe_pncp: bool = False, id_min: int | None = None,
                   id_max: int | None = None, desde: str | None = None, termo: str | None = None,
                   limite: int | None = None, amostra: int = 5, agora: datetime | None = None,
-                  workers: int = 1, cache_itens: dict | None = None, salvar_cache=None) -> dict:
+                  workers: int = 1, cache_itens: dict | None = None, salvar_cache=None,
+                  mapa_catmat: MapaCatmat | None = None) -> dict:
     """Resumo da reclassificação; em dry-run (aplicar=False) nunca grava (sb deve ser SomenteLeitura).
-    `cache_itens`: codigo_externo -> itens do PNCP já consultados (lido antes e completado com as consultas novas)."""
+    `cache_itens`: codigo_externo -> itens do PNCP já consultados (lido antes e completado com as consultas novas).
+    `mapa_catmat`: código CATMAT antes do texto, como no coletor (None = só texto)."""
     agora = agora or datetime.now(timezone.utc)
     linhas = sb.selecionar("licitacoes_externas", **_filtros(id_min, id_max, desde, termo, limite))
     n_itens = carregar_itens(sb, linhas)
@@ -414,7 +419,7 @@ def reclassificar(sb, pncp=None, *, aplicar: bool = False, consultar_pncp: bool 
         elif ln.get("licitacao_itens"):
             r["itens_gravados"] += 1
         det, excluida, _ = detalhes.get(ln["id"], (None, False, None))
-        res = reavaliar(ln, ip, agora, det, excluida)
+        res = reavaliar(ln, ip, agora, det, excluida, mapa_catmat)
         if res.get("fonte_itens") == "objeto":
             r["decididas_pelo_objeto"] += 1
         r["linhas"].append(res)
@@ -481,6 +486,14 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     sb = Supabase(env("SUPABASE_URL", obrigatorio=True), env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True))
+    # mapa CATMAT pelo cliente original, ANTES de embrulhar em SomenteLeitura (que bloqueia rpc): o dry-run usa a
+    # mesma regra de código que o --apply. Falha com o banco configurado aborta antes de qualquer gravação.
+    try:
+        mapa = carregar_mapa_catmat_se_houver_banco(sb)
+    except MapaCatmatIndisponivel as e:
+        log.error("Mapa CATMAT indisponível; abortando antes de reclassificar "
+                  "(sem o código a classificação mudaria em silêncio): %s", str(e)[:300])
+        return 1
     if not args.apply:
         sb = SomenteLeitura(sb)
     pncp = None
@@ -503,7 +516,7 @@ def main(argv: list[str] | None = None) -> int:
                       consultar_detalhe_pncp=args.consultar_detalhe, id_min=args.id_min,
                       id_max=args.id_max, desde=args.desde, termo=args.termo, limite=args.limit,
                       amostra=args.amostra, workers=int(env("PNCP_WORKERS", "1")), cache_itens=cache,
-                      salvar_cache=salvar)
+                      salvar_cache=salvar, mapa_catmat=mapa)
     if salvar is not None:
         salvar(cache)
     linhas = r.pop("linhas")

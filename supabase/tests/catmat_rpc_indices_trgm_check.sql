@@ -21,7 +21,7 @@ begin
 
   -- 2
   foreach v_idx in array array['licitacao_itens_descricao_norm_trgm_idx', 'licitacoes_externas_objeto_norm_trgm_idx',
-                               'licitacao_itens_catalogo_codigo_item_num_idx', 'licitacao_itens_no_taxonomia_efetiva_idx'] loop
+                               'licitacao_itens_catmat_codigo_item_idx', 'licitacao_itens_no_taxonomia_efetiva_idx'] loop
     -- sem quebras de linha e sem qualificação de schema (depende do search_path da sessão)
     select replace(replace(regexp_replace(pg_get_indexdef(c.oid), '\s+', ' ', 'g'), 'extensions.', ''), 'public.', '') into v_def from pg_class c join pg_namespace n on n.oid = c.relnamespace
      where n.nspname = 'public' and c.relname = v_idx;
@@ -29,8 +29,10 @@ begin
     if v_idx like '%trgm%' and strpos(v_def, 'USING gin (lg_normalizar(' || case when v_idx like 'licitacao_itens%' then 'descricao' else 'objeto' end || ') gin_trgm_ops)') = 0 then
       raise exception 'índice % com definição inesperada: %', v_idx, v_def;
     end if;
-    if v_idx = 'licitacao_itens_catalogo_codigo_item_num_idx'
-       and strpos(v_def, 'CASE WHEN (catalogo_codigo_item ~ ''^\d{1,15}$''::text) THEN (catalogo_codigo_item)::bigint ELSE NULL::bigint END') = 0 then
+    -- 20261003180000: a expressão de por_codigo exige catalogo_id = 1 e material ('M') antes do cast
+    if v_idx = 'licitacao_itens_catmat_codigo_item_idx'
+       and (strpos(v_def, '(catalogo_id = 1)') = 0 or strpos(v_def, '(material_ou_servico = ''M''') = 0
+            or strpos(v_def, '(catalogo_codigo_item ~ ''^\d{1,15}$''::text)) THEN (catalogo_codigo_item)::bigint ELSE NULL::bigint END') = 0) then
       raise exception 'índice % com definição inesperada: %', v_idx, v_def;
     end if;
     if v_idx = 'licitacao_itens_no_taxonomia_efetiva_idx'

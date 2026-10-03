@@ -253,6 +253,54 @@ async function fetchCompraMetadata(
   }
 }
 
+// materialOuServico do PNCP: código ("M"/"S") vence o nome ("Material"/"Serviço"), sem caixa e sem acento
+// (mesma regra de coletor/pncp.py material_ou_servico).
+const MATERIAL_OU_SERVICO_NOMES: Record<string, "M" | "S"> = {
+  m: "M", material: "M", materiais: "M", s: "S", servico: "S", servicos: "S",
+};
+
+export function materialOuServicoDoItem(it: Record<string, unknown>): "M" | "S" | null {
+  for (const chave of ["materialOuServico", "materialOuServicoNome"]) {
+    const v = it[chave];
+    if (v === undefined || v === null) continue;
+    const norm = String(v).normalize("NFKD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
+    if (norm in MATERIAL_OU_SERVICO_NOMES) return MATERIAL_OU_SERVICO_NOMES[norm];
+  }
+  return null;
+}
+
+/**
+ * Item do /itens do PNCP para a aba Itens PNCP. Repassa o catálogo do item (catalogo.id/nome e catalogoCodigoItem)
+ * e material/serviço para o front decidir o que é CATMAT: só catalogoId = 1 (Catálogo do Compras.gov.br) em
+ * material. numeroItem NUNCA é código de catálogo (a LICITANET numera 7932110, 7932111...).
+ */
+export function mapItemAcompanhamento(it: Record<string, unknown>): ItemAcompanhamento {
+  const catalogo = (it.catalogo && typeof it.catalogo === "object") ? (it.catalogo as Record<string, unknown>) : null;
+  const catalogoIdNum = catalogo?.id === undefined || catalogo?.id === null || typeof catalogo?.id === "boolean"
+    ? NaN
+    : Number(catalogo.id);
+  const codigoBruto = it.catalogoCodigoItem;
+  const codigo = codigoBruto === undefined || codigoBruto === null || typeof codigoBruto === "boolean"
+    ? ""
+    : String(codigoBruto).trim();
+  return {
+    numeroItem: Number(it.numeroItem),
+    descricao: (it.descricao as string) ?? null,
+    quantidade: typeof it.quantidade === "number" ? it.quantidade : (it.quantidade ? Number(it.quantidade) : null),
+    unidade: (it.unidadeMedida as string) ?? (it.unidade as string) ?? null,
+    valorUnitarioEstimado: typeof it.valorUnitarioEstimado === "number"
+      ? it.valorUnitarioEstimado
+      : (it.valorUnitarioEstimado ? Number(it.valorUnitarioEstimado) : null),
+    situacaoCompraItemNome: (it.situacaoCompraItemNome as string) ?? null,
+    temResultado: Boolean(it.temResultado),
+    resultados: [],
+    catalogoCodigoItem: codigo || null,
+    catalogoId: Number.isInteger(catalogoIdNum) && catalogoIdNum > 0 ? catalogoIdNum : null,
+    catalogoNome: typeof catalogo?.nome === "string" && catalogo.nome.trim() ? catalogo.nome.trim() : null,
+    materialOuServico: materialOuServicoDoItem(it),
+  };
+}
+
 async function fetchItensComResultados(
   httpClient: UnifiedHttpClient,
   cnpj: string,
@@ -289,18 +337,7 @@ async function fetchItensComResultados(
       if (pageItems.length === 0) break;
 
       for (const it of pageItems) {
-        allItems.push({
-          numeroItem: Number(it.numeroItem),
-          descricao: (it.descricao as string) ?? null,
-          quantidade: typeof it.quantidade === "number" ? it.quantidade : (it.quantidade ? Number(it.quantidade) : null),
-          unidade: (it.unidadeMedida as string) ?? (it.unidade as string) ?? null,
-          valorUnitarioEstimado: typeof it.valorUnitarioEstimado === "number"
-            ? it.valorUnitarioEstimado
-            : (it.valorUnitarioEstimado ? Number(it.valorUnitarioEstimado) : null),
-          situacaoCompraItemNome: (it.situacaoCompraItemNome as string) ?? null,
-          temResultado: Boolean(it.temResultado),
-          resultados: [],
-        });
+        allItems.push(mapItemAcompanhamento(it));
       }
 
       if (pageItems.length < tamanhoPagina) break;

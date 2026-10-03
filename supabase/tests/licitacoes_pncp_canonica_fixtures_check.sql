@@ -1,5 +1,5 @@
 -- =============================================================================
--- Casos sintéticos da migration 20261003010000_licitacoes_pncp_canonica (banco LOCAL de teste).
+-- Casos sintéticos da migration 20261003170000_licitacoes_pncp_canonica (banco LOCAL de teste).
 --
 -- Dados 100% fictícios (CNPJs 00000000000xxx, órgãos "ÓRGÃO FICTÍCIO ..."). Tudo dentro de
 -- begin; ... rollback; e com trava: aborta se licitacoes_externas tiver mais de 100 linhas (produção).

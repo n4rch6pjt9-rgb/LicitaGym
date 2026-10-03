@@ -19,7 +19,7 @@ import type { UnifiedHttpClient } from "../_shared/http-client/index.ts";
  * Fonte de leitura de list/get: a view com a prioridade EFETIVA (migration
  * 20260930200000_licitacoes_prioridade_efetiva). Mesmas colunas públicas da tabela, mas `prioridade`
  * recalculada só para baixo (historico com qualquer sinal de encerramento; leads -> monitorar com o
- * prazo vencido), mais `canonica_id`/`eh_canonica` (20261003010000_licitacoes_pncp_canonica: o list
+ * prazo vencido), mais `canonica_id`/`eh_canonica` (20261003170000_licitacoes_pncp_canonica: o list
  * mostra só a publicação canônica de uma compra PNCP republicada; o get devolve qualquer linha).
  * security_invoker + SELECT só para service_role (o client desta função).
  * readiness e acompanhamento continuam lendo a tabela (saúde da base e `raw` server-side).
@@ -75,7 +75,7 @@ export const PUBLIC_LICITACAO_COLUMNS = [
 
 /**
  * Colunas da view da prioridade efetiva que não existem na tabela (migration
- * 20261003010000_licitacoes_pncp_canonica): compra PNCP republicada (mesmo órgão, processo e edital)
+ * 20261003170000_licitacoes_pncp_canonica): compra PNCP republicada (mesmo órgão, processo e edital)
  * aparece uma vez em Oportunidades. `canonica_id` é o id da publicação canônica do grupo (o próprio id
  * quando a compra não tem republicação) e `eh_canonica` diz se a linha é ela.
  */

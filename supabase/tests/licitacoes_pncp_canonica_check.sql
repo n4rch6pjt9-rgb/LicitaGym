@@ -1,4 +1,4 @@
--- Verificação (SOMENTE LEITURA) do estado esperado após a migration 20261003010000_licitacoes_pncp_canonica.
+-- Verificação (SOMENTE LEITURA) do estado esperado após a migration 20261003170000_licitacoes_pncp_canonica.
 -- Só SELECT em catálogo, funções has_*_privilege e nas views (nenhuma escrita, nenhuma tabela temporária),
 -- então pode rodar em produção. Executar após aplicar a migration, ex.:
 --   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/tests/licitacoes_pncp_canonica_check.sql

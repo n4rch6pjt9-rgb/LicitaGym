@@ -815,7 +815,7 @@ Deno.test("handleRequest list com filtro uf asserte eq('uf', 'AC') e PUBLIC_LICI
     "created_at",
     "updated_at",
     "last_synced_at",
-    // só na view (20261003010000_licitacoes_pncp_canonica)
+    // só na view (20261003170000_licitacoes_pncp_canonica)
     "canonica_id",
     "eh_canonica",
   ].join(",");
@@ -1517,7 +1517,7 @@ Deno.test("list com recorte CATMAT e página além do fim: a contagem também fi
 // --------------------------------------------------------------------------
 
 const ESCOPO_OPORTUNIDADES = "prioridade.in.(leads,monitorar)";
-/** Compra PNCP republicada aparece uma vez (migration 20261003010000_licitacoes_pncp_canonica). */
+/** Compra PNCP republicada aparece uma vez (migration 20261003170000_licitacoes_pncp_canonica). */
 const SO_CANONICA = { method: "eq", args: ["eh_canonica", true] };
 
 function listReq(qs: string): Request {
@@ -1758,7 +1758,7 @@ Deno.test("CATMAT acima do teto com falha na consulta de escopo: 500 genérico",
 
 
 // --------------------------------------------------------------------------
-// Compra PNCP republicada (decisão 02/10/2026, migration 20261003010000_licitacoes_pncp_canonica):
+// Compra PNCP republicada (decisão 02/10/2026, migration 20261003170000_licitacoes_pncp_canonica):
 // list/contagem/recorte CATMAT só com a publicação canônica; get devolve qualquer linha com canonica_id.
 // Dados fictícios.
 // --------------------------------------------------------------------------

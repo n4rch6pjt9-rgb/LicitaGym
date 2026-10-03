@@ -201,7 +201,7 @@ export const ESCOPO_OPORTUNIDADES_FILTRO = `prioridade.in.(${PRIORIDADES_DE_OPOR
 /**
  * Recorte de Oportunidades, aplicado na lista, na contagem e na redução do recorte CATMAT, sobre a view
  * com a prioridade efetiva:
- * - compra PNCP republicada (decisão 02/10/2026, migration 20261003010000_licitacoes_pncp_canonica):
+ * - compra PNCP republicada (decisão 02/10/2026, migration 20261003170000_licitacoes_pncp_canonica):
  *   só a publicação canônica do grupo (`eh_canonica`), com ou sem filtro de prioridade. As demais
  *   continuam acessíveis no `get` (com `canonica_id` apontando para a canônica);
  * - sem filtro de prioridade (decisão de produto 30/09/2026, revista em 02/10/2026): só leads e

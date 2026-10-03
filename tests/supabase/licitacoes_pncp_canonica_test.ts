@@ -1,6 +1,6 @@
 import { assert, assertEquals } from "jsr:@std/assert@1";
 
-const MIGRATION = "./supabase/migrations/20261003010000_licitacoes_pncp_canonica.sql";
+const MIGRATION = "./supabase/migrations/20261003170000_licitacoes_pncp_canonica.sql";
 const CHECK = "./supabase/tests/licitacoes_pncp_canonica_check.sql";
 const FIXTURES = "./supabase/tests/licitacoes_pncp_canonica_fixtures_check.sql";
 const VIEW = "public.licitacoes_pncp_canonica";

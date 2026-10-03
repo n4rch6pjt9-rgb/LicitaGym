@@ -160,7 +160,7 @@ begin
   -- ---------------------------------------------------------------- G
   select bool_and(pg_get_constraintdef(c.oid) like 'UNIQUE NULLS NOT DISTINCT%') and count(*) = 3 into v_ok
     from pg_constraint c
-   where c.conname in ('uq_pca_pgc_item', 'uq_atas_rp_itens', 'uq_resultados_14133');
+   where c.conname in ('uq_pca_pgc_item', 'uq_atas_rp_itens_lote_fornecedor', 'uq_resultados_14133');
   if v_ok is distinct from true then raise exception 'CASO G FALHOU: constraints sem NULLS NOT DISTINCT'; end if;
   if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'resultados_itens_14133'
                   and column_name = 'id_compra_item' and is_nullable = 'NO') then

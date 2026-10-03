@@ -20,6 +20,9 @@
 --      e não mexe em created_at; como service_role, com EXECUTE da função revogado (só nesta transação), o gatilho
 --      dispara igual (gatilho não exige EXECUTE de quem faz o UPDATE). now() é fixo na transação: o teste parte de
 --      updated_at antigo explícito.
+--   L. valor que normaliza para NULL é recusado: marca canônica '-' ou 'LTDA' (marca_aliases_marca_norm_check) e
+--      valor_norm exato/prefixo '-' ou 'LTDA' (marca_aliases_valor_check). Regex segue a regra própria (compilar e
+--      não casar com ''), sem normalização.
 -- Os casos A-G rodam antes das fixtures de I, J e K, que não mudam as contagens deles.
 -- Resultado esperado: NOTICE "SUCESSO: marcas_resolvedor_views_check ok".
 -- Cada falha sai em NOTICE ("FALHA ...") e o script termina com UMA exceção que lista todas. Sem a migration aplicada
@@ -69,7 +72,7 @@ begin
     v_faltam := coalesce(v_faltam, '{}') || 'private.marca_normalizar(text)'::text;
   end if;
   if v_faltam is not null then
-    raise exception 'VIEWS CHECK FALHOU: marcas_resolvedor_views_check: % objeto(s) ausente(s), casos A-K não executados:%',
+    raise exception 'VIEWS CHECK FALHOU: marcas_resolvedor_views_check: % objeto(s) ausente(s), casos A-L não executados:%',
       array_length(v_faltam, 1), E'\n  - ausente: ' || array_to_string(v_faltam, E'\n  - ausente: ');
   end if;
   select count(*) = 2 into v_tem_constraints
@@ -320,6 +323,29 @@ begin
     raise notice 'CASO K: % não pode assumir service_role; parte de service_role pulada', current_user;
   end if;
   delete from public.marca_aliases where valor_norm = 'ZZQ UPD';
+
+  -- ------------------------------------------------------------------ L (normaliza para NULL -> recusado)
+  for v_rec in
+    select * from (values
+      ('marca',  'ZZQ L1',  'exato',   '-',     'marca canônica ''-'''),
+      ('marca',  'ZZQ L2',  'exato',   'LTDA',  'marca canônica ''LTDA'''),
+      ('valor',  '-',       'exato',   'ZZQ L', 'valor_norm exato ''-'''),
+      ('valor',  'LTDA',    'exato',   'ZZQ L', 'valor_norm exato ''LTDA'''),
+      ('valor',  '-',       'prefixo', 'ZZQ L', 'valor_norm prefixo ''-'''),
+      ('valor',  'LTDA',    'prefixo', 'ZZQ L', 'valor_norm prefixo ''LTDA''')) as x(alvo, valor_norm, modo, marca, rotulo)
+  loop
+    begin
+      insert into public.marca_aliases (valor_norm, modo, marca, tipo, origem, evidencia)
+      values (v_rec.valor_norm, v_rec.modo, v_rec.marca, 'marca', 'curadoria', 'teste caso L');
+      v_falhas := v_falhas || format('CASO L FALHOU: aceitou %s', v_rec.rotulo);
+    exception when check_violation then
+      if v_rec.alvo = 'marca' and sqlerrm !~ 'marca_aliases_marca_norm_check' then
+        v_falhas := v_falhas || format('CASO L FALHOU: %s recusado pela constraint errada: %s', v_rec.rotulo, sqlerrm);
+      elsif v_rec.alvo = 'valor' and sqlerrm !~ 'marca_aliases_valor_check' then
+        v_falhas := v_falhas || format('CASO L FALHOU: %s recusado pela constraint errada: %s', v_rec.rotulo, sqlerrm);
+      end if;
+    end;
+  end loop;
 
   -- ------------------------------------------------------------------ H
   if not v_tem_constraints then

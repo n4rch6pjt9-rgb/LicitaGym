@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from coletor import compras_arp, compras_precos, paginacao
 from coletor.compras_precos import id_compra_de, normalizar_preco_praticado, texto_ou_nulo, tipo_ni
 
@@ -61,6 +63,27 @@ def test_texto_ou_nulo():
     assert texto_ou_nulo(" 0 ") is None
     assert texto_ou_nulo("10") == "10"
     assert texto_ou_nulo(" Penalty ") == "Penalty"
+
+
+def test_texto_ou_nulo_recusa_tipo_que_nao_e_texto():
+    # Review do Copilot em 2363ba5: str() transformava marca={"nome": "X"} em "{'nome': 'X'}".
+    for val in ({"nome": "X"}, ["X"], 12.5, 123, True):
+        with pytest.raises(compras_precos.TipoInvalido):
+            texto_ou_nulo(val, "marca")
+    assert texto_ou_nulo(0, "marca") is None  # placeholder inteiro 0 continua tolerado
+
+
+def test_marca_com_tipo_invalido_e_erro_e_nao_grava(caplog):
+    itens = [_item_pp(idItemCompra=1), _item_pp(idItemCompra=2, marca={"nome": "X"}), _item_pp(idItemCompra=3)]
+    cli = _ClienteFalso([itens], total=3)
+    sb = _SbFalso()
+    res = compras_precos.coletar(cli, sb, pdms=[2640])
+    assert res["sucesso"] is False and res["erros"] == 1
+    assert res["descartados"] == 1
+    assert res["total_gravados"] == 2
+    assert [r["id_item_compra"] for r in sb.gravadas] == [1, 3]
+    assert all(isinstance(r["marca"], str) and "{" not in r["marca"] for r in sb.gravadas)
+    assert "marca com tipo dict" in caplog.text
 
 
 def test_normalizar_placeholders_viram_nulo():

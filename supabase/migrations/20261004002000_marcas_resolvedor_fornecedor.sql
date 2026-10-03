@@ -155,13 +155,19 @@ create table if not exists public.marca_aliases (
     check (origem in ('amostra_manual', 'web', 'seed_python', 'plugin_comprasgov', 'dados', 'curadoria')),
   constraint marca_aliases_cnpj_check check (cnpj_escopo is null or cnpj_escopo ~ '^[0-9]{14}$'),
   constraint marca_aliases_marca_check check ((tipo = 'nao_marca') = (marca is null)),
-  constraint marca_aliases_marca_norm_check check (marca is null or marca = private.marca_normalizar(marca)),
+  -- marca canônica já normalizada e não vazia depois de normalizar: '-' ou 'LTDA' normalizam para NULL, e
+  -- "marca = NULL" é UNKNOWN, que um CHECK aceita; o is not null fecha essa brecha
+  constraint marca_aliases_marca_norm_check check (
+    marca is null
+    or (private.marca_normalizar(marca) is not null and marca = private.marca_normalizar(marca))),
   -- padrão vazio (ou só espaços) casaria com toda marca: proibido em qualquer modo
   constraint marca_aliases_valor_vazio_check check (btrim(valor_norm) <> ''),
-  -- exato/prefixo guardam o valor já normalizado; regex precisa compilar (expressão inválida falha no INSERT) e não
+  -- exato/prefixo guardam o valor já normalizado e não nulo depois de normalizar ('-', 'LTDA' -> NULL nunca casaria
+  -- e passaria pelo UNKNOWN); regex não é normalizado: precisa compilar (expressão inválida falha no INSERT) e não
   -- pode casar com a string vazia ('', '.*', '^', 'X?'...), porque casaria com toda marca
   constraint marca_aliases_valor_check check (
-    (modo in ('exato', 'prefixo') and valor_norm = private.marca_normalizar(valor_norm))
+    (modo in ('exato', 'prefixo') and private.marca_normalizar(valor_norm) is not null
+       and valor_norm = private.marca_normalizar(valor_norm))
     or (modo = 'regex' and not ('' ~ valor_norm)))
 );
 
@@ -205,6 +211,16 @@ begin
                   where c.conrelid = 'public.marca_aliases'::regclass and c.conname = 'marca_aliases_chave_key'
                     and i.indnullsnotdistinct) then
     raise exception 'marcas_resolvedor: marca_aliases_chave_key deveria ser UNIQUE NULLS NOT DISTINCT';
+  end if;
+  -- tabela criada por versão anterior desta migration (CHECK sem "is not null") não pode seguir com a regra fraca
+  select string_agg(c.conname, ', ' order by c.conname) into v_div
+    from pg_constraint c
+   where c.conrelid = 'public.marca_aliases'::regclass
+     and c.conname in ('marca_aliases_marca_norm_check', 'marca_aliases_valor_check')
+     and pg_get_constraintdef(c.oid) !~* 'marca_normalizar\([a-z_]+\) IS NOT NULL';
+  if v_div is not null then
+    raise exception 'marcas_resolvedor: public.marca_aliases tem CHECK de versão anterior (sem is not null): %', v_div
+      using hint = 'Recriar as constraints com a definição desta migration (drop constraint + add constraint) e reaplicar.';
   end if;
 end $fmt$;
 

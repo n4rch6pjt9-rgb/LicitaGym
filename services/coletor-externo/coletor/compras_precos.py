@@ -98,11 +98,24 @@ def deduplicar_por_chave(linhas: list[dict[str, Any]]) -> tuple[list[dict[str, A
     return list(escolhidas.values()), len(linhas) - len(escolhidas)
 
 
-def texto_ou_nulo(val: Any) -> str | None:
-    """Texto com strip; vazio e o placeholder "0" da API viram None (ni_fornecedor, marca, codigo_uasg)."""
+class TipoInvalido(ValueError):
+    """Campo de texto da API veio com tipo que não é texto (ex.: marca={"nome": "X"})."""
+
+
+def texto_ou_nulo(val: Any, campo: str = "valor") -> str | None:
+    """Texto com strip; vazio e o placeholder "0" da API viram None (ni_fornecedor, marca, codigo_uasg).
+
+    Só aceita str ou None (o schema declara esses campos como string). O único não-texto tolerado é o placeholder
+    inteiro 0. Qualquer outro tipo (dict, lista, número, bool) levanta TipoInvalido: serializar com str() gravaria
+    "{'nome': 'X'}" como marca oficial.
+    """
     if val is None:
         return None
-    s = str(val).strip()
+    if type(val) is int and val == 0:
+        return None
+    if not isinstance(val, str):
+        raise TipoInvalido(f"{campo} com tipo {type(val).__name__}, esperado texto")
+    s = val.strip()
     return None if s in ("", "0") else s
 
 
@@ -172,7 +185,7 @@ def normalizar_preco_praticado(item: dict[str, Any]) -> dict[str, Any] | None:
         # caracteres (até 84): ~76% é marca real, o restante é modelo, lixo ou ambíguo. Por isso a marca canônica sai de
         # private.marca_resolver na view. Fabricante e modelo não existem na fonte: NULL de propósito (colunas
         # mantidas porque as views de BI as leem). Não inventar.
-        "marca": texto_ou_nulo(item.get("marca")),
+        "marca": texto_ou_nulo(item.get("marca"), "marca"),
         "fabricante": None,
         "modelo": None,
         "data_resultado": _date(item.get("dataResultado")),
@@ -182,9 +195,9 @@ def normalizar_preco_praticado(item: dict[str, Any]) -> dict[str, Any] | None:
         "capacidade_unidade_fornecimento": _num(item.get("capacidadeUnidadeFornecimento")),
         "sigla_unidade_medida": item.get("siglaUnidadeMedida"),
         "nome_unidade_medida": item.get("nomeUnidadeMedida"),
-        "ni_fornecedor": texto_ou_nulo(item.get("niFornecedor")),
+        "ni_fornecedor": texto_ou_nulo(item.get("niFornecedor"), "niFornecedor"),
         "nome_fornecedor": item.get("nomeFornecedor"),
-        "codigo_uasg": texto_ou_nulo(item.get("codigoUasg")),
+        "codigo_uasg": texto_ou_nulo(item.get("codigoUasg"), "codigoUasg"),
         "nome_uasg": item.get("nomeUasg"),
         "codigo_orgao": _int(item.get("codigoOrgao")),
         "nome_orgao": item.get("nomeOrgao"),
@@ -326,7 +339,15 @@ def coletar(
                 if limite and total_coletados >= limite:
                     # --limite vale antes do upsert: o resto da página não é normalizado nem gravado.
                     break
-                norm = normalizar_preco_praticado(it)
+                try:
+                    norm = normalizar_preco_praticado(it)
+                except TipoInvalido as e:
+                    # Tipo inválido em campo de texto: o item não é gravado e a consulta sai como falha.
+                    descartados += 1
+                    erros += 1
+                    log.warning("Pesquisa Preco %s=%d página %d: item idCompraItem=%s descartado: %s",
+                                tipo, cod, pagina, it.get("idCompraItem") if isinstance(it, dict) else None, e)
+                    continue
                 if norm:
                     linhas_norm.append(norm)
                     total_coletados += 1

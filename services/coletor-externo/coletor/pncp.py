@@ -22,8 +22,8 @@ Metadados de origem e versão (migration 20261002230000_pncp_link_origem_atualiz
   licitacoes_externas.link_sistema_origem = linkSistemaOrigem do detalhe (portal onde a disputa acontece);
   licitacoes_externas.pncp_data_atualizacao[_global] = dataAtualizacao[Global] do detalhe, gravadas só no FIM de
   uma coleta completa (metadados + itens + resultados + lista de arquivos); recoletar_atualizadas() recoleta
-  a compra quando o PNCP mostra outro valor (python -m coletor.pncp --recoletar-atualizadas);
-  licitacao_documentos.ativo = statusAtivo do /arquivos (anexo inativo fica registrado, mas não é baixado).
+  a compra quando o PNCP mostra outro valor (python -m coletor.pncp --recoletar-atualizadas).
+  Anexo com statusAtivo=false não é gravado; o que já existia ganha removido_do_portal_em (mesmo critério do #134).
 
 Prefeituras normalmente NÃO informam código CATMAT; por isso a busca é textual e cada
 compra passa pelo classificador de escopo (coletor/escopo.py) usando objeto + itens.
@@ -102,6 +102,12 @@ def url_permitida(url: str | None, hosts: tuple[str, ...] | None = None) -> bool
 class ConsultaFalhou(RuntimeError):
     """Consulta ao PNCP falhou (timeout, 429/5xx esgotados, resposta inválida).
     Diferente de resposta válida sem o dado: quem recebe não deve gravar nada."""
+
+
+class CompraExcluida(ConsultaFalhou):
+    """O detalhe respondeu HTTP 410 (Gone): a compra foi excluída do PNCP (evento "Exclusão – Contratação";
+    ex.: id 1315 em 02/10/2026 09:05 BRT). Subclasse de ConsultaFalhou para quem só trata falha continuar igual;
+    o coletor e o reclassificador usam o sinal para gravar historico/"Excluída do PNCP" (não é Oportunidade)."""
 
 
 def validar_prioridades(prioridades: list[str] | set[str] | str | None) -> set[str] | None:
@@ -393,18 +399,85 @@ def _data(v):
         return None
 
 
-def anexo_ativo(a: dict) -> bool:
-    """statusAtivo do /arquivos do PNCP. Ausente = ativo (formato antigo); só False/"false" explícito é inativo
-    (anexo substituído ou retirado pelo órgão: o PNCP continua listando, com statusAtivo=false)."""
-    v = a.get("statusAtivo", True)
-    if isinstance(v, str):
-        return v.strip().lower() not in ("false", "f", "0", "nao", "não")
-    return v is not False
-
-
 # Categorias de equipamento/material de academia: item marcado como serviço ('S') no PNCP não conta nelas
 # (piso/obra_piso/borracha continuam: execução de piso ou gramado interessa pela borracha do vencedor).
 CATEGORIAS_SO_MATERIAL = ("forte", "fraco", "catmat")
+# Texto que FORNECE produto (parte explícita de escopo.PRODUTO, sem os substantivos soltos "equipamento",
+# "aparelho", "material", "kit", que aparecem em "manutenção de aparelhos" e "locação de equipamentos", e sem
+# "peças", que é manutenção). Só vale para compra só de serviço (compra_so_de_servico).
+FORNECE_PRODUTO = re.compile(
+    r"aquisic|\bcompras?\s+de\b|\binsumos?\b|fornecimento\s+(e\s+instalacao\s+)?(de\s+)?(materia|equipament|aparelh|"
+    r"produt|kits?|brinquedo|piso|grama|borracha)|com\s+fornecimento\s+de\s+(materia|equipament|aparelh)", re.I)
+# "Fornecimento [, instalação | e montagem | e entrega ...] de <X>" também fornece produto quando <X> é o próprio
+# produto nomeado ("Fornecimento de halteres para academia", "Fornecimento e instalação de esteiras ergométricas",
+# "Fornecimento e montagem de equipamentos de musculação"; Copilot, PR #134). Só é consultado quando o classificador
+# já deu forte/fraco/catmat ao texto, então <X> não precisa ser listado. Não vale (a) quando <X> é peça, mão de obra,
+# pessoal/profissionais/instrutores/oficineiros, serviço, manutenção ou reposição, nem (b) quando o próprio texto é
+# de manutenção/reparo/troca/locação/credenciamento: "MANUTENÇÃO EM DECK DE ESTEIRA COM FORNECIMENTO DAS RESPECTIVAS
+# PEÇAS" (2032, 2048) e "Reparo de aparelho ... incluído fornecimento e instalação de acolchoamento" (2064) seguem
+# serviço (dry-run de 02/10/2026).
+_FORNECIMENTO_NOMEADO = re.compile(
+    r"\bfornecimento(\s*(,|e|com)\s*(a\s+|o\s+)?(respectiva\s+)?(instalacao|montagem|entrega|assentamento|implantacao|"
+    r"transporte))*\s+(de|do|da|dos|das)\s+"
+    r"(?!((todo|toda)s?\s+)?((o|a)s?\s+)?(respectiv\w*\s+)?(pecas?\b|componentes\s+de\s+reposicao|mao\s+de\s+obra|"
+    r"pessoal\b|profissiona|instrutor|oficineir|professor|servic|manutenc|reposic|tecnicos?\b|equipe\b))\w", re.I)
+_SERVICO_SOBRE_PRODUTO = re.compile(
+    r"manutenc|\breparos?\b|\bconsert|\btrocas?\s+de\b|substituic|credenciament|recuperac|\brevisao", re.I)
+# Locação/aluguel/comodato nunca é aquisição do equipamento ("Fornecimento de aparelhos de musculação em regime de
+# locação mensal"; Copilot, PR #134, 2ª rodada).
+_LOCACAO = re.compile(r"\blocac|\baluguel|\balugar\b|comodato", re.I)
+# O sinal de produto cujo objeto é peça, mão de obra ou o próprio serviço ("aquisição de peças de reposição",
+# "fornecimento das respectivas peças", "Aquisição de serviços de manutenção preventiva de aparelhos", "compra de
+# serviço de instalação"; Copilot, PR #134, 3ª rodada) não é aquisição do equipamento.
+_NAO_PRODUTO_DEPOIS = re.compile(
+    r"^\w*\s+(de|do|da|dos|das)\s+((todo|toda)s?\s+)?((o|a)s?\s+)?(respectiv\w*\s+)?(novas?\s+)?"
+    r"(pecas?\b|componentes\s+de\s+reposicao|mao\s+de\s+obra|servic|prestac|manutenc|contratac|empresa\b|"
+    r"pessoa\s+juridica)", re.I)
+
+# Aquisição efetiva de equipamento/aparelho vale mesmo depois do serviço ("serviços de revitalização, manutenção e
+# recuperação de equipamentos de academia ... bem como aquisição de novos equipamentos", 1894): não é peça. Só
+# quando o objeto da aquisição É o equipamento: "aquisição de [novos|outros|demais] equipamentos/aparelhos" logo em
+# seguida (não "aquisição de serviços ... de aparelhos", nem "aquisição de peças de equipamentos"), e não
+# equipamento de proteção/segurança/EPI/informática/limpeza (insumo do serviço).
+_AQUISICAO_DE_EQUIPAMENTO = re.compile(
+    r"\b(aquisic\w*|compras?)\s+(de|do|da|dos|das)\s+((novos?|novas?|outros?|demais)\s+)?(equipament|aparelh)[a-z]*\b"
+    r"(?!\s+(de\s+|para\s+)?(protecao|seguranca|epis?\b|informatica|limpeza|medicao))", re.I)
+
+
+def _inicio_do_produto(t: str) -> int | None:
+    """Posição do primeiro sinal de fornecimento de produto (FORNECE_PRODUTO ou _FORNECIMENTO_NOMEADO) que não seja
+    de peça/mão de obra; None = nenhum."""
+    pos = [m.start() for m in FORNECE_PRODUTO.finditer(t) if not _NAO_PRODUTO_DEPOIS.search(t[m.start():])]
+    m = _FORNECIMENTO_NOMEADO.search(t)
+    if m:
+        pos.append(m.start())
+    return min(pos) if pos else None
+
+
+def fornece_produto(texto: str | None) -> bool:
+    """O texto (já normalizado) fornece produto? Ver FORNECE_PRODUTO e _FORNECIMENTO_NOMEADO, com a mesma trava de
+    serviço nos dois ramos (Copilot, PR #134, 2ª rodada):
+    - locação/aluguel/comodato no texto: não é aquisição;
+    - fornecimento/aquisição de peças, mão de obra ou serviço ("Aquisição de serviços de manutenção"): não conta;
+    - manutenção/reparo/troca/substituição/credenciamento/recuperação/revisão ANTES do sinal de produto: o texto é o
+      serviço e o produto é acessório ("Manutenção de aparelhos com aquisição de peças", "Reparo ... incluído
+      fornecimento de acolchoamento"); DEPOIS do sinal, a manutenção é acessória da compra e o produto vale
+      ("Aquisição de esteiras ergométricas com manutenção preventiva durante a garantia"). Exceção: aquisição
+      explícita de equipamento/aparelho (o objeto da aquisição é o equipamento) vale em qualquer posição
+      (_AQUISICAO_DE_EQUIPAMENTO)."""
+    t = texto or ""
+    if _LOCACAO.search(t):
+        return False
+    inicio = _inicio_do_produto(t)
+    if inicio is None:
+        return False
+    servico = _SERVICO_SOBRE_PRODUTO.search(t)
+    return servico is None or inicio < servico.start() or bool(_AQUISICAO_DE_EQUIPAMENTO.search(t))
+
+
+def compra_so_de_servico(itens: list[dict] | None) -> bool:
+    """Compra com itens e TODOS marcados como serviço ('S') no PNCP."""
+    return bool(itens) and all(material_ou_servico(it) == "S" for it in itens)
 
 
 def avaliar(compra: dict, itens: list[dict]) -> tuple[str | None, bool, dict[int, tuple[str | None, bool]]]:
@@ -416,10 +489,15 @@ def avaliar(compra: dict, itens: list[dict]) -> tuple[str | None, bool, dict[int
     academia) fica fora inteira; item marcado como serviço ('S') sem fornecimento de material no texto não conta
     como equipamento. Compra de academia ao ar livre (ATI) só entra pelo piso/grama/borracha.
     Compra de mobiliário, brinquedos, material de expediente ou material hospitalar (escopo.objeto_passagem) só fica
-    "forte" com item core de equipamento (escopo.item_core); sem core, o forte cai para "fraco" (02/10/2026)."""
+    "forte" com item core de equipamento (escopo.item_core); sem core, o forte cai para "fraco" (02/10/2026).
+    Compra só de serviço (todos os itens 'S'; ex.: manutenção, locação, tapeçaria, orientação técnica) não vira
+    forte/fraco/catmat pelo texto do objeto nem por item que só cita o aparelho ("manutenção de aparelhos de
+    musculação"): só conta item ou objeto que fornece o produto (FORNECE_PRODUTO). Piso/obra_piso/borracha de
+    item de obra seguem valendo (decisão de 30/09/2026) (02/10/2026)."""
     objeto = compra.get("description") or compra.get("title") or ""
     if excluir_compra(objeto) or servico_sem_material(objeto):
         return None, False, {it["numeroItem"]: (None, False) for it in itens}
+    so_servico = compra_so_de_servico(itens)
     # Academia ao ar livre (ATI) está fora do escopo: numa compra dessas só o piso/grama/borracha conta;
     # "LEG PRESS DUPLO" ou "SIMULADOR DE CAVALGADA" de uma ATI não fazem a compra virar "forte".
     ar_livre = academia_ar_livre(objeto)
@@ -437,11 +515,16 @@ def avaliar(compra: dict, itens: list[dict]) -> tuple[str | None, bool, dict[int
     for it in itens:
         desc = it.get("descricao") or ""
         cat = classificar(desc)
-        servico = material_ou_servico(it) == "S" and not PRODUTO.search(normalizar(desc))
+        # "Fornecimento de halteres"/"Fornecimento e instalação de esteiras" também fornecem produto (fornece_produto;
+        # PRODUTO só conhece os substantivos genéricos)
+        servico = material_ou_servico(it) == "S" and not PRODUTO.search(normalizar(desc)) and \
+            not fornece_produto(normalizar(desc))
         # serviço ('S') nunca é core, nem quando o texto cita o aparelho ("manutenção de esteira ergométrica")
         if passagem and not tem_core and material_ou_servico(it) != "S" and not ar_livre and not obra and not predial:
             tem_core = _escopo.item_core(desc, esportivo)
         if cat in CATEGORIAS_SO_MATERIAL and servico:
+            cat = None
+        if so_servico and cat in CATEGORIAS_SO_MATERIAL and not fornece_produto(normalizar(desc)):
             cat = None
         if ar_livre and cat in CATEGORIAS_SO_MATERIAL:
             cat = None
@@ -456,6 +539,10 @@ def avaliar(compra: dict, itens: list[dict]) -> tuple[str | None, bool, dict[int
             continue
         por_item[it["numeroItem"]] = (cat, interesse_borracha(desc, cat))
     cat_obj = classificar(objeto)
+    # pncp.py:388-391 antes de 02/10/2026: o objeto sozinho ("manutenção de equipamentos de musculação") fazia
+    # forte numa compra sem nenhum item de material.
+    if so_servico and cat_obj in CATEGORIAS_SO_MATERIAL and not fornece_produto(normalizar(objeto)):
+        cat_obj = None
     if passagem and not tem_core:   # item de passagem (tatame, bola, banco, puxador...) não segura o forte
         por_item = {n: ("fraco" if c == "forte" else c, b) for n, (c, b) in por_item.items()}
         cat_obj = "fraco" if cat_obj == "forte" else cat_obj
@@ -490,6 +577,9 @@ _ITEM_COM_RESULTADO = re.compile(r"homologad|adjudicad", re.I)
 _ITEM_FINAL = re.compile(r"homologad|adjudicad|desert|fracassad|anulad|revogad|cancelad", re.I)
 # Datas do PNCP sem fuso (ex.: data_fim_vigencia "2026-10-13T09:30") estão no horário de Brasília.
 FUSO_PNCP = timezone(timedelta(hours=-3))
+# Prazo de proposta além disto é data inválida, não lead (02/10/2026): id 129 com 2604-04-16, credenciamento
+# "contínuo" com 9999-12-31, id 126 com 2029. Fica monitorar ("Prazo inválido") até alguém conferir.
+PRAZO_PROPOSTA_MAXIMO = timedelta(days=730)
 
 
 def _instante(v) -> datetime | None:
@@ -532,8 +622,9 @@ def motivo_prioridade(compra: dict, tem_resultado: bool | None = None, *, agora:
 
     Ordem: 1) historico se há homologação/resultado ou a compra está encerrada (revogada, anulada,
     cancelada, deserta, fracassada, todos os itens finalizados); 2) monitorar se suspensa; 3) pelo prazo
-    de proposta: aberto -> leads, encerrado sem resultado -> monitorar; 4) sem prazo: o status da busca
-    (último recurso); 5) None = indeterminado (quem chama não grava).
+    de proposta: aberto -> leads, encerrado sem resultado -> monitorar, além de PRAZO_PROPOSTA_MAXIMO
+    (2604, 9999) -> monitorar (data inválida não é lead); 4) sem prazo: o status da busca (último recurso);
+    5) None = indeterminado (quem chama não grava). Documentos da compra e exclusão do PNCP: fase_da_compra.
 
     Precedência de chaves (_campo): as do detalhe vêm antes das da busca (existeResultado > tem_resultado,
     situacaoCompraNome > situacao_nome, dataEncerramentoProposta > data_fim_vigencia), então na visão
@@ -568,12 +659,164 @@ def motivo_prioridade(compra: dict, tem_resultado: bool | None = None, *, agora:
     # horário sem fuso do PNCP como UTC (_data), 3 h antes do prazo real em Brasília
     fim = _instante(_campo(compra, "dataEncerramentoProposta", "data_fim_vigencia") or _campo(compra, "data_fim"))
     if fim:
+        if fim > agora + PRAZO_PROPOSTA_MAXIMO:
+            return "monitorar", f"prazo de proposta implausível ({fim.date().isoformat()})"
         if fim > agora:
             return "leads", "recebendo proposta"
         return "monitorar", "propostas encerradas sem resultado"
     if status_busca in PRIORIDADE_DO_STATUS_BUSCA:
         return PRIORIDADE_DO_STATUS_BUSCA[status_busca], f"sem prazo de proposta; busca status={status_busca}"
     return None, "indeterminado (sem prazo de proposta nem resultado)"
+
+
+# Fase real da compra (02/10/2026; regra P0-P10 de DIAG-SITUACAO-MATCH.md). O PNCP não muda situacaoCompraId
+# quando o órgão só publica o documento: em 02/10/2026, 135 e 492 tinham aviso de suspensão e 1458/1530 termo de
+# homologação, todos ainda "Divulgada no PNCP" com existeResultado=false. Documento de contrato/ata não conta: o
+# "Extrato de Suspensão de Contrato" do id 229 suspende um contrato, não a compra.
+# Só contrato/ata/empenho: "contratação" é a própria compra ("Termo de homologação da contratação", "Aviso de
+# suspensão da contratação" contam; Copilot, PR #134).
+_DOC_DE_CONTRATO = re.compile(r"\bcontratos?\b|\bcontratua\w*|\bata\s+de\s+registro|\barp\b|\baditiv\w*|\bempenho")
+# \b na frente: "granulada" contém "anula" (borracha granulada é o produto do Marcelo).
+_DOC_HOMOLOGACAO = re.compile(r"\bhomologa|\badjudica")
+# "Resultado" só com título conclusivo do certame (Copilot, PR #134): "Resultado da impugnação", "Resultado de
+# esclarecimento", "Resultado preliminar" e "Resultado da amostra" não encerram a compra.
+_DOC_RESULTADO_FINAL = re.compile(r"\baviso\s+de\s+resultado\b|\bresultado\s+(final|definitivo|do\s+julgamento|"
+                                  r"da\s+licitacao|do\s+certame|do\s+pregao|da\s+concorrencia|da\s+dispensa)\b")
+# Filtro ÚNICO de etapa / documento não conclusivo (pedido do Marcelo; Copilot, PR #134, 2ª e 3ª rodadas), aplicado
+# a TODOS os sinais documentais (homologação, adjudicação, resultado, revogação, anulação e suspensão): pedido,
+# solicitação, requerimento, recurso, impugnação, esclarecimento, preliminar, provisório, amostra, contrarrazões,
+# minuta, indeferimento, intenção, "proposta de", parecer e despacho não são o ato ("Pedido de revogação",
+# "Minuta do termo de revogação", "Pedido de suspensão", "Indeferimento do pedido de suspensão", "Parecer de
+# revogação", "Recurso contra a homologação"). Os radicais aceitam o nome de arquivo do PNCP sem os acentos
+# ("SOLICITAO_DE_REVOGAO_PARCIAL"). Despacho que É o ato ("DESPACHO DE SUSPENSAO PE 0262026", "Despacho de
+# Adjudicação e Homologação") continua valendo: só o "despacho" sozinho é etapa (_DOC_DESPACHO_ATO).
+_DOC_ETAPA = re.compile(
+    r"\bpedido|\bsolicita(c|o\b)|requeriment|\brecurso|impugna|esclarec|preliminar|\bprovis(o)?ri|amostra|contrarraz|"
+    r"\bminuta|indefer|\binten(c|ao\b|o\b)|\bproposta\s+de\b|\bparecer|\bdespacho")
+_DOC_DESPACHO_ATO = re.compile(r"\bdespacho\s+((de|da|do)\s+)?(homologa|adjudica|revoga|anula|suspens)|"
+                               r"\bdespacho\s+homologatori")
+# Além do filtro único, por sinal: resultado de habilitação ou parcial não encerra a compra; revogação/anulação e
+# suspensão parciais (de um lote) também não. "Termo de homologação e habilitação" é ato conclusivo.
+_DOC_RESULTADO_NAO_FINAL = re.compile(r"habilitac|parcial")
+_DOC_REVOGACAO = re.compile(r"\brevoga|\banula")
+_DOC_SUSPENSAO = re.compile(r"\bsuspens")
+# Fim da suspensão não é suspensão nem revogação da compra ("Revogação da suspensão", "Aviso de reabertura após
+# suspensão", "Retomada do certame suspenso", "Levantamento da suspensão").
+_DOC_FIM_SUSPENSAO = re.compile(r"\b(revoga|anula)\w*\s+((de|da|do)\s+)?((ato|aviso|termo|decisao)\s+(de\s+)?)?suspens|"
+                                r"\breabert|\bretomad|\blevantament\w*\s+((de|da|do)\s+)?suspens|"
+                                r"\bsuspens\w*\s+(revogad|anulad|sem\s+efeito|cancelad)")
+
+
+def documento_de_etapa(texto: str | None) -> bool:
+    """O título (já normalizado) é de etapa/documento não conclusivo? Ver _DOC_ETAPA."""
+    return bool(_DOC_ETAPA.search(_DOC_DESPACHO_ATO.sub(" ", texto or "")))
+
+# Suspensão publicada até 10 min antes da última retificação da compra ainda vale (o PNCP grava os dois juntos,
+# ex.: 135); retificação depois dela reabriu a compra (77: suspensa em agosto, retificada em 24/09 com prazo novo).
+TOLERANCIA_RETIFICACAO = timedelta(minutes=10)
+_CHAVES_TEXTO_DOC = ("titulo", "nome_original", "tipoDocumentoNome", "tipo_documento")
+_CHAVES_DATA_DOC = ("dataPublicacaoPncp", "data_documento", "data")
+
+FASE_EXCLUIDA = "Excluída do PNCP"
+FASE_RESULTADO = "Homologada / com resultado"
+FASE_RESULTADO_DOC = "Homologada (documento)"
+FASE_REVOGADA_DOC = "Revogada/Anulada (documento)"
+FASE_SUSPENSA = "Suspensa"
+FASE_SUSPENSA_DOC = "Suspensa (documento)"
+FASE_ITENS_FINALIZADOS = "Encerrada (itens finalizados)"
+FASE_RECEBENDO = "Recebendo propostas"
+FASE_JULGAMENTO = "Em julgamento"
+FASE_PRAZO_INVALIDO = "Prazo inválido"
+
+
+def sinal_documental(documentos: list[dict] | None, retificada_em=None) -> str | None:
+    """'resultado' | 'revogacao' | 'suspensao' | None, pelos títulos dos documentos DA COMPRA.
+    Aceita /arquivos do PNCP (titulo, tipoDocumentoNome, dataPublicacaoPncp) e licitacao_documentos
+    (nome_original, tipo_documento, data_documento). Documento com statusAtivo False (inativo no PNCP ou removido
+    do portal) não conta. Resultado só com título conclusivo (homologação, adjudicação, resultado final/do
+    julgamento/da licitação/do certame, aviso de resultado). Documento de etapa ou não conclusivo (documento_de_etapa:
+    pedido, minuta, recurso, indeferimento, parecer...) não conta para NENHUM sinal; resultado de habilitação/parcial,
+    revogação/suspensão parcial e fim de suspensão (revogação da suspensão, reabertura) também não;
+    contrato/ata/aditivo/empenho não contam (contratação sim);
+    suspensão só vale se não houve retificação da compra depois dela (retificada_em: dataAtualizacao do detalhe
+    ou data_atualizacao_pncp da busca, horário de Brasília)."""
+    resultado = revogacao = False
+    ultima_suspensao = None
+    for d in documentos or []:
+        if d.get("statusAtivo") is False:
+            continue
+        # nome de arquivo usa "_" como espaço ("AVISO_SUSPENSAO_P_E_35_2026.pdf"), e "_" é letra para o \b
+        t = normalizar(" ".join(str(d.get(k) or "") for k in _CHAVES_TEXTO_DOC)).replace("_", " ").strip()
+        if not t or _DOC_DE_CONTRATO.search(t) or documento_de_etapa(t):
+            continue
+        fim_suspensao = bool(_DOC_FIM_SUSPENSAO.search(t))
+        if _DOC_HOMOLOGACAO.search(t) or (_DOC_RESULTADO_FINAL.search(t) and not _DOC_RESULTADO_NAO_FINAL.search(t)):
+            resultado = True
+        if _DOC_REVOGACAO.search(t) and "parcial" not in t and not fim_suspensao:
+            revogacao = True
+        if _DOC_SUSPENSAO.search(t) and "parcial" not in t and not fim_suspensao:
+            dt = _instante(next((d[k] for k in _CHAVES_DATA_DOC if d.get(k)), None))
+            if dt and (ultima_suspensao is None or dt > ultima_suspensao):
+                ultima_suspensao = dt
+    if resultado:
+        return "resultado"
+    if revogacao:
+        return "revogacao"
+    retificacao = _instante(retificada_em)
+    if ultima_suspensao and (retificacao is None or ultima_suspensao >= retificacao - TOLERANCIA_RETIFICACAO):
+        return "suspensao"
+    return None
+
+
+def _fase_do_motivo(prioridade: str | None, motivo: str) -> str | None:
+    if motivo.startswith("prazo de proposta implausível"):
+        return FASE_PRAZO_INVALIDO
+    if motivo == "recebendo proposta":
+        return FASE_RECEBENDO
+    if motivo == "propostas encerradas sem resultado":
+        return FASE_JULGAMENTO
+    if motivo == "todos os itens finalizados":
+        return FASE_ITENS_FINALIZADOS
+    if motivo == "cancelada":
+        return "Cancelada"
+    if motivo.startswith("situação "):   # situação oficial: Revogada, Anulada, Suspensa, Deserta...
+        return motivo[len("situação "):].strip() or None
+    if prioridade == "historico" and not motivo.startswith("sem prazo"):
+        return FASE_RESULTADO   # resultado consultado, data_homologacao, valor homologado, item com resultado
+    return None   # sem prazo (status da busca) ou indeterminado: fica a situação oficial
+
+
+def fase_da_compra(compra: dict, tem_resultado: bool | None = None, *, agora: datetime | None = None,
+                   status_busca: str | None = None, itens: list[dict] | None = None,
+                   documentos: list[dict] | None = None, retificada_em=None,
+                   excluida: bool = False) -> tuple[str | None, str | None, str]:
+    """(fase, prioridade, motivo): a fase real da compra, gravada em licitacoes_externas.fase (coluna que a
+    view e a API já expõem; `situacao` continua sendo a oficial do PNCP). Função pura. Precedência (o primeiro
+    que casar vence):
+      P0 excluída do PNCP (detalhe HTTP 410)                        -> Excluída do PNCP          / historico
+      P1-P4 motivo_prioridade: resultado/homologação, encerramento oficial, itens finalizados, Suspensa oficial
+      P5 documento da compra de homologação/adjudicação/resultado     -> Homologada (documento)    / historico
+      P6 documento da compra de revogação/anulação (não parcial)      -> Revogada/Anulada (doc.)   / historico
+      P7 documento de suspensão sem retificação posterior             -> Suspensa (documento)      / monitorar
+      P8-P10 prazo: aberto -> leads; vencido -> Em julgamento; implausível -> Prazo inválido (monitorar)
+    `fase` None = sem rótulo melhor que a situação oficial (quem chama não grava)."""
+    if excluida:
+        return FASE_EXCLUIDA, "historico", "compra excluída do PNCP (HTTP 410)"
+    prioridade, motivo = motivo_prioridade(compra, tem_resultado, agora=agora, status_busca=status_busca,
+                                           itens=itens)
+    # Só sinal oficial retorna antes dos documentos: o último recurso "sem prazo; status da busca" (P10) fica depois da
+    # análise documental (Copilot, PR #134, 2ª rodada: busca "encerradas" + aviso de suspensão vigente = monitorar).
+    pela_busca = motivo.startswith("sem prazo de proposta; busca")
+    if not pela_busca and (prioridade == "historico" or (prioridade == "monitorar" and motivo.startswith("situação "))):
+        return _fase_do_motivo(prioridade, motivo), prioridade, motivo
+    sinal = sinal_documental(documentos, retificada_em)
+    if sinal == "resultado":
+        return FASE_RESULTADO_DOC, "historico", "documento de homologação/adjudicação/resultado da compra"
+    if sinal == "revogacao":
+        return FASE_REVOGADA_DOC, "historico", "documento de revogação/anulação da compra"
+    if sinal == "suspensao":
+        return FASE_SUSPENSA_DOC, "monitorar", "documento de suspensão da compra sem retificação posterior"
+    return _fase_do_motivo(prioridade, motivo), prioridade, motivo
 
 
 # Campos de estado do detalhe da compra (/api/consulta/v1/...) que motivo_prioridade lê.
@@ -695,7 +938,17 @@ def consultar_detalhe(pncp, c: dict) -> dict:
     try:
         return pncp.compra(c)
     except Exception as e:
+        if compra_excluida_do_erro(e):
+            raise CompraExcluida(f"detalhe da compra {c.get('numero_controle_pncp')}: excluída do PNCP ({e})") from e
         raise ConsultaFalhou(f"detalhe da compra {c.get('numero_controle_pncp')}: {e}") from e
+
+
+def compra_excluida_do_erro(e: BaseException) -> bool:
+    """HTTP 410 (Gone) no detalhe, venha como status HTTP (raise_for_status) ou como JSON {status: 410} em 200."""
+    resp = getattr(e, "response", None)
+    if getattr(resp, "status_code", None) == 410:
+        return True
+    return str(e).startswith("PNCP detalhe: 410")
 
 
 def identificacao_do_detalhe(c: dict, det: dict) -> dict:
@@ -737,8 +990,14 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
     licitacoes_externas, licitacao_itens, licitacao_resultados e licitacao_documentos.
     `det` = detalhe já consultado (recoletar_atualizadas); None consulta aqui.
     `termo` None (recoleta) mantém termos_busca do banco. As datas de atualização do PNCP só são gravadas
-    no fim, depois da lista de arquivos: se algo falhar no meio, a próxima recoleta tenta de novo."""
-    itens = pncp.itens(c)
+    no fim, depois da lista de arquivos (marcação/upsert): se algo falhar no meio, a próxima recoleta tenta
+    de novo. Compra excluída (HTTP 410) não grava a versão."""
+    try:
+        itens = pncp.itens(c)
+    except Exception as e:
+        if _excluida_sem_hidratacao(pncp, sb, c, e, dry_run, resumo):
+            return
+        raise
     categoria, interesse, por_item = avaliar(c, itens)
     rotulo = f"{c.get('municipio_nome')}/{c.get('uf')} | {(c.get('description') or '').strip()[:80]}"
     if not categoria:
@@ -748,21 +1007,46 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
     _inc(resumo, "no_escopo")
     _inc(resumo, "interesse_borracha", int(interesse))
 
-    pares = _resultados_relevantes(pncp, c, itens, por_item) if com_resultados else []
+    try:
+        pares = _resultados_relevantes(pncp, c, itens, por_item) if com_resultados else []
+    except Exception as e:
+        if _excluida_sem_hidratacao(pncp, sb, c, e, dry_run, resumo):
+            return
+        raise
     datas = [d for d in (_dt(r.get("dataResultado")) for _, r in pares) if d]
     data_homologacao = max(datas) if datas else None
     tem_resultado = (bool(pares) or data_homologacao is not None) if com_resultados else None
 
     # Detalhe consultado uma vez: identificação + estado autoritativo da compra (a busca atrasa).
+    # `det` já consultado (recoleta) não dispara outro GET. Sem ele, 410 vira CompraExcluida.
+    excluida = False
     erro_detalhe = None
     if det is None:
         try:
             det = consultar_detalhe(pncp, c)
+        except CompraExcluida as e:
+            det, erro_detalhe, excluida = None, e, True
+            _inc(resumo, "excluidas_do_pncp")
         except ConsultaFalhou as e:
-            erro_detalhe = e
+            det, erro_detalhe = None, e
     ident = identificacao_do_detalhe(c, det) if det is not None else {}
-    prioridade, motivo = motivo_prioridade(compra_com_detalhe(c, det), tem_resultado, agora=agora,
-                                           status_busca=status_busca, itens=itens)
+    # Documentos da compra antes da prioridade: homologação/revogação/suspensão publicadas só como documento
+    # (o status oficial do PNCP não acompanha) mudam a fase. Sem a lista de documentos a decisão não é tomada nem
+    # gravada (Copilot/Codex, PR #134): decidir pela ausência de documentos devolveria a leads/"Recebendo propostas"
+    # uma compra suspensa ou homologada por documento. A compra vai para a segunda passada e o banco fica como
+    # está. Exceção: 410 confirmado no detalhe já decide (historico/"Excluída do PNCP") sem documento.
+    try:
+        arquivos, erro_arquivos = pncp.arquivos(c), None
+    except Exception as e:
+        arquivos, erro_arquivos = None, e
+    if erro_arquivos is not None and not excluida:
+        _inc(resumo, "falha_arquivos")
+        raise ConsultaFalhou(f"documentos da compra {c.get('numero_controle_pncp')} indisponíveis, nada decidido "
+                             f"nem gravado: {erro_arquivos}") from erro_arquivos
+    fase, prioridade, motivo = fase_da_compra(
+        compra_com_detalhe(c, det), tem_resultado, agora=agora, status_busca=status_busca, itens=itens,
+        documentos=arquivos if isinstance(arquivos, list) else None,
+        retificada_em=atualizacao_da_compra(det, c), excluida=excluida)
     # Fail-closed: sem o detalhe, "leads" vindo só da busca+itens pode ser compra já homologada.
     # Não grava (fica o valor do banco); historico/monitorar pela busca+itens continuam valendo.
     leads_sem_detalhe = det is None and prioridade == "leads"
@@ -775,8 +1059,9 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
 
     vencedores = sorted({(r.get("nomeRazaoSocialFornecedor") or "")[:40] for _, r in pares
                          if r.get("tipoPessoa") != "PF" and r.get("nomeRazaoSocialFornecedor")})
-    log.info("  %-9s%s | %s | %s (%s)%s%s", categoria, " ★borracha" if interesse else "", rotulo,
+    log.info("  %-9s%s | %s | %s (%s; fase %s)%s%s", categoria, " ★borracha" if interesse else "", rotulo,
              "leads NÃO gravada (sem detalhe)" if leads_sem_detalhe else prioridade or "prioridade ?", motivo,
+             fase or "oficial",
              f" | homologado {data_homologacao.date()}" if data_homologacao else "",
              f" | vencedor(es): {', '.join(vencedores[:3])}" if vencedores else "")
     if det is not None:
@@ -791,16 +1076,17 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
     if dry_run:
         return
 
+    raw = raw_com_prazo_do_detalhe(c, det)
     linha = {
         "fonte": "pncp", "codigo_externo": c["numero_controle_pncp"], **ident,
         "objeto": (c.get("description") or "").strip() or None,
         "unidade_compradora": c.get("unidade_nome"), "orgao_nome": c.get("orgao_nome"),
         "orgao_cnpj": c.get("orgao_cnpj"), "municipio": c.get("municipio_nome"), "uf": c.get("uf"),
-        "modalidade": c.get("modalidade_licitacao_nome"), "situacao": c.get("situacao_nome"),
-        "data_publicacao": _data(c.get("data_publicacao_pncp")), "data_fim": _data(c.get("data_fim_vigencia")),
+        "modalidade": c.get("modalidade_licitacao_nome"), "situacao": c.get("situacao_nome"), "fase": fase,
+        "data_publicacao": _data(c.get("data_publicacao_pncp")), "data_fim": _data(raw.get("data_fim_vigencia")),
         "data_homologacao": data_homologacao.isoformat() if data_homologacao else None,
         "prioridade": prioridade, "categoria_escopo": categoria,
-        "interesse_borracha": interesse, "termos_busca": [termo], "raw": c,
+        "interesse_borracha": interesse, "termos_busca": [termo], "raw": raw,
     }
     # valor_total: detalhe (valorTotalEstimado, via identificacao_do_detalhe) > valor_global da busca
     # (vazio em editais). Sem nenhum dos dois a chave fica fora: o upsert (merge-duplicates) atualiza
@@ -815,6 +1101,9 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
     # seria leads sem o detalhe confirmar (fail-closed: homologada nunca vira lead).
     if prioridade is None or leads_sem_detalhe:
         linha.pop("prioridade")
+    # fase None = sem rótulo melhor que a situação oficial; fase de leads sem detalhe também não grava
+    if fase is None or leads_sem_detalhe:
+        linha.pop("fase")
     if not data_homologacao:
         linha.pop("data_homologacao")
     if termo is None:   # recoleta: não troca os termos que acharam a compra
@@ -852,30 +1141,34 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
     if linhas:
         sb.upsert("licitacao_resultados", linhas, "licitacao_id,numero_item,sequencial_resultado")
 
-    arquivos = pncp.arquivos(c)
-    # Anexo inativo (statusAtivo=false: substituído/retirado pelo órgão) também é registrado, com ativo=false:
-    # fica o metadado (título, data, url) para auditoria; não é baixado e não vai para o RAG.
+    if erro_arquivos is not None:   # só chega aqui com 410: compra excluída não tem documentos para gravar
+        log.info("            documentos indisponíveis na compra excluída do PNCP: %s", str(erro_arquivos)[:120])
+        return
+    visto_em = datetime.now(timezone.utc).isoformat()
     docs = [{
         "licitacao_id": lic_id, "secao": "processo",
         "nome_original": a.get("titulo"), "arquivo_origem": f"pncp-{a.get('sequencialDocumento')}",
         "data_documento": _data(a.get("dataPublicacaoPncp")),
-        "ativo": anexo_ativo(a),
         "raw": {"tipo_documento": a.get("tipoDocumentoNome"), "url": a.get("url") or a.get("uri")},
-    } for a in arquivos]
-    inativos = sum(1 for d in docs if not d["ativo"])
-    if inativos:
-        _inc(resumo, "anexos_inativos", inativos)
+        "last_seen_at": visto_em, "removido_do_portal_em": None,
+    } for a in arquivos if a.get("statusAtivo", True)]
+    # Documento que o PNCP inativou ou tirou da lista: marca removido_do_portal_em (coluna que o
+    # documentos_paradigma já usa; nada é apagado). O reclassificador ignora documento removido ao decidir a fase
+    # (Copilot/Codex, PR #134: termo de homologação retirado pelo órgão não força mais historico).
+    _marcar_documentos_removidos(sb, lic_id, {d["arquivo_origem"] for d in docs}, visto_em, resumo)
     salvos = sb.upsert("licitacao_documentos", docs, "licitacao_id,secao,arquivo_origem") if docs else []
-    # Coleta completa: grava a versão do PNCP vista (base de comparação de recoletar_atualizadas).
-    versao = datas_atualizacao(det)
-    if versao:
-        sb.atualizar("licitacoes_externas", lic_id, versao)
+    # Coleta completa: versão só depois da marcação/upsert. 410 não chega aqui (return acima) e, se
+    # excluida com arquivos ok, também não grava versão.
+    if not excluida:
+        versao = datas_atualizacao(det)
+        if versao:
+            sb.atualizar("licitacoes_externas", lic_id, versao)
+    if not docs:
+        return
     if not baixar_arquivos:
         return
     for d in salvos:
         if d.get("status_processamento") not in ("pendente", "erro"):
-            continue
-        if d.get("ativo") is False:
             continue
         url = (d.get("raw") or {}).get("url")
         try:
@@ -893,6 +1186,78 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
             log.info("    arquivo: %s (%.1f MB)", (d.get("nome_original") or "")[:70], len(conteudo) / 1048576)
         except Exception as e:
             sb.atualizar("licitacao_documentos", d["id"], {"status_processamento": "erro", "erro": str(e)[:300]})
+
+
+def raw_com_prazo_do_detalhe(c: dict, det: dict | None) -> dict:
+    """raw gravado = item da busca, com o prazo de proposta e a data de atualização do DETALHE quando existem e
+    diferem (Copilot, PR #134, 3ª e 4ª rodadas). Sem migration, e o item da busca não é alterado.
+    - Prazo: a fase e a prioridade são decididas com o prazo do detalhe (compra_com_detalhe), e a view
+      licitacoes_externas_prioridade_efetiva lê raw.data_fim_vigencia (senão data_fim); gravar o prazo da busca
+      defasada fazia a view rebaixar a "Recebendo propostas"/leads reaberta pelo detalhe. O prazo do detalhe vai em
+      raw.data_fim_vigencia (e data_fim), o da busca fica em raw.data_fim_vigencia_busca, com
+      raw.data_fim_vigencia_fonte = "detalhe".
+    - Atualização: a suspensão por documento só vale sem retificação posterior (atualizacao_da_compra), e o coletor
+      decide com o dataAtualizacao do detalhe. Ele vai em raw.data_atualizacao_detalhe (raw.data_atualizacao_pncp
+      continua sendo o da busca), para o reclassificador sem detalhe decidir com a mesma data.
+    Sem detalhe (ou sem esses campos nele), o raw é a busca, como antes."""
+    extra = {}
+    prazo = (det or {}).get("dataEncerramentoProposta")
+    if prazo and prazo != c.get("data_fim_vigencia"):
+        extra.update(data_fim_vigencia=prazo, data_fim_vigencia_busca=c.get("data_fim_vigencia"),
+                     data_fim_vigencia_fonte="detalhe")
+    atualizacao = (det or {}).get("dataAtualizacao")
+    if atualizacao and atualizacao != c.get("data_atualizacao_pncp"):
+        extra["data_atualizacao_detalhe"] = atualizacao
+    return {**c, **extra} if extra else c
+
+
+def atualizacao_da_compra(det: dict | None, raw: dict | None) -> str | None:
+    """Última atualização (retificação) da compra para sinal_documental: dataAtualizacao do detalhe consultado
+    agora; senão a do detalhe gravada pelo coletor (raw.data_atualizacao_detalhe); senão a da busca
+    (raw.data_atualizacao_pncp). Coletor e reclassificador usam a mesma ordem (Copilot, PR #134, 4ª rodada)."""
+    raw = raw if isinstance(raw, dict) else {}
+    return ((det or {}).get("dataAtualizacao") or raw.get("data_atualizacao_detalhe")
+            or raw.get("data_atualizacao_pncp"))
+
+
+def _excluida_sem_hidratacao(pncp, sb, c: dict, erro: Exception, dry_run: bool, resumo: dict) -> bool:
+    """itens()/resultados falharam: o detalhe é consultado mesmo assim (Copilot, PR #134, 2ª rodada), porque uma
+    compra excluída do PNCP costuma falhar justamente nesses endpoints e, sem isso, a linha já gravada como
+    leads/monitorar ficaria em Oportunidades. Com 410 confirmado, a linha JÁ GRAVADA (fonte pncp, mesmo código)
+    recebe só prioridade=historico e fase="Excluída do PNCP"; categoria, interesse, itens e resultados ficam como
+    estão e nada é inserido (sem itens não dá para saber se a compra é do escopo). True = resolvida (não vai para
+    a segunda passada). Sem 410 (detalhe ok ou falhou): False, e quem chama relança o erro original: sem itens ou
+    resultados nada é decidido nem gravado (regra do achado 1 da 1ª rodada)."""
+    try:
+        consultar_detalhe(pncp, c)
+    except CompraExcluida:
+        pass
+    except ConsultaFalhou:
+        return False
+    else:
+        return False
+    codigo = c.get("numero_controle_pncp")
+    _inc(resumo, "excluidas_do_pncp")
+    _inc(resumo, "excluidas_sem_itens")
+    log.info("  excluída  | %s | itens/resultados indisponíveis (%s); detalhe HTTP 410", codigo, str(erro)[:80])
+    if dry_run or not codigo:
+        return True
+    linhas = sb.selecionar("licitacoes_externas", select="id", fonte="eq.pncp", codigo_externo=f"eq.{codigo}")
+    for ln in linhas or []:
+        sb.atualizar("licitacoes_externas", ln["id"], {"prioridade": "historico", "fase": FASE_EXCLUIDA})
+        _inc(resumo, "excluidas_marcadas")
+    return True
+
+
+def _marcar_documentos_removidos(sb, lic_id, ativos: set[str], agora: str, resumo: dict) -> None:
+    """Marca removido_do_portal_em nos documentos PNCP da compra (secao processo, arquivo_origem pncp-*) que não
+    estão mais ativos em /arquivos. Documento que voltou a ficar ativo é desmarcado pelo upsert (None)."""
+    existentes = sb.selecionar("licitacao_documentos", select="id,arquivo_origem,removido_do_portal_em",
+                               licitacao_id=f"eq.{lic_id}", secao="eq.processo", arquivo_origem="like.pncp-*")
+    for r in existentes or []:
+        if r.get("arquivo_origem") not in ativos and not r.get("removido_do_portal_em"):
+            sb.atualizar("licitacao_documentos", r["id"], {"removido_do_portal_em": agora})
+            _inc(resumo, "documentos_removidos_do_portal")
 
 
 def compra_de_codigo(codigo: str | None, **extra) -> dict | None:
@@ -987,6 +1352,24 @@ def recoletar_atualizadas(pncp: PNCP, sb: Supabase, arm: Armazenamento | None = 
         resumo["consultadas"] += 1
         try:
             det = consultar_detalhe(pncp, chaves)
+        except CompraExcluida:
+            # 410: o detalhe não traz versão. _processar marca historico/"Excluída do PNCP" e não grava
+            # pncp_data_atualizacao*. det=None para ele consultar de novo e cair no bloco da main.
+            log.info("  %s: excluída do PNCP (410); versão não gravada", ln["codigo_externo"])
+            if dry_run:
+                _inc(resumo, "excluidas_do_pncp")
+                continue
+            try:
+                c = compra_para_recoleta(ln.get("raw") or {}, ln["codigo_externo"], {})
+                if c is not None:
+                    _processar(pncp, sb, arm, c, None, com_resultados, False, max_bytes, False, resumo,
+                               agora=agora, det=None)
+                    resumo["recoletadas"] += 1
+            except Exception as e:
+                resumo["erros"] += 1
+                log.warning("  %s: marcação de excluída falhou (tenta de novo na próxima): %s",
+                            ln["codigo_externo"], str(e)[:160])
+            continue
         except ConsultaFalhou as e:
             resumo["falha_detalhe"] += 1
             log.warning("  %s: detalhe falhou, fica para a próxima: %s", ln["codigo_externo"], str(e)[:120])
@@ -1143,7 +1526,8 @@ def baixar_pendentes(pncp: PNCP, sb: Supabase, arm: Armazenamento | None,
     e atualiza status_processamento, sha256, mime_type (assinatura do arquivo, não o
     Content-Type octet-stream do PNCP), tamanho_bytes, baixado_em e erro,
     respeitando MAX_MB, o delay e o Retry-After.
-    Anexo inativo no PNCP (licitacao_documentos.ativo = false) não é baixado (ignorados_inativos).
+    Documento com removido_do_portal_em preenchido (anexo que o PNCP inativou depois de gravado) não entra
+    na seleção (removido_do_portal_em=is.null): senão --baixar-pendentes baixaria um inativo ainda pendente.
     Idempotente: não baixa de novo o que já tem sha256; o caminho no storage é determinístico (sobrescreve).
     Só baixa URL https de PNCP_HOSTS_PERMITIDOS (cada redirecionamento também é validado).
     Falha transitória (429/5xx esgotados, timeout, conexão, storage) mantém 'pendente' com o erro anotado,
@@ -1186,8 +1570,9 @@ def baixar_pendentes(pncp: PNCP, sb: Supabase, arm: Armazenamento | None,
     log.info("licitacoes_externas pncp: %d total, %d nas categorias/prioridades selecionadas",
              len(lic_todas_pncp), len(lic_map))
 
-    docs = sb.selecionar("licitacao_documentos", status_processamento="eq.pendente", order="id.asc",
-                         select="id,licitacao_id,secao,nome_original,arquivo_origem,storage_uri,mime_type,tamanho_bytes,sha256,status_processamento,erro,ativo,raw")
+    docs = sb.selecionar("licitacao_documentos", status_processamento="eq.pendente",
+                         removido_do_portal_em="is.null", order="id.asc",
+                         select="id,licitacao_id,secao,nome_original,arquivo_origem,storage_uri,mime_type,tamanho_bytes,sha256,status_processamento,erro,raw")
     log.info("licitacao_documentos com status pendente: %d encontrados", len(docs))
 
     resumo = {
@@ -1198,7 +1583,6 @@ def baixar_pendentes(pncp: PNCP, sb: Supabase, arm: Armazenamento | None,
         "ignorados_categoria": 0,
         "ignorados_prioridade": 0,
         "ignorados_sem_url": 0,
-        "ignorados_inativos": 0,
         "bloqueados_host": 0,
         "erros": 0,
         "erros_transitorios": 0,
@@ -1227,11 +1611,6 @@ def baixar_pendentes(pncp: PNCP, sb: Supabase, arm: Armazenamento | None,
                 continue
 
         if lic_id not in lic_map:
-            continue
-
-        if d.get("ativo") is False:
-            # Anexo inativo no PNCP (statusAtivo=false): só metadado, nunca baixa.
-            resumo["ignorados_inativos"] += 1
             continue
 
         lic = lic_map[lic_id]

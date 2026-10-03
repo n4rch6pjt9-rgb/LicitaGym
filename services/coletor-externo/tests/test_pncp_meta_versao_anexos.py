@@ -1,4 +1,4 @@
-"""linkSistemaOrigem, anexos inativos (statusAtivo=false) e recoleta por dataAtualizacao do PNCP (02/10/2026).
+"""linkSistemaOrigem, anexos inativos (statusAtivo=false -> removido_do_portal_em) e recoleta por dataAtualizacao do PNCP.
 
 Formatos reais conferidos em 02/10/2026 na compra 04873618000117-1-000049/2026 (Viseu/PA):
   detalhe  -> dataAtualizacao "2026-10-01T17:10:57", dataAtualizacaoGlobal "2026-10-01T19:44:16" (sem fuso =
@@ -54,51 +54,45 @@ def test_link_ausente_ou_nao_http_nao_vai_no_upsert(ruim):
     assert "link_sistema_origem" not in _upserts(sb, "licitacoes_externas")[0]   # não apaga link já gravado
 
 
-# 2) anexos inativos ---------------------------------------------------------------------------------------------
+# 2) anexos inativos: não grava, marca o que já existia, e o download de pendentes ignora removido -----------
 
-@pytest.mark.parametrize("valor,esperado", [(True, True), (False, False), (None, True), ("false", False),
-                                            ("true", True)])
-def test_anexo_ativo(valor, esperado):
-    assert P.anexo_ativo({"statusAtivo": valor} if valor is not None else {}) is esperado
-
-
-def test_anexo_inativo_e_registrado_com_ativo_false():
-    p, sb = _pncp([COMPRA]), _sb()
-    p.arquivos.return_value = [ARQUIVOS[0], INATIVO]
-    r = _coletar(p, sb)
-    docs = _upserts(sb, "licitacao_documentos")[0]
-    assert [(d["arquivo_origem"], d["ativo"]) for d in docs] == [("pncp-1", True), ("pncp-2", False)]
-    assert docs[1]["raw"]["url"].endswith("/arquivos/2")   # metadado guardado
-    assert r["anexos_inativos"] == 1
-
-
-def test_coleta_com_download_nao_baixa_anexo_inativo(tmp_path):
+def test_anexo_inativo_nao_e_gravado_nem_baixado(tmp_path):
+    """statusAtivo=false não entra no upsert e pncp.baixar não é chamado para ele."""
     from coletor.destino import Armazenamento
     p, sb = _pncp([COMPRA]), _sb()
+    sb.selecionar.return_value = []
     p.arquivos.return_value = [ARQUIVOS[0], INATIVO]
     p.baixar.return_value = (b"%PDF-1.7 edital", "application/octet-stream")
     _coletar(p, sb, baixar=True, arm=Armazenamento(pasta_local=tmp_path))
+    docs = _upserts(sb, "licitacao_documentos")[0]
+    assert [d["arquivo_origem"] for d in docs] == ["pncp-1"]
     assert p.baixar.call_count == 1 and p.baixar.call_args.args[0] == ARQUIVOS[0]["url"]
 
 
-def test_baixar_pendentes_pula_inativo():
-    sb, pncp, arm = MagicMock(), MagicMock(), MagicMock()
-    lics = [{"id": 1, "codigo_externo": "11111111000111-1-000001/2026", "orgao_cnpj": "11111111000111",
-             "categoria_escopo": "borracha", "raw": {}}]
-    url = "https://pncp.gov.br/pncp-api/v1/orgaos/11111111000111/compras/2026/1/arquivos/"
-    docs = [{"id": 7, "licitacao_id": 1, "secao": "processo", "arquivo_origem": "pncp-1", "nome_original": "a.pdf",
-             "raw": {"url": url + "1"}, "sha256": None, "status_processamento": "pendente", "ativo": True},
-            {"id": 8, "licitacao_id": 1, "secao": "processo", "arquivo_origem": "pncp-2", "nome_original": "b.pdf",
-             "raw": {"url": url + "2"}, "sha256": None, "status_processamento": "pendente", "ativo": False}]
-    sb.selecionar.side_effect = lambda t, **kw: lics if t == "licitacoes_externas" else docs
-    pncp.baixar.return_value = (b"%PDF-1.7", "application/pdf")
-    arm.salvar.return_value = "supabase://b/x.pdf"
-    res = P.baixar_pendentes(pncp, sb, arm)
-    assert res["baixados"] == 1 and res["ignorados_inativos"] == 1
-    assert pncp.baixar.call_args.args[0] == url + "1"
-    assert all(c.args[1] != 8 for c in sb.atualizar.call_args_list)   # inativo nem é tocado
-    dry = P.baixar_pendentes(pncp, sb, None, dry_run=True)
-    assert [d["doc_id"] for d in dry["detalhes"]] == [7] and dry["ignorados_inativos"] == 1
+def test_anexo_ja_gravado_inativo_recebe_removido_do_portal_em():
+    """Anexo já gravado que o PNCP passa a devolver com statusAtivo=false ganha removido_do_portal_em."""
+    p, sb = _pncp([COMPRA]), _sb()
+    p.arquivos.return_value = [ARQUIVOS[0], INATIVO]
+    existentes = [{"id": 8, "arquivo_origem": "pncp-2", "removido_do_portal_em": None}]
+    sb.selecionar.side_effect = lambda t, **kw: existentes if t == "licitacao_documentos" else []
+    r = _coletar(p, sb)
+    docs = _upserts(sb, "licitacao_documentos")[0]
+    assert [d["arquivo_origem"] for d in docs] == ["pncp-1"]
+    marcados = [c for c in sb.atualizar.call_args_list if c.args[0] == "licitacao_documentos"]
+    assert len(marcados) == 1 and marcados[0].args[1] == 8
+    assert marcados[0].args[2]["removido_do_portal_em"]
+    assert r["documentos_removidos_do_portal"] == 1
+
+
+def test_baixar_pendentes_seleciona_so_removido_do_portal_nulo():
+    """O select de pendentes inclui removido_do_portal_em=is.null."""
+    sb = MagicMock()
+    sb.selecionar.return_value = []
+    P.baixar_pendentes(MagicMock(), sb, None, dry_run=True)
+    docs = [c for c in sb.selecionar.call_args_list if c.args[0] == "licitacao_documentos"]
+    assert len(docs) == 1
+    assert docs[0].kwargs["status_processamento"] == "eq.pendente"
+    assert docs[0].kwargs["removido_do_portal_em"] == "is.null"
 
 
 # 3) versão da compra (dataAtualizacao) --------------------------------------------------------------------------
@@ -166,6 +160,8 @@ class _SbRecoleta:
         self.filtros[tabela] = kw
         if tabela == "licitacoes_externas_prioridade_efetiva":
             return [{"id": i, "prioridade": p} for i, p in self.prioridades.items()]
+        if tabela == "licitacao_documentos":
+            return []
         return self.linhas
 
     def upsert(self, tabela, linhas, conflito):

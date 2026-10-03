@@ -1511,7 +1511,7 @@ Deno.test("list com recorte CATMAT e página além do fim: a contagem também fi
 // Dados fictícios.
 // --------------------------------------------------------------------------
 
-const ESCOPO_OPORTUNIDADES = "prioridade.is.null,prioridade.neq.historico";
+const ESCOPO_OPORTUNIDADES = "prioridade.in.(leads,monitorar)";
 
 function listReq(qs: string): Request {
   return new Request(`http://localhost/api-dashboard-oportunidades?action=list${qs}`, { method: "GET" });
@@ -1521,7 +1521,7 @@ Deno.test("OPORTUNIDADES_VIEW é a view da prioridade efetiva", () => {
   assertEquals(OPORTUNIDADES_VIEW, "licitacoes_externas_prioridade_efetiva");
 });
 
-Deno.test("applyOportunidadesScope: sem prioridade exclui historico e mantém NULL; com prioridade não mexe", () => {
+Deno.test("applyOportunidadesScope: sem prioridade só leads e monitorar (historico e NULL fora); com prioridade não mexe", () => {
   const semFiltro = new MockQueryBuilder();
   applyOportunidadesScope(semFiltro, {});
   assertEquals(semFiltro.calls, [{ method: "or", args: [ESCOPO_OPORTUNIDADES] }]);

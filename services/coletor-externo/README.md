@@ -154,11 +154,10 @@ python3 -m coletor.pncp --baixar-pendentes --categorias catmat,forte,borracha,pi
 python3 scripts/gerar_relatorio_termos.py                                    # docs/coletor-pncp-termos.md (PDM x termo)
 ```
 
-Anexo com `statusAtivo=false` no `/arquivos` do PNCP (substituído/retirado pelo órgão) é gravado em
-`licitacao_documentos` com `ativo = false` (só metadado: título, data, url): nem `--baixar-arquivos` nem
-`--baixar-pendentes` o baixam (`ignorados_inativos` no resumo). O indexador só lê `status_processamento = 'baixado'`
-com `sha256`/`storage_uri`, então um inativo nunca baixado não chega ao RAG; um anexo que foi baixado/indexado e depois
-ficou inativo continua `baixado`/`indexado` até o indexador filtrar `ativo = true` (frente do RAG).
+Anexo com `statusAtivo=false` no `/arquivos` do PNCP (substituído/retirado pelo órgão) não é gravado de novo.
+O que já existia recebe `removido_do_portal_em` (mesmo critério do #134). `--baixar-pendentes` só lê pendentes com
+`removido_do_portal_em is null`, para não baixar um anexo inativado depois de gravado. O RAG deve filtrar
+`removido_do_portal_em is null`.
 `licitacoes_externas.link_sistema_origem` guarda o `linkSistemaOrigem` do detalhe (portal da disputa).
 
 Recoleta por versão (migration `20261002230000_pncp_link_origem_atualizacao_anexos`): cada coleta completa grava
@@ -178,8 +177,12 @@ Reclassificar as linhas PNCP já gravadas (as antigas `leads` homologadas viram 
 export SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=...                       # do ambiente, nunca no código
 python3 -m coletor.backfill_prioridade_pncp                                 # DRY-RUN: contagem por transição + amostra
 python3 -m coletor.backfill_prioridade_pncp --consultar-pncp --limit 50     # DRY-RUN relendo o detalhe no PNCP (GET)
-python3 -m coletor.backfill_prioridade_pncp --apply                         # grava só a coluna prioridade
+python3 -m coletor.reclassificar_escopo_pncp                               # DRY-RUN (prioridade + fase)
+python3 -m coletor.reclassificar_escopo_pncp --apply                       # grava prioridade, fase e escopo
 ```
+
+`backfill_prioridade_pncp --apply` está desativado (sai com código 2): ele decide só a prioridade, sem documentos
+nem fase, e sobrescreveria fases documentais como "Suspensa (documento)". O dry-run dele fica como diagnóstico legado.
 
 `oportunidades_borracha` lista primeiro os `leads` (certames abertos, ainda sem vencedor) e depois o resto, do
 homologado mais recente para o mais antigo, com `dias_desde_homologacao`. Para oferecer raspa ao vencedor,
@@ -327,11 +330,17 @@ python3 -m coletor.buscar "Por que a Freedom Motors recorreu e qual foi a decis�
 ```
 
 - Cada arquivo físico (sha256) é processado **uma vez**; cópias recebem o mesmo resultado.
-- PDF com texto → `pypdf`; PDF escaneado → OCR pelo Gemini; `.zip` é aberto (até 2 níveis);
-  `.docx` lido direto; `.rar` e imagens ficam listados em `extracao.arquivos_ignorados`.
+- O tipo do arquivo vem dos **bytes**, não da extensão (o PNCP entrega `.bin`/sem extensão):
+  `%PDF-` → PDF; `PK` → ZIP, ou DOCX se tiver `word/document.xml`, ou XLSX se tiver `xl/`.
+- PDF com texto → `pypdf`; PDF escaneado → OCR pelo Gemini; ZIP é aberto (até 2 níveis, nomes
+  internos em cp850/UTF-8 sem flag corrigidos); DOCX lido direto; XLSX vira texto simples
+  (uma linha por linha da planilha, células com " | ", sem datas formatadas, até 200 mil caracteres);
+  `.rar`, `.7z`, `.pptx`, `.doc`/`.xls` antigos e imagens ficam em `extracao.arquivos_ignorados`.
+  Arquivo com nome `.pdf` que não é PDF (ex.: página HTML de erro) é ignorado, não vai para o OCR.
 - Gemini gera um JSON por documento em `licitacao_documentos.extracao` (tipo, resumo,
   fornecedores, decisão, motivos, fundamentos legais, valores, pontos-chave) e um trecho-resumo.
 - Embeddings: `text-multilingual-embedding-002` (lotes de até 30 trechos, 1 chamada a cada 12,5 s), 768 dimensões, `RETRIEVAL_DOCUMENT` (consulta usa `RETRIEVAL_QUERY`).
+  Cada chunk grava o modelo em `licitacao_chunks.embedding_model` (padrão da coluna: o mesmo modelo).
 - Modelos configuráveis: `EMBED_MODEL`, `GEN_MODEL` (padrão `gemini-2.5-flash`), `GOOGLE_CLOUD_LOCATION` (padrão `us-central1`).
 
 **Cota do Vertex (projeto novo):** o modelo de embeddings começa com **5 requisições/min**

@@ -329,8 +329,23 @@ class _FakeSbIdempotente:
             out.append(dict(atual))
         return out
 
-    def atualizar(self, *a, **k):
-        pass
+    def selecionar(self, tabela, select=None, **filtros):
+        """eq./like. (com * como curinga) do PostgREST, o bastante para a reconciliação de documentos."""
+        import fnmatch
+
+        def casa(ln):
+            for col, f in filtros.items():
+                op, _, val = f.partition(".")
+                v = str(ln.get(col))
+                if (op == "eq" and v != val) or (op == "like" and not fnmatch.fnmatchcase(v, val)):
+                    return False
+            return True
+        return [dict(ln) for ln in self.tabelas.get(tabela, {}).values() if casa(ln)]
+
+    def atualizar(self, tabela, id_, campos):
+        for ln in self.tabelas.get(tabela, {}).values():
+            if ln.get("id") == id_:
+                ln.update(campos)
 
 
 def test_reprocessar_mesma_compra_nao_duplica():

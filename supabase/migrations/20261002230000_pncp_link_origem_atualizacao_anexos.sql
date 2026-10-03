@@ -1,4 +1,4 @@
--- PNCP: portal de origem da disputa, versão da compra (dataAtualizacao) e anexos inativos.
+-- PNCP: portal de origem da disputa e versão da compra (dataAtualizacao).
 --
 -- 1) licitacoes_externas.link_sistema_origem: linkSistemaOrigem do detalhe da compra no PNCP
 --    (/api/consulta/v1/orgaos/{cnpj}/compras/{ano}/{seq}) = portal onde a disputa acontece (Comprasnet,
@@ -9,9 +9,9 @@
 --    arquivos). O coletor (coletor/pncp.py, --recoletar-atualizadas) recoleta a compra quando o PNCP mostra
 --    outro valor. NULL = nunca coletada com versão: a primeira rodada recoleta. Sem backfill de propósito
 --    (raw->>'data_atualizacao_pncp' vem da busca e não garante que itens/arquivos foram gravados naquela versão).
--- 3) licitacao_documentos.ativo: statusAtivo do /arquivos do PNCP. false = anexo substituído/retirado pelo
---    órgão; fica só o metadado (título, data, url): o coletor não baixa e o RAG não deve indexar.
---    Default true: linhas existentes (Paradigma, PNCP antigo) continuam ativas.
+--
+-- Anexo inativo (statusAtivo=false) NÃO ganha coluna aqui. O #134 já marca removido_do_portal_em e não grava
+-- a linha inativa. O RAG deve filtrar removido_do_portal_em is null.
 --
 -- Proposta (NÃO criada aqui): licitacao_documentos.versao_vigente boolean (NULL = não verificado), para o RAG
 -- marcar pela /historico do PNCP qual versão de um documento retificado vale.
@@ -22,7 +22,6 @@
 --
 -- Rollback (perde os valores gravados nessas colunas; raw continua com o link):
 --   begin;
---   alter table public.licitacao_documentos drop column if exists ativo;
 --   alter table public.licitacoes_externas  drop column if exists pncp_data_atualizacao_global,
 --                                          drop column if exists pncp_data_atualizacao,
 --                                          drop column if exists link_sistema_origem;
@@ -44,12 +43,6 @@ comment on column public.licitacoes_externas.pncp_data_atualizacao is
   'PNCP: dataAtualizacao do detalhe na última coleta completa (metadados+itens+arquivos). Mudou no PNCP -> recoleta. NULL = ainda não coletada com versão.';
 comment on column public.licitacoes_externas.pncp_data_atualizacao_global is
   'PNCP: dataAtualizacaoGlobal do detalhe (compra, itens, resultados ou arquivos) na última coleta completa. Mudou no PNCP -> recoleta.';
-
-alter table public.licitacao_documentos
-  add column if not exists ativo boolean not null default true;
-
-comment on column public.licitacao_documentos.ativo is
-  'statusAtivo do anexo na fonte (PNCP /arquivos). false = substituído/retirado: só metadado, não baixar nem indexar no RAG.';
 
 update public.licitacoes_externas
    set link_sistema_origem = btrim(raw->>'link_sistema_origem')

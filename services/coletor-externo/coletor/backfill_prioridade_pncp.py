@@ -11,11 +11,17 @@ itens em licitacao_itens). Com --consultar-pncp, relê o detalhe da compra no PN
 linhas que o gravado não fecha como historico (o retrato gravado pode estar velho: a compra pode ter
 sido homologada/revogada depois da coleta). Indeterminado = não mexe.
 
-Padrão: DRY-RUN (lê, mostra contagem por transição e amostra, não grava nada). Para gravar: --apply.
+ESCRITA DESATIVADA (02/10/2026; Copilot, PR #134, 3ª rodada): este script decide só por motivo_prioridade, sem os
+documentos da compra nem a coluna fase. Gravar com ele devolveria a `leads` uma compra monitorar/"Suspensa
+(documento)" (prazo aberto, situação oficial divulgada) e deixaria o rótulo de suspensão na fase. Quem grava
+prioridade + fase com a decisão compartilhada (coletor.pncp.fase_da_compra, com documentos, 410, travas) é
+coletor.reclassificar_escopo_pncp. `--apply` é recusado (sai com código 2, sem conectar ao Supabase) e
+backfill(aplicar=True) levanta EscritaDesativada. O dry-run continua como diagnóstico legado só de prioridade
+(não considera documentos nem fase).
   export SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=...     # nunca no código
   python -m coletor.backfill_prioridade_pncp                        # dry-run, só dados gravados
   python -m coletor.backfill_prioridade_pncp --consultar-pncp --limit 50   # dry-run + detalhe do PNCP
-  python -m coletor.backfill_prioridade_pncp --apply                # grava só a coluna prioridade
+  python -m coletor.reclassificar_escopo_pncp                       # dry-run do escritor atual (prioridade + fase)
 Falha de consulta ao PNCP não grava nada da consulta (fica o cálculo pelos dados gravados), com uma
 exceção fail-closed: com --consultar-pncp, se a consulta falha e os dados gravados dizem `leads`, não
 grava (conta leads_sem_detalhe): o retrato gravado pode ser de uma compra já homologada.
@@ -35,6 +41,16 @@ from .destino import Supabase, env
 from .pncp import PNCP, compra_com_detalhe, motivo_prioridade
 
 log = logging.getLogger("coletor.backfill_prioridade_pncp")
+
+MSG_ESCRITA_DESATIVADA = (
+    "backfill_prioridade_pncp --apply está desativado: este script decide só a prioridade (motivo_prioridade), sem "
+    "documentos nem fase, e sobrescreveria fases documentais como \"Suspensa (documento)\". Para gravar prioridade "
+    "e fase, use: python -m coletor.reclassificar_escopo_pncp (dry-run por padrão; --apply grava).")
+
+
+class EscritaDesativada(RuntimeError):
+    """backfill(aplicar=True): o caminho de escrita deste script foi desativado (ver MSG_ESCRITA_DESATIVADA)."""
+
 
 SELECT = "id,codigo_externo,prioridade,situacao,data_homologacao,data_fim,raw,licitacao_itens(situacao,tem_resultado)"
 
@@ -67,7 +83,10 @@ def _consultar(pncp, ln: dict, agora: datetime) -> tuple[str | None, str]:
 
 def backfill(sb, pncp=None, *, aplicar: bool = False, limite: int | None = None, amostra: int = 5,
              agora: datetime | None = None, consultar_pncp: bool = False) -> dict:
-    """Retorna o resumo; em dry-run (aplicar=False) nunca chama sb.atualizar."""
+    """Retorna o resumo; nunca chama sb.atualizar. aplicar=True levanta EscritaDesativada antes de ler qualquer
+    linha (ver MSG_ESCRITA_DESATIVADA)."""
+    if aplicar:
+        raise EscritaDesativada(MSG_ESCRITA_DESATIVADA)
     agora = agora or datetime.now(timezone.utc)
     filtros = {"select": SELECT, "fonte": "eq.pncp", "order": "id"}
     if limite:
@@ -110,36 +129,32 @@ def backfill(sb, pncp=None, *, aplicar: bool = False, limite: int | None = None,
         exemplos = r["amostra"].setdefault(chave, [])
         if len(exemplos) < amostra:
             exemplos.append((ln["id"], ln.get("codigo_externo"), motivo))
-        if aplicar:
-            try:
-                sb.atualizar("licitacoes_externas", ln["id"], {"prioridade": nova})
-            except RuntimeError as e:
-                if " 401 " in str(e) or " 403 " in str(e):
-                    raise SystemExit("Supabase recusou a chave (401/403). Confira SUPABASE_SERVICE_ROLE_KEY.")
-                raise
-            r["gravadas"] += 1
     return r
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Backfill de prioridade (PNCP) pelo estado da compra")
-    ap.add_argument("--apply", action="store_true", help="grava no Supabase (sem isto: dry-run, não grava nada)")
+    ap.add_argument("--apply", action="store_true",
+                    help="DESATIVADO: recusado com código 2 (use coletor.reclassificar_escopo_pncp para gravar)")
     ap.add_argument("--limit", type=int, help="máximo de linhas a processar")
     ap.add_argument("--amostra", type=int, default=5, help="exemplos por transição (padrão 5)")
     ap.add_argument("--consultar-pncp", action="store_true",
                     help="relê o detalhe no PNCP (GET) das linhas que os dados gravados não fecham como historico")
     args = ap.parse_args(argv)
+    if args.apply:
+        print(MSG_ESCRITA_DESATIVADA, file=sys.stderr)
+        return 2
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     sb = Supabase(env("SUPABASE_URL", obrigatorio=True), env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True))
     pncp = PNCP(delay=float(env("DELAY_SEGUNDOS", "0.5"))) if args.consultar_pncp else None
-    r = backfill(sb, pncp, aplicar=args.apply, limite=args.limit, amostra=args.amostra,
-                 consultar_pncp=args.consultar_pncp)
+    r = backfill(sb, pncp, limite=args.limit, amostra=args.amostra, consultar_pncp=args.consultar_pncp)
     amostra = r.pop("amostra")
     for chave, n in sorted(r.pop("transicoes").items(), key=lambda kv: -kv[1]):
         print(f"{chave}: {n}")
         for id_, codigo, motivo in amostra.get(chave, []):
             print(f"  #{id_} {codigo}: {motivo}")
-    log.info("RESUMO%s: %s", "" if args.apply else " (DRY-RUN, nada gravado; use --apply)", r)
+    log.info("RESUMO (DRY-RUN legado, só prioridade, sem documentos nem fase; nada gravado. Para gravar: "
+             "python -m coletor.reclassificar_escopo_pncp): %s", r)
     return 0
 
 

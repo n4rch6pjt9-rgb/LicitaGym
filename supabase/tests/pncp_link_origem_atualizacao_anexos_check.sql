@@ -17,8 +17,7 @@ begin
          and (c.table_name, c.column_name) in (
            ('licitacoes_externas', 'link_sistema_origem'),
            ('licitacoes_externas', 'pncp_data_atualizacao'),
-           ('licitacoes_externas', 'pncp_data_atualizacao_global'),
-           ('licitacao_documentos', 'ativo'))),
+           ('licitacoes_externas', 'pncp_data_atualizacao_global'))),
     checks(objeto, esperado, atual) as (
       select 'licitacoes_externas.link_sistema_origem tipo', 'text',
              coalesce((select data_type from col where column_name = 'link_sistema_origem'), 'ausente')
@@ -28,10 +27,6 @@ begin
       union all
       select 'licitacoes_externas.pncp_data_atualizacao_global tipo', 'timestamp with time zone',
              coalesce((select data_type from col where column_name = 'pncp_data_atualizacao_global'), 'ausente')
-      union all
-      select 'licitacao_documentos.ativo tipo/nulo/default', 'boolean NO true',
-             coalesce((select data_type || ' ' || is_nullable || ' ' || column_default from col
-                        where column_name = 'ativo'), 'ausente')
       union all
       select 'licitacoes_externas pncp com link no raw e coluna NULL', '0',
              (select count(*)::text from public.licitacoes_externas

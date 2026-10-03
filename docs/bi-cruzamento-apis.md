@@ -19,15 +19,17 @@ Este documento estabelece o contrato das views de BI para o time de frontend do 
 
 ## 2. Mapeamento de Campos: Fornecedor, Marca, Fabricante e Modelo
 
-Amostras reais das APIs oficiais (medidas em 02/10/2026):
+Amostras reais das APIs oficiais (medidas em 02/10/2026; marca/fabricante/modelo/lote reconferidos ao vivo e no OpenAPI em 02/10/2026 à noite):
 
 | Campo de Negócio | Compras.gov Pesquisa de Preço (`1_consultarMaterial`) | Compras.gov ARP (`2_consultarARPItem`) | Compras.gov 14.133 (`3_consultarResultado...`) | LicitaGym `licitacao_resultados` (PNCP/Paradigma) |
 |---|---|---|---|---|
 | **CNPJ / NI Fornecedor** | `niFornecedor` (ex.: `"04372852000160"`) | `niFornecedor` (ex.: `"40962266000130"`) | `niFornecedor` (ex.: `"03521758000163"`) | `fornecedor_cnpj` (14 dígitos) |
 | **Nome Fornecedor** | `nomeFornecedor` (ex.: `"W.E.V COMERCIAL LTDA"`) | `nomeRazaoSocialFornecedor` (ex.: `"PANTHERA LEO EQUIPAMENTOS"`) | `nomeRazaoSocialFornecedor` (ex.: `"LUBRITECH DO BRASIL"`) | `fornecedor_nome` |
-| **Marca** | `marca` (ex.: `"FORTIX"`, `"SIGMETAL"`) | `marca` (presente em atas detalhadas) | `marca` (quando preenchido pelo órgão) | `marca` / `marca_normalizada` (ex.: `"MOVEMENT"`) |
-| **Fabricante** | Não enviado diretamente (deriva de marca/CNAE) | `fabricante` (opcional no DTO) | `fabricante` (opcional no DTO) | `f.fabricante` (CNAE 10–33) |
-| **Modelo** | `modelo` (quando informado) | `modelo` (quando informado) | `modelo` (quando informado) | `modelo` (capturado no Paradigma) |
+| **Marca** | `marca` (ex.: `"FORTIX"`, `"SIGMETAL"`) — única fonte de marca do Compras.gov | **não existe** (`atas_rp_itens.marca` fica NULL) | **não existe** | `marca` / `marca_normalizada` (ex.: `"MOVEMENT"`) |
+| **Fabricante** | **não existe** (deriva de marca/CNAE) | **não existe** | **não existe** | `f.fabricante` (CNAE 10–33) |
+| **Modelo** | **não existe** | **não existe** | **não existe** | `modelo` (capturado no Paradigma) |
+| **Lote / grupo** | não existe | não existe (chave aceita `numero_grupo`, hoje NULL) | não existe no resultado; `numeroGrupo` só nos itens de contratação (`2_`/`2.1_consultarItensContratacoes`), observado sempre `0` | lote do edital (Paradigma) |
+| **Vários vencedores / cota** | um registro por item homologado | `classificacaoFornecedor` (`"001"`…) + `niFornecedor` na chave | `sequencialResultado`, `ordemClassificacaoSrp`, `aplicacaoBeneficioMeepp`; nos itens, `tipoBeneficio`/`tipoBeneficioNome` | — |
 | **Preço Unitário** | `precoUnitario` (ex.: `9000.00`) | `valorUnitario` (ex.: `8500.00`) | `valorUnitarioHomologado` (ex.: `4685.00`) | `valor_unitario_homologado` |
 | **Órgão / UASG** | `codigoUasg`, `nomeUasg`, `estado` | `codigoUnidadeGerenciadora`, `nomeUnidadeGerenciadora` | `unidadeOrgaoCodigoUnidade`, `orgaoEntidadeCnpj` | `orgao_cnpj`, `orgao_nome`, `uf` |
 
@@ -117,7 +119,7 @@ Atas de Registro de Preço no escopo do catálogo expirando nos próximos 180 di
 | `descricao_item` | `text` | Descrição do item registrado |
 | `ni_fornecedor` | `text` | CNPJ do fornecedor detentor da ata |
 | `nome_fornecedor` | `text` | Razão social do fornecedor |
-| `marca` | `text` | Marca registrada do produto na ata |
+| `marca` | `text` | Sempre NULL: o item de ARP do Compras.gov não traz marca (vem da Pesquisa de Preço ou do Paradigma/edital) |
 | `quantidade` | `numeric` | Quantidade homologada na ata |
 | `valor_unitario` | `numeric(18,4)` | Preço unitário registrado |
 | `valor_total` | `numeric(18,4)` | Valor total registrado para o item |
@@ -251,7 +253,8 @@ Para manter a consistência relacional e alimentar o BI sem inconsistências, a 
    - Popula `precos_praticados_itens`.
 3. **`compras_arp`** (`python -m coletor.compras_arp`):
    - Ingestão de atas de registro de preço vigentes no catálogo.
-   - Popula `atas_rp_itens`.
+   - Popula `atas_rp_itens`, chave `(numero_ata_registro_preco, codigo_unidade_gerenciadora, numero_grupo, numero_item, ni_fornecedor)` (`uq_atas_rp_itens_lote_fornecedor`, migration `20261003020000`).
+   - A API responde **404** quando falta parâmetro obrigatório (`dataVigenciaInicialMin`/`Max`; na Pesquisa de Preço, `tipo`/`codigo`); consulta válida sem resultado volta 200 com `resultado: []`. Os coletores validam antes e tratam 404 como erro, nunca como vazio.
 4. **`fornecedores --de-resultados`** (`python -m coletor.fornecedores --de-resultados`):
    - Consulta pública de CNPJ (BrasilAPI/Minha Receita) para preenchimento de Razão Social e CNAE dos novos fornecedores descobertos.
    - Popula `public.fornecedores`.

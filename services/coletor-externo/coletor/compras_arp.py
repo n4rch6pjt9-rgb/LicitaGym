@@ -31,6 +31,7 @@ import requests
 from .compras_api import ErroApiCompras, ParametroInvalido, corpo_json, erro_http, validar_codigo, validar_intervalo
 from .compras_pdms import CatalogoPdmsIndisponivel, carregar_pdms_efetivos
 from .destino import Supabase, env
+from .paginacao import TAMANHO_PAGINA_MAX, avaliar_pagina, clamp_tamanho, pagina_repetida
 from .retry import espera_retry
 
 log = logging.getLogger("coletor.compras_arp")
@@ -179,7 +180,8 @@ class ClienteComprasARP:
             "dataVigenciaInicialMax": data_max,
             "codigoPdm": codigo_pdm,
             "pagina": pagina,
-            "tamanhoPagina": min(500, max(10, tamanho_pagina)),
+            "tamanhoPagina": clamp_tamanho(tamanho_pagina, padrao=TAMANHO_PAGINA, minimo=10,
+                                           maximo=TAMANHO_PAGINA_MAX),
         }
         contexto = f"ARP PDM {codigo_pdm} ({data_min} a {data_max}) pagina {pagina}"
         for tentativa in range(1, 4):
@@ -231,6 +233,8 @@ def coletar(
 
     for pdm in pdms:
         pagina = 1
+        paginas_vistas: set[str] = set()
+        lidos = 0
         while True:
             log.info("Consultando ARP PDM %d (%s a %s) pagina %d...", pdm, data_min, data_max, pagina)
             try:
@@ -240,8 +244,14 @@ def coletar(
                 erros += 1
                 break
 
-            items_raw = resp.get("resultado") or []
-            if not items_raw:
+            if not isinstance(resp, dict) or not isinstance(resp.get("resultado"), list):
+                log.warning("ARP PDM %d página %d: resposta inesperada; não é fim de coleta", pdm, pagina)
+                erros += 1
+                break
+            items_raw = resp["resultado"]
+            if pagina_repetida(items_raw, paginas_vistas) and items_raw:
+                log.warning("ARP PDM %d página %d: conteúdo repetido; não é fim de coleta", pdm, pagina)
+                erros += 1
                 break
 
             linhas_norm = []
@@ -288,8 +298,13 @@ def coletar(
                     "amostras": amostras,
                 }
 
-            total_regs = resp.get("totalRegistros") or 0
-            if pagina * TAMANHO_PAGINA >= total_regs or len(items_raw) < TAMANHO_PAGINA:
+            lidos += len(items_raw)
+            decisao = avaliar_pagina(
+                items_raw, tamanho=TAMANHO_PAGINA, pagina=pagina, corpo=resp, acumulado=lidos,
+            )
+            if decisao.aviso:
+                log.warning("ARP PDM %d página %d: %s", pdm, pagina, decisao.aviso)
+            if decisao.encerrar:
                 break
             pagina += 1
 

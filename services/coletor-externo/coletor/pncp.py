@@ -49,6 +49,7 @@ from urllib.parse import urljoin, urlsplit
 import requests
 
 from .destino import Armazenamento, Supabase, drenar_licitacao_match, env, parece_html, sha256
+from .paginacao import TAMANHO_PAGINA_MAX, avaliar_pagina, clamp_tamanho
 from . import escopo as _escopo
 from .catmat_codigo import (
     LeituraMapaCatmat,
@@ -205,6 +206,7 @@ class PNCP:
         return r
 
     def buscar(self, termo: str, status: str = "todos", pagina: int = 1, tam: int = 100) -> dict:
+        tam = clamp_tamanho(tam, padrao=100, minimo=1, maximo=TAMANHO_PAGINA_MAX)
         r = self._get("/api/search/", q=f'"{termo}"', tipos_documento="edital", ordenacao="-data",
                       pagina=pagina, tam_pagina=tam, status=status)
         if r == []:
@@ -237,9 +239,21 @@ class PNCP:
         return r
 
     def itens(self, c: dict) -> list[dict]:
+        """Itens da compra. O corpo é uma lista, sem total: segue até a página vazia.
+
+        Página curta não encerra. Página repetida ou HTTP 404 não são fim de coleta.
+        """
         out, pagina, paginas_vistas = [], 1, set()
         while True:
-            lote = self._lista(self.base_compra(c) + "/itens", pagina=pagina, tamanhoPagina=100)
+            try:
+                lote = self._lista(
+                    self.base_compra(c) + "/itens", pagina=pagina, tamanhoPagina=TAMANHO_PAGINA_MAX,
+                )
+            except requests.HTTPError as e:
+                status = getattr(getattr(e, "response", None), "status_code", None)
+                if status == 404:
+                    log.warning("PNCP itens: HTTP 404 na página %s; não é fim de coleta", pagina)
+                raise
             fingerprint = sha256(json.dumps(
                 lote, ensure_ascii=False, sort_keys=True, separators=(",", ":")
             ).encode("utf-8"))
@@ -247,7 +261,8 @@ class PNCP:
                 raise RespostaInvalida(f"PNCP itens: página repetida durante paginação (página {pagina})")
             paginas_vistas.add(fingerprint)
             out += lote
-            if len(lote) < 100:
+            # Sem total no corpo: só a página vazia encerra.
+            if not lote:
                 return out
             pagina += 1
 
@@ -877,6 +892,7 @@ def coletar(pncp: PNCP, sb: Supabase | None, arm: Armazenamento | None, termos: 
     como último recurso). Uma compra encerrada vira historico mesmo que já fosse lead (rebaixa).
     `mapa_catmat`: código CATMAT antes do texto em avaliar (None = só texto)."""
     agora = agora or datetime.now(timezone.utc)
+    tam = clamp_tamanho(tam, padrao=50, minimo=1, maximo=TAMANHO_PAGINA_MAX)
     status_lista = status if isinstance(status, list) else [status]
     vistos: dict[str, list[str]] = {}
     resumo = {"encontradas": 0, "no_escopo": 0, "interesse_borracha": 0, "fora": 0,
@@ -897,6 +913,7 @@ def coletar(pncp: PNCP, sb: Supabase | None, arm: Armazenamento | None, termos: 
 
     for termo in termos:
         for st in status_lista:
+            lidos = 0
             for pagina in range(1, paginas + 1):
                 try:
                     res = pncp.buscar(termo, st, pagina, tam)
@@ -908,6 +925,10 @@ def coletar(pncp: PNCP, sb: Supabase | None, arm: Armazenamento | None, termos: 
                         resumo.setdefault("termos_com_falha", []).append(f"{termo} [{st}] pág. {pagina}")
                     log.error('"%s" [%s] pág. %s: busca falhou, segue para o próximo termo: %s',
                               termo, st, pagina, str(e)[:160])
+                    break
+                if not isinstance(res, dict) or not isinstance(res.get("items"), list):
+                    _inc(resumo, "falha_busca")
+                    log.warning('"%s" [%s] pág. %s: resposta inesperada; não é fim de coleta', termo, st, pagina)
                     break
                 lote = res.get("items") or []
                 log.info('"%s" [%s] pág. %s: %s de %s', termo, st, pagina, len(lote), res.get("total"))
@@ -926,8 +947,15 @@ def coletar(pncp: PNCP, sb: Supabase | None, arm: Armazenamento | None, termos: 
                     for c, erro in ex.map(lambda c: _tentar(c, termo, st), fila):
                         if erro:
                             falhas.append((c, termo, st))
-                if len(lote) < tam:
+                lidos += len(lote)
+                decisao = avaliar_pagina(lote, tamanho=tam, pagina=pagina, corpo=res, acumulado=lidos)
+                if decisao.aviso:
+                    log.warning('"%s" [%s] pág. %s: %s', termo, st, pagina, decisao.aviso)
+                if decisao.encerrar:
                     break
+            else:
+                log.warning('"%s" [%s]: parou no teto de %s páginas sem o total confirmar o fim',
+                            termo, st, paginas)
 
     if falhas:
         log.info("Segunda passada: %s compra(s) que falharam por instabilidade do PNCP", len(falhas))
@@ -1774,7 +1802,8 @@ def criar_parser() -> argparse.ArgumentParser:
     ap.add_argument("--status", choices=["todos", "recebendo_proposta", "em_julgamento", "encerradas"],
                     help="sobrescreve o status do modo")
     ap.add_argument("--paginas", type=int, help="páginas por termo (padrão: leads 20, outros 3)")
-    ap.add_argument("--tam", type=int, default=50, help="resultados por página")
+    ap.add_argument("--tam", type=int, default=50,
+                    help="resultados por página (máximo 100; pedido maior é cortado)")
     ap.add_argument("--sem-resultados", action="store_true", help="não consulta vencedores")
     ap.add_argument("--baixar-arquivos", action="store_true", help="baixa edital/anexos (para o RAG)")
     ap.add_argument("--baixar-pendentes", action="store_true",
@@ -1892,8 +1921,11 @@ def main(argv: list[str] | None = None) -> int:
     paginas = args.paginas or (20 if args.modo == "leads" else 3)
     log.info("modo=%s status=%s termos=%s lote=%s workers=%s delay=%ss", args.modo, status, len(termos),
              args.lote or "-", workers, delay)
+    tam = clamp_tamanho(args.tam, padrao=50, minimo=1, maximo=TAMANHO_PAGINA_MAX)
+    if tam != args.tam:
+        log.info("--tam %s limitado a %s", args.tam, tam)
     r = coletar(PNCP(delay=delay), sb, arm, termos, status, paginas,
-                args.tam, not args.sem_resultados, args.baixar_arquivos,
+                tam, not args.sem_resultados, args.baixar_arquivos,
                 int(float(env("MAX_MB", "80")) * 1048576), args.dry_run,
                 modo=args.modo, workers=workers, mapa_catmat=mapa)
     drenar_licitacao_match(sb)  # recorte CATMAT por texto: zera a pendência de licitacao_match (sem efeito no dry-run)

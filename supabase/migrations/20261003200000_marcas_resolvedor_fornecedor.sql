@@ -24,6 +24,9 @@
 --      "75CM BOMBA", "COD MB") -> NULL. Começar com dígito não basta: com palavra de 5+ letras e sem medida
 --      ("3 SECONDS FITNESS", "3G FITNESS", "D1FITNESS") é marca. Qualquer outro texto conta como a própria
 --      string normalizada, com curada = false.
+--      curada = "resolvida por alias" (tipo <> 'nao_marca'), venha o alias da semente ou da curadoria manual:
+--      um alias da semente marcas-v1 (revisao_manual = false) também dá curada = true. Não significa "revisada
+--      por pessoa"; para isso, ver marca_aliases.revisao_manual pelo alias_id.
 --   4. Views (security_invoker, SELECT só para service_role):
 --      v_marca_ocorrencias          1 linha por item vendido com a marca resolvida (PONTO DE EXTENSÃO das fontes)
 --      v_fornecedor_marcas_ranking  CNPJ x marca: qtd_itens, valor_total, ultima_data, posicao (mín. 2 itens)
@@ -40,15 +43,59 @@
 --
 -- ACL: RLS ligado em marca_aliases sem policy; anon, authenticated e PUBLIC sem nenhum privilégio na tabela,
 -- na sequence de identidade, nas 4 views e nas 2 funções (o default privileges do Supabase dá ALL/EXECUTE a
--- anon/authenticated em objeto novo: por isso o revoke explícito); service_role com leitura/escrita na tabela,
--- SELECT nas views e EXECUTE nas funções.
+-- anon/authenticated/service_role em objeto novo: por isso o revoke explícito); service_role só com SELECT,
+-- INSERT, UPDATE e DELETE na tabela (sem TRUNCATE/REFERENCES/TRIGGER/MAINTAIN), nada na sequence (id é
+-- GENERATED ALWAYS AS IDENTITY: o INSERT usa a sequence sem checar privilégio nela), SELECT nas views e EXECUTE
+-- nas funções.
+--
+-- Pré-condições (falham com mensagem clara antes de criar qualquer coisa): PostgreSQL 15+ (NULLS NOT DISTINCT e
+-- security_invoker); service_role com USAGE em public e private e SELECT em precos_praticados_itens (as views são
+-- security_invoker: quem consulta precisa dos privilégios nos objetos de origem). Se marca_aliases já existir em
+-- outro formato, o CREATE TABLE IF NOT EXISTS não a altera: a migration confere colunas, tipos e constraints e
+-- falha se divergir. No fim, confere EXECUTE de service_role nas funções e SELECT na tabela e nas views.
 --
 -- Verificação (só leitura): supabase/tests/marcas_resolvedor_acl_check.sql
 -- Idempotente (pode rodar duas vezes). Merge na main aplica em produção.
 
 begin;
 
+-- 0) Pré-condições -----------------------------------------------------------------------------------------
+-- NULLS NOT DISTINCT (unique de marca_aliases) e security_invoker (views) exigem PostgreSQL 15+.
+do $pre$
+begin
+  if current_setting('server_version_num')::int < 150000 then
+    raise exception 'marcas_resolvedor: requer PostgreSQL 15+ (NULLS NOT DISTINCT, security_invoker); servidor %',
+      current_setting('server_version');
+  end if;
+end $pre$;
+
 create schema if not exists private;
+
+-- As views são security_invoker: service_role (quem consulta) precisa de USAGE nos schemas e SELECT na origem.
+do $pre$
+declare
+  v_faltas text[] := '{}';
+begin
+  if not exists (select 1 from pg_roles where rolname = 'service_role') then
+    raise exception 'marcas_resolvedor: papel service_role não existe';
+  end if;
+  if not has_schema_privilege('service_role', 'public', 'USAGE') then
+    v_faltas := v_faltas || 'USAGE no schema public'::text;
+  end if;
+  if not has_schema_privilege('service_role', 'private', 'USAGE') then
+    v_faltas := v_faltas || 'USAGE no schema private'::text;
+  end if;
+  if to_regclass('public.precos_praticados_itens') is null then
+    v_faltas := v_faltas || 'tabela de origem public.precos_praticados_itens não existe'::text;
+  elsif not has_table_privilege('service_role', 'public.precos_praticados_itens', 'SELECT') then
+    v_faltas := v_faltas || 'SELECT em public.precos_praticados_itens'::text;
+  end if;
+  if array_length(v_faltas, 1) > 0 then
+    raise exception 'marcas_resolvedor: service_role sem o necessário para as views security_invoker: %',
+      array_to_string(v_faltas, '; ')
+      using hint = 'Conceder os privilégios listados a service_role (pelo bot LicitaGym Supabase) e reaplicar.';
+  end if;
+end $pre$;
 
 -- 1) Normalização ------------------------------------------------------------------------------------------
 create or replace function private.marca_normalizar(p_valor text)
@@ -107,6 +154,49 @@ create table if not exists public.marca_aliases (
     (modo in ('exato', 'prefixo') and valor_norm = private.marca_normalizar(valor_norm))
     or (modo = 'regex' and not ('' ~ valor_norm)))
 );
+
+-- CREATE TABLE IF NOT EXISTS não altera uma tabela que já exista em outro formato: confere colunas, tipos,
+-- NOT NULL, identidade e as constraints de que a semente (ON CONFLICT) e o resolvedor dependem.
+do $fmt$
+declare
+  v_div text;
+begin
+  select string_agg(coalesce(e.col, a.col) || ': esperado ' || coalesce(e.tipo || case when e.nn then ' not null' else '' end, 'ausente')
+                    || ', atual ' || coalesce(a.tipo || case when a.nn then ' not null' else '' end, 'ausente'),
+                    '; ' order by coalesce(e.col, a.col))
+    into v_div
+    from (values ('id', 'bigint', true), ('valor_norm', 'text', true), ('modo', 'text', true), ('cnpj_escopo', 'text', false),
+                 ('marca', 'text', false), ('tipo', 'text', true), ('origem', 'text', true), ('evidencia', 'text', true),
+                 ('revisao_manual', 'boolean', true), ('seed_versao', 'text', false), ('ativo', 'boolean', true),
+                 ('created_at', 'timestamp with time zone', true), ('updated_at', 'timestamp with time zone', true))
+         as e(col, tipo, nn)
+    full join (select att.attname::text as col, format_type(att.atttypid, att.atttypmod) as tipo, att.attnotnull as nn
+                 from pg_attribute att
+                where att.attrelid = 'public.marca_aliases'::regclass and att.attnum > 0 and not att.attisdropped) a
+      on a.col = e.col
+   where e.col is null or a.col is null or e.tipo <> a.tipo or e.nn <> a.nn;
+  if v_div is not null then
+    raise exception 'marcas_resolvedor: public.marca_aliases já existe com formato diferente do esperado: %', v_div
+      using hint = 'Corrigir a tabela existente (ou removê-la, se vazia) antes de aplicar esta migration.';
+  end if;
+  if not exists (select 1 from pg_attribute where attrelid = 'public.marca_aliases'::regclass and attname = 'id'
+                    and attidentity = 'a') then
+    raise exception 'marcas_resolvedor: public.marca_aliases.id deveria ser GENERATED ALWAYS AS IDENTITY';
+  end if;
+  select string_agg(e.nome, ', ' order by e.nome) into v_div
+    from (values ('marca_aliases_pkey'), ('marca_aliases_chave_key'), ('marca_aliases_modo_check'), ('marca_aliases_tipo_check'),
+                 ('marca_aliases_origem_check'), ('marca_aliases_cnpj_check'), ('marca_aliases_marca_check'),
+                 ('marca_aliases_marca_norm_check'), ('marca_aliases_valor_vazio_check'), ('marca_aliases_valor_check')) e(nome)
+   where not exists (select 1 from pg_constraint c where c.conrelid = 'public.marca_aliases'::regclass and c.conname = e.nome);
+  if v_div is not null then
+    raise exception 'marcas_resolvedor: public.marca_aliases já existe sem as constraints: %', v_div;
+  end if;
+  if not exists (select 1 from pg_constraint c join pg_index i on i.indexrelid = c.conindid
+                  where c.conrelid = 'public.marca_aliases'::regclass and c.conname = 'marca_aliases_chave_key'
+                    and i.indnullsnotdistinct) then
+    raise exception 'marcas_resolvedor: marca_aliases_chave_key deveria ser UNIQUE NULLS NOT DISTINCT';
+  end if;
+end $fmt$;
 
 comment on table public.marca_aliases is
   'Resolvedor de marca: valor normalizado (exato/prefixo) ou regex -> marca canônica (NULL = não é marca). cnpj_escopo restringe a um fornecedor (ex.: PRÓPRIA de fabricante). Curadoria: revisao_manual = true (a semente da migration não sobrescreve e a linha manual vence em empate). Só service_role.';
@@ -311,6 +401,7 @@ as $fn$
         from (
           select a.marca,
                  case when a.tipo = 'nao_marca' then 'nao_marca' else 'alias_' || a.modo end as metodo,
+                 -- curada = resolvida por alias que aponta marca (semente ou manual; revisao_manual não entra)
                  a.tipo <> 'nao_marca' as curada, a.id as alias_id,
                  1 as grupo, a.cnpj_escopo is null as global,
                  case a.modo when 'exato' then 0 when 'prefixo' then 1 else 2 end as ordem_modo,
@@ -346,7 +437,7 @@ as $fn$
 $fn$;
 
 comment on function private.marca_resolver(text, text) is
-  'Marca bruta + CNPJ -> (marca_norm, marca canônica ou NULL, metodo, curada, alias_id). Ordem: escopo do CNPJ > global; exato > prefixo mais longo > regex; manual > semente; sem alias: vazio/código/medida -> NULL, senão a string normalizada (curada=false). EXECUTE só service_role.';
+  'Marca bruta + CNPJ -> (marca_norm, marca canônica ou NULL, metodo, curada, alias_id). Ordem: escopo do CNPJ > global; exato > prefixo mais longo > regex; manual > semente; sem alias: vazio/código/medida -> NULL, senão a string normalizada (curada=false). curada = resolvida por alias (semente ou manual), não revisada por pessoa. EXECUTE só service_role.';
 
 -- 4) Views ------------------------------------------------------------------------------------------------
 create or replace view public.v_marca_ocorrencias
@@ -366,12 +457,20 @@ with fontes as (
   --   union all Paradigma/SFIEC: licitacao_resultados com vencedor = true e situacao <> 'Cancelado' (marca, cnpj)
   --   union all catálogo de fabricantes, se virar fonte de "quem vende"
 ),
+-- Resolve cada par (marca, NI) distinto uma vez só. A chave é o próprio par, com NULL e '' distintos: com
+-- coalesce(…, '') como chave, NULL e '' do mesmo NI viravam dois pares com a mesma chave e cada venda casava
+-- com os dois (ocorrência duplicada).
+-- Sem MATERIALIZED de propósito: inline, o filtro por CNPJ desce até fontes e o resolvedor só roda para as vendas
+-- daquele CNPJ. Medido com 100 mil vendas sintéticas (95 mil com data, 59 711 pares): v_fornecedor_marcas de 1 CNPJ
+-- 0,27 s (311 chamadas) sem MATERIALIZED x 6,3 s (59 711 chamadas) com; a varredura completa custa 10,4 s (uma
+-- chamada por venda, 95 015) x 6,8 s com. O uso esperado é por fornecedor; carga em lote deve materializar no
+-- consumidor (tabela ou materialized view), não aqui.
 pares as (
-  select distinct coalesce(f.marca_bruta, '') as k_marca, coalesce(f.ni, '') as k_ni, f.marca_bruta, f.ni
+  select distinct f.marca_bruta, f.ni
     from fontes f
 ),
 resolvidos as (
-  select pr.k_marca, pr.k_ni, r.marca_norm, r.marca, r.metodo, r.curada, r.alias_id
+  select pr.marca_bruta, pr.ni, r.marca_norm, r.marca, r.metodo, r.curada, r.alias_id
     from pares pr
     cross join lateral private.marca_resolver(pr.marca_bruta, pr.ni) r
 )
@@ -387,9 +486,16 @@ select f.fonte,
        r.alias_id,
        f.data_venda,
        f.valor,
-       (f.ni ~ '^[0-9]{14}$' and r.marca is not null) as entra_ranking
+       (coalesce(f.ni ~ '^[0-9]{14}$', false) and r.marca is not null) as entra_ranking  -- NI NULL: false, não NULL
   from fontes f
-  join resolvidos r on r.k_marca = coalesce(f.marca_bruta, '') and r.k_ni = coalesce(f.ni, '');
+  -- A igualdade é "is not distinct from" nas duas colunas (NULL casa só com NULL, '' só com ''). As igualdades por
+  -- coalesce ao lado não mudam o resultado (são implicadas pelas de cima); existem só para o planner poder usar
+  -- hash join: "is not distinct from" sozinho vira nested loop (95 mil vendas x 60 mil pares no teste sintético).
+  join resolvidos r
+    on r.marca_bruta is not distinct from f.marca_bruta
+   and r.ni is not distinct from f.ni
+   and coalesce(r.marca_bruta, '') = coalesce(f.marca_bruta, '')
+   and coalesce(r.ni, '') = coalesce(f.ni, '');
 
 create or replace view public.v_fornecedor_marcas_ranking
 with (security_invoker = true)
@@ -468,11 +574,12 @@ comment on view public.v_marca_aliases_pendentes is
 -- 5) ACL --------------------------------------------------------------------------------------------------
 alter table public.marca_aliases enable row level security;
 
-revoke all on table public.marca_aliases from PUBLIC, anon, authenticated;
-grant all on table public.marca_aliases to service_role;
+revoke all on table public.marca_aliases from PUBLIC, anon, authenticated, service_role;
+grant select, insert, update, delete on table public.marca_aliases to service_role;
 
-revoke all on sequence public.marca_aliases_id_seq from PUBLIC, anon, authenticated;
-grant usage, select on sequence public.marca_aliases_id_seq to service_role;
+-- id é GENERATED ALWAYS AS IDENTITY: o INSERT avança a sequence sem checar privilégio nela, então ninguém precisa
+-- de grant na sequence (nem service_role).
+revoke all on sequence public.marca_aliases_id_seq from PUBLIC, anon, authenticated, service_role;
 
 revoke all on table public.v_marca_ocorrencias, public.v_fornecedor_marcas_ranking, public.v_fornecedor_marcas,
                     public.v_marca_aliases_pendentes
@@ -485,5 +592,32 @@ revoke all on function private.marca_normalizar(text) from PUBLIC, anon, authent
 grant execute on function private.marca_normalizar(text) to service_role;
 revoke all on function private.marca_resolver(text, text) from PUBLIC, anon, authenticated, service_role;
 grant execute on function private.marca_resolver(text, text) to service_role;
+
+-- 6) Pós-checagem: o que as views security_invoker usam, com os privilégios de service_role -----------------
+do $pos$
+declare
+  v_faltas text[] := '{}';
+  v_obj text;
+begin
+  foreach v_obj in array array['private.marca_normalizar(text)', 'private.marca_resolver(text,text)'] loop
+    if not has_function_privilege('service_role', v_obj, 'EXECUTE') then
+      v_faltas := v_faltas || ('EXECUTE em ' || v_obj);
+    end if;
+  end loop;
+  foreach v_obj in array array['public.marca_aliases', 'public.precos_praticados_itens', 'public.v_marca_ocorrencias',
+                               'public.v_fornecedor_marcas_ranking', 'public.v_fornecedor_marcas',
+                               'public.v_marca_aliases_pendentes'] loop
+    if not has_table_privilege('service_role', v_obj, 'SELECT') then
+      v_faltas := v_faltas || ('SELECT em ' || v_obj);
+    end if;
+  end loop;
+  if not has_schema_privilege('service_role', 'private', 'USAGE') then
+    v_faltas := v_faltas || 'USAGE no schema private'::text;
+  end if;
+  if array_length(v_faltas, 1) > 0 then
+    raise exception 'marcas_resolvedor: service_role não consegue ler as views security_invoker: %',
+      array_to_string(v_faltas, '; ');
+  end if;
+end $pos$;
 
 commit;

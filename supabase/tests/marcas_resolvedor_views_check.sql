@@ -11,6 +11,12 @@
 --   F. v_marca_aliases_pendentes: só metodo = bruta (com e sem mínimo de 2), contagem por fornecedor
 --   G. marca que começa com dígito seguida de palavra ("3 SECONDS FITNESS") conta; código puro ("1130PC", "X44V7") não
 --   H. alias com padrão vazio ('' / só espaços / regex que casa com vazio) é recusado; o resolvedor ignora padrão vazio
+--   I. regressão NULL x '': marca NULL e '' no mesmo NI, NI NULL e '' na mesma marca e as 4 combinações: cada venda
+--      aparece uma vez só em v_marca_ocorrencias (nº de ocorrências = nº de linhas elegíveis da fonte)
+--   J. curada = "resolvida por alias": alias da semente (revisao_manual = false) dá curada = true; como
+--      service_role (grants mínimos: SELECT/INSERT/UPDATE/DELETE, nada na sequence) lê as views security_invoker
+--      e escreve em marca_aliases, mas não faz TRUNCATE
+-- Os casos A-G rodam antes das fixtures de I e J, que não mudam as contagens deles.
 -- Resultado esperado: NOTICE "SUCESSO: marcas_resolvedor_views_check ok".
 -- Cada falha sai em NOTICE ("FALHA ...") e o script termina com UMA exceção que lista todas. Sem a migration aplicada
 -- (objetos ausentes), o script lista os objetos que faltam como FALHA e não executa os casos que dependem deles:
@@ -44,6 +50,7 @@ declare
   v_falhas  text[] := '{}';
   v_faltam  text[];
   v_tem_constraints boolean;
+  v_fonte bigint;
 begin
   -- ------------------------------------------------------------------ 0. existência (antes de qualquer caso)
   select array_agg(e.obj order by e.obj) into v_faltam
@@ -58,7 +65,7 @@ begin
     v_faltam := coalesce(v_faltam, '{}') || 'private.marca_normalizar(text)'::text;
   end if;
   if v_faltam is not null then
-    raise exception 'VIEWS CHECK FALHOU: marcas_resolvedor_views_check: % objeto(s) ausente(s), casos A-H não executados:%',
+    raise exception 'VIEWS CHECK FALHOU: marcas_resolvedor_views_check: % objeto(s) ausente(s), casos A-J não executados:%',
       array_length(v_faltam, 1), E'\n  - ausente: ' || array_to_string(v_faltam, E'\n  - ausente: ');
   end if;
   select count(*) = 2 into v_tem_constraints
@@ -191,6 +198,90 @@ begin
   if v_txt is distinct from '3G FITNESS=bruta | D1FITNESS=bruta | NULL=codigo_ou_medida | NULL=codigo_ou_medida | '
                             'NULL=codigo_ou_medida | NULL=codigo_ou_medida | NULL=codigo_ou_medida | NULL=codigo_ou_medida' then
     v_falhas := v_falhas || format('CASO G FALHOU: dígito + palavra x código/medida inesperado: %s', v_txt);
+  end if;
+
+  -- ------------------------------------------------------------------ I (regressão NULL x '')
+  insert into public.precos_praticados_itens (id_compra, id_item_compra, ni_fornecedor, marca, quantidade, preco_unitario, data_resultado)
+  select 'ZZNULO', g.n, g.ni, g.marca, 1, 10, g.data
+    from (values
+      (1, c_a,        null::text, date '2026-09-01'),   -- marca NULL e '' no mesmo NI
+      (2, c_a,        '',         date '2026-09-02'),
+      (3, null::text, 'ZZQ NULO', date '2026-09-03'),   -- NI NULL e '' na mesma marca
+      (4, '',         'ZZQ NULO', date '2026-09-04'),
+      (5, null,       null,       date '2026-09-05'),   -- as 4 combinações de NULL e ''
+      (6, '',         '',         date '2026-09-06'),
+      (7, null,       '',         date '2026-09-07'),
+      (8, '',         null,       date '2026-09-08'),
+      (9, c_a,        null,       null)                 -- sem data_resultado: fora
+    ) as g(n, ni, marca, data);
+  select count(*) into v_fonte from public.precos_praticados_itens where id_compra = 'ZZNULO' and data_resultado is not null;
+  select count(*) into v_n from public.v_marca_ocorrencias where ref_item like 'ZZNULO:%';
+  if v_n <> v_fonte then
+    v_falhas := v_falhas || format('CASO I FALHOU: NULL x vazio: %s ocorrências para %s vendas elegíveis (duplicou)', v_n, v_fonte);
+  end if;
+  select count(*) into v_n
+    from (select ref_item from public.v_marca_ocorrencias where ref_item like 'ZZNULO:%' group by ref_item having count(*) > 1) d;
+  if v_n <> 0 then
+    v_falhas := v_falhas || format('CASO I FALHOU: %s venda(s) com mais de uma ocorrência', v_n);
+  end if;
+  -- invariante na base inteira (a trava garante que é base de teste): uma ocorrência por venda com data
+  select count(*) into v_fonte from public.precos_praticados_itens where data_resultado is not null;
+  select count(*) into v_n from public.v_marca_ocorrencias where fonte = 'precos_praticados';
+  if v_n <> v_fonte then
+    v_falhas := v_falhas || format('CASO I FALHOU: v_marca_ocorrencias tem %s linhas para %s vendas elegíveis', v_n, v_fonte);
+  end if;
+  select string_agg(ref_item || '=' || ni_tipo || '/' || metodo || '/' || entra_ranking::text, ' | ' order by ref_item)
+    into v_txt from public.v_marca_ocorrencias where ref_item in ('ZZNULO:1', 'ZZNULO:2', 'ZZNULO:3', 'ZZNULO:4');
+  if v_txt is distinct from 'ZZNULO:1=cnpj/vazio/false | ZZNULO:2=cnpj/vazio/false | ZZNULO:3=outro/bruta/false | ZZNULO:4=outro/bruta/false' then
+    v_falhas := v_falhas || format('CASO I FALHOU: resolução de NULL/vazio inesperada: %s', v_txt);
+  end if;
+
+  -- ------------------------------------------------------------------ J (curada da semente; service_role)
+  insert into public.marca_aliases (valor_norm, modo, cnpj_escopo, marca, tipo, origem, evidencia, revisao_manual, seed_versao)
+  values ('ZZQ SEMENTE', 'exato', null, 'ZZQ SEMENTE', 'marca', 'dados', 'teste semente', false, 'teste');
+  select r.curada::text || '/' || a.revisao_manual::text || '/' || r.metodo into v_txt
+    from private.marca_resolver('zzq semente', c_a) r join public.marca_aliases a on a.id = r.alias_id;
+  if v_txt is distinct from 'true/false/alias_exato' then
+    v_falhas := v_falhas || format('CASO J FALHOU: alias da semente deveria dar curada = true (curada/revisao_manual/metodo), obtido %s', v_txt);
+  end if;
+  if pg_has_role(current_user, 'service_role', 'MEMBER') then
+    begin
+      set local role service_role;
+      insert into public.marca_aliases (valor_norm, modo, marca, tipo, origem, evidencia, revisao_manual)
+      values ('ZZQ SR', 'exato', 'ZZQ SR', 'marca', 'curadoria', 'teste service_role', true);
+      update public.marca_aliases set evidencia = 'teste service_role 2' where valor_norm = 'ZZQ SR';
+      delete from public.marca_aliases where valor_norm = 'ZZQ SR';
+      select count(*) into v_n from public.v_fornecedor_marcas where cnpj = c_a;
+      if v_n <> 1 then
+        v_falhas := v_falhas || format('CASO J FALHOU: service_role leu %s linha(s) de v_fornecedor_marcas do CNPJ A', v_n);
+      end if;
+      select count(*) into v_n from public.v_marca_aliases_pendentes where marca_norm like 'ZZQ %';
+      if v_n = 0 then
+        v_falhas := v_falhas || 'CASO J FALHOU: service_role não leu v_marca_aliases_pendentes'::text;
+      end if;
+      reset role;
+    exception when insufficient_privilege then
+      reset role;
+      v_falhas := v_falhas || format('CASO J FALHOU: service_role sem privilégio para ler/escrever: %s', sqlerrm);
+    end;
+    begin
+      set local role service_role;
+      truncate public.marca_aliases;
+      reset role;
+      raise exception using errcode = 'P0001', message = 'ZZ_TRUNCATE_PASSOU';
+    exception
+      when insufficient_privilege then
+        reset role;
+      when raise_exception then
+        reset role;
+        if sqlerrm = 'ZZ_TRUNCATE_PASSOU' then
+          v_falhas := v_falhas || 'CASO J FALHOU: service_role conseguiu TRUNCATE em marca_aliases'::text;
+        else
+          raise;
+        end if;
+    end;
+  else
+    raise notice 'CASO J: % não pode assumir service_role; parte de service_role pulada', current_user;
   end if;
 
   -- ------------------------------------------------------------------ H

@@ -14,13 +14,18 @@
 --   2. acesso efetivo: has_*_privilege para anon e authenticated (nunca 'public': o acesso de PUBLIC é herdado por
 --                      todo papel e é conferido direto no ACL, bloco 3): nada na tabela, nas views, na sequence, nas
 --                      colunas, nas funções nem USAGE no schema private; service_role com SELECT/INSERT/UPDATE/DELETE
---                      na tabela, SELECT nas views, USAGE na sequence e no schema e EXECUTE nas funções.
+--                      na tabela e só isso (sem TRUNCATE/REFERENCES/TRIGGER/MAINTAIN), nada na sequence (id é
+--                      GENERATED ALWAYS AS IDENTITY: o INSERT não checa privilégio na sequence), SELECT nas views,
+--                      USAGE no schema private e EXECUTE nas funções.
 --   3. grants diretos: ACL do catálogo (relacl, attacl, proacl, nspacl via aclexplode; ACL NULL = acldefault, que
 --                      em função dá EXECUTE a PUBLIC) sem nenhuma entrada para PUBLIC (grantee 0), anon ou
---                      authenticated; information_schema sem grant para esses três.
+--                      authenticated; information_schema sem grant para esses três; ACL direto de service_role
+--                      na tabela = exatamente SELECT/INSERT/UPDATE/DELETE e nenhum na sequence.
 --   4. RLS:            ligado em marca_aliases; nenhuma policy; views com security_invoker=true.
 --   5. semente:        marcas-v1 com mais de 100 linhas (EXISTS ... OFFSET 100, sem count(*)).
 --   6. funções:        normalização e resolução de casos conhecidos (CNPJ 11222333000181 é fictício).
+--                      curada = "resolvida por alias" (semente ou manual): CLASSIC, alias da semente marcas-v1 com
+--                      revisao_manual = false, sai com curada = true.
 
 do $$
 declare
@@ -105,11 +110,12 @@ begin
                   else coalesce(has_schema_privilege(r.papel, to_regnamespace('private'), p.p)::text, 'ausente') end
         from fechados r cross join (values ('USAGE'), ('CREATE')) p(p) join papeis pa on pa.papel = r.papel
       union all
-      -- service_role: acesso de que o backend precisa
-      select '2 efetivo', t.obj || ' service_role ' || p.p, 'true',
+      -- service_role: só o acesso de que o backend precisa (SELECT/INSERT/UPDATE/DELETE), nada além
+      select '2 efetivo', t.obj || ' service_role ' || p.p,
+             (p.p in ('SELECT', 'INSERT', 'UPDATE', 'DELETE'))::text,
              case when not pa.existe then 'papel ausente'
                   else coalesce(has_table_privilege('service_role', to_regclass(t.obj), p.p)::text, 'ausente') end
-        from tabelas t cross join (values ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE')) p(p)
+        from tabelas t cross join privs p
         join papeis pa on pa.papel = 'service_role'
       union all
       select '2 efetivo', v.obj || ' service_role SELECT', 'true',
@@ -117,10 +123,11 @@ begin
                   else coalesce(has_table_privilege('service_role', to_regclass(v.obj), 'SELECT')::text, 'ausente') end
         from views v join papeis pa on pa.papel = 'service_role'
       union all
-      select '2 efetivo', s.obj || ' service_role USAGE', 'true',
+      -- sequence de identidade (GENERATED ALWAYS): service_role não precisa de nada nela
+      select '2 efetivo', s.obj || ' service_role ' || p.p, 'false',
              case when not pa.existe then 'papel ausente'
-                  else coalesce(has_sequence_privilege('service_role', to_regclass(s.obj), 'USAGE')::text, 'ausente') end
-        from seqs s join papeis pa on pa.papel = 'service_role'
+                  else coalesce(has_sequence_privilege('service_role', to_regclass(s.obj), p.p)::text, 'ausente') end
+        from seqs s cross join (values ('USAGE'), ('SELECT'), ('UPDATE')) p(p) join papeis pa on pa.papel = 'service_role'
       union all
       select '2 efetivo', fn.obj || ' service_role EXECUTE', 'true',
              case when not pa.existe then 'papel ausente'
@@ -180,6 +187,17 @@ begin
                   and g.table_name in ('marca_aliases', 'v_marca_ocorrencias', 'v_fornecedor_marcas_ranking',
                                        'v_fornecedor_marcas', 'v_marca_aliases_pendentes')
                   and g.grantee in ('anon', 'authenticated', 'PUBLIC')))::text
+      union all
+      -- service_role: grants diretos exatos na tabela e nenhum na sequence
+      select '3 acl', r.obj || ' relacl service_role', r.esperado,
+             case when c.oid is null then 'objeto ausente'
+                  else coalesce((select string_agg(a.privilege_type, ', ' order by a.privilege_type)
+                                   from aclexplode(coalesce(c.relacl, acldefault(case when c.relkind = 'S' then 's'::"char" else 'r'::"char" end,
+                                                                                 c.relowner))) a
+                                   join pg_roles pr on pr.oid = a.grantee and pr.rolname = 'service_role'), 'nenhum') end
+        from (values ('public.marca_aliases', 'DELETE, INSERT, SELECT, UPDATE'), ('public.marca_aliases_id_seq', 'nenhum'))
+             r(obj, esperado)
+        left join pg_class c on c.oid = to_regclass(r.obj)
       union all
       -- ----------------------------------------------------------------- 4. RLS, policy, security_invoker
       select '4 rls', t.obj, 'true',
@@ -273,6 +291,7 @@ begin
       select '6 resolver', 'AGON metodo/curada', 'bruta/false',
              (select r.metodo || '/' || r.curada::text from private.marca_resolver('AGON', '11222333000181') r)
       union all
+      -- curada = resolvida por alias: CLASSIC vem da semente (revisao_manual = false) e mesmo assim é curada
       select '6 resolver', 'CLASSIC metodo/curada', 'alias_prefixo/true',
              (select r.metodo || '/' || r.curada::text from private.marca_resolver('CLASSIC', '11222333000181') r)
       union all

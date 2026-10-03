@@ -115,6 +115,16 @@ export interface ItemAcompanhamento {
   temResultado: boolean;
   resultados: ItemResultado[];
   resultadosErro?: string | null;
+  /**
+   * catalogoCodigoItem do PNCP, cru (string). Só é CATMAT (material) / CATSER (serviço) quando catalogoId = 1
+   * (Catálogo do Compras.gov.br); com catalogoId = 2 ("Outros") é código próprio do órgão. null = não informado.
+   */
+  catalogoCodigoItem: string | null;
+  /** catalogo.id do item no PNCP (1 = Compras.gov.br, 2 = Outros); null = sem catálogo. */
+  catalogoId: number | null;
+  catalogoNome: string | null;
+  /** 'M' (material) | 'S' (serviço); null = desconhecido. */
+  materialOuServico: "M" | "S" | null;
 }
 
 export interface AtaAcompanhamento {

@@ -873,7 +873,8 @@ def test_escopo_mantem_esteira_ergometrica():
 # --- política de execução: padrão escopo completo (~160 termos) a ~1 req/s, 12 termos opt-out, lotes, falha isolada ---
 
 def _main_capturando(monkeypatch, argv, env=None):
-    for k in ("PNCP_WORKERS", "DELAY_SEGUNDOS"):
+    # sem SUPABASE_*: o dry-run não tenta ler o mapa CATMAT do banco (catmat_codigo.LeituraMapaCatmat)
+    for k in ("PNCP_WORKERS", "DELAY_SEGUNDOS", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"):
         monkeypatch.delenv(k, raising=False)
     for k, v in (env or {}).items():
         monkeypatch.setenv(k, v)

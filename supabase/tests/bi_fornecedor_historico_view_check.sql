@@ -70,6 +70,12 @@ begin
   values (480144, '2640', 'APARELHO MUSCULACAO CROSS OVER')
   on conflict (codigo_item) do nothing;
 
+  -- Paradigma não grava catalogo_id (só o PNCP manda catalogo.id): o código 480144 dos certames Paradigma não casa
+  -- com catmat_itens (20261003180000) e o item entra pela palavra-chave do PDM, como em produção.
+  insert into public.catmat_pdm_palavras (codigo_pdm, padrao, ativo)
+  values (2640, 'cross ?over', true)
+  on conflict do nothing;
+
   -- Setup: Fontes externas
   insert into public.fontes_externas (slug, entidade, plataforma, base_url, modo_coleta)
   values
@@ -102,9 +108,9 @@ begin
   ) returning id into v_lic_pncp_id;
 
   insert into public.licitacao_itens (
-    licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade, valor_unitario_estimado
+    licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade, valor_unitario_estimado, catalogo_id
   ) values (
-    v_lic_pncp_id, 1, '480144', 'M', 2, 9500.0
+    v_lic_pncp_id, 1, '480144', 'M', 2, 9500.0, 1
   );
 
   insert into public.licitacao_resultados (
@@ -137,9 +143,9 @@ begin
   ) returning id into v_lic_par1_id;
 
   insert into public.licitacao_itens (
-    licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade, descricao
+    licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade, descricao, catalogo_id
   ) values (
-    v_lic_par1_id, 1, '480144', 'M', 1, 'APARELHO CROSS OVER'
+    v_lic_par1_id, 1, '480144', 'M', 1, 'APARELHO CROSS OVER', null
   );
 
   insert into public.licitacao_resultados (
@@ -158,9 +164,9 @@ begin
   ) returning id into v_lic_par2_id;
 
   insert into public.licitacao_itens (
-    licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade, descricao
+    licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade, descricao, catalogo_id
   ) values (
-    v_lic_par2_id, 1, '480144', 'M', 1, 'APARELHO CROSS OVER'
+    v_lic_par2_id, 1, '480144', 'M', 1, 'APARELHO CROSS OVER', null
   );
 
   insert into public.licitacao_resultados (
@@ -179,9 +185,9 @@ begin
   ) returning id into v_lic_par3_id;
 
   insert into public.licitacao_itens (
-    licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade, descricao
+    licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade, descricao, catalogo_id
   ) values (
-    v_lic_par3_id, 1, '480144', 'M', 1, 'APARELHO CROSS OVER'
+    v_lic_par3_id, 1, '480144', 'M', 1, 'APARELHO CROSS OVER', null
   );
 
   insert into public.licitacao_resultados (
@@ -245,6 +251,11 @@ begin
     if v_total_certames_par is distinct from 3 then
       raise exception 'TESTE CASO 2 FALHOU: esperado 3 certames Paradigma, obtido %', v_total_certames_par;
     end if;
+
+    -- catalogo_id NULL (Paradigma): o código não vale como CATMAT, a cobertura vem da palavra-chave
+    if v_cobertura_par is distinct from 'pdm_palavra' then
+      raise exception 'TESTE CASO 2 FALHOU: esperado cobertura pdm_palavra (Paradigma sem catalogo_id), obtido %', v_cobertura_par;
+    end if;
   end;
 
   -- Verificação Caso 3 (Cobertura pdm_palavra via catmat_pdm_palavras):
@@ -269,9 +280,9 @@ begin
     ) returning id into v_lic_palavra_id;
 
     insert into public.licitacao_itens (
-      licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade, descricao
+      licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade, descricao, catalogo_id
     ) values (
-      v_lic_palavra_id, 1, null, 'M', 10, 'HALTERES ESPECIAIS EMBORRACHADOS'
+      v_lic_palavra_id, 1, null, 'M', 10, 'HALTERES ESPECIAIS EMBORRACHADOS', null
     );
 
     insert into public.licitacao_resultados (
@@ -322,8 +333,8 @@ begin
       'historico', jsonb_build_object('srp', true), 'Pregão Eletrônico', 'Aquisição de esteiras para ginásio'
     ) returning id into v_lic_srp_a;
 
-    insert into public.licitacao_itens (licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade)
-    values (v_lic_srp_a, 1, '480144', 'M', 1);
+    insert into public.licitacao_itens (licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade, catalogo_id)
+    values (v_lic_srp_a, 1, '480144', 'M', 1, 1);
 
     insert into public.licitacao_resultados (licitacao_id, numero_item, sequencial_resultado, fornecedor_cnpj, vencedor, valor_unitario_homologado, valor_total_homologado, data_resultado)
     values (v_lic_srp_a, 1, 1, '77777777000171', true, 1000.0, 1000.0, '2026-09-21'::timestamptz);
@@ -343,8 +354,8 @@ begin
       'historico', '{}'::jsonb, 'Pregão Eletrônico', 'REGISTRO DE PREÇOS para aquisição de esteira'
     ) returning id into v_lic_srp_b;
 
-    insert into public.licitacao_itens (licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade)
-    values (v_lic_srp_b, 1, '480144', 'M', 1);
+    insert into public.licitacao_itens (licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade, catalogo_id)
+    values (v_lic_srp_b, 1, '480144', 'M', 1, 1);
 
     insert into public.licitacao_resultados (licitacao_id, numero_item, sequencial_resultado, fornecedor_cnpj, vencedor, valor_unitario_homologado, valor_total_homologado, data_resultado)
     values (v_lic_srp_b, 1, 1, '77777777000172', true, 2000.0, 2000.0, '2026-09-22'::timestamptz);
@@ -364,8 +375,8 @@ begin
       'historico', jsonb_build_object('srp', false), 'Pregão Eletrônico', 'REGISTRO DE PREÇOS para aquisição de esteira'
     ) returning id into v_lic_srp_c;
 
-    insert into public.licitacao_itens (licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade)
-    values (v_lic_srp_c, 1, '480144', 'M', 1);
+    insert into public.licitacao_itens (licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade, catalogo_id)
+    values (v_lic_srp_c, 1, '480144', 'M', 1, 1);
 
     insert into public.licitacao_resultados (licitacao_id, numero_item, sequencial_resultado, fornecedor_cnpj, vencedor, valor_unitario_homologado, valor_total_homologado, data_resultado)
     values (v_lic_srp_c, 1, 1, '77777777000173', true, 3000.0, 3000.0, '2026-09-23'::timestamptz);
@@ -385,8 +396,9 @@ begin
       'historico', '{}'::jsonb, 'Pregão Eletrônico - Registro de Preços', 'Aquisição de esteiras esportivas'
     ) returning id into v_lic_srp_d;
 
-    insert into public.licitacao_itens (licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade)
-    values (v_lic_srp_d, 1, '480144', 'M', 1);
+    -- Paradigma: catalogo_id NULL, entra pela palavra-chave (descricao)
+    insert into public.licitacao_itens (licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade, catalogo_id, descricao)
+    values (v_lic_srp_d, 1, '480144', 'M', 1, null, 'APARELHO CROSS OVER');
 
     insert into public.licitacao_resultados (licitacao_id, numero_item, sequencial_resultado, fornecedor_cnpj, vencedor, valor_unitario_homologado, valor_total_homologado, data_resultado)
     values (v_lic_srp_d, 1, 1, '77777777000174', true, 4000.0, 4000.0, '2026-09-24'::timestamptz);

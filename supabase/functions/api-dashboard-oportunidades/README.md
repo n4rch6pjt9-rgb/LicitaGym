@@ -205,7 +205,9 @@ Lista oportunidades com suporte a paginação, ordenação configurável e múlt
 
 Com recorte CATMAT:
 - cada item da resposta ganha `catmat_match: [{codigo_pdm, nome_pdm, codigo_item, motivo}]`, com `motivo`:
-  - `codigo`: código numérico do item (`licitacao_itens.catalogo_codigo_item`);
+  - `codigo`: código numérico do item (`licitacao_itens.catalogo_codigo_item`), só do Catálogo do Compras.gov.br
+    (`catalogo_id = 1`) em item de material (`material_ou_servico = 'M'`): catálogo "Outros" (código do órgão) e CATSER
+    não casam (20261003180000);
   - `texto_item` / `texto_objeto`: padrão do PDM (`catmat_pdm_palavras`) na descrição do item / no objeto;
   - `taxonomia` / `taxonomia_objeto`: nó do dicionário de aparelhos (`no_taxonomia` do item / da licitação) mapeado para o PDM em `taxonomia_no_pdm` (a partir da migration `20260930110000_taxonomia_no_pdm`);
   - `texto_item_aprox` / `taxonomia_aprox`: recorte por item (`catmat_item`) casado por texto ou taxonomia, que identificam o PDM, não o item;
@@ -245,7 +247,7 @@ Com recorte CATMAT:
 ### 4. `acompanhamento`
 Obtém o painel de acompanhamento em tempo real para uma oportunidade, consultando em paralelo a API oficial do PNCP para carregar:
 - Metadados da compra (`situacao`, `modalidade`, `objeto`, `valorEstimado`, `valorHomologado`, `datas`, `linkSistemaOrigem`).
-- Lista completa de itens paginada (`numeroItem`, `descricao`, `quantidade`, `unidade`, `valorUnitarioEstimado`, `situacaoCompraItemNome`, `temResultado`).
+- Lista completa de itens paginada (`numeroItem`, `descricao`, `quantidade`, `unidade`, `valorUnitarioEstimado`, `situacaoCompraItemNome`, `temResultado`, `catalogoCodigoItem`, `catalogoId`, `catalogoNome`, `materialOuServico`). `numeroItem` é o número do item no PNCP, nunca código de catálogo; `catalogoCodigoItem` só é CATMAT/CATSER com `catalogoId = 1` (Catálogo do Compras.gov.br), com `catalogoId = 2` ("Outros") é código do órgão.
 - Vencedores e homologação de itens com resultado via `/itens/{n}/resultados` com concorrência limitada (~5). CNPJ/CPF retornados como dados públicos oficiais.
 - Atas de registro de preço associadas (`numero`, `ano`, `vigenciaInicio`, `vigenciaFim`, `cancelado`).
 - Histórico completo de eventos e retificações paginado (`data`, `categoria`, `tipo`, `item`, `documentoTitulo`, `justificativa`).

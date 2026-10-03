@@ -50,6 +50,7 @@ import requests
 
 from .destino import Armazenamento, Supabase, drenar_licitacao_match, env, parece_html, sha256
 from . import escopo as _escopo
+from .catmat_codigo import MapaCatmat, carregar_mapa_catmat_ou_texto, catalogo_id, categoria_por_codigo
 from .escopo import (
     PRODUTO,
     TERMOS_ESCOPO_COMPLETO,
@@ -480,7 +481,8 @@ def compra_so_de_servico(itens: list[dict] | None) -> bool:
     return bool(itens) and all(material_ou_servico(it) == "S" for it in itens)
 
 
-def avaliar(compra: dict, itens: list[dict]) -> tuple[str | None, bool, dict[int, tuple[str | None, bool]]]:
+def avaliar(compra: dict, itens: list[dict], mapa_catmat: MapaCatmat | None = None,
+            ) -> tuple[str | None, bool, dict[int, tuple[str | None, bool]]]:
     """Classifica a compra pelo objeto e pelos itens. Retorna (categoria, interesse_borracha, por_item).
 
     Só o TEXTO do objeto e dos itens classifica: o termo de busca que achou a compra não entra (30/09/2026:
@@ -493,7 +495,13 @@ def avaliar(compra: dict, itens: list[dict]) -> tuple[str | None, bool, dict[int
     Compra só de serviço (todos os itens 'S'; ex.: manutenção, locação, tapeçaria, orientação técnica) não vira
     forte/fraco/catmat pelo texto do objeto nem por item que só cita o aparelho ("manutenção de aparelhos de
     musculação"): só conta item ou objeto que fornece o produto (FORNECE_PRODUTO). Piso/obra_piso/borracha de
-    item de obra seguem valendo (decisão de 30/09/2026) (02/10/2026)."""
+    item de obra seguem valendo (decisão de 30/09/2026) (02/10/2026).
+
+    Código antes do texto (03/10/2026; coletor/catmat_codigo.py): com `mapa_catmat`, item de material com código do
+    Catálogo do Compras.gov.br (catalogo.id = 1) presente no mapa CATMAT é classificado pelo código: PDM no catálogo
+    efetivo da empresa -> "catmat", fora -> None. Sem código desse catálogo (Outros = código do órgão, CATSER) ou com
+    código fora do mapa, vale o texto, como antes. As travas abaixo (obra, ar livre, passagem...) valem igual.
+    `mapa_catmat` None = só texto (dry-run sem banco, RPC indisponível, testes antigos)."""
     objeto = compra.get("description") or compra.get("title") or ""
     if excluir_compra(objeto) or servico_sem_material(objeto):
         return None, False, {it["numeroItem"]: (None, False) for it in itens}
@@ -514,7 +522,8 @@ def avaliar(compra: dict, itens: list[dict]) -> tuple[str | None, bool, dict[int
     por_item = {}
     for it in itens:
         desc = it.get("descricao") or ""
-        cat = classificar(desc)
+        decidido, cat_codigo = categoria_por_codigo(it, mapa_catmat, material_ou_servico(it))
+        cat = cat_codigo if decidido else classificar(desc)
         # "Fornecimento de halteres"/"Fornecimento e instalação de esteiras" também fornecem produto (fornece_produto;
         # PRODUTO só conhece os substantivos genéricos)
         servico = material_ou_servico(it) == "S" and not PRODUTO.search(normalizar(desc)) and \
@@ -855,10 +864,11 @@ def _dt(v) -> datetime | None:
 def coletar(pncp: PNCP, sb: Supabase | None, arm: Armazenamento | None, termos: list[str], status,
             paginas: int, tam: int, com_resultados: bool, baixar_arquivos: bool, max_bytes: int,
             dry_run: bool, modo: str | None = None, agora: datetime | None = None, workers: int = 3,
-            pausa_segunda_passada: float = 30) -> dict:
+            pausa_segunda_passada: float = 30, mapa_catmat: MapaCatmat | None = None) -> dict:
     """Busca `status` para cada termo e grava as compras no escopo. `modo` só vai para o log/resumo:
     a prioridade de cada compra vem de prioridade_da_compra() (estado real, com o status da busca só
-    como último recurso). Uma compra encerrada vira historico mesmo que já fosse lead (rebaixa)."""
+    como último recurso). Uma compra encerrada vira historico mesmo que já fosse lead (rebaixa).
+    `mapa_catmat`: código CATMAT antes do texto em avaliar (None = só texto)."""
     agora = agora or datetime.now(timezone.utc)
     status_lista = status if isinstance(status, list) else [status]
     vistos: dict[str, list[str]] = {}
@@ -869,7 +879,7 @@ def coletar(pncp: PNCP, sb: Supabase | None, arm: Armazenamento | None, termos: 
     def _tentar(c, termo, st):
         try:
             _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos,
-                       max_bytes, dry_run, resumo, modo, status_busca=st, agora=agora)
+                       max_bytes, dry_run, resumo, modo, status_busca=st, agora=agora, mapa_catmat=mapa_catmat)
             return c, None
         except Exception as e:
             if "Supabase" in str(e) and (" 401 " in str(e) or " 403 " in str(e)):
@@ -985,7 +995,7 @@ def _raw_resultado(r: dict) -> dict:
 
 
 def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_bytes, dry_run, resumo,
-               modo=None, status_busca=None, agora=None, det=None):
+               modo=None, status_busca=None, agora=None, det=None, mapa_catmat=None):
     """Coleta completa de uma compra: itens, resultados, detalhe e lista de arquivos do PNCP, gravados em
     licitacoes_externas, licitacao_itens, licitacao_resultados e licitacao_documentos.
     `det` = detalhe já consultado (recoletar_atualizadas); None consulta aqui.
@@ -998,7 +1008,7 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
         if _excluida_sem_hidratacao(pncp, sb, c, e, dry_run, resumo):
             return
         raise
-    categoria, interesse, por_item = avaliar(c, itens)
+    categoria, interesse, por_item = avaliar(c, itens, mapa_catmat)
     rotulo = f"{c.get('municipio_nome')}/{c.get('uf')} | {(c.get('description') or '').strip()[:80]}"
     if not categoria:
         _inc(resumo, "fora")
@@ -1121,6 +1131,8 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
             "unidade_medida": it.get("unidadeMedida"), "valor_unitario_estimado": _num(it.get("valorUnitarioEstimado")),
             "valor_total_estimado": _num(it.get("valorTotal")),
             "catalogo_codigo_item": str(it["catalogoCodigoItem"]) if it.get("catalogoCodigoItem") else None,
+            # catalogo.id do PNCP (1 = Compras.gov.br; 2 = Outros, código do órgão): só o 1 casa com CATMAT
+            "catalogo_id": catalogo_id(it),
             "situacao": it.get("situacaoCompraItemNome"), "tem_resultado": it.get("temResultado"),
             "categoria_escopo": por_item[it["numeroItem"]][0], "interesse_borracha": por_item[it["numeroItem"]][1],
             "raw": it,
@@ -1320,7 +1332,8 @@ def compra_para_recoleta(raw: dict, codigo: str, det: dict) -> dict | None:
 def recoletar_atualizadas(pncp: PNCP, sb: Supabase, arm: Armazenamento | None = None,
                           prioridades: list[str] | set[str] | str | None = PRIORIDADES_RECOLETA_PADRAO,
                           com_resultados: bool = True, max_bytes: int = 80 * 1048576, dry_run: bool = False,
-                          limite: int | None = None, agora: datetime | None = None) -> dict:
+                          limite: int | None = None, agora: datetime | None = None,
+                          mapa_catmat: MapaCatmat | None = None) -> dict:
     """Recoleta (metadados + itens + resultados + lista de arquivos) as compras PNCP já gravadas cujo
     dataAtualizacao/dataAtualizacaoGlobal no detalhe do PNCP difere do guardado em
     licitacoes_externas.pncp_data_atualizacao[_global] (ou que ainda não têm valor guardado).
@@ -1363,7 +1376,7 @@ def recoletar_atualizadas(pncp: PNCP, sb: Supabase, arm: Armazenamento | None = 
                 c = compra_para_recoleta(ln.get("raw") or {}, ln["codigo_externo"], {})
                 if c is not None:
                     _processar(pncp, sb, arm, c, None, com_resultados, False, max_bytes, False, resumo,
-                               agora=agora, det=None)
+                               agora=agora, det=None, mapa_catmat=mapa_catmat)
                     resumo["recoletadas"] += 1
             except Exception as e:
                 resumo["erros"] += 1
@@ -1387,7 +1400,8 @@ def recoletar_atualizadas(pncp: PNCP, sb: Supabase, arm: Armazenamento | None = 
             continue
         try:
             _processar(pncp, sb, arm, compra_para_recoleta(ln.get("raw"), ln["codigo_externo"], det), None,
-                       com_resultados, False, max_bytes, False, resumo, agora=agora, det=det)
+                       com_resultados, False, max_bytes, False, resumo, agora=agora, det=det,
+                       mapa_catmat=mapa_catmat)
             resumo["recoletadas"] += 1
         except Exception as e:
             resumo["erros"] += 1
@@ -1790,7 +1804,8 @@ def main(argv: list[str] | None = None) -> int:
                                   prioridades=args.prioridades or PRIORIDADES_RECOLETA_PADRAO,
                                   com_resultados=not args.sem_resultados,
                                   max_bytes=int(float(env("MAX_MB", "80")) * 1048576),
-                                  dry_run=args.dry_run, limite=args.limite_recoleta)
+                                  dry_run=args.dry_run, limite=args.limite_recoleta,
+                                  mapa_catmat=carregar_mapa_catmat_ou_texto(sb))
         if not args.dry_run:
             drenar_licitacao_match(sb)
         log.info("RESUMO RECOLETA: %s", r)
@@ -1846,7 +1861,7 @@ def main(argv: list[str] | None = None) -> int:
     r = coletar(PNCP(delay=delay), sb, arm, termos, status, paginas,
                 args.tam, not args.sem_resultados, args.baixar_arquivos,
                 int(float(env("MAX_MB", "80")) * 1048576), args.dry_run,
-                modo=args.modo, workers=workers)
+                modo=args.modo, workers=workers, mapa_catmat=carregar_mapa_catmat_ou_texto(sb))
     drenar_licitacao_match(sb)  # recorte CATMAT por texto: zera a pendência de licitacao_match (sem efeito no dry-run)
     log.info("RESUMO: %s", r)
     if r.get("falha_busca"):

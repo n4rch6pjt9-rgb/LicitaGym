@@ -50,20 +50,20 @@ begin
   --   cert 1 tem 2 resultados do mesmo item (sequencial 1 e 2)                -> não colapsam
   insert into public.licitacoes_externas (fonte, modulo, id_externo, unidade_compradora, data_homologacao, prioridade)
   values ('portal_teste', 59, 501, 'Unidade  Teste São João', '2026-09-01', 'historico') returning id into v_id;
-  insert into public.licitacao_itens (licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade) values (v_id, 1, '480144', 'M', 2);
+  insert into public.licitacao_itens (licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade, catalogo_id) values (v_id, 1, '480144', 'M', 2, 1);
   insert into public.licitacao_resultados (licitacao_id, numero_item, sequencial_resultado, fornecedor_cnpj, fornecedor_nome, vencedor, quantidade_homologada, valor_unitario_homologado, valor_total_homologado, data_resultado)
   values (v_id, 1, 1, '21111111000101', 'FORNECEDOR A TESTE LTDA', true, 1, 100, 100, '2026-09-01'),
          (v_id, 1, 2, '21111111000101', 'FORNECEDOR A TESTE LTDA', true, 1, 110, 110, '2026-09-01');
 
   insert into public.licitacoes_externas (fonte, modulo, id_externo, orgao_nome, data_homologacao, prioridade)
   values ('portal_teste', 59, 502, 'UNIDADE TESTE SAO JOAO ', '2026-09-02', 'historico') returning id into v_id2;
-  insert into public.licitacao_itens (licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade) values (v_id2, 1, '480144', 'M', 1);
+  insert into public.licitacao_itens (licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade, catalogo_id) values (v_id2, 1, '480144', 'M', 1, 1);
   insert into public.licitacao_resultados (licitacao_id, numero_item, sequencial_resultado, fornecedor_cnpj, fornecedor_nome, vencedor, quantidade_homologada, valor_unitario_homologado, valor_total_homologado, data_resultado)
   values (v_id2, 1, 1, '21111111000101', 'FORNECEDOR A TESTE LTDA', true, 1, 120, 120, '2026-09-02');
 
   insert into public.licitacoes_externas (fonte, data_homologacao, prioridade)
   values ('portal_teste', '2026-09-03', 'historico') returning id into v_id3;
-  insert into public.licitacao_itens (licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade) values (v_id3, 1, '480144', 'M', 1);
+  insert into public.licitacao_itens (licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade, catalogo_id) values (v_id3, 1, '480144', 'M', 1, 1);
   insert into public.licitacao_resultados (licitacao_id, numero_item, sequencial_resultado, fornecedor_cnpj, fornecedor_nome, vencedor, quantidade_homologada, valor_unitario_homologado, valor_total_homologado, data_resultado)
   values (v_id3, 1, 1, '21111111000101', 'FORNECEDOR A TESTE LTDA', true, 1, 130, 130, '2026-09-03');
 
@@ -131,7 +131,7 @@ begin
   -- -> qtd_itens_homologados 2 e valor_homologado NULL.
   insert into public.licitacoes_externas (fonte, codigo_externo, orgao_cnpj, orgao_nome, uf, data_homologacao, prioridade)
   values ('pncp', '44444444000104-1-000001/2026', '44444444000104', 'ORGAO ORIGEM TESTE F', 'SC', '2026-09-15', 'historico') returning id into v_id;
-  insert into public.licitacao_itens (licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade) values (v_id, 1, '480144', 'M', 2);
+  insert into public.licitacao_itens (licitacao_id, numero_item, catalogo_codigo_item, material_ou_servico, quantidade, catalogo_id) values (v_id, 1, '480144', 'M', 2, 1);
   insert into public.licitacao_resultados (licitacao_id, numero_item, sequencial_resultado, fornecedor_cnpj, fornecedor_nome, vencedor, quantidade_homologada, valor_unitario_homologado, valor_total_homologado, data_resultado)
   values (v_id, 1, 1, '24444444000104', 'FORNECEDOR F1 TESTE LTDA', true, 1, null, null, '2026-09-15'),
          (v_id, 1, 2, '25555555000105', 'FORNECEDOR F2 TESTE LTDA', true, 1, null, null, '2026-09-15');

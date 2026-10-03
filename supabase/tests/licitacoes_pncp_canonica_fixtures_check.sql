@@ -98,9 +98,10 @@ end $$;
 insert into public.licitacao_itens (licitacao_id, numero_item, descricao, quantidade, valor_unitario_estimado, valor_total_estimado)
 select id, 1, 'ITEM FICTICIO', 10, case when rotulo = 'B2' then 0 else 100 end, case when rotulo = 'B2' then 0 else 1000 end
 from _fx where left(rotulo, 1) <> 'H';
+-- catalogo_id = 1: código do Catálogo do Compras.gov.br (só ele casa com catmat_itens; 20261003180000)
 insert into public.licitacao_itens (licitacao_id, numero_item, descricao, catalogo_codigo_item, material_ou_servico, quantidade,
-    valor_unitario_estimado, valor_total_estimado, interesse_borracha)
-select id, 1, 'APARELHO CROSS OVER FICTICIO', '480144', 'M', 2, 9500, 19000, true from _fx where left(rotulo, 1) = 'H';
+    valor_unitario_estimado, valor_total_estimado, interesse_borracha, catalogo_id)
+select id, 1, 'APARELHO CROSS OVER FICTICIO', '480144', 'M', 2, 9500, 19000, true, 1 from _fx where left(rotulo, 1) = 'H';
 
 -- Resultados: E1 tem 1, E2 tem 2; H1 e H2 o mesmo resultado (a republicação repete a homologação)
 insert into public.licitacao_resultados (licitacao_id, numero_item, sequencial_resultado, fornecedor_cnpj, fornecedor_nome,

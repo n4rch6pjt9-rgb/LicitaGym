@@ -32,7 +32,8 @@ Janela fora de pico: 02:00–06:00 BRT. Os minutos quebrados espalham a carga. O
 | 4 | `licitagym-sync-pncp-pca-continuacao` | `sync-pncp-pca` | diário 03:43 | `43 6 * * *` | igual ao 3 | 150 s | Retoma as páginas pendentes do lock `pca-sync:<ano>:7830` quando a 1ª execução esgota o orçamento de 110 s. Se estiver tudo em dia, devolve `ignorado`. |
 | 5 | `licitagym-link-catmat-pca` | `link-catmat-pca` | diário 04:23 | `23 7 * * *` | `{"limite":500,"offset":N}`, N = 0, 500, … até o total de `pca_itens` (7 lotes para 3.331, calculado na hora) | 120 s | Liga PCA a CATMAT depois do PCA. Não chama API externa. Lote de 500 levou no máximo 27 s. |
 | 6 | `licitagym-sync-pncp-orgaos` | `sync-pncp-orgaos` | diário 04:43 | `43 7 * * *` | `{}` | 150 s | Entidades e órgãos dos CNPJs dos planos PCA. Depende do PCA. Leva 21–27 s. |
-| 7 | `licitagym-orgaos-classificar-escopo` | SQL: `fn_orgaos_uasgs_classificar()` e `fn_escopo_match_atualizar()` | diário 05:03 | `3 8 * * *` | — | `statement_timeout` de 10 min | É o "PR 3" do plano órgãos/UASG. Classifica os órgãos e popula `mv_escopo_demanda`, hoje vazia. |
+| 7 | `licitagym-orgaos-classificar` | SQL: `fn_orgaos_uasgs_classificar()` | diário 05:03 | `3 8 * * *` | — | `statement_timeout` de 10 min | Classifica órgãos e UASGs na transação própria. Não espera o refresh da MV. |
+| 7b | `licitagym-escopo-match` | SQL: `fn_escopo_match_atualizar()` | diário 05:18 | `18 8 * * *` | — | `statement_timeout` de 10 min | Sincroniza `escopo_item_calc` (só texto novo ou alterado), atualiza `mv_escopo_demanda` e grava `match_nivel`. Faixa livre 05:12–05:26, depois do pior caso da classificação. |
 | 8 | `licitagym-sync-pncp-legislation` | `sync-pncp-legislation` | seg 05:27 | `27 8 * * 1` | `{}` | 60 s | Página de legislação, muda raramente. Leva 2 s. |
 | 9 | `licitagym-sync-pncp-catalogo` | `sync-pncp-catalogo` | dia 1, 05:37 | `37 8 1 * *` | `{}` | 150 s | Categorias de item do PCA (tabela de referência, nunca carregada). |
 | 10 | `licitagym-cron-respostas` | SQL: `private.cron_coletar_respostas()` | a cada hora, no minuto 11 | `11 * * * *` | — | — | Copia o status HTTP de `net._http_response`, que dura 6 h, para `private.cron_edge_chamadas`. |
@@ -44,14 +45,14 @@ Sobre o job 5: o `pg_net` dispara os 7 lotes do `link-catmat-pca` quase ao mesmo
 
 ```
 dom: compras-catmat 7830 (02:07) → compras-catmat 7220 (02:27)
-diário: pca (03:13) → pca-continuacao (03:43) → link-catmat-pca (04:23) → orgaos (04:43) → classificar/escopo (05:03)
+diário: pca (03:13) → pca-continuacao (03:43) → link-catmat-pca (04:23) → orgaos (04:43) → classificar (05:03) → escopo (05:18)
 independentes: legislation (seg 05:27), catalogo (dia 1 05:37), respostas (:11), limpeza (dom 05:51)
 ```
 
 - `link-catmat-pca` precisa do catálogo CATMAT (domingo) e do PCA do dia.
 - `sync-pncp-orgaos` lê os CNPJs de `pca_planos`.
 - As rotinas SQL usam órgãos, UASGs, PCA e licitações.
-- Entre um passo e o seguinte há pelo menos 20 min. É mais que a duração observada, e cada job é idempotente, com lock no `private.pncp_sync_run`.
+- Entre um passo e o seguinte há pelo menos 20 min, exceto classificação (05:03) e escopo (05:18): 15 min, mais que os 10 min de timeout da classificação. Cada job é idempotente; os syncs de Edge usam lock no `private.pncp_sync_run`.
 
 ## 4. Como cada job chama a função
 
@@ -77,7 +78,7 @@ O valor do segredo não aparece na migration, no `cron.job.command` nem no log. 
   - 120 s no `link-catmat-pca`;
   - 60 s na `legislation`;
   - o PCA usa `async`, responde 202 em segundos e segue em background com orçamento interno de 110 s.
-- **pg_cron:** o job só enfileira a requisição (milissegundos). O job SQL 7 roda com `set local statement_timeout = '10min'`.
+- **pg_cron:** o job só enfileira a requisição (milissegundos). Os jobs SQL de classificação (05:03) e de escopo (05:18) rodam cada um com `set local statement_timeout = '10min'`, em transações separadas.
 - **Concorrência:** `max_running_jobs = 32` sobra. Os locks do `pncp_sync_run` impedem duas execuções do mesmo sync: a segunda responde `already_running`.
 
 ## 7. Monitoramento de falhas

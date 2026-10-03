@@ -190,9 +190,19 @@ export function applyLicitacaoFilters<T extends FilterableQuery>(
 }
 
 /**
- * Recorte de Oportunidades (decisão de produto 30/09/2026): sem filtro de prioridade, exclui
- * `historico` (compra homologada/encerrada é só do BI) mantendo NULL (fonte que não grava prioridade,
- * sem sinal de encerramento na view). Aplicado na lista e na contagem, sobre a view com a prioridade
+ * Prioridades que aparecem em Oportunidades sem filtro explícito. NULL fica fora (02/10/2026): o
+ * reclassificador (reclassificar_escopo_pncp) grava prioridade NULL na compra que saiu do escopo, e eram
+ * essas 292 linhas (ex.: id 229, credenciamento de oficineiros) que ainda apareciam. SEST SENAT e
+ * Paradigma também já gravam prioridade, então NULL não é mais "fonte sem prioridade".
+ */
+export const PRIORIDADES_DE_OPORTUNIDADES = ["leads", "monitorar"] as const;
+export const ESCOPO_OPORTUNIDADES_FILTRO = `prioridade.in.(${PRIORIDADES_DE_OPORTUNIDADES.join(",")})`;
+
+/**
+ * Recorte de Oportunidades (decisão de produto 30/09/2026, revista em 02/10/2026): sem filtro de
+ * prioridade, só leads e monitorar. `historico` (homologada/encerrada) é só do BI e NULL é compra fora
+ * do escopo. Vai como `or` de uma condição só para somar (AND) com o `or` da busca e não colidir com o
+ * `in("id", ...)` do recorte CATMAT. Aplicado na lista e na contagem, sobre a view com a prioridade
  * efetiva. Com filtro explícito (leads/monitorar), o eq de applyLicitacaoFilters já recorta.
  */
 export function applyOportunidadesScope<T extends FilterableQuery>(
@@ -200,7 +210,7 @@ export function applyOportunidadesScope<T extends FilterableQuery>(
   filtros: LicitacaoFiltros,
 ): T {
   if (!filtros.prioridade) {
-    query.or("prioridade.is.null,prioridade.neq.historico");
+    query.or(ESCOPO_OPORTUNIDADES_FILTRO);
   }
   return query;
 }

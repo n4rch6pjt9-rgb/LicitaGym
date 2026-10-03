@@ -14,6 +14,7 @@ import re
 import sys
 from pathlib import Path
 
+from . import ia as ia_mod
 from .destino import Supabase, env
 from .textos import Pagina, dividir, extrair, limpar_texto
 
@@ -131,9 +132,13 @@ def indexar_grupo(sb: Supabase, ia, docs: list[dict], lic: dict, com_extracao: b
     vetores = ia.embed([t["texto"] for t in trechos])
 
     sb.remover_chunks(doc["id"])
+    # Modelo que gerou os vetores (coluna licitacao_chunks.embedding_model, migration 20261002200000).
+    # Vetores de modelos diferentes não são comparáveis: a busca precisa usar o mesmo modelo na pergunta.
+    modelo = ia_mod.EMBED_MODEL
     linhas = [{
         "documento_id": doc["id"], "licitacao_id": doc["licitacao_id"], "secao": secao,
         "ordem": i, "pagina": t["pagina"], "texto": t["texto"], "embedding": vetor_pg(v),
+        "embedding_model": modelo,
         "metadados": {"tipo_documento": tipo, "fonte": lic.get("fonte"), "origem": t["origem"], "numero_processo": lic["numero_processo"],
                       "numero_edital": lic.get("numero_edital"), "fornecedor": doc.get("fornecedor_nome"),
                       "chunk_kind": "resumo" if (i == 0 and extracao.get("resumo")) else "trecho"},

@@ -27,8 +27,8 @@ export const OPORTUNIDADES_VIEW = "licitacoes_externas_prioridade_efetiva";
 /**
  * Prioridades que aparecem em Oportunidades (decisão de produto 30/09/2026): compra homologada ou
  * encerrada (`historico`) é só do BI. O list exclui `historico` por padrão (lista e contagem);
- * `prioridade=historico` responde 200 vazio (ver handleList). NULL (fonte que não grava prioridade e
- * sem sinal de encerramento) continua aparecendo.
+ * `prioridade=historico` responde 200 vazio (ver handleList). NULL (compra fora do escopo, gravada
+ * pelo reclassificador) também fica fora desde 02/10/2026 (ver query.ts PRIORIDADES_DE_OPORTUNIDADES).
  */
 export const PRIORIDADE_FORA_DE_OPORTUNIDADES = "historico";
 

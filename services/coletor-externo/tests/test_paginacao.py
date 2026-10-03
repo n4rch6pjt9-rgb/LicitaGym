@@ -159,74 +159,118 @@ def test_arp_pagina_curta_com_total_para():
     assert cliente.consultar_itens_pdm.call_count == 1
 
 
-def test_selecionar_pagina_curta_sem_content_range_segue_ate_vazia(monkeypatch):
+class _Resp:
+    def __init__(self, payload, headers=None):
+        self._payload = payload
+        self.headers = headers or {}
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+def test_count_exact_so_na_primeira_pagina(monkeypatch):
+    import coletor.destino as Destino
+    prefers = []
+
+    def fake_get(url, params, headers, timeout):
+        prefers.append(headers.get("Prefer"))
+        if "id" not in params:
+            return _Resp([{"id": 1}, {"id": 2}], {"Content-Range": "0-1/3"})
+        return _Resp([{"id": 3}], {"Content-Range": "0-0/1"})
+
+    monkeypatch.setattr(Destino, "POSTGREST_MAX_ROWS", 2)
+    monkeypatch.setattr("coletor.destino.requests.get", fake_get)
+    sb = Supabase("https://example.supabase.co", "token")
+    assert [r["id"] for r in sb.selecionar("licitacoes_externas")] == [1, 2, 3]
+    assert prefers == ["count=exact", None]
+
+
+def test_keyset_avanca_por_id_gt(monkeypatch):
     import coletor.destino as Destino
     chamadas = []
 
-    class Resp:
-        def __init__(self, payload):
-            self._payload = payload
-            self.headers = {}
-
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return self._payload
-
-    prefer = {}
-
     def fake_get(url, params, headers, timeout):
-        chamadas.append(params["offset"])
-        prefer["valor"] = headers.get("Prefer")
-        if params["offset"] == "0":
-            return Resp([{"id": 1}])
-        return Resp([])
+        chamadas.append(params.copy())
+        if "id" not in params:
+            return _Resp([{"id": 10}, {"id": 20}], {"Content-Range": "0-1/3"})
+        return _Resp([{"id": 30}], {})
 
-    monkeypatch.setattr(Destino, "POSTGREST_MAX_ROWS", 100)
+    monkeypatch.setattr(Destino, "POSTGREST_MAX_ROWS", 2)
     monkeypatch.setattr("coletor.destino.requests.get", fake_get)
     sb = Supabase("https://example.supabase.co", "token")
-    assert sb.selecionar("licitacoes_externas") == [{"id": 1}]
-    assert chamadas == ["0", "1"]
-    assert prefer["valor"] == "count=exact"
+    assert [r["id"] for r in sb.selecionar("licitacao_documentos", status_processamento="eq.pendente")] == [10, 20, 30]
+    assert "offset" not in chamadas[0] and chamadas[0]["order"] == "id.asc"
+    assert chamadas[1]["id"] == "gt.20" and "offset" not in chamadas[1]
 
 
-def test_selecionar_content_range_confirma_fim(monkeypatch):
+def test_order_nao_unico_ganha_desempate_id(monkeypatch):
     import coletor.destino as Destino
-
-    class Resp:
-        def __init__(self, payload, total):
-            self._payload = payload
-            self.headers = {"Content-Range": f"0-{max(len(payload) - 1, 0)}/{total}"}
-
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return self._payload
+    visto = {}
 
     def fake_get(url, params, headers, timeout):
-        assert headers["Prefer"] == "count=exact"
-        if params["offset"] == "0":
-            return Resp([{"id": 1}], 1)
-        raise AssertionError("total já confirmou o fim")
+        visto.update(params)
+        return _Resp([{"id": 1}], {"Content-Range": "0-0/1"})
 
-    monkeypatch.setattr(Destino, "POSTGREST_MAX_ROWS", 100)
     monkeypatch.setattr("coletor.destino.requests.get", fake_get)
     sb = Supabase("https://example.supabase.co", "token")
-    assert sb.selecionar("licitacoes_externas") == [{"id": 1}]
+    assert sb.selecionar("licitacoes_externas", order="created_at.desc") == [{"id": 1}]
+    assert visto["order"] == "created_at.desc,id.asc"
+    assert visto["offset"] == "0"
 
 
-def test_cnpjs_para_so_na_pagina_vazia_e_pede_no_maximo_100():
-    vistos = []
+def test_status_que_sai_do_filtro_nao_deixa_linha_para_tras(monkeypatch):
+    """Offset pularia as linhas que 'sobem' quando as anteriores mudam de status. Keyset não."""
+    import coletor.destino as Destino
+    pendentes = [{"id": 1}, {"id": 2}, {"id": 3}, {"id": 4}]
 
+    def fake_get(url, params, headers, timeout):
+        if "id" in params:
+            limite = int(str(params["id"]).split(".", 1)[1])
+            vivos = [r for r in pendentes if r["id"] > limite]
+        else:
+            vivos = list(pendentes)
+        page = vivos[:2]
+        for r in page:
+            pendentes.remove(r)
+        return _Resp(page, {"Content-Range": "0-1/4"} if "id" not in params else {})
+
+    monkeypatch.setattr(Destino, "POSTGREST_MAX_ROWS", 2)
+    monkeypatch.setattr("coletor.destino.requests.get", fake_get)
+    sb = Supabase("https://example.supabase.co", "token")
+    ids = [r["id"] for r in sb.selecionar(
+        "licitacao_documentos", status_processamento="eq.pendente", order="id.asc",
+    )]
+    assert ids == [1, 2, 3, 4]
+
+
+def test_count_planned_nao_encerra(monkeypatch):
+    import coletor.destino as Destino
+    fila = [
+        _Resp([{"id": 1}], {"Content-Range": "0-0/1", "Preference-Applied": "count=planned"}),
+        _Resp([{"id": 2}], {}),
+        _Resp([], {}),
+    ]
+
+    def fake_get(url, params, headers, timeout):
+        return fila.pop(0)
+
+    monkeypatch.setattr(Destino, "POSTGREST_MAX_ROWS", 2)
+    monkeypatch.setattr("coletor.destino.requests.get", fake_get)
+    sb = Supabase("https://example.supabase.co", "token")
+    assert [r["id"] for r in sb.selecionar("licitacoes_externas")] == [1, 2]
+
+
+def test_cnpjs_uma_leitura_sem_offset():
     def selecionar(tabela, **kw):
-        vistos.append(int(kw["limit"]))
-        if kw["offset"] == "0":
-            return [{"fornecedor_cnpj": "111"}]
-        return []
+        assert tabela == "licitacao_resultados"
+        assert "offset" not in kw and "limit" not in kw
+        assert "id" in kw["select"]
+        return [{"id": 1, "fornecedor_cnpj": "111"}, {"id": 2, "fornecedor_cnpj": "111"}]
 
     sb = MagicMock()
     sb.selecionar.side_effect = selecionar
     assert cnpjs_de_resultados(sb, pagina=1000) == ["111"]
-    assert vistos == [100, 100]
+    assert sb.selecionar.call_count == 1

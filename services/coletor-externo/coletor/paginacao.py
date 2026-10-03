@@ -25,6 +25,29 @@ def clamp_tamanho(pedido, *, padrao: int = TAMANHO_PAGINA_MAX, minimo: int = 1,
     return max(minimo, min(maximo, n))
 
 
+def contagem_exata(headers) -> tuple[int | None, str | None]:
+    """Total só quando a resposta é `count=exact`.
+
+    `count=planned` e `count=estimated` não entram na parada: devolvem aviso para log.
+    `(total, aviso)` — aviso preenchido quando o cabeçalho existe e não serve de critério.
+    """
+    if headers is None:
+        return None, None
+    partes: list[str] = []
+    itens = getattr(headers, "items", None)
+    if callable(itens):
+        for chave, valor in headers.items():
+            partes.append(f"{chave}: {valor}")
+    texto = " ".join(partes).lower()
+    if "count=planned" in texto or "count=estimated" in texto:
+        return None, "contagem planned/estimated ignorada como critério de parada"
+    bruto = headers.get("Content-Range") if hasattr(headers, "get") else None
+    total, ilegivel = interpretar_content_range(bruto)
+    if ilegivel:
+        return None, f"Content-Range ilegível ({bruto!r})"
+    return total, None
+
+
 def interpretar_content_range(valor: str | None) -> tuple[int | None, bool]:
     """Lê o total do `Content-Range` do PostgREST (`0-99/1234` ou `*/0`).
 

@@ -206,7 +206,7 @@ def test_supabase_selecionar_pagina_automaticamente(monkeypatch):
 
     def fake_get(url, params, headers, timeout):
         chamadas.append(params.copy())
-        if params["offset"] == "0":
+        if "id" not in params:
             return Resp([{"id": 1}, {"id": 2}], 3)
         return Resp([{"id": 3}], 3)
 
@@ -214,7 +214,8 @@ def test_supabase_selecionar_pagina_automaticamente(monkeypatch):
     monkeypatch.setattr("coletor.destino.requests.get", fake_get)
     sb = Supabase("https://example.supabase.co", "token")
     assert sb.selecionar("licitacoes_externas", order="id") == [{"id": 1}, {"id": 2}, {"id": 3}]
-    assert [c["offset"] for c in chamadas] == ["0", "2"]
+    assert "offset" not in chamadas[0] and chamadas[0]["order"] == "id.asc"
+    assert chamadas[1]["id"] == "gt.2" and "offset" not in chamadas[1]
 
 
 def test_filtro_fitness():

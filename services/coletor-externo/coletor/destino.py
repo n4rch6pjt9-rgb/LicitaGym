@@ -11,11 +11,89 @@ import logging
 
 import requests
 
-from .paginacao import avaliar_pagina, interpretar_content_range
+from .paginacao import avaliar_pagina, contagem_exata
 
 # PostgREST do projeto aceita até 1000, mas a leitura paginada pede no máximo 100
 # (regra de 03/10/2026). SUPABASE_PAGE_SIZE acima de 100 é cortado aqui.
 POSTGREST_MAX_ROWS = max(1, min(100, int(os.environ.get("SUPABASE_PAGE_SIZE", "100"))))
+
+# Tabelas lidas pelo coletor cuja PK não é `id`. O resto (e as views com `id`) pagina em keyset por id.
+# RPC (`rpc/...`) não tem `id`: fica no `order` que o chamador passou, com offset.
+_PK_SEM_ID = {
+    "fornecedores": "cnpj",
+    "portal_visitante": "fonte",
+}
+
+
+def _pk_tabela(tabela: str) -> str | None:
+    if tabela.startswith("rpc/"):
+        return None
+    return _PK_SEM_ID.get(tabela, "id")
+
+
+def _partes_order(order: str) -> list[tuple[str, str]]:
+    partes: list[tuple[str, str]] = []
+    for bruto in order.split(","):
+        pedaco = bruto.strip()
+        if not pedaco:
+            continue
+        if "." in pedaco:
+            coluna, direcao = pedaco.rsplit(".", 1)
+            if direcao not in ("asc", "desc"):
+                coluna, direcao = pedaco, "asc"
+        else:
+            coluna, direcao = pedaco, "asc"
+        partes.append((coluna.strip(), direcao))
+    return partes
+
+
+def _order_efetivo(order: str | None, pk: str | None) -> str | None:
+    """Sem order: PK asc. Order sem a PK `id` ganha `,id.asc` para o desempate ser estável."""
+    if order is None:
+        return f"{pk}.asc" if pk else None
+    if pk != "id":
+        return order
+    partes = _partes_order(order)
+    if partes == [("id", "asc")]:
+        return "id.asc"
+    if partes == [("id", "desc")]:
+        return "id.desc"
+    if any(coluna == "id" for coluna, _ in partes):
+        return order
+    return order.rstrip().rstrip(",") + ",id.asc"
+
+
+def _select_inclui(select: str | None, coluna: str) -> bool:
+    if not select or select.strip() in ("", "*"):
+        return True
+    for pedaco in select.split(","):
+        nome = pedaco.strip().split("(")[0].strip()
+        if nome == coluna or nome.endswith(f".{coluna}") or nome == "*":
+            return True
+    return False
+
+
+def _classificar_filtro_id(filtro: str | None) -> str:
+    if filtro is None:
+        return "livre"
+    if filtro.startswith("gt.") or filtro.startswith("gte."):
+        return "faixa"
+    return "outro"
+
+
+def _usar_keyset(tabela: str, order: str | None, passou_offset: bool, filtro_id: str | None,
+                 select: str | None) -> tuple[bool, str]:
+    """Keyset só em `id` asc/desc, sem offset explícito e com `id` no select."""
+    if passou_offset or _pk_tabela(tabela) != "id" or not order or not _select_inclui(select, "id"):
+        return False, "asc"
+    if _classificar_filtro_id(filtro_id) == "outro":
+        return False, "asc"
+    partes = _partes_order(order)
+    if partes == [("id", "asc")]:
+        return True, "asc"
+    if partes == [("id", "desc")]:
+        return True, "desc"
+    return False, "asc"
 
 log = logging.getLogger(__name__)
 
@@ -127,64 +205,77 @@ class Supabase:
     def selecionar(self, tabela: str, **filtros: str) -> list[dict]:
         """Lê a tabela em páginas de no máximo 100.
 
-        Para quando o `Content-Range` (`Prefer: count=exact`) confirma que os
-        registros já lidos cobrem o total, ou quando chega uma página vazia.
-        Página curta sem total segue até a página vazia, com aviso.
+        `Prefer: count=exact` só na primeira página. O total guardado (ou uma página
+        vazia) encerra. `count=planned` e `count=estimated` não param a leitura.
+
+        Sem `order`, a paginação é keyset: `order=id.asc` e `id=gt.<último>`, sem
+        offset. `order` que não inclui `id` ganha `,id.asc`. Tabela sem coluna `id`
+        usa offset ordenado pela PK. `offset` explícito mantém a paginação por offset.
         """
-        params_base = dict(filtros)
-        limite_total = self._int_param(params_base.pop("limit", None))
-        offset_inicial = self._int_param(params_base.pop("offset", None)) or 0
+        params_fixos = dict(filtros)
+        limite_total = self._int_param(params_fixos.pop("limit", None))
+        passou_offset = "offset" in params_fixos
+        offset_inicial = self._int_param(params_fixos.pop("offset", None)) or 0
+        order = _order_efetivo(params_fixos.pop("order", None), _pk_tabela(tabela))
+        usar_keyset, direcao = _usar_keyset(
+            tabela, order, passou_offset, params_fixos.get("id"), params_fixos.get("select"),
+        )
+        filtro_id = params_fixos.pop("id", None) if usar_keyset else None
         linhas: list[dict] = []
         anterior: list | None = None
+        total: int | None = None
         avisou_sem_total = False
+        cursor = None
+        primeira = True
         while True:
             restante = None if limite_total is None else limite_total - len(linhas)
             if restante is not None and restante <= 0:
                 return linhas
             limite_pagina = POSTGREST_MAX_ROWS if restante is None else min(POSTGREST_MAX_ROWS, restante)
-            params = {
-                **params_base,
-                "limit": str(limite_pagina),
-                "offset": str(offset_inicial + len(linhas)),
-            }
-            r = requests.get(
-                f"{self.base}/{tabela}",
-                params=params,
-                headers={**self.h, "Prefer": "count=exact"},
-                timeout=60,
-            )
+            params = dict(params_fixos)
+            params["limit"] = str(limite_pagina)
+            if order:
+                params["order"] = order
+            if usar_keyset:
+                if cursor is not None:
+                    params["id"] = f"{'gt' if direcao == 'asc' else 'lt'}.{cursor}"
+                elif filtro_id is not None:
+                    params["id"] = filtro_id
+            else:
+                params["offset"] = str(offset_inicial + len(linhas))
+            headers = dict(self.h)
+            if primeira:
+                headers["Prefer"] = "count=exact"
+            r = requests.get(f"{self.base}/{tabela}", params=params, headers=headers, timeout=60)
             if getattr(r, "status_code", None) == 404:
-                log.warning("Supabase %s: HTTP 404 ao selecionar (offset %s); não é fim de coleta",
-                            tabela, params["offset"])
+                log.warning("Supabase %s: HTTP 404 ao selecionar; não é fim de coleta", tabela)
             r.raise_for_status()
             lote = r.json()
             if not isinstance(lote, list):
                 raise RuntimeError(f"Supabase {tabela}: resposta inesperada ao selecionar")
             if lote and anterior is not None and lote == anterior:
-                log.warning("Supabase %s: página repetida no offset %s; não é fim de coleta",
-                            tabela, params["offset"])
-                raise RuntimeError(
-                    f"Supabase {tabela}: página repetida no offset {params['offset']}; não é fim de coleta"
-                )
+                log.warning("Supabase %s: página repetida; não é fim de coleta", tabela)
+                raise RuntimeError(f"Supabase {tabela}: página repetida; não é fim de coleta")
             anterior = lote
-            cabecalho = getattr(r, "headers", None)
-            bruto = cabecalho.get("Content-Range") if cabecalho is not None else None
-            total, ilegivel = interpretar_content_range(bruto)
-            if ilegivel:
-                log.warning("Supabase %s: Content-Range ilegível (%r); seguindo até página vazia",
-                            tabela, bruto)
-                total = None
+            if primeira:
+                total, aviso_contagem = contagem_exata(getattr(r, "headers", None))
+                if aviso_contagem:
+                    log.warning("Supabase %s: %s", tabela, aviso_contagem)
+                primeira = False
             linhas.extend(lote)
+            if usar_keyset and lote:
+                if "id" not in lote[-1]:
+                    raise RuntimeError(f"Supabase {tabela}: keyset sem coluna id na linha")
+                cursor = lote[-1]["id"]
             corpo = {"totalRegistros": total} if total is not None else {}
             decisao = avaliar_pagina(
-                lote, tamanho=limite_pagina, pagina=1, corpo=corpo,
-                acumulado=offset_inicial + len(linhas),
+                lote, tamanho=limite_pagina, pagina=1, corpo=corpo, acumulado=len(linhas),
             )
             if decisao.aviso:
                 log.warning("Supabase %s: %s", tabela, decisao.aviso)
             elif total is None and lote and len(lote) < limite_pagina and not avisou_sem_total:
                 log.warning(
-                    "Supabase %s: página com %s itens (pedido %s) sem Content-Range; seguindo até página vazia",
+                    "Supabase %s: página com %s itens (pedido %s) sem total exato; seguindo até página vazia",
                     tabela, len(lote), limite_pagina,
                 )
                 avisou_sem_total = True

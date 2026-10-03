@@ -1,6 +1,6 @@
 # Jobs pg_cron dos syncs (Edge Functions)
 
-Migration: `supabase/migrations/20260930180000_cron_sync_jobs.sql`. Os jobs de CATMAT por classe foram substituídos em `supabase/migrations/20261004000000_cron_sync_catmat_catalogo.sql`. Horários em BRT (UTC-3); o `cron.timezone` do projeto é GMT, então as expressões do pg_cron estão em UTC.
+Migration: `supabase/migrations/20260930180000_cron_sync_jobs.sql`. Os jobs de CATMAT por classe foram substituídos em `supabase/migrations/20261004004000_cron_sync_catmat_catalogo.sql`. Horários em BRT (UTC-3); o `cron.timezone` do projeto é GMT, então as expressões do pg_cron estão em UTC.
 
 ## 2. Edge Functions que são jobs
 

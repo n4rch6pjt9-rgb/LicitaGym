@@ -1,5 +1,5 @@
 {
- "versao": "2026-09-26",
+ "versao": "2026-10-03",
  "descricao": "Fontes públicas de catálogo dos fabricantes para ingestão no LicitaGym (bucket catalogos-fabricantes). robots.txt conferido em 26/09/2026: todos permitem. Páginas de produto viram fichas estruturadas (catalogo_produtos); PDFs vão para o bucket com histórico e depois para o RAG (catalogo_chunks).",
  "fabricantes": {
   "MOVEMENT": {
@@ -24,7 +24,15 @@
     }
    ],
    "manuais_sitemap": "https://www.movement.com.br/manuais_proprietario-sitemap.xml",
-   "observacao": "Catálogo 2023 existe só como visualizador FlipHTML5 (fliphtml5.com/rigcc/sbqh) — não é arquivo; usar as páginas de produto (167 no sitemap, com ficha: carga máxima, peso da placa, dimensões)."
+   "observacao": "Catálogo 2023 existe só como visualizador FlipHTML5 (fliphtml5.com/rigcc/sbqh) — não é arquivo; usar as páginas de produto (167 no sitemap, com ficha: carga máxima, peso da placa, dimensões).",
+   "adaptador": "movement_wp",
+   "entradas": [
+    "https://www.movement.com.br/produtos/musculacao/",
+    "https://www.movement.com.br/produtos/cardio/"
+   ],
+   "hosts_permitidos": [
+    "www.movement.com.br"
+   ]
   },
   "LION": {
    "site": "https://lionfitness.com.br",
@@ -36,7 +44,15 @@
     "padrao_url": "/produto/"
    },
    "pdfs": [],
-   "observacao": "Sem catálogo PDF público encontrado; sem sitemap. Coleta pelas páginas de produto a partir do índice."
+   "observacao": "Sem catálogo PDF público encontrado; sem sitemap. Coleta pelas páginas de produto a partir do índice.",
+   "adaptador": "generico",
+   "entradas": [
+    "https://lionfitness.com.br/produtos",
+    "https://lionfitness.com.br/categoria-produto/linhas/"
+   ],
+   "hosts_permitidos": [
+    "lionfitness.com.br"
+   ]
   },
   "TOTAL HEALTH": {
    "site": "https://totalhealth.com.br",
@@ -46,7 +62,14 @@
     "exige_codigo": true
    },
    "pdfs": [],
-   "observacao": "O link catalogo/catalogo_totalhealth.pdf dá 404 (26/09/2026). Linhas pelo site: RRF, RRX Premium, Total Access, Total Strength, Total Prime. 552 URLs no sitemap."
+   "observacao": "O link catalogo/catalogo_totalhealth.pdf dá 404 (26/09/2026). Linhas pelo site: RRF, RRX Premium, Total Access, Total Strength, Total Prime. 552 URLs no sitemap.",
+   "adaptador": "generico",
+   "entradas": [
+    "https://totalhealth.com.br/sitemap.xml"
+   ],
+   "hosts_permitidos": [
+    "totalhealth.com.br"
+   ]
   },
   "MACSPORT": {
    "site": "https://macsport.com.br",
@@ -57,7 +80,18 @@
     "padrao_url": "/produto/[a-z0-9-]+/[a-z0-9-]+"
    },
    "pdfs": [],
-   "observacao": "Site novo em Next.js: produtos em /produto/<linha>/<slug> (linhas CROMUS, EVO, SIGMA, PESO LIVRE); links no payload JS. /loja/shop/ antigo redireciona (308)."
+   "observacao": "Site novo em Next.js: produtos em /produto/<linha>/<slug> (linhas CROMUS, EVO, SIGMA, PESO LIVRE); links no payload JS. /loja/shop/ antigo redireciona (308).",
+   "adaptador": "macsport_rsc",
+   "entradas": [
+    "https://macsport.com.br/equipamentos"
+   ],
+   "hosts_permitidos": [
+    "macsport.com.br"
+   ],
+   "hosts_imagem": [
+    "i.ibb.co",
+    "*.previews.dropboxusercontent.com"
+   ]
   },
   "FLEX EQUIPMENT": {
    "site": "https://www.flex.ind.br",
@@ -70,7 +104,31 @@
     "padrao_url": "/produto/"
    },
    "pdfs": [],
-   "observacao": "Catálogo 2019 só no visualizador Calaméo (não é arquivo). Sitemap wp-sitemap.xml recusou conexão em 26/09/2026; coleta pelas páginas de linha."
+   "observacao": "Catálogo 2019 só no visualizador Calaméo (não é arquivo). Sitemap wp-sitemap.xml recusou conexão em 26/09/2026; coleta pelas páginas de linha.",
+   "adaptador": "generico",
+   "entradas": [
+    "https://www.flex.ind.br/linha/profissional-classic/",
+    "https://www.flex.ind.br/linha/special/"
+   ],
+   "hosts_permitidos": [
+    "www.flex.ind.br"
+   ]
+  },
+  "KONNEN": {
+   "site": "https://www.konnenfitness.com.br",
+   "adaptador": "konnen_wc",
+   "entradas": [
+    "https://www.konnenfitness.com.br/categoria-produto/cardio/"
+   ],
+   "hosts_permitidos": [
+    "www.konnenfitness.com.br"
+   ],
+   "produtos": {
+    "sitemap": "https://www.konnenfitness.com.br/wp-sitemap-posts-product-1.xml",
+    "padrao_url": "/produto/"
+   },
+   "pdfs": [],
+   "observacao": "WooCommerce. A fase 1 entra por /categoria-produto/cardio/. O post id só aparece no detalhe; o código é evidência, não chave."
   }
  }
 }

@@ -1,0 +1,18 @@
+User-Agent: *
+Allow: /
+Disallow: /admin/
+Disallow: /api/
+
+User-Agent: GPTBot
+Allow: /
+
+User-Agent: Google-Extended
+Allow: /
+
+User-Agent: Anthropic-AI
+Allow: /
+
+User-Agent: ClaudeBot
+Allow: /
+
+Sitemap: https://macsport.com.br/sitemap.xml

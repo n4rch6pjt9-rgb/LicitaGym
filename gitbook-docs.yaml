@@ -6,11 +6,12 @@ site:
       key: section-1
       title: Licitagym Docs
       path: licitagym-docs
+      description: Documentação de Onboarding e Produtos do Licitagym
       default: true
       children:
         - type: space
           key: space-1
-          title: Untitled
+          title: Licitagym Docs
           path: untitled
           default: true
           content:

@@ -86,37 +86,116 @@ def test_tipo_ni():
 
 
 class _ClienteFalso:
-    """Devolve páginas de tamanho controlado e registra o tamanho_pagina pedido."""
+    """Devolve páginas de tamanho controlado e registra (pagina, tamanho_pagina) pedidos.
 
-    def __init__(self, paginas: list[list[dict[str, Any]]], total: int):
+    totais: campos extras da resposta (totalRegistros/totalPaginas); None = a resposta não traz o campo.
+    """
+
+    def __init__(self, paginas: list[list[dict[str, Any]]], total: int | None = None, total_paginas: int | None = None):
         self.paginas = paginas
         self.total = total
+        self.total_paginas = total_paginas
         self.pedidos: list[tuple[int, int]] = []
 
     def consultar_material(self, tipo, codigo, pagina=1, tamanho_pagina=100):
         self.pedidos.append((pagina, tamanho_pagina))
+        if len(self.pedidos) > 50:
+            raise AssertionError("coleta não terminou (laço sem fim)")
         itens = self.paginas[pagina - 1] if pagina <= len(self.paginas) else []
-        return {"resultado": itens, "totalRegistros": self.total}
+        resp: dict[str, Any] = {"resultado": itens}
+        if self.total is not None:
+            resp["totalRegistros"] = self.total
+        if self.total_paginas is not None:
+            resp["totalPaginas"] = self.total_paginas
+        return resp
 
 
 def _pagina(n: int, inicio: int, ni: str = "11222333000181") -> list[dict[str, Any]]:
     return [_item_pp(idItemCompra=inicio + i, niFornecedor=ni) for i in range(n)]
 
 
-def test_coletar_pede_100_e_para_na_pagina_certa():
+class _SbFalso:
+    def __init__(self):
+        self.gravadas: list[dict[str, Any]] = []
+
+    def upsert(self, tabela, linhas, conflito=None):
+        self.gravadas.extend(linhas)
+
+
+def test_tamanho_pagina_e_100():
+    # Regra do projeto: coletores Python pedem no máximo 100 itens por página.
     assert compras_precos.TAMANHO_PAGINA == 100
     cli = _ClienteFalso([_pagina(100, 0), _pagina(20, 100)], total=120)
-    res = compras_precos.coletar(cli, None, pdms=[2640], dry_run=True)
+    compras_precos.coletar(cli, None, pdms=[2640], dry_run=True)
     assert cli.pedidos == [(1, 100), (2, 100)]
-    assert res["total_coletados"] == 120
 
 
-def test_coletar_continua_com_pagina_cheia_de_100():
-    # página cheia (100) com totalRegistros maior segue; a página curta final encerra
-    cli = _ClienteFalso([_pagina(100, 0), _pagina(100, 100), _pagina(1, 200)], total=201)
+def test_cliente_nunca_pede_mais_de_100(monkeypatch):
+    cliente = compras_precos.ClienteComprasPrecos(delay=1.0)
+    monkeypatch.setattr(compras_precos.time, "sleep", lambda s: None)
+    capturado: dict[str, Any] = {}
+
+    class _Resp:
+        status_code = 200
+        headers: dict[str, str] = {}
+
+        def json(self):
+            return {"resultado": [], "totalRegistros": 0}
+
+    def _get(url, params=None, timeout=None):
+        capturado.update(params)
+        return _Resp()
+
+    monkeypatch.setattr(cliente.s, "get", _get)
+    cliente.consultar_material("codigoPdm", 2640, pagina=1, tamanho_pagina=500)
+    assert capturado["tamanhoPagina"] == 100
+
+
+def test_pagina_parcial_com_registros_restantes_continua():
+    # Achado do review: página incompleta (API devolveu menos que o pedido) não pode encerrar a coleta.
+    cli = _ClienteFalso([_pagina(60, 0), _pagina(100, 60), _pagina(41, 160)], total=201)
     res = compras_precos.coletar(cli, None, pdms=[2640], dry_run=True)
-    assert cli.pedidos == [(1, 100), (2, 100), (3, 100)]
+    assert [p for p, _ in cli.pedidos] == [1, 2, 3]
     assert res["total_coletados"] == 201
+
+
+def test_fim_por_total_registros_sem_pedir_pagina_extra():
+    cli = _ClienteFalso([_pagina(100, 0), _pagina(100, 100)], total=200)
+    res = compras_precos.coletar(cli, None, pdms=[2640], dry_run=True)
+    assert [p for p, _ in cli.pedidos] == [1, 2]
+    assert res["total_coletados"] == 200
+
+
+def test_fim_por_total_paginas():
+    cli = _ClienteFalso([_pagina(100, 0), _pagina(30, 100), _pagina(100, 500)], total_paginas=2)
+    res = compras_precos.coletar(cli, None, pdms=[2640], dry_run=True)
+    assert [p for p, _ in cli.pedidos] == [1, 2]
+    assert res["total_coletados"] == 130
+
+
+def test_sem_totais_para_na_pagina_vazia():
+    cli = _ClienteFalso([_pagina(100, 0), _pagina(7, 100)])
+    res = compras_precos.coletar(cli, None, pdms=[2640], dry_run=True)
+    assert [p for p, _ in cli.pedidos] == [1, 2, 3]
+    assert res["total_coletados"] == 107
+
+
+def test_ultima_pagina_ignora_totais_invalidos():
+    assert compras_precos.ultima_pagina({"totalRegistros": 0}, 1, 100) is False
+    assert compras_precos.ultima_pagina({"totalRegistros": "x", "totalPaginas": None}, 1, 100) is False
+    assert compras_precos.ultima_pagina({"totalRegistros": "150"}, 2, 150) is True
+    assert compras_precos.ultima_pagina({"totalPaginas": 3}, 3, 10) is True
+
+
+def test_limite_respeitado_antes_de_gravar():
+    # Achado do review: --limite 30 não pode gravar a página inteira de 100.
+    cli = _ClienteFalso([_pagina(100, 0), _pagina(100, 100)], total=200)
+    sb = _SbFalso()
+    res = compras_precos.coletar(cli, sb, pdms=[2640], limite=30)
+    assert res["total_coletados"] == 30
+    assert res["total_gravados"] == 30
+    assert len(sb.gravadas) == 30
+    assert [p for p, _ in cli.pedidos] == [1]
 
 
 def test_coletar_conta_cpf_no_resumo():

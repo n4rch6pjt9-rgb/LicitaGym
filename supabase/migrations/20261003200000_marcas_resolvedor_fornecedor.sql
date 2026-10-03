@@ -20,8 +20,10 @@
 --      com revisao_manual = true, e no resolvedor a linha manual vence em empate.
 --   3. private.marca_resolver(marca_bruta, cnpj): o primeiro que casar vence, nesta ordem:
 --      escopo do CNPJ > global; exato > prefixo (o mais longo) > regex; manual > semente.
---      Sem alias: vazio/1 caractere, código de modelo ou medida ("1130PC", "LLM014", "2 KG", "8 0", "COD MB")
---      -> NULL; qualquer outro texto conta como a própria string normalizada, com curada = false.
+--      Sem alias: vazio/1 caractere, código de modelo ou medida ("1130PC", "LLM014", "R55V5", "10KG", "2 KG", "8 0",
+--      "75CM BOMBA", "COD MB") -> NULL. Começar com dígito não basta: com palavra de 5+ letras e sem medida
+--      ("3 SECONDS FITNESS", "3G FITNESS", "D1FITNESS") é marca. Qualquer outro texto conta como a própria
+--      string normalizada, com curada = false.
 --   4. Views (security_invoker, SELECT só para service_role):
 --      v_marca_ocorrencias          1 linha por item vendido com a marca resolvida (PONTO DE EXTENSÃO das fontes)
 --      v_fornecedor_marcas_ranking  CNPJ x marca: qtd_itens, valor_total, ultima_data, posicao (mín. 2 itens)
@@ -97,10 +99,13 @@ create table if not exists public.marca_aliases (
   constraint marca_aliases_cnpj_check check (cnpj_escopo is null or cnpj_escopo ~ '^[0-9]{14}$'),
   constraint marca_aliases_marca_check check ((tipo = 'nao_marca') = (marca is null)),
   constraint marca_aliases_marca_norm_check check (marca is null or marca = private.marca_normalizar(marca)),
-  -- exato/prefixo guardam o valor já normalizado; regex precisa compilar (expressão inválida falha no INSERT)
+  -- padrão vazio (ou só espaços) casaria com toda marca: proibido em qualquer modo
+  constraint marca_aliases_valor_vazio_check check (btrim(valor_norm) <> ''),
+  -- exato/prefixo guardam o valor já normalizado; regex precisa compilar (expressão inválida falha no INSERT) e não
+  -- pode casar com a string vazia ('', '.*', '^', 'X?'...), porque casaria com toda marca
   constraint marca_aliases_valor_check check (
     (modo in ('exato', 'prefixo') and valor_norm = private.marca_normalizar(valor_norm))
-    or (modo = 'regex' and ('' ~ valor_norm) is not null))
+    or (modo = 'regex' and not ('' ~ valor_norm)))
 );
 
 comment on table public.marca_aliases is
@@ -313,6 +318,7 @@ as $fn$
             from public.marca_aliases a
            where n.v is not null
              and a.ativo
+             and btrim(a.valor_norm) <> ''  -- defesa extra: padrão vazio nunca casa (a constraint já recusa)
              and (a.cnpj_escopo is null or a.cnpj_escopo = p_cnpj)
              and case a.modo
                    when 'exato' then a.valor_norm = n.v
@@ -320,11 +326,16 @@ as $fn$
                    else n.v ~ a.valor_norm
                  end
           union all
-          -- sem alias: vazio, código de modelo/medida (até 4 letras + dígito) ou prefixo COD/MOD/REF -> não conta
+          -- sem alias: vazio, código de modelo/medida ou prefixo COD/MOD/REF -> não conta. Código/medida = começa
+          -- com até 4 letras + dígito E (não tem palavra de 5+ letras OU tem medida: 10KG, 75CM, 60X30). Assim
+          -- "3 SECONDS FITNESS", "3G FITNESS" e "D1FITNESS" ficam como marca; "1130PC", "R55V5", "LLM014" não.
           select null, case when n.v is null or length(n.v) < 2 then 'vazio' else 'codigo_ou_medida' end,
                  false, null, 2, true, 0, 0, false
             from n
-           where n.v is null or length(n.v) < 2 or n.v ~ '^[A-Z]{0,4} ?[0-9]' or n.v ~ '^(COD|MOD|MODELO|REF)( |$)'
+           where n.v is null or length(n.v) < 2
+              or (n.v ~ '^[A-Z]{0,4} ?[0-9]'
+                  and (n.v !~ '[A-Z]{5,}' or n.v ~ '[0-9] ?(KG|KGS|CM|MM|MT|ML|LT|X)( |$|[0-9])'))
+              or n.v ~ '^(COD|MOD|MODELO|REF)( |$)'
           union all
           select n.v, 'bruta', false, null, 3, true, 0, 0, false
             from n

@@ -51,7 +51,8 @@ UA = "LicitaGym-Coletor/1.1 (pesquisa de licitacoes publicas)"
 PDMS_PADRAO = [2640, 2638, 7113, 7115, 3522, 5341, 8166, 18481, 10779]
 
 TIPOS_CONSULTA = ("codigoPdm", "codigoItemCatalogo")
-# A API aceita tamanhoPagina de 10 a 500 neste módulo. O script pede 100.
+# Regra do projeto (Marcelo, 03/10/2026): coletores Python pedem no máximo 100 itens por página, mesmo que a API
+# aceite até 500. O fim da coleta vem de totalRegistros/totalPaginas da resposta, não de página incompleta.
 TAMANHO_PAGINA = 100
 
 
@@ -111,6 +112,29 @@ def tipo_ni(ni: str | None) -> str | None:
     if re.fullmatch(r"\d{11}", ni):
         return "cpf"
     return "outro"
+
+
+def _inteiro_positivo(val: Any) -> int | None:
+    try:
+        n = int(val)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
+def ultima_pagina(resp: dict[str, Any], pagina: int, recebidos: int) -> bool:
+    """True quando a resposta diz que não há mais páginas: pagina >= totalPaginas ou recebidos >= totalRegistros.
+
+    `recebidos` = itens brutos já recebidos nesta consulta (todas as páginas). Página incompleta não encerra a coleta.
+    Sem totalPaginas e sem totalRegistros válidos (> 0), devolve False e o fim fica por conta da página vazia.
+    """
+    total_paginas = _inteiro_positivo(resp.get("totalPaginas"))
+    total_registros = _inteiro_positivo(resp.get("totalRegistros"))
+    if total_paginas is not None and pagina >= total_paginas:
+        return True
+    if total_registros is not None and recebidos >= total_registros:
+        return True
+    return False
 
 
 def normalizar_preco_praticado(item: dict[str, Any]) -> dict[str, Any] | None:
@@ -216,7 +240,7 @@ class ClienteComprasPrecos:
             "tipo": tipo,
             "codigo": codigo,
             "pagina": pagina,
-            "tamanhoPagina": min(500, max(10, tamanho_pagina)),
+            "tamanhoPagina": min(TAMANHO_PAGINA, max(10, tamanho_pagina)),
         }
         contexto = f"Pesquisa Preco {tipo}={codigo} pagina {pagina}"
         for tentativa in range(1, 4):
@@ -291,6 +315,7 @@ def coletar(
 
     for tipo, cod in consultas:
         pagina = 1
+        recebidos = 0
         while True:
             log.info("Consultando Pesquisa Preco %s=%d pagina %d...", tipo, cod, pagina)
             try:
@@ -303,9 +328,13 @@ def coletar(
             items_raw = resp.get("resultado") or []
             if not items_raw:
                 break
+            recebidos += len(items_raw)
 
             linhas_norm = []
             for it in items_raw:
+                if limite and total_coletados >= limite:
+                    # --limite vale antes do upsert: o resto da página não é normalizado nem gravado.
+                    break
                 norm = normalizar_preco_praticado(it)
                 if norm:
                     linhas_norm.append(norm)
@@ -350,8 +379,7 @@ def coletar(
                     "amostras": amostras,
                 }
 
-            total_regs = resp.get("totalRegistros") or 0
-            if pagina * TAMANHO_PAGINA >= total_regs or len(items_raw) < TAMANHO_PAGINA:
+            if ultima_pagina(resp, pagina, recebidos):
                 break
             pagina += 1
 

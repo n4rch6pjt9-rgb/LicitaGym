@@ -7,6 +7,8 @@
 --   C. homologacoes_itens: pdm_metodo 'catalogo' só no catálogo 1 em material; Outros não pega o PDM do código
 --   D. v_bi_fornecedor_historico: codigo_item e cobertura 'catmat_oficial' só no catálogo 1 em material
 --   E. security_invoker = true nas três views recriadas e ACL só service_role
+--   F. homologacoes_itens.codigo_catmat (bigint, última coluna; as 13 anteriores iguais): código validado só no
+--      catálogo 1 em material; NULL para Outros, CATSER, sem catalogo_id e código não numérico
 -- =============================================================================
 begin;
 
@@ -25,6 +27,7 @@ declare
   v_txt text;
   v_n int;
   v_rel text;
+  v_cols text;
 begin
   -- A
   if (select format_type(atttypid, atttypmod) from pg_attribute
@@ -83,6 +86,32 @@ begin
   end if;
   if (select catalogo_codigo_item from public.homologacoes_itens where licitacao_id = v_lic[2]) is distinct from '480145' then
     raise exception 'TESTE C FALHOU: catalogo_codigo_item cru deveria continuar exposto';
+  end if;
+
+  -- F
+  select string_agg(attname || ':' || format_type(atttypid, atttypmod), ',' order by attnum) into v_cols
+    from pg_attribute where attrelid = 'public.homologacoes_itens'::regclass and attnum > 0 and not attisdropped;
+  if v_cols is distinct from 'resultado_id:bigint,fornecedor_cnpj:text,licitacao_id:bigint,numero_item:integer,uf:text,'
+       'orgao_cnpj:text,modalidade:text,item_descricao:text,catalogo_codigo_item:text,valor_total_homologado:numeric,'
+       'codigo_pdm:integer,nome_pdm:text,pdm_metodo:text,codigo_catmat:bigint' then
+    raise exception 'TESTE F FALHOU: colunas de homologacoes_itens fora do esperado: %', v_cols;
+  end if;
+  if (select codigo_catmat from public.homologacoes_itens where licitacao_id = v_lic[1]) is distinct from 480145 then
+    raise exception 'TESTE F FALHOU: codigo_catmat esperado 480145 no catálogo 1/M';
+  end if;
+  select count(*) into v_n from public.homologacoes_itens
+   where licitacao_id = any (v_lic[2:4]) and codigo_catmat is not null;
+  if v_n <> 0 then
+    raise exception 'TESTE F FALHOU: codigo_catmat deveria ser NULL em Outros, CATSER e sem catalogo_id; % linha(s)', v_n;
+  end if;
+  insert into public.licitacoes_externas (fonte, codigo_externo, objeto, prioridade, data_homologacao)
+  values ('pncp', 'zzteste-catalogo-nao-numerico', 'ZZ OBJETO NEUTRO', 'historico', '2026-09-01') returning id into v_id;
+  insert into public.licitacao_itens (licitacao_id, numero_item, descricao, catalogo_codigo_item, catalogo_id, material_ou_servico, quantidade)
+  values (v_id, 1, 'ZZ ITEM NEUTRO', 'AI0300075', 1, 'M', 1);
+  insert into public.licitacao_resultados (licitacao_id, numero_item, sequencial_resultado, fornecedor_cnpj, vencedor, data_resultado)
+  values (v_id, 1, 1, '21111111000102', true, '2026-09-01');
+  if exists (select 1 from public.homologacoes_itens where licitacao_id = v_id and codigo_catmat is not null) then
+    raise exception 'TESTE F FALHOU: código não numérico virou codigo_catmat';
   end if;
 
   -- D (a view só lista fornecedores com PDM no escopo; checa a CTE equivalente pelos itens da licitação)

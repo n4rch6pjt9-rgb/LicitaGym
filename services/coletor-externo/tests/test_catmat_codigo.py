@@ -84,18 +84,76 @@ def test_travas_do_objeto_valem_para_o_codigo():
 
 
 class _SB:
-    def __init__(self, mapa=None, pdms=None, erro=None):
+    def __init__(self, mapa=None, pdms=None, erro=None, regras_item=None, erro_regras=None):
         self.mapa, self.pdms, self.erro, self.chamadas = mapa, pdms, erro, []
+        self.regras_item = [] if regras_item is None else regras_item
+        self.erro_regras = erro_regras
 
     def selecionar(self, tabela, **filtros):
         self.chamadas.append((tabela, filtros))
         if self.erro:
             raise self.erro
+        if tabela == "catalogo_empresa_catmat":
+            if self.erro_regras:
+                raise self.erro_regras
+            return self.regras_item
         return self.mapa
 
     def rpc(self, funcao, params):
         self.chamadas.append((funcao, params))
         return self.pdms
+
+
+# --- regras do catálogo no nível de item (catalogo_empresa_catmat nivel 'item'), como licitacoes_ids_por_catmat ---
+# PDM 2640 incluído; 480145 (PDM 2640) excluído do PDM herdado; 230525 (PDM 121, fora) incluído avulso;
+# 999001 avulso de PDM fora e ausente das tabelas CATMAT (o SQL também aceita: itens_avulsos não passa pelo mapa)
+MAPA_ITEM = C.MapaCatmat(item_pdm={230525: 121, 480144: 2640, 480145: 2640, 93882: 762},
+                         pdms_catalogo=frozenset({2640}), itens_avulsos={230525: 121, 999001: 555},
+                         itens_excluidos=frozenset({480145}))
+
+
+@pytest.mark.parametrize("codigo,esperado", [
+    (480144, (True, "catmat")),   # herdado do PDM incluído
+    (480145, (True, None)),       # excluído no nível de item: o PDM incluído não reabre
+    (230525, (True, "catmat")),   # avulso incluído com PDM fora do catálogo
+    (999001, (True, "catmat")),   # avulso fora do mapa CATMAT
+    (93882, (True, None)),        # PDM fora, sem regra de item
+    (777777, (False, None)),      # fora do mapa e sem regra: o texto decide
+])
+def test_regras_de_item_do_catalogo(codigo, esperado):
+    it = _it(1, "x", codigo, COMPRAS_GOV)
+    assert C.categoria_por_codigo(it, MAPA_ITEM, P.material_ou_servico(it)) == esperado
+
+
+def test_regras_de_item_so_valem_para_codigo_catmat_valido():
+    # catálogo Outros e CATSER não são CATMAT: avulso/excluído não se aplicam e o texto decide
+    for it in (_it(1, "x", 230525, OUTROS), _it(1, "x", 480145, OUTROS), _it(1, "x", 230525, COMPRAS_GOV, "S")):
+        assert C.categoria_por_codigo(it, MAPA_ITEM, P.material_ou_servico(it)) == (False, None)
+
+
+def test_avaliar_respeita_item_excluido_e_avulso():
+    excluido = P.avaliar(COMPRA, [_it(1, "Aparelho de musculação cross over", 480145, COMPRAS_GOV)], MAPA_ITEM)
+    avulso = P.avaliar(COMPRA, [_it(1, "Cesto de roupa", 230525, COMPRAS_GOV)], MAPA_ITEM)
+    assert excluido[0] != "catmat" and avulso[0] == "catmat"
+
+
+def test_carregar_mapa_le_regras_de_item():
+    sb = _SB(mapa=[{"codigo_item": 480145, "codigo_pdm": 2640}], pdms=[{"codigo_pdm": 2640}],
+             regras_item=[{"codigo_item": 230525, "codigo_pdm": 121, "incluido": True},
+                          {"codigo_item": "480145", "codigo_pdm": "2640", "incluido": False}])
+    m = C.carregar_mapa_catmat(sb)
+    assert m.itens_avulsos == {230525: 121} and m.itens_excluidos == {480145}
+
+
+@pytest.mark.parametrize("sb", [
+    _SB(mapa=[], pdms=[], erro_regras=RuntimeError("503")),
+    _SB(mapa=[], pdms=[], regras_item={"erro": "fora do contrato"}),
+    _SB(mapa=[], pdms=[], regras_item=[{"codigo_item": None, "codigo_pdm": 1, "incluido": True}]),
+    _SB(mapa=[], pdms=[], regras_item=[{"codigo_item": 1, "codigo_pdm": 1, "incluido": None}]),
+])
+def test_regras_de_item_indisponiveis_levantam(sb):
+    with pytest.raises(C.MapaCatmatIndisponivel):
+        C.carregar_mapa_catmat_se_houver_banco(sb)
 
 
 def test_carregar_mapa_le_as_duas_rpcs():
@@ -104,6 +162,9 @@ def test_carregar_mapa_le_as_duas_rpcs():
     m = C.carregar_mapa_catmat(sb)
     assert m.item_pdm == {230525: 121, 480144: 2640} and m.pdms_catalogo == {2640}
     assert sb.chamadas[0] == ("rpc/catmat_itens_mapa", {"select": "codigo_item,codigo_pdm", "order": "codigo_item.asc"})
+    assert sb.chamadas[2] == ("catalogo_empresa_catmat", {"select": "codigo_item,codigo_pdm,incluido",
+                                                          "nivel": "eq.item", "order": "codigo_item.asc"})
+    assert m.itens_avulsos == {} and m.itens_excluidos == frozenset()
 
 
 MAPA_RPC = [{"codigo_item": 230525, "codigo_pdm": 121}, {"codigo_item": 480144, "codigo_pdm": 2640}]
@@ -132,7 +193,8 @@ def test_leitura_mapa_catmat_so_le():
     for escrita in ("upsert", "atualizar", "inserir", "drenar_licitacao_match"):
         with pytest.raises(PermissionError):
             getattr(leitor, escrita)
-    assert [c[0] for c in sb.chamadas] == ["rpc/catmat_itens_mapa", "catalogo_catmat_pdms_efetivos"]
+    assert [c[0] for c in sb.chamadas] == ["rpc/catmat_itens_mapa", "catalogo_catmat_pdms_efetivos",
+                                           "catalogo_empresa_catmat"]
 
 
 # --- main: o mapa é carregado antes de gravar; dry-run usa a mesma regra; falha com banco aborta ---

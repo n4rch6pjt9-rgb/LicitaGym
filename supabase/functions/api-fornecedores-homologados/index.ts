@@ -95,7 +95,12 @@ async function cnpjsPorItem(
   if (pdm) q = q.eq("codigo_pdm", pdm);
   if (item) {
     const dig = onlyDigits(item);
-    q = dig.length >= 4 && dig === item ? q.eq("catalogo_codigo_item", dig) : q.ilike("item_descricao", `%${item}%`);
+    // Código CATMAT: só o validado (codigo_catmat = Catálogo Compras.gov.br em material; migration 20261003180000).
+    // catalogo_codigo_item é cru e casava código próprio do órgão (catálogo 'Outros') e CATSER. Até 15 dígitos
+    // (bigint, mesmo limite do predicado SQL); fora disso é texto.
+    q = dig.length >= 4 && dig.length <= 15 && dig === item
+      ? q.eq("codigo_catmat", dig)
+      : q.ilike("item_descricao", `%${item}%`);
   }
   const uf = str(p.uf, 2).toUpperCase();
   if (/^[A-Z]{2}$/.test(uf)) q = q.eq("uf", uf);

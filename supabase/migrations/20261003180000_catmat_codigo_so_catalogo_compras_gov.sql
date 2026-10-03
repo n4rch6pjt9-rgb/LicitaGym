@@ -22,8 +22,10 @@
 --      com catmat_itens, o codigo_item e a cobertura 'catmat_oficial' exigem o mesmo predicado. Sem ele o item cai
 --      na palavra-chave do PDM (catmat_pdm_palavras), como qualquer item sem código. create or replace com as mesmas
 --      colunas, nomes, tipos e ordem: mantém dono, grants e dependentes; security_invoker = true continua.
---      catalogo_codigo_item continua exposto cru em homologacoes_itens e v_bi_resultados_itens (codigo_produto),
---      que não muda.
+--      homologacoes_itens ganha UMA coluna no fim, codigo_catmat (bigint): o código validado pelo mesmo predicado,
+--      NULL fora dele. api-fornecedores-homologados filtra a busca por código CATMAT por ela (antes: código cru,
+--      que casava código do órgão do catálogo 'Outros'). catalogo_codigo_item continua exposto cru em
+--      homologacoes_itens e v_bi_resultados_itens (codigo_produto), para rastreabilidade.
 --
 -- Efeito medido em produção (SELECT, 03/10/2026; ver DRY-RUN-BE-CATMAT-CATALOGO.sql): por_codigo deixa de devolver 2
 -- linhas (92/PDM 121 e 397/PDM 762), ambas falsos positivos; nenhum item de material tem código do catálogo 1,
@@ -252,7 +254,7 @@ as $$
 $$;
 
 -- 4) Views com o mesmo predicado ------------------------------------------------------------------------------------
--- homologacoes_itens (igual à 20261002205000, menos o join com catmat_itens)
+-- homologacoes_itens (igual à 20261002205000, menos o join com catmat_itens; + codigo_catmat no fim)
 create or replace view public.homologacoes_itens
 with (security_invoker = true) as
 select
@@ -268,7 +270,11 @@ select
   r.valor_total_homologado,
   coalesce(ci.codigo_pdm::integer, kw.codigo_pdm) as codigo_pdm,
   p.nome_pdm,
-  case when ci.codigo_pdm is not null then 'catalogo' when kw.codigo_pdm is not null then 'palavra_chave' end as pdm_metodo
+  case when ci.codigo_pdm is not null then 'catalogo' when kw.codigo_pdm is not null then 'palavra_chave' end as pdm_metodo,
+  -- código CATMAT validado (20261003180000): só Catálogo Compras.gov.br (catalogo_id = 1) em material; NULL para
+  -- 'Outros' (código do órgão), CATSER e código não numérico. catalogo_codigo_item segue cru (rastreabilidade).
+  case when i.catalogo_id = 1 and i.material_ou_servico = 'M' and i.catalogo_codigo_item ~ '^\d{1,15}$'
+       then i.catalogo_codigo_item::bigint end as codigo_catmat
 from public.licitacao_resultados r
 join public.licitacoes_externas l on l.id = r.licitacao_id
 left join public.licitacao_itens i on i.licitacao_id = r.licitacao_id and i.numero_item = r.numero_item

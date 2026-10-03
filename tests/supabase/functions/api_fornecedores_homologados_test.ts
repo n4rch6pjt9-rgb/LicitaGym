@@ -252,3 +252,32 @@ Deno.test("api-fornecedores-homologados: orgao_get ignora lance perdedor e resul
   assertEquals(body.licitacoes[1].vencedores, []);
   assertEquals(body.fornecedores, [{ cnpj: A, nome: "A LTDA", valor_homologado: 120, qtd_editais: 1 }]);
 });
+
+// ---------------------------------------------------------------- busca por código CATMAT (migration 20261003180000)
+
+async function filtrosDaBuscaPorItem(action: "list" | "orgaos_list", item: string): Promise<Chamada[]> {
+  const chamadasItens: Chamada[] = [];
+  const mockDb = createMockDb((table) => {
+    if (table === "homologacoes_itens") return consulta({ data: [], error: null }, chamadasItens);
+    if (table === "fornecedores_homologados" || table === "orgaos_compradores") {
+      return consulta({ data: [], count: 0, error: null } as { data: unknown; error: unknown });
+    }
+    throw new Error(`tabela inesperada: ${table}`);
+  });
+  const res = await handleRequest(post(JSON.stringify({ action, item })), { requireAuth: autenticado, getDb: () => mockDb });
+  assertEquals(res.status, 200);
+  return chamadasItens.filter((c) => c[0] === "eq" || c[0] === "ilike");
+}
+
+Deno.test("api-fornecedores-homologados: código CATMAT filtra pela coluna validada codigo_catmat, não pelo código cru", async () => {
+  for (const action of ["list", "orgaos_list"] as const) {
+    assertEquals(await filtrosDaBuscaPorItem(action, "480144"), [["eq", "codigo_catmat", "480144"]]);
+  }
+});
+
+Deno.test("api-fornecedores-homologados: busca por item que não é código CATMAT usa a descrição", async () => {
+  assertEquals(await filtrosDaBuscaPorItem("list", "cross over"), [["ilike", "item_descricao", "%cross over%"]]);
+  assertEquals(await filtrosDaBuscaPorItem("list", "123"), [["ilike", "item_descricao", "%123%"]]); // < 4 dígitos
+  const longo = "1".repeat(16); // além de bigint/15 dígitos: não é código CATMAT
+  assertEquals(await filtrosDaBuscaPorItem("list", longo), [["ilike", "item_descricao", `%${longo}%`]]);
+});

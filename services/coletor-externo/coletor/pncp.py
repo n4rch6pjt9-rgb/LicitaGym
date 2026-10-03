@@ -979,7 +979,7 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
     fase, prioridade, motivo = fase_da_compra(
         compra_com_detalhe(c, det), tem_resultado, agora=agora, status_busca=status_busca, itens=itens,
         documentos=arquivos if isinstance(arquivos, list) else None,
-        retificada_em=(det or {}).get("dataAtualizacao") or c.get("data_atualizacao_pncp"), excluida=excluida)
+        retificada_em=atualizacao_da_compra(det, c), excluida=excluida)
     # Fail-closed: sem o detalhe, "leads" vindo só da busca+itens pode ser compra já homologada.
     # Não grava (fica o valor do banco); historico/monitorar pela busca+itens continuam valendo.
     leads_sem_detalhe = det is None and prioridade == "leads"
@@ -1110,17 +1110,35 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
 
 
 def raw_com_prazo_do_detalhe(c: dict, det: dict | None) -> dict:
-    """raw gravado = item da busca, com o prazo de proposta do DETALHE quando ele existe e difere (Copilot, PR #134,
-    3ª rodada). A fase e a prioridade são decididas com o prazo do detalhe (compra_com_detalhe), e a view
-    licitacoes_externas_prioridade_efetiva lê raw.data_fim_vigencia (senão data_fim): gravar o prazo da busca
-    defasada fazia a view rebaixar a "Recebendo propostas"/leads reaberta pelo detalhe. Sem migration: o prazo do
-    detalhe vai em raw.data_fim_vigencia (e data_fim), e o da busca fica preservado em raw.data_fim_vigencia_busca,
-    com raw.data_fim_vigencia_fonte = "detalhe". Sem detalhe (ou sem prazo nele), o raw é a busca, como antes."""
+    """raw gravado = item da busca, com o prazo de proposta e a data de atualização do DETALHE quando existem e
+    diferem (Copilot, PR #134, 3ª e 4ª rodadas). Sem migration, e o item da busca não é alterado.
+    - Prazo: a fase e a prioridade são decididas com o prazo do detalhe (compra_com_detalhe), e a view
+      licitacoes_externas_prioridade_efetiva lê raw.data_fim_vigencia (senão data_fim); gravar o prazo da busca
+      defasada fazia a view rebaixar a "Recebendo propostas"/leads reaberta pelo detalhe. O prazo do detalhe vai em
+      raw.data_fim_vigencia (e data_fim), o da busca fica em raw.data_fim_vigencia_busca, com
+      raw.data_fim_vigencia_fonte = "detalhe".
+    - Atualização: a suspensão por documento só vale sem retificação posterior (atualizacao_da_compra), e o coletor
+      decide com o dataAtualizacao do detalhe. Ele vai em raw.data_atualizacao_detalhe (raw.data_atualizacao_pncp
+      continua sendo o da busca), para o reclassificador sem detalhe decidir com a mesma data.
+    Sem detalhe (ou sem esses campos nele), o raw é a busca, como antes."""
+    extra = {}
     prazo = (det or {}).get("dataEncerramentoProposta")
-    if not prazo or prazo == c.get("data_fim_vigencia"):
-        return c
-    return {**c, "data_fim_vigencia": prazo, "data_fim_vigencia_busca": c.get("data_fim_vigencia"),
-            "data_fim_vigencia_fonte": "detalhe"}
+    if prazo and prazo != c.get("data_fim_vigencia"):
+        extra.update(data_fim_vigencia=prazo, data_fim_vigencia_busca=c.get("data_fim_vigencia"),
+                     data_fim_vigencia_fonte="detalhe")
+    atualizacao = (det or {}).get("dataAtualizacao")
+    if atualizacao and atualizacao != c.get("data_atualizacao_pncp"):
+        extra["data_atualizacao_detalhe"] = atualizacao
+    return {**c, **extra} if extra else c
+
+
+def atualizacao_da_compra(det: dict | None, raw: dict | None) -> str | None:
+    """Última atualização (retificação) da compra para sinal_documental: dataAtualizacao do detalhe consultado
+    agora; senão a do detalhe gravada pelo coletor (raw.data_atualizacao_detalhe); senão a da busca
+    (raw.data_atualizacao_pncp). Coletor e reclassificador usam a mesma ordem (Copilot, PR #134, 4ª rodada)."""
+    raw = raw if isinstance(raw, dict) else {}
+    return ((det or {}).get("dataAtualizacao") or raw.get("data_atualizacao_detalhe")
+            or raw.get("data_atualizacao_pncp"))
 
 
 def _excluida_sem_hidratacao(pncp, sb, c: dict, erro: Exception, dry_run: bool, resumo: dict) -> bool:

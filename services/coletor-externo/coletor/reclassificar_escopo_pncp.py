@@ -47,8 +47,8 @@ from datetime import datetime, timezone
 
 from .destino import Supabase, env
 from .escopo import classificar, excluir_compra, objeto_passagem, servico_sem_material
-from .pncp import (FASE_EXCLUIDA, PNCP, CompraExcluida, _instante, avaliar, compra_com_detalhe, compra_de_codigo,
-                   consultar_detalhe, fase_da_compra)
+from .pncp import (FASE_EXCLUIDA, PNCP, CompraExcluida, _instante, atualizacao_da_compra, avaliar, compra_com_detalhe,
+                   compra_de_codigo, consultar_detalhe, fase_da_compra)
 
 log = logging.getLogger("coletor.reclassificar_escopo_pncp")
 
@@ -148,7 +148,7 @@ def _nova_prioridade(ln: dict, itens: list[dict] | None, agora: datetime, det: d
     raw = ln.get("raw") if isinstance(ln.get("raw"), dict) else {}
     fase, nova, motivo = fase_da_compra(
         compra_com_detalhe(base, det), agora=agora, itens=itens or None, documentos=ln.get("_documentos"),
-        retificada_em=(det or {}).get("dataAtualizacao") or raw.get("data_atualizacao_pncp"), excluida=excluida)
+        retificada_em=atualizacao_da_compra(det, raw), excluida=excluida)
     if nova is None:
         return None, motivo, "indeterminada", None
     if det is None and not excluida:

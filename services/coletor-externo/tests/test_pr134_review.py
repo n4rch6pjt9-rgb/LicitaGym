@@ -535,6 +535,70 @@ def test_detalhe_com_prazo_vencido_e_busca_aberta_grava_o_vencido():
 
 def test_sem_prazo_no_detalhe_ou_igual_o_raw_e_a_busca():
     assert P.raw_com_prazo_do_detalhe(ABERTA_BUSCA, None) is ABERTA_BUSCA
-    assert P.raw_com_prazo_do_detalhe(ABERTA_BUSCA, DETALHE) is ABERTA_BUSCA
+    assert P.raw_com_prazo_do_detalhe(ABERTA_BUSCA, {"processo": "1/2026"}) is ABERTA_BUSCA
     igual = {"dataEncerramentoProposta": ABERTA_BUSCA["data_fim_vigencia"]}
     assert P.raw_com_prazo_do_detalhe(ABERTA_BUSCA, igual) is ABERTA_BUSCA
+
+
+# ---------- 4ª rodada: dataAtualizacao do detalhe gravada no raw e lida pelo reclassificador ----------
+BUSCA_SUSPENSA = dict(ABERTA_BUSCA, data_atualizacao_pncp="2026-09-20T10:00:00")   # busca antiga
+DETALHE_RETIFICADO = dict(DETALHE, dataAtualizacao="2026-09-28T15:00:00")           # depois da suspensão (28/09 10h)
+
+
+def _coletar_suspensa_e_retificada():
+    p = _pncp_aberto([BUSCA_SUSPENSA])
+    p.compra.return_value = DETALHE_RETIFICADO
+    p.arquivos.return_value = [SUSPENSAO]
+    sb = _sb_coleta()
+    _coletar(p, sb)
+    return _lic(sb), _tabela(sb, "licitacao_documentos")[0], _tabela(sb, "licitacao_itens")[0]
+
+
+def _linha_do_banco(lic, docs, itens):
+    """Linha como o reclassificador lê do banco depois da coleta (sem nova consulta ao PNCP)."""
+    ln = _linha(501, lic["objeto"], cat=lic["categoria_escopo"], prio=lic["prioridade"],
+                ib=lic["interesse_borracha"], itens=[dict(it, id=i) for i, it in enumerate(itens, 1)])
+    ln.update(raw=dict(lic["raw"]), fase=lic["fase"], data_fim=lic["data_fim"])
+    ln["documentos"] = [{"nome_original": d["nome_original"], "data_documento": d["data_documento"],
+                         "raw": d["raw"]} for d in docs]
+    return ln
+
+
+def test_coletor_grava_a_atualizacao_do_detalhe_e_preserva_a_da_busca():
+    lic, _, _ = _coletar_suspensa_e_retificada()
+    assert (lic["prioridade"], lic["fase"]) == ("leads", "Recebendo propostas")   # retificada depois da suspensão
+    assert lic["raw"]["data_atualizacao_detalhe"] == "2026-09-28T15:00:00"
+    assert lic["raw"]["data_atualizacao_pncp"] == "2026-09-20T10:00:00"
+    assert BUSCA_SUSPENSA.get("data_atualizacao_detalhe") is None              # item da busca não é alterado
+
+
+def test_reclassificacao_sem_detalhe_depois_da_coleta_nao_volta_a_suspender():
+    lic, docs, itens = _coletar_suspensa_e_retificada()
+    ln = _linha_do_banco(lic, docs, itens)
+    linha = R.reclassificar(R.SomenteLeitura(_sb([ln])), agora=AGORA)["linhas"][0]
+    assert linha["status"] == "sem_mudanca" and linha["campos"] == {}
+    assert linha["prioridade_depois"] == "leads" and linha["fase_depois"] == "Recebendo propostas"
+
+
+def test_sem_a_atualizacao_do_detalhe_no_raw_a_reclassificacao_suspenderia():
+    # controle: é a data do detalhe no raw que evita o rebaixamento (raw antigo, só com a data da busca)
+    lic, docs, itens = _coletar_suspensa_e_retificada()
+    ln = _linha_do_banco(lic, docs, itens)
+    del ln["raw"]["data_atualizacao_detalhe"]
+    linha = R.reclassificar(R.SomenteLeitura(_sb([ln])), agora=AGORA)["linhas"][0]
+    assert linha["campos"] == {"prioridade": "monitorar", "fase": "Suspensa (documento)"}
+
+
+def test_atualizacao_da_compra_prefere_detalhe_ao_vivo_depois_o_gravado_depois_a_busca():
+    raw = {"data_atualizacao_pncp": "2026-09-20T10:00:00", "data_atualizacao_detalhe": "2026-09-28T15:00:00"}
+    assert P.atualizacao_da_compra({"dataAtualizacao": "2026-09-30T08:00:00"}, raw) == "2026-09-30T08:00:00"
+    assert P.atualizacao_da_compra(None, raw) == "2026-09-28T15:00:00"
+    assert P.atualizacao_da_compra({}, {"data_atualizacao_pncp": "2026-09-20T10:00:00"}) == "2026-09-20T10:00:00"
+    assert P.atualizacao_da_compra(None, None) is None
+
+
+def test_atualizacao_do_detalhe_igual_a_da_busca_nao_entra_no_raw():
+    igual = {"dataAtualizacao": BUSCA_SUSPENSA["data_atualizacao_pncp"]}
+    assert P.raw_com_prazo_do_detalhe(BUSCA_SUSPENSA, igual) is BUSCA_SUSPENSA
+    so_atualizacao = P.raw_com_prazo_do_detalhe(BUSCA_SUSPENSA, DETALHE_RETIFICADO)
+    assert so_atualizacao == dict(BUSCA_SUSPENSA, data_atualizacao_detalhe="2026-09-28T15:00:00")

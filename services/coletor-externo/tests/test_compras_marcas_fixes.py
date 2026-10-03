@@ -1,4 +1,4 @@
-"""Correções do coletor ligadas ao resolvedor de marcas (migration 20261003200000_marcas_resolvedor_fornecedor).
+"""Correções do coletor ligadas ao resolvedor de marcas (migration 20261003233000_marcas_resolvedor_fornecedor).
 
 CNPJ/CPF das fixtures são fictícios (11222333000181 tem dígitos verificadores válidos, mas é o exemplo clássico).
 """

@@ -222,13 +222,35 @@ def test_backfill_consulta_itens_quando_detalhe_diz_em_julgamento():
     assert "todos os itens finalizados" in r["amostra"]["monitorar->historico"][0][2]
 
 
-def test_backfill_apply_grava_so_a_coluna_prioridade():
+def test_backfill_apply_desativado_nao_le_nem_grava():
+    """Escrita desativada (Copilot, PR #134, 3ª rodada): quem grava prioridade + fase é reclassificar_escopo_pncp."""
     sb = _SbSomenteLeitura(_linhas())
-    r = B.backfill(sb, aplicar=True, agora=AGORA)
-    assert r["gravadas"] == 4
-    assert sorted((i, c) for _, i, c in sb.atualizacoes) == [
-        (1, {"prioridade": "historico"}), (2, {"prioridade": "leads"}),
-        (4, {"prioridade": "historico"}), (6, {"prioridade": "historico"})]
+    with pytest.raises(B.EscritaDesativada, match="reclassificar_escopo_pncp"):
+        B.backfill(sb, aplicar=True, agora=AGORA)
+    assert sb.selecoes == [] and sb.atualizacoes == []
+
+
+def test_backfill_main_apply_recusa_sem_conectar(monkeypatch, capsys):
+    monkeypatch.setattr(B, "Supabase", lambda *a, **kw: pytest.fail("--apply não pode conectar ao Supabase"))
+    monkeypatch.setattr(B, "env", lambda *a, **kw: pytest.fail("--apply não pode ler credenciais"))
+    assert B.main(["--apply"]) == 2
+    assert "python -m coletor.reclassificar_escopo_pncp" in capsys.readouterr().err
+
+
+def test_backfill_nao_sobrescreve_suspensa_documento():
+    """monitorar/"Suspensa (documento)" com prazo aberto e situação divulgada: o cálculo legado diria leads, mas o
+    backfill não grava (dry-run só conta) e o --apply é recusado; a decisão compartilhada mantém a suspensão."""
+    ln = dict(_linhas()[1], fase="Suspensa (documento)")       # #2: prazo aberto, Divulgada no PNCP, monitorar
+    sb = _SbSomenteLeitura([ln])
+    r = B.backfill(sb, agora=AGORA)
+    assert r["transicoes"] == {"monitorar->leads": 1} and r["gravadas"] == 0 and sb.atualizacoes == []
+    with pytest.raises(B.EscritaDesativada):
+        B.backfill(sb, aplicar=True, agora=AGORA)
+    assert sb.atualizacoes == []
+    suspensao = [{"titulo": "Aviso de suspensão do pregão", "dataPublicacaoPncp": "2026-09-28T10:00:00"}]
+    fase, prio, _ = P.fase_da_compra(ln, False, agora=AGORA, documentos=suspensao,
+                                     retificada_em="2026-09-20T10:00:00")
+    assert (fase, prio) == ("Suspensa (documento)", "monitorar")
 
 
 def test_backfill_main_padrao_e_dry_run(monkeypatch, capsys):
@@ -376,7 +398,7 @@ def test_backfill_falha_na_consulta_nao_grava_leads():
     sb = _SbSomenteLeitura([ln])
     pncp = MagicMock()
     pncp.compra.side_effect = RuntimeError("429 do PNCP")
-    r = B.backfill(sb, pncp, aplicar=True, agora=AGORA, consultar_pncp=True)
+    r = B.backfill(sb, pncp, agora=AGORA, consultar_pncp=True)
     assert sb.atualizacoes == [] and r["gravadas"] == 0
     assert r["leads_sem_detalhe"] == 1 and r["falha_consulta"] == 1 and r["transicoes"] == {}
 
@@ -387,8 +409,8 @@ def test_backfill_detalhe_vence_o_gravado():
     pncp = MagicMock()
     pncp.compra.return_value = {"situacaoCompraNome": "Divulgada no PNCP", "existeResultado": False,
                                 "valorTotalHomologado": 900.0, "dataEncerramentoProposta": "2026-10-13T09:30:00"}
-    r = B.backfill(sb, pncp, aplicar=True, agora=AGORA, consultar_pncp=True)
-    assert sb.atualizacoes == [("licitacoes_externas", 2, {"prioridade": "historico"})]
+    r = B.backfill(sb, pncp, agora=AGORA, consultar_pncp=True)
+    assert r["transicoes"] == {"monitorar->historico": 1} and sb.atualizacoes == []
     assert "valor homologado" in r["amostra"]["monitorar->historico"][0][2]
 
 
@@ -396,13 +418,13 @@ def test_backfill_historico_nao_e_rebaixado_sem_o_detalhe():
     """O coletor grava historico pelo detalhe (existeResultado), que não fica nas colunas: sem consulta, não rebaixa."""
     ln = dict(_linhas()[1], prioridade="historico")            # gravado diria leads
     sb = _SbSomenteLeitura([ln])
-    r = B.backfill(sb, aplicar=True, agora=AGORA)
-    assert sb.atualizacoes == [] and r["historico_mantido_sem_detalhe"] == 1
-    # com o detalhe confirmando compra aberta e sem resultado, sai de historico
+    r = B.backfill(sb, agora=AGORA)
+    assert r["transicoes"] == {} and r["historico_mantido_sem_detalhe"] == 1
+    # com o detalhe confirmando compra aberta e sem resultado, sai de historico (no dry-run legado)
     pncp = MagicMock()
     pncp.compra.return_value = DETALHE_ABERTO
-    r = B.backfill(sb, pncp, aplicar=True, agora=AGORA, consultar_pncp=True)
-    assert sb.atualizacoes == [("licitacoes_externas", 2, {"prioridade": "leads"})]
+    r = B.backfill(sb, pncp, agora=AGORA, consultar_pncp=True)
+    assert r["transicoes"] == {"historico->leads": 1} and sb.atualizacoes == []
     assert r["historico_mantido_sem_detalhe"] == 0
 
 

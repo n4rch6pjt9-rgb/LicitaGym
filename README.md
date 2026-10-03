@@ -94,8 +94,12 @@ Reclassificar as linhas PNCP já gravadas (as antigas `leads` homologadas viram 
 export SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=...                       # do ambiente, nunca no código
 python3 -m coletor.backfill_prioridade_pncp                                 # DRY-RUN: contagem por transição + amostra
 python3 -m coletor.backfill_prioridade_pncp --consultar-pncp --limit 50     # DRY-RUN relendo o detalhe no PNCP (GET)
-python3 -m coletor.backfill_prioridade_pncp --apply                         # grava só a coluna prioridade
+python3 -m coletor.reclassificar_escopo_pncp                               # DRY-RUN (prioridade + fase)
+python3 -m coletor.reclassificar_escopo_pncp --apply                       # grava prioridade, fase e escopo
 ```
+
+`backfill_prioridade_pncp --apply` está desativado (sai com código 2): ele decide só a prioridade, sem documentos
+nem fase, e sobrescreveria fases documentais como "Suspensa (documento)". O dry-run dele fica como diagnóstico legado.
 
 `oportunidades_borracha` lista primeiro os `leads` (certames abertos, ainda sem vencedor) e depois o resto, do
 homologado mais recente para o mais antigo, com `dias_desde_homologacao`. Para oferecer raspa ao vencedor,

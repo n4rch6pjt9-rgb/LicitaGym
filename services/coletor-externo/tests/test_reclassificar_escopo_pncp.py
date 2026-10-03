@@ -13,6 +13,7 @@ RAW_ABERTA = {"data_fim_vigencia": "2026-10-20T09:00", "situacao_nome": "Divulga
 def _linha(id_, objeto, cat="forte", prio="leads", itens=None, termos=("puxador",), ib=False, codigo=None):
     return {"id": id_, "codigo_externo": codigo or f"12345678000199-1-{id_:06d}/2026", "objeto": objeto,
             "categoria_escopo": cat, "interesse_borracha": ib, "prioridade": prio, "situacao": "Divulgada no PNCP",
+            "fase": "Recebendo propostas",   # fase já gravada coerente com RAW_ABERTA (prazo aberto)
             "data_homologacao": None, "data_fim": None, "termos_busca": list(termos),
             "created_at": "2026-09-30T23:30:00+00:00", "raw": dict(RAW_ABERTA, description=objeto),
             "licitacao_itens": itens or []}
@@ -38,16 +39,18 @@ def _pncp():
 
 
 def _sb(linhas):
-    """Supabase falso: compras sem itens embutidos; os itens vêm de licitacao_itens (filtro licitacao_id=in.(...))."""
+    """Supabase falso: compras sem itens embutidos; os itens vêm de licitacao_itens e os documentos de
+    licitacao_documentos (filtro licitacao_id=in.(...)); documentos do teste ficam em ln["documentos"]."""
     sb = MagicMock()
 
     def selecionar(tabela, **f):
         if tabela == "licitacoes_externas":
-            return [{k: v for k, v in ln.items() if k != "licitacao_itens"} for ln in linhas]
-        assert tabela == "licitacao_itens" and f["licitacao_id"].startswith("in.(")
+            return [{k: v for k, v in ln.items() if k not in ("licitacao_itens", "documentos")} for ln in linhas]
+        assert tabela in ("licitacao_itens", "licitacao_documentos") and f["licitacao_id"].startswith("in.(")
         ids = {int(x) for x in f["licitacao_id"][4:-1].split(",")}
+        chave = "licitacao_itens" if tabela == "licitacao_itens" else "documentos"
         return [dict(it, licitacao_id=ln["id"]) for ln in linhas if ln["id"] in ids
-                for it in (ln.get("licitacao_itens") or [])]
+                for it in (ln.get(chave) or [])]
     sb.selecionar.side_effect = selecionar
     return sb
 
@@ -175,6 +178,8 @@ def test_le_todos_os_itens_sem_o_corte_de_1000_do_embutido():
     def selecionar(tabela, **f):   # imita o PostgREST: no máximo 1000 por requisição, Supabase.selecionar pagina
         if tabela == "licitacoes_externas":
             return [{k: v for k, v in ln.items() if k != "licitacao_itens"}]
+        if tabela == "licitacao_documentos":
+            return []
         assert "material_ou_servico" in f["select"]
         out, off = [], 0
         while True:
@@ -228,3 +233,90 @@ def test_venda_de_bens_sem_itens_gravados_decide_pelo_objeto_sem_cache_nem_pncp(
     linha = r["linhas"][0]
     assert linha["fonte_itens"] == "objeto" and linha["n_itens"] == 0 and linha["status"] == "sem_mudanca"
     assert r["decididas_pelo_objeto"] == 1 and r["itens_pncp"] == 0
+
+
+# --------------------------------------------------------------------------------------------------------------
+# Fase real (02/10/2026): documentos da compra, prazo implausível, 410 e compra só de serviço. Dados fictícios
+# com os títulos reais dos casos do diagnóstico (135, 1458, 2267, 229, 129, 1315).
+# --------------------------------------------------------------------------------------------------------------
+
+def _doc(nome, data, tipo=None):
+    return {"nome_original": nome, "data_documento": data, "raw": {"tipo_documento": tipo}}
+
+
+def test_documento_de_suspensao_da_compra_tira_dos_leads_e_grava_a_fase():
+    ln = _linha(135, "Aquisição de equipamentos de academia", termos=("academia",),
+                itens=[{"id": 1, "numero_item": 1, "descricao": "Leg press 45 graus", "material_ou_servico": "M",
+                        "categoria_escopo": "forte", "interesse_borracha": False}])
+    ln["raw"]["data_atualizacao_pncp"] = "2026-09-29T14:18:52"
+    ln["documentos"] = [_doc("ATA RELATIVA E DECISÃO ADM. DE SUSPENSÃO.pdf", "2026-09-29T14:18:52+00:00")]
+    ln["fase"] = None
+    r = R.reclassificar(R.SomenteLeitura(_sb([ln])), agora=AGORA)
+    linha = r["linhas"][0]
+    assert linha["campos"] == {"prioridade": "monitorar", "fase": "Suspensa (documento)"}
+    assert r["transicoes_prioridade"] == {"leads->monitorar": 1}
+    assert r["transicoes_fase"] == {"NULL->Suspensa (documento)": 1}
+
+
+def test_suspensao_anterior_a_retificacao_nao_vale():
+    ln = _linha(77, "Aquisição de equipamentos de academia", termos=("academia",),
+                itens=[{"id": 1, "numero_item": 1, "descricao": "Leg press 45 graus", "material_ou_servico": "M",
+                        "categoria_escopo": "forte", "interesse_borracha": False}])
+    ln["raw"]["data_atualizacao_pncp"] = "2026-09-24T10:00:00"
+    ln["documentos"] = [_doc("Memorando suspensão.pdf", "2026-08-28T09:00:00+00:00")]
+    linha = R.reclassificar(R.SomenteLeitura(_sb([ln])), agora=AGORA)["linhas"][0]
+    assert linha["status"] == "sem_mudanca" and linha["campos"] == {} and linha["prioridade_depois"] == "leads"
+
+
+def test_homologacao_e_revogacao_por_documento_vao_para_historico_e_extrato_de_contrato_nao():
+    item = [{"id": 1, "numero_item": 1, "descricao": "Leg press 45 graus", "material_ou_servico": "M",
+             "categoria_escopo": "forte", "interesse_borracha": False}]
+    hom = _linha(1458, "Aquisição de equipamentos de academia", prio="monitorar", itens=item)
+    hom["raw"]["data_fim_vigencia"] = "2026-08-01T09:00"
+    hom["documentos"] = [_doc("ADJUDICAÇÃO E HOMOLOGAÇÃO.pdf", "2026-08-19T10:00:00+00:00")]
+    rev = _linha(2267, "Aquisição de equipamentos de academia", prio="monitorar", itens=item)
+    rev["raw"]["data_fim_vigencia"] = "2026-08-01T09:00"
+    rev["documentos"] = [_doc("TERMO DE REVOGAÇÃO DE LICITAÇÃO PE 012-2026.pdf", "2026-08-21T10:00:00+00:00")]
+    contrato = _linha(229, "Aquisição de equipamentos de academia", prio="monitorar", itens=item)
+    contrato["raw"]["data_fim_vigencia"] = "2026-08-01T09:00"
+    contrato["documentos"] = [_doc("Extrato de Suspensao de Contrato.pdf", "2026-06-29T10:33:00+00:00"),
+                              _doc("Edital borracha granulada.pdf", "2026-06-01T10:00:00+00:00")]
+    r = R.reclassificar(R.SomenteLeitura(_sb([hom, rev, contrato])), agora=AGORA)
+    por_id = {ln["id"]: ln["campos"] for ln in r["linhas"]}
+    assert por_id[1458] == {"prioridade": "historico", "fase": "Homologada (documento)"}
+    assert por_id[2267] == {"prioridade": "historico", "fase": "Revogada/Anulada (documento)"}
+    assert por_id[229] == {"fase": "Em julgamento"}
+
+
+def test_prazo_implausivel_nao_e_lead():
+    item = [{"id": 1, "numero_item": 1, "descricao": "Leg press 45 graus", "material_ou_servico": "M",
+             "categoria_escopo": "forte", "interesse_borracha": False}]
+    ln = _linha(129, "Aquisição de equipamentos de academia", itens=item)
+    ln["raw"]["data_fim_vigencia"] = "2604-04-16T09:00"
+    linha = R.reclassificar(R.SomenteLeitura(_sb([ln])), agora=AGORA)["linhas"][0]
+    assert linha["campos"] == {"prioridade": "monitorar", "fase": "Prazo inválido"}
+
+
+def test_compra_excluida_do_pncp_vai_para_historico_com_consultar_detalhe():
+    from coletor.pncp import CompraExcluida
+    item = [{"id": 1, "numero_item": 1, "descricao": "Leg press 45 graus", "material_ou_servico": "M",
+             "categoria_escopo": "forte", "interesse_borracha": False}]
+    ln = _linha(1315, "Aquisição de equipamentos de academia", prio="monitorar", itens=item)
+    p = MagicMock()
+    p.compra.side_effect = RuntimeError("PNCP detalhe: 410 Gone")
+    sb = _sb([ln])
+    r = R.reclassificar(R.SomenteLeitura(sb), p, consultar_detalhe_pncp=True, agora=AGORA)
+    assert r["excluidas_do_pncp"] == 1 and r["detalhes_consultados"] == 1
+    assert r["linhas"][0]["campos"] == {"prioridade": "historico", "fase": "Excluída do PNCP"}
+    sb.atualizar.assert_not_called()
+    assert issubclass(CompraExcluida, R.CompraExcluida)
+
+
+def test_compra_so_de_servico_sai_do_escopo_mesmo_com_objeto_de_equipamento():
+    itens = [{"id": 1, "numero_item": 1, "descricao": "Manutenção preventiva e corretiva de aparelhos de musculação",
+              "material_ou_servico": "S", "categoria_escopo": "forte", "interesse_borracha": False}]
+    ln = _linha(1635, "Contratação de empresa para manutenção de equipamentos de musculação", prio="monitorar",
+                itens=itens)
+    linha = R.reclassificar(R.SomenteLeitura(_sb([ln])), agora=AGORA)["linhas"][0]
+    assert linha["status"] == "sai_do_escopo"
+    assert linha["campos"] == {"categoria_escopo": None, "prioridade": None}

@@ -1,5 +1,5 @@
 -- =============================================================================
--- Verificação comportamental das views da 20261003233000_marcas_resolvedor_fornecedor (review do PR #148)
+-- Verificação comportamental das views da 20261004002000_marcas_resolvedor_fornecedor (review do PR #148)
 -- Dados fictícios (CNPJ 11222333000181 e 99888777000166, CPF 12345678909, marcas "ZZQ ..."). begin ... rollback:
 -- nada persiste. Trava contra produção (precos_praticados_itens com mais de 100 linhas).
 --   A. v_marca_ocorrencias: 1 linha por venda com data_resultado (sem data fica fora); ni_tipo; metodo; entra_ranking

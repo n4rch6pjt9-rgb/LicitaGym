@@ -51,7 +51,9 @@ UA = "LicitaGym-Coletor/1.1 (pesquisa de licitacoes publicas)"
 PDMS_PADRAO = [2640, 2638, 7113, 7115, 3522, 5341, 8166, 18481, 10779]
 
 TIPOS_CONSULTA = ("codigoPdm", "codigoItemCatalogo")
-TAMANHO_PAGINA = 100
+# A API aceita tamanhoPagina de 10 a 500 neste módulo (plugin comprasgov-dados-abertos 0.3.1; varredura dos 40 PDMs
+# efetivos com 500 fez 80 requisições em 02/10/2026).
+TAMANHO_PAGINA = 500
 
 
 def validar_parametros_consulta(tipo: Any, codigo: Any) -> int:
@@ -90,6 +92,26 @@ def deduplicar_por_chave(linhas: list[dict[str, Any]]) -> tuple[list[dict[str, A
         if atual is None or str(linha.get("data_hora_atualizacao_item") or "") >= str(atual.get("data_hora_atualizacao_item") or ""):
             escolhidas[k] = linha
     return list(escolhidas.values()), len(linhas) - len(escolhidas)
+
+
+def texto_ou_nulo(val: Any) -> str | None:
+    """Texto com strip; vazio e o placeholder "0" da API viram None (ni_fornecedor, marca, codigo_uasg)."""
+    if val is None:
+        return None
+    s = str(val).strip()
+    return None if s in ("", "0") else s
+
+
+def tipo_ni(ni: str | None) -> str | None:
+    """'cnpj' (14 dígitos), 'cpf' (11), 'outro' ou None. Pessoa física fica gravada, mas fora do ranking de marcas
+    (v_marca_ocorrencias.entra_ranking só aceita CNPJ)."""
+    if not ni:
+        return None
+    if re.fullmatch(r"\d{14}", ni):
+        return "cnpj"
+    if re.fullmatch(r"\d{11}", ni):
+        return "cpf"
+    return "outro"
 
 
 def normalizar_preco_praticado(item: dict[str, Any]) -> dict[str, Any] | None:
@@ -142,9 +164,11 @@ def normalizar_preco_praticado(item: dict[str, Any]) -> dict[str, Any] | None:
         "percentual_maior_desconto": _num(item.get("percentualMaiorDesconto")),
         "descricao_item": item.get("descricaoItem"),
         "descricao_detalhada_item": item.get("descricaoDetalhadaItem"),
-        # Única fonte de marca do Compras.gov. Fabricante e modelo não existem na fonte: NULL de propósito
-        # (colunas mantidas porque as views de BI as leem). Não inventar.
-        "marca": (str(item.get("marca")).strip() or None) if item.get("marca") is not None else None,
+        # Única fonte de marca do Compras.gov: é a marca declarada na proposta, em texto livre e sem limite de 20
+        # caracteres (até 84): ~76% é marca real, o restante é modelo, lixo ou ambíguo. Por isso a marca canônica sai de
+        # private.marca_resolver na view. Fabricante e modelo não existem na fonte: NULL de propósito (colunas
+        # mantidas porque as views de BI as leem). Não inventar.
+        "marca": texto_ou_nulo(item.get("marca")),
         "fabricante": None,
         "modelo": None,
         "data_resultado": _date(item.get("dataResultado")),
@@ -154,9 +178,9 @@ def normalizar_preco_praticado(item: dict[str, Any]) -> dict[str, Any] | None:
         "capacidade_unidade_fornecimento": _num(item.get("capacidadeUnidadeFornecimento")),
         "sigla_unidade_medida": item.get("siglaUnidadeMedida"),
         "nome_unidade_medida": item.get("nomeUnidadeMedida"),
-        "ni_fornecedor": str(item.get("niFornecedor") or "").strip() or None,
+        "ni_fornecedor": texto_ou_nulo(item.get("niFornecedor")),
         "nome_fornecedor": item.get("nomeFornecedor"),
-        "codigo_uasg": str(item.get("codigoUasg") or "").strip() or None,
+        "codigo_uasg": texto_ou_nulo(item.get("codigoUasg")),
         "nome_uasg": item.get("nomeUasg"),
         "codigo_orgao": _int(item.get("codigoOrgao")),
         "nome_orgao": item.get("nomeOrgao"),
@@ -234,6 +258,7 @@ def coletar(
     descartados = 0
     duplicados_removidos = 0
     amostras = []
+    por_tipo_ni = {"cnpj": 0, "cpf": 0, "outro": 0, "sem_ni": 0}
 
     consultas: list[tuple[str, int]] = []
     if itens:
@@ -286,6 +311,7 @@ def coletar(
                 if norm:
                     linhas_norm.append(norm)
                     total_coletados += 1
+                    por_tipo_ni[tipo_ni(norm["ni_fornecedor"]) or "sem_ni"] += 1
                     if len(amostras) < 5:
                         amostras.append({
                             "id_compra": norm["id_compra"],
@@ -321,6 +347,7 @@ def coletar(
                     "erros": erros,
                     "descartados": descartados,
                     "duplicados_removidos": duplicados_removidos,
+                    "por_tipo_ni": por_tipo_ni,
                     "amostras": amostras,
                 }
 
@@ -336,6 +363,7 @@ def coletar(
         "erros": erros,
         "descartados": descartados,
         "duplicados_removidos": duplicados_removidos,
+        "por_tipo_ni": por_tipo_ni,
         "amostras": amostras,
     }
 

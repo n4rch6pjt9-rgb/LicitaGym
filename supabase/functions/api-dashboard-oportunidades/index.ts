@@ -19,7 +19,9 @@ import type { UnifiedHttpClient } from "../_shared/http-client/index.ts";
  * Fonte de leitura de list/get: a view com a prioridade EFETIVA (migration
  * 20260930200000_licitacoes_prioridade_efetiva). Mesmas colunas públicas da tabela, mas `prioridade`
  * recalculada só para baixo (historico com qualquer sinal de encerramento; leads -> monitorar com o
- * prazo vencido). security_invoker + SELECT só para service_role (o client desta função).
+ * prazo vencido), mais `canonica_id`/`eh_canonica` (20261003170000_licitacoes_pncp_canonica: o list
+ * mostra só a publicação canônica de uma compra PNCP republicada; o get devolve qualquer linha).
+ * security_invoker + SELECT só para service_role (o client desta função).
  * readiness e acompanhamento continuam lendo a tabela (saúde da base e `raw` server-side).
  */
 export const OPORTUNIDADES_VIEW = "licitacoes_externas_prioridade_efetiva";
@@ -70,6 +72,17 @@ export const PUBLIC_LICITACAO_COLUMNS = [
   "updated_at",
   "last_synced_at",
 ].join(",");
+
+/**
+ * Colunas da view da prioridade efetiva que não existem na tabela (migration
+ * 20261003170000_licitacoes_pncp_canonica): compra PNCP republicada (mesmo órgão, processo e edital)
+ * aparece uma vez em Oportunidades. `canonica_id` é o id da publicação canônica do grupo (o próprio id
+ * quando a compra não tem republicação) e `eh_canonica` diz se a linha é ela.
+ */
+export const CANONICA_COLUMNS = "canonica_id,eh_canonica";
+
+/** Projeção de list/get (sempre na view): colunas públicas da tabela + as da canônica. */
+export const OPORTUNIDADES_COLUMNS = `${PUBLIC_LICITACAO_COLUMNS},${CANONICA_COLUMNS}`;
 
 export interface DashboardOportunidadesClientContext {
   getClient?: () => SupabaseClient;
@@ -162,7 +175,8 @@ async function handleReadiness(
  * Ação: get
  * Lê da view com a prioridade efetiva. Uma compra `historico` é devolvida normalmente (com
  * `prioridade: "historico"`): links do BI e links diretos continuam funcionando; ela só não aparece
- * no list de Oportunidades.
+ * no list de Oportunidades. O mesmo vale para uma republicação PNCP não canônica (`eh_canonica: false`,
+ * `canonica_id` = id da publicação que aparece no list): o get não filtra a canônica.
  * - Se buscado por `id` ou `codigo_externo`: lookup único (retorna `{ item: ... }`, ou 404 claro).
  * - Se buscado por `orgao_cnpj` + `processo_norm`: pode haver 1..N compras (AGENTS.md L66-77),
  *   portanto retorna coleção (`{ items: [...] }`), sem maybeSingle().
@@ -178,7 +192,7 @@ async function handleGet(
     if (params.id !== undefined && params.id !== null) {
       const { data, error } = await client
         .from(OPORTUNIDADES_VIEW)
-        .select(PUBLIC_LICITACAO_COLUMNS)
+        .select(OPORTUNIDADES_COLUMNS)
         .eq("id", params.id)
         .maybeSingle();
 
@@ -214,7 +228,7 @@ async function handleGet(
 
       const query = client
         .from(OPORTUNIDADES_VIEW)
-        .select(PUBLIC_LICITACAO_COLUMNS)
+        .select(OPORTUNIDADES_COLUMNS)
         .eq("codigo_externo", params.codigo_externo)
         .eq("fonte", params.fonte);
 
@@ -249,7 +263,7 @@ async function handleGet(
 
       const { data, error, count } = await client
         .from(OPORTUNIDADES_VIEW)
-        .select(PUBLIC_LICITACAO_COLUMNS, { count: "exact" })
+        .select(OPORTUNIDADES_COLUMNS, { count: "exact" })
         .eq("orgao_cnpj", params.orgao_cnpj)
         .eq("processo_norm", params.processo_norm)
         .order("data_publicacao", { ascending: false, nullsFirst: false })
@@ -390,7 +404,8 @@ async function resolverCatmat(
 
 /**
  * Reduz os ids do recorte CATMAT ao escopo pedido, na view da prioridade efetiva: sem filtro de
- * prioridade, exclui `historico` (applyOportunidadesScope); com filtro, só aquela prioridade. Assim um
+ * prioridade, só leads e monitorar; com filtro, só aquela prioridade; nos dois casos só a publicação
+ * canônica (applyOportunidadesScope, o mesmo recorte da consulta principal). Assim um
  * recorte com muitas compras arquivadas (historico) e poucas Oportunidades não bate no teto à toa.
  * Consulta em lotes de CATMAT_ESCOPO_LOTE ids; falha de consulta levanta (vira 500).
  */
@@ -403,7 +418,8 @@ export async function idsNoEscopo(
   for (let i = 0; i < ids.length; i += CATMAT_ESCOPO_LOTE) {
     const lote = ids.slice(i, i + CATMAT_ESCOPO_LOTE);
     let query = client.from(OPORTUNIDADES_VIEW).select("id").in("id", lote);
-    query = filtros.prioridade ? query.eq("prioridade", filtros.prioridade) : applyOportunidadesScope(query, filtros);
+    if (filtros.prioridade) query = query.eq("prioridade", filtros.prioridade);
+    query = applyOportunidadesScope(query, filtros);
     const { data, error } = await query;
     if (error) throw error;
     for (const row of (data ?? []) as Array<{ id: number }>) mantidos.push(Number(row.id));
@@ -464,7 +480,7 @@ async function handleList(
 
     let baseQuery = client
       .from(OPORTUNIDADES_VIEW)
-      .select(PUBLIC_LICITACAO_COLUMNS, { count: "exact" });
+      .select(OPORTUNIDADES_COLUMNS, { count: "exact" });
 
     baseQuery = applyOportunidadesScope(applyLicitacaoFilters(baseQuery, filtros), filtros);
 

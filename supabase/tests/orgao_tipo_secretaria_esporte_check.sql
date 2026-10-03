@@ -1,4 +1,4 @@
--- Verificação (SOMENTE LEITURA) do estado esperado após a migration 20261003203000_orgao_tipo_secretaria_esporte.
+-- Verificação (SOMENTE LEITURA) do estado esperado após a migration 20261003234000_orgao_tipo_secretaria_esporte.
 -- Só SELECT nos dicionários, em orgaos/uasgs e chamadas das funções PURAS (fn_classifica_orgao, fn_classifica_uasg,
 -- fn_esfera_canon, fn_poder_canon, fn_norm_nome) sobre literais sintéticos. Não chama fn_orgaos_uasgs_classificar().
 -- Executar após aplicar a migration (1a e 1b também aplicadas), ex.:
@@ -15,8 +15,13 @@
 --                  continua educação; associação/clube/liga, "turismo e lazer" e "juventude" sozinhos não viram;
 --                  UASG de esporte sob prefeitura/governo vira, sob órgão federal, universidade ou Forças Armadas não;
 --                  esfera/poder canônicos do tipo novo.
+--   prioridade:    unique (nivel, prioridade); regra de prioridade menor que 645/1170 vence (hospital, saúde, educação,
+--                  privado por tipo de adm./natureza, Forças Armadas), maior perde (prefeitura, fundação, fundo, secretaria).
+--   grupo_pai:     UASG sob pai secretaria_esporte/educação/universidade/segurança/nulo/Forças Armadas não usa a 1170;
+--                  sob executivo municipal/estadual usa.
+--   override:      linhas com override mantêm o tipo do override (dados); nenhum override para o tipo novo.
 --   dados:         nenhum órgão/UASG com nome de esporte ficou com tipo diferente do que as regras dão hoje (a
---                  reclassificação rodou) e todo secretaria_esporte tem grupo esporte_lazer e poder E.
+--                  reclassificação rodou; só linhas já classificadas, as demais ficam para o job das 05:03) e todo secretaria_esporte tem grupo esporte_lazer e poder E.
 
 do $$
 declare
@@ -111,19 +116,94 @@ begin
              public.fn_esfera_canon(null, 'F', null, 'DF', 'secretaria_esporte') || '/' ||
              public.fn_poder_canon('secretaria_esporte', null)
       union all
+      -- prioridade: sem empate (unique (nivel, prioridade)) e a 645/1170 são únicas no seu nível
+      select 'prioridade', 'unique (nivel, prioridade) em orgao_tipo_regras', '1',
+             (select count(*)::text from pg_index i
+               where i.indrelid = 'public.orgao_tipo_regras'::regclass and i.indisunique
+                 and (select array_agg(a.attname::text order by a.attname) from pg_attribute a
+                       where a.attrelid = i.indrelid and a.attnum = any (i.indkey)) = array['nivel', 'prioridade'])
+      union all
+      select 'prioridade', 'regras com prioridade 645 (órgão) / 1170 (UASG): sem empate', '1/1',
+             (select count(*) filter (where nivel = 'orgao' and prioridade = 645) || '/' ||
+                     count(*) filter (where nivel = 'uasg' and prioridade = 1170) from public.orgao_tipo_regras)
+      union all
+      -- prioridade de órgão: regra de prioridade MENOR que 645 vence; MAIOR perde (nomes sintéticos)
+      select 'prioridade', 'fn_classifica_orgao(' || x.nome || ' nat=' || coalesce(x.natureza, '-') || ' adm=' || coalesce(x.tipo_adm::text, '-') || ')',
+             x.esperado, (public.fn_classifica_orgao(x.nome, x.natureza, x.esfera, x.tipo_adm, x.codigo, null)).tipo_orgao
+        from (values
+          -- menor que 645 vence
+          ('HOSPITAL MUNICIPAL DO ESPORTE DE CIDADE FICTÍCIA', null, 'M', 12, null, 'hospital'),                         -- 620
+          ('SECRETARIA MUNICIPAL DE SAÚDE E ESPORTES DE CIDADE FICTÍCIA', null, 'M', 12, null, 'secretaria_fundo_saude'),  -- 630
+          ('SECRETARIA DE ESTADO DE EDUCAÇÃO E DESPORTO FICTÍCIA', null, 'E', 11, null, 'secretaria_educacao'),           -- 640
+          ('INSTITUTO DE ESPORTES FICTÍCIO', null, 'M', 15, null, 'entidade_privada'),                                    -- 270 (adm 15)
+          ('INSTITUTO DE ESPORTES FICTÍCIO', '3999', 'M', null, null, 'entidade_privada'),                                -- 280 (natureza 3)
+          ('CENTRO DE DESPORTOS DO EXERCITO FICTÍCIO', null, 'F', 1, null, 'forcas_armadas_exercito'),                    -- 340
+          ('COMISSAO DE DESPORTOS FICTÍCIA', null, 'F', 1, 52121, 'forcas_armadas_exercito'),                              -- 10 (código)
+          -- maior que 645 perde
+          ('PREFEITURA MUNICIPAL DE CIDADE FICTÍCIA - SECRETARIA DE ESPORTES', null, 'M', 12, null, 'secretaria_esporte'), -- 650
+          ('FUNDAÇÃO DE ESPORTES DE CIDADE FICTÍCIA', '1120', 'M', 14, null, 'secretaria_esporte'),                       -- 940/950
+          ('FUNDO MUNICIPAL DE ESPORTES DE CIDADE FICTÍCIA', '1333', 'M', 7, null, 'secretaria_esporte'),                 -- 820/850/880
+          ('SUPERINTENDÊNCIA DE DESPORTOS DO ESTADO FICTÍCIO', '1112', 'E', 13, null, 'secretaria_esporte'),              -- 910/920
+          ('SECRETARIA DE ESTADO DO ESPORTE FICTÍCIA', '1023', 'E', 11, null, 'secretaria_esporte')                        -- 990-1060
+        ) x(nome, natureza, esfera, tipo_adm, codigo, esperado)
+      union all
+      -- grupo do órgão-pai na UASG (fn_classifica_uasg(nome, tipo do pai)): 1170 só sob executivo_municipal/estadual
+      select 'grupo_pai', 'fn_classifica_uasg(' || x.nome || ' / ' || coalesce(x.pai, 'NULL') || ')', x.esperado,
+             (public.fn_classifica_uasg(x.nome, x.pai)).tipo_orgao
+        from (values
+          -- pai que vira secretaria_esporte (grupo esporte_lazer): herda, salvo regra sem restrição de grupo
+          ('DIVISAO DE ESPORTES', 'secretaria_esporte', 'secretaria_esporte'),
+          ('ASSOCIACAO DESPORTIVA FICTICIA', 'secretaria_esporte', 'secretaria_esporte'),
+          ('BATALHAO DE POLICIA MILITAR FICTICIO', 'secretaria_esporte', 'secretaria_esporte'),  -- 1100 exige grupo de segurança/estadual
+          ('HOSPITAL MUNICIPAL DO ESPORTE', 'secretaria_esporte', 'hospital'),                 -- 1150 sem restrição de grupo
+          -- pai educação (secretaria mista continua educação): 1170 não vale para o grupo educacao
+          ('COORDENACAO DE ESPORTES', 'secretaria_educacao', 'secretaria_educacao'),
+          ('SECRETARIA MUNICIPAL DE EDUCACAO E ESPORTES', 'secretaria_educacao', 'secretaria_educacao'),
+          ('DEPARTAMENTO DE DESPORTOS', 'universidade_estadual_municipal', 'universidade_estadual_municipal'),
+          -- pai executivo municipal/estadual: 1170 vale
+          ('DIVISAO DE ESPORTES', 'secretaria_municipal', 'secretaria_esporte'),
+          ('DIVISAO DE ESPORTES', 'fundo_municipal', 'secretaria_esporte'),
+          ('SUPERINTENDENCIA DE ESPORTES', 'subprefeitura', 'secretaria_esporte'),
+          ('COORDENADORIA DE ESPORTES', 'secretaria_estadual', 'secretaria_esporte'),
+          -- grupo fora da lista, pai nulo e Forças Armadas
+          ('DIVISAO DE ESPORTES', 'secretaria_seguranca_publica', 'secretaria_seguranca_publica'),
+          ('SECRETARIA DE ESPORTES', null, 'outros'),
+          ('COMISSAO DE DESPORTOS DO EXERCITO', 'forcas_armadas_exercito', 'forcas_armadas_exercito'),
+          -- prioridade de UASG: menor que 1170 vence mesmo sob prefeitura/governo
+          ('HOSPITAL DO ESPORTE FICTICIO', 'prefeitura', 'hospital'),                                  -- 1150
+          ('BATALHAO DE POLICIA MILITAR - DESPORTOS', 'governo_estadual', 'policia_militar')         -- 1100
+        ) x(nome, pai, esperado)
+      union all
+      -- override manual: nunca muda (dados reais; o caso sintético ponta a ponta está em
+      -- orgao_tipo_secretaria_esporte_fixtures_check.sql, banco local)
+      select 'override', 'órgãos com override e tipo/origem diferente do override', '0',
+             (select count(*)::text from public.orgaos o join public.orgao_tipo_override ov
+                on ov.nivel = 'orgao' and ov.chave = o.codigo_orgao::text
+               where o.classificado_em is not null
+                 and (o.tipo_orgao is distinct from ov.tipo_orgao or o.tipo_orgao_origem is distinct from 'override'))
+      union all
+      select 'override', 'UASGs com override e tipo/origem diferente do override', '0',
+             (select count(*)::text from public.uasgs u join public.orgao_tipo_override ov
+                on ov.nivel = 'uasg' and ov.chave = u.codigo_uasg
+               where u.classificado_em is not null
+                 and (u.tipo_orgao is distinct from ov.tipo_orgao or u.tipo_orgao_origem is distinct from 'override'))
+      union all
+      select 'override', 'nenhum override aponta para secretaria_esporte (a migration não cria override)', '0',
+             (select count(*)::text from public.orgao_tipo_override where tipo_orgao = 'secretaria_esporte')
+      union all
       -- dados: reclassificação aplicada (só linhas com nome de esporte, barato; sem override)
-      select 'dados', 'órgãos com nome de esporte e tipo diferente das regras', '0',
+      select 'dados', 'órgãos classificados com nome de esporte e tipo diferente das regras', '0',
              (select count(*)::text from public.orgaos o
                where public.fn_norm_nome(coalesce(o.nome_orgao, o.razao_social)) ~ '\y(PARA)?D?ESPORT|\yESP?( E)? LAZER\y'
-                 and coalesce(o.tipo_orgao_origem, '') <> 'override'
+                 and coalesce(o.tipo_orgao_origem, '') <> 'override' and o.classificado_em is not null
                  and o.tipo_orgao is distinct from (public.fn_classifica_orgao(coalesce(o.nome_orgao, o.razao_social),
                        o.natureza_juridica, coalesce(o.esfera, o.pncp_esfera), o.codigo_tipo_administracao, o.codigo_orgao,
                        o.codigo_orgao_vinculado)).tipo_orgao)
       union all
-      select 'dados', 'UASGs com nome de esporte e tipo diferente das regras', '0',
+      select 'dados', 'UASGs classificadas com nome de esporte e tipo diferente das regras', '0',
              (select count(*)::text from public.uasgs u left join public.orgaos o on o.id = u.orgao_id
                where public.fn_norm_nome(u.nome_uasg) ~ '\y(PARA)?D?ESPORT|\yESP?( E)? LAZER\y'
-                 and coalesce(u.tipo_orgao_origem, '') <> 'override'
+                 and coalesce(u.tipo_orgao_origem, '') <> 'override' and u.classificado_em is not null
                  and u.tipo_orgao is distinct from (public.fn_classifica_uasg(u.nome_uasg, o.tipo_orgao)).tipo_orgao)
       union all
       select 'dados', 'secretaria_esporte com grupo/poder inconsistente (orgaos+uasgs)', '0',

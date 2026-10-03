@@ -21,7 +21,8 @@
 --                      em função dá EXECUTE a PUBLIC) sem nenhuma entrada para PUBLIC (grantee 0), anon ou
 --                      authenticated; information_schema sem grant para esses três; ACL direto de service_role
 --                      na tabela = exatamente SELECT/INSERT/UPDATE/DELETE e nenhum na sequence.
---   4. RLS:            ligado em marca_aliases; nenhuma policy; views com security_invoker=true.
+--   4. RLS:            ligado em marca_aliases; nenhuma policy; views com security_invoker=true; trigger
+--                      marca_aliases_updated_at (BEFORE UPDATE, public.update_updated_at_column()) ativo.
 --   5. semente:        marcas-v1 com mais de 100 linhas (EXISTS ... OFFSET 100, sem count(*)).
 --   6. funções:        normalização e resolução de casos conhecidos (CNPJ 11222333000181 é fictício).
 --                      curada = "resolvida por alias" (semente ou manual): CLASSIC, alias da semente marcas-v1 com
@@ -213,6 +214,19 @@ begin
              coalesce((select (coalesce(c.reloptions, '{}') @> array['security_invoker=true'])::text
                          from pg_class c where c.oid = to_regclass(v.obj)), 'ausente')
         from views v
+      union all
+      -- updated_at: gatilho BEFORE UPDATE por linha, ativo, chamando public.update_updated_at_column()
+      select '4 rls', 'public.marca_aliases trigger marca_aliases_updated_at', 'before update/row/O/public.update_updated_at_column()',
+             case when to_regclass('public.marca_aliases') is null then 'ausente'
+                  else coalesce((select case when tg.tgtype & 2 = 2 then 'before' else 'after' end
+                                        || case when tg.tgtype & 16 = 16 then ' update' else ' ?' end
+                                        || case when tg.tgtype & 1 = 1 then '/row' else '/statement' end
+                                        || '/' || tg.tgenabled::text || '/'
+                                        || (select n.nspname || '.' || f.proname || '()' from pg_proc f
+                                              join pg_namespace n on n.oid = f.pronamespace where f.oid = tg.tgfoid)
+                                   from pg_trigger tg
+                                  where tg.tgrelid = to_regclass('public.marca_aliases')
+                                    and tg.tgname = 'marca_aliases_updated_at' and not tg.tgisinternal), 'ausente') end
     )
     select * from checks order by grupo, objeto
   loop

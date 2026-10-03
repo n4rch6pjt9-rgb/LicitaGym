@@ -54,6 +54,10 @@
 -- outro formato, o CREATE TABLE IF NOT EXISTS não a altera: a migration confere colunas, tipos e constraints e
 -- falha se divergir. No fim, confere EXECUTE de service_role nas funções e SELECT na tabela e nas views.
 --
+-- updated_at de marca_aliases: trigger BEFORE UPDATE com public.update_updated_at_column() (já existente, criada
+-- pela 20260929180000_legislacao_rag_baseline; a pré-checagem exige que exista). A função não ganha nem perde grant
+-- aqui: o gatilho dispara sem checar EXECUTE de quem faz o UPDATE.
+--
 -- Verificação (só leitura): supabase/tests/marcas_resolvedor_acl_check.sql
 -- Idempotente (pode rodar duas vezes). Merge na main aplica em produção.
 
@@ -78,6 +82,12 @@ declare
 begin
   if not exists (select 1 from pg_roles where rolname = 'service_role') then
     raise exception 'marcas_resolvedor: papel service_role não existe';
+  end if;
+  if to_regprocedure('public.update_updated_at_column()') is null
+     or (select p.prorettype from pg_proc p where p.oid = to_regprocedure('public.update_updated_at_column()'))
+        <> 'trigger'::regtype then
+    raise exception 'marcas_resolvedor: função de trigger public.update_updated_at_column() ausente ou não retorna trigger'
+      using hint = 'Ela vem da 20260929180000_legislacao_rag_baseline; aplicar essa migration antes desta.';
   end if;
   if not has_schema_privilege('service_role', 'public', 'USAGE') then
     v_faltas := v_faltas || 'USAGE no schema public'::text;
@@ -197,6 +207,12 @@ begin
     raise exception 'marcas_resolvedor: marca_aliases_chave_key deveria ser UNIQUE NULLS NOT DISTINCT';
   end if;
 end $fmt$;
+
+-- Curadoria por UPDATE atualiza updated_at (idempotente: recria o gatilho).
+drop trigger if exists marca_aliases_updated_at on public.marca_aliases;
+create trigger marca_aliases_updated_at
+  before update on public.marca_aliases
+  for each row execute function public.update_updated_at_column();
 
 comment on table public.marca_aliases is
   'Resolvedor de marca: valor normalizado (exato/prefixo) ou regex -> marca canônica (NULL = não é marca). cnpj_escopo restringe a um fornecedor (ex.: PRÓPRIA de fabricante). Curadoria: revisao_manual = true (a semente da migration não sobrescreve e a linha manual vence em empate). Só service_role.';
@@ -613,6 +629,12 @@ begin
   end loop;
   if not has_schema_privilege('service_role', 'private', 'USAGE') then
     v_faltas := v_faltas || 'USAGE no schema private'::text;
+  end if;
+  if not exists (select 1 from pg_trigger tg
+                  where tg.tgrelid = 'public.marca_aliases'::regclass and tg.tgname = 'marca_aliases_updated_at'
+                    and not tg.tgisinternal and tg.tgenabled = 'O'
+                    and tg.tgfoid = to_regprocedure('public.update_updated_at_column()')) then
+    v_faltas := v_faltas || 'trigger marca_aliases_updated_at ausente ou desativado'::text;
   end if;
   if array_length(v_faltas, 1) > 0 then
     raise exception 'marcas_resolvedor: service_role não consegue ler as views security_invoker: %',

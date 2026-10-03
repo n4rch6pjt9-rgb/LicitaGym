@@ -36,6 +36,7 @@ import requests
 from .compras_api import ErroApiCompras, ParametroInvalido, corpo_json, erro_http, validar_codigo
 from .compras_pdms import CatalogoPdmsIndisponivel, carregar_pdms_efetivos
 from .destino import Supabase, env
+from .paginacao import TAMANHO_PAGINA_MAX, avaliar_pagina, clamp_tamanho, pagina_repetida
 from .retry import espera_retry
 
 log = logging.getLogger("coletor.compras_precos")
@@ -52,8 +53,11 @@ PDMS_PADRAO = [2640, 2638, 7113, 7115, 3522, 5341, 8166, 18481, 10779]
 
 TIPOS_CONSULTA = ("codigoPdm", "codigoItemCatalogo")
 # Regra do projeto (Marcelo, 03/10/2026): coletores Python pedem no máximo 100 itens por página, mesmo que a API
-# aceite até 500. O fim da coleta vem de totalRegistros/totalPaginas da resposta, não de página incompleta.
-TAMANHO_PAGINA = 100
+# aceite até 500. O fim da coleta é decidido por coletor.paginacao.avaliar_pagina (o mesmo helper do PGC e do ARP):
+# só encerra quando os totais da resposta concordam; página curta não é fim; página vazia com totais indicando
+# registros restantes, ou com totais divergentes, encerra com aviso e conta como erro (coleta truncada); página
+# repetida também é erro.
+TAMANHO_PAGINA = TAMANHO_PAGINA_MAX
 
 
 def validar_parametros_consulta(tipo: Any, codigo: Any) -> int:
@@ -112,29 +116,6 @@ def tipo_ni(ni: str | None) -> str | None:
     if re.fullmatch(r"\d{11}", ni):
         return "cpf"
     return "outro"
-
-
-def _inteiro_positivo(val: Any) -> int | None:
-    try:
-        n = int(val)
-    except (TypeError, ValueError):
-        return None
-    return n if n > 0 else None
-
-
-def ultima_pagina(resp: dict[str, Any], pagina: int, recebidos: int) -> bool:
-    """True quando a resposta diz que não há mais páginas: pagina >= totalPaginas ou recebidos >= totalRegistros.
-
-    `recebidos` = itens brutos já recebidos nesta consulta (todas as páginas). Página incompleta não encerra a coleta.
-    Sem totalPaginas e sem totalRegistros válidos (> 0), devolve False e o fim fica por conta da página vazia.
-    """
-    total_paginas = _inteiro_positivo(resp.get("totalPaginas"))
-    total_registros = _inteiro_positivo(resp.get("totalRegistros"))
-    if total_paginas is not None and pagina >= total_paginas:
-        return True
-    if total_registros is not None and recebidos >= total_registros:
-        return True
-    return False
 
 
 def normalizar_preco_praticado(item: dict[str, Any]) -> dict[str, Any] | None:
@@ -240,7 +221,8 @@ class ClienteComprasPrecos:
             "tipo": tipo,
             "codigo": codigo,
             "pagina": pagina,
-            "tamanhoPagina": min(TAMANHO_PAGINA, max(10, tamanho_pagina)),
+            "tamanhoPagina": clamp_tamanho(tamanho_pagina, padrao=TAMANHO_PAGINA_MAX, minimo=10,
+                                           maximo=TAMANHO_PAGINA_MAX),
         }
         contexto = f"Pesquisa Preco {tipo}={codigo} pagina {pagina}"
         for tentativa in range(1, 4):
@@ -316,6 +298,7 @@ def coletar(
     for tipo, cod in consultas:
         pagina = 1
         recebidos = 0
+        paginas_vistas: set[str] = set()
         while True:
             log.info("Consultando Pesquisa Preco %s=%d pagina %d...", tipo, cod, pagina)
             try:
@@ -325,8 +308,16 @@ def coletar(
                 erros += 1
                 break
 
-            items_raw = resp.get("resultado") or []
-            if not items_raw:
+            if not isinstance(resp, dict) or not isinstance(resp.get("resultado"), list):
+                log.warning("Pesquisa Preco %s=%d página %d: resposta inesperada; não é fim de coleta", tipo, cod, pagina)
+                erros += 1
+                break
+            items_raw = resp["resultado"]
+            if items_raw and pagina_repetida(items_raw, paginas_vistas):
+                # A API devolveu de novo uma página já vista: não conta como progresso nem como fim.
+                log.warning("Pesquisa Preco %s=%d página %d: conteúdo repetido; coleta interrompida como erro",
+                            tipo, cod, pagina)
+                erros += 1
                 break
             recebidos += len(items_raw)
 
@@ -379,7 +370,14 @@ def coletar(
                     "amostras": amostras,
                 }
 
-            if ultima_pagina(resp, pagina, recebidos):
+            decisao = avaliar_pagina(items_raw, tamanho=TAMANHO_PAGINA, pagina=pagina, corpo=resp, acumulado=recebidos)
+            if decisao.aviso:
+                log.warning("Pesquisa Preco %s=%d página %d: %s", tipo, cod, pagina, decisao.aviso)
+            if decisao.encerrar:
+                if decisao.aviso:
+                    # Parou sem os totais confirmarem o fim (vazia com registros restantes, totais divergentes ou
+                    # ilegíveis): a consulta pode ter ficado truncada, então não sai como sucesso.
+                    erros += 1
                 break
             pagina += 1
 

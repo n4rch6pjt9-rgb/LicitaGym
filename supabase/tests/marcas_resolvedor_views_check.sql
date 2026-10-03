@@ -16,7 +16,11 @@
 --   J. curada = "resolvida por alias": alias da semente (revisao_manual = false) dá curada = true; como
 --      service_role (grants mínimos: SELECT/INSERT/UPDATE/DELETE, nada na sequence) lê as views security_invoker
 --      e escreve em marca_aliases, mas não faz TRUNCATE
--- Os casos A-G rodam antes das fixtures de I e J, que não mudam as contagens deles.
+--   K. updated_at: o gatilho BEFORE UPDATE (public.update_updated_at_column()) move updated_at para now() no UPDATE
+--      e não mexe em created_at; como service_role, com EXECUTE da função revogado (só nesta transação), o gatilho
+--      dispara igual (gatilho não exige EXECUTE de quem faz o UPDATE). now() é fixo na transação: o teste parte de
+--      updated_at antigo explícito.
+-- Os casos A-G rodam antes das fixtures de I, J e K, que não mudam as contagens deles.
 -- Resultado esperado: NOTICE "SUCESSO: marcas_resolvedor_views_check ok".
 -- Cada falha sai em NOTICE ("FALHA ...") e o script termina com UMA exceção que lista todas. Sem a migration aplicada
 -- (objetos ausentes), o script lista os objetos que faltam como FALHA e não executa os casos que dependem deles:
@@ -65,7 +69,7 @@ begin
     v_faltam := coalesce(v_faltam, '{}') || 'private.marca_normalizar(text)'::text;
   end if;
   if v_faltam is not null then
-    raise exception 'VIEWS CHECK FALHOU: marcas_resolvedor_views_check: % objeto(s) ausente(s), casos A-J não executados:%',
+    raise exception 'VIEWS CHECK FALHOU: marcas_resolvedor_views_check: % objeto(s) ausente(s), casos A-K não executados:%',
       array_length(v_faltam, 1), E'\n  - ausente: ' || array_to_string(v_faltam, E'\n  - ausente: ');
   end if;
   select count(*) = 2 into v_tem_constraints
@@ -283,6 +287,39 @@ begin
   else
     raise notice 'CASO J: % não pode assumir service_role; parte de service_role pulada', current_user;
   end if;
+
+  -- ------------------------------------------------------------------ K (updated_at no UPDATE)
+  insert into public.marca_aliases (valor_norm, modo, marca, tipo, origem, evidencia, revisao_manual, created_at, updated_at)
+  values ('ZZQ UPD', 'exato', 'ZZQ UPD', 'marca', 'curadoria', 'teste updated_at', true,
+          timestamptz '2000-01-01 00:00:00+00', timestamptz '2000-01-01 00:00:00+00');
+  update public.marca_aliases set evidencia = 'teste updated_at 2' where valor_norm = 'ZZQ UPD';
+  select (updated_at = now())::text || '/' || (created_at = timestamptz '2000-01-01 00:00:00+00')::text into v_txt
+    from public.marca_aliases where valor_norm = 'ZZQ UPD';
+  if v_txt is distinct from 'true/true' then
+    v_falhas := v_falhas || format('CASO K FALHOU: UPDATE deveria mover updated_at para now() e manter created_at (updated/created), obtido %s', v_txt);
+  end if;
+  if pg_has_role(current_user, 'service_role', 'MEMBER') then
+    revoke execute on function public.update_updated_at_column() from public, anon, authenticated, service_role;
+    if has_function_privilege('service_role', 'public.update_updated_at_column()', 'EXECUTE') then
+      raise notice 'CASO K: service_role ainda tem EXECUTE em public.update_updated_at_column() por outra via; teste sem EXECUTE vale só como teste de UPDATE';
+    end if;
+    update public.marca_aliases set updated_at = timestamptz '2000-01-01 00:00:00+00' where valor_norm = 'ZZQ UPD';
+    begin
+      set local role service_role;
+      update public.marca_aliases set evidencia = 'teste updated_at 3' where valor_norm = 'ZZQ UPD';
+      reset role;
+    exception when insufficient_privilege then
+      reset role;
+      v_falhas := v_falhas || format('CASO K FALHOU: UPDATE de service_role falhou sem EXECUTE na função do gatilho: %s', sqlerrm);
+    end;
+    select (updated_at = now())::text into v_txt from public.marca_aliases where valor_norm = 'ZZQ UPD';
+    if v_txt is distinct from 'true' then
+      v_falhas := v_falhas || format('CASO K FALHOU: UPDATE de service_role não moveu updated_at, obtido %s', v_txt);
+    end if;
+  else
+    raise notice 'CASO K: % não pode assumir service_role; parte de service_role pulada', current_user;
+  end if;
+  delete from public.marca_aliases where valor_norm = 'ZZQ UPD';
 
   -- ------------------------------------------------------------------ H
   if not v_tem_constraints then

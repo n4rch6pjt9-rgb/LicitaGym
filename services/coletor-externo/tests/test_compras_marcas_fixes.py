@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from coletor import compras_arp, compras_precos
+from coletor import compras_arp, compras_precos, paginacao
 from coletor.compras_precos import id_compra_de, normalizar_preco_praticado, texto_ou_nulo, tipo_ni
 
 
@@ -91,7 +91,7 @@ class _ClienteFalso:
     totais: campos extras da resposta (totalRegistros/totalPaginas); None = a resposta não traz o campo.
     """
 
-    def __init__(self, paginas: list[list[dict[str, Any]]], total: int | None = None, total_paginas: int | None = None):
+    def __init__(self, paginas: list[list[dict[str, Any]]], total: Any = None, total_paginas: Any = None):
         self.paginas = paginas
         self.total = total
         self.total_paginas = total_paginas
@@ -180,11 +180,73 @@ def test_sem_totais_para_na_pagina_vazia():
     assert res["total_coletados"] == 107
 
 
-def test_ultima_pagina_ignora_totais_invalidos():
-    assert compras_precos.ultima_pagina({"totalRegistros": 0}, 1, 100) is False
-    assert compras_precos.ultima_pagina({"totalRegistros": "x", "totalPaginas": None}, 1, 100) is False
-    assert compras_precos.ultima_pagina({"totalRegistros": "150"}, 2, 150) is True
-    assert compras_precos.ultima_pagina({"totalPaginas": 3}, 3, 10) is True
+def test_usa_helper_compartilhado_de_paginacao():
+    # Mesmo helper do PGC e do ARP (coletor/paginacao.py, #211); a lógica própria (ultima_pagina) saiu.
+    assert compras_precos.avaliar_pagina is paginacao.avaliar_pagina
+    assert not hasattr(compras_precos, "ultima_pagina")
+    assert compras_precos.TAMANHO_PAGINA == paginacao.TAMANHO_PAGINA_MAX == 100
+
+
+def test_totais_divergentes_nao_truncam():
+    # Review r4175191540: totalPaginas=1 desatualizado e totalRegistros=201. Antes (OR entre os totais) a coleta
+    # parava na página 1 com 60 itens e sucesso; agora segue até os dois totais concordarem.
+    cli = _ClienteFalso([_pagina(60, 0), _pagina(100, 60), _pagina(41, 160)], total=201, total_paginas=1)
+    res = compras_precos.coletar(cli, None, pdms=[2640], dry_run=True)
+    assert [p for p, _ in cli.pedidos] == [1, 2, 3]
+    assert res["total_coletados"] == 201
+    assert res["sucesso"] is True and res["erros"] == 0
+
+
+def test_totais_divergentes_e_pagina_vazia_e_erro(caplog):
+    # Se os totais seguem divergindo até a página vazia, a coleta não sai como sucesso.
+    cli = _ClienteFalso([_pagina(60, 0)], total=201, total_paginas=1)
+    res = compras_precos.coletar(cli, None, pdms=[2640], dry_run=True)
+    assert [p for p, _ in cli.pedidos] == [1, 2]
+    assert res["total_coletados"] == 60
+    assert res["sucesso"] is False and res["erros"] == 1
+    assert "totais divergem" in caplog.text
+
+
+def test_pagina_repetida_e_erro_e_nao_conta_como_progresso(caplog):
+    # Review r4175078298: a API repete a página 1 como página 2 e anuncia 200 registros. Antes o contador chegava a
+    # 200 e a coleta terminava com sucesso e metade dos dados; agora a repetição é erro e não soma em recebidos.
+    pagina_1 = _pagina(100, 0)
+    cli = _ClienteFalso([pagina_1, list(pagina_1), _pagina(100, 100)], total=200)
+    res = compras_precos.coletar(cli, None, pdms=[2640], dry_run=True)
+    assert [p for p, _ in cli.pedidos] == [1, 2]
+    assert res["total_coletados"] == 100
+    assert res["sucesso"] is False and res["erros"] == 1
+    assert "conteúdo repetido" in caplog.text
+
+
+def test_pagina_vazia_com_registros_restantes_e_erro(caplog):
+    # Review r4175078351: depois de 100 itens, página 2 vazia com totalRegistros=201 (ou totalPaginas=3) não pode
+    # encerrar como sucesso.
+    for kw in ({"total": 201}, {"total_paginas": 3}):
+        caplog.clear()
+        cli = _ClienteFalso([_pagina(100, 0)], **kw)
+        res = compras_precos.coletar(cli, None, pdms=[2640], dry_run=True)
+        assert [p for p, _ in cli.pedidos] == [1, 2], kw
+        assert res["total_coletados"] == 100
+        assert res["sucesso"] is False and res["erros"] == 1, kw
+        assert "ainda há registros" in caplog.text
+
+
+def test_total_ilegivel_segue_ate_vazia_e_sinaliza(caplog):
+    # Total que não é número não encerra nem trunca: a coleta segue até a página vazia e sai com aviso e erro.
+    cli = _ClienteFalso([_pagina(100, 0), _pagina(5, 100)], total="x")
+    res = compras_precos.coletar(cli, None, pdms=[2640], dry_run=True)
+    assert [p for p, _ in cli.pedidos] == [1, 2, 3]
+    assert res["total_coletados"] == 105
+    assert res["sucesso"] is False and res["erros"] == 1
+    assert "total ilegível" in caplog.text
+
+
+def test_total_zero_com_pagina_vazia_e_sucesso():
+    cli = _ClienteFalso([], total=0)
+    res = compras_precos.coletar(cli, None, pdms=[2640], dry_run=True)
+    assert [p for p, _ in cli.pedidos] == [1]
+    assert res["sucesso"] is True and res["total_coletados"] == 0
 
 
 def test_limite_respeitado_antes_de_gravar():

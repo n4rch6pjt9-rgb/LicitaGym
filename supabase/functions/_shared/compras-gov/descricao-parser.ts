@@ -23,7 +23,7 @@ export interface AtributoItem {
   valor: string;
 }
 
-// Mesmo separador de public.catmat_atributos_da_descricao (migration 20261003200000): vírgula seguida de
+// Mesmo separador de public.catmat_atributos_da_descricao (migration 20261004005000): vírgula seguida de
 // CHAVE EM MAIÚSCULAS (até 80 caracteres, sem vírgula nem dois-pontos) e dois-pontos. "PESO: 2,0 KG" não quebra.
 const SEPARADOR_ATRIBUTO = /,\s*(?=[A-ZÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÛÜÇ0-9][A-ZÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÛÜÇ0-9 /().ºª-]{0,80}:)/u;
 

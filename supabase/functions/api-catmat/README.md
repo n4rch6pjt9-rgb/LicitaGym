@@ -26,7 +26,7 @@ Tabelas e funções: `supabase/migrations/20260930100000_catalogo_empresa_catmat
 
 Inclusões ficam em `catmat_pdm_palavras` e exclusões em `catmat_pdm_exclusoes` (migration `20260930120000_taxonomia_pisos.sql`). O `id` só é único dentro do tipo, por isso editar/remover sem `tipo` responde `400` (evita mexer na inclusão de mesmo id quando a intenção era a exclusão); para trocar o tipo de um padrão, remova e crie de novo. Exclusão não conta como cobertura de texto (`palavras` em `opcoes.pdms`, `pdms_sem_palavras`).
 
-Em `arvore` com `nivel: itens`, cada nó traz também `nome_item` e `atributos` (quebra da descrição, `_shared/compras-gov/descricao-parser.ts`, igual a `catmat_atributos_da_descricao` da migration `20261003200000`). O `nome` do item é a descrição completa do Compras.gov, sem corte.
+Em `arvore` com `nivel: itens`, cada nó traz também `nome_item` e `atributos` (quebra da descrição, `_shared/compras-gov/descricao-parser.ts`, igual a `catmat_atributos_da_descricao` da migration `20261004005000`). O `nome` do item é a descrição completa do Compras.gov, sem corte.
 
 `nivel` em `arvore` pede os **filhos** do código informado: `classes` + `78` devolve 7810, 7820 e 7830; `pdms` + `7830`; `itens` + `7115`.
 

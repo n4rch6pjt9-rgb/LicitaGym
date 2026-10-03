@@ -103,7 +103,7 @@ function comTipo(linhas: unknown, tipo: TipoPalavra): CatmatPalavra[] {
   return ((linhas ?? []) as Omit<CatmatPalavra, "tipo">[]).map((l) => ({ ...l, tipo }));
 }
 
-/** Tabela/coluna/função ainda não criada (migration 20261003200000 não aplicada): Postgres 42P01/42703/42883, PostgREST PGRST202/PGRST204/PGRST205. */
+/** Tabela/coluna/função ainda não criada (migration 20261004005000 não aplicada): Postgres 42P01/42703/42883, PostgREST PGRST202/PGRST204/PGRST205. */
 export function semMigrationTaxonomia(error: unknown): boolean {
   const code = (error as { code?: string })?.code ?? "";
   return ["42P01", "42703", "42883", "PGRST202", "PGRST204", "PGRST205"].includes(code);

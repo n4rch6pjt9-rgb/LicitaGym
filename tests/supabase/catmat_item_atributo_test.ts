@@ -1,6 +1,6 @@
 import { assertEquals } from "jsr:@std/assert@1";
 
-const MIGRATION = "./supabase/migrations/20261003200000_catmat_item_atributo_ancoras.sql";
+const MIGRATION = "./supabase/migrations/20261004005000_catmat_item_atributo_ancoras.sql";
 const PARSER = "./supabase/functions/_shared/compras-gov/descricao-parser.ts";
 
 Deno.test("catmat_item_atributo: tabela, âncoras e ACL no padrão do catálogo; nada roda na migration", async () => {

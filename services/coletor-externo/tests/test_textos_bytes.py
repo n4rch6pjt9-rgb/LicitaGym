@@ -115,7 +115,9 @@ def test_xlsx_vira_texto_simples():
     assert not r.ignorados and len(r.paginas) == 1
     p = r.paginas[0]
     assert p.origem == "pncp-3.bin#Proposta" and p.numero is None
-    assert p.texto.split("\n") == ["Item | Descrição | Valor Total", "4 | Bola de Handebol H1 | 6626.53", "Total geral"]
+    # número sai com o texto do XML (review do #137: sem float, que alterava preços e identificadores)
+    assert p.texto.split("\n") == ["Item | Descrição | Valor Total", "4 | Bola de Handebol H1 | 6626.5300000000007",
+                                    "Total geral"]
 
 
 def test_xlsx_dentro_do_zip_e_rar_ignorado():
@@ -126,10 +128,16 @@ def test_xlsx_dentro_do_zip_e_rar_ignorado():
 
 @pytest.mark.parametrize("membros", [
     {"xl/workbook.xml": b"<nao-e-xml", "xl/_rels/workbook.xml.rels": b"<Relationships/>"},   # XML inválido
-    {"xl/workbook.xml": b"<nao-e-xml"},                                                        # sem abas legíveis
-    {"xl/worksheets/sheet1.xml": f'<worksheet xmlns="{NS_X}"><sheetData/></worksheet>'.encode()},  # vazia
+    {"xl/workbook.xml": b"<nao-e-xml"},                                                        # workbook quebrado, sem abas
 ])
-def test_xlsx_quebrado_ou_vazio_fica_ignorado(membros):
+def test_xlsx_quebrado_vira_erro(membros):
+    # review do #137: XLSX inválido não pode virar 'ignorado' (sairia de --reprocessar-erros)
+    with pytest.raises(ValueError, match=r"XLSX inválido \(planilha.xlsx\)"):
+        extrair(_zip(membros), "planilha.xlsx")
+
+
+def test_xlsx_vazio_fica_ignorado():
+    membros = {"xl/worksheets/sheet1.xml": f'<worksheet xmlns="{NS_X}"><sheetData/></worksheet>'.encode()}
     r = extrair(_zip(membros), "planilha.xlsx")
     assert r.ignorados == ["planilha.xlsx"] and not r.paginas
 

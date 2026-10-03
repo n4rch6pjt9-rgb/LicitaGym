@@ -199,16 +199,21 @@ export const PRIORIDADES_DE_OPORTUNIDADES = ["leads", "monitorar"] as const;
 export const ESCOPO_OPORTUNIDADES_FILTRO = `prioridade.in.(${PRIORIDADES_DE_OPORTUNIDADES.join(",")})`;
 
 /**
- * Recorte de Oportunidades (decisão de produto 30/09/2026, revista em 02/10/2026): sem filtro de
- * prioridade, só leads e monitorar. `historico` (homologada/encerrada) é só do BI e NULL é compra fora
- * do escopo. Vai como `or` de uma condição só para somar (AND) com o `or` da busca e não colidir com o
- * `in("id", ...)` do recorte CATMAT. Aplicado na lista e na contagem, sobre a view com a prioridade
- * efetiva. Com filtro explícito (leads/monitorar), o eq de applyLicitacaoFilters já recorta.
+ * Recorte de Oportunidades, aplicado na lista, na contagem e na redução do recorte CATMAT, sobre a view
+ * com a prioridade efetiva:
+ * - compra PNCP republicada (decisão 02/10/2026, migration 20261003010000_licitacoes_pncp_canonica):
+ *   só a publicação canônica do grupo (`eh_canonica`), com ou sem filtro de prioridade. As demais
+ *   continuam acessíveis no `get` (com `canonica_id` apontando para a canônica);
+ * - sem filtro de prioridade (decisão de produto 30/09/2026, revista em 02/10/2026): só leads e
+ *   monitorar. `historico` (homologada/encerrada) é só do BI e NULL é compra fora do escopo. Vai como
+ *   `or` de uma condição só para somar (AND) com o `or` da busca e não colidir com o `in("id", ...)` do
+ *   recorte CATMAT. Com filtro explícito (leads/monitorar), o eq de applyLicitacaoFilters já recorta.
  */
 export function applyOportunidadesScope<T extends FilterableQuery>(
   query: T,
   filtros: LicitacaoFiltros,
 ): T {
+  query.eq("eh_canonica", true);
   if (!filtros.prioridade) {
     query.or(ESCOPO_OPORTUNIDADES_FILTRO);
   }

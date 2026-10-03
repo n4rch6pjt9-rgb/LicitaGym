@@ -20,8 +20,10 @@ import {
   type FilterableQuery,
 } from "../../../supabase/functions/api-dashboard-oportunidades/query.ts";
 import {
+  CANONICA_COLUMNS,
   CATMAT_RPC,
   handleRequest,
+  OPORTUNIDADES_COLUMNS,
   OPORTUNIDADES_VIEW,
   PUBLIC_LICITACAO_COLUMNS,
 } from "../../../supabase/functions/api-dashboard-oportunidades/index.ts";
@@ -781,7 +783,7 @@ Deno.test("handleRequest list com filtro uf asserte eq('uf', 'AC') e PUBLIC_LICI
   assertEquals(fromCall, { method: "from", args: [OPORTUNIDADES_VIEW] });
 
   const selectCall = mockClient.calls.find((c) => c.method === "select");
-  assertEquals(selectCall?.args[0], PUBLIC_LICITACAO_COLUMNS);
+  assertEquals(selectCall?.args[0], OPORTUNIDADES_COLUMNS);
   // Asserção exata da allowlist esperada
   const EXPECTED_PROJECTION = [
     "id",
@@ -813,6 +815,9 @@ Deno.test("handleRequest list com filtro uf asserte eq('uf', 'AC') e PUBLIC_LICI
     "created_at",
     "updated_at",
     "last_synced_at",
+    // só na view (20261003010000_licitacoes_pncp_canonica)
+    "canonica_id",
+    "eh_canonica",
   ].join(",");
   assertEquals(selectCall?.args[0], EXPECTED_PROJECTION);
 
@@ -849,7 +854,7 @@ Deno.test("handleRequest get por id asserte eq('id', 101) e maybeSingle", async 
   assertEquals(body.item.url_edital, null);
 
   const selectCall = mockClient.calls.find((c) => c.method === "select");
-  assertEquals(selectCall?.args[0], PUBLIC_LICITACAO_COLUMNS);
+  assertEquals(selectCall?.args[0], OPORTUNIDADES_COLUMNS);
   assertEquals((selectCall?.args[0] as string).includes("modulo"), true);
   assertEquals((selectCall?.args[0] as string).includes("id_externo"), true);
   assertEquals((selectCall?.args[0] as string).includes("raw"), false);
@@ -961,7 +966,7 @@ Deno.test("handleRequest get por orgao_cnpj + processo_norm asserte eq nos dois 
   assertEquals(body.items[1].url_edital, null);
 
   const selectCall = mockClient.calls.find((c) => c.method === "select");
-  assertEquals(selectCall?.args[0], PUBLIC_LICITACAO_COLUMNS);
+  assertEquals(selectCall?.args[0], OPORTUNIDADES_COLUMNS);
   assertEquals(selectCall?.args[1], { count: "exact" });
 
   const rangeCall = mockClient.calls.find((c) => c.method === "range");
@@ -1512,6 +1517,8 @@ Deno.test("list com recorte CATMAT e página além do fim: a contagem também fi
 // --------------------------------------------------------------------------
 
 const ESCOPO_OPORTUNIDADES = "prioridade.in.(leads,monitorar)";
+/** Compra PNCP republicada aparece uma vez (migration 20261003010000_licitacoes_pncp_canonica). */
+const SO_CANONICA = { method: "eq", args: ["eh_canonica", true] };
 
 function listReq(qs: string): Request {
   return new Request(`http://localhost/api-dashboard-oportunidades?action=list${qs}`, { method: "GET" });
@@ -1521,14 +1528,14 @@ Deno.test("OPORTUNIDADES_VIEW é a view da prioridade efetiva", () => {
   assertEquals(OPORTUNIDADES_VIEW, "licitacoes_externas_prioridade_efetiva");
 });
 
-Deno.test("applyOportunidadesScope: sem prioridade só leads e monitorar (historico e NULL fora); com prioridade não mexe", () => {
+Deno.test("applyOportunidadesScope: só canônica sempre; sem prioridade só leads e monitorar (historico e NULL fora)", () => {
   const semFiltro = new MockQueryBuilder();
   applyOportunidadesScope(semFiltro, {});
-  assertEquals(semFiltro.calls, [{ method: "or", args: [ESCOPO_OPORTUNIDADES] }]);
+  assertEquals(semFiltro.calls, [SO_CANONICA, { method: "or", args: [ESCOPO_OPORTUNIDADES] }]);
 
   const leads = new MockQueryBuilder();
   applyOportunidadesScope(leads, { prioridade: "leads" });
-  assertEquals(leads.calls, []);
+  assertEquals(leads.calls, [SO_CANONICA]);
 });
 
 Deno.test("list padrão lê a view e exclui historico na lista", async () => {
@@ -1670,7 +1677,12 @@ Deno.test("CATMAT: 1200 historico + 300 atuais não dá 422; lista só as atuais
     ESCOPO_OPORTUNIDADES,
     ESCOPO_OPORTUNIDADES,
   ]);
-  assertEquals(mockClient.calls.some((c) => c.method === "escopo.eq"), false);
+  // sem prioridade, o único eq do escopo é o da canônica
+  assertEquals(mockClient.calls.filter((c) => c.method === "escopo.eq").map((c) => c.args), [
+    ["eh_canonica", true],
+    ["eh_canonica", true],
+    ["eh_canonica", true],
+  ]);
   // consulta principal filtra pelos 300 ids atuais (e aplica o escopo de novo)
   const inPrincipal = mockClient.calls.find((c) => c.method === "in" && c.args[0] === "id");
   assertEquals((inPrincipal?.args[1] as number[]).length, 300);
@@ -1687,10 +1699,10 @@ Deno.test("CATMAT: mais de 1000 atuais depois do escopo continua 422 (com a cont
   assertEquals(res.status, 422);
   assertEquals((await res.json()).error.includes("1100 oportunidades"), true);
   // a consulta principal nem roda
-  assertEquals(mockClient.calls.some((c) => c.method === "select" && c.args[0] === PUBLIC_LICITACAO_COLUMNS), false);
+  assertEquals(mockClient.calls.some((c) => c.method === "select" && c.args[0] === OPORTUNIDADES_COLUMNS), false);
 });
 
-Deno.test("CATMAT com prioridade=leads acima do teto: escopo filtra eq(prioridade, leads), sem o or", async () => {
+Deno.test("CATMAT com prioridade=leads acima do teto: escopo filtra eq(prioridade, leads) e a canônica, sem o or", async () => {
   const mockClient = createRecordingMockClient({
     rpcResult: rpcComIds(1001),
     escopoIds: (ids) => ids.filter((id) => id % 2 === 0),
@@ -1702,8 +1714,11 @@ Deno.test("CATMAT com prioridade=leads acima do teto: escopo filtra eq(prioridad
   assertEquals(res.status, 200);
   assertEquals(mockClient.calls.filter((c) => c.method === "escopo.eq").map((c) => c.args), [
     ["prioridade", "leads"],
+    ["eh_canonica", true],
     ["prioridade", "leads"],
+    ["eh_canonica", true],
     ["prioridade", "leads"],
+    ["eh_canonica", true],
   ]);
   assertEquals(mockClient.calls.some((c) => c.method === "escopo.or"), false);
   const inPrincipal = mockClient.calls.find((c) => c.method === "in" && c.args[0] === "id");
@@ -1719,7 +1734,7 @@ Deno.test("CATMAT acima do teto só com historico: 200 vazio sem a consulta prin
   const body = await res.json();
   assertEquals(body.total, 0);
   assertEquals(body.items, []);
-  assertEquals(mockClient.calls.some((c) => c.method === "select" && c.args[0] === PUBLIC_LICITACAO_COLUMNS), false);
+  assertEquals(mockClient.calls.some((c) => c.method === "select" && c.args[0] === OPORTUNIDADES_COLUMNS), false);
 });
 
 Deno.test("CATMAT até o teto não faz a consulta de escopo (a consulta principal já recorta)", async () => {
@@ -1739,4 +1754,99 @@ Deno.test("CATMAT acima do teto com falha na consulta de escopo: 500 genérico",
   const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
   assertEquals(res.status, 500);
   assertEquals((await res.json()).error, "Erro interno no servidor");
+});
+
+
+// --------------------------------------------------------------------------
+// Compra PNCP republicada (decisão 02/10/2026, migration 20261003010000_licitacoes_pncp_canonica):
+// list/contagem/recorte CATMAT só com a publicação canônica; get devolve qualquer linha com canonica_id.
+// Dados fictícios.
+// --------------------------------------------------------------------------
+
+Deno.test("OPORTUNIDADES_COLUMNS = colunas públicas da tabela + canonica_id, eh_canonica (fora de PUBLIC_LICITACAO_COLUMNS)", () => {
+  assertEquals(CANONICA_COLUMNS, "canonica_id,eh_canonica");
+  assertEquals(OPORTUNIDADES_COLUMNS, `${PUBLIC_LICITACAO_COLUMNS},canonica_id,eh_canonica`);
+  assertEquals(PUBLIC_LICITACAO_COLUMNS.split(",").some((c) => c === "canonica_id" || c === "eh_canonica"), false);
+});
+
+Deno.test("list padrão: só canônica e sem historico, na lista", async () => {
+  const mockClient = createRecordingMockClient({ listResult: { data: [{ id: 7, canonica_id: 7, eh_canonica: true }], count: 1, error: null } });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(listReq("&uf=MG"), { getClient: () => mockClient as any, requireAuth: () => null });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.items[0].canonica_id, 7);
+  assertEquals(mockClient.calls.find((c) => c.method === "select")?.args[0], OPORTUNIDADES_COLUMNS);
+  assertEquals(mockClient.calls.filter((c) => c.method === "eq" && c.args[0] === "eh_canonica"), [SO_CANONICA]);
+  assertEquals(mockClient.calls.filter((c) => c.method === "or").map((c) => c.args[0]), [ESCOPO_OPORTUNIDADES]);
+});
+
+Deno.test("list com prioridade=monitorar: só canônica, sem o or do escopo", async () => {
+  const mockClient = createRecordingMockClient({ listResult: { data: [], count: 0, error: null } });
+  // deno-lint-ignore no-explicit-any
+  await handleRequest(listReq("&prioridade=monitorar"), { getClient: () => mockClient as any, requireAuth: () => null });
+  assertEquals(mockClient.calls.filter((c) => c.method === "eq").map((c) => c.args), [
+    ["prioridade", "monitorar"],
+    ["eh_canonica", true],
+  ]);
+  assertEquals(mockClient.calls.some((c) => c.method === "or"), false);
+});
+
+Deno.test("list além do fim (PGRST103): a contagem também só conta a canônica", async () => {
+  for (const qs of ["&page=9&limit=100", "&prioridade=leads&page=9&limit=100"]) {
+    const mockClient = createRecordingMockClient({
+      listResult: { data: null as unknown as unknown[], count: null, error: { code: "PGRST103", message: "range" } },
+      headCountResult: { count: 2, error: null },
+    });
+    // deno-lint-ignore no-explicit-any
+    const res = await handleRequest(listReq(qs), { getClient: () => mockClient as any, requireAuth: () => null });
+    assertEquals(res.status, 200, qs);
+    assertEquals((await res.json()).total, 2, qs);
+    assertEquals(mockClient.calls.filter((c) => c.method === "head.eq" && c.args[0] === "eh_canonica").map((c) => c.args), [
+      ["eh_canonica", true],
+    ], qs);
+  }
+});
+
+Deno.test("get por id de uma republicação não canônica: 200 com canonica_id, sem filtrar a canônica", async () => {
+  const mockClient = createRecordingMockClient({
+    singleResult: {
+      data: { id: 9102, fonte: "pncp", prioridade: "monitorar", canonica_id: 9101, eh_canonica: false, objeto: "Piso (fictício)" },
+      error: null,
+    },
+  });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=get&id=9102", { method: "GET" });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
+  assertEquals(res.status, 200);
+  const { item } = await res.json();
+  assertEquals(item.id, 9102);
+  assertEquals(item.canonica_id, 9101);
+  assertEquals(item.eh_canonica, false);
+  assertEquals(mockClient.calls.find((c) => c.method === "select")?.args[0], OPORTUNIDADES_COLUMNS);
+  assertEquals(mockClient.calls.filter((c) => c.method === "eq").map((c) => c.args), [["id", "9102"]]);
+});
+
+Deno.test("get por codigo_externo e por orgao_cnpj + processo_norm não filtram a canônica (todas as publicações)", async () => {
+  for (
+    const qs of [
+      "codigo_externo=11111111000100-1-000002/2026&fonte=pncp",
+      "orgao_cnpj=11111111000100&processo_norm=0001202600001",
+    ]
+  ) {
+    const mockClient = createRecordingMockClient({
+      singleResult: { data: { id: 9102, canonica_id: 9101, eh_canonica: false }, error: null },
+      listResult: {
+        data: [{ id: 9101, canonica_id: 9101, eh_canonica: true }, { id: 9102, canonica_id: 9101, eh_canonica: false }],
+        count: 2,
+        error: null,
+      },
+    });
+    const req = new Request(`http://localhost/api-dashboard-oportunidades?action=get&${qs}`, { method: "GET" });
+    // deno-lint-ignore no-explicit-any
+    const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
+    assertEquals(res.status, 200, qs);
+    assertEquals(mockClient.calls.find((c) => c.method === "select")?.args[0], OPORTUNIDADES_COLUMNS, qs);
+    assertEquals(mockClient.calls.some((c) => c.method === "eq" && c.args[0] === "eh_canonica"), false, qs);
+  }
 });

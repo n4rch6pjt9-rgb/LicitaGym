@@ -280,7 +280,7 @@ def test_fetch_json_legacy_rollback_mode_when_env_enabled(monkeypatch):
 
 
 def test_clamp_compras_gov_page_size():
-    assert clamp_compras_gov_page_size(None) == 500
+    assert clamp_compras_gov_page_size(None) == 100
     assert clamp_compras_gov_page_size(5) == 10
     assert clamp_compras_gov_page_size(100) == 100
     assert clamp_compras_gov_page_size(500) == 500

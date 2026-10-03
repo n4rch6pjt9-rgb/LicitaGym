@@ -23,6 +23,19 @@ import { corsHeaders, jsonResponse, validateCronAuth } from "../_shared/http.ts"
 import { acquireSyncLock } from "../_shared/pncp/lock.ts";
 import { hashPayload, sha256Hex } from "../_shared/pncp/hash.ts";
 import { resolveCatmatIngestTargets } from "../_shared/pncp/catmat-scope-resolver.ts";
+import {
+  bloqueioModoCatalogo,
+  CATMAT_SYNC_LOCK_CATALOGO,
+  CATMAT_TAMANHO_PAGINA,
+  continuationCatalogo,
+  decidirInicioCatalogo,
+  deveSincronizarCatalogo,
+  fatiaPdms,
+  linhaCatmatItemPdm,
+  normalizarPdmsEfetivos,
+  paramsItemDoPdm,
+  resolverIncluirInativos,
+} from "../_shared/pncp/catmat-catalogo-sync.ts";
 import { assertCatmatClasseInScope } from "../_shared/pncp/licitagym-scope-gate.ts";
 import {
   createServiceClient,
@@ -39,6 +52,13 @@ import { upsertByHash, type UpsertResult } from "../_shared/pncp/upsert.ts";
 type SyncBody = {
   codigo_grupo?: number;
   codigo_classe?: number;
+  /** "catalogo" segue catalogo_catmat_pdms_efetivos(); "classe" força a lista fixa. */
+  modo?: "catalogo" | "classe";
+  /** Retomada estável: PDMs efetivos ordenados por codigo_pdm. */
+  offset_pdm?: number;
+  limite_pdm?: number;
+  /** Não inicia carga nova; só continua um run incompleto do modo catálogo. */
+  somente_retomada?: boolean;
   incluir_inativos?: boolean;
   max_paginas?: number;
   /** Processa características a partir deste offset (codigo_catmat ordenado). */
@@ -101,6 +121,200 @@ async function logAndStore(
   });
 }
 
+async function ingestCatalogoCatmat(body: SyncBody): Promise<Response> {
+  const incluirInativos = resolverIncluirInativos(body);
+  const maxPaginas = body.max_paginas ?? 500;
+  const client = createServiceClient();
+  const httpClient = new UnifiedHttpClient({
+    supabaseClient: client,
+    telemetryLogger: (t) => logSyncRequest(client, t),
+  });
+  const material = new ComprasGovMaterialClient(httpClient);
+  const { data: rpcRows, error: rpcError } = await client.rpc("catalogo_catmat_pdms_efetivos");
+  if (rpcError) {
+    console.error("[sync-compras-catmat] catalogo_catmat_pdms_efetivos", rpcError.message);
+    return jsonResponse({ status: "falhou", reason: "Falha ao ler os PDMs efetivos do catálogo" }, 500);
+  }
+  const pdms = normalizarPdmsEfetivos(rpcRows);
+  const { runId, alreadyRunning, continuation: inheritedContinuation } = await acquireSyncLock(
+    client,
+    CATMAT_SYNC_LOCK_CATALOGO,
+    "compras_catmat",
+    { modo: "catalogo", incluir_inativos: incluirInativos, ...body },
+  );
+  if (alreadyRunning) {
+    return jsonResponse({ status: "already_running", sync_id: runId, scope: "catalogo_catmat_pdms_efetivos" });
+  }
+
+  const inicio = decidirInicioCatalogo({
+    bodyOffset: body.offset_pdm,
+    inheritedContinuation,
+    somenteRetomada: body.somente_retomada === true,
+  });
+  if (inicio.pular) {
+    await finishSyncRun(client, runId, {
+      status: "concluida",
+      totalRecebidos: 0,
+      totalNovos: 0,
+      totalAtualizados: 0,
+      totalInalterados: 0,
+      totalErros: 0,
+    });
+    return jsonResponse({
+      sync_id: runId,
+      status: "ignorado",
+      motivo: "sem retomada pendente do catálogo",
+      scope: "catalogo_catmat_pdms_efetivos",
+    });
+  }
+
+  const { fatia, proximo } = fatiaPdms(pdms, inicio.offset, body.limite_pdm);
+  const stats = emptyStats();
+  let indice = 0;
+
+  try {
+    for (const pdm of fatia) {
+      await updateSyncHeartbeat(client, runId, {
+        paginaAtual: inicio.offset + indice + 1,
+        continuation: continuationCatalogo(inicio.offset + indice),
+        baseParametros: body,
+      });
+      const consulta = paramsItemDoPdm(pdm, incluirInativos);
+      const { pages: itemPages, items: itens } = await material.fetchItens(consulta, {
+        maxPaginas,
+        tamanhoPagina: CATMAT_TAMANHO_PAGINA,
+      });
+      for (const page of itemPages) {
+        await logAndStore(
+          client,
+          runId,
+          "/modulo-material/4_consultarItemMaterial",
+          { ...consulta, tamanhoPagina: CATMAT_TAMANHO_PAGINA },
+          page,
+          200,
+          0,
+        );
+      }
+
+      const linhasPdm = [];
+      for (const raw of itens) {
+        const item = raw as ItemMaterial;
+        const row = normalizeCatalogoItemFromMaterial(item, {
+          grupo: String(pdm.codigo_grupo),
+          classe: String(pdm.codigo_classe),
+        });
+        const result = await upsertCatalogoItemFromCompras(client, row, { syncRunId: runId });
+        tally(stats, result);
+        const linha = linhaCatmatItemPdm(item);
+        if (!linha) {
+          stats.erros++;
+          continue;
+        }
+        linhasPdm.push(linha);
+      }
+      if (linhasPdm.length > 0) {
+        const { error: itemPdmError } = await client.from("catmat_item_pdm").upsert(linhasPdm, {
+          onConflict: "codigo_item",
+        });
+        if (itemPdmError) throw itemPdmError;
+      }
+
+      const { items: naturezas } = await material.fetchNaturezasDespesa(pdm.codigo_pdm, {
+        maxPaginas: 20,
+        tamanhoPagina: CATMAT_TAMANHO_PAGINA,
+      });
+      for (const raw of naturezas) {
+        const row = normalizeNaturezaDespesa(raw as NaturezaDespesaMaterial);
+        if (!row) continue;
+        const result = await upsertByHash(
+          client,
+          "catmat_pdm_naturezas_despesa",
+          {
+            codigo_pdm: row.codigo_pdm,
+            codigo_natureza_despesa: row.codigo_natureza_despesa,
+          },
+          row,
+          { syncRunId: runId },
+        );
+        tally(stats, result);
+      }
+
+      const { items: unidades } = await material.fetchUnidadesFornecimento(pdm.codigo_pdm, {
+        maxPaginas: 20,
+        tamanhoPagina: CATMAT_TAMANHO_PAGINA,
+      });
+      for (const raw of unidades) {
+        const row = normalizeUnidadeFornecimento(raw as UnidadeFornecimentoMaterial);
+        if (!row) continue;
+        const result = await upsertByHash(
+          client,
+          "catmat_pdm_unidades",
+          {
+            codigo_pdm: row.codigo_pdm,
+            sigla_unidade_fornecimento: row.sigla_unidade_fornecimento,
+            numero_sequencial: row.numero_sequencial,
+          },
+          row,
+          { syncRunId: runId },
+        );
+        tally(stats, result);
+      }
+      indice++;
+    }
+
+    const incompletaPorLimite = proximo != null && stats.erros === 0;
+    const terminalStatus = stats.erros > 0
+      ? "concluida_com_erros"
+      : (incompletaPorLimite ? "incompleta" : "concluida");
+    await finishSyncRun(client, runId, {
+      status: terminalStatus,
+      totalRecebidos: stats.recebidos,
+      totalNovos: stats.novos,
+      totalAtualizados: stats.alterados,
+      totalInalterados: stats.inalterados,
+      totalErros: stats.erros,
+      ...(incompletaPorLimite
+        ? { parametros: { ...body, continuation: continuationCatalogo(proximo) } }
+        : {}),
+    });
+    return jsonResponse({
+      sync_id: runId,
+      status: terminalStatus,
+      scope: "catalogo_catmat_pdms_efetivos",
+      incluir_inativos: incluirInativos,
+      tamanho_pagina: CATMAT_TAMANHO_PAGINA,
+      pdms_efetivos: pdms.length,
+      pdms_processados: indice,
+      offset_pdm: inicio.offset,
+      proximo_offset_pdm: incompletaPorLimite ? proximo : null,
+      ...stats,
+    }, stats.erros > 0 ? 500 : 200);
+  } catch (error) {
+    const detalhe = error instanceof Error
+      ? error.message
+      : typeof error === "object" && error !== null && "message" in error
+      ? String((error as { message: unknown }).message)
+      : JSON.stringify(error);
+    const isResumable = error instanceof BudgetExhaustedError || error instanceof RateLimitPauseError;
+    const status = isResumable ? "incompleta" : "falhou";
+    await finishSyncRun(client, runId, {
+      status,
+      erroPrincipal: detalhe,
+      parametros: {
+        ...body,
+        continuation: continuationCatalogo(inicio.offset + indice),
+      },
+    });
+    return jsonResponse({
+      error: detalhe,
+      sync_id: runId,
+      status,
+      scope: "catalogo_catmat_pdms_efetivos",
+      proximo_offset_pdm: inicio.offset + indice,
+    }, 500);
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return jsonResponse({ error: "Use POST" }, 405);
@@ -109,6 +323,23 @@ Deno.serve(async (req) => {
   const url = new URL(req.url);
   const body = (await req.json().catch(() => ({}))) as SyncBody;
   const isAsync = url.searchParams.get("async") === "1" || body.async === true;
+  if (deveSincronizarCatalogo(body)) {
+    const bloqueio = bloqueioModoCatalogo(body);
+    if (bloqueio) return jsonResponse({ status: "blocked", reason: bloqueio }, 400);
+    if (isAsync) {
+      const edgeRuntime = (globalThis as unknown as {
+        EdgeRuntime?: { waitUntil?: (promise: Promise<unknown>) => void };
+      }).EdgeRuntime;
+      const runWorker = () => ingestCatalogoCatmat(body);
+      if (typeof edgeRuntime?.waitUntil === "function") {
+        edgeRuntime.waitUntil(runWorker());
+      } else {
+        runWorker().catch((err) => console.error("[async compras-catmat catalogo] Error:", err));
+      }
+      return jsonResponse({ status: "accepted", scope: "catalogo_catmat_pdms_efetivos" }, 202);
+    }
+    return await ingestCatalogoCatmat(body);
+  }
   const resolved = resolveCatmatIngestTargets(body);
   if (!resolved.ok) {
     return jsonResponse({ status: "blocked", reason: resolved.reason }, 423);
@@ -187,7 +418,7 @@ async function ingestOneCatmatClass(body: SyncBody): Promise<Response> {
   if (scopeErr) {
     return jsonResponse({ status: "blocked", reason: scopeErr }, 423);
   }
-  const incluirInativos = body.incluir_inativos ?? false;
+  const incluirInativos = resolverIncluirInativos(body);
   const maxPaginas = body.max_paginas ?? 500;
   const offsetCaracteristicas = body.offset_caracteristicas ?? 0;
   const limiteCaracteristicas = body.limite_caracteristicas ?? 80;
@@ -286,7 +517,7 @@ async function ingestOneCatmatClass(body: SyncBody): Promise<Response> {
         codigoGrupo,
         codigoClasse,
         ...(incluirInativos ? {} : { statusPdm: true }),
-      }, { maxPaginas });
+      }, { maxPaginas, tamanhoPagina: CATMAT_TAMANHO_PAGINA });
       for (const page of pdmPages) {
         await logAndStore(
           client,
@@ -317,7 +548,7 @@ async function ingestOneCatmatClass(body: SyncBody): Promise<Response> {
         codigoGrupo,
         codigoClasse,
         ...(incluirInativos ? {} : { statusItem: true }),
-      }, { maxPaginas });
+      }, { maxPaginas, tamanhoPagina: CATMAT_TAMANHO_PAGINA });
       for (const page of itemPages) {
         await logAndStore(
           client,

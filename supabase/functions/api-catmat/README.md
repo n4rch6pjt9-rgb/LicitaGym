@@ -33,7 +33,7 @@ Inclusões ficam em `catmat_pdm_palavras` e exclusões em `catmat_pdm_exclusoes`
 - **`catalogo_salvar`:**
   - valida o nó no Compras.gov (`404` se não existir);
   - grava grupo, classe e PDM em `catmat_grupos`, `catmat_classes` e `catmat_pdms` (sem `last_seen_sync_id`);
-  - ao incluir grupo ou classe, materializa os PDMs descendentes;
+  - ao incluir grupo ou classe, materializa os PDMs descendentes e hidrata `catmat_item_pdm` de cada PDM (ativos e inativos, com `status_item`);
   - em PDM ou item, hidrata `catmat_item_pdm`.
 - **Padrões (`catmat_pdm_palavras`):**
   - regex do Postgres aplicada ao texto em minúsculas e sem acento (`lg_normalizar`), com até 300 caracteres;
@@ -42,7 +42,7 @@ Inclusões ficam em `catmat_pdm_palavras` e exclusões em `catmat_pdm_exclusoes`
 
 ## Compras.gov e cache
 
-- Endpoints `modulo-material/1_` a `4_consultar*Material`, com `tamanhoPagina=500`, no máximo 20 páginas e 350 ms entre páginas.
+- Endpoints `modulo-material/1_` a `4_consultar*Material`, com `tamanhoPagina=100`, no máximo 20 páginas e 350 ms entre páginas.
 - Limite de 8 s por chamada, 1 nova tentativa em 429 ou 5xx, e orçamento de 25 s por árvore.
 - Cache em memória por isolate (10 min) e em `compras_catmat_cache` (24 h). Pedidos iguais simultâneos compartilham a mesma busca.
 - Se o Compras.gov falhar: devolve o cache vencido com `stale: true`. Sem cache nenhum, responde `504`.

@@ -108,11 +108,19 @@ function paraItemPdm(i: CatmatNo) {
   };
 }
 
+async function hidratarItensDoPdm(deps: TreeDeps, codigoPdm: number): Promise<number> {
+  const itens = await arvoreVerificada(deps, "itens", codigoPdm);
+  if (itens.length === 0) return 0;
+  await deps.repo.upsertItensPdm(itens.map(paraItemPdm));
+  return itens.length;
+}
+
 /**
  * Registra (incluido=true) ou exclui (incluido=false) um nó do catálogo.
  * - valida o nó no Compras.gov
  * - grava os ancestrais em catmat_grupos/classes/pdms (FKs e nomes para o filtro)
- * - grupo/classe incluídos: materializa os PDMs descendentes (a herança só expande sobre catmat_pdms)
+ * - grupo/classe incluídos: materializa os PDMs descendentes e hidrata catmat_item_pdm
+ *   (a árvore devolve ativos e inativos; status_item guarda o valor oficial)
  * - PDM/item: hidrata catmat_item_pdm (casamento por código)
  * - exclusão só vale para nó herdado de um ancestral incluído
  */
@@ -149,13 +157,12 @@ export async function salvarRegra(
       for (const p of await arvoreVerificada(deps, "pdms", c.codigo_classe as number)) {
         await gravarPdm(repo, p);
         pdmsMaterializados++;
+        itensHidratados += await hidratarItensDoPdm(deps, p.codigo_pdm as number);
       }
     }
   }
   if (alvo.nivel === "pdm" || alvo.nivel === "item") {
-    const itens = await arvoreVerificada(deps, "itens", alvo.codigo_pdm as number);
-    await repo.upsertItensPdm(itens.map(paraItemPdm));
-    itensHidratados = itens.length;
+    itensHidratados = await hidratarItensDoPdm(deps, alvo.codigo_pdm as number);
   }
 
   const row: RegraInput = {

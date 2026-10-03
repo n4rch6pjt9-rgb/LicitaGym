@@ -83,11 +83,16 @@ def test_travas_do_objeto_valem_para_o_codigo():
     assert P.avaliar(obra, [_it(1, "ZZ ITEM 7", 480144, COMPRAS_GOV)], MAPA)[2][1][0] is None
 
 
+# itens do catálogo em catmat_item_pdm (âncoras do forte ancorado): um item por PDM efetivo dos testes
+ITENS_CATALOGO = [{"codigo_item": 480144, "codigo_pdm": 2640, "descricao": "ESTEIRA ERGOMÉTRICA, TIPO: ELÉTRICA"}]
+
+
 class _SB:
-    def __init__(self, mapa=None, pdms=None, erro=None, regras_item=None, erro_regras=None):
+    def __init__(self, mapa=None, pdms=None, erro=None, regras_item=None, erro_regras=None, itens_catalogo=None):
         self.mapa, self.pdms, self.erro, self.chamadas = mapa, pdms, erro, []
         self.regras_item = [] if regras_item is None else regras_item
         self.erro_regras = erro_regras
+        self.itens_catalogo = ITENS_CATALOGO if itens_catalogo is None else itens_catalogo
 
     def selecionar(self, tabela, **filtros):
         self.chamadas.append((tabela, filtros))
@@ -97,6 +102,8 @@ class _SB:
             if self.erro_regras:
                 raise self.erro_regras
             return self.regras_item
+        if tabela == "catmat_item_pdm":
+            return self.itens_catalogo
         return self.mapa
 
     def rpc(self, funcao, params):
@@ -194,7 +201,7 @@ def test_leitura_mapa_catmat_so_le():
         with pytest.raises(PermissionError):
             getattr(leitor, escrita)
     assert [c[0] for c in sb.chamadas] == ["rpc/catmat_itens_mapa", "catalogo_catmat_pdms_efetivos",
-                                           "catalogo_empresa_catmat"]
+                                           "catalogo_empresa_catmat", "catmat_item_pdm"]
 
 
 # --- main: o mapa é carregado antes de gravar; dry-run usa a mesma regra; falha com banco aborta ---

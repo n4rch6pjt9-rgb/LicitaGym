@@ -24,15 +24,22 @@ cliente só leitura (LeituraMapaCatmat), para prever as mesmas transições.
 from __future__ import annotations
 
 import logging
+import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
+from .catmat_ancoras import AncorasCatalogo, AncorasIndisponiveis, carregar_ancoras
 from .compras_pdms import RPC_PDMS_EFETIVOS, carregar_pdms_efetivos
 
 log = logging.getLogger("coletor.catmat_codigo")
 
 RPC_ITENS_MAPA = "catmat_itens_mapa"
+# Regra do forte ancorado (coletor/catmat_ancoras.py; Marcelo, 03/10/2026 19:00 BRT: modo núcleo). "desligado" volta
+# à regra antiga (listas fixas de escopo.py dão "forte"); só para emergência, com o motivo registrado.
+ENV_FORTE_ANCORADO = "FORTE_ANCORADO"
+MODO_FORTE_PADRAO = "nucleo"
+MODOS_FORTE = ("nucleo", "estrito", "desligado")
 TABELA_CATALOGO = "catalogo_empresa_catmat"
 # catalogo.id do PNCP: 1 = Catálogo do Compras.gov.br (CATMAT/CATSER), 2 = Outros (código do órgão)
 CATALOGO_COMPRAS_GOV = 1
@@ -72,6 +79,8 @@ class MapaCatmat:
     pdms_catalogo: frozenset[int] = frozenset()
     itens_avulsos: Mapping[int, int] = field(default_factory=dict)
     itens_excluidos: frozenset[int] = frozenset()
+    # Âncoras do catálogo (forte só por item que casa uma delas). None = regra antiga (listas fixas dão "forte").
+    ancoras: AncorasCatalogo | None = None
 
 
 def _inteiro(v) -> int | None:
@@ -140,9 +149,20 @@ def _regras_de_item(sb) -> tuple[dict[int, int], frozenset[int]]:
     return avulsos, frozenset(excluidos)
 
 
-def carregar_mapa_catmat(sb) -> MapaCatmat:
-    """Lê as duas RPCs (GET paginado em rpc/catmat_itens_mapa; as duas são STABLE e só service_role executa) e as
-    regras de item do catálogo (GET em catalogo_empresa_catmat). Qualquer falha -> MapaCatmatIndisponivel."""
+def modo_forte(valor: str | None = None) -> str:
+    """Modo da regra do forte: FORTE_ANCORADO (nucleo | estrito | desligado); vazio = nucleo."""
+    v = (valor if valor is not None else os.environ.get(ENV_FORTE_ANCORADO, "")).strip().lower() or MODO_FORTE_PADRAO
+    if v not in MODOS_FORTE:
+        raise MapaCatmatIndisponivel(f"{ENV_FORTE_ANCORADO}={v!r} inválido (use {', '.join(MODOS_FORTE)})")
+    return v
+
+
+def carregar_mapa_catmat(sb, modo: str | None = None) -> MapaCatmat:
+    """Lê as duas RPCs (GET paginado em rpc/catmat_itens_mapa; as duas são STABLE e só service_role executa), as
+    regras de item do catálogo (GET em catalogo_empresa_catmat) e, salvo FORTE_ANCORADO=desligado, as âncoras dos
+    itens do catálogo (GET em catmat_item_pdm, 100 por página). Qualquer falha -> MapaCatmatIndisponivel, inclusive
+    PDM efetivo sem itens em catmat_item_pdm (sem os itens o PDM inteiro deixaria de ser forte em silêncio)."""
+    modo = modo_forte(modo)
     try:
         linhas = sb.selecionar(f"rpc/{RPC_ITENS_MAPA}", select="codigo_item,codigo_pdm", order="codigo_item.asc")
     except Exception as e:
@@ -160,9 +180,18 @@ def carregar_mapa_catmat(sb) -> MapaCatmat:
     except Exception as e:
         raise MapaCatmatIndisponivel(str(e)) from e
     avulsos, excluidos = _regras_de_item(sb)
-    log.info("Mapa CATMAT: %d itens, %d PDMs no catálogo efetivo, %d itens avulsos, %d itens excluídos",
-             len(item_pdm), len(pdms), len(avulsos), len(excluidos))
-    return MapaCatmat(item_pdm=item_pdm, pdms_catalogo=pdms, itens_avulsos=avulsos, itens_excluidos=excluidos)
+    ancoras = None
+    if modo != "desligado":
+        try:
+            ancoras = carregar_ancoras(sb, pdms, avulsos, excluidos, modo)
+        except AncorasIndisponiveis as e:
+            raise MapaCatmatIndisponivel(f"âncoras do catálogo: {e}") from e
+    else:
+        log.warning("%s=desligado: forte pelas listas fixas (regra antiga), sem âncora do catálogo", ENV_FORTE_ANCORADO)
+    log.info("Mapa CATMAT: %d itens, %d PDMs no catálogo efetivo, %d itens avulsos, %d itens excluídos, forte %s",
+             len(item_pdm), len(pdms), len(avulsos), len(excluidos), modo)
+    return MapaCatmat(item_pdm=item_pdm, pdms_catalogo=pdms, itens_avulsos=avulsos, itens_excluidos=excluidos,
+                      ancoras=ancoras)
 
 
 def carregar_mapa_catmat_se_houver_banco(sb) -> MapaCatmat | None:

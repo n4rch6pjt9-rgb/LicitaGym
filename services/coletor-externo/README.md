@@ -234,6 +234,15 @@ Polia e espaldar são `forte`. Pilates, "aparelho para condicionamento físico" 
 `Puxador` é positivo só na categoria acessórios.
 O coletor usa `--escopo fitness` por padrão (`--escopo tudo` desliga o filtro).
 
+**Forte ancorado (03/10/2026, modo núcleo).** Com o banco configurado, `forte` só vem de item que casa uma âncora
+do catálogo CATMAT da empresa (`coletor/catmat_ancoras.py`: nome/TIPO/NOME dos itens dos PDMs efetivos e dos itens
+incluídos, lidos de `catmat_item_pdm` com 100 linhas por página). As listas fixas acima só rebaixam: sem âncora o
+`forte` delas vira `fraco`, e item ancorado que cai em `ITEM_FORA`, academia ao ar livre ou brinquedo infantil fica
+`fraco`. O objeto da compra não tem âncora (`forte` do objeto vira `fraco`). Piso, borracha, obra_piso e o código
+CATMAT (`catmat`) não mudam; as travas (serviço, obra, ATI, passagem sem core, predial) continuam. PDM efetivo sem
+itens em `catmat_item_pdm` aborta a coleta antes de gravar. `FORTE_ANCORADO` = `nucleo` (padrão), `estrito`
+(âncora inteira) ou `desligado` (regra antiga, só emergência).
+
 ## 1. Criar as tabelas (uma vez)
 
 As tabelas vêm de `supabase/migrations/20260923100000_licitacoes_externas.sql` (já aplicada; migrations novas entram por PR e a integração Supabase aplica no merge)

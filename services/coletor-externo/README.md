@@ -154,6 +154,24 @@ python3 -m coletor.pncp --baixar-pendentes --categorias catmat,forte,borracha,pi
 python3 scripts/gerar_relatorio_termos.py                                    # docs/coletor-pncp-termos.md (PDM x termo)
 ```
 
+Anexo com `statusAtivo=false` no `/arquivos` do PNCP (substituído/retirado pelo órgão) é gravado em
+`licitacao_documentos` com `ativo = false` (só metadado: título, data, url): nem `--baixar-arquivos` nem
+`--baixar-pendentes` o baixam (`ignorados_inativos` no resumo). O indexador só lê `status_processamento = 'baixado'`
+com `sha256`/`storage_uri`, então um inativo nunca baixado não chega ao RAG; um anexo que foi baixado/indexado e depois
+ficou inativo continua `baixado`/`indexado` até o indexador filtrar `ativo = true` (frente do RAG).
+`licitacoes_externas.link_sistema_origem` guarda o `linkSistemaOrigem` do detalhe (portal da disputa).
+
+Recoleta por versão (migration `20261002230000_pncp_link_origem_atualizacao_anexos`): cada coleta completa grava
+`dataAtualizacao`/`dataAtualizacaoGlobal` do detalhe em `pncp_data_atualizacao[_global]`; `--recoletar-atualizadas`
+consulta o detalhe das compras gravadas (prioridade efetiva `leads,monitorar` por padrão) e recoleta metadados, itens,
+resultados e lista de arquivos só das que mudaram (ou ainda sem valor guardado). Nunca baixa arquivo.
+
+```bash
+python3 -m coletor.pncp --recoletar-atualizadas --dry-run                  # só conta (1 GET de detalhe por compra)
+python3 -m coletor.pncp --recoletar-atualizadas --limite-recoleta 50       # recoleta até 50 compras que mudaram
+python3 -m coletor.pncp --recoletar-atualizadas --prioridades leads
+```
+
 Reclassificar as linhas PNCP já gravadas (as antigas `leads` homologadas viram `historico`) — dry-run por padrão:
 
 ```bash

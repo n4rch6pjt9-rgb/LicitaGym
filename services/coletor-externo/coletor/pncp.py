@@ -18,6 +18,13 @@ licitacoes_externas.prioridade (decisão do owner, 29/09/2026) vem do ESTADO da 
   leads = recebendo proposta | monitorar = em julgamento | historico = encerrada/homologada/com resultado.
 Ver prioridade_da_compra(). Compra homologada não é lead.
 
+Metadados de origem e versão (migration 20261002230000_pncp_link_origem_atualizacao_anexos):
+  licitacoes_externas.link_sistema_origem = linkSistemaOrigem do detalhe (portal onde a disputa acontece);
+  licitacoes_externas.pncp_data_atualizacao[_global] = dataAtualizacao[Global] do detalhe, gravadas só no FIM de
+  uma coleta completa (metadados + itens + resultados + lista de arquivos); recoletar_atualizadas() recoleta
+  a compra quando o PNCP mostra outro valor (python -m coletor.pncp --recoletar-atualizadas);
+  licitacao_documentos.ativo = statusAtivo do /arquivos (anexo inativo fica registrado, mas não é baixado).
+
 Prefeituras normalmente NÃO informam código CATMAT; por isso a busca é textual e cada
 compra passa pelo classificador de escopo (coletor/escopo.py) usando objeto + itens.
 """
@@ -308,6 +315,54 @@ def valor_total_detalhe(det: dict) -> float | None:
     return _valor_positivo((det or {}).get("valorTotalEstimado"))
 
 
+def _link_http(v) -> str | None:
+    """URL http(s) ou None (o link vai para a interface: nada de javascript:, data: etc.)."""
+    if not isinstance(v, str):
+        return None
+    v = v.strip()
+    try:
+        p = urlsplit(v)
+    except ValueError:
+        return None
+    return v if p.scheme in ("http", "https") and p.netloc else None
+
+
+def link_sistema_origem(c: dict, det: dict | None) -> str | None:
+    """Portal onde a disputa acontece: linkSistemaOrigem do detalhe > link_sistema_origem do item da busca."""
+    return _link_http((det or {}).get("linkSistemaOrigem")) or _link_http(c.get("link_sistema_origem"))
+
+
+# Colunas de versão da compra no PNCP (licitacoes_externas) e as chaves do detalhe de onde vêm.
+DATAS_ATUALIZACAO = (("pncp_data_atualizacao", "dataAtualizacao"),
+                     ("pncp_data_atualizacao_global", "dataAtualizacaoGlobal"))
+
+
+def datas_atualizacao(det: dict | None) -> dict:
+    """{coluna: ISO com fuso} das datas de atualização do detalhe (sem fuso = Brasília). Só as que vieram:
+    ausente nunca vira NULL gravado por cima de valor bom."""
+    out = {}
+    for coluna, chave in DATAS_ATUALIZACAO:
+        d = _instante((det or {}).get(chave))
+        if d:
+            out[coluna] = d.isoformat()
+    return out
+
+
+def mudou_no_pncp(guardado: dict, det: dict | None) -> str | None:
+    """Motivo para recoletar a compra, ou None se as datas do PNCP batem com as guardadas.
+    `guardado` = linha de licitacoes_externas (pncp_data_atualizacao[_global]). Compara instantes, não texto.
+    Sem nenhuma data no detalhe não dá para decidir: None (quem chama conta como sem_data_pncp)."""
+    atuais = datas_atualizacao(det)
+    if not atuais:
+        return None
+    if not any(guardado.get(coluna) for coluna, _ in DATAS_ATUALIZACAO):
+        return "sem valor guardado"
+    for coluna, chave in DATAS_ATUALIZACAO:
+        if coluna in atuais and _instante(guardado.get(coluna)) != _instante(atuais[coluna]):
+            return f"{chave} mudou"
+    return None
+
+
 # licitacao_itens.material_ou_servico só aceita 'M' ou 'S' (CHECK licitem_ms_chk, migration 20260925120000).
 # O PNCP manda o código em materialOuServico ("M"/"S") e o nome em materialOuServicoNome ("Material"/"Serviço").
 # Em 30/09/2026 o coletor gravava o nome: todo insert de item falhava com 23514 e, como a exceção interrompe
@@ -336,6 +391,15 @@ def _data(v):
         return (d if d.tzinfo else d.replace(tzinfo=timezone.utc)).isoformat()
     except ValueError:
         return None
+
+
+def anexo_ativo(a: dict) -> bool:
+    """statusAtivo do /arquivos do PNCP. Ausente = ativo (formato antigo); só False/"false" explícito é inativo
+    (anexo substituído ou retirado pelo órgão: o PNCP continua listando, com statusAtivo=false)."""
+    v = a.get("statusAtivo", True)
+    if isinstance(v, str):
+        return v.strip().lower() not in ("false", "f", "0", "nao", "não")
+    return v is not False
 
 
 # Categorias de equipamento/material de academia: item marcado como serviço ('S') no PNCP não conta nelas
@@ -668,7 +732,12 @@ def _raw_resultado(r: dict) -> dict:
 
 
 def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_bytes, dry_run, resumo,
-               modo=None, status_busca=None, agora=None):
+               modo=None, status_busca=None, agora=None, det=None):
+    """Coleta completa de uma compra: itens, resultados, detalhe e lista de arquivos do PNCP, gravados em
+    licitacoes_externas, licitacao_itens, licitacao_resultados e licitacao_documentos.
+    `det` = detalhe já consultado (recoletar_atualizadas); None consulta aqui.
+    `termo` None (recoleta) mantém termos_busca do banco. As datas de atualização do PNCP só são gravadas
+    no fim, depois da lista de arquivos: se algo falhar no meio, a próxima recoleta tenta de novo."""
     itens = pncp.itens(c)
     categoria, interesse, por_item = avaliar(c, itens)
     rotulo = f"{c.get('municipio_nome')}/{c.get('uf')} | {(c.get('description') or '').strip()[:80]}"
@@ -685,10 +754,12 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
     tem_resultado = (bool(pares) or data_homologacao is not None) if com_resultados else None
 
     # Detalhe consultado uma vez: identificação + estado autoritativo da compra (a busca atrasa).
-    try:
-        det, erro_detalhe = consultar_detalhe(pncp, c), None
-    except ConsultaFalhou as e:
-        det, erro_detalhe = None, e
+    erro_detalhe = None
+    if det is None:
+        try:
+            det = consultar_detalhe(pncp, c)
+        except ConsultaFalhou as e:
+            erro_detalhe = e
     ident = identificacao_do_detalhe(c, det) if det is not None else {}
     prioridade, motivo = motivo_prioridade(compra_com_detalhe(c, det), tem_resultado, agora=agora,
                                            status_busca=status_busca, itens=itens)
@@ -746,6 +817,11 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
         linha.pop("prioridade")
     if not data_homologacao:
         linha.pop("data_homologacao")
+    if termo is None:   # recoleta: não troca os termos que acharam a compra
+        linha.pop("termos_busca")
+    link = link_sistema_origem(c, det)
+    if link:   # ausente não apaga um link já gravado
+        linha["link_sistema_origem"] = link
     lic_id = sb.upsert("licitacoes_externas", linha, "fonte,codigo_externo")[0]["id"]
     _inc(resumo, "gravadas")
 
@@ -777,19 +853,29 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
         sb.upsert("licitacao_resultados", linhas, "licitacao_id,numero_item,sequencial_resultado")
 
     arquivos = pncp.arquivos(c)
+    # Anexo inativo (statusAtivo=false: substituído/retirado pelo órgão) também é registrado, com ativo=false:
+    # fica o metadado (título, data, url) para auditoria; não é baixado e não vai para o RAG.
     docs = [{
         "licitacao_id": lic_id, "secao": "processo",
         "nome_original": a.get("titulo"), "arquivo_origem": f"pncp-{a.get('sequencialDocumento')}",
         "data_documento": _data(a.get("dataPublicacaoPncp")),
+        "ativo": anexo_ativo(a),
         "raw": {"tipo_documento": a.get("tipoDocumentoNome"), "url": a.get("url") or a.get("uri")},
-    } for a in arquivos if a.get("statusAtivo", True)]
-    if not docs:
-        return
-    salvos = sb.upsert("licitacao_documentos", docs, "licitacao_id,secao,arquivo_origem")
+    } for a in arquivos]
+    inativos = sum(1 for d in docs if not d["ativo"])
+    if inativos:
+        _inc(resumo, "anexos_inativos", inativos)
+    salvos = sb.upsert("licitacao_documentos", docs, "licitacao_id,secao,arquivo_origem") if docs else []
+    # Coleta completa: grava a versão do PNCP vista (base de comparação de recoletar_atualizadas).
+    versao = datas_atualizacao(det)
+    if versao:
+        sb.atualizar("licitacoes_externas", lic_id, versao)
     if not baixar_arquivos:
         return
     for d in salvos:
         if d.get("status_processamento") not in ("pendente", "erro"):
+            continue
+        if d.get("ativo") is False:
             continue
         url = (d.get("raw") or {}).get("url")
         try:
@@ -845,6 +931,86 @@ def corrigir_processos(pncp: PNCP, sb: Supabase) -> dict:
             r["sem_processo"] += 1
         log.info("  %s -> processo %s | %s", ln["codigo_externo"], ident["numero_processo"], ident["numero_edital"])
     return r
+
+
+PRIORIDADES_RECOLETA_PADRAO = "leads,monitorar"
+
+
+def compra_para_recoleta(raw: dict, codigo: str, det: dict) -> dict | None:
+    """Item da busca guardado em `raw` atualizado com o que o detalhe traz de autoritativo (a busca atrasa e a
+    compra pode ter sido retificada): objeto, situação, prazo de proposta e versão. None se o código não é PNCP."""
+    chaves = compra_de_codigo(codigo)
+    if not chaves:
+        return None
+    c = {**(raw if isinstance(raw, dict) else {}), **chaves}
+    for chave_busca, chave_detalhe in (("description", "objetoCompra"), ("situacao_nome", "situacaoCompraNome"),
+                                       ("data_fim_vigencia", "dataEncerramentoProposta"),
+                                       ("data_atualizacao_pncp", "dataAtualizacao"),
+                                       ("link_sistema_origem", "linkSistemaOrigem")):
+        if det.get(chave_detalhe) not in (None, ""):
+            c[chave_busca] = det[chave_detalhe]
+    return c
+
+
+def recoletar_atualizadas(pncp: PNCP, sb: Supabase, arm: Armazenamento | None = None,
+                          prioridades: list[str] | set[str] | str | None = PRIORIDADES_RECOLETA_PADRAO,
+                          com_resultados: bool = True, max_bytes: int = 80 * 1048576, dry_run: bool = False,
+                          limite: int | None = None, agora: datetime | None = None) -> dict:
+    """Recoleta (metadados + itens + resultados + lista de arquivos) as compras PNCP já gravadas cujo
+    dataAtualizacao/dataAtualizacaoGlobal no detalhe do PNCP difere do guardado em
+    licitacoes_externas.pncp_data_atualizacao[_global] (ou que ainda não têm valor guardado).
+
+    Lê as compras no escopo (categoria_escopo não nula) com prioridade efetiva em `prioridades`
+    (view licitacoes_externas_prioridade_efetiva; padrão leads,monitorar) e faz UMA consulta de detalhe
+    por compra; só as que mudaram passam por _processar (com o detalhe já consultado). Nunca baixa
+    arquivo: o download é sob demanda (--baixar-pendentes, só para as compras do pipeline).
+    Compra que a recoleta classifica como fora do escopo não é regravada (como na coleta normal) e
+    continua sem a versão guardada. `limite` = máximo de compras recoletadas. --dry-run só conta."""
+    prio_set = validar_prioridades(prioridades)
+    agora = agora or datetime.now(timezone.utc)
+    resumo = {"lidas": 0, "consultadas": 0, "sem_mudanca": 0, "mudaram": 0, "recoletadas": 0,
+              "falha_detalhe": 0, "sem_data_pncp": 0, "erros": 0, "motivos": {}}
+    prio_map = {pl["id"]: pl.get("prioridade") for pl in
+                sb.selecionar("licitacoes_externas_prioridade_efetiva", fonte="eq.pncp", order="id.asc",
+                              select="id,prioridade")}
+    linhas = sb.selecionar("licitacoes_externas", fonte="eq.pncp", categoria_escopo="not.is.null", order="id.asc",
+                           select="id,codigo_externo,pncp_data_atualizacao,pncp_data_atualizacao_global,raw")
+    for ln in linhas:
+        if (prio_map.get(ln["id"]) or "").lower() not in prio_set:
+            continue
+        resumo["lidas"] += 1
+        if limite and resumo["recoletadas"] >= limite:
+            break
+        chaves = compra_de_codigo(ln.get("codigo_externo"))
+        if not chaves:
+            continue
+        resumo["consultadas"] += 1
+        try:
+            det = consultar_detalhe(pncp, chaves)
+        except ConsultaFalhou as e:
+            resumo["falha_detalhe"] += 1
+            log.warning("  %s: detalhe falhou, fica para a próxima: %s", ln["codigo_externo"], str(e)[:120])
+            continue
+        motivo = mudou_no_pncp(ln, det)
+        if motivo is None:
+            resumo["sem_data_pncp" if not datas_atualizacao(det) else "sem_mudanca"] += 1
+            continue
+        resumo["mudaram"] += 1
+        resumo["motivos"][motivo] = resumo["motivos"].get(motivo, 0) + 1
+        log.info("  %s: %s (guardado %s / %s; PNCP %s / %s)", ln["codigo_externo"], motivo,
+                 ln.get("pncp_data_atualizacao"), ln.get("pncp_data_atualizacao_global"),
+                 det.get("dataAtualizacao"), det.get("dataAtualizacaoGlobal"))
+        if dry_run:
+            continue
+        try:
+            _processar(pncp, sb, arm, compra_para_recoleta(ln.get("raw"), ln["codigo_externo"], det), None,
+                       com_resultados, False, max_bytes, False, resumo, agora=agora, det=det)
+            resumo["recoletadas"] += 1
+        except Exception as e:
+            resumo["erros"] += 1
+            log.warning("  %s: recoleta falhou (versão não gravada, tenta de novo na próxima): %s",
+                        ln["codigo_externo"], str(e)[:160])
+    return resumo
 
 
 def _compra_slug(lic: dict) -> str:
@@ -977,6 +1143,7 @@ def baixar_pendentes(pncp: PNCP, sb: Supabase, arm: Armazenamento | None,
     e atualiza status_processamento, sha256, mime_type (assinatura do arquivo, não o
     Content-Type octet-stream do PNCP), tamanho_bytes, baixado_em e erro,
     respeitando MAX_MB, o delay e o Retry-After.
+    Anexo inativo no PNCP (licitacao_documentos.ativo = false) não é baixado (ignorados_inativos).
     Idempotente: não baixa de novo o que já tem sha256; o caminho no storage é determinístico (sobrescreve).
     Só baixa URL https de PNCP_HOSTS_PERMITIDOS (cada redirecionamento também é validado).
     Falha transitória (429/5xx esgotados, timeout, conexão, storage) mantém 'pendente' com o erro anotado,
@@ -1020,7 +1187,7 @@ def baixar_pendentes(pncp: PNCP, sb: Supabase, arm: Armazenamento | None,
              len(lic_todas_pncp), len(lic_map))
 
     docs = sb.selecionar("licitacao_documentos", status_processamento="eq.pendente", order="id.asc",
-                         select="id,licitacao_id,secao,nome_original,arquivo_origem,storage_uri,mime_type,tamanho_bytes,sha256,status_processamento,erro,raw")
+                         select="id,licitacao_id,secao,nome_original,arquivo_origem,storage_uri,mime_type,tamanho_bytes,sha256,status_processamento,erro,ativo,raw")
     log.info("licitacao_documentos com status pendente: %d encontrados", len(docs))
 
     resumo = {
@@ -1031,6 +1198,7 @@ def baixar_pendentes(pncp: PNCP, sb: Supabase, arm: Armazenamento | None,
         "ignorados_categoria": 0,
         "ignorados_prioridade": 0,
         "ignorados_sem_url": 0,
+        "ignorados_inativos": 0,
         "bloqueados_host": 0,
         "erros": 0,
         "erros_transitorios": 0,
@@ -1059,6 +1227,11 @@ def baixar_pendentes(pncp: PNCP, sb: Supabase, arm: Armazenamento | None,
                 continue
 
         if lic_id not in lic_map:
+            continue
+
+        if d.get("ativo") is False:
+            # Anexo inativo no PNCP (statusAtivo=false): só metadado, nunca baixa.
+            resumo["ignorados_inativos"] += 1
             continue
 
         lic = lic_map[lic_id]
@@ -1212,6 +1385,11 @@ def criar_parser() -> argparse.ArgumentParser:
                     help="prioridades efetivas permitidas no download de pendentes (valores: leads, monitorar, historico)")
     ap.add_argument("--limite-download", type=int, default=None,
                     help="limite máximo de documentos para baixar no modo --baixar-pendentes")
+    ap.add_argument("--recoletar-atualizadas", action="store_true",
+                    help="recoleta compras PNCP já gravadas cujo dataAtualizacao/dataAtualizacaoGlobal mudou no PNCP "
+                         "(usa --prioridades, padrão leads,monitorar; nunca baixa arquivos)")
+    ap.add_argument("--limite-recoleta", type=int, default=None,
+                    help="máximo de compras recoletadas por --recoletar-atualizadas")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--corrigir-processos", action="store_true",
                     help="só corrige numero_processo das compras PNCP já gravadas (processo administrativo real)")
@@ -1225,6 +1403,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.corrigir_processos:
         sb = Supabase(env("SUPABASE_URL", obrigatorio=True), env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True))
         log.info("RESUMO: %s", corrigir_processos(PNCP(delay=float(env("DELAY_SEGUNDOS", "0.5"))), sb))
+        return 0
+
+    if args.recoletar_atualizadas:
+        sb = Supabase(env("SUPABASE_URL", obrigatorio=True), env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True))
+        r = recoletar_atualizadas(PNCP(delay=float(env("DELAY_SEGUNDOS", "1.0"))), sb, None,
+                                  prioridades=args.prioridades or PRIORIDADES_RECOLETA_PADRAO,
+                                  com_resultados=not args.sem_resultados,
+                                  max_bytes=int(float(env("MAX_MB", "80")) * 1048576),
+                                  dry_run=args.dry_run, limite=args.limite_recoleta)
+        if not args.dry_run:
+            drenar_licitacao_match(sb)
+        log.info("RESUMO RECOLETA: %s", r)
         return 0
 
     if args.baixar_pendentes:

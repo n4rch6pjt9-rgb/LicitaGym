@@ -12,10 +12,10 @@ site:
         - type: space
           key: space-1
           title: Licitagym Docs
-          path: untitled
+          path: product-docs
           default: true
           content:
-            directory: ./untitled
+            directory: ./product-docs
     - type: section
       key: section-2
       title: Product Docs
@@ -23,7 +23,7 @@ site:
       children:
         - type: space
           key: space-2
-          title: Product Docs
+          title: Licitagym Docs
           path: product-docs
           default: true
           draft: true

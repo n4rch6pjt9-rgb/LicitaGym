@@ -245,6 +245,41 @@ def linha_produto(f: dict) -> dict:
             "last_seen_at": datetime.now(timezone.utc).isoformat()}
 
 
+def _adaptador_efetivo(marca: str, modo: str) -> str | None:
+    if modo == "generico":
+        return "generico"
+    return manifesto()[marca].get("adaptador")
+
+
+def _rodar_adaptadores(a, plano: list[tuple[str, str]]) -> int:
+    """Motor novo. Não abre o Supabase: --gravar/--pdf já foram recusados antes."""
+    from .catalogo.executar import executar_marca
+    from .catalogo.motor import Limites
+    intervalo = a.intervalo if a.intervalo > 2.0 else 2.5
+    limites = Limites(max_requisicoes=a.max_requisicoes, max_produtos=a.max_produtos or a.limite or 4000)
+    if a.limite:
+        limites.max_produtos = a.limite
+    pior = 0
+    with open(a.saida, "w", encoding="utf-8") as fh:
+        for marca, ad in plano:
+            cfg = dict(manifesto()[marca])
+            cfg["adaptador"] = ad
+            estado = a.estado
+            if estado and len(plano) > 1:
+                base = Path(estado)
+                estado = str(base.with_name(f"{base.stem}-{marca}{base.suffix or '.json'}"))
+            resultado = executar_marca(
+                marca, cfg, intervalo=intervalo, limites=limites, saida=fh, estado_path=estado,
+            )
+            extra = f", {resultado['motivo']}" if resultado.get("motivo") else ""
+            print(f"{marca}: {len(resultado['produtos'])} produtos ({resultado['status']}{extra})")
+            if resultado["status"] == "bloqueada":
+                pior = 2
+            elif resultado["status"] == "parcial" and pior < 2:
+                pior = 1
+    return pior
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--marca", choices=list(manifesto()), action="append")
@@ -253,7 +288,33 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--saida", default="catalogo_fichas.jsonl")
     ap.add_argument("--pdf", action="store_true", help="baixar também os PDFs do manifesto para o bucket")
     ap.add_argument("--gravar", action="store_true", help="gravar fichas/PDFs no Supabase (catalogo_produtos/_documentos)")
+    ap.add_argument("--adaptador", choices=("auto", "generico"), default="auto",
+                    help="auto usa o adaptador do manifesto; generico força sitemap/índice + extrair_ficha")
+    ap.add_argument("--estado", help="checkpoint JSON para retomar a coleta do adaptador")
+    ap.add_argument("--max-requisicoes", type=int, default=4000)
+    ap.add_argument("--max-produtos", type=int, default=4000)
     a = ap.parse_args(argv)
+    marcas = a.marca or list(manifesto())
+    plano = [(m, _adaptador_efetivo(m, a.adaptador)) for m in marcas]
+    novos = [f"{m} ({ad})" for m, ad in plano if ad]
+    if novos and a.gravar:
+        print(
+            f"erro: --gravar recusado para {', '.join(novos)}. "
+            "A fase 1 não grava no banco e não há migration.",
+            file=sys.stderr,
+        )
+        return 2
+    if novos and a.pdf:
+        print(
+            f"erro: --pdf recusado para {', '.join(novos)}. A fase 1 não baixa PDF nem imagem.",
+            file=sys.stderr,
+        )
+        return 2
+    if any(ad for _, ad in plano) and any(ad is None for _, ad in plano):
+        print("erro: não misture marca com adaptador e marca da coleta antiga na mesma execução.", file=sys.stderr)
+        return 2
+    if any(ad for _, ad in plano):
+        return _rodar_adaptadores(a, [(m, ad) for m, ad in plano if ad])
     sb = None
     if a.gravar or a.pdf:
         from .destino import Supabase, env

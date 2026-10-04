@@ -67,7 +67,9 @@ def test_coleta_grava_compra_itens_vencedor_e_arquivos():
     assert len(tabelas["licitacao_itens"]) == 2 and tabelas["licitacao_itens"][0]["quantidade"] == 50
     res = tabelas["licitacao_resultados"][0]
     assert res["fornecedor_nome"].startswith("HG COM") and res["valor_unitario_homologado"] == 2779.46
-    assert res["fornecedor_cnpj"] == "12345678000199" and "niFornecedor" not in res["raw"]
+    assert res["fornecedor_cnpj"] == "12345678000199" and "raw" not in res
+    assert "raw" not in tabelas["licitacao_itens"][0]
+    assert "raw" in lic
     assert tabelas["licitacao_documentos"][0]["raw"]["tipo_documento"] == "Edital"
 
 
@@ -88,7 +90,7 @@ def test_pessoa_fisica_nao_tem_nome_nem_cpf_gravado():
     P.coletar(p, sb, None, ["x"], "todos", 1, 50, True, False, 10**8, False)
     res = {c.args[0]: c.args[1] for c in sb.upsert.call_args_list}["licitacao_resultados"][0]
     assert res["fornecedor_nome"] is None and res["fornecedor_cnpj"] is None
-    assert "niFornecedor" not in res["raw"] and "nomeRazaoSocialFornecedor" not in res["raw"]
+    assert "raw" not in res
 
 
 from datetime import datetime, timezone

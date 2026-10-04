@@ -226,17 +226,19 @@ async function handleReadiness(
  * se a consulta falhar, o detalhe sai sem aderência (com log) em vez de falhar.
  * Diferença conhecida do catmat_match da lista (licitacoes_ids_por_catmat_unica): aqui não entram o casamento pelo
  * código do item (em 04/10/2026, 2 itens em toda a base) nem os objetos ainda pendentes de recálculo.
+ * Só no detalhe, cada entrada traz `itens`: os numero_item (licitacao_itens) que casaram para aquele (PDM, motivo),
+ * sem repetição, em ordem crescente, no máximo MAX_ITENS_ADERENCIA ([] para texto_objeto ou se a leitura falhar).
  */
 async function aderenciaPorLicitacao(
   client: SupabaseClient,
   ids: number[],
-): Promise<Map<number, CatmatMatch[]>> {
-  const porLicitacao = new Map<number, CatmatMatch[]>();
+): Promise<Map<number, CatmatMatchDetalhe[]>> {
+  const porLicitacao = new Map<number, CatmatMatchDetalhe[]>();
   if (ids.length === 0) return porLicitacao;
   try {
     const { data, error } = await client
       .from("licitacao_match")
-      .select("licitacao_id,codigo_pdm,origem")
+      .select("licitacao_id,codigo_pdm,origem,item_id")
       .in("licitacao_id", ids)
       .order("licitacao_id")
       .order("codigo_pdm")
@@ -245,7 +247,7 @@ async function aderenciaPorLicitacao(
       console.warn("[api-dashboard-oportunidades] aderência do detalhe indisponível (licitacao_match):", error ?? "resposta inválida");
       return porLicitacao;
     }
-    const linhas = data as Array<{ licitacao_id: number; codigo_pdm: number; origem: string }>;
+    const linhas = data as Array<{ licitacao_id: number; codigo_pdm: number; origem: string; item_id?: number | string | null }>;
     const pdms = [...new Set(linhas.map((l) => Number(l.codigo_pdm)))];
     const nomes = new Map<number, string>();
     if (pdms.length > 0) {
@@ -255,14 +257,29 @@ async function aderenciaPorLicitacao(
         nomes.set(Number(r.codigo_pdm), r.nome_pdm);
       }
     }
-    const vistos = new Set<string>();
+    const numeros = await numerosDosItens(
+      client,
+      linhas.map((l) => l.item_id).filter((v): v is number | string => v !== null && v !== undefined).map(Number),
+    );
+    const porChave = new Map<string, { entrada: CatmatMatchDetalhe; itens: Set<number> }>();
     for (const l of linhas) {
       const chave = `${l.licitacao_id}:${l.codigo_pdm}:${l.origem}`;
-      if (vistos.has(chave)) continue;
-      vistos.add(chave);
-      const lista = porLicitacao.get(Number(l.licitacao_id)) ?? [];
-      lista.push({ codigo_pdm: Number(l.codigo_pdm), nome_pdm: nomes.get(Number(l.codigo_pdm)) ?? null, codigo_item: null, motivo: l.origem });
-      porLicitacao.set(Number(l.licitacao_id), lista);
+      let grupo = porChave.get(chave);
+      if (!grupo) {
+        grupo = {
+          entrada: { codigo_pdm: Number(l.codigo_pdm), nome_pdm: nomes.get(Number(l.codigo_pdm)) ?? null, codigo_item: null, motivo: l.origem, itens: [] },
+          itens: new Set<number>(),
+        };
+        porChave.set(chave, grupo);
+        const lista = porLicitacao.get(Number(l.licitacao_id)) ?? [];
+        lista.push(grupo.entrada);
+        porLicitacao.set(Number(l.licitacao_id), lista);
+      }
+      const numero = l.item_id === null || l.item_id === undefined ? undefined : numeros.get(Number(l.item_id));
+      if (numero !== undefined) grupo.itens.add(numero);
+    }
+    for (const { entrada, itens } of porChave.values()) {
+      entrada.itens = [...itens].sort((a, b) => a - b).slice(0, MAX_ITENS_ADERENCIA);
     }
   } catch (e) {
     console.warn("[api-dashboard-oportunidades] aderência do detalhe indisponível:", e instanceof Error ? e.message : String(e));
@@ -270,8 +287,34 @@ async function aderenciaPorLicitacao(
   return porLicitacao;
 }
 
+/**
+ * numero_item (public.licitacao_itens) por id de item, lido só pelos ids pedidos, em lotes (URL curta no PostgREST).
+ * É um extra da aderência: se a leitura falhar, devolve o que conseguiu (com log) e as entradas saem com `itens: []`.
+ */
+async function numerosDosItens(client: SupabaseClient, itemIds: number[]): Promise<Map<number, number>> {
+  const numeros = new Map<number, number>();
+  const unicos = [...new Set(itemIds.filter((id) => Number.isFinite(id)))];
+  try {
+    for (let i = 0; i < unicos.length; i += ITENS_ADERENCIA_LOTE) {
+      const lote = unicos.slice(i, i + ITENS_ADERENCIA_LOTE);
+      const { data, error } = await client.from("licitacao_itens").select("id,numero_item").in("id", lote);
+      if (error || !Array.isArray(data)) {
+        console.warn("[api-dashboard-oportunidades] números dos itens da aderência indisponíveis (licitacao_itens):", error ?? "resposta inválida");
+        return numeros;
+      }
+      for (const r of data as Array<{ id: number | string; numero_item: number | string | null }>) {
+        const numero = r.numero_item === null || r.numero_item === undefined ? NaN : Number(r.numero_item);
+        if (Number.isFinite(numero)) numeros.set(Number(r.id), numero);
+      }
+    }
+  } catch (e) {
+    console.warn("[api-dashboard-oportunidades] números dos itens da aderência indisponíveis:", e instanceof Error ? e.message : String(e));
+  }
+  return numeros;
+}
+
 /** Acrescenta catmat_match ao item só quando há casamento (a resposta não muda para quem não tem). */
-function comAderencia(item: Record<string, unknown>, ader: Map<number, CatmatMatch[]>): Record<string, unknown> {
+function comAderencia(item: Record<string, unknown>, ader: Map<number, CatmatMatchDetalhe[]>): Record<string, unknown> {
   const m = ader.get(Number(item.id));
   return m && m.length > 0 ? { ...item, catmat_match: m } : item;
 }
@@ -445,6 +488,17 @@ export interface CatmatMatch {
   codigo_item: number | null;
   motivo: string;
 }
+
+/** Entrada de catmat_match no get: a mesma da lista mais os numero_item que casaram (só no detalhe). */
+export interface CatmatMatchDetalhe extends CatmatMatch {
+  itens: number[];
+}
+
+/** Máximo de numero_item por entrada de catmat_match no get (em 04/10/2026, o maior grupo tinha 44). */
+export const MAX_ITENS_ADERENCIA = 50;
+
+/** Tamanho do lote de ids por leitura de licitacao_itens na aderência do get. */
+export const ITENS_ADERENCIA_LOTE = 500;
 
 /** SQLSTATE do Postgres para statement_timeout (query_canceled). */
 export const PG_STATEMENT_TIMEOUT = "57014";

@@ -168,11 +168,13 @@ begin
   values
     (9999909, 'SECRETARIA EST. EDUC. CULTURA E ESPORTE FICTÍCIA', null, 'E', 11, '{}'::jsonb, 'fixture'),
     (9999910, 'SECRETARIA DE ESPORTES ESTADUAL FICTÍCIA', null, 'E', 11, '{}'::jsonb, 'fixture'),
-    (9999911, 'OSCIP ESPORTE FICTÍCIA', null, null, null, '{}'::jsonb, 'fixture');
+    (9999911, 'OSCIP ESPORTE FICTÍCIA', null, null, null, '{}'::jsonb, 'fixture'),
+    (9999912, 'SECRETARIA DE ESTADO DO ESPORTE FICTÍCIA', null, 'E', 11, '{}'::jsonb, 'fixture');
   insert into public.uasgs (codigo_uasg, nome_uasg, orgao_id, sigla_uf, ativo, raw, payload_hash)
   select x.codigo, x.nome, o.id, 'RN', true, '{}'::jsonb, 'fixture'
     from (values ('999991', 'DIVISAO ADMINISTRATIVA FICTICIA RN', 9999909),
-                 ('999101', 'DIVISAO ADMINISTRATIVA FICTICIA ESTADUAL', 9999910)) x(codigo, nome, codigo_orgao)
+                 ('999101', 'DIVISAO ADMINISTRATIVA FICTICIA ESTADUAL', 9999910),
+                 ('999121', 'BATALHAO DE POLICIA MILITAR FICTICIO', 9999912)) x(codigo, nome, codigo_orgao)
     join public.orgaos o on o.codigo_orgao = x.codigo_orgao;
   perform public.fn_orgaos_uasgs_classificar();
   -- drift simulado (tipo gravado <> regra atual), como nos órgãos do espelho classificados antes da carga
@@ -181,6 +183,12 @@ begin
   update public.uasgs  set tipo_orgao = 'outros', grupo_tipo = 'outros'
    where codigo_uasg = '999101';
   update public.orgaos set tipo_orgao = 'secretaria_esporte', grupo_tipo = 'esporte_lazer' where codigo_orgao = 9999911;
+  -- estado anterior à regra nova: secretaria estadual com UASG de polícia militar (seguranca_defesa) e contador 1
+  update public.orgaos set tipo_orgao = 'secretaria_estadual', grupo_tipo = 'executivo_estadual' where codigo_orgao = 9999912;
+  update public.uasgs  set tipo_orgao = 'policia_militar',
+                           grupo_tipo = (select grupo_tipo from public.orgao_tipos where tipo_orgao = 'policia_militar')
+   where codigo_uasg = '999121';
+  update public.orgaos set seguranca_defesa_uasgs = 1 where codigo_orgao = 9999912;
   create temp table fx_antes on commit drop as
     select 'orgao'::text nivel, codigo_orgao::text chave, tipo_orgao, grupo_tipo from public.orgaos where compras_payload_hash = 'fixture'
     union all
@@ -204,7 +212,9 @@ begin
       ('uasg',  '999991',  'secretaria_estadual'),
       ('orgao', '9999910', 'secretaria_esporte'),
       ('uasg',  '999101',  'secretaria_esporte'),
-      ('orgao', '9999911', 'outros')) x(nivel, chave, esperado)
+      ('orgao', '9999911', 'outros'),
+      ('orgao', '9999912', 'secretaria_esporte'),
+      ('uasg',  '999121',  'secretaria_esporte')) x(nivel, chave, esperado)
   loop
     n := n + 1;
     select case when v.nivel = 'orgao'
@@ -226,8 +236,16 @@ begin
     join (select 'orgao'::text nivel, codigo_orgao::text chave, tipo_orgao from public.orgaos where compras_payload_hash = 'fixture'
           union all select 'uasg', codigo_uasg, tipo_orgao from public.uasgs where payload_hash = 'fixture') d using (nivel, chave)
    where a.tipo_orgao is distinct from d.tipo_orgao;
-  if r.mud <> 3 or r.lateral <> 0 then
-    f := f + 1; raise notice 'FALHA fase 2 [M] mudaram %, laterais % (esperado 3 e 0)', r.mud, r.lateral;
+  if r.mud <> 5 or r.lateral <> 0 then
+    f := f + 1; raise notice 'FALHA fase 2 [M] mudaram %, laterais % (esperado 5 e 0)', r.mud, r.lateral;
+  end if;
+
+  -- 3c: a UASG de polícia militar saiu de seguranca_defesa; o contador do pai acompanha (1 -> 0)
+  n := n + 1;
+  select o.seguranca_defesa_uasgs as cont, (select u.seguranca_defesa from public.uasgs u where u.codigo_uasg = '999121') as seg
+    into r from public.orgaos o where o.codigo_orgao = 9999912;
+  if r.cont is distinct from 0 or r.seg is distinct from false then
+    f := f + 1; raise notice 'FALHA fase 2 [S] seguranca_defesa_uasgs do pai = %, uasg.seguranca_defesa = % (esperado 0 e false)', r.cont, r.seg;
   end if;
 
   raise notice 'orgao_tipo_secretaria_esporte_fixtures_check fase 2 (guarda entra/sai): % checagens, % falhas', n, f;

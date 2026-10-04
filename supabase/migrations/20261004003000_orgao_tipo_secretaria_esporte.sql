@@ -54,8 +54,10 @@
 --                      fn_orgaos_uasgs_classificar() completa, com a regra que estiver em prod). A esfera usa
 --                      orgaos.uf já gravado pela última classificação (o tipo novo não muda a localização).
 --                      Equivalência: sem drift, depois desta migration fn_orgaos_uasgs_classificar() completa altera
---                      0 linhas (teste local sobre a carga real). seguranca_defesa_uasgs não é recalculado: conta
---                      uasgs.seguranca_defesa/ativo, que esta migration não altera (recalcular só corrigiria drift).
+--                      0 linhas (teste local sobre a carga real). seguranca_defesa_uasgs é recalculado só nos órgãos
+--                      pais das UASGs gravadas aqui (3c): uasgs.seguranca_defesa é coluna gerada de grupo_tipo, e uma
+--                      UASG que entra em/sai de secretaria_esporte pode sair/entrar de seguranca_defesa (ex.: BATALHAO
+--                      DE POLICIA MILITAR sob secretaria estadual que vira esporte; review do Copilot no #184).
 --
 -- Não toca estrutura, função, grant, supabase/functions/** nem escopo_termos/orgao_tipo_override. Idempotente: o
 -- remanejamento de ordem só roda se o tipo ainda não existe; seeds com "on conflict do nothing"; a 2ª chamada de
@@ -158,5 +160,18 @@ update public.uasgs u
    and (n.tipo = 'secretaria_esporte' or u.tipo_orgao = 'secretaria_esporte')
    and (u.tipo_orgao, u.grupo_tipo, u.tipo_orgao_origem, u.tipo_orgao_regra_id, u.esfera_canon, u.poder_canon)
        is distinct from (n.tipo, n.grupo_tipo, n.origem, n.regra_id, n.esf, n.pod);
+
+-- 3c) seguranca_defesa_uasgs dos órgãos pais das UASGs gravadas no 3b (mesma fórmula de fn_orgaos_uasgs_classificar).
+--     As UASGs gravadas no 3b são as com classificado_em = now() (now() = início desta transação). Sem UASG gravada
+--     (prod hoje: 0), não toca nada.
+update public.orgaos o
+   set seguranca_defesa_uasgs = s.n
+  from (select u.orgao_id as id, count(*) filter (where u.seguranca_defesa and u.ativo)::int as n
+          from public.uasgs u
+         where u.orgao_id in (select u2.orgao_id from public.uasgs u2
+                               where u2.classificado_em = now() and u2.orgao_id is not null)
+         group by u.orgao_id) s
+ where o.id = s.id
+   and o.seguranca_defesa_uasgs is distinct from s.n;
 
 commit;

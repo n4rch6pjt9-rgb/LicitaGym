@@ -206,20 +206,33 @@ begin
       select 'override', 'nenhum override aponta para secretaria_esporte (a migration não cria override)', '0',
              (select count(*)::text from public.orgao_tipo_override where tipo_orgao = 'secretaria_esporte')
       union all
-      -- dados: reclassificação aplicada (só linhas com nome de esporte, barato; sem override)
-      select 'dados', 'órgãos classificados com nome de esporte e tipo diferente das regras', '0',
+      -- dados: reclassificação aplicada (só linhas com nome de esporte, barato; sem override). Só conta divergência
+      -- que entra em/sai de secretaria_esporte: drift lateral (tipo gravado <> regra atual, nenhum dos dois esporte,
+      -- ex.: ERN 99792 em prod, #221) é preservado de propósito pela migration e fica para o job das 05:03.
+      select 'dados', 'órgãos classificados com nome de esporte e entrada/saída de secretaria_esporte diferente das regras', '0',
              (select count(*)::text from public.orgaos o
+               cross join lateral public.fn_classifica_orgao(coalesce(o.nome_orgao, o.razao_social),
+                       o.natureza_juridica, coalesce(o.esfera, o.pncp_esfera), o.codigo_tipo_administracao, o.codigo_orgao,
+                       o.codigo_orgao_vinculado) cl
                where public.fn_norm_nome(coalesce(o.nome_orgao, o.razao_social)) ~ '\y(PARA)?D?ESPORT|\yESP?( E)? LAZER\y'
                  and coalesce(o.tipo_orgao_origem, '') <> 'override' and o.classificado_em is not null
-                 and o.tipo_orgao is distinct from (public.fn_classifica_orgao(coalesce(o.nome_orgao, o.razao_social),
-                       o.natureza_juridica, coalesce(o.esfera, o.pncp_esfera), o.codigo_tipo_administracao, o.codigo_orgao,
-                       o.codigo_orgao_vinculado)).tipo_orgao)
+                 and o.tipo_orgao is distinct from cl.tipo_orgao
+                 and (o.tipo_orgao = 'secretaria_esporte' or cl.tipo_orgao = 'secretaria_esporte'))
       union all
-      select 'dados', 'UASGs classificadas com nome de esporte e tipo diferente das regras', '0',
+      select 'dados', 'UASGs classificadas com nome de esporte e entrada/saída de secretaria_esporte diferente das regras', '0',
              (select count(*)::text from public.uasgs u left join public.orgaos o on o.id = u.orgao_id
+               cross join lateral public.fn_classifica_uasg(u.nome_uasg, o.tipo_orgao) cl
                where public.fn_norm_nome(u.nome_uasg) ~ '\y(PARA)?D?ESPORT|\yESP?( E)? LAZER\y'
                  and coalesce(u.tipo_orgao_origem, '') <> 'override' and u.classificado_em is not null
-                 and u.tipo_orgao is distinct from (public.fn_classifica_uasg(u.nome_uasg, o.tipo_orgao)).tipo_orgao)
+                 and u.tipo_orgao is distinct from cl.tipo_orgao
+                 and (u.tipo_orgao = 'secretaria_esporte' or cl.tipo_orgao = 'secretaria_esporte'))
+      union all
+      -- contador seguranca_defesa_uasgs dos pais de UASG secretaria_esporte = contagem atual (3c da migration)
+      select 'dados', 'órgãos pais de UASG secretaria_esporte com seguranca_defesa_uasgs diferente da contagem', '0',
+             (select count(*)::text from public.orgaos o
+               where o.id in (select orgao_id from public.uasgs where tipo_orgao = 'secretaria_esporte')
+                 and o.seguranca_defesa_uasgs is distinct from
+                     (select count(*) filter (where u.seguranca_defesa and u.ativo)::int from public.uasgs u where u.orgao_id = o.id))
       union all
       select 'dados', 'secretaria_esporte com grupo/poder inconsistente (orgaos+uasgs)', '0',
              (select (count(*) filter (where grupo_tipo is distinct from 'esporte_lazer' or poder_canon is distinct from 'E'))::text

@@ -657,6 +657,85 @@ def test_pagina_seguinte_invalida_nao_encerra_com_sucesso():
         P.paginar_intervalo(buscar, rotulo="meio")
 
 
+def _lote(inicio: int, n: int) -> list[dict]:
+    return [{"id": inicio + i} for i in range(n)]
+
+
+def test_pagina_curta_intermediaria_ignora_total_paginas_e_coleta_tudo():
+    """40 + páginas cheias, totalPaginas=3, 300 registros: não para na 3ª chamada."""
+    emitidos = 0
+    chamadas = []
+
+    def buscar(de, ate):
+        nonlocal emitidos
+        chamadas.append((de, ate))
+        assert ate - de + 1 <= 100
+        if emitidos >= 300:
+            return {"resultado": [], "totalPaginas": 3}
+        n = 40 if emitidos == 0 else min(100, 300 - emitidos)
+        lote = _lote(emitidos + 1, n)
+        emitidos += n
+        return {"resultado": lote, "totalPaginas": 3}
+
+    itens, avisos = P.paginar_intervalo(buscar, tamanho=100, rotulo="tp")
+    assert [i["id"] for i in itens] == list(range(1, 301))
+    assert len(chamadas) == 5  # 40, 100, 100, 60 e a página vazia
+    assert any("não encerram" in a for a in avisos)
+
+
+def test_pagina_curta_intermediaria_ignora_paginas_restantes():
+    emitidos = 0
+    chamadas = []
+
+    def buscar(de, ate):
+        nonlocal emitidos
+        chamadas.append((de, ate))
+        if emitidos >= 300:
+            return {"resultado": [], "paginasRestantes": 0}
+        n = 40 if emitidos == 0 else min(100, 300 - emitidos)
+        lote = _lote(emitidos + 1, n)
+        emitidos += n
+        restantes = max(0, 3 - len(chamadas))
+        return {"resultado": lote, "paginasRestantes": restantes}
+
+    itens, _avisos = P.paginar_intervalo(buscar, tamanho=100, rotulo="pr")
+    assert len(itens) == 300 and itens[-1]["id"] == 300
+    assert len(chamadas) == 5
+
+
+def test_pagina_curta_intermediaria_para_em_total_registros():
+    emitidos = 0
+    chamadas = []
+
+    def buscar(de, ate):
+        nonlocal emitidos
+        chamadas.append((de, ate))
+        n = 40 if emitidos == 0 else min(100, 300 - emitidos)
+        lote = _lote(emitidos + 1, n)
+        emitidos += n
+        return {"resultado": lote, "totalRegistros": 300}
+
+    itens, avisos = P.paginar_intervalo(buscar, tamanho=100, rotulo="tr")
+    assert len(itens) == 300 and itens[0]["id"] == 1 and itens[-1]["id"] == 300
+    assert len(chamadas) == 4  # para ao acumular 300, sem página vazia extra
+    assert avisos  # a página curta com totalRegistros ainda não atingido avisa e segue
+
+
+def test_faixa_alinhada_para_em_total_paginas_sem_chamada_extra():
+    chamadas = []
+
+    def buscar(de, ate):
+        chamadas.append(de)
+        if len(chamadas) > 3:
+            raise AssertionError("chamada além da última página")
+        inicio = (len(chamadas) - 1) * 100
+        return {"resultado": _lote(inicio + 1, 100), "totalPaginas": 3}
+
+    itens, avisos = P.paginar_intervalo(buscar, tamanho=100, rotulo="alinhada")
+    assert len(itens) == 300 and chamadas == [1, 101, 201]
+    assert avisos == []
+
+
 def test_paginar_para_pelo_total():
     faixas = []
 

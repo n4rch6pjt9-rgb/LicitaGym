@@ -24,8 +24,10 @@ que não aceitam acesso automatizado: o adaptador recusa essas fontes (ver FONTE
 
 Paginação (regra de 03/10/2026): cada faixa pede no máximo 100 itens (`nPaginaDe`/`nPaginaAte`).
 A resposta observada do webservice é uma lista, sem total de registros. Página curta não encerra.
-Sem total, a coleta segue até uma página vazia. Se o corpo vier como objeto com `totalRegistros`,
-`totalPaginas`, `paginasRestantes` ou `total`, a parada usa esse total. Há um limite de segurança
+Sem total, a coleta segue até uma página vazia. Com a faixa alinhada, `totalRegistros`,
+`total`, `totalPaginas` ou `paginasRestantes` encerram quando confirmam o fim. Depois de uma
+página curta intermediária, `totalPaginas` e `paginasRestantes` deixam de encerrar: vale
+`totalRegistros`/`total` ou a página vazia. Há um limite de segurança
 de MAX_PAGINAS_SEGURANCA páginas (e detecção de página repetida); os dois param com aviso no log
 e não contam como fim confirmado. `--paginas` é teto opcional; omitido, coleta até o fim.
 CPF e CNPJ de documento de licitação ficam íntegros (decisão de 01/10/2026): não se mascaram.
@@ -158,7 +160,10 @@ def paginar_intervalo(buscar, *, tamanho: int = TAMANHO_PAGINA, max_paginas: int
     `buscar(de, ate)` devolve a página. Sem total, só uma página vazia encerra; página
     curta não. Lista vazia, ou objeto com lista reconhecida vazia, é página vazia.
     Envelope sem essa lista (nulo, string, objeto só com mensagem) levanta erro.
-    Com total no corpo, `avaliar_pagina` encerra quando o total confirma o fim.
+    Com a faixa ainda alinhada, `avaliar_pagina` encerra quando o total confirma o fim.
+    Depois de uma página curta intermediária a faixa deixa de coincidir com o número
+    da página: `totalPaginas` e `paginasRestantes` não encerram mais. Segue
+    `totalRegistros`/`total` (pelo acumulado) ou uma página vazia.
     `max_paginas` e `max_itens` são tetos opcionais (avisam se cortarem antes do fim).
     Sem eles, o corte é `MAX_PAGINAS_SEGURANCA` ou página de conteúdo repetido: os dois
     param com aviso e não são fim confirmado. A faixa seguinte começa depois do último
@@ -174,6 +179,10 @@ def paginar_intervalo(buscar, *, tamanho: int = TAMANHO_PAGINA, max_paginas: int
     vistas: set[str] = set()
     de = 1
     pagina = 1
+    # Página curta intermediária avança `de` por len(itens), não por uma página cheia.
+    # A partir daí o contador `pagina` não é o número de página da API.
+    desalinhada = False
+    avisou_desalinhada = False
 
     def _aviso(msg: str) -> None:
         avisos.append(msg)
@@ -200,11 +209,26 @@ def paginar_intervalo(buscar, *, tamanho: int = TAMANHO_PAGINA, max_paginas: int
                    "interrompendo para não laçar (não é fim confirmado)")
             break
         out.extend(itens)
-        decisao = avaliar_pagina(itens, tamanho=pedido, pagina=pagina, corpo=corpo, acumulado=len(out))
+        corpo_decisao = corpo
+        if desalinhada:
+            corpo_decisao = {k: v for k, v in corpo.items() if k not in ("totalPaginas", "paginasRestantes")}
+            if not avisou_desalinhada and any(k in corpo for k in ("totalPaginas", "paginasRestantes")):
+                if any(k in corpo_decisao for k in ("totalRegistros", "total")):
+                    texto = ("faixa desalinhada após página curta; totalPaginas/paginasRestantes "
+                             "ignorados; parada por totalRegistros/total ou página vazia")
+                else:
+                    texto = ("faixa desalinhada após página curta; totalPaginas/paginasRestantes "
+                             "não encerram; seguindo até página vazia")
+                _aviso(f"{rotulo}: {texto}")
+                avisou_desalinhada = True
+        decisao = avaliar_pagina(
+            itens, tamanho=pedido, pagina=pagina, corpo=corpo_decisao, acumulado=len(out))
         if decisao.aviso:
             _aviso(f"{rotulo} página {pagina}: {decisao.aviso}")
         if decisao.encerrar or not itens:
             break
+        if len(itens) < pedido:
+            desalinhada = True
         de += len(itens)
         pagina += 1
     return out, avisos

@@ -32,6 +32,7 @@ from scripts.lib.http_client import (
     clamp_compras_gov_page_size,
     is_legacy_empty_on_error_enabled,
 )
+from scripts.lib.paginacao import acao_pagina
 from scripts.lib.sync_state import SyncStateManager, is_sync_resume_enabled
 
 logging.basicConfig(
@@ -156,7 +157,10 @@ class ConsultaComprasGovCollector:
             resultado.dataExecucao = datetime.now().isoformat()
             return resultado
         except HttpFetchError as e:
-            logger.warning(f"Falha na consulta {nome_endpoint}: {e}")
+            if e.status_code == 404:
+                logger.warning(f"HTTP 404 na consulta {nome_endpoint}; não é fim de coleta: {e}")
+            else:
+                logger.warning(f"Falha na consulta {nome_endpoint}: {e}")
             return ConsultaResultado(
                 endpoint=nome_endpoint,
                 modulo=endpoint.modulo,
@@ -189,33 +193,107 @@ class ConsultaComprasGovCollector:
     ) -> ConsultaResultado:
         """Faz requisição HTTP para um endpoint usando o HttpClient compartilhado"""
 
-        url = self._monta_url(endpoint, opcoes)
-
+        opcoes = self._com_tamanho_pagina(endpoint, opcoes)
+        tamanho = opcoes.get("pageSize") or opcoes.get("tamanhoPagina") or clamp_compras_gov_page_size(None)
+        pagina = int(opcoes.get("pagina") or 1)
+        acumulado: List[Any] = []
+        vistos: set[str] = set()
+        lidos = 0
         loop = asyncio.get_running_loop()
-        dados = await loop.run_in_executor(
-            None,
-            lambda: self.client.fetch_json(
-                url=url,
-                timeout=TIMEOUT_REQUISICAO,
-                max_retries=MAX_RETRIES,
-                raise_for_status=True,
-                legacy_empty_envelope_key="resultado",
-            ),
-        )
 
-        registros = self._extrai_registros(dados)
+        while True:
+            op = dict(opcoes)
+            op["pagina"] = pagina
+            url = self._monta_url(endpoint, op)
+            dados = await loop.run_in_executor(
+                None,
+                lambda url=url: self.client.fetch_json(
+                    url=url,
+                    timeout=TIMEOUT_REQUISICAO,
+                    max_retries=MAX_RETRIES,
+                    raise_for_status=True,
+                    legacy_empty_envelope_key="resultado",
+                ),
+            )
+            registros, corpo = self._registros_e_corpo(dados)
+            if registros is None:
+                logger.warning(
+                    "consulta %s página %s: resposta inesperada; não é fim de coleta",
+                    endpoint.nome, pagina,
+                )
+                return ConsultaResultado(
+                    endpoint=endpoint.nome,
+                    modulo=endpoint.modulo,
+                    sucesso=False,
+                    registrosTotais=len(acumulado),
+                    registrosProcessados=len(acumulado),
+                    erros=["resposta inesperada; não é fim de coleta"],
+                    tempoMs=0,
+                    dataExecucao=datetime.now().isoformat(),
+                    tentativas=1,
+                )
+            parar, incluir = acao_pagina(
+                registros, corpo, tamanho=int(tamanho), pagina=pagina, vistos=vistos, logger=logger,
+                ja_lidos=lidos,
+            )
+            if incluir:
+                lidos += len(registros)
+                acumulado.extend(registros)
+            if not incluir:
+                return ConsultaResultado(
+                    endpoint=endpoint.nome,
+                    modulo=endpoint.modulo,
+                    sucesso=False,
+                    registrosTotais=len(acumulado),
+                    registrosProcessados=len(acumulado),
+                    erros=["página repetida ou resposta inesperada; não é fim de coleta"],
+                    tempoMs=0,
+                    dataExecucao=datetime.now().isoformat(),
+                    tentativas=1,
+                )
+            if parar or not endpoint.temPaginacao:
+                if not endpoint.temPaginacao and not parar:
+                    logger.warning(
+                        "consulta %s: schema sem paginação e o total não confirma o fim da página %s",
+                        endpoint.nome, pagina,
+                    )
+                break
+            pagina += 1
 
         return ConsultaResultado(
             endpoint=endpoint.nome,
             modulo=endpoint.modulo,
             sucesso=True,
-            registrosTotais=len(registros),
-            registrosProcessados=len(registros),
+            registrosTotais=len(acumulado),
+            registrosProcessados=len(acumulado),
             erros=[],
             tempoMs=0,
             dataExecucao=datetime.now().isoformat(),
             tentativas=1,
         )
+
+    def _com_tamanho_pagina(self, endpoint: EndpointConsulta, opcoes: Dict[str, Any]) -> Dict[str, Any]:
+        op = dict(opcoes)
+        pedido = op.get("pageSize", op.get("tamanhoPagina"))
+        tamanho = clamp_compras_gov_page_size(pedido)
+        chaves = set(endpoint.parametros or {})
+        if "pageSize" in chaves or "pageSize" in op:
+            op["pageSize"] = tamanho
+        if "tamanhoPagina" in chaves or "tamanhoPagina" in op:
+            op["tamanhoPagina"] = tamanho
+        if "pageSize" not in op and "tamanhoPagina" not in op:
+            op["tamanhoPagina"] = tamanho
+        return op
+
+    def _registros_e_corpo(self, dados: Any) -> tuple[Optional[List[Any]], Dict[str, Any]]:
+        if isinstance(dados, list):
+            return dados, {}
+        if isinstance(dados, dict):
+            if isinstance(dados.get("resultado"), list):
+                return dados["resultado"], dados
+            if isinstance(dados.get("data"), list):
+                return dados["data"], dados
+        return None, {}
 
     def _monta_url(self, endpoint: EndpointConsulta, opcoes: Dict[str, Any]) -> str:
         """Monta URL com parâmetros e clamp de page-size"""

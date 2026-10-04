@@ -238,17 +238,17 @@ class CadastroFornecedores:
         return resumo
 
 
-def cnpjs_de_resultados(sb, pagina: int = 1000) -> list[str]:
-    """CNPJs distintos já gravados em licitacao_resultados (serve PNCP e Paradigma)."""
-    vistos: set[str] = set()
-    ini = 0
-    while True:
-        rows = sb.selecionar("licitacao_resultados", select="fornecedor_cnpj", fornecedor_cnpj="not.is.null",
-                             order="id", offset=str(ini), limit=str(pagina))
-        vistos |= {r["fornecedor_cnpj"] for r in rows}
-        if len(rows) < pagina:
-            return sorted(vistos)
-        ini += pagina
+def cnpjs_de_resultados(sb, pagina: int = 100) -> list[str]:
+    """CNPJs distintos já gravados em licitacao_resultados (serve PNCP e Paradigma).
+
+    Uma leitura só: `selecionar` pagina em keyset (no máximo 100) e pede
+    `count=exact` uma vez. `pagina` permanece na assinatura e não reabre a contagem.
+    """
+    if int(pagina) < 1:
+        raise ValueError("pagina")
+    rows = sb.selecionar("licitacao_resultados", select="fornecedor_cnpj,id",
+                         fornecedor_cnpj="not.is.null")
+    return sorted({r["fornecedor_cnpj"] for r in rows})
 
 
 def main(argv: list[str] | None = None) -> int:

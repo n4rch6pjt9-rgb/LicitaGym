@@ -6,7 +6,8 @@
 -- Qualquer falha é listada em NOTICE ("FALHA ...") e o script termina com RAISE EXCEPTION.
 --
 -- O que confere:
---   (a) catmat_item_completo: anon/authenticated/PUBLIC sem nenhum privilégio; service_role com SELECT.
+--   (a) catmat_item_completo: anon/authenticated/PUBLIC sem nenhum privilégio; service_role com SELECT
+--       (só onde a MV existe; ela não é criada por migration).
 --   (c) update_updated_at_column() e taxonomia_bloco(text) com search_path vazio; nenhuma outra função
 --       de usuário em public/private sem search_path fixo.
 --   (d-prep) match_* com search_path = public, extensions; ACL inalterado (anon sem EXECUTE).
@@ -29,16 +30,17 @@ begin
       ('public.match_licitacao_chunks(vector,integer,text,text)', 'search_path=public, extensions'),
       ('public.match_licitacao_chunks_v2(vector,integer,text,text,boolean)', 'search_path=public, extensions'),
       ('public.match_catalogo_chunks(vector,integer,text,text)', 'search_path=public, extensions'))
-    select 'MV existe' as nome, (select oid from mv) is not null as ok
-    union all
-    select format('MV: %s sem %s', r, p),
-           not exists (select 1 from mv, aclexplode(coalesce((select relacl from pg_class where oid = mv.oid), '{}')) a
+    -- A MV vem de supabase/sql/catmat_item_completo.sql (fora das migrations): no Postgres de validação ela não
+    -- existe e as checagens (a) são puladas. relacl nulo = ACL padrão (só o dono), sem linhas no aclexplode.
+    select format('MV: %s sem %s', r, p) as nome,
+           not exists (select 1 from mv, aclexplode((select relacl from pg_class where oid = mv.oid)) a
                         where a.privilege_type = p
                           and a.grantee = case r when 'public' then 0 else (select oid from pg_roles where rolname = r) end)
-           and case when r = 'public' then true else not has_table_privilege(r, (select oid from mv), p) end
-      from roles, privs
+           and case when r = 'public' then true else not has_table_privilege(r, (select oid from mv), p) end as ok
+      from roles, privs where (select oid from mv) is not null
     union all
     select 'MV: service_role com SELECT', has_table_privilege('service_role', (select oid from mv), 'SELECT')
+     where (select oid from mv) is not null
     union all
     select format('%s com %s', sig, esperado),
            coalesce(esperado = any(coalesce((select proconfig from pg_proc where oid = to_regprocedure(sig)), '{}'::text[])), false)
@@ -61,6 +63,9 @@ begin
       raise notice 'FALHA %', v_chk.nome;
     end if;
   end loop;
+  if to_regclass('public.catmat_item_completo') is null then
+    raise notice 'advisors_warn_security_check: public.catmat_item_completo ausente neste Postgres; checagens (a) puladas.';
+  end if;
   raise notice 'advisors_warn_security_check: % checagens, % falhas', n, f;
   if f > 0 then
     raise exception 'advisors_warn_security_check: % falhas', f;

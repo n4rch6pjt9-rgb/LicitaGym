@@ -35,6 +35,16 @@ begin
                        and column_name = 'objeto_registro_preco') then
     raise exception 'CHECK FALHOU: view das oportunidades sem as colunas do objeto canônico';
   end if;
+  if has_table_privilege('anon', 'public.licitacoes_externas_prioridade_efetiva'::regclass, 'SELECT')
+     or has_table_privilege('authenticated', 'public.licitacoes_externas_prioridade_efetiva'::regclass, 'SELECT')
+     or not has_table_privilege('service_role', 'public.licitacoes_externas_prioridade_efetiva'::regclass, 'SELECT') then
+    raise exception 'CHECK FALHOU: ACL da view das oportunidades mudou ao recriá-la';
+  end if;
+  foreach r in array array['anon', 'authenticated'] loop
+    if has_function_privilege(r, 'public.licitacoes_externas_objeto_canonico_trg()'::regprocedure, 'EXECUTE') then
+      raise exception 'CHECK FALHOU: % executa a função do gatilho', r;
+    end if;
+  end loop;
   if (select count(*) from public.objeto_categorias where ativo) < 11 then
     raise exception 'CHECK FALHOU: catálogo canônico sem as 11 categorias semeadas';
   end if;
@@ -91,6 +101,22 @@ begin
     select objeto_categoria, objeto_registro_preco into v_cat, v_srp from public.licitacoes_externas where id = v_id;
     if v_cat <> 'credenciamento' or v_srp then
       raise exception 'CHECK FALHOU: update não reclassificou (% / %)', v_cat, v_srp;
+    end if;
+    -- o papel dos coletores (service_role) grava com o gatilho ativo
+    set local role service_role;
+    insert into public.licitacoes_externas (fonte, objeto) values ('pncp', 'Aquisição de playground') returning id into v_id;
+    if (select objeto_categoria from public.licitacoes_externas where id = v_id) <> 'playground' then
+      raise exception 'CHECK FALHOU: gatilho como service_role';
+    end if;
+    reset role;
+    -- regex inválido é recusado na gravação do catálogo
+    v_cat := 'aceitou';
+    begin
+      insert into public.objeto_categorias (slug, nome, ordem, padrao) values ('check_regex', 'CHECK REGEX', 999, '(AB');
+    exception when check_violation or invalid_regular_expression then v_cat := 'recusou';
+    end;
+    if v_cat <> 'recusou' then
+      raise exception 'CHECK FALHOU: catálogo aceitou regex inválido';
     end if;
     raise exception 'DESFAZER_CHECK_OBJETO';
   exception when raise_exception then

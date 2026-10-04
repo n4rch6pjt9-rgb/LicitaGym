@@ -111,3 +111,44 @@ Deno.test("get sem casamento não ganha catmat_match; falha na aderência não d
   assertEquals(r2.status, 200);
   assertEquals("catmat_match" in (await r2.json()).item, false);
 });
+
+Deno.test("get: view sem as colunas do objeto (função publicada antes da migration) responde sem elas", async () => {
+  const selects: string[] = [];
+  let tentativa = 0;
+  const cliente = {
+    from: (tabela: string) => {
+      const q: Record<string, unknown> = {};
+      for (const m of ["eq", "in", "order", "limit"]) q[m] = () => q;
+      q.select = (cols: string) => {
+        if (tabela !== "licitacao_match") selects.push(cols);
+        return q;
+      };
+      q.maybeSingle = () => {
+        tentativa++;
+        return Promise.resolve(
+          tentativa === 1
+            ? { data: null, error: { code: "42703", message: "column licitacoes_externas_prioridade_efetiva.objeto_categoria does not exist" } }
+            : { data: { id: 9, fonte: "pncp" }, error: null },
+        );
+      };
+      q.then = (ok: (v: unknown) => unknown) => Promise.resolve({ data: [], error: null }).then(ok);
+      return q;
+    },
+  };
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(post({ action: "get", id: 9 }), { ...autorizado, getClient: () => cliente as any });
+  assertEquals(res.status, 200);
+  assertEquals(selects.length, 2);
+  assertEquals(selects[0].includes("objeto_categoria"), true);
+  assertEquals(selects[1].includes("objeto_categoria"), false);
+});
+
+Deno.test("filtro objeto_categoria: só slugs inválidos é 400 (não vira lista sem filtro); mais de 20 é 400", async () => {
+  const invalido = parseActionFromBody({ action: "list", objeto_categoria: ["FOO", "a b"] });
+  assertEquals("error" in invalido, true);
+  const muitos = parseActionFromBody({ action: "list", objeto_categoria: Array.from({ length: 21 }, (_, i) => `cat_${i}`) });
+  assertEquals("error" in muitos, true);
+  const misto = parseActionFromBody({ action: "list", objeto_categoria: ["FOO", "playground"] });
+  if ("error" in misto || misto.action !== "list") throw new Error("parse falhou");
+  assertEquals(misto.filtros.objeto_categoria, ["playground"]);
+});

@@ -280,6 +280,16 @@ export function parseListParams(
     catmat[campo] = r;
   }
 
+  // Objeto canônico: slugs de objeto_categorias. Pedido só com slugs inválidos é erro (não vira "sem filtro").
+  const objetoBruto = sanitizeStringList(source.objeto_categoria);
+  const objetoCategorias = objetoBruto?.filter((c) => /^[a-z][a-z0-9_]{0,59}$/.test(c));
+  if (objetoBruto && objetoBruto.length > 0 && (!objetoCategorias || objetoCategorias.length === 0)) {
+    return { error: "Parâmetro 'objeto_categoria' inválido: informe slugs do catálogo (ex.: material_esportivo)." };
+  }
+  if (objetoCategorias && objetoCategorias.length > 20) {
+    return { error: "Parâmetro 'objeto_categoria' aceita no máximo 20 categorias." };
+  }
+
   const filtros: LicitacaoFiltros = {
     prioridade: sanitizeString(source.prioridade),
     uf: sanitizeString(source.uf)?.toUpperCase(),
@@ -292,7 +302,7 @@ export function parseListParams(
     categoria_escopo: sanitizeString(source.categoria_escopo),
     interesse_borracha: sanitizeBoolean(source.interesse_borracha),
     fonte: sanitizeString(source.fonte),
-    objeto_categoria: sanitizeStringList(source.objeto_categoria)?.filter((c) => /^[a-z][a-z0-9_]{0,59}$/.test(c)),
+    objeto_categoria: objetoCategorias,
     registro_preco: sanitizeBoolean(source.registro_preco),
     data_publicacao_inicio: sanitizeDate(source.data_publicacao_inicio),
     data_publicacao_fim: sanitizeDate(source.data_publicacao_fim),

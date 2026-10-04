@@ -34,7 +34,10 @@ create table if not exists public.objeto_categorias (
   ativo      boolean not null default true,
   updated_at timestamptz not null default now(),
   constraint objeto_categorias_slug_chk check (slug ~ '^[a-z][a-z0-9_]*$' and slug <> 'outros'),
-  constraint objeto_categorias_nome_chk check (nome = upper(nome) and char_length(nome) between 3 and 60)
+  constraint objeto_categorias_nome_chk check (nome = upper(nome) and char_length(nome) between 3 and 60),
+  -- Regex inválido falha aqui, na gravação do catálogo, e não depois em todo INSERT/UPDATE dos coletores
+  -- (o gatilho de licitacoes_externas avalia os padrões em cada linha).
+  constraint objeto_categorias_regex_chk check (('' ~ padrao) is not null and (exceto is null or ('' ~ exceto) is not null))
 );
 
 comment on table public.objeto_categorias is

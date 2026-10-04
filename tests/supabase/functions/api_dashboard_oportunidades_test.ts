@@ -976,7 +976,10 @@ Deno.test("handleRequest get por orgao_cnpj + processo_norm asserte eq nos dois 
   assertEquals(rangeCall, { method: "range", args: [0, 9] });
 
   // Asserção de desempate determinístico por id no get por processo
-  const orderCalls = mockClient.calls.filter((c) => c.method === "order");
+  // (as ordenações da leitura de aderência em licitacao_match — licitacao_id, codigo_pdm — ficam de fora)
+  const orderCalls = mockClient.calls.filter((c) =>
+    c.method === "order" && !["licitacao_id", "codigo_pdm"].includes(c.args[0] as string)
+  );
   assertEquals(orderCalls, [
     { method: "order", args: ["data_publicacao", { ascending: false, nullsFirst: false }] },
     { method: "order", args: ["id", { ascending: true }] },

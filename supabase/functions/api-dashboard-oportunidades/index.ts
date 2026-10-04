@@ -86,6 +86,30 @@ export const CANONICA_COLUMNS = "canonica_id,eh_canonica";
 /** Projeção de list/get (sempre na view): colunas públicas da tabela + as da canônica. */
 export const OPORTUNIDADES_COLUMNS = `${PUBLIC_LICITACAO_COLUMNS},${CANONICA_COLUMNS}`;
 
+/** Colunas do objeto canônico (migration 20261004140000_objeto_canonico). */
+const COLUNAS_OBJETO = ["objeto_categoria", "objeto_registro_preco"];
+/** Mesmas colunas sem as do objeto canônico: usadas se a função for publicada antes de a migration existir no banco. */
+export const OPORTUNIDADES_COLUMNS_SEM_OBJETO = OPORTUNIDADES_COLUMNS.split(",")
+  .filter((c) => !COLUNAS_OBJETO.includes(c))
+  .join(",");
+
+/** O banco respondeu "coluna não existe" (42703) para uma coluna do objeto canônico? */
+function colunaDoObjetoAusente(error: unknown): boolean {
+  const e = error as { code?: string; message?: string } | null;
+  return e?.code === "42703" && COLUNAS_OBJETO.some((c) => (e.message ?? "").includes(c));
+}
+
+/**
+ * Executa a leitura com as colunas do objeto canônico e, se a view ainda não as tiver (função publicada antes da
+ * migration, ou migration atrasada), repete sem elas: list e get continuam respondendo, só sem a categoria.
+ */
+async function comColunasDoObjeto<R extends { error: unknown }>(ler: (colunas: string) => PromiseLike<R>): Promise<R> {
+  const r = await ler(OPORTUNIDADES_COLUMNS);
+  if (!colunaDoObjetoAusente(r.error)) return r;
+  console.warn("[api-dashboard-oportunidades] colunas do objeto canônico ausentes na view; respondendo sem elas");
+  return await ler(OPORTUNIDADES_COLUMNS_SEM_OBJETO);
+}
+
 export interface DashboardOportunidadesClientContext {
   getClient?: () => SupabaseClient;
   requireAuth?: (req: Request) => Promise<Response | null> | Response | null;
@@ -109,11 +133,6 @@ export function getDefaultServiceClient(): SupabaseClient {
   });
 }
 
-/**
- * Ação: readiness
- * Verifica se a tabela licitacoes_externas está acessível e retorna contagem e data da última sincronização,
- * sem expor credenciais ou segredos.
- */
 /** Catálogo canônico do objeto (opções do filtro), na ordem de precedência, mais "outros". */
 async function handleObjetoCategorias(ctx?: DashboardOportunidadesClientContext): Promise<Response> {
   try {
@@ -137,6 +156,11 @@ async function handleObjetoCategorias(ctx?: DashboardOportunidadesClientContext)
   }
 }
 
+/**
+ * Ação: readiness
+ * Verifica se a tabela licitacoes_externas está acessível e retorna contagem e data da última sincronização,
+ * sem expor credenciais ou segredos.
+ */
 async function handleReadiness(
   ctx?: DashboardOportunidadesClientContext,
 ): Promise<Response> {
@@ -197,19 +221,11 @@ async function handleReadiness(
 }
 
 /**
- * Ação: get
- * Lê da view com a prioridade efetiva. Uma compra `historico` é devolvida normalmente (com
- * `prioridade: "historico"`): links do BI e links diretos continuam funcionando; ela só não aparece
- * no list de Oportunidades. O mesmo vale para uma republicação PNCP não canônica (`eh_canonica: false`,
- * `canonica_id` = id da publicação que aparece no list): o get não filtra a canônica.
- * - Se buscado por `id` ou `codigo_externo`: lookup único (retorna `{ item: ... }`, ou 404 claro).
- * - Se buscado por `orgao_cnpj` + `processo_norm`: pode haver 1..N compras (AGENTS.md L66-77),
- *   portanto retorna coleção (`{ items: [...] }`), sem maybeSingle().
- */
-/**
  * Aderência ao catálogo CATMAT de licitações já carregadas (detalhe): lê public.licitacao_match (texto do item ou do
  * objeto casando com padrões de PDM) e devolve, por licitação, a mesma forma do catmat_match da lista. É um extra:
- * se a consulta falhar, o detalhe sai sem aderência em vez de falhar.
+ * se a consulta falhar, o detalhe sai sem aderência (com log) em vez de falhar.
+ * Diferença conhecida do catmat_match da lista (licitacoes_ids_por_catmat_unica): aqui não entram o casamento pelo
+ * código do item (em 04/10/2026, 2 itens em toda a base) nem os objetos ainda pendentes de recálculo.
  */
 async function aderenciaPorLicitacao(
   client: SupabaseClient,
@@ -222,13 +238,19 @@ async function aderenciaPorLicitacao(
       .from("licitacao_match")
       .select("licitacao_id,codigo_pdm,origem")
       .in("licitacao_id", ids)
-      .limit(500);
-    if (error || !Array.isArray(data)) return porLicitacao;
+      .order("licitacao_id")
+      .order("codigo_pdm")
+      .limit(2000);
+    if (error || !Array.isArray(data)) {
+      console.warn("[api-dashboard-oportunidades] aderência do detalhe indisponível (licitacao_match):", error ?? "resposta inválida");
+      return porLicitacao;
+    }
     const linhas = data as Array<{ licitacao_id: number; codigo_pdm: number; origem: string }>;
     const pdms = [...new Set(linhas.map((l) => Number(l.codigo_pdm)))];
     const nomes = new Map<number, string>();
     if (pdms.length > 0) {
-      const { data: rows } = await client.from("catmat_pdms").select("codigo_pdm,nome_pdm").in("codigo_pdm", pdms);
+      const { data: rows, error: nomesError } = await client.from("catmat_pdms").select("codigo_pdm,nome_pdm").in("codigo_pdm", pdms);
+      if (nomesError) console.warn("[api-dashboard-oportunidades] nomes dos PDMs indisponíveis:", nomesError);
       for (const r of (Array.isArray(rows) ? rows : []) as Array<{ codigo_pdm: number; nome_pdm: string }>) {
         nomes.set(Number(r.codigo_pdm), r.nome_pdm);
       }
@@ -254,6 +276,16 @@ function comAderencia(item: Record<string, unknown>, ader: Map<number, CatmatMat
   return m && m.length > 0 ? { ...item, catmat_match: m } : item;
 }
 
+/**
+ * Ação: get
+ * Lê da view com a prioridade efetiva. Uma compra `historico` é devolvida normalmente (com
+ * `prioridade: "historico"`): links do BI e links diretos continuam funcionando; ela só não aparece
+ * no list de Oportunidades. O mesmo vale para uma republicação PNCP não canônica (`eh_canonica: false`,
+ * `canonica_id` = id da publicação que aparece no list): o get não filtra a canônica.
+ * - Se buscado por `id` ou `codigo_externo`: lookup único (retorna `{ item: ... }`, ou 404 claro).
+ * - Se buscado por `orgao_cnpj` + `processo_norm`: pode haver 1..N compras (AGENTS.md L66-77),
+ *   portanto retorna coleção (`{ items: [...] }`), sem maybeSingle().
+ */
 async function handleGet(
   params: GetActionParams,
   ctx?: DashboardOportunidadesClientContext,
@@ -263,11 +295,13 @@ async function handleGet(
 
     // Caso 1: Busca única por ID
     if (params.id !== undefined && params.id !== null) {
-      const { data, error } = await client
-        .from(OPORTUNIDADES_VIEW)
-        .select(OPORTUNIDADES_COLUMNS)
-        .eq("id", params.id)
-        .maybeSingle();
+      const { data, error } = await comColunasDoObjeto((colunas) =>
+        client
+          .from(OPORTUNIDADES_VIEW)
+          .select(colunas)
+          .eq("id", params.id)
+          .maybeSingle()
+      );
 
       if (error) {
         console.error("[api-dashboard-oportunidades] Erro ao buscar por ID:", error);
@@ -299,13 +333,14 @@ async function handleGet(
         );
       }
 
-      const query = client
-        .from(OPORTUNIDADES_VIEW)
-        .select(OPORTUNIDADES_COLUMNS)
-        .eq("codigo_externo", params.codigo_externo)
-        .eq("fonte", params.fonte);
-
-      const { data, error } = await query.maybeSingle();
+      const { data, error } = await comColunasDoObjeto((colunas) =>
+        client
+          .from(OPORTUNIDADES_VIEW)
+          .select(colunas)
+          .eq("codigo_externo", params.codigo_externo as string)
+          .eq("fonte", params.fonte as string)
+          .maybeSingle()
+      );
 
       if (error) {
         console.error("[api-dashboard-oportunidades] Erro ao buscar por codigo_externo:", error);
@@ -334,14 +369,16 @@ async function handleGet(
       const limit = params.limit && params.limit > 0 ? params.limit : 20;
       const { from, to } = calculateRange(page, limit);
 
-      const { data, error, count } = await client
-        .from(OPORTUNIDADES_VIEW)
-        .select(OPORTUNIDADES_COLUMNS, { count: "exact" })
-        .eq("orgao_cnpj", params.orgao_cnpj)
-        .eq("processo_norm", params.processo_norm)
-        .order("data_publicacao", { ascending: false, nullsFirst: false })
-        .order("id", { ascending: true })
-        .range(from, to);
+      const { data, error, count } = await comColunasDoObjeto((colunas) =>
+        client
+          .from(OPORTUNIDADES_VIEW)
+          .select(colunas, { count: "exact" })
+          .eq("orgao_cnpj", params.orgao_cnpj as string)
+          .eq("processo_norm", params.processo_norm as string)
+          .order("data_publicacao", { ascending: false, nullsFirst: false })
+          .order("id", { ascending: true })
+          .range(from, to)
+      );
 
       if (error) {
         console.error("[api-dashboard-oportunidades] Erro ao buscar por processo:", error);
@@ -552,19 +589,17 @@ async function handleList(
       matches = r.porLicitacao;
     }
 
-    let baseQuery = client
-      .from(OPORTUNIDADES_VIEW)
-      .select(OPORTUNIDADES_COLUMNS, { count: "exact" });
-
-    baseQuery = applyOportunidadesScope(applyLicitacaoFilters(baseQuery, filtros), filtros);
-
     const isAscending = order_direction === "asc";
-    baseQuery = baseQuery
-      .order(order_by, { ascending: isAscending, nullsFirst: false })
-      .order("id", { ascending: true })
-      .range(from, to);
-
-    const { data, error, count } = await baseQuery;
+    const { data, error, count } = await comColunasDoObjeto((colunas) => {
+      let baseQuery = client
+        .from(OPORTUNIDADES_VIEW)
+        .select(colunas, { count: "exact" });
+      baseQuery = applyOportunidadesScope(applyLicitacaoFilters(baseQuery, filtros), filtros);
+      return baseQuery
+        .order(order_by, { ascending: isAscending, nullsFirst: false })
+        .order("id", { ascending: true })
+        .range(from, to);
+    });
 
     // Página além do fim: o PostgREST responde 416 (PGRST103). Para o cliente é uma página vazia,
     // não uma falha; o total vem de uma contagem com os mesmos filtros.

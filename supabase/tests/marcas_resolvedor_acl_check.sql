@@ -254,7 +254,14 @@ begin
         from (values (''' Flex  Equipment Ltda ''', ' Flex  Equipment Ltda ', 'FLEX EQUIPMENT'),
                      ('''Fundiban Fundiban''', 'Fundiban Fundiban', 'FUNDIBAN'),
                      ('''Açúcar & Cia.''', 'Açúcar & Cia.', 'ACUCAR & CIA'),
-                     (''' - ''', ' - ', 'NULL')) as t(entrada_txt, entrada, esperado)
+                     (''' - ''', ' - ', 'NULL'),
+                     -- LTDA seguido: o separador não pode ser consumido pelo LTDA anterior
+                     ('''LTDA LTDA''', 'LTDA LTDA', 'NULL'),
+                     ('''Acme Ltda Ltda''', 'Acme Ltda Ltda', 'ACME'),
+                     ('''Acme Ltda. Ltda''', 'Acme Ltda. Ltda', 'ACME'),
+                     ('''LTDA ME''', 'LTDA ME', 'ME'),
+                     ('''ME LTDA''', 'ME LTDA', 'ME'),
+                     ('''ULTDA LTDAX''', 'ULTDA LTDAX', 'ULTDA LTDAX')) as t(entrada_txt, entrada, esperado)
     $q$
     loop
       n := n + 1;

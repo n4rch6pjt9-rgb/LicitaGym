@@ -124,7 +124,7 @@ as $fn$
                      'áàâãäåéèêëíìîïóòôõöúùûüçñýÁÀÂÃÄÅÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÛÜÇÑÝ',
                      'aaaaaaeeeeiiiiooooouuuucnyAAAAAAEEEEIIIIOOOOOUUUUCNY')),
                    '[^A-Z0-9&]+', ' ', 'g'),
-                 '(^| )LTDA( |$)', ' ', 'g'),
+                 '(^| )LTDA(?= |$)', ' ', 'g'),
                ' +', ' ', 'g')) as s
     ) t
 $fn$;

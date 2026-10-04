@@ -1,3 +1,7 @@
+import type { AtributoItem } from "../_shared/compras-gov/descricao-parser.ts";
+
+export type { AtributoItem };
+
 /** Níveis da árvore CATMAT (plural = listagem de filhos; singular = nível de uma regra). */
 export type NivelArvore = "grupos" | "classes" | "pdms" | "itens";
 export type NivelRegra = "grupo" | "classe" | "pdm" | "item";
@@ -15,6 +19,9 @@ export interface CatmatNo {
   nome_grupo: string | null;
   nome_classe: string | null;
   nome_pdm: string | null;
+  /** Só itens: cabeça da descrição (âncora do casamento) e atributos de taxonomia, na ordem da descrição. */
+  nome_item?: string | null;
+  atributos?: AtributoItem[];
 }
 
 /** Estado de um nó em relação ao catálogo da empresa. */
@@ -77,6 +84,10 @@ export type ActionParams =
   | { action: "catalogo_remover"; id: number }
   | { action: "palavras_listar"; codigo_pdm: number }
   | { action: "palavras_salvar"; id: number | null; codigo_pdm: number; padrao: string; ativo: boolean; tipo: TipoPalavra }
-  | { action: "palavras_remover"; id: number; tipo: TipoPalavra };
+  | { action: "palavras_remover"; id: number; tipo: TipoPalavra }
+  | { action: "catalogo_itens"; codigo_pdm: number }
+  | { action: "catalogo_hidratar_itens"; apos_pdm: number | null; limite_pdms: number };
 
-export const ACOES_ADMIN = new Set(["catalogo_salvar", "catalogo_remover", "palavras_salvar", "palavras_remover"]);
+export const ACOES_ADMIN = new Set([
+  "catalogo_salvar", "catalogo_remover", "palavras_salvar", "palavras_remover", "catalogo_hidratar_itens",
+]);

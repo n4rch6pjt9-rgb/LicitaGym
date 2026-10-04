@@ -71,6 +71,8 @@ export const PUBLIC_LICITACAO_COLUMNS = [
   "created_at",
   "updated_at",
   "last_synced_at",
+  "objeto_categoria",
+  "objeto_registro_preco",
 ].join(",");
 
 /**
@@ -112,6 +114,29 @@ export function getDefaultServiceClient(): SupabaseClient {
  * Verifica se a tabela licitacoes_externas está acessível e retorna contagem e data da última sincronização,
  * sem expor credenciais ou segredos.
  */
+/** Catálogo canônico do objeto (opções do filtro), na ordem de precedência, mais "outros". */
+async function handleObjetoCategorias(ctx?: DashboardOportunidadesClientContext): Promise<Response> {
+  try {
+    const client = ctx?.getClient ? ctx.getClient() : getDefaultServiceClient();
+    const { data, error } = await client
+      .from("objeto_categorias")
+      .select("slug,nome,ordem")
+      .eq("ativo", true)
+      .order("ordem");
+    if (error) {
+      console.error("[api-dashboard-oportunidades] objeto_categorias:", error);
+      return jsonResponse({ error: "Falha ao consultar o catálogo de objetos" }, 500);
+    }
+    return jsonResponse({
+      action: "objeto_categorias",
+      categorias: [...(data ?? []), { slug: "outros", nome: "OUTROS", ordem: 9999 }],
+    });
+  } catch (e) {
+    console.error("[api-dashboard-oportunidades] objeto_categorias:", e);
+    return jsonResponse({ error: "Erro interno no servidor" }, 500);
+  }
+}
+
 async function handleReadiness(
   ctx?: DashboardOportunidadesClientContext,
 ): Promise<Response> {
@@ -181,6 +206,54 @@ async function handleReadiness(
  * - Se buscado por `orgao_cnpj` + `processo_norm`: pode haver 1..N compras (AGENTS.md L66-77),
  *   portanto retorna coleção (`{ items: [...] }`), sem maybeSingle().
  */
+/**
+ * Aderência ao catálogo CATMAT de licitações já carregadas (detalhe): lê public.licitacao_match (texto do item ou do
+ * objeto casando com padrões de PDM) e devolve, por licitação, a mesma forma do catmat_match da lista. É um extra:
+ * se a consulta falhar, o detalhe sai sem aderência em vez de falhar.
+ */
+async function aderenciaPorLicitacao(
+  client: SupabaseClient,
+  ids: number[],
+): Promise<Map<number, CatmatMatch[]>> {
+  const porLicitacao = new Map<number, CatmatMatch[]>();
+  if (ids.length === 0) return porLicitacao;
+  try {
+    const { data, error } = await client
+      .from("licitacao_match")
+      .select("licitacao_id,codigo_pdm,origem")
+      .in("licitacao_id", ids)
+      .limit(500);
+    if (error || !Array.isArray(data)) return porLicitacao;
+    const linhas = data as Array<{ licitacao_id: number; codigo_pdm: number; origem: string }>;
+    const pdms = [...new Set(linhas.map((l) => Number(l.codigo_pdm)))];
+    const nomes = new Map<number, string>();
+    if (pdms.length > 0) {
+      const { data: rows } = await client.from("catmat_pdms").select("codigo_pdm,nome_pdm").in("codigo_pdm", pdms);
+      for (const r of (Array.isArray(rows) ? rows : []) as Array<{ codigo_pdm: number; nome_pdm: string }>) {
+        nomes.set(Number(r.codigo_pdm), r.nome_pdm);
+      }
+    }
+    const vistos = new Set<string>();
+    for (const l of linhas) {
+      const chave = `${l.licitacao_id}:${l.codigo_pdm}:${l.origem}`;
+      if (vistos.has(chave)) continue;
+      vistos.add(chave);
+      const lista = porLicitacao.get(Number(l.licitacao_id)) ?? [];
+      lista.push({ codigo_pdm: Number(l.codigo_pdm), nome_pdm: nomes.get(Number(l.codigo_pdm)) ?? null, codigo_item: null, motivo: l.origem });
+      porLicitacao.set(Number(l.licitacao_id), lista);
+    }
+  } catch (e) {
+    console.warn("[api-dashboard-oportunidades] aderência do detalhe indisponível:", e instanceof Error ? e.message : String(e));
+  }
+  return porLicitacao;
+}
+
+/** Acrescenta catmat_match ao item só quando há casamento (a resposta não muda para quem não tem). */
+function comAderencia(item: Record<string, unknown>, ader: Map<number, CatmatMatch[]>): Record<string, unknown> {
+  const m = ader.get(Number(item.id));
+  return m && m.length > 0 ? { ...item, catmat_match: m } : item;
+}
+
 async function handleGet(
   params: GetActionParams,
   ctx?: DashboardOportunidadesClientContext,
@@ -209,10 +282,10 @@ async function handleGet(
       }
 
       const itemRecord = data as unknown as Record<string, unknown>;
-      const itemWithUrl = {
+      const itemWithUrl = comAderencia({
         ...itemRecord,
         url_edital: buildEditalUrl(itemRecord),
-      };
+      }, await aderenciaPorLicitacao(client, [Number(itemRecord.id)]));
 
       return jsonResponse({ item: itemWithUrl });
     }
@@ -247,10 +320,10 @@ async function handleGet(
       }
 
       const itemRecord = data as unknown as Record<string, unknown>;
-      const itemWithUrl = {
+      const itemWithUrl = comAderencia({
         ...itemRecord,
         url_edital: buildEditalUrl(itemRecord),
-      };
+      }, await aderenciaPorLicitacao(client, [Number(itemRecord.id)]));
 
       return jsonResponse({ item: itemWithUrl });
     }
@@ -281,10 +354,11 @@ async function handleGet(
       }
 
       const rawItems = (data ?? []) as unknown as Array<Record<string, unknown>>;
-      const items = rawItems.map((row) => ({
+      const ader = await aderenciaPorLicitacao(client, rawItems.map((r) => Number(r.id)));
+      const items = rawItems.map((row) => comAderencia({
         ...row,
         url_edital: buildEditalUrl(row),
-      }));
+      }, ader));
       const total = count;
       if (total === 0 && items.length === 0) {
         return jsonResponse(
@@ -599,6 +673,8 @@ export async function handleRequest(
       return await handleList(actionParams, ctx);
     case "acompanhamento":
       return await handleAcompanhamento(actionParams, ctx, getDefaultServiceClient);
+    case "objeto_categorias":
+      return await handleObjetoCategorias(ctx);
     default:
       return jsonResponse({ error: "Ação não suportada" }, 400);
   }

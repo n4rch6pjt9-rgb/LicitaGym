@@ -1,4 +1,4 @@
--- Checagem dos jobs CATMAT 7810 e 9320 (migration 20261003231000).
+-- Checagem dos jobs CATMAT 7810 e 9320 (migration 20261004006000).
 -- Sem pg_cron a checagem só avisa. No Supabase exige os dois jobs, sem segredo no comando.
 
 do $$

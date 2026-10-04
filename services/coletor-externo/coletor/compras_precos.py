@@ -36,6 +36,7 @@ import requests
 from .compras_api import ErroApiCompras, ParametroInvalido, corpo_json, erro_http, validar_codigo
 from .compras_pdms import CatalogoPdmsIndisponivel, carregar_pdms_efetivos
 from .destino import Supabase, env
+from .paginacao import TAMANHO_PAGINA_MAX, DecisaoPagina, avaliar_pagina, clamp_tamanho, pagina_repetida
 from .retry import espera_retry
 
 log = logging.getLogger("coletor.compras_precos")
@@ -51,7 +52,13 @@ UA = "LicitaGym-Coletor/1.1 (pesquisa de licitacoes publicas)"
 PDMS_PADRAO = [2640, 2638, 7113, 7115, 3522, 5341, 8166, 18481, 10779]
 
 TIPOS_CONSULTA = ("codigoPdm", "codigoItemCatalogo")
-TAMANHO_PAGINA = 100
+# Regra do projeto (Marcelo, 03/10/2026): coletores Python pedem no máximo 100 itens por página, mesmo que a API
+# aceite até 500. O fim da coleta é decidido por coletor.paginacao.avaliar_pagina (o mesmo helper do PGC e do ARP):
+# só encerra quando os totais da resposta concordam; página curta não é fim; página vazia com totais indicando
+# registros restantes, ou com totais divergentes, encerra com aviso e conta como erro (coleta truncada); página
+# repetida também é erro. Total declarado 0 só é fim legítimo se a consulta não leu nenhum item: com itens já
+# lidos, o metadado é contraditório e a consulta sai como erro (review do Copilot em cc1f0cb).
+TAMANHO_PAGINA = TAMANHO_PAGINA_MAX
 
 
 def validar_parametros_consulta(tipo: Any, codigo: Any) -> int:
@@ -90,6 +97,57 @@ def deduplicar_por_chave(linhas: list[dict[str, Any]]) -> tuple[list[dict[str, A
         if atual is None or str(linha.get("data_hora_atualizacao_item") or "") >= str(atual.get("data_hora_atualizacao_item") or ""):
             escolhidas[k] = linha
     return list(escolhidas.values()), len(linhas) - len(escolhidas)
+
+
+class TipoInvalido(ValueError):
+    """Campo de texto da API veio com tipo que não é texto (ex.: marca={"nome": "X"})."""
+
+
+def texto_ou_nulo(val: Any, campo: str = "valor") -> str | None:
+    """Texto com strip; vazio e o placeholder "0" da API viram None (ni_fornecedor, marca, codigo_uasg).
+
+    Só aceita str ou None (o schema declara esses campos como string). O único não-texto tolerado é o placeholder
+    inteiro 0. Qualquer outro tipo (dict, lista, número, bool) levanta TipoInvalido: serializar com str() gravaria
+    "{'nome': 'X'}" como marca oficial.
+    """
+    if val is None:
+        return None
+    if type(val) is int and val == 0:
+        return None
+    if not isinstance(val, str):
+        raise TipoInvalido(f"{campo} com tipo {type(val).__name__}, esperado texto")
+    s = val.strip()
+    return None if s in ("", "0") else s
+
+
+def total_zero_declarado(corpo: dict[str, Any]) -> str | None:
+    """Nome do primeiro total da resposta (totalRegistros, total, totalPaginas) declarado como 0 ou negativo.
+
+    Mesma leitura numérica de coletor.paginacao._inteiro (int, float inteiro ou string de dígitos; bool não conta).
+    """
+    for chave in ("totalRegistros", "total", "totalPaginas"):
+        val = corpo.get(chave)
+        if val is None or isinstance(val, bool):
+            continue
+        if isinstance(val, float) and val.is_integer():
+            val = int(val)
+        if isinstance(val, str) and val.strip().isdigit():
+            val = int(val.strip())
+        if isinstance(val, int) and val <= 0:
+            return chave
+    return None
+
+
+def tipo_ni(ni: str | None) -> str | None:
+    """'cnpj' (14 dígitos), 'cpf' (11), 'outro' ou None. Pessoa física fica gravada, mas fora do ranking de marcas
+    (v_marca_ocorrencias.entra_ranking só aceita CNPJ)."""
+    if not ni:
+        return None
+    if re.fullmatch(r"\d{14}", ni):
+        return "cnpj"
+    if re.fullmatch(r"\d{11}", ni):
+        return "cpf"
+    return "outro"
 
 
 def normalizar_preco_praticado(item: dict[str, Any]) -> dict[str, Any] | None:
@@ -142,9 +200,11 @@ def normalizar_preco_praticado(item: dict[str, Any]) -> dict[str, Any] | None:
         "percentual_maior_desconto": _num(item.get("percentualMaiorDesconto")),
         "descricao_item": item.get("descricaoItem"),
         "descricao_detalhada_item": item.get("descricaoDetalhadaItem"),
-        # Única fonte de marca do Compras.gov. Fabricante e modelo não existem na fonte: NULL de propósito
-        # (colunas mantidas porque as views de BI as leem). Não inventar.
-        "marca": (str(item.get("marca")).strip() or None) if item.get("marca") is not None else None,
+        # Única fonte de marca do Compras.gov: é a marca declarada na proposta, em texto livre e sem limite de 20
+        # caracteres (até 84): ~76% é marca real, o restante é modelo, lixo ou ambíguo. Por isso a marca canônica sai de
+        # private.marca_resolver na view. Fabricante e modelo não existem na fonte: NULL de propósito (colunas
+        # mantidas porque as views de BI as leem). Não inventar.
+        "marca": texto_ou_nulo(item.get("marca"), "marca"),
         "fabricante": None,
         "modelo": None,
         "data_resultado": _date(item.get("dataResultado")),
@@ -154,9 +214,9 @@ def normalizar_preco_praticado(item: dict[str, Any]) -> dict[str, Any] | None:
         "capacidade_unidade_fornecimento": _num(item.get("capacidadeUnidadeFornecimento")),
         "sigla_unidade_medida": item.get("siglaUnidadeMedida"),
         "nome_unidade_medida": item.get("nomeUnidadeMedida"),
-        "ni_fornecedor": str(item.get("niFornecedor") or "").strip() or None,
+        "ni_fornecedor": texto_ou_nulo(item.get("niFornecedor"), "niFornecedor"),
         "nome_fornecedor": item.get("nomeFornecedor"),
-        "codigo_uasg": str(item.get("codigoUasg") or "").strip() or None,
+        "codigo_uasg": texto_ou_nulo(item.get("codigoUasg"), "codigoUasg"),
         "nome_uasg": item.get("nomeUasg"),
         "codigo_orgao": _int(item.get("codigoOrgao")),
         "nome_orgao": item.get("nomeOrgao"),
@@ -193,7 +253,8 @@ class ClienteComprasPrecos:
             "tipo": tipo,
             "codigo": codigo,
             "pagina": pagina,
-            "tamanhoPagina": min(500, max(10, tamanho_pagina)),
+            "tamanhoPagina": clamp_tamanho(tamanho_pagina, padrao=TAMANHO_PAGINA_MAX, minimo=10,
+                                           maximo=TAMANHO_PAGINA_MAX),
         }
         contexto = f"Pesquisa Preco {tipo}={codigo} pagina {pagina}"
         for tentativa in range(1, 4):
@@ -234,6 +295,7 @@ def coletar(
     descartados = 0
     duplicados_removidos = 0
     amostras = []
+    por_tipo_ni = {"cnpj": 0, "cpf": 0, "outro": 0, "sem_ni": 0}
 
     consultas: list[tuple[str, int]] = []
     if itens:
@@ -267,6 +329,8 @@ def coletar(
 
     for tipo, cod in consultas:
         pagina = 1
+        recebidos = 0
+        paginas_vistas: set[str] = set()
         while True:
             log.info("Consultando Pesquisa Preco %s=%d pagina %d...", tipo, cod, pagina)
             try:
@@ -276,16 +340,45 @@ def coletar(
                 erros += 1
                 break
 
-            items_raw = resp.get("resultado") or []
-            if not items_raw:
+            if not isinstance(resp, dict) or not isinstance(resp.get("resultado"), list):
+                log.warning("Pesquisa Preco %s=%d página %d: resposta inesperada; não é fim de coleta", tipo, cod, pagina)
+                erros += 1
                 break
+            items_raw = resp["resultado"]
+            if items_raw and pagina_repetida(items_raw, paginas_vistas):
+                # A API devolveu de novo uma página já vista: não conta como progresso nem como fim.
+                log.warning("Pesquisa Preco %s=%d página %d: conteúdo repetido; coleta interrompida como erro",
+                            tipo, cod, pagina)
+                erros += 1
+                break
+            recebidos += len(items_raw)
 
             linhas_norm = []
-            for it in items_raw:
-                norm = normalizar_preco_praticado(it)
+            for pos, it in enumerate(items_raw):
+                if limite and total_coletados >= limite:
+                    # --limite vale antes do upsert: o resto da página não é normalizado nem gravado.
+                    break
+                if not isinstance(it, dict):
+                    # Elemento de `resultado` que não é objeto (null, número, texto, lista): mesmo tratamento do
+                    # TipoInvalido. Descartado, conta como erro e a consulta segue (review do Copilot r4175462189).
+                    descartados += 1
+                    erros += 1
+                    log.warning("Pesquisa Preco %s=%d página %d: item %d de resultado com tipo %s, esperado objeto; "
+                                "descartado", tipo, cod, pagina, pos, type(it).__name__)
+                    continue
+                try:
+                    norm = normalizar_preco_praticado(it)
+                except TipoInvalido as e:
+                    # Tipo inválido em campo de texto: o item não é gravado e a consulta sai como falha.
+                    descartados += 1
+                    erros += 1
+                    log.warning("Pesquisa Preco %s=%d página %d: item idCompraItem=%s descartado: %s",
+                                tipo, cod, pagina, it.get("idCompraItem"), e)
+                    continue
                 if norm:
                     linhas_norm.append(norm)
                     total_coletados += 1
+                    por_tipo_ni[tipo_ni(norm["ni_fornecedor"]) or "sem_ni"] += 1
                     if len(amostras) < 5:
                         amostras.append({
                             "id_compra": norm["id_compra"],
@@ -321,11 +414,25 @@ def coletar(
                     "erros": erros,
                     "descartados": descartados,
                     "duplicados_removidos": duplicados_removidos,
+                    "por_tipo_ni": por_tipo_ni,
                     "amostras": amostras,
                 }
 
-            total_regs = resp.get("totalRegistros") or 0
-            if pagina * TAMANHO_PAGINA >= total_regs or len(items_raw) < TAMANHO_PAGINA:
+            decisao = avaliar_pagina(items_raw, tamanho=TAMANHO_PAGINA, pagina=pagina, corpo=resp, acumulado=recebidos)
+            if decisao.encerrar and not decisao.aviso and recebidos > 0:
+                chave_zero = total_zero_declarado(resp)
+                if chave_zero:
+                    # O helper aceita total 0 + página vazia como fim. Com itens já lidos nesta consulta, isso é
+                    # metadado contraditório: encerra com aviso e conta como erro, como os demais casos de truncamento.
+                    decisao = DecisaoPagina(True, f"{chave_zero} declarado 0 mas {recebidos} item(ns) já lidos nesta "
+                                                  "consulta; totais contraditórios, encerrando com aviso")
+            if decisao.aviso:
+                log.warning("Pesquisa Preco %s=%d página %d: %s", tipo, cod, pagina, decisao.aviso)
+            if decisao.encerrar:
+                if decisao.aviso:
+                    # Parou sem os totais confirmarem o fim (vazia com registros restantes, totais divergentes ou
+                    # ilegíveis): a consulta pode ter ficado truncada, então não sai como sucesso.
+                    erros += 1
                 break
             pagina += 1
 
@@ -336,6 +443,7 @@ def coletar(
         "erros": erros,
         "descartados": descartados,
         "duplicados_removidos": duplicados_removidos,
+        "por_tipo_ni": por_tipo_ni,
         "amostras": amostras,
     }
 

@@ -11,6 +11,10 @@ export interface LicitacaoFiltros {
   categoria_escopo?: string;
   interesse_borracha?: boolean;
   fonte?: string;
+  /** Categorias canônicas do objeto (slugs de objeto_categorias, ou 'outros'). */
+  objeto_categoria?: string[];
+  /** Só licitações com selo de registro de preço (true) ou sem (false). */
+  registro_preco?: boolean;
   data_publicacao_inicio?: string;
   data_publicacao_fim?: string;
   data_inicio_min?: string;
@@ -62,12 +66,17 @@ export interface ReadinessActionParams {
   action: "readiness";
 }
 
+export interface ObjetoCategoriasActionParams {
+  action: "objeto_categorias";
+}
+
 export interface AcompanhamentoActionParams {
   action: "acompanhamento";
   id: number | string;
 }
 
 export type ActionParams =
+  | ObjetoCategoriasActionParams
   | ListActionParams
   | GetActionParams
   | ReadinessActionParams

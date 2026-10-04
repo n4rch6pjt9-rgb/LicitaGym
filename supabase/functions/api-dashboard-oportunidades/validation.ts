@@ -280,6 +280,16 @@ export function parseListParams(
     catmat[campo] = r;
   }
 
+  // Objeto canônico: slugs de objeto_categorias. Pedido só com slugs inválidos é erro (não vira "sem filtro").
+  const objetoBruto = sanitizeStringList(source.objeto_categoria);
+  const objetoCategorias = objetoBruto?.filter((c) => /^[a-z][a-z0-9_]{0,59}$/.test(c));
+  if (objetoBruto && objetoBruto.length > 0 && (!objetoCategorias || objetoCategorias.length === 0)) {
+    return { error: "Parâmetro 'objeto_categoria' inválido: informe slugs do catálogo (ex.: material_esportivo)." };
+  }
+  if (objetoCategorias && objetoCategorias.length > 20) {
+    return { error: "Parâmetro 'objeto_categoria' aceita no máximo 20 categorias." };
+  }
+
   const filtros: LicitacaoFiltros = {
     prioridade: sanitizeString(source.prioridade),
     uf: sanitizeString(source.uf)?.toUpperCase(),
@@ -292,6 +302,8 @@ export function parseListParams(
     categoria_escopo: sanitizeString(source.categoria_escopo),
     interesse_borracha: sanitizeBoolean(source.interesse_borracha),
     fonte: sanitizeString(source.fonte),
+    objeto_categoria: objetoCategorias,
+    registro_preco: sanitizeBoolean(source.registro_preco),
     data_publicacao_inicio: sanitizeDate(source.data_publicacao_inicio),
     data_publicacao_fim: sanitizeDate(source.data_publicacao_fim),
     data_inicio_min: sanitizeDate(source.data_inicio_min),
@@ -438,7 +450,11 @@ export function parseActionFromUrl(url: URL): ActionParams | { error: string } {
     return parseAcompanhamentoParams(url.searchParams.get("id"));
   }
 
-  return { error: `Ação inválida: '${actionParam}'. Use 'list', 'get', 'readiness' ou 'acompanhamento'.` };
+  if (actionParam === "objeto_categorias") {
+    return { action: "objeto_categorias" };
+  }
+
+  return { error: `Ação inválida: '${actionParam}'. Use 'list', 'get', 'readiness', 'acompanhamento' ou 'objeto_categorias'.` };
 }
 
 export function parseActionFromBody(
@@ -448,6 +464,10 @@ export function parseActionFromBody(
 
   if (action === "readiness") {
     return { action: "readiness" };
+  }
+
+  if (action === "objeto_categorias") {
+    return { action: "objeto_categorias" };
   }
 
   if (action === "get") {
@@ -466,5 +486,5 @@ export function parseActionFromBody(
     return parseAcompanhamentoParams(body.id);
   }
 
-  return { error: `Ação inválida: '${action}'. Use 'list', 'get', 'readiness' ou 'acompanhamento'.` };
+  return { error: `Ação inválida: '${action}'. Use 'list', 'get', 'readiness', 'acompanhamento' ou 'objeto_categorias'.` };
 }

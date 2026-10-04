@@ -101,6 +101,19 @@ export function applyLicitacaoFilters<T extends FilterableQuery>(
     query.eq("fonte", filtros.fonte);
   }
 
+  // Objeto canônico (objeto_categorias) e selo de registro de preço
+  if (filtros.objeto_categoria && filtros.objeto_categoria.length > 0) {
+    if (filtros.objeto_categoria.length === 1) {
+      query.eq("objeto_categoria", filtros.objeto_categoria[0]);
+    } else {
+      query.in("objeto_categoria", filtros.objeto_categoria);
+    }
+  }
+
+  if (filtros.registro_preco !== undefined) {
+    query.eq("objeto_registro_preco", filtros.registro_preco);
+  }
+
   // Intervalo de data_publicacao (America/Sao_Paulo UTC-3 para só-data)
   if (filtros.data_publicacao_inicio) {
     if (isDateOnly(filtros.data_publicacao_inicio)) {

@@ -1,14 +1,20 @@
 ---
 name: verificar-producao
-description: Consultas somente leitura para conferir produção depois de merge/deploy ou investigar incidente (migrations aplicadas, ACL, execuções de coleta e sync, readiness). Use com o MCP do Supabase (read_only).
+description: Consultas somente leitura para conferir produção depois de merge/deploy ou investigar incidente (migrations aplicadas, ACL, execuções de coleta e sync, readiness). Use com o MCP do Supabase (read_only). query_logs/get_logs só em incidente, com janela de no máximo 1 h.
 ---
 
 # Verificar produção (somente leitura)
 
-**Comece pela saúde consolidada:** `select verificacao, status, valor, mensagem from private.saude_operacional_resumo();`
-(ou a issue aberta com rótulo `alerta-operacional`). Os passos abaixo detalham cada área.
+**Ordem:** `private.saude_operacional_resumo()`, depois o readiness, depois `execute_sql` leve. `query_logs`/`get_logs` ficam fora dessa rotina.
 
-Use `execute_sql` do MCP do Supabase (somente leitura). Não corrija nada em produção: reporte ao usuário com evidência.
+**Comece pela saúde consolidada:** `select verificacao, status, valor, mensagem from private.saude_operacional_resumo();`
+(ou a issue aberta com rótulo `alerta-operacional`).
+
+**Readiness** (antes dos `execute_sql`):
+`curl -s -o /dev/null -w '%{http_code}' "<SUPABASE_URL>/functions/v1/api-dashboard-oportunidades?action=readiness"`
+(200). Sem token, as `api-*` devem responder 401.
+
+Os passos 1 a 5 são as consultas leves. Use `execute_sql` do MCP do Supabase (somente leitura). Não corrija nada em produção: reporte ao usuário com evidência.
 
 1. **Migrations aplicadas:** `list_migrations` do MCP, ou
    `select version, name from supabase_migrations.schema_migrations order by version desc limit 10;`
@@ -47,9 +53,9 @@ Use `execute_sql` do MCP do Supabase (somente leitura). Não corrija nada em pro
    ```
    Alerta: última execução com sucesso de uma fonte há mais de 8 dias.
 5. **Volume:** `select fonte, count(*), max(created_at) from public.licitacoes_externas group by 1;`
-6. **Edge Functions:** `get_logs` do MCP (serviço `edge-function`) e o readiness:
-   `curl -s -o /dev/null -w '%{http_code}' "<SUPABASE_URL>/functions/v1/api-dashboard-oportunidades?action=readiness"`
-   (200). Sem token, as `api-*` devem responder 401.
+6. **Logs (só incidente):** não chame `query_logs` nem `get_logs` na verificação de rotina. Use só quando a saúde, o readiness ou um `execute_sql` acusar problema e for preciso ver o log. Janela de no máximo 1 h, sempre com filtro de fonte (`edge`, `postgres` ou `api`) e de caminho ou função. A janela padrão de 24 h é proibida.
 7. **Advisors:** `get_advisors` (security e performance) depois de migration.
+
+**Logs Query:** a cota do Supabase é medida em GB varridos, não em número de chamadas. Cada consulta varre de novo a janela pedida; 24 h, ou a mesma chamada em loop, gasta essa cota sem a verificação precisar. A rotina acima (saúde, readiness e `execute_sql`) não lê log. Bots não deixam `query_logs`/`get_logs` em loop.
 
 Colunas e tabelas mudam: confirme com `list_tables` antes de concluir que algo não existe.

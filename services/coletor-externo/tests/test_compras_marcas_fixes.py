@@ -272,6 +272,75 @@ def test_total_zero_com_pagina_vazia_e_sucesso():
     assert res["sucesso"] is True and res["total_coletados"] == 0
 
 
+@pytest.mark.parametrize("ruim", [None, 7, 1.5, "texto", ["x"], True])
+def test_item_que_nao_e_objeto_e_erro_e_nao_aborta(caplog, ruim):
+    # Review do Copilot r4175462189 (cc1f0cb): {"resultado": [null]} levantava AttributeError em id_compra_de e abortava
+    # o processo depois de páginas já gravadas. Agora o item é descartado, conta como erro e o resto segue.
+    itens = [_item_pp(idItemCompra=1), ruim, _item_pp(idItemCompra=3)]
+    cli = _ClienteFalso([itens], total=3)
+    sb = _SbFalso()
+    res = compras_precos.coletar(cli, sb, pdms=[2640])
+    assert res["sucesso"] is False and res["erros"] == 1
+    assert res["descartados"] == 1
+    assert res["total_gravados"] == 2
+    assert [r["id_item_compra"] for r in sb.gravadas] == [1, 3]
+    assert [p for p, _ in cli.pedidos] == [1]
+    assert f"tipo {type(ruim).__name__}, esperado objeto" in caplog.text
+
+
+def test_resultado_so_com_null_nao_aborta_as_consultas_seguintes():
+    # O exemplo do review: {"resultado": [null]}. A consulta falha sem exceção e a próxima consulta ainda roda.
+    cli = _ClienteFalso([[None]], total=1)
+    res = compras_precos.coletar(cli, None, pdms=[2640, 2638], dry_run=True)
+    assert len(cli.pedidos) == 2
+    assert res["sucesso"] is False and res["erros"] == 2 and res["descartados"] == 2
+    assert res["total_coletados"] == 0
+
+
+class _ClienteResposta:
+    """Devolve sempre a mesma resposta bruta (para envelopes inválidos)."""
+
+    def __init__(self, resp: Any):
+        self.resp = resp
+        self.pedidos: list[int] = []
+
+    def consultar_material(self, tipo, codigo, pagina=1, tamanho_pagina=100):
+        self.pedidos.append(pagina)
+        return self.resp
+
+
+@pytest.mark.parametrize("resp", [None, [], "x", {}, {"resultado": None}, {"resultado": {"a": 1}}, {"resultado": "x"}])
+def test_resultado_que_nao_e_lista_e_erro(caplog, resp):
+    # Já tratado antes de cc1f0cb (envelope sem lista em `resultado` não é fim de coleta); fica coberto aqui.
+    cli = _ClienteResposta(resp)
+    res = compras_precos.coletar(cli, None, pdms=[2640], dry_run=True)
+    assert cli.pedidos == [1]
+    assert res["sucesso"] is False and res["erros"] == 1
+    assert "resposta inesperada" in caplog.text
+
+
+@pytest.mark.parametrize("kw", [{"total": 0}, {"total": "0"}, {"total": 0.0}, {"total_paginas": 0}])
+def test_total_zero_com_itens_ja_lidos_e_erro(caplog, kw):
+    # Review do Copilot em cc1f0cb (compras_precos.py:394): página 1 com 1 item e totalRegistros=0, página 2 vazia
+    # mantendo zero. Antes encerrava sem aviso e com sucesso=true; agora é metadado contraditório e conta como erro.
+    cli = _ClienteFalso([_pagina(1, 0)], **kw)
+    res = compras_precos.coletar(cli, None, pdms=[2640], dry_run=True)
+    assert [p for p, _ in cli.pedidos] == [1, 2]
+    assert res["total_coletados"] == 1
+    assert res["sucesso"] is False and res["erros"] == 1, kw
+    assert "declarado 0 mas 1 item(ns) já lidos" in caplog.text
+
+
+def test_total_zero_declarado():
+    assert compras_precos.total_zero_declarado({"totalRegistros": 0}) == "totalRegistros"
+    assert compras_precos.total_zero_declarado({"total": " 0 "}) == "total"
+    assert compras_precos.total_zero_declarado({"totalPaginas": -1}) == "totalPaginas"
+    assert compras_precos.total_zero_declarado({"totalRegistros": 5, "totalPaginas": 1}) is None
+    assert compras_precos.total_zero_declarado({"totalRegistros": False, "total": None}) is None
+    assert compras_precos.total_zero_declarado({"paginasRestantes": 0}) is None  # 0 restantes é fim legítimo
+    assert compras_precos.total_zero_declarado({}) is None
+
+
 def test_limite_respeitado_antes_de_gravar():
     # Achado do review: --limite 30 não pode gravar a página inteira de 100.
     cli = _ClienteFalso([_pagina(100, 0), _pagina(100, 100)], total=200)

@@ -36,7 +36,7 @@ import requests
 from .compras_api import ErroApiCompras, ParametroInvalido, corpo_json, erro_http, validar_codigo
 from .compras_pdms import CatalogoPdmsIndisponivel, carregar_pdms_efetivos
 from .destino import Supabase, env
-from .paginacao import TAMANHO_PAGINA_MAX, avaliar_pagina, clamp_tamanho, pagina_repetida
+from .paginacao import TAMANHO_PAGINA_MAX, DecisaoPagina, avaliar_pagina, clamp_tamanho, pagina_repetida
 from .retry import espera_retry
 
 log = logging.getLogger("coletor.compras_precos")
@@ -56,7 +56,8 @@ TIPOS_CONSULTA = ("codigoPdm", "codigoItemCatalogo")
 # aceite até 500. O fim da coleta é decidido por coletor.paginacao.avaliar_pagina (o mesmo helper do PGC e do ARP):
 # só encerra quando os totais da resposta concordam; página curta não é fim; página vazia com totais indicando
 # registros restantes, ou com totais divergentes, encerra com aviso e conta como erro (coleta truncada); página
-# repetida também é erro.
+# repetida também é erro. Total declarado 0 só é fim legítimo se a consulta não leu nenhum item: com itens já
+# lidos, o metadado é contraditório e a consulta sai como erro (review do Copilot em cc1f0cb).
 TAMANHO_PAGINA = TAMANHO_PAGINA_MAX
 
 
@@ -117,6 +118,24 @@ def texto_ou_nulo(val: Any, campo: str = "valor") -> str | None:
         raise TipoInvalido(f"{campo} com tipo {type(val).__name__}, esperado texto")
     s = val.strip()
     return None if s in ("", "0") else s
+
+
+def total_zero_declarado(corpo: dict[str, Any]) -> str | None:
+    """Nome do primeiro total da resposta (totalRegistros, total, totalPaginas) declarado como 0 ou negativo.
+
+    Mesma leitura numérica de coletor.paginacao._inteiro (int, float inteiro ou string de dígitos; bool não conta).
+    """
+    for chave in ("totalRegistros", "total", "totalPaginas"):
+        val = corpo.get(chave)
+        if val is None or isinstance(val, bool):
+            continue
+        if isinstance(val, float) and val.is_integer():
+            val = int(val)
+        if isinstance(val, str) and val.strip().isdigit():
+            val = int(val.strip())
+        if isinstance(val, int) and val <= 0:
+            return chave
+    return None
 
 
 def tipo_ni(ni: str | None) -> str | None:
@@ -335,10 +354,18 @@ def coletar(
             recebidos += len(items_raw)
 
             linhas_norm = []
-            for it in items_raw:
+            for pos, it in enumerate(items_raw):
                 if limite and total_coletados >= limite:
                     # --limite vale antes do upsert: o resto da página não é normalizado nem gravado.
                     break
+                if not isinstance(it, dict):
+                    # Elemento de `resultado` que não é objeto (null, número, texto, lista): mesmo tratamento do
+                    # TipoInvalido. Descartado, conta como erro e a consulta segue (review do Copilot r4175462189).
+                    descartados += 1
+                    erros += 1
+                    log.warning("Pesquisa Preco %s=%d página %d: item %d de resultado com tipo %s, esperado objeto; "
+                                "descartado", tipo, cod, pagina, pos, type(it).__name__)
+                    continue
                 try:
                     norm = normalizar_preco_praticado(it)
                 except TipoInvalido as e:
@@ -346,7 +373,7 @@ def coletar(
                     descartados += 1
                     erros += 1
                     log.warning("Pesquisa Preco %s=%d página %d: item idCompraItem=%s descartado: %s",
-                                tipo, cod, pagina, it.get("idCompraItem") if isinstance(it, dict) else None, e)
+                                tipo, cod, pagina, it.get("idCompraItem"), e)
                     continue
                 if norm:
                     linhas_norm.append(norm)
@@ -392,6 +419,13 @@ def coletar(
                 }
 
             decisao = avaliar_pagina(items_raw, tamanho=TAMANHO_PAGINA, pagina=pagina, corpo=resp, acumulado=recebidos)
+            if decisao.encerrar and not decisao.aviso and recebidos > 0:
+                chave_zero = total_zero_declarado(resp)
+                if chave_zero:
+                    # O helper aceita total 0 + página vazia como fim. Com itens já lidos nesta consulta, isso é
+                    # metadado contraditório: encerra com aviso e conta como erro, como os demais casos de truncamento.
+                    decisao = DecisaoPagina(True, f"{chave_zero} declarado 0 mas {recebidos} item(ns) já lidos nesta "
+                                                  "consulta; totais contraditórios, encerrando com aviso")
             if decisao.aviso:
                 log.warning("Pesquisa Preco %s=%d página %d: %s", tipo, cod, pagina, decisao.aviso)
             if decisao.encerrar:

@@ -62,7 +62,7 @@ A migration cria `private.cron_chamar_edge(job, funcao, corpo, timeout_ms)`. Só
    `select btrim(decrypted_secret) from vault.decrypted_secrets where name = 'sync_cron_secret'`;
 2. se o segredo não existe ou está vazio, faz **`raise exception`** antes de qualquer `net.http_post`. O job fica `failed` em `cron.job_run_details` com a mensagem `Vault sem o segredo "sync_cron_secret"…` e **nenhuma requisição sai com token vazio**;
 3. chama `net.http_post(url := 'https://ifaiagegyicjzlpskafh.supabase.co/functions/v1/<funcao>', body := <corpo>, headers := {"Authorization": "Bearer <token>", "Content-Type": "application/json"}, timeout_milliseconds := <timeout>)`;
-4. grava `request_id`, job, função e corpo em `private.cron_edge_chamadas`, **sem o token**.
+4. grava uma linha em `private.cron_edge_chamadas` (`id` próprio, `request_id` do pg_net, job, função e corpo), **sem o token**. O `request_id` não é chave (`supabase/migrations/20261004001000_cron_edge_chamadas_request_id.sql`): as tabelas do pg_net são unlogged e a sequência volta a 1 quando o banco reinicia. O retorno da função continua sendo esse `request_id`.
 
 O valor do segredo não aparece na migration, no `cron.job.command` nem no log. Num branch de preview do Supabase não há segredo no Vault, então os jobs falham sem chamar produção.
 
@@ -95,9 +95,19 @@ O valor do segredo não aparece na migration, no `cron.job.command` nem no log. 
 2. **Qual foi a resposta HTTP?** `status_code` ≠ 2xx, `timed_out` ou `erro`:
 
    ```sql
-   -- últimas 6 h, direto do pg_net
+   -- últimas 6 h, direto do pg_net. Não juntar só por request_id: ele recomeça no restart.
+   -- A mesma janela de private.cron_coletar_respostas (chamado_em entre a resposta - 6 h e a resposta + 2 s).
    select c.job, r.status_code, r.timed_out, r.error_msg, left(r.content, 200), r.created
-     from net._http_response r join private.cron_edge_chamadas c on c.request_id = r.id
+     from net._http_response r
+     join lateral (
+       select c.job
+         from private.cron_edge_chamadas c
+        where c.request_id = r.id
+          and c.chamado_em >= r.created - interval '6 hours'
+          and c.chamado_em <= r.created + interval '2 seconds'
+        order by c.id desc
+        limit 1
+     ) c on true
     order by r.created desc;
    -- histórico (copiado de hora em hora pelo licitagym-cron-respostas)
    select job, funcao, chamado_em, status_code, timed_out, erro, left(resposta, 200)
@@ -129,7 +139,7 @@ O valor do segredo não aparece na migration, no `cron.job.command` nem no log. 
    ```sql
    select private.cron_chamar_edge('teste-manual', 'sync-pncp-legislation', '{}'::jsonb, 60000);
    ```
-   Depois de uns segundos, `select status_code, left(content,200) from net._http_response order by id desc limit 1;` deve mostrar **200**. Se der 401, os valores dos passos 2 e 3 são diferentes.
+   O bigint devolvido é o `request_id` do pg_net, não o `id` da linha. Depois de uns segundos, `select status_code, left(content,200) from net._http_response order by created desc limit 1;` deve mostrar **200**. Se der 401, os valores dos passos 2 e 3 são diferentes.
 5. **Atualizar o script local do PowerShell** com o novo valor, porque o antigo deixa de valer.
 6. **Extensões:** não há nada a habilitar. `pg_cron`, `pg_net` e `supabase_vault` já estão instaladas.
 7. **Ordem com o merge:** os passos 1–3 podem ser feitos antes ou depois do merge. Enquanto o segredo não existir, os jobs falham de forma visível e não chamam nada. O primeiro job útil depois do merge é o `licitagym-sync-pncp-pca`, às 03:13.

@@ -815,6 +815,9 @@ Deno.test("handleRequest list com filtro uf asserte eq('uf', 'AC') e PUBLIC_LICI
     "created_at",
     "updated_at",
     "last_synced_at",
+    // objeto canônico (20261004140000_objeto_canonico)
+    "objeto_categoria",
+    "objeto_registro_preco",
     // só na view (20261003170000_licitacoes_pncp_canonica)
     "canonica_id",
     "eh_canonica",
@@ -973,7 +976,10 @@ Deno.test("handleRequest get por orgao_cnpj + processo_norm asserte eq nos dois 
   assertEquals(rangeCall, { method: "range", args: [0, 9] });
 
   // Asserção de desempate determinístico por id no get por processo
-  const orderCalls = mockClient.calls.filter((c) => c.method === "order");
+  // (as ordenações da leitura de aderência em licitacao_match — licitacao_id, codigo_pdm — ficam de fora)
+  const orderCalls = mockClient.calls.filter((c) =>
+    c.method === "order" && !["licitacao_id", "codigo_pdm"].includes(c.args[0] as string)
+  );
   assertEquals(orderCalls, [
     { method: "order", args: ["data_publicacao", { ascending: false, nullsFirst: false }] },
     { method: "order", args: ["id", { ascending: true }] },
@@ -1611,7 +1617,11 @@ Deno.test("get por id de uma compra historico devolve 200 com a prioridade efeti
   const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
   assertEquals(res.status, 200);
   assertEquals((await res.json()).item.prioridade, "historico");
-  assertEquals(mockClient.calls.filter((c) => c.method === "from"), [{ method: "from", args: [OPORTUNIDADES_VIEW] }]);
+  // a aderência do detalhe (licitacao_match/catmat_pdms) é uma leitura extra; a licitação vem só da view
+  assertEquals(
+    mockClient.calls.filter((c) => c.method === "from" && !["licitacao_match", "catmat_pdms"].includes(c.args[0] as string)),
+    [{ method: "from", args: [OPORTUNIDADES_VIEW] }],
+  );
   assertEquals(mockClient.calls.some((c) => c.method === "or"), false);
 });
 
@@ -1630,7 +1640,11 @@ Deno.test("get por codigo_externo e por orgao_cnpj + processo_norm leem a view, 
     // deno-lint-ignore no-explicit-any
     const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
     assertEquals(res.status, 200, qs);
-    assertEquals(mockClient.calls.filter((c) => c.method === "from"), [{ method: "from", args: [OPORTUNIDADES_VIEW] }]);
+    // a aderência do detalhe (licitacao_match/catmat_pdms) é uma leitura extra; a licitação vem só da view
+    assertEquals(
+      mockClient.calls.filter((c) => c.method === "from" && !["licitacao_match", "catmat_pdms"].includes(c.args[0] as string)),
+      [{ method: "from", args: [OPORTUNIDADES_VIEW] }],
+    );
     assertEquals(mockClient.calls.some((c) => c.method === "or"), false);
   }
 });

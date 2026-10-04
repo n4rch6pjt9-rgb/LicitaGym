@@ -1,9 +1,11 @@
+import { quebrarDescricaoItem } from "../_shared/compras-gov/descricao-parser.ts";
 import type { ClasseMaterial, ComprasGovPage, GrupoMaterial, ItemMaterial, PdmMaterial } from "../_shared/compras-gov/material-types.ts";
 import type { CatmatRepo } from "./repo.ts";
 import type { CatmatNo, NivelArvore } from "./types.ts";
 
 const BASE_URL = "https://dadosabertos.compras.gov.br";
-const TAMANHO_PAGINA = 500;
+/** Mesmo padrão do sync: COMPRAS_GOV_PAGE_SIZE.default em material-client.ts. */
+const TAMANHO_PAGINA = 100;
 const MAX_PAGINAS = 20;
 const TIMEOUT_CHAMADA_MS = 8_000;
 const ORCAMENTO_TOTAL_MS = 25_000;
@@ -93,6 +95,7 @@ function paraNo(nivel: NivelArvore, r: Record<string, unknown>): CatmatNo | null
         nivel: "item", codigo: item, nome: s(i.descricaoItem) ?? String(item), ativo: i.statusItem !== false,
         codigo_grupo: grupo, codigo_classe: classe, codigo_pdm: pdm, codigo_item: item,
         nome_grupo: s(i.nomeGrupo), nome_classe: s(i.nomeClasse), nome_pdm: s(i.nomePdm),
+        ...comTaxonomia(s(i.descricaoItem)),
       };
     }
   }
@@ -213,4 +216,10 @@ export async function obterArvore(
   } finally {
     emAndamento.delete(chave);
   }
+}
+
+/** Nome (cabeça) e atributos de um item a partir da descrição completa (que nunca é cortada). */
+export function comTaxonomia(descricao: string | null): Pick<CatmatNo, "nome_item" | "atributos"> {
+  const { nome, atributos } = quebrarDescricaoItem(descricao);
+  return { nome_item: nome, atributos };
 }

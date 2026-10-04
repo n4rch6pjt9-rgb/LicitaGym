@@ -80,6 +80,8 @@ export function parseActionFromBody(body: Record<string, unknown>): ActionParams
       if (obs !== undefined && obs !== null && (typeof obs !== "string" || obs.length > 500)) {
         return { error: "Parâmetro 'observacao' deve ser texto de até 500 caracteres." };
       }
+      const cursor = codigo(body.a_partir_do_pdm, "a_partir_do_pdm", false);
+      if (isErro(cursor)) return cursor;
       return {
         action,
         nivel,
@@ -89,6 +91,7 @@ export function parseActionFromBody(body: Record<string, unknown>): ActionParams
         codigo_item: exige.item ? i as number : null,
         incluido: body.incluido,
         observacao: typeof obs === "string" && obs.trim() ? obs.trim() : null,
+        a_partir_do_pdm: cursor,
       };
     }
 
@@ -124,6 +127,22 @@ export function parseActionFromBody(body: Record<string, unknown>): ActionParams
       const tipo = tipoPalavra(body.tipo, id !== null);
       if (isErro(tipo)) return tipo;
       return { action, id: id as number | null, codigo_pdm: p as number, padrao, ativo: booleano(body.ativo, true), tipo };
+    }
+
+    case "catalogo_itens": {
+      const p = codigo(body.codigo_pdm, "codigo_pdm", true);
+      if (isErro(p)) return p;
+      return { action, codigo_pdm: p as number };
+    }
+
+    case "catalogo_hidratar_itens": {
+      const apos = codigo(body.apos_pdm, "apos_pdm", false);
+      if (isErro(apos)) return apos;
+      const lim = body.limite_pdms === undefined || body.limite_pdms === null ? 8 : Number(body.limite_pdms);
+      if (!Number.isInteger(lim) || lim < 1 || lim > 20) {
+        return { error: "Parâmetro 'limite_pdms' deve ser inteiro de 1 a 20." };
+      }
+      return { action, apos_pdm: apos as number | null, limite_pdms: lim };
     }
 
     default:

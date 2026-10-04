@@ -1,16 +1,18 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { type AuthenticatedUser, authenticateUser, corsHeaders, isLicitagymAdmin, jsonResponse } from "../_shared/http.ts";
-import { anotar, ErroCatalogo, listarCatalogo, removerRegra, salvarPalavra, salvarRegra } from "./catalog.ts";
+import {
+  anotar, ErroCatalogo, hidratarItensDoCatalogo, itensDoCatalogo, listarCatalogo, removerRegra, salvarPalavra, salvarRegra,
+} from "./catalog.ts";
 import { type CatmatRepo, createSupabaseRepo } from "./repo.ts";
-import { ComprasGovIndisponivel, obterArvore } from "./tree.ts";
+import { ComprasGovIndisponivel, comTaxonomia, obterArvore } from "./tree.ts";
 import { ACOES_ADMIN } from "./types.ts";
 import { parseActionFromBody } from "./validation.ts";
 
 /**
  * api-catmat: árvore CATMAT (Compras.gov ao vivo, com cache) e catálogo CATMAT da empresa.
- *   Leitura (arvore, catalogo_listar, palavras_listar): qualquer usuário autenticado.
- *   Escrita (catalogo_*, palavras_salvar/remover): só app_metadata.licitagym_role = 'admin'.
+ *   Leitura (arvore, catalogo_listar, catalogo_itens, palavras_listar): qualquer usuário autenticado.
+ *   Escrita (catalogo_salvar/remover/hidratar_itens, palavras_salvar/remover): só app_metadata.licitagym_role = 'admin'.
  * O banco é acessado com service_role; o JWT do usuário serve só para identificar e autorizar.
  */
 
@@ -65,7 +67,9 @@ export async function handleRequest(req: Request, ctx: ApiCatmatContext = {}): P
     switch (params.action) {
       case "arvore": {
         const arvore = await obterArvore(deps, params.nivel, params.codigo, { refresh: params.refresh });
-        const nos = params.incluir_inativos ? arvore.nos : arvore.nos.filter((n) => n.ativo);
+        const filtrados = params.incluir_inativos ? arvore.nos : arvore.nos.filter((n) => n.ativo);
+        // cópia em cache de antes da taxonomia: completa nome_item/atributos a partir da descrição
+        const nos = filtrados.map((n) => n.nivel === "item" && n.atributos === undefined ? { ...n, ...comTaxonomia(n.nome) } : n);
         const regras = await repo.listarRegras();
         return jsonResponse({
           action: "arvore",
@@ -83,7 +87,9 @@ export async function handleRequest(req: Request, ctx: ApiCatmatContext = {}): P
         return jsonResponse({ action: "catalogo_listar", ...(await listarCatalogo(repo)) });
 
       case "catalogo_salvar": {
-        const r = await salvarRegra(deps, user.id, params);
+        const r = await salvarRegra(deps, user.id, params, {
+          aPartirDoPdm: params.a_partir_do_pdm ?? undefined,
+        });
         console.info("[api-catmat] catalogo_salvar", { user: user.id, chave: r.regra.chave, incluido: r.regra.incluido });
         return jsonResponse({ action: "catalogo_salvar", ...r }, r.criada ? 201 : 200);
       }
@@ -92,6 +98,15 @@ export async function handleRequest(req: Request, ctx: ApiCatmatContext = {}): P
         const regra = await removerRegra(repo, params.id);
         console.info("[api-catmat] catalogo_remover", { user: user.id, chave: regra.chave });
         return jsonResponse({ action: "catalogo_remover", removida: regra });
+      }
+
+      case "catalogo_itens":
+        return jsonResponse({ action: "catalogo_itens", ...(await itensDoCatalogo(repo, params.codigo_pdm)) });
+
+      case "catalogo_hidratar_itens": {
+        const r = await hidratarItensDoCatalogo(deps, params);
+        console.info("[api-catmat] catalogo_hidratar_itens", { user: user.id, pdms: r.processados.map((p) => p.codigo_pdm), proximo: r.proximo_pdm });
+        return jsonResponse({ action: "catalogo_hidratar_itens", ...r });
       }
 
       case "palavras_listar":

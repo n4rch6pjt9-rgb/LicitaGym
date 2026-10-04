@@ -5,6 +5,7 @@ Referência para montar queries SQL e chamadas à API **Dados Abertos Compras.go
 - **Fonte Swagger (DTOs):** `compras_gov_schemas.json` (OpenAPI components)
 - **Base URL:** `https://dadosabertos.compras.gov.br`
 - **Escopo LicitaGym:** CATMAT material grupo **78** / classe **7830** (equipamentos fitness). Catálogo também aceita grupo **72** / classe **7220** (revestimentos para pisos) para curadoria. PCA e `PNCP_PCA_CLASSIFICACOES` permanecem só **7830**.
+- **Espelho de itens (`sync-compras-catmat`):** com corpo vazio ou `modo: "catalogo"`, o sync segue `public.catalogo_catmat_pdms_efetivos()` (PDM a PDM, `codigoPdm`), não a lista fixa de classes. A lista fixa continua valendo para PCA, `link-catmat-pca` e sync de órgãos. Sync explícito por `codigo_grupo`+`codigo_classe` segue a lista fixa.
 - **Matriz de contratos:** [`docs/pncp/contract-matrix.md`](../pncp/contract-matrix.md)
 - **Mapa de cruzamentos:** [`docs/pncp/cruzamentos.md`](../pncp/cruzamentos.md)
 
@@ -24,7 +25,7 @@ Referência para montar queries SQL e chamadas à API **Dados Abertos Compras.go
 | Param | Tipo | Observação |
 |-------|------|------------|
 | `pagina` | int | Obrigatório em vários endpoints |
-| `tamanhoPagina` | int | Intervalo **10–500**; sync LicitaGym usa default **500** (`clampComprasGovPageSize`) |
+| `tamanhoPagina` | int | Intervalo **10–500**; sync LicitaGym e a árvore usam default **100** (`clampComprasGovPageSize`) |
 | `statusGrupo` / `statusClasse` / `statusPdm` / `statusItem` | boolean | `true` = somente ativos (padrão do sync LicitaGym) |
 
 **Contagens validadas (classe 7830, mar/2026)**

@@ -7,14 +7,18 @@ do $$
 declare
   v_catalogo text;
   v_retomada text;
+  v_ativo_catalogo boolean;
+  v_ativo_retomada boolean;
 begin
   if to_regclass('cron.job') is null then
     raise notice 'SUCESSO: cron.job ausente neste Postgres; jobs do catálogo só são conferidos onde pg_cron existe.';
     return;
   end if;
 
-  select command into v_catalogo from cron.job where jobname = 'licitagym-sync-compras-catmat-catalogo';
-  select command into v_retomada from cron.job where jobname = 'licitagym-sync-compras-catmat-catalogo-continuacao';
+  select command, active into v_catalogo, v_ativo_catalogo
+    from cron.job where jobname = 'licitagym-sync-compras-catmat-catalogo';
+  select command, active into v_retomada, v_ativo_retomada
+    from cron.job where jobname = 'licitagym-sync-compras-catmat-catalogo-continuacao';
 
   if v_catalogo is null then
     raise exception 'ACL CHECK FALHOU: job licitagym-sync-compras-catmat-catalogo ausente';
@@ -27,6 +31,9 @@ begin
   end if;
   if v_retomada not like '%somente_retomada%' then
     raise exception 'ACL CHECK FALHOU: job de retomada sem somente_retomada';
+  end if;
+  if v_ativo_catalogo is distinct from false or v_ativo_retomada is distinct from false then
+    raise exception 'ACL CHECK FALHOU: jobs do catálogo nascem inativos; a ativação é cron.alter_job depois do deploy';
   end if;
   if v_catalogo ilike '%bearer%' or v_retomada ilike '%bearer%' or v_catalogo ilike '%service_role%' then
     raise exception 'ACL CHECK FALHOU: comando do cron contém segredo ou bearer';

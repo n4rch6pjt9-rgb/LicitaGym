@@ -72,6 +72,7 @@ export type ActionParams =
     codigo_item: number | null;
     incluido: boolean;
     observacao: string | null;
+    a_partir_do_pdm: number | null;
   }
   | { action: "catalogo_remover"; id: number }
   | { action: "palavras_listar"; codigo_pdm: number }

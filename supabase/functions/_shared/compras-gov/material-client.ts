@@ -80,6 +80,27 @@ export type ComprasGovFetchOptions = {
   budget?: RequestBudget;
 };
 
+/** HTTP 200 com JSON que não é página do Compras.gov. Não é lista vazia. */
+export class EnvelopeComprasGovInvalidoError extends Error {
+  constructor(path: string) {
+    super(`Envelope Compras.gov inválido em ${path}`);
+    this.name = "EnvelopeComprasGovInvalidoError";
+  }
+}
+
+/**
+ * `resultado` tem de ser array e `paginasRestantes` número.
+ * `{}` (corpo vazio no getJson) não vira zero itens.
+ */
+export function exigirEnvelopeComprasGov(body: unknown, path: string): void {
+  if (!body || typeof body !== "object") throw new EnvelopeComprasGovInvalidoError(path);
+  const page = body as { resultado?: unknown; paginasRestantes?: unknown };
+  if (!Array.isArray(page.resultado)) throw new EnvelopeComprasGovInvalidoError(path);
+  if (typeof page.paginasRestantes !== "number" || !Number.isFinite(page.paginasRestantes)) {
+    throw new EnvelopeComprasGovInvalidoError(path);
+  }
+}
+
 export class ComprasGovMaterialClient {
   private httpClient?: UnifiedHttpClient;
 
@@ -135,10 +156,11 @@ export class ComprasGovMaterialClient {
         pagina,
         tamanhoPagina,
       }, options);
+      exigirEnvelopeComprasGov(body, path);
       pages.push(body);
-      items.push(...(body.resultado ?? []));
-      paginasRestantes = body.paginasRestantes ?? 0;
-      if ((body.resultado?.length ?? 0) === 0) break;
+      items.push(...body.resultado);
+      paginasRestantes = body.paginasRestantes;
+      if (body.resultado.length === 0) break;
       pagina++;
       if (paginasRestantes > 0) {
         if (options?.onHeartbeat) await options.onHeartbeat();

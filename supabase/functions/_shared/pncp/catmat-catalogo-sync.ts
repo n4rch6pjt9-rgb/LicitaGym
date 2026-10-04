@@ -22,10 +22,19 @@ export type PdmEfetivo = {
   codigo_grupo: number;
 };
 
+/** Próximo codigo_pdm a processar (inclusive). Não é índice da lista. */
 export type CatalogoContinuation = {
-  offset_pdm: number;
-  pending: { offset_pdm: number }[];
+  codigo_pdm: number;
+  pending: { codigo_pdm: number }[];
 };
+
+/** Item oficial incompleto: a página inteira falha, o run não conclui. */
+export class ItemCatmatInvalidoError extends Error {
+  constructor() {
+    super("Item CATMAT sem codigoItem, codigoPdm, codigoClasse ou codigoGrupo oficial");
+    this.name = "ItemCatmatInvalidoError";
+  }
+}
 
 function inteiro(value: unknown): number | null {
   if (typeof value === "number" && Number.isInteger(value)) return value;
@@ -51,15 +60,41 @@ export function resolverIncluirInativos(
   return CATMAT_SYNC_INCLUIR_INATIVOS_PADRAO;
 }
 
+/** modo presente e diferente de catalogo/classe. Corpo sem modo não é desconhecido. */
+export function modoDesconhecido(modo: unknown): boolean {
+  if (modo == null || modo === "") return false;
+  return modo !== "catalogo" && modo !== "classe";
+}
+
+/**
+ * JSON inválido não vira {}. Corpo vazio é objeto vazio (o cron manda o modo no corpo).
+ */
+export function parseCorpoSync(
+  text: string,
+): { ok: true; body: Record<string, unknown> } | { ok: false; error: string } {
+  if (!text.trim()) return { ok: true, body: {} };
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { ok: false, error: "JSON do corpo precisa ser um objeto" };
+    }
+    return { ok: true, body: parsed as Record<string, unknown> };
+  } catch {
+    return { ok: false, error: "JSON inválido" };
+  }
+}
+
 /**
  * Corpo vazio ou modo "catalogo" sincroniza os PDMs efetivos.
  * modo "classe", ou par grupo/classe explícito, segue a política fixa.
+ * modo desconhecido não escolhe o catálogo: o handler responde 400.
  */
 export function deveSincronizarCatalogo(body: {
   modo?: string;
   codigo_grupo?: number;
   codigo_classe?: number;
 }): boolean {
+  if (modoDesconhecido(body.modo)) return false;
   if (body.modo === "classe") return false;
   if (body.modo === "catalogo") return true;
   return body.codigo_grupo == null && body.codigo_classe == null;
@@ -104,82 +139,109 @@ export function paramsItemDoPdm(
     : { codigoPdm: pdm.codigo_pdm, statusItem: true };
 }
 
+/**
+ * Fatia a partir de um codigo_pdm (inclusive), não de um índice.
+ * Remover um PDM já processado não desloca o cursor.
+ */
 export function fatiaPdms(
   pdms: readonly PdmEfetivo[],
-  offset: number,
+  aPartirDe: number,
   limite: number | undefined,
 ): { fatia: PdmEfetivo[]; proximo: number | null } {
-  const inicio = Math.max(0, offset);
-  const fatia = limite == null ? pdms.slice(inicio) : pdms.slice(inicio, inicio + Math.max(0, limite));
+  const elegiveis = pdms.filter((p) => p.codigo_pdm >= aPartirDe);
+  const fatia = limite == null ? elegiveis : elegiveis.slice(0, Math.max(0, limite));
   if (fatia.length === 0) return { fatia, proximo: null };
-  const fim = inicio + fatia.length;
-  return { fatia, proximo: fim < pdms.length ? fim : null };
+  return {
+    fatia,
+    proximo: elegiveis.length > fatia.length ? elegiveis[fatia.length].codigo_pdm : null,
+  };
 }
 
-export function continuationCatalogo(offsetPdm: number): CatalogoContinuation {
-  return { offset_pdm: offsetPdm, pending: [{ offset_pdm: offsetPdm }] };
+export function continuationCatalogo(codigoPdm: number): CatalogoContinuation {
+  return { codigo_pdm: codigoPdm, pending: [{ codigo_pdm: codigoPdm }] };
 }
 
-export function offsetPdmDaContinuation(continuation: unknown): number | null {
+/** Só lê codigo_pdm. offset_pdm antigo era índice e é ignorado. */
+export function codigoPdmDaContinuation(continuation: unknown): number | null {
   if (!continuation || typeof continuation !== "object") return null;
-  const record = continuation as { offset_pdm?: unknown; pending?: unknown };
-  const direto = inteiro(record.offset_pdm);
+  const record = continuation as { codigo_pdm?: unknown; pending?: unknown };
+  const direto = inteiro(record.codigo_pdm);
   if (direto != null && direto >= 0) return direto;
   if (!Array.isArray(record.pending) || record.pending.length === 0) return null;
   const primeiro = record.pending[0];
   if (!primeiro || typeof primeiro !== "object") return null;
-  const aninhado = inteiro((primeiro as { offset_pdm?: unknown }).offset_pdm);
+  const aninhado = inteiro((primeiro as { codigo_pdm?: unknown }).codigo_pdm);
   if (aninhado != null && aninhado >= 0) return aninhado;
   return null;
 }
 
 /**
- * offset do corpo vence. Sem offset, herda continuation (inclusive 0).
+ * codigo_pdm do corpo vence. Sem ele, herda continuation.
  * somente_retomada sem continuation não dispara uma carga nova.
+ * 0 significa o início da lista ordenada.
  */
 export function decidirInicioCatalogo(input: {
-  bodyOffset?: number;
+  bodyCodigoPdm?: number;
   inheritedContinuation: unknown;
   somenteRetomada: boolean;
-}): { pular: boolean; offset: number } {
-  if (typeof input.bodyOffset === "number" && input.bodyOffset >= 0) {
-    return { pular: false, offset: input.bodyOffset };
+}): { pular: boolean; codigoPdm: number } {
+  if (typeof input.bodyCodigoPdm === "number" && input.bodyCodigoPdm >= 0) {
+    return { pular: false, codigoPdm: input.bodyCodigoPdm };
   }
-  const herdado = offsetPdmDaContinuation(input.inheritedContinuation);
-  if (herdado != null) return { pular: false, offset: herdado };
-  if (input.somenteRetomada) return { pular: true, offset: 0 };
-  return { pular: false, offset: 0 };
+  const herdado = codigoPdmDaContinuation(input.inheritedContinuation);
+  if (herdado != null) return { pular: false, codigoPdm: herdado };
+  if (input.somenteRetomada) return { pular: true, codigoPdm: 0 };
+  return { pular: false, codigoPdm: 0 };
 }
 
-export function linhaCatmatItemPdm(raw: {
-  codigoItem?: number;
-  codigoPdm?: number;
-  codigoClasse?: number;
-  codigoGrupo?: number;
-  descricaoItem?: string;
-  statusItem?: boolean;
-}): {
+function statusOficial(value: unknown): boolean | null {
+  if (value === true) return true;
+  if (value === false) return false;
+  return null;
+}
+
+/**
+ * Identificadores oficiais obrigatórios. Descrição ausente fica null
+ * (catmat_item_pdm aceita). status ausente ou desconhecido fica null:
+ * não vira ativo.
+ */
+export function linhaCatmatItemPdm(raw: unknown): {
   codigo_item: number;
   codigo_pdm: number;
   codigo_classe: number;
   codigo_grupo: number;
-  descricao: string;
-  status_item: boolean;
+  descricao: string | null;
+  status_item: boolean | null;
 } | null {
-  const codigo_item = inteiro(raw.codigoItem);
-  const codigo_pdm = inteiro(raw.codigoPdm);
-  const codigo_classe = inteiro(raw.codigoClasse);
-  const codigo_grupo = inteiro(raw.codigoGrupo);
+  if (!raw || typeof raw !== "object") return null;
+  const record = raw as Record<string, unknown>;
+  const codigo_item = inteiro(record.codigoItem);
+  const codigo_pdm = inteiro(record.codigoPdm);
+  const codigo_classe = inteiro(record.codigoClasse);
+  const codigo_grupo = inteiro(record.codigoGrupo);
   if (codigo_item == null || codigo_pdm == null || codigo_classe == null || codigo_grupo == null) {
     return null;
   }
-  const descricao = String(raw.descricaoItem ?? codigo_item).trim();
+  const descricao = typeof record.descricaoItem === "string" && record.descricaoItem.trim()
+    ? record.descricaoItem.trim()
+    : null;
   return {
     codigo_item,
     codigo_pdm,
     codigo_classe,
     codigo_grupo,
     descricao,
-    status_item: raw.statusItem !== false,
+    status_item: statusOficial(record.statusItem),
   };
+}
+
+/** Falha a página inteira se algum item não tiver os códigos oficiais. */
+export function exigirItensOficiais(raws: readonly unknown[]): NonNullable<ReturnType<typeof linhaCatmatItemPdm>>[] {
+  const linhas = [];
+  for (const raw of raws) {
+    const linha = linhaCatmatItemPdm(raw);
+    if (!linha) throw new ItemCatmatInvalidoError();
+    linhas.push(linha);
+  }
+  return linhas;
 }

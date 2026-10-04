@@ -2,9 +2,27 @@
 --
 -- Contexto: o espelho de itens só era agendado para 7830 e 7220. PDMs efetivos de
 -- 78/7810 e 93/9320 (catalogo_catmat_pdms_efetivos) nunca entravam no cron.
--- O que muda: remove os dois jobs por classe e agenda o modo "catalogo"
--- (mais um job de retomada). A Edge Function sync-compras-catmat precisa já
--- entender modo=catalogo; senão o corpo sem codigo_classe cai no caminho antigo.
+-- O que muda: remove os dois jobs por classe e cria o modo "catalogo"
+-- (mais um job de retomada) com active = false. A ativação é manual, com
+-- cron.alter_job(..., active := true), só depois do deploy da Edge Function
+-- que entende modo=catalogo e recusa modo desconhecido com 400.
+--
+-- ATIVAÇÃO (não executada aqui; rodar depois que o deploy de sync-compras-catmat
+-- estiver confirmado):
+--   do $ativar$
+--   declare j record;
+--   begin
+--     for j in
+--       select jobid from cron.job
+--        where jobname in (
+--          'licitagym-sync-compras-catmat-catalogo',
+--          'licitagym-sync-compras-catmat-catalogo-continuacao'
+--        )
+--     loop
+--       perform cron.alter_job(j.jobid, active := true);
+--     end loop;
+--   end
+--   $ativar$;
 -- Quem lê/escreve: só postgres, via cron.schedule. Nenhum grant novo.
 -- Como verificar: supabase/tests/cron_sync_catmat_catalogo_check.sql
 --   (no Postgres sem pg_cron a checagem avisa e passa; no Supabase ela exige os jobs).
@@ -34,6 +52,7 @@ begin;
 do $do$
 declare
   j record;
+  v_jobid bigint;
 begin
   if not exists (select 1 from pg_extension where extname = 'pg_cron') then
     begin
@@ -62,7 +81,8 @@ begin
          $cmd$select private.cron_chamar_edge('licitagym-sync-compras-catmat-catalogo-continuacao', 'sync-compras-catmat', '{"modo":"catalogo","incluir_inativos":false,"async":true,"somente_retomada":true}'::jsonb, 150000)$cmd$)
       ) as t(nome, agenda, comando)
   loop
-    perform cron.schedule(j.nome, j.agenda, j.comando);
+    v_jobid := cron.schedule(j.nome, j.agenda, j.comando);
+    perform cron.alter_job(v_jobid, active := false);
   end loop;
 end
 $do$;

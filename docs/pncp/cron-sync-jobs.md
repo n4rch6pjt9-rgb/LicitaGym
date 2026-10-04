@@ -26,7 +26,7 @@ Janela fora de pico: 02:00–06:00 BRT. Os minutos quebrados espalham a carga. O
 
 | # | Job | Chama | Quando (BRT) | pg_cron (UTC) | Body | Timeout pg_net | Por quê |
 |---|---|---|---|---|---|---|---|
-| 1 | `licitagym-sync-compras-catmat-catalogo` | `sync-compras-catmat` | dom 02:07 | `7 5 * * 0` | `{"modo":"catalogo","incluir_inativos":false,"async":true}` | 150 s | Espelho segue os PDMs efetivos, não a classe inteira. `async` devolve 202. `incluir_inativos: false` é explícito: só ativos. |
+| 1 | `licitagym-sync-compras-catmat-catalogo` | `sync-compras-catmat` | dom 02:07 | `7 5 * * 0` | `{"modo":"catalogo","incluir_inativos":false,"async":true}` | 150 s | Espelho segue os PDMs efetivos, não a classe inteira. Nasce `active = false`; `cron.alter_job(..., active := true)` só depois do deploy da função nova. `async` devolve 202. `incluir_inativos: false` é explícito: só ativos. |
 | 2 | `licitagym-sync-compras-catmat-catalogo-continuacao` | `sync-compras-catmat` | dom 02:27 | `27 5 * * 0` | `{"modo":"catalogo","incluir_inativos":false,"async":true,"somente_retomada":true}` | 150 s | Só continua um run `incompleta` do mesmo lock. Se a carga das 02:07 terminou, responde ignorado. |
 | 3 | `licitagym-sync-pncp-pca` | `sync-pncp-pca` | diário 03:13 | `13 6 * * *` | `{"verificar_periodo":true,"async":true}` | 150 s | O PCA é a fonte da demanda. O gate de período pula a carga quando nada mudou. `async` devolve 202 e a carga roda em background. |
 | 4 | `licitagym-sync-pncp-pca-continuacao` | `sync-pncp-pca` | diário 03:43 | `43 6 * * *` | igual ao 3 | 150 s | Retoma as páginas pendentes do lock `pca-sync:<ano>:7830` quando a 1ª execução esgota o orçamento de 110 s. Se estiver tudo em dia, devolve `ignorado`. |

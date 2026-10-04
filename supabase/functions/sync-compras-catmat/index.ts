@@ -1,5 +1,5 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { ComprasGovMaterialClient } from "../_shared/compras-gov/material-client.ts";
+import { ComprasGovMaterialClient, exigirEnvelopeComprasGov } from "../_shared/compras-gov/material-client.ts";
 import { upsertCatalogoItemFromCompras } from "../_shared/compras-gov/catalogo-upsert.ts";
 import {
   normalizeCaracteristica,
@@ -30,10 +30,12 @@ import {
   continuationCatalogo,
   decidirInicioCatalogo,
   deveSincronizarCatalogo,
+  exigirItensOficiais,
   fatiaPdms,
-  linhaCatmatItemPdm,
+  modoDesconhecido,
   normalizarPdmsEfetivos,
   paramsItemDoPdm,
+  parseCorpoSync,
   resolverIncluirInativos,
 } from "../_shared/pncp/catmat-catalogo-sync.ts";
 import { assertCatmatClasseInScope } from "../_shared/pncp/licitagym-scope-gate.ts";
@@ -44,7 +46,7 @@ import {
   storeSourceRecord,
   updateSyncHeartbeat,
 } from "../_shared/pncp/supabase-admin.ts";
-import { BudgetExhaustedError } from "../_shared/pncp/retry.ts";
+import { BudgetExhaustedError, createRequestBudget } from "../_shared/pncp/retry.ts";
 import { RateLimitPauseError, UnifiedHttpClient } from "../_shared/http-client/index.ts";
 import { upsertByNaturalKey } from "../_shared/compras-gov/upsert-natural.ts";
 import { upsertByHash, type UpsertResult } from "../_shared/pncp/upsert.ts";
@@ -52,10 +54,10 @@ import { upsertByHash, type UpsertResult } from "../_shared/pncp/upsert.ts";
 type SyncBody = {
   codigo_grupo?: number;
   codigo_classe?: number;
-  /** "catalogo" segue catalogo_catmat_pdms_efetivos(); "classe" força a lista fixa. */
+  /** "catalogo" segue catalogo_catmat_pdms_efetivos(); "classe" força a lista fixa. Outro valor: 400. */
   modo?: "catalogo" | "classe";
-  /** Retomada estável: PDMs efetivos ordenados por codigo_pdm. */
-  offset_pdm?: number;
+  /** Retomada pelo codigo_pdm (inclusive), não pelo índice da lista. */
+  codigo_pdm?: number;
   limite_pdm?: number;
   /** Não inicia carga nova; só continua um run incompleto do modo catálogo. */
   somente_retomada?: boolean;
@@ -121,6 +123,16 @@ async function logAndStore(
   });
 }
 
+const ERRO_PUBLICO_CATALOGO = "Falha no sync do catálogo CATMAT";
+
+function detalheInterno(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "object" && error !== null && "message" in error) {
+    return String((error as { message: unknown }).message);
+  }
+  return JSON.stringify(error);
+}
+
 async function ingestCatalogoCatmat(body: SyncBody): Promise<Response> {
   const incluirInativos = resolverIncluirInativos(body);
   const maxPaginas = body.max_paginas ?? 500;
@@ -130,12 +142,7 @@ async function ingestCatalogoCatmat(body: SyncBody): Promise<Response> {
     telemetryLogger: (t) => logSyncRequest(client, t),
   });
   const material = new ComprasGovMaterialClient(httpClient);
-  const { data: rpcRows, error: rpcError } = await client.rpc("catalogo_catmat_pdms_efetivos");
-  if (rpcError) {
-    console.error("[sync-compras-catmat] catalogo_catmat_pdms_efetivos", rpcError.message);
-    return jsonResponse({ status: "falhou", reason: "Falha ao ler os PDMs efetivos do catálogo" }, 500);
-  }
-  const pdms = normalizarPdmsEfetivos(rpcRows);
+  const budget = createRequestBudget();
   const { runId, alreadyRunning, continuation: inheritedContinuation } = await acquireSyncLock(
     client,
     CATMAT_SYNC_LOCK_CATALOGO,
@@ -146,8 +153,29 @@ async function ingestCatalogoCatmat(body: SyncBody): Promise<Response> {
     return jsonResponse({ status: "already_running", sync_id: runId, scope: "catalogo_catmat_pdms_efetivos" });
   }
 
+  const { data: rpcRows, error: rpcError } = await client.rpc("catalogo_catmat_pdms_efetivos");
+  if (rpcError) {
+    console.error("[sync-compras-catmat] catalogo_catmat_pdms_efetivos", rpcError.message);
+    await finishSyncRun(client, runId, {
+      status: "falhou",
+      erroPrincipal: rpcError.message,
+      totalRecebidos: 0,
+      totalNovos: 0,
+      totalAtualizados: 0,
+      totalInalterados: 0,
+      totalErros: 1,
+    });
+    return jsonResponse({
+      status: "falhou",
+      reason: "Falha ao ler os PDMs efetivos do catálogo",
+      sync_id: runId,
+      scope: "catalogo_catmat_pdms_efetivos",
+    }, 500);
+  }
+  const pdms = normalizarPdmsEfetivos(rpcRows);
+
   const inicio = decidirInicioCatalogo({
-    bodyOffset: body.offset_pdm,
+    bodyCodigoPdm: body.codigo_pdm,
     inheritedContinuation,
     somenteRetomada: body.somente_retomada === true,
   });
@@ -168,21 +196,36 @@ async function ingestCatalogoCatmat(body: SyncBody): Promise<Response> {
     });
   }
 
-  const { fatia, proximo } = fatiaPdms(pdms, inicio.offset, body.limite_pdm);
+  const { fatia, proximo } = fatiaPdms(pdms, inicio.codigoPdm, body.limite_pdm);
   const stats = emptyStats();
-  let indice = 0;
+  let processados = 0;
+  let codigoEmCurso = inicio.codigoPdm;
+
+  const opcoesHttp = (codigoPdm: number) => ({
+    budget,
+    syncRunId: runId,
+    onHeartbeat: async () => {
+      await updateSyncHeartbeat(client, runId, {
+        paginaAtual: codigoPdm,
+        continuation: continuationCatalogo(codigoPdm),
+        baseParametros: body,
+      });
+    },
+  });
 
   try {
     for (const pdm of fatia) {
+      codigoEmCurso = pdm.codigo_pdm;
       await updateSyncHeartbeat(client, runId, {
-        paginaAtual: inicio.offset + indice + 1,
-        continuation: continuationCatalogo(inicio.offset + indice),
+        paginaAtual: pdm.codigo_pdm,
+        continuation: continuationCatalogo(pdm.codigo_pdm),
         baseParametros: body,
       });
       const consulta = paramsItemDoPdm(pdm, incluirInativos);
       const { pages: itemPages, items: itens } = await material.fetchItens(consulta, {
         maxPaginas,
         tamanhoPagina: CATMAT_TAMANHO_PAGINA,
+        ...opcoesHttp(pdm.codigo_pdm),
       });
       for (const page of itemPages) {
         await logAndStore(
@@ -196,21 +239,24 @@ async function ingestCatalogoCatmat(body: SyncBody): Promise<Response> {
         );
       }
 
-      const linhasPdm = [];
-      for (const raw of itens) {
-        const item = raw as ItemMaterial;
-        const row = normalizeCatalogoItemFromMaterial(item, {
-          grupo: String(pdm.codigo_grupo),
-          classe: String(pdm.codigo_classe),
-        });
-        const result = await upsertCatalogoItemFromCompras(client, row, { syncRunId: runId });
-        tally(stats, result);
-        const linha = linhaCatmatItemPdm(item);
-        if (!linha) {
-          stats.erros++;
-          continue;
+      const linhasPdm = exigirItensOficiais(itens);
+      for (const linha of linhasPdm) {
+        if (linha.descricao != null && linha.status_item !== null) {
+          const row = normalizeCatalogoItemFromMaterial({
+            codigoItem: linha.codigo_item,
+            codigoPdm: linha.codigo_pdm,
+            codigoClasse: linha.codigo_classe,
+            codigoGrupo: linha.codigo_grupo,
+            descricaoItem: linha.descricao,
+            statusItem: linha.status_item,
+          }, {
+            grupo: String(pdm.codigo_grupo),
+            classe: String(pdm.codigo_classe),
+          });
+          row.ativo = linha.status_item;
+          const result = await upsertCatalogoItemFromCompras(client, row, { syncRunId: runId });
+          tally(stats, result);
         }
-        linhasPdm.push(linha);
       }
       if (linhasPdm.length > 0) {
         const { error: itemPdmError } = await client.from("catmat_item_pdm").upsert(linhasPdm, {
@@ -222,6 +268,7 @@ async function ingestCatalogoCatmat(body: SyncBody): Promise<Response> {
       const { items: naturezas } = await material.fetchNaturezasDespesa(pdm.codigo_pdm, {
         maxPaginas: 20,
         tamanhoPagina: CATMAT_TAMANHO_PAGINA,
+        ...opcoesHttp(pdm.codigo_pdm),
       });
       for (const raw of naturezas) {
         const row = normalizeNaturezaDespesa(raw as NaturezaDespesaMaterial);
@@ -242,6 +289,7 @@ async function ingestCatalogoCatmat(body: SyncBody): Promise<Response> {
       const { items: unidades } = await material.fetchUnidadesFornecimento(pdm.codigo_pdm, {
         maxPaginas: 20,
         tamanhoPagina: CATMAT_TAMANHO_PAGINA,
+        ...opcoesHttp(pdm.codigo_pdm),
       });
       for (const raw of unidades) {
         const row = normalizeUnidadeFornecimento(raw as UnidadeFornecimentoMaterial);
@@ -259,7 +307,7 @@ async function ingestCatalogoCatmat(body: SyncBody): Promise<Response> {
         );
         tally(stats, result);
       }
-      indice++;
+      processados++;
     }
 
     const incompletaPorLimite = proximo != null && stats.erros === 0;
@@ -284,17 +332,14 @@ async function ingestCatalogoCatmat(body: SyncBody): Promise<Response> {
       incluir_inativos: incluirInativos,
       tamanho_pagina: CATMAT_TAMANHO_PAGINA,
       pdms_efetivos: pdms.length,
-      pdms_processados: indice,
-      offset_pdm: inicio.offset,
-      proximo_offset_pdm: incompletaPorLimite ? proximo : null,
+      pdms_processados: processados,
+      codigo_pdm: inicio.codigoPdm,
+      proximo_codigo_pdm: incompletaPorLimite ? proximo : null,
       ...stats,
     }, stats.erros > 0 ? 500 : 200);
   } catch (error) {
-    const detalhe = error instanceof Error
-      ? error.message
-      : typeof error === "object" && error !== null && "message" in error
-      ? String((error as { message: unknown }).message)
-      : JSON.stringify(error);
+    const detalhe = detalheInterno(error);
+    console.error("[sync-compras-catmat] catalogo", detalhe);
     const isResumable = error instanceof BudgetExhaustedError || error instanceof RateLimitPauseError;
     const status = isResumable ? "incompleta" : "falhou";
     await finishSyncRun(client, runId, {
@@ -302,15 +347,15 @@ async function ingestCatalogoCatmat(body: SyncBody): Promise<Response> {
       erroPrincipal: detalhe,
       parametros: {
         ...body,
-        continuation: continuationCatalogo(inicio.offset + indice),
+        continuation: continuationCatalogo(codigoEmCurso),
       },
     });
     return jsonResponse({
-      error: detalhe,
+      error: ERRO_PUBLICO_CATALOGO,
       sync_id: runId,
       status,
       scope: "catalogo_catmat_pdms_efetivos",
-      proximo_offset_pdm: inicio.offset + indice,
+      proximo_codigo_pdm: codigoEmCurso,
     }, 500);
   }
 }
@@ -321,7 +366,12 @@ Deno.serve(async (req) => {
   if (!validateCronAuth(req)) return jsonResponse({ error: "Unauthorized" }, 401);
 
   const url = new URL(req.url);
-  const body = (await req.json().catch(() => ({}))) as SyncBody;
+  const parsed = parseCorpoSync(await req.text());
+  if (!parsed.ok) return jsonResponse({ error: parsed.error }, 400);
+  const body = parsed.body as SyncBody;
+  if (modoDesconhecido(body.modo)) {
+    return jsonResponse({ status: "blocked", reason: "modo desconhecido" }, 400);
+  }
   const isAsync = url.searchParams.get("async") === "1" || body.async === true;
   if (deveSincronizarCatalogo(body)) {
     const bloqueio = bloqueioModoCatalogo(body);
@@ -475,7 +525,8 @@ async function ingestOneCatmatClass(body: SyncBody): Promise<Response> {
         grupoRes.status,
         grupoRes.elapsedMs,
       );
-      for (const raw of grupoRes.body.resultado ?? []) {
+      exigirEnvelopeComprasGov(grupoRes.body, "/modulo-material/1_consultarGrupoMaterial");
+      for (const raw of grupoRes.body.resultado) {
         const row = normalizeGrupoMaterial(raw as GrupoMaterial);
         const result = await upsertByNaturalKey(
           client,
@@ -501,7 +552,8 @@ async function ingestOneCatmatClass(body: SyncBody): Promise<Response> {
         classeRes.status,
         classeRes.elapsedMs,
       );
-      for (const raw of classeRes.body.resultado ?? []) {
+      exigirEnvelopeComprasGov(classeRes.body, "/modulo-material/2_consultarClasseMaterial");
+      for (const raw of classeRes.body.resultado) {
         const row = normalizeClasseMaterial(raw as ClasseMaterial);
         const result = await upsertByHash(
           client,
@@ -708,11 +760,8 @@ async function ingestOneCatmatClass(body: SyncBody): Promise<Response> {
       ...stats,
     }, stats.erros > 0 ? 500 : 200);
   } catch (error) {
-    const detalhe = error instanceof Error
-      ? error.message
-      : typeof error === "object" && error !== null && "message" in error
-      ? String((error as { message: unknown }).message)
-      : JSON.stringify(error);
+    const detalhe = detalheInterno(error);
+    console.error("[sync-compras-catmat] classe", detalhe);
     const isResumable = error instanceof BudgetExhaustedError || error instanceof RateLimitPauseError;
     const isManual = lockKey.includes(":manual:");
     const status = isManual ? "falhou" : (isResumable ? "incompleta" : "falhou");
@@ -729,7 +778,7 @@ async function ingestOneCatmatClass(body: SyncBody): Promise<Response> {
       },
     });
     return jsonResponse({
-      error: detalhe,
+      error: "Falha no sync CATMAT por classe",
       sync_id: runId,
       status,
     }, 500);

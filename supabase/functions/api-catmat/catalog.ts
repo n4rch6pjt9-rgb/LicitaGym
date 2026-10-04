@@ -108,6 +108,9 @@ function paraItemPdm(i: CatmatNo) {
   };
 }
 
+/** PDMs hidratados por requisição de catalogo_salvar. O resto volta em proximo_codigo_pdm. */
+export const CATALOGO_HIDRATACAO_LIMITE_PDMS = 8;
+
 async function hidratarItensDoPdm(deps: TreeDeps, codigoPdm: number): Promise<number> {
   const itens = await arvoreVerificada(deps, "itens", codigoPdm);
   if (itens.length === 0) return 0;
@@ -119,7 +122,8 @@ async function hidratarItensDoPdm(deps: TreeDeps, codigoPdm: number): Promise<nu
  * Registra (incluido=true) ou exclui (incluido=false) um nó do catálogo.
  * - valida o nó no Compras.gov
  * - grava os ancestrais em catmat_grupos/classes/pdms (FKs e nomes para o filtro)
- * - grupo/classe incluídos: materializa os PDMs descendentes e hidrata catmat_item_pdm
+ * - grupo/classe incluídos: grava a regra antes do fan-out e hidrata no máximo
+ *   CATALOGO_HIDRATACAO_LIMITE_PDMS PDMs. proximo_codigo_pdm pede a continuação.
  *   (a árvore devolve ativos e inativos; status_item guarda o valor oficial)
  * - PDM/item: hidrata catmat_item_pdm (casamento por código)
  * - exclusão só vale para nó herdado de um ancestral incluído
@@ -128,7 +132,8 @@ export async function salvarRegra(
   deps: TreeDeps,
   userId: string,
   alvo: { nivel: NivelRegra; codigo_grupo: number; codigo_classe: number | null; codigo_pdm: number | null; codigo_item: number | null; incluido: boolean; observacao: string | null },
-): Promise<{ regra: CatmatRegra; criada: boolean; pdms_materializados: number; itens_hidratados: number }> {
+  opcoes?: { aPartirDoPdm?: number; limitePdms?: number },
+): Promise<{ regra: CatmatRegra; criada: boolean; pdms_materializados: number; itens_hidratados: number; proximo_codigo_pdm: number | null }> {
   const { repo } = deps;
   const { no, grupo, classe, pdm } = await localizarNo(deps, alvo);
 
@@ -147,23 +152,6 @@ export async function salvarRegra(
   await gravarGrupo(repo, grupo);
   if (classe) await gravarClasse(repo, classe);
   if (pdm) await gravarPdm(repo, pdm);
-
-  let pdmsMaterializados = 0;
-  let itensHidratados = 0;
-  if (alvo.incluido && (alvo.nivel === "grupo" || alvo.nivel === "classe")) {
-    const classes = alvo.nivel === "grupo" ? await arvoreVerificada(deps, "classes", alvo.codigo_grupo) : [classe as CatmatNo];
-    for (const c of classes) {
-      if (alvo.nivel === "grupo") await gravarClasse(repo, c);
-      for (const p of await arvoreVerificada(deps, "pdms", c.codigo_classe as number)) {
-        await gravarPdm(repo, p);
-        pdmsMaterializados++;
-        itensHidratados += await hidratarItensDoPdm(deps, p.codigo_pdm as number);
-      }
-    }
-  }
-  if (alvo.nivel === "pdm" || alvo.nivel === "item") {
-    itensHidratados = await hidratarItensDoPdm(deps, alvo.codigo_pdm as number);
-  }
 
   const row: RegraInput = {
     nivel: alvo.nivel,
@@ -184,7 +172,40 @@ export async function salvarRegra(
   const regra = existente
     ? await repo.atualizarRegra(existente.id, row, userId)
     : await repo.inserirRegra(row, userId);
-  return { regra, criada: !existente, pdms_materializados: pdmsMaterializados, itens_hidratados: itensHidratados };
+
+  const limite = opcoes?.limitePdms ?? CATALOGO_HIDRATACAO_LIMITE_PDMS;
+  const aPartir = opcoes?.aPartirDoPdm ?? 0;
+  let pdmsMaterializados = 0;
+  let itensHidratados = 0;
+  let proximoCodigoPdm: number | null = null;
+  if (alvo.incluido && (alvo.nivel === "grupo" || alvo.nivel === "classe")) {
+    const classes = alvo.nivel === "grupo" ? await arvoreVerificada(deps, "classes", alvo.codigo_grupo) : [classe as CatmatNo];
+    const pendentes: CatmatNo[] = [];
+    for (const c of classes) {
+      if (alvo.nivel === "grupo") await gravarClasse(repo, c);
+      for (const p of await arvoreVerificada(deps, "pdms", c.codigo_classe as number)) {
+        if ((p.codigo_pdm as number) >= aPartir) pendentes.push(p);
+      }
+    }
+    pendentes.sort((a, b) => (a.codigo_pdm as number) - (b.codigo_pdm as number));
+    const lote = pendentes.slice(0, Math.max(0, limite));
+    for (const p of lote) {
+      await gravarPdm(repo, p);
+      pdmsMaterializados++;
+      itensHidratados += await hidratarItensDoPdm(deps, p.codigo_pdm as number);
+    }
+    proximoCodigoPdm = pendentes.length > lote.length ? pendentes[lote.length].codigo_pdm as number : null;
+  }
+  if (alvo.nivel === "pdm" || alvo.nivel === "item") {
+    itensHidratados = await hidratarItensDoPdm(deps, alvo.codigo_pdm as number);
+  }
+  return {
+    regra,
+    criada: !existente,
+    pdms_materializados: pdmsMaterializados,
+    itens_hidratados: itensHidratados,
+    proximo_codigo_pdm: proximoCodigoPdm,
+  };
 }
 
 export async function removerRegra(repo: CatmatRepo, id: number): Promise<CatmatRegra> {

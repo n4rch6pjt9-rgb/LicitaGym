@@ -1,6 +1,6 @@
 import { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { errorDetail, jsonResponse } from "../_shared/http.ts";
-import { buildEditalUrl, buildPncpEditalUrl } from "../_shared/edital-url.ts";
+import { buildAcompanhamentoUrl, buildEditalUrl, buildPncpEditalUrl } from "../_shared/edital-url.ts";
 import { UnifiedHttpClient } from "../_shared/http-client/index.ts";
 import type {
   AcompanhamentoActionParams,
@@ -106,30 +106,8 @@ export function resolvePncpKey(row: Record<string, unknown> | null | undefined):
   return null;
 }
 
-/**
- * Constrói a url_acompanhamento para o Comprasnet a partir de linkSistemaOrigem.
- * Revalida: protocolo https, host exato cnetmobile.estaleiro.serpro.gov.br e
- * parâmetro compra com exatamente 17 dígitos (UASG 6 + Mod 2 + Num 5 + Ano 4).
- */
-export function buildAcompanhamentoUrl(linkSistemaOrigem: unknown): string | null {
-  if (typeof linkSistemaOrigem !== "string") return null;
-  const trimmed = linkSistemaOrigem.trim();
-  if (!trimmed.toLowerCase().startsWith("https://")) return null;
-
-  try {
-    const parsed = new URL(trimmed);
-    if (parsed.protocol !== "https:") return null;
-    const hostname = parsed.hostname.toLowerCase();
-    if (hostname !== "cnetmobile.estaleiro.serpro.gov.br") return null;
-
-    const idCompra = parsed.searchParams.get("compra");
-    if (!idCompra || !/^\d{17}$/.test(idCompra.trim())) return null;
-
-    return `https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/landing?destino=acompanhamento-compra&compra=${idCompra.trim()}`;
-  } catch {
-    return null;
-  }
-}
+// buildAcompanhamentoUrl mora em _shared/edital-url.ts (também usada pela rota do fornecedor).
+export { buildAcompanhamentoUrl };
 
 // -----------------------------------------------------------------------------
 // Cache em memória (TTL de 5 minutos)

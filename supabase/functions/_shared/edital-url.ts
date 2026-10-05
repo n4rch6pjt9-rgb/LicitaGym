@@ -176,6 +176,54 @@ function validarLinkOrigem(rawUrl: unknown, fonte: string): string | null {
   return parsed.toString();
 }
 
+/** Host do Compras.gov.br (Comprasnet) usado no acompanhamento público da compra. */
+const COMPRASNET_HOST = "cnetmobile.estaleiro.serpro.gov.br";
+
+/**
+ * Constrói a url_acompanhamento para o Comprasnet a partir de linkSistemaOrigem.
+ * Revalida: protocolo https, host exato cnetmobile.estaleiro.serpro.gov.br e
+ * parâmetro compra com exatamente 17 dígitos (UASG 6 + Mod 2 + Num 5 + Ano 4).
+ */
+export function buildAcompanhamentoUrl(linkSistemaOrigem: unknown): string | null {
+  if (typeof linkSistemaOrigem !== "string") return null;
+  const trimmed = linkSistemaOrigem.trim();
+  if (!trimmed.toLowerCase().startsWith("https://")) return null;
+
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "https:") return null;
+    const hostname = parsed.hostname.toLowerCase();
+    if (hostname !== COMPRASNET_HOST) return null;
+
+    const idCompra = parsed.searchParams.get("compra");
+    if (!idCompra || !/^\d{17}$/.test(idCompra.trim())) return null;
+
+    return `https://${COMPRASNET_HOST}/comprasnet-web/public/landing?destino=acompanhamento-compra&compra=${idCompra.trim()}`;
+  } catch {
+    return null;
+  }
+}
+
+/** Link do portal onde a disputa acontece, já validado, e o host para rotular o botão. */
+export interface OrigemUrl {
+  url: string;
+  host: string;
+}
+
+/**
+ * Link do portal de origem da disputa (`licitacoes_externas.link_sistema_origem`, o linkSistemaOrigem que o
+ * órgão informou ao PNCP). O PNCP não monta esse link: só repassa. Aqui ele é dado de terceiros, então:
+ * - Comprasnet: reescrito para a página pública de acompanhamento (`buildAcompanhamentoUrl`);
+ * - demais: aceito como veio, só se https e host em `ALLOWED_ORIGEM_HOSTS` (mesma regra de `buildEditalUrl`).
+ * Retorna null para link ausente, http sem TLS, sem esquema ou host fora da lista: a tela mostra só o PNCP.
+ */
+export function buildOrigemUrl(linkSistemaOrigem: unknown, fonte: unknown = "pncp"): OrigemUrl | null {
+  const url = buildAcompanhamentoUrl(linkSistemaOrigem) ??
+    validarLinkOrigem(linkSistemaOrigem, String(fonte ?? "").trim().toLowerCase());
+  if (!url) return null;
+  return { url, host: new URL(url).hostname.toLowerCase() };
+}
+
 /**
  * Normaliza CNPJ removendo caracteres não numéricos.
  */

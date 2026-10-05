@@ -1,5 +1,5 @@
 import { assertEquals } from "jsr:@std/assert@1";
-import { handleRequest } from "../../../supabase/functions/api-dashboard-oportunidades/index.ts";
+import { handleRequest, ITENS_ADERENCIA_LOTE, MAX_ITENS_ADERENCIA } from "../../../supabase/functions/api-dashboard-oportunidades/index.ts";
 import { applyLicitacaoFilters, type FilterableQuery } from "../../../supabase/functions/api-dashboard-oportunidades/query.ts";
 import { parseActionFromBody } from "../../../supabase/functions/api-dashboard-oportunidades/validation.ts";
 
@@ -90,8 +90,9 @@ Deno.test("get por id traz a aderência CATMAT (licitacao_match) com o nome do P
   assertEquals(res.status, 200);
   const { item } = await res.json();
   assertEquals(item.catmat_match, [
-    { codigo_pdm: 7115, nome_pdm: "ESTEIRA ERGOMÉTRICA", codigo_item: null, motivo: "texto_item" },
-    { codigo_pdm: 7115, nome_pdm: "ESTEIRA ERGOMÉTRICA", codigo_item: null, motivo: "texto_objeto" },
+    // linhas sem item_id neste cenário: itens vazio (os números dos itens estão nos testes de `itens` abaixo)
+    { codigo_pdm: 7115, nome_pdm: "ESTEIRA ERGOMÉTRICA", codigo_item: null, motivo: "texto_item", itens: [] },
+    { codigo_pdm: 7115, nome_pdm: "ESTEIRA ERGOMÉTRICA", codigo_item: null, motivo: "texto_objeto", itens: [] },
   ]);
   assertEquals(chamadas.some((c) => c.tabela === "licitacao_match" && c.metodo === "in"), true);
 });
@@ -110,6 +111,133 @@ Deno.test("get sem casamento não ganha catmat_match; falha na aderência não d
   const r2 = await handleRequest(post({ action: "get", id: 5 }), { ...autorizado, getClient: () => falha.cliente as any });
   assertEquals(r2.status, 200);
   assertEquals("catmat_match" in (await r2.json()).item, false);
+});
+
+Deno.test("get: catmat_match.itens agrupa os numero_item por PDM + motivo, sem repetição e em ordem numérica", async () => {
+  const { cliente, chamadas } = clientePorTabela({
+    licitacoes_externas_prioridade_efetiva: { data: { id: 77, fonte: "pncp", objeto: "Academia (fictício)" } },
+    licitacao_match: {
+      data: [
+        { licitacao_id: 77, codigo_pdm: 7115, origem: "texto_item", item_id: 9010 },
+        { licitacao_id: 77, codigo_pdm: 7115, origem: "texto_item", item_id: 9002 },
+        { licitacao_id: 77, codigo_pdm: 7115, origem: "texto_item", item_id: 9010 }, // repetido
+        { licitacao_id: 77, codigo_pdm: 7115, origem: "texto_item", item_id: 9009 },
+        { licitacao_id: 77, codigo_pdm: 7115, origem: "texto_objeto", item_id: null },
+        { licitacao_id: 77, codigo_pdm: 2638, origem: "texto_item", item_id: 9002 }, // mesmo item, outro PDM
+        { licitacao_id: 77, codigo_pdm: 2638, origem: "texto_item", item_id: 9999 }, // item sem linha em licitacao_itens
+      ],
+    },
+    licitacao_itens: {
+      data: [
+        { id: 9010, numero_item: 10 },
+        { id: 9002, numero_item: 2 },
+        { id: 9009, numero_item: 9 },
+      ],
+    },
+    catmat_pdms: { data: [{ codigo_pdm: 7115, nome_pdm: "ESTEIRA ERGOMÉTRICA" }, { codigo_pdm: 2638, nome_pdm: "APARELHO" }] },
+  });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(post({ action: "get", id: 77 }), { ...autorizado, getClient: () => cliente as any });
+  assertEquals(res.status, 200);
+  const { item } = await res.json();
+  assertEquals(item.catmat_match, [
+    { codigo_pdm: 7115, nome_pdm: "ESTEIRA ERGOMÉTRICA", codigo_item: null, motivo: "texto_item", itens: [2, 9, 10] },
+    { codigo_pdm: 7115, nome_pdm: "ESTEIRA ERGOMÉTRICA", codigo_item: null, motivo: "texto_objeto", itens: [] },
+    { codigo_pdm: 2638, nome_pdm: "APARELHO", codigo_item: null, motivo: "texto_item", itens: [2] },
+  ]);
+  // licitacao_itens lida só pelos item_ids necessários, sem repetição, numa chamada
+  const leituras = chamadas.filter((c) => c.tabela === "licitacao_itens" && c.metodo === "in");
+  assertEquals(leituras, [{ tabela: "licitacao_itens", metodo: "in", args: ["id", [9010, 9002, 9009, 9999]] }]);
+  assertEquals(chamadas.some((c) => c.tabela === "licitacao_itens" && c.metodo === "select" && c.args[0] === "id,numero_item"), true);
+});
+
+Deno.test("get: catmat_match.itens limita a MAX_ITENS_ADERENCIA (os menores números) e lê licitacao_itens em lotes", async () => {
+  const total = ITENS_ADERENCIA_LOTE + 20;
+  // ids em ordem decrescente de numero_item, para provar que a ordem vem do número e não da leitura
+  const match = Array.from({ length: total }, (_, i) => ({ licitacao_id: 5, codigo_pdm: 7115, origem: "texto_item", item_id: 1000 + i }));
+  const itens = Array.from({ length: total }, (_, i) => ({ id: 1000 + i, numero_item: total - i }));
+  const { cliente, chamadas } = clientePorTabela({
+    licitacoes_externas_prioridade_efetiva: { data: { id: 5, fonte: "pncp" } },
+    licitacao_match: { data: match },
+    licitacao_itens: { data: itens },
+  });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(post({ action: "get", id: 5 }), { ...autorizado, getClient: () => cliente as any });
+  const { item } = await res.json();
+  assertEquals(item.catmat_match.length, 1);
+  assertEquals(item.catmat_match[0].itens, Array.from({ length: MAX_ITENS_ADERENCIA }, (_, i) => i + 1));
+  const lotes = chamadas.filter((c) => c.tabela === "licitacao_itens" && c.metodo === "in").map((c) => (c.args[1] as number[]).length);
+  assertEquals(lotes, [ITENS_ADERENCIA_LOTE, 20]);
+});
+
+Deno.test("get: falha na leitura de licitacao_itens não derruba o detalhe e deixa itens vazio", async () => {
+  const warn = console.warn;
+  const avisos: unknown[][] = [];
+  console.warn = (...a: unknown[]) => avisos.push(a);
+  try {
+    for (const licitacaoItens of [{ data: null, error: { message: "timeout" } }, { data: null }]) {
+      const { cliente } = clientePorTabela({
+        licitacoes_externas_prioridade_efetiva: { data: { id: 5, fonte: "pncp" } },
+        licitacao_match: { data: [{ licitacao_id: 5, codigo_pdm: 7115, origem: "texto_item", item_id: 1 }] },
+        licitacao_itens: licitacaoItens,
+        catmat_pdms: { data: [{ codigo_pdm: 7115, nome_pdm: "ESTEIRA ERGOMÉTRICA" }] },
+      });
+      // deno-lint-ignore no-explicit-any
+      const res = await handleRequest(post({ action: "get", id: 5 }), { ...autorizado, getClient: () => cliente as any });
+      assertEquals(res.status, 200);
+      assertEquals((await res.json()).item.catmat_match, [
+        { codigo_pdm: 7115, nome_pdm: "ESTEIRA ERGOMÉTRICA", codigo_item: null, motivo: "texto_item", itens: [] },
+      ]);
+    }
+    // exceção lançada pelo cliente (rede) também não derruba
+    const base = clientePorTabela({
+      licitacoes_externas_prioridade_efetiva: { data: { id: 5, fonte: "pncp" } },
+      licitacao_match: { data: [{ licitacao_id: 5, codigo_pdm: 7115, origem: "texto_item", item_id: 1 }] },
+    });
+    const cliente = {
+      from: (t: string) => {
+        if (t === "licitacao_itens") throw new Error("rede caiu");
+        return base.cliente.from(t);
+      },
+    };
+    // deno-lint-ignore no-explicit-any
+    const res = await handleRequest(post({ action: "get", id: 5 }), { ...autorizado, getClient: () => cliente as any });
+    assertEquals(res.status, 200);
+    assertEquals((await res.json()).item.catmat_match[0].itens, []);
+  } finally {
+    console.warn = warn;
+  }
+  assertEquals(avisos.filter((a) => String(a[0]).includes("licitacao_itens") || String(a[0]).includes("números dos itens")).length, 3);
+});
+
+Deno.test("get por processo: itens separados por licitação, com uma leitura de licitacao_itens para todas", async () => {
+  const { cliente, chamadas } = clientePorTabela({
+    licitacoes_externas_prioridade_efetiva: { data: [{ id: 1, fonte: "pncp" }, { id: 2, fonte: "pncp" }], count: 2 },
+    licitacao_match: {
+      data: [
+        { licitacao_id: 1, codigo_pdm: 7115, origem: "texto_item", item_id: 11 },
+        { licitacao_id: 2, codigo_pdm: 7115, origem: "texto_item", item_id: 21 },
+      ],
+    },
+    licitacao_itens: { data: [{ id: 11, numero_item: 3 }, { id: 21, numero_item: 1 }] },
+  });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(post({ action: "get", orgao_cnpj: "07486108000185", processo_norm: "2026001" }), { ...autorizado, getClient: () => cliente as any });
+  assertEquals(res.status, 200);
+  const { items } = await res.json();
+  assertEquals(items.map((i: { catmat_match: Array<{ itens: number[] }> }) => i.catmat_match[0].itens), [[3], [1]]);
+  assertEquals(chamadas.filter((c) => c.tabela === "licitacao_itens" && c.metodo === "in").length, 1);
+});
+
+Deno.test("get só com texto_objeto não lê licitacao_itens", async () => {
+  const { cliente, chamadas } = clientePorTabela({
+    licitacoes_externas_prioridade_efetiva: { data: { id: 5, fonte: "pncp" } },
+    licitacao_match: { data: [{ licitacao_id: 5, codigo_pdm: 7115, origem: "texto_objeto", item_id: null }] },
+  });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(post({ action: "get", id: 5 }), { ...autorizado, getClient: () => cliente as any });
+  assertEquals((await res.json()).item.catmat_match[0].itens, []);
+  assertEquals(chamadas.some((c) => c.tabela === "licitacao_itens"), false);
 });
 
 Deno.test("get: view sem as colunas do objeto (função publicada antes da migration) responde sem elas", async () => {

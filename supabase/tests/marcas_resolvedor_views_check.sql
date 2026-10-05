@@ -381,6 +381,67 @@ begin
   end if;
   end if;
 
+  -- ------------------------------------------------------------------ M: frase repetida 3x e 4x
+  delete from public.precos_praticados_itens where id_compra = 'ZZTESTE';
+  delete from public.marca_aliases where cnpj_escopo is null and origem = 'curadoria';
+  insert into public.marca_aliases (valor_norm, modo, cnpj_escopo, marca, tipo, origem, evidencia, revisao_manual) values
+    ('^TRIPLE TRIPLE TRIPLE', 'regex', null, 'TRIPLE X3', 'marca', 'curadoria', 'teste repetição 3x', true),
+    ('^QUAD QUAD QUAD QUAD', 'regex', null, 'QUAD X4', 'marca', 'curadoria', 'teste repetição 4x', true);
+  insert into public.precos_praticados_itens (id_compra, id_item_compra, ni_fornecedor, marca, quantidade, preco_unitario, data_resultado)
+  values
+    ('ZZTESTE', 1, c_a, 'TRIPLE TRIPLE TRIPLE filler', 100, date '2026-09-01'),
+    ('ZZTESTE', 2, c_a, 'QUAD QUAD QUAD QUAD filler', 100, date '2026-09-01');
+  select bool_and(marca = 'TRIPLE X3' or marca = 'QUAD X4') into v_ok
+    from public.v_marca_ocorrencias where ref_item in ('ZZTESTE:1', 'ZZTESTE:2');
+  if v_ok is distinct from true then v_falhas := v_falhas || 'CASO M FALHOU: repetição 3x/4x não casou ou resultado errado'::text; end if;
+
+  -- ------------------------------------------------------------------ N: CNPJ 00000000000000 (ausente/inválido)
+  delete from public.precos_praticados_itens where id_compra = 'ZZTEST_CNPJ_NULL';
+  insert into public.precos_praticados_itens (id_compra, id_item_compra, ni_fornecedor, marca, quantidade, preco_unitario, data_resultado)
+  values ('ZZTEST_CNPJ_NULL', 1, '00000000000000', 'BRAND A', 100, date '2026-09-01');
+  select ni_tipo into v_txt from public.v_marca_ocorrencias where ref_item = 'ZZTEST_CNPJ_NULL:1';
+  if v_txt is distinct from 'cnpj' or not exists (select 1 from public.v_marca_ocorrencias where ref_item = 'ZZTEST_CNPJ_NULL:1' and (ni_tipo = 'cnpj' and marca is not null)) then
+    v_falhas := v_falhas || format('CASO N FALHOU: CNPJ 00000000000000 tratado como inválido, obtido ni_tipo=%s', coalesce(v_txt, 'NULL'))::text;
+  end if;
+
+  -- ------------------------------------------------------------------ O: CNPJ dígitos verificadores inválidos (ex.: 11222333000180, não 181)
+  delete from public.precos_praticados_itens where id_compra = 'ZZTEST_CNPJ_INVALID_CHECKSUM';
+  insert into public.precos_praticados_itens (id_compra, id_item_compra, ni_fornecedor, marca, quantidade, preco_unitario, data_resultado)
+  values ('ZZTEST_CNPJ_INVALID_CHECKSUM', 1, '11222333000180', 'BRAND B', 100, date '2026-09-01');
+  select ni_tipo into v_txt from public.v_marca_ocorrencias where ref_item = 'ZZTEST_CNPJ_INVALID_CHECKSUM:1';
+  if exists (select 1 from public.v_marca_ocorrencias where ref_item = 'ZZTEST_CNPJ_INVALID_CHECKSUM:1' and (ni_tipo = 'cnpj' and marca = 'BRAND B')) then
+    v_falhas := v_falhas || 'CASO O FALHOU: CNPJ com dígitos verificadores inválidos foi aceito como válido'::text;
+  end if;
+
+  -- ------------------------------------------------------------------ P: precedência regex manual × semente (já testado em B, mas explícito)
+  -- manual (revisao_manual=true) deve vencer semente (revisao_manual=false)
+  delete from public.precos_praticados_itens where id_compra = 'ZZTEST_PRECEDENCE';
+  delete from public.marca_aliases where origem in ('dados', 'curadoria') and marca in ('MANUAL WIN', 'SEMENTE LOSE');
+  insert into public.marca_aliases (valor_norm, modo, marca, tipo, origem, evidencia, revisao_manual) values
+    ('PATTERN', 'regex', 'SEMENTE LOSE', 'marca', 'dados', 'semente', false),
+    ('PATTERN', 'regex', 'MANUAL WIN', 'marca', 'curadoria', 'manual', true);
+  insert into public.precos_praticados_itens (id_compra, id_item_compra, ni_fornecedor, marca, quantidade, preco_unitario, data_resultado)
+  values ('ZZTEST_PRECEDENCE', 1, c_a, 'PATTERN text', 100, date '2026-09-01');
+  select marca into v_txt from public.v_marca_ocorrencias where ref_item = 'ZZTEST_PRECEDENCE:1';
+  if v_txt is distinct from 'MANUAL WIN' then
+    v_falhas := v_falhas || format('CASO P FALHOU: manual não venceu semente, obtido %s', coalesce(v_txt, 'NULL'))::text;
+  end if;
+
+  -- ------------------------------------------------------------------ Q: idempotência (executar resolvedor 2x sem mudanças, não duplica)
+  delete from public.precos_praticados_itens where id_compra = 'ZZTEST_IDEMPOTENT';
+  delete from public.marca_aliases where origem = 'teste_idem';
+  insert into public.marca_aliases (valor_norm, modo, marca, tipo, origem, evidencia, revisao_manual) values
+    ('IDEM', 'exato', 'IDEM BRAND', 'marca', 'teste_idem', 'idempotência', true);
+  insert into public.precos_praticados_itens (id_compra, id_item_compra, ni_fornecedor, marca, quantidade, preco_unitario, data_resultado)
+  values
+    ('ZZTEST_IDEMPOTENT', 1, c_a, 'IDEM', 100, date '2026-09-01'),
+    ('ZZTEST_IDEMPOTENT', 2, c_a, 'IDEM', 100, date '2026-09-01');
+  select count(*) into v_n from public.v_marca_ocorrencias where ref_item like 'ZZTEST_IDEMPOTENT:%';
+  if v_n <> 2 then v_falhas := v_falhas || format('CASO Q FALHOU: idempotência 1ª vez: esperado 2, obtido %s', v_n)::text; end if;
+  -- resolver de novo: resultado deve ser idêntico (não cria duplicatas)
+  select count(*) into v_n from public.v_marca_ocorrencias where ref_item like 'ZZTEST_IDEMPOTENT:%';
+  if v_n <> 2 then v_falhas := v_falhas || format('CASO Q FALHOU: idempotência 2ª vez: esperado 2, obtido %s', v_n)::text; end if;
+
   -- ------------------------------------------------------------------ resultado: uma exceção com a lista
   if coalesce(array_length(v_falhas, 1), 0) > 0 then
     for i in 1 .. array_length(v_falhas, 1) loop

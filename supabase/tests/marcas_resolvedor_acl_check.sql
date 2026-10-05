@@ -330,6 +330,38 @@ begin
     v_falhas := v_falhas || '[6 resolver] pulado: private.marca_resolver(text,text) ou public.marca_aliases ausente'::text;
   end if;
 
+  -- ===================================================================== bloco 7: CNPJ validation (fix #228)
+  -- private.cnpj_valido valida formato (14 dígitos), rejeita zeros (00000000000000) e checksum (RFC 10291)
+  if to_regprocedure('private.cnpj_valido(text)') is not null then
+    for v_chk in execute $q$
+      with casos(entrada, cnpj, esperado) as (values
+        ('11222333000181', 'true'),    -- válido: 14 dígitos + checksum correto
+        ('00000000000000', 'false'),   -- inválido: todos zeros (fix #228)
+        ('11222333000180', 'false'),   -- inválido: checksum errado (dígito 9 deveria ser 81, não 80)
+        ('12345678000190', 'true'),    -- válido: checksum correto
+        ('00000000000001', 'false'),   -- inválido: quase tudo zeros (checksum deve rejeitar)
+        ('11222333000181 ', 'true'),   -- formatado com espaço, deve limpar
+        ('11.222.333/0001-81', 'true'), -- formatado com máscara, deve limpar
+        (null, 'false'),               -- NULL = false
+        ('', 'false'),                 -- vazio = false
+        ('123', 'false'))              -- menos de 14 dígitos = false
+      select '7 cnpj_valido' as grupo,
+             coalesce(c.entrada, '<null>') || ' → ' || c.cnpj as objeto,
+             c.cnpj as esperado,
+             (private.cnpj_valido(c.entrada))::text as atual
+        from casos c
+    $q$
+    loop
+      n := n + 1;
+      if v_chk.atual is distinct from v_chk.esperado then
+        v_falhas := v_falhas || format('[%s] %s: esperado "%s", atual "%s"', v_chk.grupo, v_chk.objeto, v_chk.esperado, v_chk.atual);
+      end if;
+    end loop;
+  else
+    n := n + 1;
+    v_falhas := v_falhas || '[7 cnpj_valido] pulado: private.cnpj_valido(text) ausente (migration 20261005160000 não aplicada)'::text;
+  end if;
+
   -- ===================================================================== resultado: uma exceção com a lista
   if coalesce(array_length(v_falhas, 1), 0) > 0 then
     for i in 1 .. array_length(v_falhas, 1) loop

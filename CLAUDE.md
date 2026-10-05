@@ -62,6 +62,7 @@ SQL Editor com o usuário.
 | skill `validar-migrations` | antes de abrir PR com migration |
 | skill `merge-pilha` | quando o usuário pedir merge de PRs empilhados |
 | skill `verificar-producao` | depois de merge/deploy, ou para investigar incidente |
+| agente `revisor-codigo` | revisão geral do diff (corretude, regras de produto, contrato com o Dashboard, testes) antes do PR |
 | agente `revisor-migration` | revisão de migration (destrutivo, ACL, RLS, idempotência) antes do PR |
 | agente `revisor-seguranca` | revisão de segredos, auth e service_role antes do PR |
 

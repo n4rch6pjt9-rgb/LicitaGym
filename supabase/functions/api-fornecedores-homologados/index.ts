@@ -5,6 +5,8 @@
 // Ações (POST JSON { action, ... }):
 //   list     → lista segmentada (filtros: q, modalidade, uf, porte, enriquecido, min_editais; ordenação; paginação)
 //   get      → detalhe de um CNPJ: agregados, editais homologados e dados Econodata
+//              cada edital traz url_pncp (página da contratação no PNCP), url_origem e origem_host
+//              (portal onde a disputa aconteceu, quando o órgão informou ao PNCP e o link é https de host permitido)
 //   stats    → totais para os cards/filtros da página
 //   enrich   → consulta a Econodata para 1..20 CNPJs (estimar=true faz dry-run sem custo)
 //   balance  → saldo de tokens Econodata
@@ -17,6 +19,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { type AuthenticatedUser, requireUserAuth } from "../_shared/http.ts";
+import { buildOrigemUrl, parsePncpControleToUrl } from "../_shared/edital-url.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -200,6 +203,23 @@ async function handleStats(db: SupabaseClient): Promise<Response> {
   });
 }
 
+/**
+ * Links do edital para a tela do fornecedor. Só URLs prontas e validadas saem daqui (o link bruto não é devolvido):
+ * - url_pncp: página da contratação no PNCP, derivada do numeroControlePNCP (`codigo_externo`);
+ * - url_origem / origem_host: portal onde a disputa aconteceu (Compras.gov.br, Compras MG...), quando o órgão
+ *   informou ao PNCP e o link passa na validação de `buildOrigemUrl`. NULL = mostrar só o PNCP.
+ */
+export function linksDoEdital(
+  lic: { fonte?: unknown; codigo_externo?: unknown; link_sistema_origem?: unknown } | null | undefined,
+): { url_pncp: string | null; url_origem: string | null; origem_host: string | null } {
+  const origem = buildOrigemUrl(lic?.link_sistema_origem, lic?.fonte);
+  return {
+    url_pncp: parsePncpControleToUrl(lic?.codigo_externo),
+    url_origem: origem?.url ?? null,
+    origem_host: origem?.host ?? null,
+  };
+}
+
 async function handleGet(db: SupabaseClient, p: Record<string, unknown>): Promise<Response> {
   const cnpj = onlyDigits(p.cnpj);
   if (!isCnpj(cnpj)) return json({ error: "CNPJ inválido" }, 400);
@@ -210,7 +230,7 @@ async function handleGet(db: SupabaseClient, p: Record<string, unknown>): Promis
       .select("cnpj,razao_social,nome_fantasia,matriz_filial,situacao_cadastral,data_inicio_atividade,natureza_juridica,porte,porte_econodata,capital_social,cnae_principal,cnae_principal_descricao,cnaes_secundarios,uf,municipio,cep,logradouro,numero,bairro,email,telefones,emails_publicos,socios,recebimentos_governo,ufs_atuacao,filiais_qtd,consulta_fonte,econodata_consultado_em")
       .eq("cnpj", cnpj).maybeSingle(),
     db.from("licitacao_resultados")
-      .select("licitacao_id,numero_item,valor_total_homologado,valor_unitario_homologado,quantidade_homologada,marca,modelo,data_resultado,licitacoes_externas(id,fonte,codigo_externo,numero_edital,numero_processo,objeto,modalidade,orgao_nome,uf,municipio,data_homologacao,valor_total)")
+      .select("licitacao_id,numero_item,valor_total_homologado,valor_unitario_homologado,quantidade_homologada,marca,modelo,data_resultado,licitacoes_externas(id,fonte,codigo_externo,numero_edital,numero_processo,objeto,modalidade,orgao_nome,uf,municipio,data_homologacao,valor_total,link_sistema_origem)")
       .eq("fornecedor_cnpj", cnpj)
       .not("vencedor", "is", false) // vencedor is distinct from false (NULL do PNCP entra)
       .or(`situacao.is.null,situacao.neq.${SITUACAO_CANCELADO}`) // coalesce(situacao,'') <> 'Cancelado'
@@ -244,6 +264,7 @@ async function handleGet(db: SupabaseClient, p: Record<string, unknown>): Promis
     const lic = row.licitacoes_externas ?? {};
     const e = editais.get(row.licitacao_id) ?? {
       licitacao_id: row.licitacao_id,
+      ...linksDoEdital(lic),
       fonte: lic.fonte, codigo_externo: lic.codigo_externo, numero_edital: lic.numero_edital,
       numero_processo: lic.numero_processo, objeto: lic.objeto, modalidade: lic.modalidade,
       orgao_nome: lic.orgao_nome, uf: lic.uf, municipio: lic.municipio,

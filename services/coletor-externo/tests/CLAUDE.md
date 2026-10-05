@@ -16,26 +16,27 @@
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
 | #7840 | 6:02 PM | ○ | PR #48 Copilot Review — Inventário Completo: 29 Findings BLOQUEANTE/IMPORTANTE em coletor/ | ~1415 |
+| #7730 | 11:48 AM | ○ | Full coletor-externo test suite — 59/59 passed in 0.63s on fix/processo-bloqueio-edital branch | ~422 |
+| #7717 | 11:39 AM | ✓ | taxonomy test suite passes — 11/11 green after aplicar_taxonomia.py upgrade | ~245 |
+| #7715 | " | ○ | test_taxonomia.py — 10 test cases covering full 6-block taxonomy engine behavior | ~587 |
 | #7712 | 11:36 AM | ○ | PR #44 Owner Comment — Raiz do Problema do Coletor Externo | ~353 |
+| #7709 | 11:32 AM | ✓ | Smoke Completo Verde — 4 Deno + 61 pytest Coletor Passam | ~333 |
+| #7707 | 11:31 AM | ○ | Smoke Test Revela 2 Erros Bloqueantes — TS2769 e ModuleNotFoundError | ~440 |
 | #7700 | 11:28 AM | ○ | Copilot Review PR #44 — 4 Findings Detalhados via gh api | ~310 |
 | #7701 | 11:27 AM | ↻ | Testes Raiz Removidos — Consolidação no Coletor Externo | ~374 |
 | #7695 | 11:18 AM | ○ | test_processo_edital.py — Dois Arquivos Distintos: 73 vs 156 Linhas em Diretórios Separados | ~323 |
+| #7675 | 10:52 AM | ○ | Active Branch fix/p0-normalize-classificacao — 8 Modified Files + 6 Audit Artefacts | ~422 |
 
 ### Oct 5, 2026
 
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
-| #8828 | 7:56 PM | ○ | orgao_id_pncp has a btree index in DB — confirmed bigint type in schema test | ~252 |
-| #8704 | 3:09 PM | ● | ACL test block 8 SQL syntax hardened — CTE and coalesce fix | ~390 |
+| #8784 | 7:31 PM | ○ | id_compra canonical format confirmed as 17 digits in test suite | ~445 |
+| #8772 | 7:09 PM | ○ | id_compra derivation logic found in compras_precos.py | ~411 |
+| #8751 | 5:25 PM | ○ | pytest 85 pass — Implementação --ignorar-robots Validada; git add Falhou por CWD Errado | ~244 |
+| #8747 | 5:17 PM | ○ | Localização Exata dos Conflitos de Merge — paradigma.py e test_paradigma.py | ~221 |
+| #8726 | 5:01 PM | ○ | pytest 1328 pass — 2 falhas preexistentes em test_pncp_tipo_arquivo.py (storage_uri path) | ~338 |
 | #8703 | 2:50 PM | ○ | validar-migrations.sh test suite run — 3 ACL/view check failures in staging database | ~482 |
-| #8702 | 2:10 PM | ○ | marcas_resolvedor_views_check.sql already covers idempotency (case Q) and regex manual precedence (case P) | ~463 |
-| #8698 | 2:08 PM | ◆ | ACL check block 8 added — idempotência and regex order test cases | ~359 |
-| #8688 | 1:51 PM | ○ | views_check.sql case N — CNPJ 00000000000000 currently expected to have entra_ranking=true (pre-fix) | ~385 |
-| #8682 | 1:50 PM | ◆ | ACL check test — block 7 added for private.cnpj_valido() validation | ~340 |
-| #8624 | 12:13 PM | ○ | acl_check.sql block 6 — complete resolver test cases including CNPJ/PRÓPRIA scoped aliases and NULL-producing inputs | ~483 |
-| #8619 | 12:07 PM | ◆ | views_check.sql — 5 new regression cases M-Q added for PR #148 audit | ~524 |
-| #8618 | " | ○ | views_check.sql ends at line 396 with ROLLBACK — cases I-L not yet visible, H is the last case in first 396 lines | ~396 |
-| #8616 | 12:05 PM | ○ | marcas_resolvedor_views_check.sql — existing cases A-L and fixture structure | ~587 |
-| #8615 | " | ○ | marcas_resolvedor_acl_check.sql — structure and coverage of existing ACL test file | ~555 |
-| #8614 | 12:04 PM | ○ | PR #148 marcas resolvedor — state reconciled: MERGED 2026-10-04 | ~525 |
+| #8613 | 11:55 AM | ○ | testar-gcs-raw-1.sh pytest — 2 Falhas em test_pncp_tipo_arquivo.py | ~435 |
+| #8599 | 11:46 AM | ○ | Commit 7ea7c3c — Arquivamento Raw GCS: Estrutura Completa e Arquivos | ~416 |
 </claude-mem-context>

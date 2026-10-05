@@ -1,29 +1,11 @@
 <claude-mem-context>
 # Recent Activity
 
-### Sep 21, 2026
-
-| ID | Time | T | Title | Read |
-|----|------|---|-------|------|
-| #7184 | 2:09 PM | ◆ | Fase 3 migration created — precos_praticados_itens table | ~349 |
-| #7130 | 11:11 AM | ◆ | validate_migrations.py — static validator for all 7 icatmat_ migrations | ~402 |
-| #7129 | 11:08 AM | ✓ | LicitaGym CATMAT — migration test via /supabase-server initiated | ~398 |
-| #7126 | 10:47 AM | ✓ | SCHEMA_STANDARDS.md created — icatmat_ migration checklist and templates | ~377 |
-| #7124 | 10:45 AM | ↻ | All 7 icatmat_ migrations hardened — batch complete | ~394 |
-
-### Sep 22, 2026
-
-| ID | Time | T | Title | Read |
-|----|------|---|-------|------|
-| #7192 | 12:02 AM | ○ | LicitaGym CATMAT icatmat_* staging table hierarchy — full schema confirmed | ~535 |
-| #7191 | 12:01 AM | ○ | E7 characteristics output still 236 bytes — prior "4.95MB" growth not reflected | ~379 |
-
 ### Sep 24, 2026
 
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
 | #7331 | 9:34 PM | ○ | LicitaGym PR #47 — Full Text of 3 Unresolved Threads: Precise Fix Targets Identified | ~575 |
-| #7292 | 3:38 PM | ○ | LicitaGym — Rebase fix/pncp-retry-budget onto main Hit 3-File Merge Conflict | ~393 |
 
 ### Sep 25, 2026
 
@@ -60,6 +42,14 @@
 
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
+| #8830 | 7:56 PM | ○ | orgaos table expanded with Compras.gov columns — entidade_id and cnpj now nullable | ~405 |
+| #8829 | " | ○ | cnpj_cpf_orgao_norm is in compras_orgaos_uasgs table, not in entidades/orgaos | ~229 |
+| #8820 | 7:51 PM | ○ | private.cnpj_valido() — SQL function with full checksum validation per RFC 10291 | ~342 |
+| #8819 | " | ○ | last_seen_sync_id column — only in pca, contratacoes, irp, catmat_compras tables, NOT in entidades/orgaos | ~288 |
+| #8816 | " | ○ | entidades/orgaos/unidades schema — key constraints and design decisions | ~384 |
+| #8794 | 7:38 PM | ○ | orgaos table schema confirmed — last_seen_sync_id column missing, orgao_id_pncp is bigint | ~401 |
+| #8703 | 2:50 PM | ○ | validar-migrations.sh test suite run — 3 ACL/view check failures in staging database | ~482 |
+| #8701 | 2:10 PM | ○ | marca_aliases schema diverges from migration 20261005170000 assumptions — column names differ | ~423 |
 | #8697 | 2:08 PM | ● | marca_normalizar rewritten in PL/pgSQL — recursive CTE replaced with imperative WHILE loop | ~408 |
 | #8696 | 2:07 PM | ◆ | Migration 20261005170000 — idempotência marca_normalizar + regex manual precedence fix | ~442 |
 | #8680 | 1:47 PM | ● | Migration 20261005160000 corrected — v_marca_ocorrencias DDL now matches original CTE structure | ~382 |

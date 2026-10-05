@@ -111,7 +111,7 @@ Deno.serve(async (req) => {
             cnpj_normalizado: cnpj.replace(/\D/g, ""),
             tipo: "orgao",
           },
-          { syncRunId: runId, lastSeenSyncId: runId },
+          { syncRunId: runId },
         );
 
         if (entidadeResult !== "erro") stats.entidades_inseridas++;
@@ -131,10 +131,10 @@ Deno.serve(async (req) => {
             { entidade_id: entidadeId },
             {
               entidade_id: entidadeId,
-              orgao_id_pncp: cnpj.slice(0, 8),
+              orgao_id_pncp: parseInt(cnpj.slice(0, 8), 10),
               cnpj: cnpj,
             },
-            { syncRunId: runId, lastSeenSyncId: runId },
+            { syncRunId: runId },
           );
 
           if (orgaoResult !== "erro") stats.orgaos_inseridas++;

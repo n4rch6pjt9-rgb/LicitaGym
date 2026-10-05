@@ -1,4 +1,5 @@
 """Testes offline do adaptador Paradigma com respostas reais do portal FIESC (capturadas em 24/09/2026)."""
+import json
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
@@ -231,7 +232,8 @@ def test_fontes_bloqueadas_por_robots():
     P.PortalParadigma(P.FONTES["fiesc"], sessao=MagicMock())  # permitido
 
 
-def test_ws_sem_resposta_nao_vira_lista_vazia():
+def test_ws_sem_resposta_nao_vira_lista_vazia(monkeypatch):
+    monkeypatch.setattr(P.time, "sleep", lambda _s: None)
     s = MagicMock()
     s.post.return_value.status_code = 200
     s.post.return_value.json.return_value = {"d": None}
@@ -453,17 +455,28 @@ def test_produtos_escopo_filtra_nome_exato_tipo_e_pagina():
         dto = corpo["dtoProduto"]
         if metodo == "PesquisarCatalogoProdutoClasses":
             return classes[dto["sDsProduto"]]
-        chamadas.append((dto["nCdClasse"], dto["nCdTipo"], dto["dtoPaginacao"]["nPaginaDe"]))
-        n = 500 if (dto["nCdClasse"] == 74 and dto["dtoPaginacao"]["nPaginaDe"] == 1) else 3
-        base = dto["nCdClasse"] * 10000 + dto["dtoPaginacao"]["nPaginaDe"]
+        de = dto["dtoPaginacao"]["nPaginaDe"]
+        ate = dto["dtoPaginacao"]["nPaginaAte"]
+        assert ate - de + 1 <= 100
+        chamadas.append((dto["nCdClasse"], dto["nCdTipo"], de))
+        if dto["nCdClasse"] == 74 and de == 1:
+            n = 100  # página cheia: segue
+        elif dto["nCdClasse"] == 74 and de == 101:
+            n = 3    # curta, sem total: não encerra
+        elif de == 1:
+            n = 3
+        else:
+            n = 0    # página vazia encerra
+        base = dto["nCdClasse"] * 10000 + de
         return [{"nCdProduto": base + k, "sCdProdutoEmpresa": f"X{k}", "sDsClasse": "c", "nCdClasse": dto["nCdClasse"]}
                 for k in range(n)]
     p._ws = ws
     prods = p.produtos_escopo(tipo="produto")
     assert {c for c, _, _ in chamadas} == {30, 371, 74}   # DIDATICO ESPORTIVO não entra (nome não é exato)
     assert all(t == 1 for _, t, _ in chamadas)            # Tipo = Produto
-    assert (74, 1, 501) in chamadas                       # paginou a categoria com 500+
-    assert len(prods) == 3 + 3 + 500 + 3
+    assert (74, 1, 101) in chamadas                       # paginou a categoria cheia (100) e a curta seguinte
+    assert (74, 1, 104) in chamadas                       # página vazia encerra
+    assert len(prods) == 3 + 3 + 100 + 3
 
 
 def test_mural_estatistico_leva_totais_para_licitacao():
@@ -477,9 +490,10 @@ def test_mural_estatistico_leva_totais_para_licitacao():
     assert li["modulo"] == 18 and li["status_normalizado"] == "homologada"
 
 
-def test_nome_de_mei_com_cpf_e_mascarado():
+def test_nome_de_mei_com_cpf_fica_inteiro():
     nome, cnpj = P.empresa_cnpj("GABRIEL MOTA LIMA 00982645325 - 32.068.708/0001-70")
-    assert nome == "GABRIEL MOTA LIMA ***826453**" and cnpj == "32068708000170"
+    assert nome == "GABRIEL MOTA LIMA 00982645325" and cnpj == "32068708000170"
+    assert "***" not in (nome or "")
 
 
 # ---------------- peças de manutenção (categoria 'manutencao', só com contexto de academia) ----------------
@@ -589,3 +603,293 @@ def test_disputa_aberta_2025_sem_trofeu_vence_classificada():
     res = P.linhas_resultados(1, 1, lances, None, "Homologado", 2)
     assert len(res) == 1 and res[0]["vencedor"] and res[0]["fornecedor_cnpj"] == "19932867000103"
     assert res[0]["valor_total_homologado"] == 108
+
+
+# ---------------- paginação (regra de 03/10/2026) e CPF sem máscara ----------------
+
+@pytest.mark.parametrize("resp,trecho", [
+    ({"mensagem": "indisponível"}, "indisponível"),
+    (None, "null"),
+    ("indisponível", "indisponível"),
+    ({"d": {"mensagem": "indisponível"}}, "indisponível"),
+    ({"nCdProcesso": 1}, "nCdProcesso"),
+])
+def test_envelope_200_sem_lista_levanta(resp, trecho):
+    with pytest.raises(RuntimeError, match="sem lista reconhecida") as exc:
+        P.paginar_intervalo(lambda de, ate: resp, rotulo="sfiec termo academia")
+    msg = str(exc.value)
+    assert "sfiec termo academia" in msg and trecho in msg
+
+
+def test_envelope_invalido_trunca_o_trecho():
+    bruto = "x" * 5000
+    with pytest.raises(RuntimeError, match="sem lista reconhecida") as exc:
+        P.paginar_intervalo(lambda de, ate: bruto, rotulo="longo")
+    assert "longo" in str(exc.value) and len(str(exc.value)) < 400
+
+
+def test_lista_vazia_encerra_normalmente():
+    chamadas = []
+
+    def buscar(de, ate):
+        chamadas.append((de, ate))
+        return []
+
+    itens, avisos = P.paginar_intervalo(buscar, rotulo="vazio")
+    assert chamadas == [(1, 100)] and itens == [] and avisos == []
+
+
+def test_objeto_com_lista_vazia_encerra_normalmente():
+    def buscar(de, ate):
+        return {"resultado": [], "totalRegistros": 0}
+
+    itens, avisos = P.paginar_intervalo(buscar, rotulo="obj-vazio")
+    assert itens == [] and avisos == []
+
+
+def test_pagina_seguinte_invalida_nao_encerra_com_sucesso():
+    def buscar(de, ate):
+        if de == 1:
+            return [{"n": 1}]
+        return {"mensagem": "indisponível"}
+
+    with pytest.raises(RuntimeError, match="sem lista reconhecida"):
+        P.paginar_intervalo(buscar, rotulo="meio")
+
+
+def _lote(inicio: int, n: int) -> list[dict]:
+    return [{"id": inicio + i} for i in range(n)]
+
+
+def test_pagina_curta_intermediaria_ignora_total_paginas_e_coleta_tudo():
+    """40 + páginas cheias, totalPaginas=3, 300 registros: não para na 3ª chamada."""
+    emitidos = 0
+    chamadas = []
+
+    def buscar(de, ate):
+        nonlocal emitidos
+        chamadas.append((de, ate))
+        assert ate - de + 1 <= 100
+        if emitidos >= 300:
+            return {"resultado": [], "totalPaginas": 3}
+        n = 40 if emitidos == 0 else min(100, 300 - emitidos)
+        lote = _lote(emitidos + 1, n)
+        emitidos += n
+        return {"resultado": lote, "totalPaginas": 3}
+
+    itens, avisos = P.paginar_intervalo(buscar, tamanho=100, rotulo="tp")
+    assert [i["id"] for i in itens] == list(range(1, 301))
+    assert len(chamadas) == 5  # 40, 100, 100, 60 e a página vazia
+    assert any("não encerram" in a for a in avisos)
+
+
+def test_pagina_curta_intermediaria_ignora_paginas_restantes():
+    emitidos = 0
+    chamadas = []
+
+    def buscar(de, ate):
+        nonlocal emitidos
+        chamadas.append((de, ate))
+        if emitidos >= 300:
+            return {"resultado": [], "paginasRestantes": 0}
+        n = 40 if emitidos == 0 else min(100, 300 - emitidos)
+        lote = _lote(emitidos + 1, n)
+        emitidos += n
+        restantes = max(0, 3 - len(chamadas))
+        return {"resultado": lote, "paginasRestantes": restantes}
+
+    itens, _avisos = P.paginar_intervalo(buscar, tamanho=100, rotulo="pr")
+    assert len(itens) == 300 and itens[-1]["id"] == 300
+    assert len(chamadas) == 5
+
+
+def test_pagina_curta_intermediaria_para_em_total_registros():
+    emitidos = 0
+    chamadas = []
+
+    def buscar(de, ate):
+        nonlocal emitidos
+        chamadas.append((de, ate))
+        n = 40 if emitidos == 0 else min(100, 300 - emitidos)
+        lote = _lote(emitidos + 1, n)
+        emitidos += n
+        return {"resultado": lote, "totalRegistros": 300}
+
+    itens, avisos = P.paginar_intervalo(buscar, tamanho=100, rotulo="tr")
+    assert len(itens) == 300 and itens[0]["id"] == 1 and itens[-1]["id"] == 300
+    assert len(chamadas) == 4  # para ao acumular 300, sem página vazia extra
+    assert avisos  # a página curta com totalRegistros ainda não atingido avisa e segue
+
+
+def test_faixa_alinhada_para_em_total_paginas_sem_chamada_extra():
+    chamadas = []
+
+    def buscar(de, ate):
+        chamadas.append(de)
+        if len(chamadas) > 3:
+            raise AssertionError("chamada além da última página")
+        inicio = (len(chamadas) - 1) * 100
+        return {"resultado": _lote(inicio + 1, 100), "totalPaginas": 3}
+
+    itens, avisos = P.paginar_intervalo(buscar, tamanho=100, rotulo="alinhada")
+    assert len(itens) == 300 and chamadas == [1, 101, 201]
+    assert avisos == []
+
+
+def test_paginar_para_pelo_total():
+    faixas = []
+
+    def buscar(de, ate):
+        faixas.append((de, ate))
+        if de == 1:
+            return {"resultado": [{"n": i} for i in range(100)], "totalRegistros": 100}
+        return [{"n": "nao-deveria"}]
+
+    itens, avisos = P.paginar_intervalo(buscar, tamanho=100, rotulo="total")
+    assert faixas == [(1, 100)]
+    assert len(itens) == 100 and avisos == []
+
+
+def test_paginar_pagina_curta_sem_total_segue_ate_vazia():
+    faixas = []
+
+    def buscar(de, ate):
+        faixas.append(ate - de + 1)
+        if de == 1:
+            return [{"n": i} for i in range(40)]
+        if de == 41:
+            return [{"n": 100 + i} for i in range(10)]
+        return []
+
+    itens, avisos = P.paginar_intervalo(buscar, tamanho=100, rotulo="sem-total")
+    assert faixas == [100, 100, 100]
+    assert len(itens) == 50 and avisos == []
+    assert all(t <= 100 for t in faixas)
+
+
+def test_paginar_pagina_curta_com_total_confirmado_para():
+    faixas = []
+
+    def buscar(de, ate):
+        faixas.append((de, ate))
+        return {"resultado": [{"n": 1}, {"n": 2}], "total": 2}
+
+    itens, avisos = P.paginar_intervalo(buscar, tamanho=500, rotulo="curta-total")
+    assert faixas == [(1, 100)]  # pedido 500 vira 100
+    assert [i["n"] for i in itens] == [1, 2]
+    assert avisos == []
+
+
+def test_tamanho_de_pagina_nunca_passa_de_100():
+    faixas = []
+
+    def buscar(de, ate):
+        faixas.append(ate - de + 1)
+        return []
+
+    P.paginar_intervalo(buscar, tamanho=500)
+    assert faixas == [100]
+
+
+def test_listar_limita_faixa_a_100(monkeypatch):
+    monkeypatch.setattr(P.time, "sleep", lambda _s: None)
+    s = MagicMock()
+    s.post.return_value.status_code = 200
+    s.post.return_value.json.return_value = {"d": []}
+    p = P.PortalParadigma(P.FONTES["fiesc"], delay=0, sessao=s)
+    p.listar("academia", 1, 500)
+    corpo = json.loads(s.post.call_args.kwargs["data"])
+    pag = corpo["dtoProcesso"]["dtoPaginacao"]
+    assert pag["nPaginaAte"] - pag["nPaginaDe"] + 1 == 100
+    p.listar_encerrados("academia", 2024, 1, 400)
+    corpo2 = json.loads(s.post.call_args.kwargs["data"])
+    pag2 = corpo2["dtoProcesso"]["dtoPaginacao"]
+    assert pag2["nPaginaAte"] - pag2["nPaginaDe"] + 1 == 100
+
+
+def test_cpf_e_cnpj_ficam_sem_mascara_no_resultado_e_no_raw():
+    original = "GABRIEL MOTA LIMA 00982645325 - 32.068.708/0001-70"
+    rk = [{
+        "nNrRanking": 1,
+        "sNmEmpresa": original,
+        "sNrCnpj": "32.068.708/0001-70",
+        "sDsStatus": "Classificada",
+        "dVlProposta": 10,
+        "observacao": "cpf 00982645325 e cnpj 32068708000170",
+    }]
+    res = P.linhas_resultados(1, 1, rk, None, "Homologado")
+    assert len(res) == 1
+    assert res[0]["fornecedor_nome"] == "GABRIEL MOTA LIMA 00982645325"
+    assert res[0]["fornecedor_cnpj"] == "32068708000170"
+    assert res[0]["raw"]["sNmEmpresa"] == original
+    assert res[0]["raw"]["sNrCnpj"] == "32.068.708/0001-70"
+    assert "00982645325" in res[0]["raw"]["observacao"]
+    assert "***" not in json.dumps(res[0], ensure_ascii=False)
+
+
+def test_delay_minimo_entre_requisicoes(monkeypatch):
+    pausas = []
+    monkeypatch.setattr(P.time, "sleep", lambda s: pausas.append(s))
+    s = MagicMock()
+    s.post.return_value.status_code = 200
+    s.post.return_value.json.return_value = {"d": []}
+    p = P.PortalParadigma(P.FONTES["fiesc"], delay=0.2, sessao=s)
+    assert p.delay >= 1
+    p.listar("academia", 1, 50)
+    assert pausas and all(x >= 1 for x in pausas)
+
+
+def test_pagina_repetida_interrompe_com_aviso():
+    def buscar(de, ate):
+        return [{"id": 1}]
+
+    itens, avisos = P.paginar_intervalo(buscar, rotulo="repetida")
+    assert len(itens) == 1
+    assert any("repetido" in a for a in avisos)
+
+
+def test_limite_de_seguranca_interrompe_com_aviso(monkeypatch):
+    monkeypatch.setattr(P, "MAX_PAGINAS_SEGURANCA", 2)
+    seq = {"n": 0}
+
+    def buscar(de, ate):
+        seq["n"] += 1
+        return [{"id": seq["n"]}]
+
+    itens, avisos = P.paginar_intervalo(buscar, rotulo="seguranca")
+    assert len(itens) == 2
+    assert any("limite de segurança" in a for a in avisos)
+
+
+def test_coletar_pagina_curta_sem_total_segue_e_pede_100():
+    portal = MagicMock()
+    portal.fonte = P.FONTES["fiesc"]
+    portal.detalhes.return_value = None
+    chamadas = []
+
+    def listar(texto, de, ate):
+        chamadas.append((de, ate))
+        if de == 1:
+            return [{"nCdOrigem": 7, "nCdModulo": 59, "sDsObjeto": "academia"}]
+        return []
+
+    portal.listar.side_effect = listar
+    r = P.coletar(portal, None, ["academia"], paginas=None, dry_run=True, com_resultados=False)
+    assert chamadas[0] == (1, 100)
+    assert chamadas[-1][0] > 1
+    assert all(ate - de + 1 <= 100 for de, ate in chamadas)
+    assert r["listados"] == 1 and r["paginacao_avisos"] == []
+
+
+def test_cli_paginas_padrao_nao_corta(monkeypatch):
+    visto = {}
+    monkeypatch.setattr(P, "PortalParadigma", lambda *a, **k: MagicMock())
+
+    def falso_coletar(portal, sb, termos, paginas, *a, **k):
+        visto["paginas"] = paginas
+        return {"erros": 0, "no_escopo": 0}
+
+    monkeypatch.setattr(P, "coletar", falso_coletar)
+    assert P.main(["--fonte", "fiesc", "--dry-run", "--sem-catalogo", "--sem-documentos",
+                   "--sem-resultados", "--sem-fornecedores"]) == 0
+    assert visto["paginas"] is None

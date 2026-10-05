@@ -10,6 +10,10 @@ Mesmo processo aplicado ao PE000652022 (2022), agora para qualquer ano:
 Não grava no banco (use o coletor para isso). Guarda o bruto de cada processo em --cache para retomar.
 
   python -m coletor.relatorio_ano --fonte sfiec --ano 2023 --saida bi-sfiec-2023.csv
+
+Paginação (regra de 03/10/2026): mural estatístico e mural comum pedem no máximo 100 itens
+por faixa e seguem até página vazia quando a API não informa total. `max_por_termo` não
+corta mais por padrão; se for passado, é teto opcional e o corte entra no log.
 """
 from __future__ import annotations
 
@@ -23,8 +27,9 @@ from pathlib import Path
 
 from .fornecedores import CadastroFornecedores
 from .marcas import enriquecer
-from .paradigma import (FONTES, PortalParadigma, ResultadoInvalido, avaliar_processo, empresa_cnpj, limpar,
-                        linhas_itens, linhas_resultados, modulo_de, parse_data, valor)
+from .paradigma import (FONTES, TAMANHO_PAGINA, PortalParadigma, ResultadoInvalido, avaliar_processo,
+                        empresa_cnpj, limpar, linhas_itens, linhas_resultados, modulo_de, paginar_intervalo,
+                        parse_data, valor)
 from .perfil_item import texto_do_item
 
 log = logging.getLogger("coletor.relatorio_ano")
@@ -133,27 +138,34 @@ def consolidar(entradas: list[str], saida: str) -> list[dict]:
 
 
 def coletar_ano(portal: PortalParadigma, ano: int, termos: list[str], produtos: dict | None, cache: Path,
-                max_por_termo: int = 500) -> list[dict]:
-    """Bruto de cada processo encerrado no ano: listagem, detalhe, itens e lances dos itens no escopo."""
+                max_por_termo: int | None = None) -> list[dict]:
+    """Bruto de cada processo encerrado no ano: listagem, detalhe, itens e lances dos itens no escopo.
+
+    `max_por_termo`, se informado, é teto opcional de itens por termo em cada mural.
+    O padrão não corta: pagina até página vazia ou até o total da API.
+    """
     cache.mkdir(parents=True, exist_ok=True)
     vistos: dict[tuple[int, int], dict] = {}
     for t in termos:
-        de = 1
-        while de <= max_por_termo:
-            lote = portal.listar_encerrados(t, ano, de, de + 49)
-            for x in lote:
-                if isinstance(x.get("nCdOrigem"), int) and x.get("nAnoFinalizacao") == ano:
-                    vistos.setdefault((x["nCdOrigem"], modulo_de(x)), x)
-            if len(lote) < 50:
-                break
-            de += 50
+        lote, _avisos = paginar_intervalo(
+            lambda de, ate, t=t: portal.listar_encerrados(t, ano, de, ate),
+            tamanho=TAMANHO_PAGINA, max_itens=max_por_termo,
+            rotulo=f"{portal.fonte.slug} mural estatístico {ano} {t!r}")
+        for x in lote:
+            if isinstance(x.get("nCdOrigem"), int) and x.get("nAnoFinalizacao") == ano:
+                vistos.setdefault((x["nCdOrigem"], modulo_de(x)), x)
     for x in list(vistos.values()):
         x.setdefault("_origem", "mural_estatistico")
     n_estatistico = len(vistos)
     # O Mural estatístico não traz tudo (ex.: SFIEC PD000802025, homologado em 09/2025, e os cancelados).
-    # Complementa com o mural comum: entra se foi homologado/finalizado no ano, ou cancelado com início no ano.
+    # Complementa com o mural comum, paginado: entra se foi homologado/finalizado no ano,
+    # ou cancelado com início no ano.
     for t in termos:
-        for x in portal.listar(t, 1, max_por_termo):
+        lote, _avisos = paginar_intervalo(
+            lambda de, ate, t=t: portal.listar(t, de, ate),
+            tamanho=TAMANHO_PAGINA, max_itens=max_por_termo,
+            rotulo=f"{portal.fonte.slug} mural comum {ano} {t!r}")
+        for x in lote:
             chave = (x.get("nCdOrigem"), modulo_de(x))
             if not isinstance(chave[0], int) or chave[0] <= 0 or chave in vistos:
                 continue
@@ -245,7 +257,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--termos", help="separados por ';' (padrão: " + "; ".join(TERMOS_PADRAO) + ")")
     ap.add_argument("--saida", required=True)
     ap.add_argument("--cache", default="cache_relatorio")
-    ap.add_argument("--delay", type=float, default=0.6)
+    ap.add_argument("--delay", type=float, default=1.5,
+                    help="segundos entre requisições (mínimo 1; valor menor sobe para 1)")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if args.consolidar:

@@ -10,8 +10,6 @@
 | #7129 | 11:08 AM | ✓ | LicitaGym CATMAT — migration test via /supabase-server initiated | ~398 |
 | #7126 | 10:47 AM | ✓ | SCHEMA_STANDARDS.md created — icatmat_ migration checklist and templates | ~377 |
 | #7124 | 10:45 AM | ↻ | All 7 icatmat_ migrations hardened — batch complete | ~394 |
-| #7123 | 10:44 AM | ↻ | E3 icatmat_pdm_material hardened — composite FK pattern established for deeper hierarchy levels | ~352 |
-| #7122 | 10:42 AM | ⚖ | icatmat_ FK chain stays within staging layer, not referencing catmat_ operational tables | ~340 |
 
 ### Sep 22, 2026
 
@@ -62,6 +60,8 @@
 
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
+| #8697 | 2:08 PM | ● | marca_normalizar rewritten in PL/pgSQL — recursive CTE replaced with imperative WHILE loop | ~408 |
+| #8696 | 2:07 PM | ◆ | Migration 20261005170000 — idempotência marca_normalizar + regex manual precedence fix | ~442 |
 | #8680 | 1:47 PM | ● | Migration 20261005160000 corrected — v_marca_ocorrencias DDL now matches original CTE structure | ~382 |
 | #8678 | 1:46 PM | ○ | v_marca_ocorrencias full DDL confirmed — exact entra_ranking line and join structure for fix migration | ~439 |
 | #8677 | " | ○ | v_marca_ocorrencias original DDL — fontes CTE uses precos_praticados_itens directly, not licitagym.fontes | ~418 |

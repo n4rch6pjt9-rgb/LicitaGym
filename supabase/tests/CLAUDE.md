@@ -25,6 +25,8 @@
 
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
+| #8688 | 1:51 PM | ○ | views_check.sql case N — CNPJ 00000000000000 currently expected to have entra_ranking=true (pre-fix) | ~385 |
+| #8682 | 1:50 PM | ◆ | ACL check test — block 7 added for private.cnpj_valido() validation | ~340 |
 | #8624 | 12:13 PM | ○ | acl_check.sql block 6 — complete resolver test cases including CNPJ/PRÓPRIA scoped aliases and NULL-producing inputs | ~483 |
 | #8619 | 12:07 PM | ◆ | views_check.sql — 5 new regression cases M-Q added for PR #148 audit | ~524 |
 | #8618 | " | ○ | views_check.sql ends at line 396 with ROLLBACK — cases I-L not yet visible, H is the last case in first 396 lines | ~396 |

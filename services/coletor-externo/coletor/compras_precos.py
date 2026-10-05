@@ -33,6 +33,7 @@ from typing import Any
 
 import requests
 
+from .arquivo_raw import ArquivoRaw
 from .compras_api import ErroApiCompras, ParametroInvalido, corpo_json, erro_http, validar_codigo
 from .compras_pdms import CatalogoPdmsIndisponivel, carregar_pdms_efetivos
 from .destino import Supabase, env
@@ -232,7 +233,6 @@ def normalizar_preco_praticado(item: dict[str, Any]) -> dict[str, Any] | None:
         "nome_pdm": item.get("nomePdm"),
         "id_compra_item": str(item.get("idCompraItem") or "") or None,
         "data_atualizacao_fato": item.get("dataAtualizacaoFato"),
-        "raw": item,
         "payload_hash": p_hash,
         "last_synced_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -288,6 +288,26 @@ def coletar(
     itens: list[int] | None = None,
     limite: int | None = None,
     dry_run: bool = False,
+) -> dict[str, Any]:
+    arquivo = ArquivoRaw("precos_praticados_itens", "compras-precos", dry_run=dry_run)
+    resultado: dict[str, Any] | None = None
+    try:
+        resultado = _coletar_precos(cliente, sb, pdms, itens, limite, dry_run, arquivo)
+        return resultado
+    finally:
+        manifestos = arquivo.fechar()
+        if resultado is not None:
+            resultado["arquivo_raw"] = manifestos
+
+
+def _coletar_precos(
+    cliente: ClienteComprasPrecos,
+    sb: Supabase | None,
+    pdms: list[int] | None,
+    itens: list[int] | None,
+    limite: int | None,
+    dry_run: bool,
+    arquivo: ArquivoRaw,
 ) -> dict[str, Any]:
     total_coletados = 0
     total_gravados = 0
@@ -376,6 +396,7 @@ def coletar(
                                 tipo, cod, pagina, it.get("idCompraItem"), e)
                     continue
                 if norm:
+                    norm["_bruto"] = it
                     linhas_norm.append(norm)
                     total_coletados += 1
                     por_tipo_ni[tipo_ni(norm["ni_fornecedor"]) or "sem_ni"] += 1
@@ -395,7 +416,12 @@ def coletar(
 
             linhas_norm, dup = deduplicar_por_chave(linhas_norm)
             duplicados_removidos += dup
+            brutos = [ln.pop("_bruto") for ln in linhas_norm]
 
+            if linhas_norm and (dry_run or sb is not None):
+                for ln, bruto in zip(linhas_norm, brutos):
+                    arquivo.adicionar(
+                        {"id_compra": ln["id_compra"], "id_item_compra": ln["id_item_compra"]}, bruto)
             if not dry_run and sb is not None and linhas_norm:
                 try:
                     conflito = "id_compra,id_item_compra"

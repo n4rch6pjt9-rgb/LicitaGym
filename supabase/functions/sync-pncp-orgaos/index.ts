@@ -111,10 +111,20 @@ Deno.serve(async (req) => {
             cnpj_normalizado: cnpj.replace(/\D/g, ""),
             tipo: "orgao",
           },
-          { syncRunId: runId, lastSeenSyncId: runId },
+          { syncRunId: runId },
         );
 
-        if (entidadeResult !== "erro") stats.entidades_inseridas++;
+        if (entidadeResult === "erro") {
+          stats.erros++;
+          await logSyncRequest(client, {
+            syncRunId: runId,
+            endpoint: `/orgaos/${cnpj}`,
+            parametros: { cnpj, tabela: "entidades" },
+            erro: "upsert entidades failed",
+          });
+        } else {
+          stats.entidades_inseridas++;
+        }
 
         const entidadeIdResult = await client
           .from("entidades")
@@ -122,7 +132,15 @@ Deno.serve(async (req) => {
           .eq("codigo_pncp", cnpj)
           .single();
 
-        if (entidadeIdResult.data && entidadeIdResult.data.id) {
+        if (entidadeIdResult.error) {
+          stats.erros++;
+          await logSyncRequest(client, {
+            syncRunId: runId,
+            endpoint: `/orgaos/${cnpj}`,
+            parametros: { cnpj, tabela: "entidades_select" },
+            erro: entidadeIdResult.error.message,
+          });
+        } else if (entidadeIdResult.data && entidadeIdResult.data.id) {
           const entidadeId = entidadeIdResult.data.id;
 
           const orgaoResult = await upsertByHash(
@@ -131,13 +149,22 @@ Deno.serve(async (req) => {
             { entidade_id: entidadeId },
             {
               entidade_id: entidadeId,
-              orgao_id_pncp: cnpj.slice(0, 8),
               cnpj: cnpj,
             },
-            { syncRunId: runId, lastSeenSyncId: runId },
+            { syncRunId: runId },
           );
 
-          if (orgaoResult !== "erro") stats.orgaos_inseridas++;
+          if (orgaoResult === "erro") {
+            stats.erros++;
+            await logSyncRequest(client, {
+              syncRunId: runId,
+              endpoint: `/orgaos/${cnpj}`,
+              parametros: { cnpj, tabela: "orgaos" },
+              erro: "upsert orgaos failed",
+            });
+          } else {
+            stats.orgaos_inseridas++;
+          }
         }
       } catch (error) {
         stats.erros++;

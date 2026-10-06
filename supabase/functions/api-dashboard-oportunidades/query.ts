@@ -227,7 +227,9 @@ export function applyOportunidadesScope<T extends FilterableQuery>(
   filtros: LicitacaoFiltros,
 ): T {
   query.eq("eh_canonica", true);
-  if (!filtros.prioridade) {
+  // Fonte escolhida (SEST SENAT etc.) traz também o histórico: as compras homologadas
+  // sumiam da lista, que sem prioridade só devolve leads e monitorar.
+  if (!filtros.prioridade && !filtros.fonte) {
     query.or(ESCOPO_OPORTUNIDADES_FILTRO);
   }
   return query;

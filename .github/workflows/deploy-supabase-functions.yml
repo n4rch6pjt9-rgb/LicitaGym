@@ -64,6 +64,7 @@ jobs:
             sync-pncp-catalogo
             sync-compras-catmat
             link-catmat-pca
+            link-pca-edital
             sync-pncp-irp
             sync-pncp-orgaos
             # PENDING (not production-ready — do not deploy yet):

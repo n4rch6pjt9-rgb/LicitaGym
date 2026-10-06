@@ -126,6 +126,10 @@ verify_jwt = false
 [functions.api-catmat]
 verify_jwt = false
 
+# api-pipeline valida o JWT do usuário no código (auth.getUser) e o papel admin em app_metadata (Dashboard #29)
+[functions.api-pipeline]
+verify_jwt = false
+
 # api-saude: cron secret (workflow saude.yml) ou usuário admin, validados no código
 [functions.api-saude]
 verify_jwt = false

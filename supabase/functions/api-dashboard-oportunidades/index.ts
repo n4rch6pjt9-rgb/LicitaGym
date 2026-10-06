@@ -222,7 +222,8 @@ async function handleReadiness(
 
 /**
  * Aderência ao catálogo CATMAT de licitações já carregadas (detalhe): lê public.licitacao_match (texto do item ou do
- * objeto casando com padrões de PDM) e devolve, por licitação, a mesma forma do catmat_match da lista. É um extra:
+ * objeto casando com padrões de PDM), mantém só os PDMs efetivos do catálogo da empresa (sem excluídos nem PDMs fora
+ * dele, como a lista com catalogo=true) e devolve, por licitação, a mesma forma do catmat_match da lista. É um extra:
  * se a consulta falhar, o detalhe sai sem aderência (com log) em vez de falhar.
  * Diferença conhecida do catmat_match da lista (licitacoes_ids_por_catmat_unica): aqui não entram o casamento pelo
  * código do item (em 04/10/2026, 2 itens em toda a base) nem os objetos ainda pendentes de recálculo.
@@ -247,7 +248,11 @@ async function aderenciaPorLicitacao(
       console.warn("[api-dashboard-oportunidades] aderência do detalhe indisponível (licitacao_match):", error ?? "resposta inválida");
       return porLicitacao;
     }
-    const linhas = data as Array<{ licitacao_id: number; codigo_pdm: number; origem: string; item_id?: number | string | null }>;
+    if (data.length === 0) return porLicitacao;
+    const noCatalogo = await pdmsDoCatalogo(client);
+    if (noCatalogo === null) return porLicitacao;
+    const linhas = (data as Array<{ licitacao_id: number; codigo_pdm: number; origem: string; item_id?: number | string | null }>)
+      .filter((l) => noCatalogo.has(Number(l.codigo_pdm)));
     const pdms = [...new Set(linhas.map((l) => Number(l.codigo_pdm)))];
     const nomes = new Map<number, string>();
     if (pdms.length > 0) {
@@ -285,6 +290,34 @@ async function aderenciaPorLicitacao(
     console.warn("[api-dashboard-oportunidades] aderência do detalhe indisponível:", e instanceof Error ? e.message : String(e));
   }
   return porLicitacao;
+}
+
+/**
+ * PDMs efetivos do catálogo da empresa (public.catalogo_catmat_pdms_efetivos: a regra mais específica vence e só entram
+ * os incluídos), para a aderência do detalhe mostrar só o que a empresa vende. Catálogo sem PDM incluído = conjunto
+ * vazio (nenhuma aderência). Se a leitura falhar devolve null (com log): o detalhe sai sem aderência em vez de mostrar
+ * PDMs excluídos ou fora do catálogo.
+ */
+async function pdmsDoCatalogo(client: SupabaseClient): Promise<Set<number> | null> {
+  const pdms = new Set<number>();
+  try {
+    // Em páginas: o max_rows do PostgREST (1000) cortaria em silêncio um catálogo com grupos/classes inteiros.
+    for (let de = 0; ; de += CATALOGO_PDMS_PAGINA) {
+      const { data, error } = await client
+        .rpc("catalogo_catmat_pdms_efetivos")
+        .order("codigo_pdm")
+        .range(de, de + CATALOGO_PDMS_PAGINA - 1);
+      if (error || !Array.isArray(data)) {
+        console.warn("[api-dashboard-oportunidades] catálogo CATMAT indisponível para a aderência:", error ?? "resposta inválida");
+        return null;
+      }
+      for (const r of data as Array<{ codigo_pdm: number | string }>) pdms.add(Number(r.codigo_pdm));
+      if (data.length < CATALOGO_PDMS_PAGINA) return pdms;
+    }
+  } catch (e) {
+    console.warn("[api-dashboard-oportunidades] catálogo CATMAT indisponível para a aderência:", e instanceof Error ? e.message : String(e));
+    return null;
+  }
 }
 
 /**
@@ -495,6 +528,9 @@ export interface CatmatMatch {
 export interface CatmatMatchDetalhe extends CatmatMatch {
   itens: number[];
 }
+
+/** Página da leitura de catalogo_catmat_pdms_efetivos (= max_rows do PostgREST em supabase/config.toml). */
+export const CATALOGO_PDMS_PAGINA = 1000;
 
 /** Máximo de numero_item por entrada de catmat_match no get (em 04/10/2026, o maior grupo tinha 44). */
 export const MAX_ITENS_ADERENCIA = 50;

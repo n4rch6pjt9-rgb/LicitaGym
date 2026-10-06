@@ -1,5 +1,5 @@
 import { assertEquals } from "jsr:@std/assert@1";
-import { handleRequest, ITENS_ADERENCIA_LOTE, MAX_ITENS_ADERENCIA } from "../../../supabase/functions/api-dashboard-oportunidades/index.ts";
+import { CATALOGO_PDMS_PAGINA, handleRequest, ITENS_ADERENCIA_LOTE, MAX_ITENS_ADERENCIA } from "../../../supabase/functions/api-dashboard-oportunidades/index.ts";
 import { applyLicitacaoFilters, type FilterableQuery } from "../../../supabase/functions/api-dashboard-oportunidades/query.ts";
 import { parseActionFromBody } from "../../../supabase/functions/api-dashboard-oportunidades/validation.ts";
 
@@ -7,9 +7,42 @@ import { parseActionFromBody } from "../../../supabase/functions/api-dashboard-o
 
 type Chamada = { tabela: string; metodo: string; args: unknown[] };
 
-/** Cliente falso que responde por tabela e grava as chamadas. */
+/**
+ * Cliente falso que responde por tabela e grava as chamadas. RPC responde por `rpc:<nome>`; sem resposta definida,
+ * catalogo_catmat_pdms_efetivos devolve todos os PDMs de licitacao_match (catálogo que contém tudo o que casou).
+ */
 function clientePorTabela(respostas: Record<string, { data: unknown; error?: unknown; count?: number }>) {
   const chamadas: Chamada[] = [];
+  const rpc = (nome: string) => {
+    chamadas.push({ tabela: `rpc:${nome}`, metodo: "rpc", args: [nome] });
+    let faixa: [number, number] | undefined;
+    const resposta = () => {
+      const definida = respostas[`rpc:${nome}`];
+      if (definida) {
+        const data = Array.isArray(definida.data) && faixa ? definida.data.slice(faixa[0], faixa[1] + 1) : definida.data;
+        return { data, error: definida.error ?? null };
+      }
+      if (nome === "catalogo_catmat_pdms_efetivos") {
+        const match = respostas.licitacao_match?.data;
+        const pdms = Array.isArray(match) ? [...new Set(match.map((m: { codigo_pdm: number }) => m.codigo_pdm))] : [];
+        return { data: pdms.map((codigo_pdm) => ({ codigo_pdm })), error: null };
+      }
+      return { data: null, error: { message: `rpc ${nome} sem resposta no teste` } };
+    };
+    const q: Record<string, unknown> = {
+      order: (...args: unknown[]) => {
+        chamadas.push({ tabela: `rpc:${nome}`, metodo: "order", args });
+        return q;
+      },
+      range: (de: number, ate: number) => {
+        chamadas.push({ tabela: `rpc:${nome}`, metodo: "range", args: [de, ate] });
+        faixa = [de, ate];
+        return q;
+      },
+      then: (ok: (v: unknown) => unknown, err?: (e: unknown) => unknown) => Promise.resolve(resposta()).then(ok, err),
+    };
+    return q;
+  };
   const from = (tabela: string) => {
     const q: Record<string, unknown> = {};
     const res = respostas[tabela] ?? { data: [], error: null };
@@ -25,7 +58,7 @@ function clientePorTabela(respostas: Record<string, { data: unknown; error?: unk
     chamadas.push({ tabela, metodo: "from", args: [tabela] });
     return q;
   };
-  return { cliente: { from }, chamadas };
+  return { cliente: { from, rpc }, chamadas };
 }
 
 const autorizado = { requireAuth: () => null };
@@ -113,6 +146,70 @@ Deno.test("get sem casamento não ganha catmat_match; falha na aderência não d
   assertEquals("catmat_match" in (await r2.json()).item, false);
 });
 
+Deno.test("get: aderência só mostra PDMs efetivos do catálogo (sem excluídos nem fora do catálogo)", async () => {
+  const { cliente, chamadas } = clientePorTabela({
+    licitacoes_externas_prioridade_efetiva: { data: { id: 77, fonte: "pncp" } },
+    licitacao_match: {
+      data: [
+        { licitacao_id: 77, codigo_pdm: 1400, origem: "texto_item" }, // no catálogo
+        { licitacao_id: 77, codigo_pdm: 3233, origem: "texto_item" }, // excluído (fora de pdms_efetivos)
+        { licitacao_id: 77, codigo_pdm: 758, origem: "texto_objeto" }, // fora do catálogo
+      ],
+    },
+    "rpc:catalogo_catmat_pdms_efetivos": { data: [{ codigo_pdm: 1400 }, { codigo_pdm: 8166 }] },
+    catmat_pdms: { data: [{ codigo_pdm: 1400, nome_pdm: "CORDA DE PULAR" }] },
+  });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(post({ action: "get", id: 77 }), { ...autorizado, getClient: () => cliente as any });
+  assertEquals(res.status, 200);
+  assertEquals((await res.json()).item.catmat_match, [
+    { codigo_pdm: 1400, nome_pdm: "CORDA DE PULAR", codigo_item: null, motivo: "texto_item", itens: [] },
+  ]);
+  // nomes lidos só dos PDMs que ficaram
+  assertEquals(chamadas.filter((c) => c.tabela === "catmat_pdms" && c.metodo === "in").map((c) => c.args), [["codigo_pdm", [1400]]]);
+});
+
+Deno.test("get: catálogo com mais PDMs que o max_rows é lido em páginas (PDM da 2ª página não some)", async () => {
+  const total = CATALOGO_PDMS_PAGINA + 5;
+  const catalogo = Array.from({ length: total }, (_, i) => ({ codigo_pdm: i + 1 }));
+  const ultimo = total; // só aparece na 2ª página
+  const { cliente, chamadas } = clientePorTabela({
+    licitacoes_externas_prioridade_efetiva: { data: { id: 77, fonte: "pncp" } },
+    licitacao_match: { data: [{ licitacao_id: 77, codigo_pdm: ultimo, origem: "texto_objeto" }] },
+    "rpc:catalogo_catmat_pdms_efetivos": { data: catalogo },
+    catmat_pdms: { data: [{ codigo_pdm: ultimo, nome_pdm: "PDM FICTÍCIO" }] },
+  });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(post({ action: "get", id: 77 }), { ...autorizado, getClient: () => cliente as any });
+  assertEquals((await res.json()).item.catmat_match.map((m: { codigo_pdm: number }) => m.codigo_pdm), [ultimo]);
+  assertEquals(
+    chamadas.filter((c) => c.tabela === "rpc:catalogo_catmat_pdms_efetivos" && c.metodo === "range").map((c) => c.args),
+    [[0, CATALOGO_PDMS_PAGINA - 1], [CATALOGO_PDMS_PAGINA, 2 * CATALOGO_PDMS_PAGINA - 1]],
+  );
+});
+
+Deno.test("get: catálogo vazio ou ilegível deixa o detalhe sem aderência (nunca mostra PDM sem filtro)", async () => {
+  const warn = console.warn;
+  const avisos: unknown[][] = [];
+  console.warn = (...a: unknown[]) => avisos.push(a);
+  try {
+    for (const catalogo of [{ data: [] }, { data: null, error: { message: "timeout" } }, { data: null }]) {
+      const { cliente } = clientePorTabela({
+        licitacoes_externas_prioridade_efetiva: { data: { id: 77, fonte: "pncp" } },
+        licitacao_match: { data: [{ licitacao_id: 77, codigo_pdm: 1400, origem: "texto_item" }] },
+        "rpc:catalogo_catmat_pdms_efetivos": catalogo,
+      });
+      // deno-lint-ignore no-explicit-any
+      const res = await handleRequest(post({ action: "get", id: 77 }), { ...autorizado, getClient: () => cliente as any });
+      assertEquals(res.status, 200);
+      assertEquals("catmat_match" in (await res.json()).item, false);
+    }
+  } finally {
+    console.warn = warn;
+  }
+  assertEquals(avisos.filter((a) => String(a[0]).includes("catálogo CATMAT indisponível")).length, 2);
+});
+
 Deno.test("get: catmat_match.itens agrupa os numero_item por PDM + motivo, sem repetição e em ordem numérica", async () => {
   const { cliente, chamadas } = clientePorTabela({
     licitacoes_externas_prioridade_efetiva: { data: { id: 77, fonte: "pncp", objeto: "Academia (fictício)" } },
@@ -195,6 +292,7 @@ Deno.test("get: falha na leitura de licitacao_itens não derruba o detalhe e dei
       licitacao_match: { data: [{ licitacao_id: 5, codigo_pdm: 7115, origem: "texto_item", item_id: 1 }] },
     });
     const cliente = {
+      rpc: base.cliente.rpc,
       from: (t: string) => {
         if (t === "licitacao_itens") throw new Error("rede caiu");
         return base.cliente.from(t);
@@ -208,6 +306,38 @@ Deno.test("get: falha na leitura de licitacao_itens não derruba o detalhe e dei
     console.warn = warn;
   }
   assertEquals(avisos.filter((a) => String(a[0]).includes("licitacao_itens") || String(a[0]).includes("números dos itens")).length, 3);
+});
+
+Deno.test("get: falha no 2º lote de licitacao_itens deixa itens vazio (sem lista parcial do 1º lote)", async () => {
+  const total = ITENS_ADERENCIA_LOTE + 20;
+  const match = Array.from({ length: total }, (_, i) => ({ licitacao_id: 5, codigo_pdm: 7115, origem: "texto_item", item_id: 1000 + i }));
+  const base = clientePorTabela({
+    licitacoes_externas_prioridade_efetiva: { data: { id: 5, fonte: "pncp" } },
+    licitacao_match: { data: match },
+  });
+  let leituras = 0;
+  const cliente = {
+    rpc: base.cliente.rpc,
+    from: (t: string) => {
+      if (t !== "licitacao_itens") return base.cliente.from(t);
+      leituras++;
+      const resposta = leituras === 1
+        ? { data: Array.from({ length: ITENS_ADERENCIA_LOTE }, (_, i) => ({ id: 1000 + i, numero_item: i + 1 })) }
+        : { data: null, error: { message: "timeout" } };
+      return clientePorTabela({ licitacao_itens: resposta }).cliente.from(t);
+    },
+  };
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    // deno-lint-ignore no-explicit-any
+    const res = await handleRequest(post({ action: "get", id: 5 }), { ...autorizado, getClient: () => cliente as any });
+    assertEquals(res.status, 200);
+    assertEquals((await res.json()).item.catmat_match[0].itens, []);
+  } finally {
+    console.warn = warn;
+  }
+  assertEquals(leituras, 2);
 });
 
 Deno.test("get por processo: itens separados por licitação, com uma leitura de licitacao_itens para todas", async () => {

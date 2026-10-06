@@ -17,6 +17,12 @@ import {
   parseUnidade,
   type PcaItemLeading,
 } from "../_shared/pcaLeading.ts";
+import {
+  baselineFrequencia,
+  contratoMotor,
+  estadoDoPlano,
+  notaMaterialidade,
+} from "../_shared/motor-oportunidade.ts";
 
 function getUserClient(req: Request) {
   const url = Deno.env.get("SUPABASE_URL");
@@ -157,18 +163,101 @@ async function triggerSync(body: Record<string, unknown>) {
   return { status: res.status, body: await res.json() };
 }
 
+function anoUtc(): number {
+  return Number(hojeUtc().slice(0, 4));
+}
+
+async function responderConversao(req: Request, url: URL): Promise<Response> {
+  const denied = await requireUserAuth(req);
+  if (denied) return denied;
+  const anoAberto = anoUtc();
+  const client = getUserClient(req);
+  let taxa = client
+    .from("pca_conversao_edital_taxa")
+    .select("ano_exercicio, classe_material_servico, denominador_itens, numerador_com_evidencia, taxa_pct_historica, lag_medio_dias, disclaimer")
+    .lt("ano_exercicio", anoAberto)
+    .order("ano_exercicio", { ascending: false });
+  const classe = url.searchParams.get("classe");
+  if (classe) taxa = taxa.eq("classe_material_servico", classe);
+  const { data: taxas, error: taxaError } = await taxa;
+  if (taxaError) return jsonResponse({ error: taxaError.message }, 400);
+
+  let itens = client
+    .from("pca_conversao_edital_item")
+    .select("pca_item_id, orgao_cnpj, ano_exercicio, classe_material_servico, convertido_com_evidencia, fonte_evidencia, pca_link_evidencia")
+    .lt("ano_exercicio", anoAberto)
+    .order("ano_exercicio", { ascending: false })
+    .limit(50);
+  const cnpj = url.searchParams.get("orgao_cnpj")?.replace(/\D/g, "");
+  if (cnpj) itens = itens.eq("orgao_cnpj", cnpj);
+  if (classe) itens = itens.eq("classe_material_servico", classe);
+  const { data: amostra, error: itemError } = await itens;
+  if (itemError) return jsonResponse({ error: itemError.message }, 400);
+
+  return jsonResponse({
+    ano_aberto_excluido: anoAberto,
+    disclaimer: "frequencia_historica_fk_evidencia_nao_ml",
+    nota: "Ano ainda em curso não entra como não convertido. Taxa não é probabilidade de modelo.",
+    taxas: taxas ?? [],
+    amostra: amostra ?? [],
+  });
+}
+
+async function responderPriorizacao(req: Request, url: URL): Promise<Response> {
+  const denied = await requireUserAuth(req);
+  if (denied) return denied;
+  const valorRaw = url.searchParams.get("valor_item");
+  const dotacaoRaw = url.searchParams.get("dotacao_permanente");
+  const planoRaw = url.searchParams.get("plano_publicado");
+  const valor = valorRaw == null || valorRaw === "" ? null : Number(valorRaw);
+  const dotacao = dotacaoRaw == null || dotacaoRaw === "" ? null : Number(dotacaoRaw);
+  if ((valorRaw != null && valorRaw !== "" && !Number.isFinite(valor)) ||
+      (dotacaoRaw != null && dotacaoRaw !== "" && !Number.isFinite(dotacao))) {
+    return jsonResponse({ error: "valor_item ou dotacao_permanente inválido" }, 400);
+  }
+  const plano = planoRaw == null || planoRaw === ""
+    ? null
+    : planoRaw === "true";
+  return jsonResponse({
+    plano: estadoDoPlano(plano),
+    materialidade: notaMaterialidade(
+      valor != null && Number.isFinite(valor) ? valor : null,
+      dotacao != null && Number.isFinite(dotacao) ? dotacao : null,
+    ),
+    nota: "Denominador é a linha de equipamento permanente. Orçamento total não entra. Plano ausente é not_observed, não zero.",
+  });
+}
+
+async function responderMotor(req: Request, url: URL): Promise<Response> {
+  const denied = await requireUserAuth(req);
+  if (denied) return denied;
+  const positivos = Number(url.searchParams.get("positivos"));
+  const total = Number(url.searchParams.get("total"));
+  const temAmostra = url.searchParams.has("positivos") && url.searchParams.has("total");
+  return jsonResponse({
+    ...contratoMotor(),
+    baseline: temAmostra && Number.isFinite(positivos) && Number.isFinite(total)
+      ? baselineFrequencia({ positivos, total })
+      : { sinal: "abstencao", frequencia: null },
+  });
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   const url = new URL(req.url);
 
   if (req.method === "GET") {
-    if (url.searchParams.get("visao") === "leading") {
+    const visao = url.searchParams.get("visao");
+    if (visao === "leading") {
       return await responderLeading(
         req,
         url.searchParams.get("unidade"),
         url.searchParams.get("data_referencia"),
       );
     }
+    if (visao === "conversao") return await responderConversao(req, url);
+    if (visao === "priorizacao") return await responderPriorizacao(req, url);
+    if (visao === "motor") return await responderMotor(req, url);
     const client = getUserClient(req);
     const ano = parseQueryInt(url, "ano", new Date().getUTCFullYear());
     const page = parseQueryInt(url, "page", 1);

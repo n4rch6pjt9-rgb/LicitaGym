@@ -11,6 +11,18 @@ async function sqlSemComentarios(path: string): Promise<string> {
   return (await Deno.readTextFile(path)).replace(/--[^\n]*/g, "");
 }
 
+/** A migration mais recente que redefine a view (a que vale em produção). */
+async function ultimaMigracaoDaView(): Promise<string> {
+  const nomes: string[] = [];
+  for await (const e of Deno.readDir("./supabase/migrations")) {
+    if (!e.isFile || !/^2\d+_.*\.sql$/.test(e.name)) continue;
+    const sql = await Deno.readTextFile(`./supabase/migrations/${e.name}`);
+    if (/create or replace view public\.licitacoes_externas_prioridade_efetiva/.test(sql)) nomes.push(e.name);
+  }
+  nomes.sort();
+  return `./supabase/migrations/${nomes[nomes.length - 1]}`;
+}
+
 /** Corpo da view (do "as select" até o ";" final da definição). */
 function corpoDaView(sql: string): string {
   return sql.match(
@@ -107,7 +119,8 @@ Deno.test("prioridade efetiva: prazo sem fuso em BRT e inválido não derruba a 
 });
 
 Deno.test("prioridade efetiva: colunas da view cobrem PUBLIC_LICITACAO_COLUMNS", async () => {
-  const view = corpoDaView(await sqlSemComentarios(MIGRATION));
+  // a definição que vale é a da última migration que recria a view (colunas novas entram no fim)
+  const view = corpoDaView(await sqlSemComentarios(await ultimaMigracaoDaView()));
   const ts = await Deno.readTextFile(
     "./supabase/functions/api-dashboard-oportunidades/index.ts",
   );
@@ -118,7 +131,7 @@ Deno.test("prioridade efetiva: colunas da view cobrem PUBLIC_LICITACAO_COLUMNS",
   for (const c of cols) {
     if (c === "prioridade") continue; // recalculada
     assert(
-      new RegExp(`\\bl\\.${c},`).test(view),
+      new RegExp(`\\bl\\.${c}\\b`).test(view),
       `coluna ${c} ausente na view`,
     );
   }

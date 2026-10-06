@@ -8,7 +8,9 @@ import json
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from scripts.lib.http_client import clamp_compras_gov_page_size
 from scripts.lib.http_fetch import fetch_json, HttpFetchError
+from scripts.lib.paginacao import acao_pagina
 from scripts.lib.sync_state import SyncStateManager, is_sync_resume_enabled
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -26,9 +28,10 @@ def fetch_classes(
     codigo_classe: Optional[int] = None,
     status_classe: Optional[bool] = None,
     pagina: int = 1,
-    tamanho_pagina: int = 500
+    tamanho_pagina: int = 100
 ) -> Dict[str, Any]:
     """Consulta classes de material"""
+    tamanho_pagina = clamp_compras_gov_page_size(tamanho_pagina)
     url = f"{BASE_URL}{ENDPOINT}"
 
     params = {
@@ -98,19 +101,34 @@ def collect_classes(
             continue
 
         logger.info(f"G{grupo} classe {classe}...")
-        try:
-            resp = fetch_classes(codigo_grupo=grupo, codigo_classe=classe)
-        except Exception as e:
-            sync_manager.record_partial_failure(
-                e,
-                page=idx,
-                error_details={"grupo": grupo, "classe": classe},
-                cursor={"completed_keys": completed_keys, "resultado": resultado},
+        classes: List[Dict] = []
+        pagina = 1
+        tamanho = clamp_compras_gov_page_size(100)
+        vistos: set[str] = set()
+        lidos = 0
+        while True:
+            try:
+                resp = fetch_classes(codigo_grupo=grupo, codigo_classe=classe, pagina=pagina, tamanho_pagina=tamanho)
+            except Exception as e:
+                sync_manager.record_partial_failure(
+                    e,
+                    page=idx,
+                    error_details={"grupo": grupo, "classe": classe},
+                    cursor={"completed_keys": completed_keys, "resultado": resultado},
+                )
+                sync_manager.save_accumulated_data({"completed_keys": completed_keys, "resultado": resultado})
+                raise
+            lote = resp.get("resultado") if isinstance(resp, dict) else None
+            parar, incluir = acao_pagina(
+                lote, resp if isinstance(resp, dict) else {},
+                tamanho=tamanho, pagina=pagina, vistos=vistos, logger=logger, ja_lidos=lidos,
             )
-            sync_manager.save_accumulated_data({"completed_keys": completed_keys, "resultado": resultado})
-            raise
-
-        classes = resp.get("resultado", [])
+            if incluir and lote:
+                lidos += len(lote)
+                classes.extend(lote)
+            if not incluir or parar:
+                break
+            pagina += 1
         resultado[key] = classes
         completed_keys.append(key)
         total_records += len(classes)

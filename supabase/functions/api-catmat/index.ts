@@ -87,7 +87,9 @@ export async function handleRequest(req: Request, ctx: ApiCatmatContext = {}): P
         return jsonResponse({ action: "catalogo_listar", ...(await listarCatalogo(repo)) });
 
       case "catalogo_salvar": {
-        const r = await salvarRegra(deps, user.id, params);
+        const r = await salvarRegra(deps, user.id, params, {
+          aPartirDoPdm: params.a_partir_do_pdm ?? undefined,
+        });
         console.info("[api-catmat] catalogo_salvar", { user: user.id, chave: r.regra.chave, incluido: r.regra.incluido });
         return jsonResponse({ action: "catalogo_salvar", ...r }, r.criada ? 201 : 200);
       }

@@ -1,6 +1,6 @@
-import { assertEquals } from "jsr:@std/assert@1";
+import { assertEquals, assertRejects } from "jsr:@std/assert@1";
 import { type ApiCatmatContext, handleRequest } from "../../../supabase/functions/api-catmat/index.ts";
-import { estadoDoNo, indexarRegras } from "../../../supabase/functions/api-catmat/catalog.ts";
+import { estadoDoNo, indexarRegras, salvarRegra } from "../../../supabase/functions/api-catmat/catalog.ts";
 import type { CatmatRepo, ItemPdmInput, RegraInput } from "../../../supabase/functions/api-catmat/repo.ts";
 import { limparCacheMemoria } from "../../../supabase/functions/api-catmat/tree.ts";
 import { quebrarDescricaoItem } from "../../../supabase/functions/_shared/compras-gov/descricao-parser.ts";
@@ -273,14 +273,14 @@ Deno.test("api-catmat: cache em memória e no banco; Compras.gov fora do ar usa 
   assertEquals(res.status, 504);
 });
 
-Deno.test("api-catmat: percorre todas as páginas do Compras.gov (tamanhoPagina 500)", async () => {
+Deno.test("api-catmat: percorre todas as páginas do Compras.gov (tamanhoPagina 100)", async () => {
   limparCacheMemoria();
   const mem = repoMemoria();
   const gov = comprasGovFalso({ paginarPdms: true });
   const body = await (await handleRequest(post({ action: "arvore", nivel: "pdms", codigo: 7830, incluir_inativos: true }), ctx(mem, gov))).json();
   assertEquals(body.total, 3);
   assertEquals(gov.chamadas.filter((c) => c.includes("3_consultarPdmMaterial")).length, 2);
-  assertEquals(gov.chamadas.every((c) => c.includes("tamanhoPagina=500")), true);
+  assertEquals(gov.chamadas.every((c) => c.includes("tamanhoPagina=100")), true);
 });
 
 // ------------------------------------------------------------------------------------------------
@@ -296,6 +296,9 @@ Deno.test("api-catmat: registrar a classe 7830 grava ancestrais, materializa os 
   assertEquals(body.regra.chave, "classe:7830");
   assertEquals(body.regra.created_by, "u-admin");
   assertEquals(body.pdms_materializados, 3);
+  assertEquals(body.itens_hidratados, 3);
+  assertEquals([...mem.itens.keys()].sort(), [319134, 373980, 470001]);
+  assertEquals(mem.atributos.get(470001)?.length, 5);
   assertEquals(mem.grupos.has(78), true);
   assertEquals(mem.classes.has(7830), true);
   assertEquals([...mem.pdms.keys()].sort(), [2638, 2746, 7115]);
@@ -311,6 +314,53 @@ Deno.test("api-catmat: registrar a classe 7830 grava ancestrais, materializa os 
   const de_novo = await handleRequest(post({ action: "catalogo_salvar", nivel: "classe", codigo_grupo: 78, codigo_classe: 7830, incluido: true, observacao: "núcleo" }), ctx(mem));
   assertEquals(de_novo.status, 200);
   assertEquals(mem.regras.length, 1);
+});
+
+Deno.test("api-catmat: hidratação de classe é lote e a regra existe mesmo se o item falha", async () => {
+  limparCacheMemoria();
+  const mem = repoMemoria();
+  const gov = comprasGovFalso();
+  const deps = { repo: mem.repo, fetchFn: gov.fetchFn, agora: () => 1_000_000, dormir: () => Promise.resolve() };
+  const alvo = {
+    nivel: "classe" as const,
+    codigo_grupo: 78,
+    codigo_classe: 7830,
+    codigo_pdm: null,
+    codigo_item: null,
+    incluido: true,
+    observacao: null,
+  };
+  const primeiro = await salvarRegra(deps, "u-admin", alvo, { limitePdms: 1 });
+  assertEquals(mem.regras.length, 1);
+  assertEquals(primeiro.pdms_materializados, 1);
+  assertEquals(primeiro.proximo_codigo_pdm != null, true);
+  const segundo = await salvarRegra(deps, "u-admin", alvo, {
+    limitePdms: 8,
+    aPartirDoPdm: primeiro.proximo_codigo_pdm as number,
+  });
+  assertEquals(mem.regras.length, 1);
+  assertEquals(segundo.criada, false);
+  assertEquals(segundo.proximo_codigo_pdm, null);
+  assertEquals([...mem.pdms.keys()].sort(), [2638, 2746, 7115]);
+
+  limparCacheMemoria();
+  const memFalha = repoMemoria();
+  memFalha.repo.upsertPdm = () => Promise.reject(new Error("Compras.gov timeout"));
+  const depsFalha = { repo: memFalha.repo, fetchFn: gov.fetchFn, agora: () => 1_000_000, dormir: () => Promise.resolve() };
+  await assertRejects(() => salvarRegra(depsFalha, "u-admin", alvo, { limitePdms: 1 }));
+  assertEquals(memFalha.regras.length, 1);
+});
+
+Deno.test("api-catmat: registrar o grupo hidrata os itens dos PDMs materializados", async () => {
+  limparCacheMemoria();
+  const mem = repoMemoria();
+  const res = await handleRequest(post({ action: "catalogo_salvar", nivel: "grupo", codigo_grupo: 78, incluido: true }), ctx(mem));
+  assertEquals(res.status, 201);
+  const body = await res.json();
+  assertEquals(body.pdms_materializados, 3);
+  assertEquals(body.itens_hidratados, 3);
+  assertEquals([...mem.itens.keys()].sort(), [319134, 373980, 470001]);
+  assertEquals(mem.atributos.get(470001)?.length, 5);
 });
 
 Deno.test("api-catmat: catalogo_salvar recusa árvore vencida (stale) com 503 e não grava nada", async () => {
@@ -538,8 +588,14 @@ Deno.test("api-catmat: catalogo_hidratar_itens hidrata os PDMs do grupo incluíd
   const gov = comprasGovFalso();
   const c = ctx(mem, gov);
   assertEquals((await handleRequest(post({ action: "catalogo_salvar", nivel: "grupo", codigo_grupo: 78, incluido: true }), c)).status, 201);
+be-forte-ancorado-nucleo
   // grupo incluído só materializa PDMs (era a causa dos 38 PDMs sem itens)
   assertEquals(mem.itens.size, 0);
+
+  // desde o #213 o grupo já hidrata itens e atributos do primeiro lote de PDMs; catalogo_hidratar_itens refaz sem duplicar
+  assertEquals(mem.itens.size, 3);
+  assertEquals(mem.atributos.get(470001)?.length, 5);
+ main
 
   // comum não hidrata
   assertEquals((await handleRequest(post({ action: "catalogo_hidratar_itens" }), ctx(mem, gov, COMUM))).status, 403);

@@ -71,6 +71,8 @@ export const PUBLIC_LICITACAO_COLUMNS = [
   "created_at",
   "updated_at",
   "last_synced_at",
+  "objeto_categoria",
+  "objeto_registro_preco",
 ].join(",");
 
 /**
@@ -83,6 +85,30 @@ export const CANONICA_COLUMNS = "canonica_id,eh_canonica";
 
 /** Projeção de list/get (sempre na view): colunas públicas da tabela + as da canônica. */
 export const OPORTUNIDADES_COLUMNS = `${PUBLIC_LICITACAO_COLUMNS},${CANONICA_COLUMNS}`;
+
+/** Colunas do objeto canônico (migration 20261004140000_objeto_canonico). */
+const COLUNAS_OBJETO = ["objeto_categoria", "objeto_registro_preco"];
+/** Mesmas colunas sem as do objeto canônico: usadas se a função for publicada antes de a migration existir no banco. */
+export const OPORTUNIDADES_COLUMNS_SEM_OBJETO = OPORTUNIDADES_COLUMNS.split(",")
+  .filter((c) => !COLUNAS_OBJETO.includes(c))
+  .join(",");
+
+/** O banco respondeu "coluna não existe" (42703) para uma coluna do objeto canônico? */
+function colunaDoObjetoAusente(error: unknown): boolean {
+  const e = error as { code?: string; message?: string } | null;
+  return e?.code === "42703" && COLUNAS_OBJETO.some((c) => (e.message ?? "").includes(c));
+}
+
+/**
+ * Executa a leitura com as colunas do objeto canônico e, se a view ainda não as tiver (função publicada antes da
+ * migration, ou migration atrasada), repete sem elas: list e get continuam respondendo, só sem a categoria.
+ */
+async function comColunasDoObjeto<R extends { error: unknown }>(ler: (colunas: string) => PromiseLike<R>): Promise<R> {
+  const r = await ler(OPORTUNIDADES_COLUMNS);
+  if (!colunaDoObjetoAusente(r.error)) return r;
+  console.warn("[api-dashboard-oportunidades] colunas do objeto canônico ausentes na view; respondendo sem elas");
+  return await ler(OPORTUNIDADES_COLUMNS_SEM_OBJETO);
+}
 
 export interface DashboardOportunidadesClientContext {
   getClient?: () => SupabaseClient;
@@ -105,6 +131,29 @@ export function getDefaultServiceClient(): SupabaseClient {
   return createClient(url, serviceKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
+}
+
+/** Catálogo canônico do objeto (opções do filtro), na ordem de precedência, mais "outros". */
+async function handleObjetoCategorias(ctx?: DashboardOportunidadesClientContext): Promise<Response> {
+  try {
+    const client = ctx?.getClient ? ctx.getClient() : getDefaultServiceClient();
+    const { data, error } = await client
+      .from("objeto_categorias")
+      .select("slug,nome,ordem")
+      .eq("ativo", true)
+      .order("ordem");
+    if (error) {
+      console.error("[api-dashboard-oportunidades] objeto_categorias:", error);
+      return jsonResponse({ error: "Falha ao consultar o catálogo de objetos" }, 500);
+    }
+    return jsonResponse({
+      action: "objeto_categorias",
+      categorias: [...(data ?? []), { slug: "outros", nome: "OUTROS", ordem: 9999 }],
+    });
+  } catch (e) {
+    console.error("[api-dashboard-oportunidades] objeto_categorias:", e);
+    return jsonResponse({ error: "Erro interno no servidor" }, 500);
+  }
 }
 
 /**
@@ -172,6 +221,140 @@ async function handleReadiness(
 }
 
 /**
+ * Aderência ao catálogo CATMAT de licitações já carregadas (detalhe): lê public.licitacao_match (texto do item ou do
+ * objeto casando com padrões de PDM), mantém só os PDMs efetivos do catálogo da empresa (sem excluídos nem PDMs fora
+ * dele, como a lista com catalogo=true) e devolve, por licitação, a mesma forma do catmat_match da lista. É um extra:
+ * se a consulta falhar, o detalhe sai sem aderência (com log) em vez de falhar.
+ * Diferença conhecida do catmat_match da lista (licitacoes_ids_por_catmat_unica): aqui não entram o casamento pelo
+ * código do item (em 04/10/2026, 2 itens em toda a base) nem os objetos ainda pendentes de recálculo.
+ * Só no detalhe, cada entrada traz `itens`: os numero_item (licitacao_itens) que casaram para aquele (PDM, motivo),
+ * sem repetição, em ordem crescente, no máximo MAX_ITENS_ADERENCIA ([] para texto_objeto ou se a leitura falhar).
+ */
+async function aderenciaPorLicitacao(
+  client: SupabaseClient,
+  ids: number[],
+): Promise<Map<number, CatmatMatchDetalhe[]>> {
+  const porLicitacao = new Map<number, CatmatMatchDetalhe[]>();
+  if (ids.length === 0) return porLicitacao;
+  try {
+    const { data, error } = await client
+      .from("licitacao_match")
+      .select("licitacao_id,codigo_pdm,origem,item_id")
+      .in("licitacao_id", ids)
+      .order("licitacao_id")
+      .order("codigo_pdm")
+      .limit(2000);
+    if (error || !Array.isArray(data)) {
+      console.warn("[api-dashboard-oportunidades] aderência do detalhe indisponível (licitacao_match):", error ?? "resposta inválida");
+      return porLicitacao;
+    }
+    if (data.length === 0) return porLicitacao;
+    const noCatalogo = await pdmsDoCatalogo(client);
+    if (noCatalogo === null) return porLicitacao;
+    const linhas = (data as Array<{ licitacao_id: number; codigo_pdm: number; origem: string; item_id?: number | string | null }>)
+      .filter((l) => noCatalogo.has(Number(l.codigo_pdm)));
+    const pdms = [...new Set(linhas.map((l) => Number(l.codigo_pdm)))];
+    const nomes = new Map<number, string>();
+    if (pdms.length > 0) {
+      const { data: rows, error: nomesError } = await client.from("catmat_pdms").select("codigo_pdm,nome_pdm").in("codigo_pdm", pdms);
+      if (nomesError) console.warn("[api-dashboard-oportunidades] nomes dos PDMs indisponíveis:", nomesError);
+      for (const r of (Array.isArray(rows) ? rows : []) as Array<{ codigo_pdm: number; nome_pdm: string }>) {
+        nomes.set(Number(r.codigo_pdm), r.nome_pdm);
+      }
+    }
+    const numeros = await numerosDosItens(
+      client,
+      linhas.map((l) => l.item_id).filter((v): v is number | string => v !== null && v !== undefined).map(Number),
+    );
+    const porChave = new Map<string, { entrada: CatmatMatchDetalhe; itens: Set<number> }>();
+    for (const l of linhas) {
+      const chave = `${l.licitacao_id}:${l.codigo_pdm}:${l.origem}`;
+      let grupo = porChave.get(chave);
+      if (!grupo) {
+        grupo = {
+          entrada: { codigo_pdm: Number(l.codigo_pdm), nome_pdm: nomes.get(Number(l.codigo_pdm)) ?? null, codigo_item: null, motivo: l.origem, itens: [] },
+          itens: new Set<number>(),
+        };
+        porChave.set(chave, grupo);
+        const lista = porLicitacao.get(Number(l.licitacao_id)) ?? [];
+        lista.push(grupo.entrada);
+        porLicitacao.set(Number(l.licitacao_id), lista);
+      }
+      const numero = l.item_id === null || l.item_id === undefined ? undefined : numeros.get(Number(l.item_id));
+      if (numero !== undefined) grupo.itens.add(numero);
+    }
+    for (const { entrada, itens } of porChave.values()) {
+      entrada.itens = [...itens].sort((a, b) => a - b).slice(0, MAX_ITENS_ADERENCIA);
+    }
+  } catch (e) {
+    console.warn("[api-dashboard-oportunidades] aderência do detalhe indisponível:", e instanceof Error ? e.message : String(e));
+  }
+  return porLicitacao;
+}
+
+/**
+ * PDMs efetivos do catálogo da empresa (public.catalogo_catmat_pdms_efetivos: a regra mais específica vence e só entram
+ * os incluídos), para a aderência do detalhe mostrar só o que a empresa vende. Catálogo sem PDM incluído = conjunto
+ * vazio (nenhuma aderência). Se a leitura falhar devolve null (com log): o detalhe sai sem aderência em vez de mostrar
+ * PDMs excluídos ou fora do catálogo.
+ */
+async function pdmsDoCatalogo(client: SupabaseClient): Promise<Set<number> | null> {
+  const pdms = new Set<number>();
+  try {
+    // Em páginas: o max_rows do PostgREST (1000) cortaria em silêncio um catálogo com grupos/classes inteiros.
+    for (let de = 0; ; de += CATALOGO_PDMS_PAGINA) {
+      const { data, error } = await client
+        .rpc("catalogo_catmat_pdms_efetivos")
+        .order("codigo_pdm")
+        .range(de, de + CATALOGO_PDMS_PAGINA - 1);
+      if (error || !Array.isArray(data)) {
+        console.warn("[api-dashboard-oportunidades] catálogo CATMAT indisponível para a aderência:", error ?? "resposta inválida");
+        return null;
+      }
+      for (const r of data as Array<{ codigo_pdm: number | string }>) pdms.add(Number(r.codigo_pdm));
+      if (data.length < CATALOGO_PDMS_PAGINA) return pdms;
+    }
+  } catch (e) {
+    console.warn("[api-dashboard-oportunidades] catálogo CATMAT indisponível para a aderência:", e instanceof Error ? e.message : String(e));
+    return null;
+  }
+}
+
+/**
+ * numero_item (public.licitacao_itens) por id de item, lido só pelos ids pedidos, em lotes (URL curta no PostgREST).
+ * É um extra da aderência: se qualquer lote falhar, devolve o mapa vazio (com log) e todas as entradas saem com
+ * `itens: []`, em vez de listas parciais que pareceriam completas.
+ */
+async function numerosDosItens(client: SupabaseClient, itemIds: number[]): Promise<Map<number, number>> {
+  const numeros = new Map<number, number>();
+  const unicos = [...new Set(itemIds.filter((id) => Number.isFinite(id)))];
+  try {
+    for (let i = 0; i < unicos.length; i += ITENS_ADERENCIA_LOTE) {
+      const lote = unicos.slice(i, i + ITENS_ADERENCIA_LOTE);
+      const { data, error } = await client.from("licitacao_itens").select("id,numero_item").in("id", lote);
+      if (error || !Array.isArray(data)) {
+        console.warn("[api-dashboard-oportunidades] números dos itens da aderência indisponíveis (licitacao_itens):", error ?? "resposta inválida");
+        return new Map();
+      }
+      for (const r of data as Array<{ id: number | string; numero_item: number | string | null }>) {
+        const numero = r.numero_item === null || r.numero_item === undefined ? NaN : Number(r.numero_item);
+        if (Number.isFinite(numero)) numeros.set(Number(r.id), numero);
+      }
+    }
+  } catch (e) {
+    console.warn("[api-dashboard-oportunidades] números dos itens da aderência indisponíveis:", e instanceof Error ? e.message : String(e));
+    return new Map();
+  }
+  return numeros;
+}
+
+/** Acrescenta catmat_match ao item só quando há casamento (a resposta não muda para quem não tem). */
+function comAderencia(item: Record<string, unknown>, ader: Map<number, CatmatMatchDetalhe[]>): Record<string, unknown> {
+  const m = ader.get(Number(item.id));
+  return m && m.length > 0 ? { ...item, catmat_match: m } : item;
+}
+
+/**
  * Ação: get
  * Lê da view com a prioridade efetiva. Uma compra `historico` é devolvida normalmente (com
  * `prioridade: "historico"`): links do BI e links diretos continuam funcionando; ela só não aparece
@@ -190,11 +373,13 @@ async function handleGet(
 
     // Caso 1: Busca única por ID
     if (params.id !== undefined && params.id !== null) {
-      const { data, error } = await client
-        .from(OPORTUNIDADES_VIEW)
-        .select(OPORTUNIDADES_COLUMNS)
-        .eq("id", params.id)
-        .maybeSingle();
+      const { data, error } = await comColunasDoObjeto((colunas) =>
+        client
+          .from(OPORTUNIDADES_VIEW)
+          .select(colunas)
+          .eq("id", params.id)
+          .maybeSingle()
+      );
 
       if (error) {
         console.error("[api-dashboard-oportunidades] Erro ao buscar por ID:", error);
@@ -209,10 +394,10 @@ async function handleGet(
       }
 
       const itemRecord = data as unknown as Record<string, unknown>;
-      const itemWithUrl = {
+      const itemWithUrl = comAderencia({
         ...itemRecord,
         url_edital: buildEditalUrl(itemRecord),
-      };
+      }, await aderenciaPorLicitacao(client, [Number(itemRecord.id)]));
 
       return jsonResponse({ item: itemWithUrl });
     }
@@ -226,13 +411,14 @@ async function handleGet(
         );
       }
 
-      const query = client
-        .from(OPORTUNIDADES_VIEW)
-        .select(OPORTUNIDADES_COLUMNS)
-        .eq("codigo_externo", params.codigo_externo)
-        .eq("fonte", params.fonte);
-
-      const { data, error } = await query.maybeSingle();
+      const { data, error } = await comColunasDoObjeto((colunas) =>
+        client
+          .from(OPORTUNIDADES_VIEW)
+          .select(colunas)
+          .eq("codigo_externo", params.codigo_externo as string)
+          .eq("fonte", params.fonte as string)
+          .maybeSingle()
+      );
 
       if (error) {
         console.error("[api-dashboard-oportunidades] Erro ao buscar por codigo_externo:", error);
@@ -247,10 +433,10 @@ async function handleGet(
       }
 
       const itemRecord = data as unknown as Record<string, unknown>;
-      const itemWithUrl = {
+      const itemWithUrl = comAderencia({
         ...itemRecord,
         url_edital: buildEditalUrl(itemRecord),
-      };
+      }, await aderenciaPorLicitacao(client, [Number(itemRecord.id)]));
 
       return jsonResponse({ item: itemWithUrl });
     }
@@ -261,14 +447,16 @@ async function handleGet(
       const limit = params.limit && params.limit > 0 ? params.limit : 20;
       const { from, to } = calculateRange(page, limit);
 
-      const { data, error, count } = await client
-        .from(OPORTUNIDADES_VIEW)
-        .select(OPORTUNIDADES_COLUMNS, { count: "exact" })
-        .eq("orgao_cnpj", params.orgao_cnpj)
-        .eq("processo_norm", params.processo_norm)
-        .order("data_publicacao", { ascending: false, nullsFirst: false })
-        .order("id", { ascending: true })
-        .range(from, to);
+      const { data, error, count } = await comColunasDoObjeto((colunas) =>
+        client
+          .from(OPORTUNIDADES_VIEW)
+          .select(colunas, { count: "exact" })
+          .eq("orgao_cnpj", params.orgao_cnpj as string)
+          .eq("processo_norm", params.processo_norm as string)
+          .order("data_publicacao", { ascending: false, nullsFirst: false })
+          .order("id", { ascending: true })
+          .range(from, to)
+      );
 
       if (error) {
         console.error("[api-dashboard-oportunidades] Erro ao buscar por processo:", error);
@@ -281,10 +469,11 @@ async function handleGet(
       }
 
       const rawItems = (data ?? []) as unknown as Array<Record<string, unknown>>;
-      const items = rawItems.map((row) => ({
+      const ader = await aderenciaPorLicitacao(client, rawItems.map((r) => Number(r.id)));
+      const items = rawItems.map((row) => comAderencia({
         ...row,
         url_edital: buildEditalUrl(row),
-      }));
+      }, ader));
       const total = count;
       if (total === 0 && items.length === 0) {
         return jsonResponse(
@@ -334,6 +523,20 @@ export interface CatmatMatch {
   codigo_item: number | null;
   motivo: string;
 }
+
+/** Entrada de catmat_match no get: a mesma da lista mais os numero_item que casaram (só no detalhe). */
+export interface CatmatMatchDetalhe extends CatmatMatch {
+  itens: number[];
+}
+
+/** Página da leitura de catalogo_catmat_pdms_efetivos (= max_rows do PostgREST em supabase/config.toml). */
+export const CATALOGO_PDMS_PAGINA = 1000;
+
+/** Máximo de numero_item por entrada de catmat_match no get (em 04/10/2026, o maior grupo tinha 44). */
+export const MAX_ITENS_ADERENCIA = 50;
+
+/** Tamanho do lote de ids por leitura de licitacao_itens na aderência do get. */
+export const ITENS_ADERENCIA_LOTE = 500;
 
 /** SQLSTATE do Postgres para statement_timeout (query_canceled). */
 export const PG_STATEMENT_TIMEOUT = "57014";
@@ -478,19 +681,17 @@ async function handleList(
       matches = r.porLicitacao;
     }
 
-    let baseQuery = client
-      .from(OPORTUNIDADES_VIEW)
-      .select(OPORTUNIDADES_COLUMNS, { count: "exact" });
-
-    baseQuery = applyOportunidadesScope(applyLicitacaoFilters(baseQuery, filtros), filtros);
-
     const isAscending = order_direction === "asc";
-    baseQuery = baseQuery
-      .order(order_by, { ascending: isAscending, nullsFirst: false })
-      .order("id", { ascending: true })
-      .range(from, to);
-
-    const { data, error, count } = await baseQuery;
+    const { data, error, count } = await comColunasDoObjeto((colunas) => {
+      let baseQuery = client
+        .from(OPORTUNIDADES_VIEW)
+        .select(colunas, { count: "exact" });
+      baseQuery = applyOportunidadesScope(applyLicitacaoFilters(baseQuery, filtros), filtros);
+      return baseQuery
+        .order(order_by, { ascending: isAscending, nullsFirst: false })
+        .order("id", { ascending: true })
+        .range(from, to);
+    });
 
     // Página além do fim: o PostgREST responde 416 (PGRST103). Para o cliente é uma página vazia,
     // não uma falha; o total vem de uma contagem com os mesmos filtros.
@@ -599,6 +800,8 @@ export async function handleRequest(
       return await handleList(actionParams, ctx);
     case "acompanhamento":
       return await handleAcompanhamento(actionParams, ctx, getDefaultServiceClient);
+    case "objeto_categorias":
+      return await handleObjetoCategorias(ctx);
     default:
       return jsonResponse({ error: "Ação não suportada" }, 400);
   }

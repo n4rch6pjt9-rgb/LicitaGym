@@ -75,7 +75,8 @@ def test_collect_grupos_records_partial_failure_and_resumes(tmp_path):
     # Page 1 returns valid grupo
     payload_p1 = {
         "resultado": [{"codigoGrupo": 78, "nomeGrupo": "EQUIPAMENTOS FITNESS"}],
-        "totalRegistros": 1,
+        "totalRegistros": 2,
+        "paginasRestantes": 1,
     }
     # Page 2 fails with 500
     http_err_p2 = urllib.error.HTTPError(

@@ -16,7 +16,7 @@ Tabelas e funções: `supabase/migrations/20260930100000_catalogo_empresa_catmat
 |---|---|---|
 | `arvore` | `nivel` (`grupos`\|`classes`\|`pdms`\|`itens`), `codigo` (do pai; em `grupos`, o próprio grupo), `incluir_inativos?`, `refresh?` (admin) | `nos[]` com `estado` (`incluido`\|`excluido`\|`herdado`\|`excluido_herdado`\|`nenhum`), `regra_id`, `origem_nivel`; `fonte` (`memoria`\|`banco`\|`compras.gov`), `stale`, `inativos_ocultos` |
 | `catalogo_listar` | — | `regras`, `resumo` (inclui `pdms_sem_texto`: sem padrão e sem nó do dicionário), `opcoes` (`grupos`, `classes`, `pdms` com `palavras` e `nos_taxonomia`, `itens`) para o filtro em cascata |
-| `catalogo_salvar` | `nivel` (`grupo`\|`classe`\|`pdm`\|`item`), `codigo_grupo`, `codigo_classe`, `codigo_pdm`, `codigo_item` (conforme o nível), `incluido`, `observacao?` | `201` ao criar, `200` ao atualizar; `pdms_materializados`, `itens_hidratados` |
+| `catalogo_salvar` | `nivel` (`grupo`\|`classe`\|`pdm`\|`item`), `codigo_grupo`, `codigo_classe`, `codigo_pdm`, `codigo_item` (conforme o nível), `incluido`, `observacao?`, `a_partir_do_pdm?` | `201` ao criar, `200` ao atualizar; `pdms_materializados`, `itens_hidratados`, `proximo_codigo_pdm` (null quando o lote acabou) |
 | `catalogo_remover` | `id` | a regra removida |
 | `palavras_listar` | `codigo_pdm` | `palavras` (padrões do PDM com `tipo`: primeiro as inclusões, depois as exclusões) e `nos_taxonomia` (nós do dicionário de aparelhos e da taxonomia de pisos que apontam para o PDM, só leitura) |
 | `palavras_salvar` | `codigo_pdm`, `padrao`, `ativo?`, `tipo` (`inclui`\|`exclui`; `exclui` = texto que casar não conta para o PDM; **obrigatório com `id`**, ao criar ausente = `inclui`), `id?` (para editar) | o padrão |
@@ -37,9 +37,15 @@ Em `arvore` com `nivel: itens`, cada nó traz também `nome_item` e `atributos` 
 - **`catalogo_salvar`:**
   - valida o nó no Compras.gov (`404` se não existir);
   - grava grupo, classe e PDM em `catmat_grupos`, `catmat_classes` e `catmat_pdms` (sem `last_seen_sync_id`);
+be-forte-ancorado-nucleo
   - ao incluir grupo ou classe, materializa os PDMs descendentes;
   - em PDM ou item, hidrata `catmat_item_pdm` e `catmat_item_atributo` (rpc `catmat_item_atributo_sincronizar`);
   - grupo/classe não hidratam itens (seriam dezenas de PDMs numa chamada): use `catalogo_hidratar_itens`.
+
+  - grava a regra antes de hidratar. Grupo ou classe materializa no máximo 8 PDMs por chamada (`proximo_codigo_pdm` pede a continuação com `a_partir_do_pdm`); a árvore devolve ativos e inativos, com `status_item`;
+  - em PDM ou item (e em cada PDM do lote de grupo/classe), hidrata `catmat_item_pdm` e `catmat_item_atributo` (rpc `catmat_item_atributo_sincronizar`);
+  - para hidratar os itens de todos os PDMs do catálogo, use `catalogo_hidratar_itens`.
+main
 - **Padrões (`catmat_pdm_palavras`):**
   - regex do Postgres aplicada ao texto em minúsculas e sem acento (`lg_normalizar`), com até 300 caracteres;
   - validada com `catmat_regex_valido` (`400` se for inválida);
@@ -47,7 +53,7 @@ Em `arvore` com `nivel: itens`, cada nó traz também `nome_item` e `atributos` 
 
 ## Compras.gov e cache
 
-- Endpoints `modulo-material/1_` a `4_consultar*Material`, com `tamanhoPagina=500`, no máximo 20 páginas e 350 ms entre páginas.
+- Endpoints `modulo-material/1_` a `4_consultar*Material`, com `tamanhoPagina=100`, no máximo 20 páginas e 350 ms entre páginas.
 - Limite de 8 s por chamada, 1 nova tentativa em 429 ou 5xx, e orçamento de 25 s por árvore.
 - Cache em memória por isolate (10 min) e em `compras_catmat_cache` (24 h). Pedidos iguais simultâneos compartilham a mesma busca.
 - Se o Compras.gov falhar: devolve o cache vencido com `stale: true`. Sem cache nenhum, responde `504`.

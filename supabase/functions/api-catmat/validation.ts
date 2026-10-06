@@ -80,6 +80,8 @@ export function parseActionFromBody(body: Record<string, unknown>): ActionParams
       if (obs !== undefined && obs !== null && (typeof obs !== "string" || obs.length > 500)) {
         return { error: "Parâmetro 'observacao' deve ser texto de até 500 caracteres." };
       }
+      const cursor = codigo(body.a_partir_do_pdm, "a_partir_do_pdm", false);
+      if (isErro(cursor)) return cursor;
       return {
         action,
         nivel,
@@ -89,6 +91,7 @@ export function parseActionFromBody(body: Record<string, unknown>): ActionParams
         codigo_item: exige.item ? i as number : null,
         incluido: body.incluido,
         observacao: typeof obs === "string" && obs.trim() ? obs.trim() : null,
+        a_partir_do_pdm: cursor,
       };
     }
 

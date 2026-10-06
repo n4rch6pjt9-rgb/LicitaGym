@@ -7,10 +7,11 @@ name: PR Quality
 permissions:
   contents: read
 
+# Desativado em 06/10/2026: o GitHub Actions não aloca runner para este repositório (jobs terminam em ~3 s,
+# sem log) e a validação passou para o Supabase. Só roda manualmente (Actions → PR Quality → Run workflow).
+# Para reativar, volte os gatilhos pull_request e push (branches: [main]).
 on:
-  pull_request:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: pr-quality-${{ github.event.pull_request.number || github.ref }}

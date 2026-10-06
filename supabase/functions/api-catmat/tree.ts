@@ -4,7 +4,8 @@ import type { CatmatRepo } from "./repo.ts";
 import type { CatmatNo, NivelArvore } from "./types.ts";
 
 const BASE_URL = "https://dadosabertos.compras.gov.br";
-const TAMANHO_PAGINA = 500;
+/** Mesmo padrão do sync: COMPRAS_GOV_PAGE_SIZE.default em material-client.ts. */
+const TAMANHO_PAGINA = 100;
 const MAX_PAGINAS = 20;
 const TIMEOUT_CHAMADA_MS = 8_000;
 const ORCAMENTO_TOTAL_MS = 25_000;

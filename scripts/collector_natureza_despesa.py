@@ -10,7 +10,9 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from scripts.lib.catmat_pdm_source import extract_resultado, resolve_pdms
+from scripts.lib.http_client import clamp_compras_gov_page_size
 from scripts.lib.http_fetch import fetch_json, HttpFetchError
+from scripts.lib.paginacao import acao_pagina
 from scripts.lib.sync_state import SyncStateManager, is_sync_resume_enabled
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -29,13 +31,14 @@ def fetch_naturezas(
     codigo_item: Optional[int] = None,
     codigo_natureza: Optional[int] = None,
     pagina: int = 1,
-    tamanho_pagina: int = 500,
+    tamanho_pagina: int = 100,
     max_retries: int = 3,
 ) -> Dict[str, Any]:
     """Consulta Naturezas de Despesa.
     Conforme schema Compras.gov (schemas-consultas.md §1.5), E5 aceita codigoPdm.
     Timeout, 429/5xx esgotados e JSON inválido levantam HttpFetchError.
     """
+    tamanho_pagina = clamp_compras_gov_page_size(tamanho_pagina)
     url = f"{BASE_URL}{ENDPOINT}"
 
     params = {
@@ -95,13 +98,16 @@ def collect_naturezas_por_pdm(
 
     pagina = (state.last_page + 1) if (should_resume and state.last_page > 0) else 1
     pages_coletadas = 0
+    tamanho = clamp_compras_gov_page_size(100)
+    vistos: set[str] = set()
+    lidos = 0
 
     while True:
         try:
             resp = fetch_naturezas(
                 codigo_pdm=codigo_pdm,
                 pagina=pagina,
-                tamanho_pagina=500,
+                tamanho_pagina=tamanho,
             )
         except Exception as e:
             sync_manager.record_partial_failure(
@@ -114,22 +120,23 @@ def collect_naturezas_por_pdm(
             raise
 
         naturezas = extract_resultado(resp, f"E5 pdm={codigo_pdm} pagina={pagina}")
-        if not naturezas:
-            break
-
-        todas_naturezas.extend(naturezas)
-        pages_coletadas += 1
-        sync_manager.record_page_success(
-            page=pagina,
-            records_in_page=len(naturezas),
-            cursor={"naturezas": todas_naturezas},
+        parar, incluir = acao_pagina(
+            naturezas, resp, tamanho=tamanho, pagina=pagina, vistos=vistos, logger=logger, ja_lidos=lidos,
         )
-        sync_manager.save_accumulated_data(todas_naturezas)
-
-        if max_pages and pages_coletadas >= max_pages:
+        if incluir and naturezas:
+            lidos += len(naturezas)
+            todas_naturezas.extend(naturezas)
+            pages_coletadas += 1
+            sync_manager.record_page_success(
+                page=pagina,
+                records_in_page=len(naturezas),
+                cursor={"naturezas": todas_naturezas},
+            )
+            sync_manager.save_accumulated_data(todas_naturezas)
+        if not incluir or parar:
             break
-
-        if resp.get("paginasRestantes", 0) == 0:
+        if max_pages and pages_coletadas >= max_pages:
+            logger.warning("teto de %s páginas atingido sem o total confirmar o fim", max_pages)
             break
 
         pagina += 1
@@ -207,6 +214,9 @@ def collect_naturezas_por_grupo_classe(
 
     pagina = (state.last_page + 1) if (should_resume and state.last_page > 0) else 1
     pages_coletadas = 0
+    tamanho = clamp_compras_gov_page_size(100)
+    vistos = set()
+    lidos = 0
 
     while True:
         try:
@@ -214,7 +224,7 @@ def collect_naturezas_por_grupo_classe(
                 codigo_grupo=codigo_grupo,
                 codigo_classe=codigo_classe,
                 pagina=pagina,
-                tamanho_pagina=500
+                tamanho_pagina=tamanho
             )
         except Exception as e:
             sync_manager.record_partial_failure(
@@ -227,21 +237,24 @@ def collect_naturezas_por_grupo_classe(
             raise
 
         naturezas = extract_resultado(resp, f"E5 G{codigo_grupo}/C{codigo_classe} pagina={pagina}")
-
-        logger.info(f"  Página {pagina}: {len(naturezas)} naturezas")
-        todas_naturezas.extend(naturezas)
-        pages_coletadas += 1
-        sync_manager.record_page_success(
-            page=pagina,
-            records_in_page=len(naturezas),
-            cursor={"naturezas": todas_naturezas},
+        parar, incluir = acao_pagina(
+            naturezas, resp, tamanho=tamanho, pagina=pagina, vistos=vistos, logger=logger, ja_lidos=lidos,
         )
-        sync_manager.save_accumulated_data(todas_naturezas)
-
-        if max_pages and pages_coletadas >= max_pages:
+        if incluir and naturezas:
+            lidos += len(naturezas)
+            logger.info(f"  Página {pagina}: {len(naturezas)} naturezas")
+            todas_naturezas.extend(naturezas)
+            pages_coletadas += 1
+            sync_manager.record_page_success(
+                page=pagina,
+                records_in_page=len(naturezas),
+                cursor={"naturezas": todas_naturezas},
+            )
+            sync_manager.save_accumulated_data(todas_naturezas)
+        if not incluir or parar:
             break
-
-        if resp.get("paginasRestantes", 0) == 0:
+        if max_pages and pages_coletadas >= max_pages:
+            logger.warning("teto de %s páginas atingido sem o total confirmar o fim", max_pages)
             break
 
         pagina += 1

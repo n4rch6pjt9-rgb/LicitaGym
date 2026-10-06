@@ -41,6 +41,7 @@ import sys
 import threading
 import time
 import unicodedata
+import uuid
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -48,7 +49,9 @@ from urllib.parse import urljoin, urlsplit
 
 import requests
 
+from .arquivo_raw import ArquivoRaw, ArquivoRawErro, fechar_todos
 from .destino import Armazenamento, Supabase, drenar_licitacao_match, env, parece_html, sha256
+from .paginacao import TAMANHO_PAGINA_MAX, avaliar_pagina, clamp_tamanho
 from . import escopo as _escopo
 from .catmat_codigo import (
     LeituraMapaCatmat,
@@ -205,6 +208,7 @@ class PNCP:
         return r
 
     def buscar(self, termo: str, status: str = "todos", pagina: int = 1, tam: int = 100) -> dict:
+        tam = clamp_tamanho(tam, padrao=100, minimo=1, maximo=TAMANHO_PAGINA_MAX)
         r = self._get("/api/search/", q=f'"{termo}"', tipos_documento="edital", ordenacao="-data",
                       pagina=pagina, tam_pagina=tam, status=status)
         if r == []:
@@ -237,9 +241,21 @@ class PNCP:
         return r
 
     def itens(self, c: dict) -> list[dict]:
+        """Itens da compra. O corpo é uma lista, sem total: segue até a página vazia.
+
+        Página curta não encerra. Página repetida ou HTTP 404 não são fim de coleta.
+        """
         out, pagina, paginas_vistas = [], 1, set()
         while True:
-            lote = self._lista(self.base_compra(c) + "/itens", pagina=pagina, tamanhoPagina=100)
+            try:
+                lote = self._lista(
+                    self.base_compra(c) + "/itens", pagina=pagina, tamanhoPagina=TAMANHO_PAGINA_MAX,
+                )
+            except requests.HTTPError as e:
+                status = getattr(getattr(e, "response", None), "status_code", None)
+                if status == 404:
+                    log.warning("PNCP itens: HTTP 404 na página %s; não é fim de coleta", pagina)
+                raise
             fingerprint = sha256(json.dumps(
                 lote, ensure_ascii=False, sort_keys=True, separators=(",", ":")
             ).encode("utf-8"))
@@ -247,7 +263,8 @@ class PNCP:
                 raise RespostaInvalida(f"PNCP itens: página repetida durante paginação (página {pagina})")
             paginas_vistas.add(fingerprint)
             out += lote
-            if len(lote) < 100:
+            # Sem total no corpo: só a página vazia encerra.
+            if not lote:
                 return out
             pagina += 1
 
@@ -917,17 +934,23 @@ def coletar(pncp: PNCP, sb: Supabase | None, arm: Armazenamento | None, termos: 
     como último recurso). Uma compra encerrada vira historico mesmo que já fosse lead (rebaixa).
     `mapa_catmat`: código CATMAT antes do texto em avaliar (None = só texto)."""
     agora = agora or datetime.now(timezone.utc)
+    tam = clamp_tamanho(tam, padrao=50, minimo=1, maximo=TAMANHO_PAGINA_MAX)
     status_lista = status if isinstance(status, list) else [status]
     vistos: dict[str, list[str]] = {}
     resumo = {"encontradas": 0, "no_escopo": 0, "interesse_borracha": 0, "fora": 0,
               "gravadas": 0, "erros": 0}
     falhas: list[tuple[dict, str, str]] = []
+    # dry-run volta antes do upsert: a chave natural do item inclui licitacao_id, que só existe depois.
+    arquivos_raw = None if dry_run else _abrir_arquivos_pncp(str(uuid.uuid4()))
 
     def _tentar(c, termo, st):
         try:
             _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos,
-                       max_bytes, dry_run, resumo, modo, status_busca=st, agora=agora, mapa_catmat=mapa_catmat)
+                       max_bytes, dry_run, resumo, modo, status_busca=st, agora=agora, mapa_catmat=mapa_catmat,
+                       arquivos_raw=arquivos_raw)
             return c, None
+        except ArquivoRawErro:
+            raise
         except Exception as e:
             if "Supabase" in str(e) and (" 401 " in str(e) or " 403 " in str(e)):
                 raise SystemExit("Supabase recusou a chave (401/403). Confira SUPABASE_SERVICE_ROLE_KEY "
@@ -935,48 +958,64 @@ def coletar(pncp: PNCP, sb: Supabase | None, arm: Armazenamento | None, termos: 
             log.warning("  %s: %s (vai para a segunda passada)", c.get("numero_controle_pncp"), str(e)[:120])
             return c, e
 
-    for termo in termos:
-        for st in status_lista:
-            for pagina in range(1, paginas + 1):
-                try:
-                    res = pncp.buscar(termo, st, pagina, tam)
-                except Exception as e:
-                    # Uma busca que esgotou as tentativas (429/5xx/timeout) não derruba os outros termos;
-                    # fica no resumo e o processo sai com código 1 (ver main).
-                    _inc(resumo, "falha_busca")
-                    with _trava:
-                        resumo.setdefault("termos_com_falha", []).append(f"{termo} [{st}] pág. {pagina}")
-                    log.error('"%s" [%s] pág. %s: busca falhou, segue para o próximo termo: %s',
-                              termo, st, pagina, str(e)[:160])
-                    break
-                lote = res.get("items") or []
-                log.info('"%s" [%s] pág. %s: %s de %s', termo, st, pagina, len(lote), res.get("total"))
-                fila = []
-                for c in lote:
-                    chave = c.get("numero_controle_pncp")
-                    if not chave:
-                        continue
-                    if chave in vistos:
-                        vistos[chave].append(termo)
-                        continue
-                    vistos[chave] = [termo]
-                    resumo["encontradas"] += 1
-                    fila.append(c)
-                with ThreadPoolExecutor(max_workers=workers) as ex:
-                    for c, erro in ex.map(lambda c: _tentar(c, termo, st), fila):
-                        if erro:
-                            falhas.append((c, termo, st))
-                if len(lote) < tam:
-                    break
+    try:
+        for termo in termos:
+            for st in status_lista:
+                lidos = 0
+                for pagina in range(1, paginas + 1):
+                    try:
+                        res = pncp.buscar(termo, st, pagina, tam)
+                    except Exception as e:
+                        # Uma busca que esgotou as tentativas (429/5xx/timeout) não derruba os outros termos;
+                        # fica no resumo e o processo sai com código 1 (ver main).
+                        _inc(resumo, "falha_busca")
+                        with _trava:
+                            resumo.setdefault("termos_com_falha", []).append(f"{termo} [{st}] pág. {pagina}")
+                        log.error('"%s" [%s] pág. %s: busca falhou, segue para o próximo termo: %s',
+                                  termo, st, pagina, str(e)[:160])
+                        break
+                    if not isinstance(res, dict) or not isinstance(res.get("items"), list):
+                        _inc(resumo, "falha_busca")
+                        log.warning('"%s" [%s] pág. %s: resposta inesperada; não é fim de coleta', termo, st, pagina)
+                        break
+                    lote = res.get("items") or []
+                    log.info('"%s" [%s] pág. %s: %s de %s', termo, st, pagina, len(lote), res.get("total"))
+                    fila = []
+                    for c in lote:
+                        chave = c.get("numero_controle_pncp")
+                        if not chave:
+                            continue
+                        if chave in vistos:
+                            vistos[chave].append(termo)
+                            continue
+                        vistos[chave] = [termo]
+                        resumo["encontradas"] += 1
+                        fila.append(c)
+                    with ThreadPoolExecutor(max_workers=workers) as ex:
+                        for c, erro in ex.map(lambda c: _tentar(c, termo, st), fila):
+                            if erro:
+                                falhas.append((c, termo, st))
+                    lidos += len(lote)
+                    decisao = avaliar_pagina(lote, tamanho=tam, pagina=pagina, corpo=res, acumulado=lidos)
+                    if decisao.aviso:
+                        log.warning('"%s" [%s] pág. %s: %s', termo, st, pagina, decisao.aviso)
+                    if decisao.encerrar:
+                        break
+                else:
+                    log.warning('"%s" [%s]: parou no teto de %s páginas sem o total confirmar o fim',
+                                termo, st, paginas)
 
-    if falhas:
-        log.info("Segunda passada: %s compra(s) que falharam por instabilidade do PNCP", len(falhas))
-        time.sleep(pausa_segunda_passada)
-        for c, termo, st in falhas:
-            _, erro = _tentar(c, termo, st)
-            if erro:
-                _inc(resumo, "erros")
-    return resumo
+        if falhas:
+            log.info("Segunda passada: %s compra(s) que falharam por instabilidade do PNCP", len(falhas))
+            time.sleep(pausa_segunda_passada)
+            for c, termo, st in falhas:
+                _, erro = _tentar(c, termo, st)
+                if erro:
+                    _inc(resumo, "erros")
+        return resumo
+    finally:
+        if arquivos_raw is not None:
+            resumo["arquivo_raw"] = fechar_todos(list(arquivos_raw.values()))
 
 
 def _resultados_relevantes(pncp, c, itens, por_item) -> list[tuple[dict, dict]]:
@@ -1041,8 +1080,27 @@ def _raw_resultado(r: dict) -> dict:
     return {k: v for k, v in r.items() if k not in campos_sigilosos}
 
 
+def _abrir_arquivos_pncp(execucao_id: str) -> dict[str, ArquivoRaw]:
+    """Um id por execução, as duas tabelas cujo raw sai do banco. licitacoes_externas fica de fora."""
+    return {
+        "licitacao_itens": ArquivoRaw("licitacao_itens", "pncp", execucao_id=execucao_id),
+        "licitacao_resultados": ArquivoRaw("licitacao_resultados", "pncp", execucao_id=execucao_id),
+    }
+
+
+def _enviar_raw(arquivos_raw: dict[str, ArquivoRaw] | None, tabela: str, chave: dict, bruto: dict) -> None:
+    """Com o dict da execução, acumula o lote. Sem ele (chamada avulsa), grava e fecha na hora."""
+    if arquivos_raw is None:
+        avulso = ArquivoRaw(tabela, "pncp")
+        avulso.adicionar(chave, bruto)
+        avulso.fechar()
+        return
+    arquivos_raw[tabela].adicionar(chave, bruto)
+
+
 def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_bytes, dry_run, resumo,
-               modo=None, status_busca=None, agora=None, det=None, mapa_catmat=None):
+               modo=None, status_busca=None, agora=None, det=None, mapa_catmat=None,
+               arquivos_raw: dict[str, ArquivoRaw] | None = None):
     """Coleta completa de uma compra: itens, resultados, detalhe e lista de arquivos do PNCP, gravados em
     licitacoes_externas, licitacao_itens, licitacao_resultados e licitacao_documentos.
     `det` = detalhe já consultado (recoletar_atualizadas); None consulta aqui.
@@ -1171,32 +1229,46 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
     lic_id = sb.upsert("licitacoes_externas", linha, "fonte,codigo_externo")[0]["id"]
     _inc(resumo, "gravadas")
 
+    # raw destas duas tabelas vai para o GCS (arquivo_raw). Omitir a coluna no upsert
+    # merge-duplicates mantém o valor já gravado; linha nova fica com raw NULL até o DROP.
+    # licitacoes_externas.raw e licitacao_documentos.raw continuam no banco.
     if itens:
-        sb.upsert("licitacao_itens", [{
-            "licitacao_id": lic_id, "numero_item": it["numeroItem"], "descricao": it.get("descricao"),
-            "material_ou_servico": material_ou_servico(it), "quantidade": _num(it.get("quantidade")),
-            "unidade_medida": it.get("unidadeMedida"), "valor_unitario_estimado": _num(it.get("valorUnitarioEstimado")),
-            "valor_total_estimado": _num(it.get("valorTotal")),
-            "catalogo_codigo_item": str(it["catalogoCodigoItem"]) if it.get("catalogoCodigoItem") else None,
-            # catalogo.id do PNCP (1 = Compras.gov.br; 2 = Outros, código do órgão): só o 1 casa com CATMAT
-            "catalogo_id": catalogo_id(it),
-            "situacao": it.get("situacaoCompraItemNome"), "tem_resultado": it.get("temResultado"),
-            "categoria_escopo": por_item[it["numeroItem"]][0], "interesse_borracha": por_item[it["numeroItem"]][1],
-            "raw": it,
-        } for it in itens], "licitacao_id,numero_item")
+        linhas_itens = []
+        for it in itens:
+            ln = {
+                "licitacao_id": lic_id, "numero_item": it["numeroItem"], "descricao": it.get("descricao"),
+                "material_ou_servico": material_ou_servico(it), "quantidade": _num(it.get("quantidade")),
+                "unidade_medida": it.get("unidadeMedida"), "valor_unitario_estimado": _num(it.get("valorUnitarioEstimado")),
+                "valor_total_estimado": _num(it.get("valorTotal")),
+                "catalogo_codigo_item": str(it["catalogoCodigoItem"]) if it.get("catalogoCodigoItem") else None,
+                # catalogo.id do PNCP (1 = Compras.gov.br; 2 = Outros, código do órgão): só o 1 casa com CATMAT
+                "catalogo_id": catalogo_id(it),
+                "situacao": it.get("situacaoCompraItemNome"), "tem_resultado": it.get("temResultado"),
+                "categoria_escopo": por_item[it["numeroItem"]][0], "interesse_borracha": por_item[it["numeroItem"]][1],
+            }
+            _enviar_raw(arquivos_raw, "licitacao_itens",
+                        {"licitacao_id": lic_id, "numero_item": ln["numero_item"]}, it)
+            linhas_itens.append(ln)
+        sb.upsert("licitacao_itens", linhas_itens, "licitacao_id,numero_item")
 
-    linhas = [{
-        "licitacao_id": lic_id, "numero_item": it["numeroItem"],
-        "sequencial_resultado": r.get("sequencialResultado") or 1,
-        "fornecedor_nome": r.get("nomeRazaoSocialFornecedor") if r.get("tipoPessoa") != "PF" else None,
-        "fornecedor_cnpj": cnpj_ou_none(r.get("niFornecedor")),
-        "porte_fornecedor": r.get("porteFornecedorNome"),
-        "quantidade_homologada": _num(r.get("quantidadeHomologada")),
-        "valor_unitario_homologado": _num(r.get("valorUnitarioHomologado")),
-        "valor_total_homologado": _num(r.get("valorTotalHomologado")),
-        "situacao": r.get("situacaoCompraItemResultadoNome"), "data_resultado": _data(r.get("dataResultado")),
-        "raw": _raw_resultado(r),
-    } for it, r in pares]
+    linhas = []
+    for it, r in pares:
+        ln = {
+            "licitacao_id": lic_id, "numero_item": it["numeroItem"],
+            "sequencial_resultado": r.get("sequencialResultado") or 1,
+            "fornecedor_nome": r.get("nomeRazaoSocialFornecedor") if r.get("tipoPessoa") != "PF" else None,
+            "fornecedor_cnpj": cnpj_ou_none(r.get("niFornecedor")),
+            "porte_fornecedor": r.get("porteFornecedorNome"),
+            "quantidade_homologada": _num(r.get("quantidadeHomologada")),
+            "valor_unitario_homologado": _num(r.get("valorUnitarioHomologado")),
+            "valor_total_homologado": _num(r.get("valorTotalHomologado")),
+            "situacao": r.get("situacaoCompraItemResultadoNome"), "data_resultado": _data(r.get("dataResultado")),
+        }
+        _enviar_raw(arquivos_raw, "licitacao_resultados", {
+            "licitacao_id": lic_id, "numero_item": ln["numero_item"],
+            "sequencial_resultado": ln["sequencial_resultado"],
+        }, _raw_resultado(r))
+        linhas.append(ln)
     if linhas:
         sb.upsert("licitacao_resultados", linhas, "licitacao_id,numero_item,sequencial_resultado")
 
@@ -1400,61 +1472,70 @@ def recoletar_atualizadas(pncp: PNCP, sb: Supabase, arm: Armazenamento | None = 
                               select="id,prioridade")}
     linhas = sb.selecionar("licitacoes_externas", fonte="eq.pncp", categoria_escopo="not.is.null", order="id.asc",
                            select="id,codigo_externo,pncp_data_atualizacao,pncp_data_atualizacao_global,raw")
-    for ln in linhas:
-        if (prio_map.get(ln["id"]) or "").lower() not in prio_set:
-            continue
-        resumo["lidas"] += 1
-        if limite and resumo["recoletadas"] >= limite:
-            break
-        chaves = compra_de_codigo(ln.get("codigo_externo"))
-        if not chaves:
-            continue
-        resumo["consultadas"] += 1
-        try:
-            det = consultar_detalhe(pncp, chaves)
-        except CompraExcluida:
-            # 410: o detalhe não traz versão. _processar marca historico/"Excluída do PNCP" e não grava
-            # pncp_data_atualizacao*. det=None para ele consultar de novo e cair no bloco da main.
-            log.info("  %s: excluída do PNCP (410); versão não gravada", ln["codigo_externo"])
+    arquivos_raw = None if dry_run else _abrir_arquivos_pncp(str(uuid.uuid4()))
+    try:
+        for ln in linhas:
+            if (prio_map.get(ln["id"]) or "").lower() not in prio_set:
+                continue
+            resumo["lidas"] += 1
+            if limite and resumo["recoletadas"] >= limite:
+                break
+            chaves = compra_de_codigo(ln.get("codigo_externo"))
+            if not chaves:
+                continue
+            resumo["consultadas"] += 1
+            try:
+                det = consultar_detalhe(pncp, chaves)
+            except CompraExcluida:
+                # 410: o detalhe não traz versão. _processar marca historico/"Excluída do PNCP" e não grava
+                # pncp_data_atualizacao*. det=None para ele consultar de novo e cair no bloco da main.
+                log.info("  %s: excluída do PNCP (410); versão não gravada", ln["codigo_externo"])
+                if dry_run:
+                    _inc(resumo, "excluidas_do_pncp")
+                    continue
+                try:
+                    c = compra_para_recoleta(ln.get("raw") or {}, ln["codigo_externo"], {})
+                    if c is not None:
+                        _processar(pncp, sb, arm, c, None, com_resultados, False, max_bytes, False, resumo,
+                                   agora=agora, det=None, mapa_catmat=mapa_catmat, arquivos_raw=arquivos_raw)
+                        resumo["recoletadas"] += 1
+                except ArquivoRawErro:
+                    raise
+                except Exception as e:
+                    resumo["erros"] += 1
+                    log.warning("  %s: marcação de excluída falhou (tenta de novo na próxima): %s",
+                                ln["codigo_externo"], str(e)[:160])
+                continue
+            except ConsultaFalhou as e:
+                resumo["falha_detalhe"] += 1
+                log.warning("  %s: detalhe falhou, fica para a próxima: %s", ln["codigo_externo"], str(e)[:120])
+                continue
+            motivo = mudou_no_pncp(ln, det)
+            if motivo is None:
+                resumo["sem_data_pncp" if not datas_atualizacao(det) else "sem_mudanca"] += 1
+                continue
+            resumo["mudaram"] += 1
+            resumo["motivos"][motivo] = resumo["motivos"].get(motivo, 0) + 1
+            log.info("  %s: %s (guardado %s / %s; PNCP %s / %s)", ln["codigo_externo"], motivo,
+                     ln.get("pncp_data_atualizacao"), ln.get("pncp_data_atualizacao_global"),
+                     det.get("dataAtualizacao"), det.get("dataAtualizacaoGlobal"))
             if dry_run:
-                _inc(resumo, "excluidas_do_pncp")
                 continue
             try:
-                c = compra_para_recoleta(ln.get("raw") or {}, ln["codigo_externo"], {})
-                if c is not None:
-                    _processar(pncp, sb, arm, c, None, com_resultados, False, max_bytes, False, resumo,
-                               agora=agora, det=None, mapa_catmat=mapa_catmat)
-                    resumo["recoletadas"] += 1
+                _processar(pncp, sb, arm, compra_para_recoleta(ln.get("raw"), ln["codigo_externo"], det), None,
+                           com_resultados, False, max_bytes, False, resumo, agora=agora, det=det,
+                           mapa_catmat=mapa_catmat, arquivos_raw=arquivos_raw)
+                resumo["recoletadas"] += 1
+            except ArquivoRawErro:
+                raise
             except Exception as e:
                 resumo["erros"] += 1
-                log.warning("  %s: marcação de excluída falhou (tenta de novo na próxima): %s",
+                log.warning("  %s: recoleta falhou (versão não gravada, tenta de novo na próxima): %s",
                             ln["codigo_externo"], str(e)[:160])
-            continue
-        except ConsultaFalhou as e:
-            resumo["falha_detalhe"] += 1
-            log.warning("  %s: detalhe falhou, fica para a próxima: %s", ln["codigo_externo"], str(e)[:120])
-            continue
-        motivo = mudou_no_pncp(ln, det)
-        if motivo is None:
-            resumo["sem_data_pncp" if not datas_atualizacao(det) else "sem_mudanca"] += 1
-            continue
-        resumo["mudaram"] += 1
-        resumo["motivos"][motivo] = resumo["motivos"].get(motivo, 0) + 1
-        log.info("  %s: %s (guardado %s / %s; PNCP %s / %s)", ln["codigo_externo"], motivo,
-                 ln.get("pncp_data_atualizacao"), ln.get("pncp_data_atualizacao_global"),
-                 det.get("dataAtualizacao"), det.get("dataAtualizacaoGlobal"))
-        if dry_run:
-            continue
-        try:
-            _processar(pncp, sb, arm, compra_para_recoleta(ln.get("raw"), ln["codigo_externo"], det), None,
-                       com_resultados, False, max_bytes, False, resumo, agora=agora, det=det,
-                       mapa_catmat=mapa_catmat)
-            resumo["recoletadas"] += 1
-        except Exception as e:
-            resumo["erros"] += 1
-            log.warning("  %s: recoleta falhou (versão não gravada, tenta de novo na próxima): %s",
-                        ln["codigo_externo"], str(e)[:160])
-    return resumo
+        return resumo
+    finally:
+        if arquivos_raw is not None:
+            resumo["arquivo_raw"] = fechar_todos(list(arquivos_raw.values()))
 
 
 def _compra_slug(lic: dict) -> str:
@@ -1814,7 +1895,8 @@ def criar_parser() -> argparse.ArgumentParser:
     ap.add_argument("--status", choices=["todos", "recebendo_proposta", "em_julgamento", "encerradas"],
                     help="sobrescreve o status do modo")
     ap.add_argument("--paginas", type=int, help="páginas por termo (padrão: leads 20, outros 3)")
-    ap.add_argument("--tam", type=int, default=50, help="resultados por página")
+    ap.add_argument("--tam", type=int, default=50,
+                    help="resultados por página (máximo 100; pedido maior é cortado)")
     ap.add_argument("--sem-resultados", action="store_true", help="não consulta vencedores")
     ap.add_argument("--baixar-arquivos", action="store_true", help="baixa edital/anexos (para o RAG)")
     ap.add_argument("--baixar-pendentes", action="store_true",
@@ -1932,8 +2014,11 @@ def main(argv: list[str] | None = None) -> int:
     paginas = args.paginas or (20 if args.modo == "leads" else 3)
     log.info("modo=%s status=%s termos=%s lote=%s workers=%s delay=%ss", args.modo, status, len(termos),
              args.lote or "-", workers, delay)
+    tam = clamp_tamanho(args.tam, padrao=50, minimo=1, maximo=TAMANHO_PAGINA_MAX)
+    if tam != args.tam:
+        log.info("--tam %s limitado a %s", args.tam, tam)
     r = coletar(PNCP(delay=delay), sb, arm, termos, status, paginas,
-                args.tam, not args.sem_resultados, args.baixar_arquivos,
+                tam, not args.sem_resultados, args.baixar_arquivos,
                 int(float(env("MAX_MB", "80")) * 1048576), args.dry_run,
                 modo=args.modo, workers=workers, mapa_catmat=mapa)
     drenar_licitacao_match(sb)  # recorte CATMAT por texto: zera a pendência de licitacao_match (sem efeito no dry-run)

@@ -21,6 +21,16 @@ Métodos usados (todos públicos no mural):
 
 Portais Paradigma hospedados em paradigmabs.com.br (Sesc SP, Sesc/Senac RS) declaram no robots.txt
 que não aceitam acesso automatizado: o adaptador recusa essas fontes (ver FONTES).
+
+Paginação (regra de 03/10/2026): cada faixa pede no máximo 100 itens (`nPaginaDe`/`nPaginaAte`).
+A resposta observada do webservice é uma lista, sem total de registros. Página curta não encerra.
+Sem total, a coleta segue até uma página vazia. Com a faixa alinhada, `totalRegistros`,
+`total`, `totalPaginas` ou `paginasRestantes` encerram quando confirmam o fim. Depois de uma
+página curta intermediária, `totalPaginas` e `paginasRestantes` deixam de encerrar: vale
+`totalRegistros`/`total` ou a página vazia. Há um limite de segurança
+de MAX_PAGINAS_SEGURANCA páginas (e detecção de página repetida); os dois param com aviso no log
+e não contam como fim confirmado. `--paginas` é teto opcional; omitido, coleta até o fim.
+CPF e CNPJ de documento de licitação ficam íntegros (decisão de 01/10/2026): não se mascaram.
 """
 from __future__ import annotations
 
@@ -36,7 +46,7 @@ from typing import Any
 
 import requests
 
-from .fornecedores import mascarar_cpf
+from .paginacao import TAMANHO_PAGINA_MAX, avaliar_pagina, clamp_tamanho, pagina_repetida
 from .perfil_item import normalizar_marca, perfil_item, texto_do_item
 from .escopo import ITEM_FORA, classificar, contexto_academia, e_peca, classificar_texto_item, interesse_borracha, normalizar
 from .portal import cnpj_ou_none, limpar, parse_data
@@ -83,13 +93,146 @@ TIPOS_CATALOGO = {"todos": 0, "produto": 1, "servico": 2}
 # Filtro "Categoria" já mapeado (catálogo SFIEC, 26/09/2026): AI03 = EQUIPAMENTOS ESPORTIVOS; NE53 e MC06 = ESPORTIVO.
 # Casamento por nome exato (normalizado), porque o autocomplete devolve várias classes por prefixo.
 CATEGORIAS_MAPEADAS = ["EQUIPAMENTOS ESPORTIVOS", "ESPORTIVO"]
-_PAGINA_CATALOGO = 500
+# Regra de 03/10/2026: no máximo 100 itens por página.
+TAMANHO_PAGINA = TAMANHO_PAGINA_MAX
+# Teto contra laço infinito quando a API não devolve página vazia nem total.
+# 1000 páginas × 100 itens = 100_000 registros pedidos por consulta. Ao atingir, para com aviso.
+MAX_PAGINAS_SEGURANCA = 1000
+DELAY_MINIMO = 1.0
+_CHAVES_TOTAL = ("totalRegistros", "totalPaginas", "paginasRestantes", "total")
 
 
 def modulo_de(x: dict | None) -> int:
     """nCdModulo vindo do portal (listagem/detalhe). Alguns tenants usam 18 (ex.: FIEMS, SFIEC); 59 é o padrão."""
     m = (x or {}).get("nCdModulo")
     return m if isinstance(m, int) and not isinstance(m, bool) and m > 0 else MODULO_PADRAO
+
+
+def _intervalo(pagina_de: int, pagina_ate: int) -> tuple[int, int]:
+    """Faixa inclusiva de no máximo 100 itens. Pedido maior é cortado e registrado."""
+    de = max(1, int(pagina_de))
+    ate = int(pagina_ate)
+    if ate < de:
+        ate = de
+    pedido = ate - de + 1
+    tamanho = clamp_tamanho(pedido, padrao=TAMANHO_PAGINA, minimo=1, maximo=TAMANHO_PAGINA_MAX)
+    if tamanho != pedido:
+        log.warning("intervalo %s–%s pedia %s itens; limitado a %s", de, ate, pedido, tamanho)
+    return de, de + tamanho - 1
+
+
+def _trecho_resposta(resp: Any, limite: int = 200) -> str:
+    """Trecho curto do corpo para a mensagem de erro. Não despeja a página inteira."""
+    try:
+        texto = json.dumps(resp, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        texto = repr(resp)
+    if len(texto) <= limite:
+        return texto
+    return texto[:limite] + "…"
+
+
+def _itens_e_total(resp: Any, *, rotulo: str) -> tuple[list, dict]:
+    """Separa a lista e o total, se a API informar.
+
+    Página vazia só com lista (`[]` inclusive) ou com objeto cuja chave reconhecida
+    (`resultado`, `itens`, `lista` ou `d`) seja uma lista, ainda que vazia. HTTP 200
+    com `d` nulo, string, ou objeto sem essa lista não é fim: levanta erro.
+    O webservice observado devolve `d` como lista, sem total. Se o objeto trouxer
+    `totalRegistros`, `totalPaginas`, `paginasRestantes` ou `total`, o total entra
+    na decisão de parada.
+    """
+    if isinstance(resp, list):
+        return resp, {}
+    if isinstance(resp, dict):
+        corpo = {k: resp[k] for k in _CHAVES_TOTAL if k in resp}
+        for chave in ("resultado", "itens", "lista", "d"):
+            if isinstance(resp.get(chave), list):
+                return resp[chave], corpo
+    raise RuntimeError(
+        f"{rotulo}: resposta sem lista reconhecida; não é fim de coleta ({_trecho_resposta(resp)})")
+
+
+def paginar_intervalo(buscar, *, tamanho: int = TAMANHO_PAGINA, max_paginas: int | None = None,
+                      max_itens: int | None = None, rotulo: str = "paradigma") -> tuple[list, list[str]]:
+    """Percorre faixas inclusivas de no máximo 100 itens.
+
+    `buscar(de, ate)` devolve a página. Sem total, só uma página vazia encerra; página
+    curta não. Lista vazia, ou objeto com lista reconhecida vazia, é página vazia.
+    Envelope sem essa lista (nulo, string, objeto só com mensagem) levanta erro.
+    Com a faixa ainda alinhada, `avaliar_pagina` encerra quando o total confirma o fim.
+    Depois de uma página curta intermediária a faixa deixa de coincidir com o número
+    da página: `totalPaginas` e `paginasRestantes` não encerram mais. Segue
+    `totalRegistros`/`total` (pelo acumulado) ou uma página vazia.
+    `max_paginas` e `max_itens` são tetos opcionais (avisam se cortarem antes do fim).
+    Sem eles, o corte é `MAX_PAGINAS_SEGURANCA` ou página de conteúdo repetido: os dois
+    param com aviso e não são fim confirmado. A faixa seguinte começa depois do último
+    item recebido, para uma página curta não pular o que a API não devolveu.
+    """
+    tamanho = clamp_tamanho(tamanho, padrao=TAMANHO_PAGINA, minimo=1, maximo=TAMANHO_PAGINA_MAX)
+    if max_paginas is not None and max_paginas < 1:
+        raise ValueError("max_paginas deve ser >= 1")
+    if max_itens is not None and max_itens < 1:
+        raise ValueError("max_itens deve ser >= 1")
+    out: list = []
+    avisos: list[str] = []
+    vistas: set[str] = set()
+    de = 1
+    pagina = 1
+    # Página curta intermediária avança `de` por len(itens), não por uma página cheia.
+    # A partir daí o contador `pagina` não é o número de página da API.
+    desalinhada = False
+    avisou_desalinhada = False
+
+    def _aviso(msg: str) -> None:
+        avisos.append(msg)
+        log.warning("%s", msg)
+
+    while True:
+        if pagina > MAX_PAGINAS_SEGURANCA:
+            _aviso(f"{rotulo}: limite de segurança de {MAX_PAGINAS_SEGURANCA} páginas "
+                   f"(até {MAX_PAGINAS_SEGURANCA * tamanho} itens pedidos); interrompendo")
+            break
+        if max_paginas is not None and pagina > max_paginas:
+            _aviso(f"{rotulo}: teto opcional de {max_paginas} páginas atingido sem o total confirmar o fim")
+            break
+        if max_itens is not None and len(out) >= max_itens:
+            _aviso(f"{rotulo}: teto opcional de {max_itens} itens atingido sem o total confirmar o fim")
+            break
+        falta = None if max_itens is None else max_itens - len(out)
+        pedido = tamanho if falta is None else min(tamanho, falta)
+        ate = de + pedido - 1
+        resp = buscar(de, ate)
+        itens, corpo = _itens_e_total(resp, rotulo=f"{rotulo} página {pagina}")
+        if pagina_repetida(itens, vistas) and itens:
+            _aviso(f"{rotulo} página {pagina} ({de}–{ate}): conteúdo repetido; "
+                   "interrompendo para não laçar (não é fim confirmado)")
+            break
+        out.extend(itens)
+        corpo_decisao = corpo
+        if desalinhada:
+            corpo_decisao = {k: v for k, v in corpo.items() if k not in ("totalPaginas", "paginasRestantes")}
+            if not avisou_desalinhada and any(k in corpo for k in ("totalPaginas", "paginasRestantes")):
+                if any(k in corpo_decisao for k in ("totalRegistros", "total")):
+                    texto = ("faixa desalinhada após página curta; totalPaginas/paginasRestantes "
+                             "ignorados; parada por totalRegistros/total ou página vazia")
+                else:
+                    texto = ("faixa desalinhada após página curta; totalPaginas/paginasRestantes "
+                             "não encerram; seguindo até página vazia")
+                _aviso(f"{rotulo}: {texto}")
+                avisou_desalinhada = True
+        decisao = avaliar_pagina(
+            itens, tamanho=pedido, pagina=pagina, corpo=corpo_decisao, acumulado=len(out))
+        if decisao.aviso:
+            _aviso(f"{rotulo} página {pagina}: {decisao.aviso}")
+        if decisao.encerrar or not itens:
+            break
+        if len(itens) < pedido:
+            desalinhada = True
+        de += len(itens)
+        pagina += 1
+    return out, avisos
+
 
 # Paradigma usa System.Decimal.MinValue como "vazio" em campos monetários
 _DECIMAL_NULO_LIMITE = -1e20
@@ -214,6 +357,9 @@ class PortalParadigma:
                 f"{fonte.slug}: o host proíbe coleta automatizada (robots.txt ou WAF). "
                 "Use aviso de fornecedor/coleta manual, ou passe autorizado=True com autorização formal da entidade.")
         self.fonte = fonte
+        if delay < DELAY_MINIMO:
+            log.warning("delay %s s abaixo do mínimo de %s s; usando %s s", delay, DELAY_MINIMO, DELAY_MINIMO)
+            delay = DELAY_MINIMO
         self.delay = delay
         self._sem_classificacao: set[int] = set()  # módulos em que a aba Classificação não existe (500)
         self.timeout = timeout
@@ -242,7 +388,8 @@ class PortalParadigma:
         raise RuntimeError(f"{metodo}: sem resposta após 4 tentativas")  # nunca devolve vazio em silêncio
 
     # ------------ listagem ------------
-    def listar(self, texto: str = "", pagina_de: int = 1, pagina_ate: int = 50) -> list[dict]:
+    def listar(self, texto: str = "", pagina_de: int = 1, pagina_ate: int = TAMANHO_PAGINA) -> list[dict]:
+        pagina_de, pagina_ate = _intervalo(pagina_de, pagina_ate)
         r = self._ws("PesquisarProcessos", {"dtoProcesso": {
             "nAnoFinalizacao": 0, "tmpTipoMuralProcesso": 2, "nCdModulo": 0, "nCdModalidade": 0,
             "nCdModalidadeFase": 0, "nCdTipoModalidade": 0, "tmpTipoMuralVisao": 0, "nCdSituacao": 0,
@@ -253,9 +400,10 @@ class PortalParadigma:
             raise RuntimeError("PesquisarProcessos devolveu null")
         return r
 
-    def listar_encerrados(self, texto: str, ano: int, pagina_de: int = 1, pagina_ate: int = 50) -> list[dict]:
+    def listar_encerrados(self, texto: str, ano: int, pagina_de: int = 1, pagina_ate: int = TAMANHO_PAGINA) -> list[dict]:
         """Mural estatístico (processos finalizados por ano). Traz dVlEstimado/dVlNegociado/dVlEconomia e
         tDtEncerrado, que o detalhe não traz. Corpo igual ao capturado no HAR do portal SFIEC (26/09/2026)."""
+        pagina_de, pagina_ate = _intervalo(pagina_de, pagina_ate)
         r = self._ws("PesquisarProcessosMuralEstatistico", {"dtoProcesso": {
             "nAnoFinalizacao": ano, "tmpTipoMuralProcesso": 1, "nCdModulo": 0, "nCdModalidade": 0,
             "nCdModalidadeFase": 0, "nCdTipoModalidade": 0, "tmpTipoMuralVisao": 0, "nCdSituacao": 0,
@@ -324,20 +472,16 @@ class PortalParadigma:
 
     def catalogo(self, classe: dict | None = None, tipo: str = "produto", descricao: str = "",
                  codigo: str = "") -> list[dict]:
-        """PesquisarCatalogoProdutos com os filtros da tela Catálogo, paginado até a última página."""
-        out: list[dict] = []
-        de = 1
-        while True:
-            lote = self._ws("PesquisarCatalogoProdutos", {"dtoProduto": {
+        """PesquisarCatalogoProdutos com os filtros da tela Catálogo, em faixas de até 100."""
+        def buscar(de: int, ate: int) -> Any:
+            return self._ws("PesquisarCatalogoProdutos", {"dtoProduto": {
                 "sCdProduto": codigo, "sDsProduto": descricao, "nCdTipo": TIPOS_CATALOGO[tipo],
                 "nCdClasse": (classe or {}).get("nCdClasse") or 0, "sDsClasse": (classe or {}).get("sDsClasse") or "",
                 "sOrdenarPor": "SCDPRODUTOEMPRESA", "sOrdenarPorDirecao": "ASC",
-                "dtoPaginacao": {"nPaginaDe": de, "nPaginaAte": de + _PAGINA_CATALOGO - 1},
-                "dtoIdioma": {"nCdIdioma": 1}}}) or []
-            out.extend(lote)
-            if len(lote) < _PAGINA_CATALOGO:
-                return out
-            de += _PAGINA_CATALOGO
+                "dtoPaginacao": {"nPaginaDe": de, "nPaginaAte": ate},
+                "dtoIdioma": {"nCdIdioma": 1}}})
+        itens, _avisos = paginar_intervalo(buscar, tamanho=TAMANHO_PAGINA, rotulo=f"catálogo {self.fonte.slug}")
+        return itens
 
     def produtos_escopo(self, categorias: list[str] | None = None, tipo: str = "produto") -> dict[int, dict]:
         """nCdProduto -> {codigo, descricao, categoria, tipo} para as categorias mapeadas, filtradas por Tipo."""
@@ -453,12 +597,15 @@ def brl(v: float | None) -> str:
 
 
 def empresa_cnpj(s: str | None) -> tuple[str | None, str | None]:
-    """'J&A E-COMMERCE LTDA - 24.608.949/0001-37' -> ('J&A E-COMMERCE LTDA', '24608949000137')."""
+    """'J&A E-COMMERCE LTDA - 24.608.949/0001-37' -> ('J&A E-COMMERCE LTDA', '24608949000137').
+
+    CPF no nome fica como veio: documento de licitação é público (decisão de 01/10/2026).
+    """
     s = (s or "").strip() or None
     m = _EMPRESA_CNPJ.match(s or "")
     if not m:
-        return mascarar_cpf(s), None
-    return mascarar_cpf(m.group(1).strip()) or None, cnpj_ou_none(m.group(2))
+        return s, None
+    return (m.group(1).strip() or None), cnpj_ou_none(m.group(2))
 
 
 def linhas_resultados(lic_id: int | None, numero_item: int, ranking: list[dict], data_resultado: str | None,
@@ -531,7 +678,7 @@ def linhas_resultados(lic_id: int | None, numero_item: int, ranking: list[dict],
             "modelo": (r.get("sDsModelo") or "").strip() or None,
             "situacao": "vencedor" if venc else (status or "perdida"),
             "data_resultado": data_resultado,
-            "raw": mascarar_cpf({k: v for k, v in r.items() if k != "sNmEmpresa"}) | {"sNmEmpresa": nome},
+            "raw": dict(r),
         })
     return out
 
@@ -648,28 +795,32 @@ def processar_processo(portal: "PortalParadigma", sb, pid: int, mod: int, resumo
                       f"{l.get('uf')}/{l.get('municipio')} | CNAE {l.get('cnae_principal')}")
 
 
-def coletar(portal: "PortalParadigma", sb, termos: list[str], paginas: int, dry_run: bool,
+def coletar(portal: "PortalParadigma", sb, termos: list[str], paginas: int | None, dry_run: bool,
             com_resultados: bool = True, produtos: dict[int, dict] | None = None, fornecedores=None,
             processos: list[tuple[int, int]] | None = None, anos: list[int] | None = None, documentos=None) -> dict:
     resumo = {"listados": 0, "processos": 0, "no_escopo": 0, "itens_escopo": 0, "itens_catalogo": 0,
               "resultados": 0, "itens_com_vencedor": 0, "alertas": 0, "erros": 0,
-              "participantes": 0, "fornecedores_consultados": 0, "fornecedores_em_cache": 0, "fornecedores_erros": 0}
+              "participantes": 0, "fornecedores_consultados": 0, "fornecedores_em_cache": 0,
+              "fornecedores_erros": 0, "paginacao_avisos": []}
     vistos: dict[tuple[int, int], dict] = {}
     if processos:
         vistos = {p: {} for p in processos}
     else:
         buscas = [(t, a) for t in termos for a in (anos or [None])]
         for t, ano in buscas:
-            for pag in range(paginas):
-                lote = (portal.listar_encerrados(t, ano, pag * 50 + 1, (pag + 1) * 50) if ano
-                        else portal.listar(t, pag * 50 + 1, (pag + 1) * 50))
-                resumo["listados"] += len(lote)
-                for x in lote:
-                    pid = x.get("nCdOrigem")
-                    if isinstance(pid, int) and pid > 0:
-                        vistos.setdefault((pid, modulo_de(x)), x)
-                if len(lote) < 50:
-                    break
+            def buscar(de: int, ate: int, t: str = t, ano: int | None = ano) -> Any:
+                if ano:
+                    return portal.listar_encerrados(t, ano, de, ate)
+                return portal.listar(t, de, ate)
+            lote, avisos = paginar_intervalo(
+                buscar, tamanho=TAMANHO_PAGINA, max_paginas=paginas,
+                rotulo=f"{portal.fonte.slug} termo {t!r} ano={ano}")
+            resumo["paginacao_avisos"].extend(avisos)
+            resumo["listados"] += len(lote)
+            for x in lote:
+                pid = x.get("nCdOrigem")
+                if isinstance(pid, int) and pid > 0:
+                    vistos.setdefault((pid, modulo_de(x)), x)
     for (pid, mod), x in vistos.items():
         try:
             processar_processo(portal, sb, pid, mod, resumo, dry_run, com_resultados, produtos, fornecedores,
@@ -687,7 +838,8 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Coletor Paradigma (Sistema S)")
     ap.add_argument("--fonte", required=True, choices=sorted(FONTES))
     ap.add_argument("--termos", help="termos separados por ';' (padrão: TERMOS_SISTEMA_S)")
-    ap.add_argument("--paginas", type=int, default=4, help="páginas de 50 por termo")
+    ap.add_argument("--paginas", type=int, default=None,
+                    help="teto opcional de páginas de até 100 itens por termo; omitido, coleta até o fim")
     ap.add_argument("--processo", action="append", metavar="ID[/MODULO]",
                     help="coleta só este processo (nCdOrigem), ex.: 32/18; pode repetir")
     ap.add_argument("--anos", help="busca no Mural estatístico (encerrados) destes anos, ex.: 2022,2023")
@@ -700,6 +852,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--sem-documentos", action="store_true", help="não registra/baixa os anexos do processo")
     ap.add_argument("--dry-run", action="store_true", help="não grava; mostra vencedores e fornecedores consultados")
     args = ap.parse_args(argv)
+    if args.paginas is not None and args.paginas < 1:
+        ap.error("--paginas deve ser >= 1")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     portal = PortalParadigma(FONTES[args.fonte], delay=float(env("DELAY_SEGUNDOS", "1.5")))

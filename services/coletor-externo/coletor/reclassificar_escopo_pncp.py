@@ -35,18 +35,28 @@ Padrão: DRY-RUN (só SELECT; o cliente do Supabase fica embrulhado em modo some
   python -m coletor.reclassificar_escopo_pncp --consultar-pncp --id-min 50 --id-max 556 --termo puxador
   python -m coletor.reclassificar_escopo_pncp --consultar-pncp --apply               # grava
   python -m coletor.reclassificar_escopo_pncp --consultar-pncp --consultar-detalhe   # + 410/estado do detalhe
+
+Forte ancorado (03/10/2026, modo núcleo; pncp.forte_ancorado): o mapa CATMAT traz as âncoras do catálogo
+(itens de catmat_itens_mapa(), 100 por página). Dry-run OFFLINE, sem tocar no banco: o bot LicitaGym Supabase roda o SQL de
+export (RECLASSIFICAR-FORTE-EXPORT.sql) e devolve os CSVs (coletor/entrada_arquivos.py); daí
+  python -m coletor.reclassificar_escopo_pncp --entrada-dir DIR --sql-backup backup.sql --mudancas-csv mud.csv \\
+         --json linhas.json
+--entrada-dir implica --so-escopo (prioridade e fase não são recalculadas) e não aceita --apply.
 """
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import logging
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from .catmat_codigo import MapaCatmat, MapaCatmatIndisponivel, carregar_mapa_catmat_se_houver_banco
 from .destino import Supabase, env
+from .entrada_arquivos import ClienteArquivos
 from .escopo import classificar, excluir_compra, objeto_passagem, servico_sem_material
 from .pncp import (FASE_EXCLUIDA, PNCP, CompraExcluida, _instante, atualizacao_da_compra, avaliar, compra_com_detalhe,
                    compra_de_codigo, consultar_detalhe, fase_da_compra)
@@ -172,9 +182,18 @@ def _nova_prioridade(ln: dict, itens: list[dict] | None, agora: datetime, det: d
 
 
 def reavaliar(ln: dict, itens_pncp: list[dict] | None, agora: datetime, det: dict | None = None,
-              excluida: bool = False, mapa_catmat: MapaCatmat | None = None) -> dict:
+              excluida: bool = False, mapa_catmat: MapaCatmat | None = None, so_escopo: bool = False,
+              so_regra_nova: bool = False) -> dict:
     """Resultado para UMA linha: {status, categoria, interesse, prioridade, campos, itens_campos, ...}.
-    status: sem_itens | sem_mudanca | sai_do_escopo | muda."""
+    status: sem_itens | sem_mudanca | sai_do_escopo | muda | divergencia_previa.
+    Com as âncoras ligadas, `categoria_regra_antiga` é o mesmo cálculo sem elas e `causa` diz por que a categoria
+    gravada mudaria: "regra_nova" (sem as âncoras ficaria a gravada) ou "divergencia_previa" (sem as âncoras já
+    mudaria: gravado velho, de uma versão anterior do classificador). `so_regra_nova`: linha com divergência prévia
+    não é tocada (status divergencia_previa, nada a gravar, nem nos itens), para esta reclassificação só aplicar o
+    efeito da regra nova.
+    `so_escopo`: só categoria_escopo/interesse_borracha (compra e itens); prioridade e fase não são recalculadas
+    (compra que sai do escopo continua indo para prioridade NULL, como sempre). `ancoras`/`vetos` na saída: âncora
+    do catálogo que deu "forte" a cada item e lista fixa que vetou (regra do forte ancorado, pncp.forte_ancorado)."""
     atual_cat, atual_ib, atual_prio = ln.get("categoria_escopo"), bool(ln.get("interesse_borracha")), ln.get("prioridade")
     gravados = _itens_gravados(ln)
     itens = gravados or itens_pncp
@@ -191,12 +210,35 @@ def reavaliar(ln: dict, itens_pncp: list[dict] | None, agora: datetime, det: dic
             out.update(status="sem_itens", categoria_depois=atual_cat, motivo="sem itens gravados nem consulta ao PNCP")
             return out
         out["fonte_itens"] = "objeto"
-        cat, ib, _ = avaliar(compra, [])
+        cat, ib, _ = avaliar(compra, [], mapa_catmat)
         if cat is not None:
-            cat, ib = atual_cat, atual_ib   # objeto confirma a categoria gravada; interesse fica o gravado
+            # objeto confirma a categoria gravada; interesse fica o gravado. Forte ancorado: sem item não há âncora,
+            # e o "forte" que só o objeto dava cai para "fraco" (pncp.avaliar)
+            rebaixa = cat == "fraco" and atual_cat == "forte" and getattr(mapa_catmat, "ancoras", None) is not None
+            cat, ib = ("fraco" if rebaixa else atual_cat), atual_ib
         por_item = {}
     else:
-        cat, ib, por_item = avaliar(compra, itens, mapa_catmat)
+        motivos: dict = {}
+        cat, ib, por_item = avaliar(compra, itens, mapa_catmat, motivos=motivos)
+        out["motivos_itens"] = motivos
+        out["ancoras"] = sorted({f"{m['pdm']}:{m['ancora']}" for n, m in motivos.items()
+                                 if m["ancora"] and not m["veto"] and por_item.get(n, (None,))[0] == "forte"})
+        out["vetos"] = sorted({f"{m['veto']}:{m['ancora']}" for m in motivos.values() if m["veto"]})
+    if getattr(mapa_catmat, "ancoras", None) is not None:
+        sem_ancoras = replace(mapa_catmat, ancoras=None)
+        if itens is None:
+            antiga = avaliar(compra, [], sem_ancoras)[0]
+            antiga = atual_cat if antiga is not None else None
+        else:
+            antiga = avaliar(compra, itens, sem_ancoras)[0]
+        out["categoria_regra_antiga"] = antiga
+        out["causa"] = None if cat == atual_cat else ("regra_nova" if antiga == atual_cat else "divergencia_previa")
+        if so_regra_nova and out["causa"] == "divergencia_previa":
+            out.update(status="divergencia_previa", categoria_depois=atual_cat, categoria_calculada=cat,
+                       interesse_depois=atual_ib, prioridade_depois=atual_prio,
+                       motivo=f"sem a regra nova o classificador já dá {antiga or 'NULL'} (gravado {atual_cat or 'NULL'}):"
+                              " gravado velho, fora desta reclassificação (--so-regra-nova)")
+            return out
     out["categoria_depois"], out["interesse_depois"] = cat, ib
     # itens gravados cuja categoria/interesse mudaria
     for it in gravados:
@@ -208,6 +250,10 @@ def reavaliar(ln: dict, itens_pncp: list[dict] | None, agora: datetime, det: dic
             mud["interesse_borracha"] = bool(b_it)
         if mud and it["_id"] is not None:
             out["itens_campos"].append((it["_id"], mud))
+            out.setdefault("itens_detalhe", []).append({
+                "id": it["_id"], "numero_item": it["numeroItem"], "descricao": (it.get("descricao") or "")[:160],
+                "antes": {"categoria_escopo": it["_categoria"], "interesse_borracha": it["_interesse"]},
+                "depois": mud})
     if cat is None:
         alvo = {"categoria_escopo": None, "interesse_borracha": False, "prioridade": None}
         atual = {"categoria_escopo": atual_cat, "interesse_borracha": atual_ib, "prioridade": atual_prio}
@@ -222,7 +268,10 @@ def reavaliar(ln: dict, itens_pncp: list[dict] | None, agora: datetime, det: dic
         campos["categoria_escopo"] = cat
     if bool(ib) != atual_ib:
         campos["interesse_borracha"] = bool(ib)
-    prio, motivo, trava, fase = _nova_prioridade(ln, itens, agora, det, excluida)
+    if so_escopo:
+        prio, motivo, trava, fase = None, "só escopo (prioridade e fase não recalculadas)", None, None
+    else:
+        prio, motivo, trava, fase = _nova_prioridade(ln, itens, agora, det, excluida)
     if prio is not None:
         campos["prioridade"] = prio
     if fase is not None:
@@ -330,17 +379,23 @@ def reclassificar(sb, pncp=None, *, aplicar: bool = False, consultar_pncp: bool 
                   id_max: int | None = None, desde: str | None = None, termo: str | None = None,
                   limite: int | None = None, amostra: int = 5, agora: datetime | None = None,
                   workers: int = 1, cache_itens: dict | None = None, salvar_cache=None,
-                  mapa_catmat: MapaCatmat | None = None) -> dict:
+                  mapa_catmat: MapaCatmat | None = None, so_escopo: bool = False,
+                  so_regra_nova: bool = False) -> dict:
     """Resumo da reclassificação; em dry-run (aplicar=False) nunca grava (sb deve ser SomenteLeitura).
     `cache_itens`: codigo_externo -> itens do PNCP já consultados (lido antes e completado com as consultas novas).
     `mapa_catmat`: código CATMAT antes do texto, como no coletor (None = só texto)."""
     agora = agora or datetime.now(timezone.utc)
     linhas = sb.selecionar("licitacoes_externas", **_filtros(id_min, id_max, desde, termo, limite))
     n_itens = carregar_itens(sb, linhas)
-    n_docs = carregar_documentos(sb, linhas)
+    if so_escopo:   # prioridade/fase não são recalculadas: os documentos não entram
+        for ln in linhas:
+            ln["_documentos"] = []
+        n_docs = 0
+    else:
+        n_docs = carregar_documentos(sb, linhas)
     log.info("%d compra(s), %d item(ns) e %d documento(s) gravado(s) lidos", len(linhas), n_itens, n_docs)
     r = {"lidas": len(linhas), "itens_lidos": n_itens, "itens_gravados": 0, "itens_pncp": 0, "decididas_pelo_objeto": 0, "falha_consulta": 0, "sem_itens": 0,
-         "sem_mudanca": 0, "sai_do_escopo": 0, "sai_dos_leads": 0, "muda": 0, "muda_categoria": 0,
+         "sem_mudanca": 0, "divergencia_previa": 0, "sai_do_escopo": 0, "sai_dos_leads": 0, "muda": 0, "muda_categoria": 0,
          "muda_interesse": 0, "muda_prioridade": 0, "itens_mudariam": 0, "gravadas": 0,
          "muda_fase": 0, "transicoes_fase": {}, "excluidas_do_pncp": 0, "falha_detalhe": 0, "detalhes_consultados": 0,
          "arquivos_consultados": 0, "falha_arquivos": 0, "documentos_ao_vivo": 0,
@@ -419,7 +474,7 @@ def reclassificar(sb, pncp=None, *, aplicar: bool = False, consultar_pncp: bool 
         elif ln.get("licitacao_itens"):
             r["itens_gravados"] += 1
         det, excluida, _ = detalhes.get(ln["id"], (None, False, None))
-        res = reavaliar(ln, ip, agora, det, excluida, mapa_catmat)
+        res = reavaliar(ln, ip, agora, det, excluida, mapa_catmat, so_escopo, so_regra_nova)
         if res.get("fonte_itens") == "objeto":
             r["decididas_pelo_objeto"] += 1
         r["linhas"].append(res)
@@ -427,7 +482,7 @@ def reclassificar(sb, pncp=None, *, aplicar: bool = False, consultar_pncp: bool 
         r[st] += 1
         if res.get("trava_prioridade"):
             r["trava_prioridade"][res["trava_prioridade"]] = r["trava_prioridade"].get(res["trava_prioridade"], 0) + 1
-        if st in ("sem_itens", "sem_mudanca"):
+        if st in ("sem_itens", "sem_mudanca", "divergencia_previa"):
             continue
         campos = res["campos"]
         if st == "sai_do_escopo":
@@ -467,6 +522,95 @@ def reclassificar(sb, pncp=None, *, aplicar: bool = False, consultar_pncp: bool 
     return r
 
 
+_CAMPOS_COMPRA = ("categoria_escopo", "interesse_borracha", "prioridade", "fase")
+_CAMPOS_ITEM = ("categoria_escopo", "interesse_borracha")
+
+
+def _sql_literal(v) -> str:
+    if v is None:
+        return "null"
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, int):
+        return str(v)
+    return "'" + str(v).replace("'", "''") + "'"
+
+
+def _ids_sql(ids: list[int], por_linha: int = 20) -> str:
+    return ",\n    ".join(", ".join(str(x) for x in ids[i:i + por_linha]) for i in range(0, len(ids), por_linha))
+
+
+def sql_backup(linhas: list[dict], gerado_em: str) -> str:
+    """SQL de backup das linhas que MUDARIAM (dry-run). Parte 1: SELECT só leitura dos valores atuais, para o bot
+    rodar e guardar ANTES do --apply. Parte 2 (comentada): restauração com os valores lidos neste dry-run, só para
+    reverter um --apply com o ok do Marcelo. Este arquivo não grava nada."""
+    compras = [ln for ln in linhas if ln.get("status") in ("muda", "sai_do_escopo") and ln.get("campos")]
+    itens = [d for ln in linhas if ln.get("status") in ("muda", "sai_do_escopo") for d in ln.get("itens_detalhe", [])]
+    ids_c = sorted(ln["id"] for ln in compras)
+    ids_i = sorted(d["id"] for d in itens)
+    out = [f"-- Backup do reclassificador (forte ancorado) gerado em {gerado_em} pelo DRY-RUN; nada foi gravado.",
+           f"-- {len(ids_c)} compra(s) e {len(ids_i)} item(ns) mudariam.",
+           "-- PARTE 1: rodar ANTES do --apply (só leitura) e guardar a saída como backup.",
+           "begin read only;", "set local statement_timeout = '20s';"]
+    if ids_c:
+        out += ["select id, codigo_externo, categoria_escopo, interesse_borracha, prioridade, fase",
+                "  from public.licitacoes_externas", " where id in (", "    " + _ids_sql(ids_c), " )", " order by id;"]
+    for i in range(0, len(ids_i), 1000):   # blocos de 1000 ids (consulta leve, pela PK)
+        out += ["select id, licitacao_id, numero_item, categoria_escopo, interesse_borracha",
+                "  from public.licitacao_itens", " where id in (", "    " + _ids_sql(ids_i[i:i + 1000]), " )",
+                " order by id;"]
+    out += ["rollback;", "",
+            "-- PARTE 2: restauração (NÃO RODAR sem o ok do Marcelo). Valores lidos no dry-run; confira com a",
+            "-- parte 1.",
+            "-- begin;"]
+    for ln in sorted(compras, key=lambda x: x["id"]):
+        antes = {"categoria_escopo": ln.get("categoria_antes"), "interesse_borracha": ln.get("interesse_antes"),
+                 "prioridade": ln.get("prioridade_antes"), "fase": ln.get("fase_antes")}
+        sets = ", ".join(f"{k} = {_sql_literal(antes[k])}" for k in _CAMPOS_COMPRA if k in ln["campos"])
+        out.append(f"-- update public.licitacoes_externas set {sets} where id = {ln['id']};")
+    for d in sorted(itens, key=lambda x: x["id"]):
+        sets = ", ".join(f"{k} = {_sql_literal(d['antes'][k])}" for k in _CAMPOS_ITEM if k in d["depois"])
+        out.append(f"-- update public.licitacao_itens set {sets} where id = {d['id']};")
+    out += ["-- commit;", ""]
+    return "\n".join(out)
+
+
+def escrever_mudancas_csv(linhas: list[dict], caminho: str) -> int:
+    """Uma linha por campo que mudaria (compra ou item), com a âncora/veto que decidiu. Retorna o nº de linhas."""
+    n = 0
+    with open(caminho, "w", encoding="utf-8", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["tipo", "licitacao_id", "item_id", "numero_item", "codigo_externo", "prioridade", "campo", "antes",
+                    "depois", "causa", "categoria_regra_antiga", "ancoras", "vetos", "texto"])
+        for ln in sorted(linhas, key=lambda x: x.get("id") or 0):
+            causa, antiga = ln.get("causa") or "", ln.get("categoria_regra_antiga")
+            if ln.get("status") == "divergencia_previa":   # não tocada: fica no CSV com o motivo
+                w.writerow(["compra", ln["id"], "", "", ln.get("codigo_externo"), ln.get("prioridade_antes"),
+                            "categoria_escopo (NÃO aplicada)", ln.get("categoria_antes"), ln.get("categoria_calculada"),
+                            causa, antiga, "", "", ln.get("motivo")])
+                n += 1
+                continue
+            if ln.get("status") not in ("muda", "sai_do_escopo"):
+                continue
+            antes = {"categoria_escopo": ln.get("categoria_antes"), "interesse_borracha": ln.get("interesse_antes"),
+                     "prioridade": ln.get("prioridade_antes"), "fase": ln.get("fase_antes")}
+            for k, v in (ln.get("campos") or {}).items():
+                w.writerow(["compra", ln["id"], "", "", ln.get("codigo_externo"), ln.get("prioridade_antes"), k,
+                            antes.get(k), v, causa, antiga, " | ".join(ln.get("ancoras") or []),
+                            " | ".join(ln.get("vetos") or []), (ln.get("objeto") or "")[:160]])
+                n += 1
+            motivos = ln.get("motivos_itens") or {}
+            for d in ln.get("itens_detalhe", []):
+                m = motivos.get(d["numero_item"]) or {}
+                anc = f"{m['pdm']}:{m['ancora']}" if m.get("ancora") else ""
+                for k, v in d["depois"].items():
+                    w.writerow(["item", ln["id"], d["id"], d["numero_item"], ln.get("codigo_externo"),
+                                ln.get("prioridade_antes"), k, d["antes"].get(k), v, "", "", anc, m.get("veto") or "",
+                                d["descricao"]])
+                    n += 1
+    return n
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Reclassifica escopo/categoria/prioridade das compras PNCP gravadas")
     ap.add_argument("--apply", action="store_true", help="grava no Supabase (sem isto: dry-run, só SELECT)")
@@ -483,9 +627,27 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--json", help="grava o resultado por linha neste arquivo (fora do repositório)")
     ap.add_argument("--cache-itens", help="arquivo JSON (fora do repositório) com os itens já consultados no PNCP: "
                                           "lido se existir e regravado com as consultas novas")
+    ap.add_argument("--so-escopo", action="store_true",
+                    help="só categoria_escopo/interesse_borracha (compra e itens); prioridade e fase não são "
+                         "recalculadas")
+    ap.add_argument("--so-regra-nova", action="store_true",
+                    help="com as âncoras: não toca compra cuja categoria já mudaria sem a regra nova (gravado velho); "
+                         "ela sai no relatório como divergencia_previa")
+    ap.add_argument("--entrada-dir", help="dry-run OFFLINE: lê os CSVs exportados pelo bot (RECLASSIFICAR-FORTE-"
+                                          "EXPORT.sql) em vez do Supabase; implica --so-escopo; não aceita --apply")
+    ap.add_argument("--sql-backup", help="grava aqui o SQL de backup (SELECT só leitura + restauração comentada) "
+                                         "das linhas que mudariam")
+    ap.add_argument("--mudancas-csv", help="grava aqui a lista de mudanças (uma linha por campo de compra/item)")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    sb = Supabase(env("SUPABASE_URL", obrigatorio=True), env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True))
+    if args.entrada_dir:
+        if args.apply or args.consultar_pncp or args.consultar_detalhe:
+            log.error("--entrada-dir é só dry-run offline: sem --apply, --consultar-pncp nem --consultar-detalhe")
+            return 2
+        args.so_escopo = True
+        sb = ClienteArquivos(args.entrada_dir)
+    else:
+        sb = Supabase(env("SUPABASE_URL", obrigatorio=True), env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True))
     # mapa CATMAT pelo cliente original, ANTES de embrulhar em SomenteLeitura (que bloqueia rpc): o dry-run usa a
     # mesma regra de código que o --apply. Falha com o banco configurado aborta antes de qualquer gravação.
     try:
@@ -516,10 +678,17 @@ def main(argv: list[str] | None = None) -> int:
                       consultar_detalhe_pncp=args.consultar_detalhe, id_min=args.id_min,
                       id_max=args.id_max, desde=args.desde, termo=args.termo, limite=args.limit,
                       amostra=args.amostra, workers=int(env("PNCP_WORKERS", "1")), cache_itens=cache,
-                      salvar_cache=salvar, mapa_catmat=mapa)
+                      salvar_cache=salvar, mapa_catmat=mapa, so_escopo=args.so_escopo,
+                      so_regra_nova=args.so_regra_nova)
     if salvar is not None:
         salvar(cache)
     linhas = r.pop("linhas")
+    if args.sql_backup:
+        with open(args.sql_backup, "w", encoding="utf-8") as fh:
+            fh.write(sql_backup(linhas, datetime.now(timezone.utc).isoformat(timespec="seconds")))
+        log.info("SQL de backup em %s", args.sql_backup)
+    if args.mudancas_csv:
+        log.info("%d mudança(s) em %s", escrever_mudancas_csv(linhas, args.mudancas_csv), args.mudancas_csv)
     if args.json:
         with open(args.json, "w", encoding="utf-8") as fh:
             json.dump(linhas, fh, ensure_ascii=False, indent=1, default=str)

@@ -588,9 +588,14 @@ Deno.test("api-catmat: catalogo_hidratar_itens hidrata os PDMs do grupo incluíd
   const gov = comprasGovFalso();
   const c = ctx(mem, gov);
   assertEquals((await handleRequest(post({ action: "catalogo_salvar", nivel: "grupo", codigo_grupo: 78, incluido: true }), c)).status, 201);
+be-forte-ancorado-nucleo
+  // grupo incluído só materializa PDMs (era a causa dos 38 PDMs sem itens)
+  assertEquals(mem.itens.size, 0);
+
   // desde o #213 o grupo já hidrata itens e atributos do primeiro lote de PDMs; catalogo_hidratar_itens refaz sem duplicar
   assertEquals(mem.itens.size, 3);
   assertEquals(mem.atributos.get(470001)?.length, 5);
+ main
 
   // comum não hidrata
   assertEquals((await handleRequest(post({ action: "catalogo_hidratar_itens" }), ctx(mem, gov, COMUM))).status, 403);

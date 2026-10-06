@@ -912,6 +912,34 @@ def normalizar(t: str) -> str:
     return unicodedata.normalize("NFKD", t or "").encode("ascii", "ignore").decode().lower()
 
 
+# Decisão do Marcelo (03/10/2026, 19:47 BRT): equipamento tático/operacional (polícia, guarda municipal) não é da
+# linha, mesmo casando âncora ("KIT COTOVELEIRA E JOELHEIRA TÁTICA", "CINTURÃO ... CINTO OPERACIONAL"; compras 66/1215)
+TATICO_OPERACIONAL = re.compile(r"\b(tatic[oa]s?|operaciona(l|is))\b")
+
+
+def veto_lista_fixa(texto: str | None) -> str | None:
+    """Regra do forte ancorado (03/10/2026, modo núcleo): item que casa âncora do catálogo, mas que uma lista fixa de
+    fora DE ITEM diz não ser produto da linha, fica "fraco" (as listas fixas só rebaixam; não promovem). Retorna o
+    nome da lista que vetou (para o relatório do reclassificador) ou None.
+    - ITEM_FORA (balança, estadiômetro, bandeira, massageador, anilha de vedação, arruela...), menos o cronômetro:
+      "BICICLETA ERGOMÉTRICA ... display com cronômetro" é a bike (mesma exceção de item_core, #1831);
+    - ACADEMIA_AR_LIVRE e BRINQUEDO_INFANTIL no texto do item (decisões do Marcelo de 30/09 e 01/10/2026);
+    - TATICO_OPERACIONAL: "tático(a)(s)" e "operacional(is)" (decisão de 03/10/2026, 19:47 BRT).
+    As listas de OBJETO (FORA, EXCLUSAO_COMPRA, SERVICO_PESSOAL) não valem no item: no dry-run de 03/10/2026 vetavam
+    166 itens ancorados por "construção ultra fusion", "rodas para transporte", "enchimento uniforme", "para aulas";
+    no objeto da compra elas continuam valendo (avaliar)."""
+    t = normalizar(texto or "")
+    if any(not m.group(0).startswith("cronometr") for m in ITEM_FORA.finditer(t)):
+        return "ITEM_FORA"
+    if academia_ar_livre(t):
+        return "ACADEMIA_AR_LIVRE"
+    if brinquedo_infantil(t):
+        return "BRINQUEDO_INFANTIL"
+    if TATICO_OPERACIONAL.search(t):
+        return "TATICO_OPERACIONAL"
+    return None
+
+
 def classificar(objeto: str, classes_catmat: set[int] | None = None,
                 pdms: set[int] | None = None) -> str | None:
     """Retorna 'catmat', 'borracha', 'piso', 'obra_piso', 'forte', 'fraco' ou None.

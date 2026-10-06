@@ -37,9 +37,15 @@ Em `arvore` com `nivel: itens`, cada nó traz também `nome_item` e `atributos` 
 - **`catalogo_salvar`:**
   - valida o nó no Compras.gov (`404` se não existir);
   - grava grupo, classe e PDM em `catmat_grupos`, `catmat_classes` e `catmat_pdms` (sem `last_seen_sync_id`);
+be-forte-ancorado-nucleo
+  - ao incluir grupo ou classe, materializa os PDMs descendentes;
+  - em PDM ou item, hidrata `catmat_item_pdm` e `catmat_item_atributo` (rpc `catmat_item_atributo_sincronizar`);
+  - grupo/classe não hidratam itens (seriam dezenas de PDMs numa chamada): use `catalogo_hidratar_itens`.
+
   - grava a regra antes de hidratar. Grupo ou classe materializa no máximo 8 PDMs por chamada (`proximo_codigo_pdm` pede a continuação com `a_partir_do_pdm`); a árvore devolve ativos e inativos, com `status_item`;
   - em PDM ou item (e em cada PDM do lote de grupo/classe), hidrata `catmat_item_pdm` e `catmat_item_atributo` (rpc `catmat_item_atributo_sincronizar`);
   - para hidratar os itens de todos os PDMs do catálogo, use `catalogo_hidratar_itens`.
+main
 - **Padrões (`catmat_pdm_palavras`):**
   - regex do Postgres aplicada ao texto em minúsculas e sem acento (`lg_normalizar`), com até 300 caracteres;
   - validada com `catmat_regex_valido` (`400` se for inválida);

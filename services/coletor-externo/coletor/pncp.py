@@ -505,7 +505,34 @@ def compra_so_de_servico(itens: list[dict] | None) -> bool:
     return bool(itens) and all(material_ou_servico(it) == "S" for it in itens)
 
 
+# Categorias que a regra do forte ancorado não toca (vêm do piso/borracha/obra ou do código CATMAT)
+_FORA_DA_REGRA_ANCORADA = ("borracha", "obra_piso", "piso", "catmat")
+
+
+def forte_ancorado(cat: str | None, descricao: str, ancoras) -> tuple[str | None, dict | None]:
+    """Regra do forte ancorado (Marcelo, 03/10/2026 19:00 BRT, modo núcleo; coletor/catmat_ancoras.py).
+    `cat` é a categoria do texto do item (escopo.classificar). Retorna (categoria, motivo):
+    - piso, obra_piso, borracha e catmat: ficam como estão;
+    - item que casa âncora de PDM ou de item incluído no catálogo: "forte"; se uma lista fixa de fora veta o texto
+      (escopo.veto_lista_fixa), "fraco";
+    - sem âncora: "forte" das listas fixas cai para "fraco"; "fraco" e None ficam.
+    motivo (None quando nada muda): {"ancora", "pdm", "origem", "item_origem", "veto"}."""
+    if cat in _FORA_DA_REGRA_ANCORADA:
+        return cat, None
+    hits = ancoras.casar(descricao)
+    if hits:
+        a = hits[0]
+        veto = _escopo.veto_lista_fixa(descricao)
+        motivo = {"ancora": a.ancora, "pdm": a.codigo_pdm, "origem": a.origem, "item_origem": a.codigo_item_origem,
+                  "veto": veto}
+        return ("fraco" if veto else "forte"), motivo
+    if cat == "forte":
+        return "fraco", {"ancora": None, "pdm": None, "origem": None, "item_origem": None, "veto": None}
+    return cat, None
+
+
 def avaliar(compra: dict, itens: list[dict], mapa_catmat: MapaCatmat | None = None,
+            motivos: dict | None = None,
             ) -> tuple[str | None, bool, dict[int, tuple[str | None, bool]]]:
     """Classifica a compra pelo objeto e pelos itens. Retorna (categoria, interesse_borracha, por_item).
 
@@ -525,7 +552,14 @@ def avaliar(compra: dict, itens: list[dict], mapa_catmat: MapaCatmat | None = No
     Catálogo do Compras.gov.br (catalogo.id = 1) presente no mapa CATMAT é classificado pelo código: PDM no catálogo
     efetivo da empresa -> "catmat", fora -> None. Sem código desse catálogo (Outros = código do órgão, CATSER) ou com
     código fora do mapa, vale o texto, como antes. As travas abaixo (obra, ar livre, passagem...) valem igual.
-    `mapa_catmat` None = só texto (sem banco nenhum, testes antigos); com banco e RPC fora do ar, main aborta."""
+    `mapa_catmat` None = só texto (sem banco nenhum, testes antigos); com banco e RPC fora do ar, main aborta.
+
+    Forte ancorado (03/10/2026, Marcelo: modo núcleo): com `mapa_catmat.ancoras`, item que o código não decidiu só
+    é "forte" quando casa uma âncora do catálogo (forte_ancorado); as listas fixas só rebaixam para "fraco". O
+    objeto da compra não tem âncora: "forte" do objeto vira "fraco". As travas acima continuam valendo depois
+    (âncora não é item core da compra de passagem). `motivos` (opcional) recebe {numeroItem: motivo} dos itens em
+    que a regra decidiu, para o relatório do reclassificador."""
+    ancoras = mapa_catmat.ancoras if mapa_catmat is not None else None
     objeto = compra.get("description") or compra.get("title") or ""
     if excluir_compra(objeto) or servico_sem_material(objeto):
         return None, False, {it["numeroItem"]: (None, False) for it in itens}
@@ -548,6 +582,10 @@ def avaliar(compra: dict, itens: list[dict], mapa_catmat: MapaCatmat | None = No
         desc = it.get("descricao") or ""
         decidido, cat_codigo = categoria_por_codigo(it, mapa_catmat, material_ou_servico(it))
         cat = cat_codigo if decidido else classificar(desc)
+        if ancoras is not None and not decidido:
+            cat, motivo = forte_ancorado(cat, desc, ancoras)
+            if motivo is not None and motivos is not None:
+                motivos[it["numeroItem"]] = motivo
         # "Fornecimento de halteres"/"Fornecimento e instalação de esteiras" também fornecem produto (fornece_produto;
         # PRODUTO só conhece os substantivos genéricos)
         servico = material_ou_servico(it) == "S" and not PRODUTO.search(normalizar(desc)) and \
@@ -572,6 +610,8 @@ def avaliar(compra: dict, itens: list[dict], mapa_catmat: MapaCatmat | None = No
             continue
         por_item[it["numeroItem"]] = (cat, interesse_borracha(desc, cat))
     cat_obj = classificar(objeto)
+    if ancoras is not None and cat_obj == "forte":   # o objeto não tem âncora: as listas fixas só dão "fraco"
+        cat_obj = "fraco"
     # pncp.py:388-391 antes de 02/10/2026: o objeto sozinho ("manutenção de equipamentos de musculação") fazia
     # forte numa compra sem nenhum item de material.
     if so_servico and cat_obj in CATEGORIAS_SO_MATERIAL and not fornece_produto(normalizar(objeto)):

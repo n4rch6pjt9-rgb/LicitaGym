@@ -1542,6 +1542,10 @@ Deno.test("applyOportunidadesScope: só canônica sempre; sem prioridade só lea
   const leads = new MockQueryBuilder();
   applyOportunidadesScope(leads, { prioridade: "leads" });
   assertEquals(leads.calls, [SO_CANONICA]);
+
+  const porFonte = new MockQueryBuilder();
+  applyOportunidadesScope(porFonte, { fonte: "sestsenat" });
+  assertEquals(porFonte.calls, [SO_CANONICA]);
 });
 
 Deno.test("list padrão lê a view e exclui historico na lista", async () => {

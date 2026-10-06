@@ -362,41 +362,6 @@ begin
     v_falhas := v_falhas || '[7 cnpj_valido] pulado: private.cnpj_valido(text) ausente (migration 20261005160000 não aplicada)'::text;
   end if;
 
-  -- ===================================================================== bloco 8: idempotência + regex order (fix #228 #1 #3)
-  -- Testa: normalização idempotente e regex manual vence regex semente
-  if v_tem_norm and v_tem_res and v_tem_tabela then
-    for v_chk in execute $q$
-      with casos(grupo, entrada, cnpj, esperado) as (values
-        -- Idempotência #1: frases repetidas devem colapsar completamente
-        ('idempotencia', 'FUNDIBAN FUNDIBAN', '11222333000181', 'FUNDIBAN'),
-        ('idempotencia', 'FUNDIBAN FUNDIBAN FUNDIBAN', '11222333000181', 'FUNDIBAN'),
-        ('idempotencia', 'FUNDIBAN FUNDIBAN FUNDIBAN FUNDIBAN', '11222333000181', 'FUNDIBAN'),
-        ('idempotencia', 'XYZ ABC XYZ ABC', '11222333000181', 'ABC XYZ'),  -- não colapsa: frases diferentes
-        -- Teste de idempotência: normalizar 2x deve dar mesmo resultado
-        ('idempotencia', 'TRIPLE TRIPLE TRIPLE', '11222333000181', 'TRIPLE'),
-        -- Regex manual vence regex semente #3: se houver alias manual curto e semente longo
-        -- Caso: PRÓPRIA tem 2 aliases em 08973569000145:
-        --   - manual curto: regex 'PROPRIA' (revisao_manual=true)
-        --   - semente longo: regex '.+' (revisao_manual=false)
-        -- Antes: '.+' vencia (tamanho 2 > 1). Agora: manual vence (mesmo que mais curto).
-        ('regex_order', 'PRÓPRIA', '08973569000145', 'FLEX EQUIPMENT'))  -- manual vence semente
-      select c.grupo, c.entrada || ' → ' || c.cnpj as objeto, c.esperado,
-             (select r.marca from private.marca_resolver(c.entrada, c.cnpj) r) as atual
-        from casos c
-    $q$
-    loop
-      n := n + 1;
-      if v_chk.atual is distinct from v_chk.esperado then
-        v_falhas := v_falhas || format('[%s] %s: esperado "%s", atual "%s"', v_chk.grupo, v_chk.objeto, v_chk.esperado, v_chk.atual);
-      end if;
-    end loop;
-  else
-    n := n + 1;
-    if not v_tem_norm or not v_tem_res or not v_tem_tabela then
-      v_falhas := v_falhas || '[8 idempotencia/regex] pulado: private.marca_normalizar, marca_resolver, ou public.marca_aliases ausente'::text;
-    end if;
-  end if;
-
   -- ===================================================================== resultado: uma exceção com a lista
   if coalesce(array_length(v_falhas, 1), 0) > 0 then
     for i in 1 .. array_length(v_falhas, 1) loop

@@ -2,7 +2,7 @@
 
 Pipeline comercial da equipe (Dashboard #29). Uma etapa por licitação, compartilhada pelo tenant, com histórico de
 cada entrada, mudança e saída. Etapas configuráveis por admin; as 13 do Kanban são o padrão (migration
-`20261004150000_pipeline_oportunidades`).
+`20261006020000_pipeline_oportunidades`).
 
 - `POST`, JWT do Supabase Auth no `Authorization` (validado no código; `verify_jwt = false` no `config.toml`).
 - Banco com `service_role`; tabelas e funções fechadas para `anon`/`authenticated`.

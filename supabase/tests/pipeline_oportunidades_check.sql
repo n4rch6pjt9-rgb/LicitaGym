@@ -1,4 +1,4 @@
--- Checagem da migration 20261004150000_pipeline_oportunidades (Dashboard #29).
+-- Checagem da migration 20261006020000_pipeline_oportunidades (Dashboard #29).
 --   (a) ACL e RLS: as 3 tabelas com RLS e sem nenhum privilégio para anon/authenticated/PUBLIC; funções só service_role.
 --   (b) Semente: todo tenant ativo tem as 13 etapas padrão, na ordem do Kanban, com "Descartada" exigindo motivo.
 --   (c) Regras: mover/adicionar/remover em lote com histórico, motivo obrigatório, etapa de outro tenant recusada,

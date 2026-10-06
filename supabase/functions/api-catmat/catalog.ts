@@ -154,27 +154,6 @@ export async function salvarRegra(
   if (classe) await gravarClasse(repo, classe);
   if (pdm) await gravarPdm(repo, pdm);
 
-be-forte-ancorado-nucleo
-  let pdmsMaterializados = 0;
-  let itensHidratados = 0;
-  if (alvo.incluido && (alvo.nivel === "grupo" || alvo.nivel === "classe")) {
-    const classes = alvo.nivel === "grupo" ? await arvoreVerificada(deps, "classes", alvo.codigo_grupo) : [classe as CatmatNo];
-    for (const c of classes) {
-      if (alvo.nivel === "grupo") await gravarClasse(repo, c);
-      for (const p of await arvoreVerificada(deps, "pdms", c.codigo_classe as number)) {
-        await gravarPdm(repo, p);
-        pdmsMaterializados++;
-      }
-    }
-  }
-  if (alvo.nivel === "pdm" || alvo.nivel === "item") {
-    const itens = await arvoreVerificada(deps, "itens", alvo.codigo_pdm as number);
-    await repo.upsertItensPdm(itens.map(paraItemPdm));
-    await repo.sincronizarAtributos(itens.map((i) => i.codigo_item as number));
-    itensHidratados = itens.length;
-  }
-
-main
   const row: RegraInput = {
     nivel: alvo.nivel,
     codigo_grupo: no.codigo_grupo,
@@ -228,55 +207,6 @@ main
     itens_hidratados: itensHidratados,
     proximo_codigo_pdm: proximoCodigoPdm,
   };
-}
-
-/**
- * Hidrata catmat_item_pdm + catmat_item_atributo para os PDMs do catálogo (efetivos + PDMs dos itens avulsos),
- * em lotes: grupo/classe incluídos só materializam PDMs, então 38 dos 41 PDMs efetivos ficaram sem itens.
- * Cursor por código de PDM (apos_pdm); a tela chama até proximo_pdm = null.
- */
-export async function hidratarItensDoCatalogo(
-  deps: TreeDeps,
-  opcoes: { apos_pdm: number | null; limite_pdms: number },
-): Promise<{ total_pdms: number; processados: Array<{ codigo_pdm: number; itens: number; atributos: number }>; proximo_pdm: number | null }> {
-  const { repo } = deps;
-  const regras = await repo.listarRegras();
-  const efetivos = await repo.pdmsEfetivos();
-  const avulsos = regras.filter((r) => r.nivel === "item" && r.incluido && r.codigo_pdm !== null).map((r) => r.codigo_pdm as number);
-  const todos = [...new Set([...efetivos.map((e) => e.codigo_pdm), ...avulsos])].sort((a, b) => a - b);
-  const fila = todos.filter((c) => opcoes.apos_pdm === null || c > opcoes.apos_pdm);
-  const lote = fila.slice(0, opcoes.limite_pdms);
-  const processados: Array<{ codigo_pdm: number; itens: number; atributos: number }> = [];
-  for (const codigoPdm of lote) {
-    const itens = await arvoreVerificada(deps, "itens", codigoPdm);
-    await repo.upsertItensPdm(itens.map(paraItemPdm));
-    const atributos = await repo.sincronizarAtributos(itens.map((i) => i.codigo_item as number));
-    processados.push({ codigo_pdm: codigoPdm, itens: itens.length, atributos });
-  }
-  return { total_pdms: todos.length, processados, proximo_pdm: fila.length > lote.length ? lote[lote.length - 1] : null };
-}
-
-/** Item do catálogo para a árvore "Catálogo da empresa": descrição completa, cabeça, atributos e estado. */
-export interface ItemDoCatalogo extends ItemCatalogoLinha {
-  estado: CatmatEstado;
-  regra_id: number | null;
-  origem_nivel: NivelRegra | null;
-}
-
-/**
- * Itens de um PDM do catálogo, lidos do banco (hidratados por catalogo_salvar / catalogo_hidratar_itens).
- * Para PDM que só entra por itens avulsos (ex.: 10779 PISO SINTÉTICO), os demais itens vêm com estado 'nenhum'.
- */
-export async function itensDoCatalogo(repo: CatmatRepo, codigoPdm: number): Promise<{ codigo_pdm: number; hidratado: boolean; itens: ItemDoCatalogo[] }> {
-  const [regras, linhas] = await Promise.all([repo.listarRegras(), repo.itensDoPdmComAtributos(codigoPdm)]);
-  const idx = indexarRegras(regras);
-  const itens = linhas.map((l) => {
-    const e = estadoDoNo({ nivel: "item", codigo: l.codigo_item, codigo_grupo: l.codigo_grupo, codigo_classe: l.codigo_classe, codigo_pdm: l.codigo_pdm }, idx);
-    // atributos ainda não sincronizados (migration nova sem backfill): calcula da descrição, sem gravar
-    const tax = l.atributos.length > 0 || !l.descricao ? { nome_item: l.nome_item, atributos: l.atributos } : comTaxonomia(l.descricao);
-    return { ...l, nome_item: tax.nome_item ?? l.nome_item, atributos: tax.atributos ?? [], ...e };
-  });
-  return { codigo_pdm: codigoPdm, hidratado: itens.length > 0, itens };
 }
 
 /**

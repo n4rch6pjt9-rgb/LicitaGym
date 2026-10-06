@@ -299,13 +299,21 @@ async function aderenciaPorLicitacao(
  * PDMs excluídos ou fora do catálogo.
  */
 async function pdmsDoCatalogo(client: SupabaseClient): Promise<Set<number> | null> {
+  const pdms = new Set<number>();
   try {
-    const { data, error } = await client.rpc("catalogo_catmat_pdms_efetivos");
-    if (error || !Array.isArray(data)) {
-      console.warn("[api-dashboard-oportunidades] catálogo CATMAT indisponível para a aderência:", error ?? "resposta inválida");
-      return null;
+    // Em páginas: o max_rows do PostgREST (1000) cortaria em silêncio um catálogo com grupos/classes inteiros.
+    for (let de = 0; ; de += CATALOGO_PDMS_PAGINA) {
+      const { data, error } = await client
+        .rpc("catalogo_catmat_pdms_efetivos")
+        .order("codigo_pdm")
+        .range(de, de + CATALOGO_PDMS_PAGINA - 1);
+      if (error || !Array.isArray(data)) {
+        console.warn("[api-dashboard-oportunidades] catálogo CATMAT indisponível para a aderência:", error ?? "resposta inválida");
+        return null;
+      }
+      for (const r of data as Array<{ codigo_pdm: number | string }>) pdms.add(Number(r.codigo_pdm));
+      if (data.length < CATALOGO_PDMS_PAGINA) return pdms;
     }
-    return new Set((data as Array<{ codigo_pdm: number | string }>).map((r) => Number(r.codigo_pdm)));
   } catch (e) {
     console.warn("[api-dashboard-oportunidades] catálogo CATMAT indisponível para a aderência:", e instanceof Error ? e.message : String(e));
     return null;
@@ -520,6 +528,9 @@ export interface CatmatMatch {
 export interface CatmatMatchDetalhe extends CatmatMatch {
   itens: number[];
 }
+
+/** Página da leitura de catalogo_catmat_pdms_efetivos (= max_rows do PostgREST em supabase/config.toml). */
+export const CATALOGO_PDMS_PAGINA = 1000;
 
 /** Máximo de numero_item por entrada de catmat_match no get (em 04/10/2026, o maior grupo tinha 44). */
 export const MAX_ITENS_ADERENCIA = 50;

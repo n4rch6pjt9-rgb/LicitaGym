@@ -1,5 +1,5 @@
 import { assertEquals } from "jsr:@std/assert@1";
-import { handleRequest, ITENS_ADERENCIA_LOTE, MAX_ITENS_ADERENCIA } from "../../../supabase/functions/api-dashboard-oportunidades/index.ts";
+import { CATALOGO_PDMS_PAGINA, handleRequest, ITENS_ADERENCIA_LOTE, MAX_ITENS_ADERENCIA } from "../../../supabase/functions/api-dashboard-oportunidades/index.ts";
 import { applyLicitacaoFilters, type FilterableQuery } from "../../../supabase/functions/api-dashboard-oportunidades/query.ts";
 import { parseActionFromBody } from "../../../supabase/functions/api-dashboard-oportunidades/validation.ts";
 
@@ -15,14 +15,33 @@ function clientePorTabela(respostas: Record<string, { data: unknown; error?: unk
   const chamadas: Chamada[] = [];
   const rpc = (nome: string) => {
     chamadas.push({ tabela: `rpc:${nome}`, metodo: "rpc", args: [nome] });
-    const definida = respostas[`rpc:${nome}`];
-    if (definida) return Promise.resolve({ data: definida.data, error: definida.error ?? null });
-    if (nome === "catalogo_catmat_pdms_efetivos") {
-      const match = respostas.licitacao_match?.data;
-      const pdms = Array.isArray(match) ? [...new Set(match.map((m: { codigo_pdm: number }) => m.codigo_pdm))] : [];
-      return Promise.resolve({ data: pdms.map((codigo_pdm) => ({ codigo_pdm })), error: null });
-    }
-    return Promise.resolve({ data: null, error: { message: `rpc ${nome} sem resposta no teste` } });
+    let faixa: [number, number] | undefined;
+    const resposta = () => {
+      const definida = respostas[`rpc:${nome}`];
+      if (definida) {
+        const data = Array.isArray(definida.data) && faixa ? definida.data.slice(faixa[0], faixa[1] + 1) : definida.data;
+        return { data, error: definida.error ?? null };
+      }
+      if (nome === "catalogo_catmat_pdms_efetivos") {
+        const match = respostas.licitacao_match?.data;
+        const pdms = Array.isArray(match) ? [...new Set(match.map((m: { codigo_pdm: number }) => m.codigo_pdm))] : [];
+        return { data: pdms.map((codigo_pdm) => ({ codigo_pdm })), error: null };
+      }
+      return { data: null, error: { message: `rpc ${nome} sem resposta no teste` } };
+    };
+    const q: Record<string, unknown> = {
+      order: (...args: unknown[]) => {
+        chamadas.push({ tabela: `rpc:${nome}`, metodo: "order", args });
+        return q;
+      },
+      range: (de: number, ate: number) => {
+        chamadas.push({ tabela: `rpc:${nome}`, metodo: "range", args: [de, ate] });
+        faixa = [de, ate];
+        return q;
+      },
+      then: (ok: (v: unknown) => unknown, err?: (e: unknown) => unknown) => Promise.resolve(resposta()).then(ok, err),
+    };
+    return q;
   };
   const from = (tabela: string) => {
     const q: Record<string, unknown> = {};
@@ -148,6 +167,25 @@ Deno.test("get: aderência só mostra PDMs efetivos do catálogo (sem excluídos
   ]);
   // nomes lidos só dos PDMs que ficaram
   assertEquals(chamadas.filter((c) => c.tabela === "catmat_pdms" && c.metodo === "in").map((c) => c.args), [["codigo_pdm", [1400]]]);
+});
+
+Deno.test("get: catálogo com mais PDMs que o max_rows é lido em páginas (PDM da 2ª página não some)", async () => {
+  const total = CATALOGO_PDMS_PAGINA + 5;
+  const catalogo = Array.from({ length: total }, (_, i) => ({ codigo_pdm: i + 1 }));
+  const ultimo = total; // só aparece na 2ª página
+  const { cliente, chamadas } = clientePorTabela({
+    licitacoes_externas_prioridade_efetiva: { data: { id: 77, fonte: "pncp" } },
+    licitacao_match: { data: [{ licitacao_id: 77, codigo_pdm: ultimo, origem: "texto_objeto" }] },
+    "rpc:catalogo_catmat_pdms_efetivos": { data: catalogo },
+    catmat_pdms: { data: [{ codigo_pdm: ultimo, nome_pdm: "PDM FICTÍCIO" }] },
+  });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(post({ action: "get", id: 77 }), { ...autorizado, getClient: () => cliente as any });
+  assertEquals((await res.json()).item.catmat_match.map((m: { codigo_pdm: number }) => m.codigo_pdm), [ultimo]);
+  assertEquals(
+    chamadas.filter((c) => c.tabela === "rpc:catalogo_catmat_pdms_efetivos" && c.metodo === "range").map((c) => c.args),
+    [[0, CATALOGO_PDMS_PAGINA - 1], [CATALOGO_PDMS_PAGINA, 2 * CATALOGO_PDMS_PAGINA - 1]],
+  );
 });
 
 Deno.test("get: catálogo vazio ou ilegível deixa o detalhe sem aderência (nunca mostra PDM sem filtro)", async () => {

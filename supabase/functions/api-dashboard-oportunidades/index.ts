@@ -248,6 +248,7 @@ async function aderenciaPorLicitacao(
       console.warn("[api-dashboard-oportunidades] aderência do detalhe indisponível (licitacao_match):", error ?? "resposta inválida");
       return porLicitacao;
     }
+    if (data.length === 0) return porLicitacao;
     const noCatalogo = await pdmsDoCatalogo(client);
     if (noCatalogo === null) return porLicitacao;
     const linhas = (data as Array<{ licitacao_id: number; codigo_pdm: number; origem: string; item_id?: number | string | null }>)

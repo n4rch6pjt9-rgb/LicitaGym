@@ -10,7 +10,7 @@ import {
 } from "../_shared/http.ts";
 
 /**
- * api-saude: saúde operacional da ingestão (private.saude_operacional_resumo, migration 20261001100000).
+ * api-saude: saúde operacional da ingestão (public.saude_operacional_resumo → private, migration 20261007133000).
  *   POST {action: "resumo"} -> {status_geral, contagem, verificacoes[]}
  * Acesso: cron secret (workflow .github/workflows/saude.yml) ou usuário com app_metadata.licitagym_role = 'admin'.
  * Usuário comum: 403 (o detalhe traz mensagens de erro internas). Sem credencial: 401.
@@ -43,7 +43,8 @@ async function resumoDoBanco(): Promise<Verificacao[]> {
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   if (!url || !serviceKey) throw new Error("SUPABASE_URL ou SUPABASE_SERVICE_ROLE_KEY não configuradas");
   const client = createClient(url, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } });
-  const { data, error } = await client.schema("private").rpc("saude_operacional_resumo");
+  // public: o Data API não expõe o schema private ("Invalid schema: private").
+  const { data, error } = await client.rpc("saude_operacional_resumo");
   if (error) throw new Error(`saude_operacional_resumo: ${error.message}`);
   return (data ?? []) as Verificacao[];
 }

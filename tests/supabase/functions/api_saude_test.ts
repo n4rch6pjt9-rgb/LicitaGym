@@ -49,6 +49,12 @@ Deno.test("api-saude: método, corpo e ação inválidos; falha do banco vira 50
   assertEquals(JSON.stringify(await r.json()).includes("xyz"), false);
 });
 
+Deno.test("api-saude: o resumo não passa pelo schema private do PostgREST", async () => {
+  const src = await Deno.readTextFile("./supabase/functions/api-saude/index.ts");
+  assertEquals(src.includes('.schema("private")'), false);
+  assertEquals(src.includes('rpc("saude_operacional_resumo")'), true);
+});
+
 Deno.test("migration de saúde: tudo só service_role e função security definer com search_path fixo", async () => {
   const sql = await Deno.readTextFile("./supabase/migrations/20261001100000_saude_operacional.sql");
   assertEquals(sql.includes("revoke all on table private.saude_limiares from public, anon, authenticated;"), true);

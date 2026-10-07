@@ -62,4 +62,12 @@ Deno.test("migration de saúde: tudo só service_role e função security define
   assertEquals(/grant [^;]*to [^;]*\b(anon|authenticated)\b/i.test(sql), false);
   assertEquals(sql.includes("security definer") && sql.includes("set search_path = pg_catalog, pg_temp"), true);
   assertEquals(sql.includes("on conflict (verificacao) do nothing"), true, "não sobrescreve limiar editado");
+
+  const inv = await Deno.readTextFile("./supabase/migrations/20261007133000_saude_rpc_public.sql");
+  assertEquals(inv.includes("create or replace function public.saude_operacional_resumo()"), true);
+  assertEquals(inv.includes("from private.saude_operacional_resumo()"), true);
+  assertEquals(inv.includes("security definer") && inv.includes("set search_path = pg_catalog, private, pg_temp"), true);
+  assertEquals(inv.includes("revoke all on function public.saude_operacional_resumo() from public, anon, authenticated;"), true);
+  assertEquals(inv.includes("grant execute on function public.saude_operacional_resumo() to service_role;"), true);
+  assertEquals(/grant [^;]*to [^;]*\b(anon|authenticated)\b/i.test(inv), false);
 });

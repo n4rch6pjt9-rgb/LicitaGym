@@ -1,7 +1,8 @@
 # Saúde operacional (plano DevOps, Fase 3): a cada 30 min consulta a api-saude, o readiness da api-dashboard-oportunidades
 # e o Dashboard; com verificação crítica abre/atualiza a issue "alerta-operacional" (o GitHub avisa por e-mail) e a fecha
 # quando normaliza. Limiares: private.saude_limiares. Lógica: scripts/saude-alerta.sh (testável com DRY_RUN=1).
-# Pré-requisito: secret SAUDE_TOKEN = o mesmo valor de SYNC_CRON_SECRET das Edge Functions.
+# Pré-requisito: secret SAUDE_TOKEN = SYNC_CRON_SECRET das Edge Functions.
+# Secret SAUDE_APIKEY = chave publishable do projeto (header apikey). O Bearer sozinho é recusado pelo gateway.
 name: Saude operacional
 
 on:
@@ -36,9 +37,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           SAUDE_TOKEN: ${{ secrets.SAUDE_TOKEN }}
+          SAUDE_APIKEY: ${{ secrets.SAUDE_APIKEY }}
         run: |
           if [ -z "${SAUDE_TOKEN}" ]; then
             echo "::error::Secret SAUDE_TOKEN ausente (use o valor de SYNC_CRON_SECRET)."
+            exit 1
+          fi
+          if [ -z "${SAUDE_APIKEY}" ]; then
+            echo "::error::Secret SAUDE_APIKEY ausente (chave publishable do projeto, header apikey)."
             exit 1
           fi
           bash scripts/saude-alerta.sh

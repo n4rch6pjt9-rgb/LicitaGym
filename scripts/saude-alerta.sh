@@ -6,6 +6,8 @@
 # Entradas (env):
 #   SUPABASE_PROJECT  ref do projeto (padrão ifaiagegyicjzlpskafh)
 #   SAUDE_TOKEN       SYNC_CRON_SECRET (Bearer da api-saude)            — obrigatório sem SAUDE_JSON
+#   SAUDE_APIKEY      chave publishable (header apikey). Sem ela o gateway responde 500
+#                     apikey.authorization.error=invalid e a função nem executa.
 #   DASHBOARD_URL     padrão https://licitagym-dashboard.licitagym.workers.dev
 #   SAUDE_JSON        arquivo com a resposta da api-saude (pula as chamadas HTTP; para teste)
 #   DRY_RUN=1         só imprime o que faria no GitHub
@@ -23,9 +25,11 @@ if [ -n "${SAUDE_JSON:-}" ]; then
   cp "$SAUDE_JSON" "$TMP/saude.json"; HTTP_SAUDE=200; HTTP_READY="${HTTP_READY:-200}"; HTTP_DASH="${HTTP_DASH:-200}"
 else
   : "${SAUDE_TOKEN:?SAUDE_TOKEN (SYNC_CRON_SECRET) não configurado}"
+  : "${SAUDE_APIKEY:?SAUDE_APIKEY (chave publishable, header apikey) não configurada}"
   HTTP_SAUDE=$(curl -s -m 60 -o "$TMP/saude.json" -w '%{http_code}' -X POST "$FN/api-saude" \
-    -H "Authorization: Bearer ${SAUDE_TOKEN}" -H 'Content-Type: application/json' -d '{"action":"resumo"}' || echo 000)
-  HTTP_READY=$(curl -s -m 30 -o /dev/null -w '%{http_code}' "$FN/api-dashboard-oportunidades?action=readiness" || echo 000)
+    -H "apikey: ${SAUDE_APIKEY}" -H "Authorization: Bearer ${SAUDE_TOKEN}" -H 'Content-Type: application/json' -d '{"action":"resumo"}' || echo 000)
+  HTTP_READY=$(curl -s -m 30 -o /dev/null -w '%{http_code}' \
+    -H "apikey: ${SAUDE_APIKEY}" "$FN/api-dashboard-oportunidades?action=readiness" || echo 000)
   HTTP_DASH=$(curl -s -m 30 -o /dev/null -w '%{http_code}' "$DASH/" || echo 000)
 fi
 

@@ -2,6 +2,15 @@
 
 export const POSTGREST_PAGE_SIZE = 1000;
 
+/**
+ * Max values in one PostgREST `.in()` sent as GET.
+ * The list goes in the query string. 550 UUIDs are about 21 KB and Deno
+ * fetch throws `TypeError: error sending request` before any HTTP status
+ * (sync-pncp-orgaos, job 6, 2026-10-03 through 2026-10-07).
+ * 80 UUIDs stay near 3 KB.
+ */
+export const POSTGREST_IN_CHUNK = 80;
+
 export type PageResult<T> = {
   data: T[] | null;
   error: { message: string } | null;

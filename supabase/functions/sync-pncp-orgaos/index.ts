@@ -13,7 +13,7 @@ import { hashPayload, sha256Hex } from "../_shared/pncp/hash.ts";
 import {
   chunkValues,
   fetchAllByRange,
-  POSTGREST_PAGE_SIZE,
+  POSTGREST_IN_CHUNK,
 } from "../_shared/pncp/postgrest-paginate.ts";
 import { upsertByHash } from "../_shared/pncp/upsert.ts";
 
@@ -65,7 +65,7 @@ Deno.serve(async (req) => {
     ];
 
     const cnpjsSet = new Set<string>();
-    for (const idChunk of chunkValues(planIds, POSTGREST_PAGE_SIZE)) {
+    for (const idChunk of chunkValues(planIds, POSTGREST_IN_CHUNK)) {
       const { rows: planRows } = await fetchAllByRange<{ orgao_cnpj: string }>(
         (from, to) =>
           client

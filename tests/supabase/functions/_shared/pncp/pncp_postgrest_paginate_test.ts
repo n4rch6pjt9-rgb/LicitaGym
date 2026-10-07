@@ -5,6 +5,7 @@ import { assertEquals } from "jsr:@std/assert@1";
 import {
   chunkValues,
   fetchAllByRange,
+  POSTGREST_IN_CHUNK,
   POSTGREST_PAGE_SIZE,
 } from "../../../../../supabase/functions/_shared/pncp/postgrest-paginate.ts";
 
@@ -94,6 +95,24 @@ Deno.test("chunkValues splits large .in() lists", () => {
   assertEquals(chunks[2].length, 500);
 });
 
+function encodedInFilter(values: readonly string[]): number {
+  const list = values.map((value) => encodeURIComponent(value)).join("%2C");
+  return encodeURIComponent("(").length + list.length + encodeURIComponent(")").length;
+}
+
+Deno.test("POSTGREST_IN_CHUNK keeps a UUID .in() under the GET limit that broke job 6", () => {
+  const uuid = "ab8e2780-eb91-415f-8830-24fd4a0ab5e0";
+  const planos = Array.from({ length: 550 }, () => uuid);
+  const chunks = chunkValues(planos, POSTGREST_IN_CHUNK);
+  assertEquals(chunks.length, 7);
+  assertEquals(chunks[0].length, POSTGREST_IN_CHUNK);
+  assertEquals(chunks[6].length, 70);
+  for (const chunk of chunks) {
+    assertEquals(encodedInFilter(chunk) < 8000, true);
+  }
+  assertEquals(encodedInFilter(planos) > 8000, true);
+});
+
 Deno.test("orgaos sync source uses fetchAllByRange with stable order", async () => {
   const src = await Deno.readTextFile(
     "supabase/functions/sync-pncp-orgaos/index.ts",
@@ -103,6 +122,11 @@ Deno.test("orgaos sync source uses fetchAllByRange with stable order", async () 
   assertEquals(src.includes('.order("id")'), true);
   assertEquals(src.includes('orderBy: "id"'), true);
   assertEquals(src.includes("async (from, to)"), false);
+  assertEquals(src.includes("POSTGREST_IN_CHUNK"), true);
+  assertEquals(src.includes("chunkValues(planIds, POSTGREST_PAGE_SIZE)"), false);
+  assertEquals(src.includes("lastSeenSyncId"), false);
+  assertEquals(src.includes("cnpj.slice"), false);
+  assertEquals(src.includes("stats.erros++"), true);
 });
 
 Deno.test("catmat-scope-resolver pages with stable order keys", async () => {

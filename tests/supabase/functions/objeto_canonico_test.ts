@@ -378,7 +378,8 @@ Deno.test("get: view sem as colunas do objeto (função publicada antes da migra
       const q: Record<string, unknown> = {};
       for (const m of ["eq", "in", "order", "limit"]) q[m] = () => q;
       q.select = (cols: string) => {
-        if (tabela !== "licitacao_match") selects.push(cols);
+        // Só a view importa aqui; o get também lê licitacao_match e, desde o #269, portal_consulta e pipeline.
+        if (tabela === "licitacoes_externas_prioridade_efetiva") selects.push(cols);
         return q;
       };
       q.maybeSingle = () => {

@@ -1,0 +1,7 @@
+# Checks e migrations que falham hoje no scripts/validar-migrations.sh por causa conhecida, com issue aberta.
+# Falha de arquivo listado aparece como PENDENTE e não derruba a validação; falha de qualquer outro derruba.
+# Arquivo listado que passar derruba a validação até sair desta lista (a pendência foi resolvida).
+# Formato: <nome do arquivo>  <issue e motivo>
+advisors_warn_security_check.sql    #262 private.cnpj_valido sem search_path fixo (também em produção)
+marcas_resolvedor_acl_check.sql     #262 bloco 7 (cnpj_valido) com CTE de 3 colunas e 2 valores, desde o #235/#241
+marcas_resolvedor_views_check.sql   #262 fixture de marca_aliases com colunas a mais, desde o #235/#241

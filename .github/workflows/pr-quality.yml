@@ -1,16 +1,24 @@
-# Gate de qualidade em PRs — Deno (Edge) + pytest (collectors).
-# Qualquer erro de typecheck, teste Deno ou pytest falha o job.
-# Nenhum passo é condicional: sem testes descobertos, o job falha.
+# Gate de qualidade em PRs: typecheck, lint, testes e migrations.
+# Qualquer erro derruba o job. Os mesmos scripts rodam no pre-commit (.githooks/pre-commit) e à mão.
+#   deno-edge          deno check de todas as funções (pendências conhecidas em .github/ci/deno-check-pendentes.txt)
+#                      + deno test tests/supabase
+#   lint               deno lint / ruff só nos arquivos alterados (scripts/ci/lint-alterados.sh)
+#   migrations         scripts/validar-migrations.sh: Postgres 17 descartável, todas as migrations, reaplicação das
+#                      novas (idempotência) e todos os supabase/tests/*_check.sql (pendências em supabase/tests/pendentes.txt)
+#   python-*           pytest
+#   hook-agente        casos do .claude/hooks/bloquear-destrutivo.mjs
+# Nenhum job usa segredo nem fala com o Supabase de produção.
 
 name: PR Quality
 
 permissions:
   contents: read
 
-# Desativado em 06/10/2026: o GitHub Actions não aloca runner para este repositório (jobs terminam em ~3 s,
-# sem log) e a validação passou para o Supabase. Só roda manualmente (Actions → PR Quality → Run workflow).
-# Para reativar, volte os gatilhos pull_request e push (branches: [main]).
+# Religado em 08/10/2026 (estava só em workflow_dispatch desde 06/10 por falta de runner).
 on:
+  pull_request:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -19,8 +27,9 @@ concurrency:
 
 jobs:
   deno-edge:
-    name: Deno check + PNCP tests
+    name: Deno check (todas as funções) + testes
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
         with:
@@ -30,45 +39,75 @@ jobs:
         with:
           deno-version: v2.x
 
-      - name: Typecheck PNCP shared modules and importers
-        run: |
-          set -euo pipefail
-          deno check \
-            supabase/functions/_shared/pncp/pagination-budget.ts \
-            supabase/functions/_shared/pncp/catmat-scope-resolver.ts \
-            supabase/functions/_shared/pncp/lock.ts \
-            supabase/functions/_shared/pncp/licitagym-catmat.ts \
-            supabase/functions/_shared/pncp/licitagym-scope-gate.ts \
-            supabase/functions/_shared/pncp/upsert.ts \
-            supabase/functions/_shared/pncp/retry.ts \
-            supabase/functions/_shared/pncp/consulta-client.ts \
-            supabase/functions/_shared/pncp/search-client.ts \
-            supabase/functions/sync-pncp-pca/index.ts \
-            supabase/functions/sync-pncp-contratacoes-editais/index.ts \
-            supabase/functions/sync-pncp-contratacoes-atas/index.ts \
-            supabase/functions/sync-pncp-contratacoes-contratos/index.ts \
-            supabase/functions/sync-pncp-orgaos/index.ts \
-            supabase/functions/link-catmat-pca/index.ts \
-            supabase/functions/sync-compras-catmat/index.ts \
-            supabase/functions/_shared/edital-url.ts \
-            supabase/functions/api-dashboard-oportunidades/acompanhamento.ts \
-            supabase/functions/api-dashboard-oportunidades/index.ts \
-            supabase/functions/api-catmat/index.ts \
-            supabase/functions/api-fornecedores-homologados/index.ts \
-            supabase/functions/api-saude/index.ts
+      - name: Typecheck de todos os entrypoints
+        run: scripts/ci/deno-check-funcoes.sh
 
       # deno test descobre *_test.ts / *.test.ts e já faz typecheck dos testes.
       # Sem --allow-net: teste que tente rede real falha (suíte determinística).
       - name: Deno tests (tests/supabase)
         env:
           NO_COLOR: "1"
+        run: deno test tests/supabase --allow-read --allow-write --allow-env --no-prompt --reporter=dot
+
+  lint:
+    name: Lint dos arquivos alterados
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Instalar ruff
+        run: python -m pip install "ruff==0.16.8"
+
+      - name: deno lint + ruff nos arquivos do PR
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           set -euo pipefail
-          deno test tests/supabase --allow-read --allow-write --allow-env --no-prompt --reporter=dot
+          if [ -z "${BASE_SHA}" ] || ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            BASE_SHA="$(git rev-parse HEAD~1)"
+          fi
+          echo "base: ${BASE_SHA}"
+          git diff --name-only --diff-filter=ACMR "${BASE_SHA}" HEAD | scripts/ci/lint-alterados.sh -
+
+  migrations:
+    name: Migrations (Postgres 17 descartável)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Baixar a imagem do Postgres
+        run: docker pull pgvector/pgvector:pg17
+
+      - name: validar-migrations (aplica tudo, reaplica as novas, roda os checks)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BASE_SHA}" ] || ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            BASE_SHA="$(git rev-parse HEAD~1)"
+          fi
+          scripts/validar-migrations.sh "${BASE_SHA}"
 
   python-tests:
-    name: pytest (collectors)
+    name: pytest (scripts)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
         with:
@@ -81,13 +120,14 @@ jobs:
       - name: Install root test deps
         run: python -m pip install -r requirements-dev.txt
 
-      # Só scripts/collectors da raiz — sem duplicatas do coletor-externo.
+      # Só scripts/collectors da raiz, sem duplicatas do coletor-externo.
       - name: Run pytest (tests/)
         run: pytest tests/ -q --tb=short
 
   python-coletor-externo:
     name: pytest (coletor-externo)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: services/coletor-externo
@@ -105,3 +145,19 @@ jobs:
 
       - name: Run pytest (coletor-externo)
         run: python -m pytest -q --tb=short
+
+  hook-agente:
+    name: Hook bloquear-destrutivo (casos)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Casos do hook
+        run: node .claude/hooks/bloquear-destrutivo.test.mjs

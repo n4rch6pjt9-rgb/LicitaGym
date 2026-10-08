@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Pre-commit do LicitaGym: lint e testes afetados só pelos arquivos do commit (meta: < 30 s).
+#   1. lint dos arquivos staged           (scripts/ci/lint-alterados.sh)
+#   2. deno check das funções tocadas     (scripts/ci/deno-check-funcoes.sh; _shared tocado = todas)
+#   3. deno test dos testes afetados      (testes staged + testes que citam a função ou o módulo _shared)
+#   4. pytest dos testes afetados         (testes staged + test_<modulo>*.py do pacote)
+#   5. migration staged: lembra de rodar scripts/validar-migrations.sh (Docker, ~1,5 min; a CI roda)
+# Ferramenta ausente (deno, ruff, python) vira aviso, não bloqueio; a CI roda tudo de novo.
+# Instalar: git config core.hooksPath .githooks      Pular uma vez: git commit --no-verify
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)"
+inicio=$(date +%s); rc=0
+mapfile -t ARQS < <(git diff --cached --name-only --diff-filter=ACMR)
+[ "${#ARQS[@]}" -eq 0 ] && exit 0
+tem() { command -v "$1" >/dev/null 2>&1 || { echo "aviso: $1 não instalado, etapa pulada"; return 1; }; }
+PY=python3; command -v python3 >/dev/null 2>&1 || PY=python
+
+echo "[pre-commit] 1/4 lint"
+PULAR_SEM_FERRAMENTA=1 scripts/ci/lint-alterados.sh "${ARQS[@]}" || rc=1
+
+# Funções e módulos _shared tocados; testes Deno afetados.
+FUNCOES=(); SHARED=0; DT=()
+for a in "${ARQS[@]}"; do
+  case "$a" in
+    supabase/functions/_shared/*) SHARED=1; DT+=($(grep -rlF "${a#supabase/functions/}" tests/supabase 2>/dev/null)) ;;
+    supabase/functions/*/*) fn="${a#supabase/functions/}"; fn="${fn%%/*}"; FUNCOES+=("$fn")
+      DT+=($(grep -rlE "functions/$fn/" tests/supabase 2>/dev/null)) ;;
+    tests/supabase/*_test.ts|tests/supabase/*.test.ts) DT+=("$a") ;;
+  esac
+done
+if [ "${#FUNCOES[@]}" -gt 0 ] || [ "$SHARED" -eq 1 ]; then
+  echo "[pre-commit] 2/4 deno check"
+  if tem deno; then
+    if [ "$SHARED" -eq 1 ]; then scripts/ci/deno-check-funcoes.sh >/tmp/lg-precommit-check.log 2>&1 || { cat /tmp/lg-precommit-check.log; rc=1; }
+    else scripts/ci/deno-check-funcoes.sh $(printf '%s\n' "${FUNCOES[@]}" | sort -u) || rc=1; fi
+  fi
+fi
+if [ "${#DT[@]}" -gt 0 ]; then
+  mapfile -t DT < <(printf '%s\n' "${DT[@]}" | grep -E '(_test|\.test)\.ts$' | sort -u)
+  if [ "${#DT[@]}" -gt 0 ]; then
+    echo "[pre-commit] 3/4 deno test (${#DT[@]} arquivo(s))"
+    tem deno && { NO_COLOR=1 deno test --allow-read --allow-write --allow-env --no-prompt --reporter=dot "${DT[@]}" || rc=1; }
+  fi
+fi
+
+# pytest: raiz (scripts/ -> tests/) e coletor-externo (coletor/ -> services/coletor-externo/tests/).
+RAIZ_T=(); COL_T=()
+for a in "${ARQS[@]}"; do
+  case "$a" in
+    tests/test_*.py) RAIZ_T+=("$a") ;;
+    services/coletor-externo/tests/test_*.py) COL_T+=("${a#services/coletor-externo/}") ;;
+    services/coletor-externo/coletor/*.py) m=$(basename "$a" .py)
+      for t in services/coletor-externo/tests/test_"$m"*.py; do [ -f "$t" ] && COL_T+=("${t#services/coletor-externo/}"); done ;;
+    scripts/*.py) m=$(basename "$a" .py); RAIZ_T+=($(grep -lwE "$m" tests/test_*.py 2>/dev/null)) ;;
+  esac
+done
+if [ "${#RAIZ_T[@]}" -gt 0 ] || [ "${#COL_T[@]}" -gt 0 ]; then
+  echo "[pre-commit] 4/4 pytest"
+  if ! "$PY" -c "import pytest" >/dev/null 2>&1; then echo "aviso: pytest não instalado para $PY, etapa pulada"
+  else
+    [ "${#RAIZ_T[@]}" -gt 0 ] && { "$PY" -m pytest -q --tb=short $(printf '%s\n' "${RAIZ_T[@]}" | sort -u) || rc=1; }
+    [ "${#COL_T[@]}" -gt 0 ] && { (cd services/coletor-externo && "$PY" -m pytest -q --tb=short $(printf '%s\n' "${COL_T[@]}" | sort -u)) || rc=1; }
+  fi
+fi
+
+if printf '%s\n' "${ARQS[@]}" | grep -qE '^supabase/(migrations/2|tests/).*\.sql$'; then
+  echo "[pre-commit] migration/checagem SQL no commit: rode scripts/validar-migrations.sh antes do PR (a CI roda)."
+fi
+echo "[pre-commit] $(( $(date +%s) - inicio )) s"
+[ "$rc" -eq 0 ] || echo "[pre-commit] falhou. Corrija, ou pule só desta vez com git commit --no-verify."
+exit "$rc"

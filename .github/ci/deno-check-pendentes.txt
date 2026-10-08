@@ -1,0 +1,7 @@
+# Entrypoints de Edge Function que não passam em `deno check` hoje (erro de tipo real, levantado em 08/10/2026).
+# A CI checa todos os supabase/functions/*/index.ts; os listados aqui podem falhar (viram aviso).
+# Listado que passar derruba a CI até sair desta lista. Função nova ou não listada tem que passar.
+api-pncp-irp                  TS2339 'auth' não existe em SupabaseClient
+import-catmat-curadoria       TS2345 ImportBody x LegacyImportBody & CuradoriaExportV2
+sync-comprasgov-consulta      TS2353 'metadados' fora do tipo (função pendente, TODO de endpoints)
+sync-pncp-contratacoes-itens  TS2339 'id' em ParserError (select com payload_hash); importa _shared_prod

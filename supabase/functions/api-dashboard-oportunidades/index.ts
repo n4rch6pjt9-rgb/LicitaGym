@@ -13,7 +13,6 @@ import { parseActionFromBody, parseActionFromUrl } from "./validation.ts";
 import { applyLicitacaoFilters, applyOportunidadesScope, calculateRange } from "./query.ts";
 import { buildEditalUrl } from "../_shared/edital-url.ts";
 import { handleAcompanhamento } from "./acompanhamento.ts";
-import { anexarAlertaPortal } from "./portal.ts";
 import type { UnifiedHttpClient } from "../_shared/http-client/index.ts";
 
 /**
@@ -399,9 +398,8 @@ async function handleGet(
         ...itemRecord,
         url_edital: buildEditalUrl(itemRecord),
       }, await aderenciaPorLicitacao(client, [Number(itemRecord.id)]));
-      const [itemComPortal] = await anexarAlertaPortal(client, [itemWithUrl]);
 
-      return jsonResponse({ item: itemComPortal });
+      return jsonResponse({ item: itemWithUrl });
     }
 
     // Caso 2: Busca única por codigo_externo + fonte
@@ -439,9 +437,8 @@ async function handleGet(
         ...itemRecord,
         url_edital: buildEditalUrl(itemRecord),
       }, await aderenciaPorLicitacao(client, [Number(itemRecord.id)]));
-      const [itemComPortal] = await anexarAlertaPortal(client, [itemWithUrl]);
 
-      return jsonResponse({ item: itemComPortal });
+      return jsonResponse({ item: itemWithUrl });
     }
 
     // Caso 3: Busca por par órgão + processo (1..N compras/certames do mesmo processo administrativo) paginada
@@ -473,10 +470,10 @@ async function handleGet(
 
       const rawItems = (data ?? []) as unknown as Array<Record<string, unknown>>;
       const ader = await aderenciaPorLicitacao(client, rawItems.map((r) => Number(r.id)));
-      const items = await anexarAlertaPortal(client, rawItems.map((row) => comAderencia({
+      const items = rawItems.map((row) => comAderencia({
         ...row,
         url_edital: buildEditalUrl(row),
-      }, ader)));
+      }, ader));
       const total = count;
       if (total === 0 && items.length === 0) {
         return jsonResponse(
@@ -730,11 +727,11 @@ async function handleList(
     }
 
     const rawItems = (data ?? []) as unknown as Array<Record<string, unknown>>;
-    const items = await anexarAlertaPortal(client, rawItems.map((row) => ({
+    const items = rawItems.map((row) => ({
       ...row,
       url_edital: buildEditalUrl(row),
       ...(matches ? { catmat_match: matches.get(Number(row.id)) ?? [] } : {}),
-    })));
+    }));
 
     return jsonResponse({
       action: "list",

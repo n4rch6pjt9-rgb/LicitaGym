@@ -1,5 +1,3 @@
-import type { PortalSecao } from "../_shared/portal-compras.ts";
-
 export interface LicitacaoFiltros {
   /** leads | monitorar (efetiva, da view). `historico` responde vazio: não é Oportunidade (é do BI). */
   prioridade?: string;
@@ -75,8 +73,6 @@ export interface ObjetoCategoriasActionParams {
 export interface AcompanhamentoActionParams {
   action: "acompanhamento";
   id: number | string;
-  /** true só dispara a API do portal se a licitação está no pipeline. */
-  atualizar?: boolean;
 }
 
 export type ActionParams =
@@ -195,6 +191,5 @@ export type AcompanhamentoResponse =
     atas: AcompanhamentoSection<AtaAcompanhamento[]> & { total: number };
     historico: AcompanhamentoSection<HistoricoEvento[]> & { total: number };
     arquivos: AcompanhamentoSection<ArquivoAcompanhamento[]> & { total: number };
-    portal: PortalSecao | null;
   };
 

@@ -1621,9 +1621,9 @@ Deno.test("get por id de uma compra historico devolve 200 com a prioridade efeti
   const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
   assertEquals(res.status, 200);
   assertEquals((await res.json()).item.prioridade, "historico");
-  // a aderência do detalhe e o alerta do portal são leituras extras; a licitação vem só da view
+  // a aderência do detalhe (licitacao_match/catmat_pdms) é uma leitura extra; a licitação vem só da view
   assertEquals(
-    mockClient.calls.filter((c) => c.method === "from" && !["licitacao_match", "catmat_pdms", "licitacoes_externas", "portal_consulta", "pipeline_oportunidades"].includes(c.args[0] as string)),
+    mockClient.calls.filter((c) => c.method === "from" && !["licitacao_match", "catmat_pdms"].includes(c.args[0] as string)),
     [{ method: "from", args: [OPORTUNIDADES_VIEW] }],
   );
   assertEquals(mockClient.calls.some((c) => c.method === "or"), false);
@@ -1644,9 +1644,9 @@ Deno.test("get por codigo_externo e por orgao_cnpj + processo_norm leem a view, 
     // deno-lint-ignore no-explicit-any
     const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
     assertEquals(res.status, 200, qs);
-    // a aderência do detalhe e o alerta do portal são leituras extras; a licitação vem só da view
+    // a aderência do detalhe (licitacao_match/catmat_pdms) é uma leitura extra; a licitação vem só da view
     assertEquals(
-      mockClient.calls.filter((c) => c.method === "from" && !["licitacao_match", "catmat_pdms", "licitacoes_externas", "portal_consulta", "pipeline_oportunidades"].includes(c.args[0] as string)),
+      mockClient.calls.filter((c) => c.method === "from" && !["licitacao_match", "catmat_pdms"].includes(c.args[0] as string)),
       [{ method: "from", args: [OPORTUNIDADES_VIEW] }],
     );
     assertEquals(mockClient.calls.some((c) => c.method === "or"), false);
@@ -1705,7 +1705,7 @@ Deno.test("CATMAT: 1200 historico + 300 atuais não dá 422; lista só as atuais
   const inPrincipal = mockClient.calls.find((c) => c.method === "in" && c.args[0] === "id");
   assertEquals((inPrincipal?.args[1] as number[]).length, 300);
   assertEquals(Math.min(...(inPrincipal?.args[1] as number[])), 1201);
-  assertEquals(mockClient.calls.filter((c) => c.method === "from").map((c) => c.args[0]).filter((t) => t !== "catmat_pdms" && t !== "licitacoes_externas" && t !== "portal_consulta" && t !== "pipeline_oportunidades").every((t) => t === OPORTUNIDADES_VIEW), true);
+  assertEquals(mockClient.calls.filter((c) => c.method === "from").map((c) => c.args[0]).filter((t) => t !== "catmat_pdms").every((t) => t === OPORTUNIDADES_VIEW), true);
 });
 
 Deno.test("CATMAT: mais de 1000 atuais depois do escopo continua 422 (com a contagem de oportunidades)", async () => {

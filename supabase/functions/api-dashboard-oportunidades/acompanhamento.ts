@@ -1,7 +1,6 @@
 import { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { errorDetail, jsonResponse } from "../_shared/http.ts";
 import { buildAcompanhamentoUrl, buildEditalUrl, buildPncpEditalUrl } from "../_shared/edital-url.ts";
-import { secaoPortal } from "./portal.ts";
 import { UnifiedHttpClient } from "../_shared/http-client/index.ts";
 import type {
   AcompanhamentoActionParams,
@@ -568,7 +567,6 @@ export const ACOMPANHAMENTO_LICITACAO_COLUMNS: readonly string[] = [
   "processo_norm",
   "numero_edital",
   "orgao_cnpj",
-  "link_sistema_origem",
   "raw",
 ];
 
@@ -623,11 +621,13 @@ export async function handleAcompanhamento(
     // 3. Verifica Cache em memória (~5 minutos)
     const cacheKey = `${pncpKey.cnpj}/${pncpKey.ano}/${pncpKey.sequencial}`;
     const cached = getCachedAcompanhamento(cacheKey);
+    if (cached) {
+      return jsonResponse(cached, 200, {
+        "Cache-Control": "private, max-age=300",
+      });
+    }
 
-    let payload: AcompanhamentoResponse;
-    if (cached && cached.disponivel) {
-      payload = cached;
-    } else {
+    // 4. Instancia cliente HTTP
     // Host lease usa private.acquire_http_slot via client.schema("private").rpc(...).
     const hasPrivateRpc = typeof client.rpc === "function" && typeof client.schema === "function";
     const httpClient = ctx?.httpClient ?? new UnifiedHttpClient({
@@ -673,12 +673,10 @@ export async function handleAcompanhamento(
     const urlEdital = buildEditalUrl(row) ?? buildPncpEditalUrl(pncpKey.cnpj, pncpKey.ano, pncpKey.sequencial);
     // linkSistemaOrigem não é coluna de licitacoes_externas: vem do PNCP (compra)
     // ou do payload `raw`, lido apenas server-side (raw nunca é devolvido).
-    const rawLinkOrigem = (typeof row.link_sistema_origem === "string" ? row.link_sistema_origem : null) ??
-      compraSection.dados?.linkSistemaOrigem ??
-      linkSistemaOrigemFromRaw(row.raw);
+    const rawLinkOrigem = compraSection.dados?.linkSistemaOrigem ?? linkSistemaOrigemFromRaw(row.raw);
     const urlAcompanhamento = buildAcompanhamentoUrl(rawLinkOrigem);
 
-    payload = {
+    const payload: AcompanhamentoResponse = {
       disponivel: true,
       id: row.id as number | string,
       pncp: {
@@ -695,20 +693,12 @@ export async function handleAcompanhamento(
       atas: atasSection,
       historico: historicoSection,
       arquivos: arquivosSection,
-      portal: null,
     };
 
+    // 7. Salva no cache em memória
     setCachedAcompanhamento(cacheKey, payload);
-    }
 
-    const linkPortal = (typeof row.link_sistema_origem === "string" ? row.link_sistema_origem : null) ??
-      (payload.disponivel ? payload.compra.dados?.linkSistemaOrigem : null) ??
-      linkSistemaOrigemFromRaw(row.raw);
-    const portal = payload.disponivel
-      ? await secaoPortal(client, Number(row.id), linkPortal, params.atualizar === true)
-      : null;
-
-    return jsonResponse(payload.disponivel ? { ...payload, portal } : payload, 200, {
+    return jsonResponse(payload, 200, {
       "Cache-Control": "private, max-age=300",
     });
   } catch (err: unknown) {

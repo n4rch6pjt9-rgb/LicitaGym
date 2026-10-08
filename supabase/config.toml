@@ -155,7 +155,3 @@ verify_jwt = false
 # analyze-public-material (prod v5): verify_jwt = true em prod (gateway) + auth.getUser no código
 [functions.analyze-public-material]
 verify_jwt = true
-
-# sync-portal-compras (issue #266): Bearer SYNC_CRON_SECRET validado no código. Uma vez por dia.
-[functions.sync-portal-compras]
-verify_jwt = false

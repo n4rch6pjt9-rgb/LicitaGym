@@ -91,20 +91,31 @@ Itens com **CONFIRMAR** foram inferidos do código e ainda não foram validados 
   CATMAT núcleo 78/7830, extensão curada 72/7220, sem misturar automaticamente.
 - **Classificação de equipamento:** Musculação, Cárdio ou Acessórios; determinística, idempotente e editável à mão.
 - **Pisos de borracha:** SBR/EPDM (academia, crossfit, playground) = prioridade alta; piso modular PP/TPE = sinal de
-  concorrente. **CONFIRMAR** se a taxonomia `pisos-0.2` continua a vigente.
-- **Mesma compra no PNCP:** linhas com `(orgao_cnpj, processo_norm, numero_edital)` iguais são uma compra só
-  (`licitacoes_pncp_canonica`). **CONFIRMAR** que vale para todas as modalidades, não só para os 11 casos que a motivaram.
-- **Regulamento:** Lei 14.133 (PNCP) e regulamentos próprios do Sistema S (RLC/RCA). **CONFIRMAR** se há prazo ou
-  regra de fase diferente por regulamento que o produto deva tratar.
+  concorrente.
+- **Taxonomia:** a fonte da verdade hoje são os JSON `services/coletor-externo/coletor/data/taxonomia-pisos-v0.2.json`
+  e `dicionario-aparelhos-v0.3.json`; o banco recebe cópia por migration, sem histórico de versão, e
+  `catalogo_itens.taxonomias` mistura atributo oficial do CATMAT com curadoria. Não gravar campo derivado nesse jsonb
+  nem mudar taxonomia sem migration; o redesenho (oficial × curadoria, versão, diff idempotente) é a issue #272.
+- **Mesma compra no PNCP:** a mesma compra publicada duas vezes (sistema do órgão + plataforma, ou republicação)
+  ganha dois números de controle. A view `licitacoes_pncp_canonica` trata como uma só as linhas com
+  `(orgao_cnpj, processo_norm, numero_edital)` iguais (ano e modalidade estão no `numero_edital`) e mostra a de prazo
+  mais recente; nada é apagado. **CONFIRMAR** como regra de produto (hoje são 11 grupos de 2).
+- **Regulamento:** PNCP segue a Lei 14.133; o Sistema S tem regulamento próprio (RLC antigo, RCA desde 2025). A coluna
+  `regulamento` está NULL em todas as linhas e nenhuma regra (status, prazo, prioridade, tarefas) a usa; o catálogo de
+  tarefas cobre só a 14.133. **CONFIRMAR** se o Sistema S precisa de fase, prazo ou tarefa própria.
 - **Preço, marca e fornecedor** vêm só de compra homologada e aparecem só no BI. Cálculo financeiro é determinístico,
   com regra de arredondamento escrita.
 - **Pipeline:** entra só pela ação explícita "Enviar para pipeline"; descartar exige motivo.
 - **Habilitação (tenant):** documento sem validade informada vale emissão + 90 dias (marcado como calculado);
-  certidão de falência e balanço não são sanáveis. **CONFIRMAR** os 90 dias como padrão de produto.
+  certidão de falência e balanço não são sanáveis. Os 90 dias são decisão de produto.
 - **Papéis:** admin da plataforma = `app_metadata.licitagym_role = 'admin'`; dentro do tenant, `admin` ou `operacao`
   (`operacao` não vê dados bancários).
-- **Tabela com RLS e sem policy** (33 em `public`) é intencional: o cliente não lê direto, só via Edge Function.
-  **CONFIRMAR** que nenhuma delas deveria ser lida pelo Dashboard com o JWT do usuário.
+- **Tabela com RLS e sem policy** (33 em `public`) é intencional: o cliente não lê direto, só via Edge Function
+  (validado em 08/10: nenhuma tem grant a `authenticated`, o Dashboard não lê nenhuma direto).
+- **Tenants em construção, desligados na prática** (1 empresa ativa, 0 membros, pipeline vazio). Antes de ligar:
+  todo `service_role` que lê tabela com `tenant_id` filtra por tenant (hoje `api-dashboard-oportunidades/portal.ts` e
+  `sync-portal-compras` leem `pipeline_oportunidades` sem filtro); vínculo com empresa inativa não pode cair em outra
+  (#263); `api-pipeline` passa a respeitar o papel `admin`/`operacao`; teste com duas empresas e dois usuários.
 
 ## O que o agente NÃO faz
 - Não altera schema, ACL ou dado de produção fora de migration versionada + PR (nem pelo MCP, nem por SQL avulso).

@@ -10,7 +10,7 @@ import { parseActionFromBody } from "./validation.ts";
  *   Leitura e movimentação (etapas_listar, pipeline_listar/estado/historico, pipeline_adicionar/mover/remover):
  *   qualquer usuário autenticado. Configuração das etapas (etapa_criar/atualizar/excluir): só
  *   app_metadata.licitagym_role = 'admin'. O banco é acessado com service_role; o JWT só identifica e autoriza.
- *   O pipeline é do tenant (equipe); hoje há um tenant ativo e o usuário ainda não é ligado a empresa.
+ *   O pipeline é do tenant. tenant_membros liga o usuário; sem vínculo, só vale se houver uma empresa ativa.
  */
 
 export interface ApiPipelineContext {

@@ -6,7 +6,7 @@ cada entrada, mudança e saída. Etapas configuráveis por admin; as 13 do Kanba
 
 - `POST`, JWT do Supabase Auth no `Authorization` (validado no código; `verify_jwt = false` no `config.toml`).
 - Banco com `service_role`; tabelas e funções fechadas para `anon`/`authenticated`.
-- Tenant: hoje o único ativo (o banco ainda não liga usuário a empresa). Com mais de um ativo, responde 409.
+- Tenant: `tenant_membros` (papel `admin` ou `operacao`). Sem vínculo, só resolve se houver uma empresa ativa. Com duas empresas ativas e sem vínculo, responde 409.
 
 | action | quem | corpo | resposta |
 |---|---|---|---|

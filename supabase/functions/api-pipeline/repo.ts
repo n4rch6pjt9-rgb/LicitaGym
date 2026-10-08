@@ -17,8 +17,21 @@ export class ErroPipeline extends Error {
   }
 }
 
+/**
+ * Um vínculo ativo manda. Sem vínculo, só resta o único tenant ativo (a Konnen, até ligarem os usuários).
+ * Dois vínculos, ou duas empresas ativas sem vínculo, recusam.
+ */
+export function resolverTenant(ligados: number[], ativos: number[]): number {
+  const unicos = [...new Set(ligados)];
+  if (unicos.length > 1) throw new ErroPipeline("Usuário ligado a mais de uma empresa.", 409);
+  if (unicos.length === 1) return unicos[0];
+  if (ativos.length === 1) return ativos[0];
+  if (ativos.length === 0) throw new ErroPipeline("Nenhuma empresa ativa cadastrada.", 409);
+  throw new ErroPipeline("Há mais de uma empresa cadastrada e o usuário ainda não está ligado a uma.", 409);
+}
+
 export interface PipelineRepo {
-  /** Tenant do usuário. Hoje: o único tenant ativo (o banco ainda não liga usuário a empresa). */
+  /** Tenant do usuário. Vínculo em tenant_membros; sem vínculo, só se houver uma empresa ativa. */
   tenantDoUsuario(userId: string): Promise<number>;
   listarEtapas(tenant: number): Promise<EtapaComTotal[]>;
   /** Até LIMITE_LISTA itens, mais recentes primeiro; `truncado` avisa quando havia mais. */
@@ -44,14 +57,22 @@ function traduzir(error: { code?: string; message?: string } | null): never {
 
 export function createSupabaseRepo(client: SupabaseClient): PipelineRepo {
   return {
-    async tenantDoUsuario(_userId) {
-      const { data, error } = await client.from("tenants").select("id").eq("ativo", true).order("id").limit(2);
+    async tenantDoUsuario(userId) {
+      const { data: membros, error } = await client
+        .from("tenant_membros")
+        .select("tenant_id")
+        .eq("user_id", userId)
+        .eq("ativo", true);
       if (error) throw new Error(error.message);
-      if (!data || data.length === 0) throw new ErroPipeline("Nenhuma empresa ativa cadastrada.", 409);
-      if (data.length > 1) {
-        throw new ErroPipeline("Há mais de uma empresa cadastrada e o usuário ainda não está ligado a uma.", 409);
-      }
-      return data[0].id as number;
+      const ligados = (membros ?? []).map((r) => Number(r.tenant_id));
+      const { data: ativos, error: erroAtivos } = await client
+        .from("tenants")
+        .select("id")
+        .eq("ativo", true)
+        .order("id")
+        .limit(2);
+      if (erroAtivos) throw new Error(erroAtivos.message);
+      return resolverTenant(ligados, (ativos ?? []).map((r) => Number(r.id)));
     },
 
     async listarEtapas(tenant) {

@@ -9,10 +9,12 @@
 -- O que confere:
 --   objetos:  tenants, catalogo_precos, catalogo_de_para e v_catalogo_viabilidade existem; colunas do drift em
 --             catalogo_produtos (tenant_id, atributos, fonte_documento, ativo) e índice uq_catprod_tenant_codigo.
---   grants:   anon, authenticated e PUBLIC sem nenhum privilégio nas 3 tabelas, na view e nas 3 sequences
---             (relação, coluna e information_schema); service_role com SELECT/INSERT/UPDATE/DELETE nas tabelas,
---             SELECT na view e USAGE nas sequences.
---   RLS:      ligado nas 3 tabelas; nenhuma policy nelas (acesso só por service_role, que ignora RLS).
+--   grants:   anon e PUBLIC sem privilégio. authenticated sem privilégio em catalogo_precos,
+--             catalogo_de_para, na view e nas sequences desses. Em tenants, authenticated tem
+--             SELECT/INSERT/UPDATE e USAGE/SELECT em tenants_id_seq; a policy limita ao desenvolvedor.
+--             service_role com SELECT/INSERT/UPDATE/DELETE nas tabelas, SELECT na view e USAGE nas sequences.
+--   RLS:      ligado nas 3 tabelas. catalogo_precos e catalogo_de_para sem policy.
+--             tenants tem a policy tenants_desenvolvedor.
 --   view:     security_invoker=true.
 -- catalogo_produtos (grants e policy catprod_select) continua coberto por sistema_s_catalogos_acl_check.sql.
 

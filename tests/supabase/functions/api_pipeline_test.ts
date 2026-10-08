@@ -1,6 +1,6 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import { type ApiPipelineContext, handleRequest } from "../../../supabase/functions/api-pipeline/index.ts";
-import { ErroPipeline, type PipelineRepo } from "../../../supabase/functions/api-pipeline/repo.ts";
+import { ErroPipeline, resolverTenant, type PipelineRepo } from "../../../supabase/functions/api-pipeline/repo.ts";
 import type { Etapa, EventoHistorico } from "../../../supabase/functions/api-pipeline/types.ts";
 import { MAX_LOTE, parseActionFromBody } from "../../../supabase/functions/api-pipeline/validation.ts";
 
@@ -169,6 +169,36 @@ Deno.test("api-pipeline: configurar etapas só admin; criar, renomear, excluir m
   assertEquals(ops.get(101)?.etapa_id, 2);
   const etapas = await chamar(a, { action: "etapas_listar" });
   assertEquals(etapas.json.etapas.map((e: { nome: string }) => e.nome), ["Triagem", "Visita", "Descartada"]);
+});
+
+Deno.test("resolverTenant: vínculo único manda; sem vínculo só cabe uma empresa", () => {
+  assertEquals(resolverTenant([7], [1, 2]), 7);
+  assertEquals(resolverTenant([], [1]), 1);
+  assertEquals(resolverTenant([7, 7], [1]), 7);
+  let status = 0;
+  try {
+    resolverTenant([7, 8], [1]);
+  } catch (e) {
+    status = e instanceof ErroPipeline ? e.status : 0;
+  }
+  assertEquals(status, 409);
+});
+
+Deno.test("resolverTenant: duas empresas sem vínculo recusam", () => {
+  let status = 0;
+  try {
+    resolverTenant([], [1, 2]);
+  } catch (e) {
+    status = e instanceof ErroPipeline ? e.status : 0;
+  }
+  assertEquals(status, 409);
+  status = 0;
+  try {
+    resolverTenant([], []);
+  } catch (e) {
+    status = e instanceof ErroPipeline ? e.status : 0;
+  }
+  assertEquals(status, 409);
 });
 
 Deno.test("validação: limites e tipos", () => {

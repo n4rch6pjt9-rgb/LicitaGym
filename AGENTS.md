@@ -175,17 +175,12 @@ Alterações de schema devem utilizar migrations.
 - **Índices:** apenas `sync_timestamp` (golden rule limita a 2 grupos = outros índices inúteis)
 - **Segurança:** `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` obrigatório
 
-### Tabelas (E1-E7)
+### Tabelas existentes
 
-| E | Tabela | Registro | FK Pai | Relação |
-|---|--------|----------|--------|---------|
-| 1 | `icatmat_grupo_material` | 2 grupos | — | root |
-| 2 | `icatmat_classe_material` | 2 classes | E1 | 1:N |
-| 3 | `icatmat_pdm_material` | N PDMs | E2 | 1:N |
-| 4 | `icatmat_item_material` | N items | E3 | 1:N |
-| 5 | `icatmat_natureza_despesa` | N naturezas | E4 | 1:N |
-| 6 | `icatmat_unidade_fornecimento` | ~76k unidades | E4 | 1:N |
-| 7 | `icatmat_caracteristica_material` | N características | E4 | 1:N |
+Só duas estão no schema: `icatmat_grupo_material` (E1) e `icatmat_pdm_completa`. As E2–E7
+(`icatmat_classe_material`, `icatmat_pdm_material`, `icatmat_item_material`, `icatmat_natureza_despesa`,
+`icatmat_unidade_fornecimento`, `icatmat_caracteristica_material`) nunca foram aplicadas e estão em
+`supabase/migrations_archive/`. O catálogo em uso é `catmat_*`. Recriar uma E2–E7 exige migration nova.
 
 Ver `supabase/migrations/SCHEMA_STANDARDS.md` para template e checklist.
 

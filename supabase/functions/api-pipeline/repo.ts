@@ -18,11 +18,11 @@ export class ErroPipeline extends Error {
 }
 
 /**
- * Um vínculo ativo manda. Sem vínculo, só resta o único tenant ativo (a Konnen, até ligarem os usuários).
- * Dois vínculos, ou duas empresas ativas sem vínculo, recusam.
+ * Vínculo só conta se a empresa está ativa. Sem vínculo válido, só resta o único tenant ativo
+ * (a Konnen, até ligarem os usuários). Dois vínculos válidos, ou duas empresas ativas sem vínculo, recusam.
  */
-export function resolverTenant(ligados: number[], ativos: number[]): number {
-  const unicos = [...new Set(ligados)];
+export function resolverTenant(ligadosAtivos: number[], ativos: number[]): number {
+  const unicos = [...new Set(ligadosAtivos)];
   if (unicos.length > 1) throw new ErroPipeline("Usuário ligado a mais de uma empresa.", 409);
   if (unicos.length === 1) return unicos[0];
   if (ativos.length === 1) return ativos[0];
@@ -65,6 +65,16 @@ export function createSupabaseRepo(client: SupabaseClient): PipelineRepo {
         .eq("ativo", true);
       if (error) throw new Error(error.message);
       const ligados = (membros ?? []).map((r) => Number(r.tenant_id));
+      let ligadosAtivos: number[] = [];
+      if (ligados.length > 0) {
+        const { data: vivos, error: erroVivos } = await client
+          .from("tenants")
+          .select("id")
+          .in("id", ligados)
+          .eq("ativo", true);
+        if (erroVivos) throw new Error(erroVivos.message);
+        ligadosAtivos = (vivos ?? []).map((r) => Number(r.id));
+      }
       const { data: ativos, error: erroAtivos } = await client
         .from("tenants")
         .select("id")
@@ -72,7 +82,7 @@ export function createSupabaseRepo(client: SupabaseClient): PipelineRepo {
         .order("id")
         .limit(2);
       if (erroAtivos) throw new Error(erroAtivos.message);
-      return resolverTenant(ligados, (ativos ?? []).map((r) => Number(r.id)));
+      return resolverTenant(ligadosAtivos, (ativos ?? []).map((r) => Number(r.id)));
     },
 
     async listarEtapas(tenant) {

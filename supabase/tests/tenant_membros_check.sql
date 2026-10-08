@@ -55,6 +55,23 @@ begin
       union all
       select 'execute', 'authenticated tenant_papel', 'true',
              coalesce(has_function_privilege('authenticated', 'public.tenant_papel(bigint)', 'EXECUTE')::text, 'ausente')
+      union all
+      select 'execute', 'anon licitagym_desenvolvedor', 'false',
+             coalesce(has_function_privilege('anon', 'public.licitagym_desenvolvedor()', 'EXECUTE')::text, 'ausente')
+      union all
+      select 'execute', 'authenticated licitagym_desenvolvedor', 'true',
+             coalesce(has_function_privilege('authenticated', 'public.licitagym_desenvolvedor()', 'EXECUTE')::text, 'ausente')
+      union all
+      select 'policy', pol.polname, 'existe',
+             case when exists (
+               select 1 from pg_policy p
+                where p.polrelid = to_regclass(pol.rel) and p.polname = pol.polname
+             ) then 'existe' else 'ausente' end
+        from (values
+          ('public.tenant_membros', 'tenant_membros_desenvolvedor'),
+          ('public.tenant_dados_restritos', 'tenant_dados_restritos_desenvolvedor'),
+          ('public.tenants', 'tenants_desenvolvedor')
+        ) pol(rel, polname)
     )
     select * from checks
   loop
@@ -66,11 +83,18 @@ begin
   end loop;
   if exists (
     select 1 from pg_policy p
-     where p.polrelid in ('public.tenant_membros'::regclass, 'public.tenant_dados_restritos'::regclass)
-       and pg_get_expr(p.polqual, p.polrelid) like '%licitagym_role%'
+     where p.polrelid in (
+       'public.tenant_membros'::regclass,
+       'public.tenant_dados_restritos'::regclass,
+       'public.tenants'::regclass
+     )
+       and (
+         pg_get_expr(p.polqual, p.polrelid) like '%user_metadata%'
+         or pg_get_expr(p.polwithcheck, p.polrelid) like '%user_metadata%'
+       )
   ) then
     f := f + 1;
-    raise notice 'FALHA policy usa licitagym_role';
+    raise notice 'FALHA policy usa user_metadata';
   end if;
   if f > 0 then
     raise exception 'ACL CHECK FALHOU: tenant_membros % checagens, % falhas', n, f;

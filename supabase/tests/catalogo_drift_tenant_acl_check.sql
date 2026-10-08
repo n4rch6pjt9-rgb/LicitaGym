@@ -51,30 +51,58 @@ begin
       select 'indice', 'public.uq_catprod_tenant_codigo', 'existe',
              case when to_regclass('public.uq_catprod_tenant_codigo') is null then 'ausente' else 'existe' end
       union all
-      -- anon, authenticated e PUBLIC: nenhum privilégio de relação
+      -- Catálogo segue fechado. tenants abre SELECT/INSERT/UPDATE só na tabela;
+      -- a policy tenants_desenvolvedor limita ao licitagym_role = admin.
       select 'grant', o.obj || ' ' || r.papel || ' ' || p.p, 'false',
              coalesce(has_table_privilege(r.papel, to_regclass(o.obj), p.p)::text, 'ausente')
         from objs o cross join privs p cross join fechados r
+       where o.obj <> 'public.tenants'
       union all
-      -- ... nem de coluna
+      select 'grant', 'public.tenants ' || r.papel || ' ' || p.p, 'false',
+             coalesce(has_table_privilege(r.papel, 'public.tenants'::regclass, p.p)::text, 'ausente')
+        from privs p cross join (values ('anon'), ('public')) r(papel)
+      union all
+      select 'grant', 'public.tenants authenticated ' || p.p,
+             case when p.p in ('SELECT', 'INSERT', 'UPDATE') then 'true' else 'false' end,
+             coalesce(has_table_privilege('authenticated', 'public.tenants'::regclass, p.p)::text, 'ausente')
+        from privs p
+      union all
       select 'grant', o.obj || ' ' || r.papel || ' qualquer coluna ' || p.p, 'false',
              coalesce(has_any_column_privilege(r.papel, to_regclass(o.obj), p.p)::text, 'ausente')
         from objs o cross join (values ('SELECT'), ('INSERT'), ('UPDATE'), ('REFERENCES')) p(p) cross join fechados r
+       where o.obj <> 'public.tenants'
       union all
-      select 'grant', 'information_schema anon/authenticated/PUBLIC (tabela + coluna)', '0',
+      select 'grant', 'public.tenants ' || r.papel || ' qualquer coluna ' || p.p, 'false',
+             coalesce(has_any_column_privilege(r.papel, 'public.tenants'::regclass, p.p)::text, 'ausente')
+        from (values ('SELECT'), ('INSERT'), ('UPDATE'), ('REFERENCES')) p(p)
+        cross join (values ('anon'), ('public')) r(papel)
+      union all
+      select 'grant', 'public.tenants authenticated qualquer coluna ' || p.p,
+             case when p.p in ('SELECT', 'INSERT', 'UPDATE') then 'true' else 'false' end,
+             coalesce(has_any_column_privilege('authenticated', 'public.tenants'::regclass, p.p)::text, 'ausente')
+        from (values ('SELECT'), ('INSERT'), ('UPDATE'), ('REFERENCES')) p(p)
+      union all
+      select 'grant', 'information_schema anon/authenticated/PUBLIC sem tenants', '0',
              ((select count(*) from information_schema.role_table_grants g
                 where g.table_schema = 'public'
-                  and g.table_name in ('tenants', 'catalogo_precos', 'catalogo_de_para', 'v_catalogo_viabilidade')
+                  and g.table_name in ('catalogo_precos', 'catalogo_de_para', 'v_catalogo_viabilidade')
                   and g.grantee in ('anon', 'authenticated', 'PUBLIC'))
               + (select count(*) from information_schema.column_privileges g
                 where g.table_schema = 'public'
-                  and g.table_name in ('tenants', 'catalogo_precos', 'catalogo_de_para', 'v_catalogo_viabilidade')
-                  and g.grantee in ('anon', 'authenticated', 'PUBLIC')))::text
+                  and g.table_name in ('catalogo_precos', 'catalogo_de_para', 'v_catalogo_viabilidade')
+                  and g.grantee in ('anon', 'authenticated', 'PUBLIC'))
+              + (select count(*) from information_schema.role_table_grants g
+                where g.table_schema = 'public' and g.table_name = 'tenants'
+                  and g.grantee in ('anon', 'PUBLIC')))::text
       union all
-      -- sequences: nada para anon/authenticated/PUBLIC
       select 'grant', s.obj || ' ' || r.papel || ' ' || p.p, 'false',
              coalesce(has_sequence_privilege(r.papel, to_regclass(s.obj), p.p)::text, 'ausente')
         from seqs s cross join (values ('USAGE'), ('SELECT'), ('UPDATE')) p(p) cross join fechados r
+       where not (s.obj = 'public.tenants_id_seq' and r.papel = 'authenticated' and p.p in ('USAGE', 'SELECT'))
+      union all
+      select 'grant', 'public.tenants_id_seq authenticated ' || p.p, 'true',
+             coalesce(has_sequence_privilege('authenticated', 'public.tenants_id_seq'::regclass, p.p)::text, 'ausente')
+        from (values ('USAGE'), ('SELECT')) p(p)
       union all
       -- service_role: leitura e escrita nas tabelas, leitura na view, uso das sequences
       select 'grant', t.obj || ' service_role ' || p.p, 'true',
@@ -94,7 +122,7 @@ begin
              coalesce((select c.relrowsecurity::text from pg_class c where c.oid = to_regclass(t.obj)), 'ausente')
         from tabelas t
       union all
-      select 'policy', t.obj, '0',
+      select 'policy', t.obj, case when t.obj = 'public.tenants' then '1' else '0' end,
              (select count(*)::text from pg_policies pp where pp.schemaname || '.' || pp.tablename = t.obj)
         from tabelas t
       union all

@@ -84,8 +84,15 @@ create table if not exists public.tenant_documentos (
   substituido_por     bigint,
   created_at          timestamptz not null default now(),
   created_by          uuid,
+  constraint tenant_documentos_tenant_id_key unique (tenant_id, id),
+  constraint tenant_documentos_substitui_fkey foreign key (tenant_id, substituido_por)
+    references public.tenant_documentos (tenant_id, id) on delete restrict,
   constraint tenant_documentos_path_chk check (
-    storage_path is null or storage_path ~ '^[0-9]+/.+'
+    storage_path is null
+    or (
+      storage_path ~ '^[0-9]+/.+'
+      and split_part(storage_path, '/', 1) = tenant_id::text
+    )
   )
 );
 
@@ -130,6 +137,41 @@ $$;
 
 comment on function public.tenant_documento_alerta(date, date) is
   'Alerta de calendário: vencido, d7, d15, d30, ok ou sem_data. A sessão do certame não entra aqui.';
+
+create or replace function public.tenant_documentos_validade_trg()
+returns trigger
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $$
+declare
+  v_tem boolean;
+  v_padrao integer;
+begin
+  select t.tem_validade, t.validade_padrao_dias
+    into v_tem, v_padrao
+    from public.documento_tipos t
+   where t.codigo = new.tipo_codigo;
+  if new.valido_ate is not null then
+    new.validade_calculada := false;
+  elsif coalesce(v_tem, false) and new.emitido_em is not null and v_padrao is not null then
+    new.valido_ate := new.emitido_em + v_padrao;
+    new.validade_calculada := true;
+  else
+    new.validade_calculada := false;
+  end if;
+  return new;
+end
+$$;
+
+drop trigger if exists tenant_documentos_validade on public.tenant_documentos;
+create trigger tenant_documentos_validade
+  before insert or update of emitido_em, valido_ate, tipo_codigo
+  on public.tenant_documentos
+  for each row execute function public.tenant_documentos_validade_trg();
+
+revoke all on function public.tenant_documentos_validade_trg() from PUBLIC, anon, authenticated;
+grant execute on function public.tenant_documentos_validade_trg() to service_role;
 
 alter table public.documento_tipos enable row level security;
 alter table public.tenant_documentos enable row level security;

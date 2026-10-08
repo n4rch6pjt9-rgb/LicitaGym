@@ -8,6 +8,7 @@ declare
   f int := 0;
   v_val date;
   v_calc boolean;
+  v_tenant bigint;
 begin
   select (public.tenant_documento_validade('2026-01-01'::date, null, 90)->>'validade')::date,
          (public.tenant_documento_validade('2026-01-01'::date, null, 90)->>'calculada')::boolean
@@ -42,6 +43,33 @@ begin
   if exists (select 1 from public.documento_tipos where codigo = 'certidao_federal' and not sanavel) then
     raise exception 'CHECK FALHOU: certidão federal nasceu não sanável';
   end if;
+
+  begin
+    begin
+      insert into public.tenants (slug, nome)
+      values ('chk-doc-253', 'Check documento')
+      returning id into v_tenant;
+      insert into public.tenant_documentos (tenant_id, tipo_codigo, emitido_em, storage_path)
+      values (v_tenant, 'certidao_falencia', date '2026-01-01', v_tenant::text || '/falencia.pdf')
+      returning valido_ate, validade_calculada into v_val, v_calc;
+      if v_val is distinct from date '2026-04-01' or v_calc is distinct from true then
+        raise exception 'CHECK FALHOU: gatilho não calculou emissão mais 90 dias';
+      end if;
+      begin
+        insert into public.tenant_documentos (tenant_id, tipo_codigo, storage_path)
+        values (v_tenant, 'certidao_falencia', (v_tenant + 1)::text || '/outro.pdf');
+        raise exception 'CHECK FALHOU: caminho de outro tenant foi aceito';
+      exception
+        when check_violation then null;
+      end;
+      raise exception 'rollback_chk_doc';
+    end;
+  exception
+    when others then
+      if sqlerrm is distinct from 'rollback_chk_doc' then
+        raise;
+      end if;
+  end;
 
   for v_chk in
     with

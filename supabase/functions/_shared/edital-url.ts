@@ -1,3 +1,5 @@
+import { parsePortalProcessoUrl } from "./portal-compras.ts";
+
 /**
  * Função pura e segura para derivação de url_edital a partir dos dados de licitacoes_externas.
  *
@@ -25,6 +27,8 @@
  * - Hosts conhecidos autorizados para URLs construídas: `pncp.gov.br`, `compras.gov.br`, `cnetmobile.estaleiro.serpro.gov.br`.
  * - Para o domínio vindo de `linkSistemaOrigem` (dado coletado de terceiros), aceita somente https
  *   e host em `ALLOWED_ORIGEM_HOSTS`: qualquer `*.gov.br` e os portais Paradigma do Sistema S.
+ * - Portal de Compras Públicas (issue #266): host exato `portaldecompraspublicas.com.br` ou `www`,
+ *   caminho `/processos/{UF}/{comprador}/{processo}`. Subdomínio da API e outros portais não entram.
  * - Retorna null quando não for possível construir URL válida ou segura.
  */
 
@@ -169,6 +173,8 @@ function parseHttpsUrl(
  * Paradigma, tenant da própria `fonte` da linha (link do Sesc RJ não vale numa linha de outra fonte).
  */
 function validarLinkOrigem(rawUrl: unknown, fonte: string): string | null {
+  const portal = parsePortalProcessoUrl(rawUrl);
+  if (portal) return portal.pagina;
   const parsed = parseHttpsUrl(rawUrl, true, ALLOWED_ORIGEM_HOSTS);
   if (!parsed) return null;
   const donoSaas = tenantParadigmaSaas(parsed);
@@ -214,6 +220,7 @@ export interface OrigemUrl {
  * Link do portal de origem da disputa (`licitacoes_externas.link_sistema_origem`, o linkSistemaOrigem que o
  * órgão informou ao PNCP). O PNCP não monta esse link: só repassa. Aqui ele é dado de terceiros, então:
  * - Comprasnet: reescrito para a página pública de acompanhamento (`buildAcompanhamentoUrl`);
+ * - Portal de Compras Públicas: só `/processos/` no host da página;
  * - demais: aceito como veio, só se https e host em `ALLOWED_ORIGEM_HOSTS` (mesma regra de `buildEditalUrl`).
  * Retorna null para link ausente, http sem TLS, sem esquema ou host fora da lista: a tela mostra só o PNCP.
  */

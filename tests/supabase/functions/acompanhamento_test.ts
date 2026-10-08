@@ -542,12 +542,16 @@ Deno.test("acompanhamento: url_acompanhamento vem de raw.linkSistemaOrigem quand
 Deno.test("validation acompanhamento: id válido (1 a 18 dígitos) via URL e body", () => {
   for (const id of ["1", "101", "000123", "123456789012345678"]) {
     const url = new URL(`http://localhost/api-dashboard-oportunidades?action=acompanhamento&id=${id}`);
-    assertEquals(parseActionFromUrl(url), { action: "acompanhamento", id });
-    assertEquals(parseActionFromBody({ action: "acompanhamento", id }), { action: "acompanhamento", id });
+    assertEquals(parseActionFromUrl(url), { action: "acompanhamento", id, atualizar: false });
+    assertEquals(parseActionFromBody({ action: "acompanhamento", id }), { action: "acompanhamento", id, atualizar: false });
   }
-  assertEquals(parseActionFromBody({ action: "acompanhamento", id: 42 }), { action: "acompanhamento", id: "42" });
+  assertEquals(parseActionFromBody({ action: "acompanhamento", id: 42 }), { action: "acompanhamento", id: "42", atualizar: false });
+  assertEquals(
+    parseActionFromBody({ action: "acompanhamento", id: "7", atualizar: true }),
+    { action: "acompanhamento", id: "7", atualizar: true },
+  );
   const padded = new URL("http://localhost/api-dashboard-oportunidades?action=acompanhamento&id=%2042%20");
-  assertEquals(parseActionFromUrl(padded), { action: "acompanhamento", id: "42" });
+  assertEquals(parseActionFromUrl(padded), { action: "acompanhamento", id: "42", atualizar: false });
 });
 
 Deno.test("validation acompanhamento: id inválido retorna erro", () => {

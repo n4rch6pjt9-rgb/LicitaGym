@@ -402,6 +402,7 @@ export const ACOMPANHAMENTO_ID_RE = /^\d{1,18}$/;
  */
 export function parseAcompanhamentoParams(
   idRaw: unknown,
+  atualizarRaw: unknown = false,
 ): AcompanhamentoActionParams | { error: string } {
   if (idRaw === undefined || idRaw === null || String(idRaw).trim() === "") {
     return { error: "Parâmetro 'id' é obrigatório para a ação 'acompanhamento'." };
@@ -416,7 +417,7 @@ export function parseAcompanhamentoParams(
   if (!ACOMPANHAMENTO_ID_RE.test(id)) {
     return { error: "Parâmetro 'id' inválido: informe apenas dígitos (1 a 18)." };
   }
-  return { action: "acompanhamento", id };
+  return { action: "acompanhamento", id, atualizar: atualizarRaw === true || atualizarRaw === "true" };
 }
 
 export function parseActionFromUrl(url: URL): ActionParams | { error: string } {
@@ -447,7 +448,7 @@ export function parseActionFromUrl(url: URL): ActionParams | { error: string } {
   }
 
   if (actionParam === "acompanhamento") {
-    return parseAcompanhamentoParams(url.searchParams.get("id"));
+    return parseAcompanhamentoParams(url.searchParams.get("id"), url.searchParams.get("atualizar"));
   }
 
   if (actionParam === "objeto_categorias") {
@@ -483,7 +484,7 @@ export function parseActionFromBody(
   }
 
   if (action === "acompanhamento") {
-    return parseAcompanhamentoParams(body.id);
+    return parseAcompanhamentoParams(body.id, body.atualizar);
   }
 
   return { error: `Ação inválida: '${action}'. Use 'list', 'get', 'readiness', 'acompanhamento' ou 'objeto_categorias'.` };

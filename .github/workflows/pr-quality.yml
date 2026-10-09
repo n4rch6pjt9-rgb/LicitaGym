@@ -155,9 +155,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@v5
-        with:
-          node-version: "22"
-
+      # Node já vem no ubuntu-latest (sem action extra).
       - name: Casos do hook
-        run: node .claude/hooks/bloquear-destrutivo.test.mjs
+        run: node --version && node .claude/hooks/bloquear-destrutivo.test.mjs

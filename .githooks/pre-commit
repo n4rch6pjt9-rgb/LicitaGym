@@ -22,17 +22,20 @@ PULAR_SEM_FERRAMENTA=1 scripts/ci/lint-alterados.sh "${ARQS[@]}" || rc=1
 FUNCOES=(); SHARED=0; DT=()
 for a in "${ARQS[@]}"; do
   case "$a" in
-    supabase/functions/_shared/*) SHARED=1; DT+=($(grep -rlF "${a#supabase/functions/}" tests/supabase 2>/dev/null)) ;;
+    supabase/functions/_shared/*) SHARED=1; mapfile -t -O "${#DT[@]}" DT < <(grep -rlF -- "${a#supabase/functions/}" tests/supabase 2>/dev/null) ;;
     supabase/functions/*/*) fn="${a#supabase/functions/}"; fn="${fn%%/*}"; FUNCOES+=("$fn")
-      DT+=($(grep -rlE "functions/$fn/" tests/supabase 2>/dev/null)) ;;
+      mapfile -t -O "${#DT[@]}" DT < <(grep -rlF -- "functions/$fn/" tests/supabase 2>/dev/null) ;;
     tests/supabase/*_test.ts|tests/supabase/*.test.ts) DT+=("$a") ;;
   esac
 done
 if [ "${#FUNCOES[@]}" -gt 0 ] || [ "$SHARED" -eq 1 ]; then
   echo "[pre-commit] 2/4 deno check"
   if tem deno; then
-    if [ "$SHARED" -eq 1 ]; then scripts/ci/deno-check-funcoes.sh >/tmp/lg-precommit-check.log 2>&1 || { cat /tmp/lg-precommit-check.log; rc=1; }
-    else scripts/ci/deno-check-funcoes.sh $(printf '%s\n' "${FUNCOES[@]}" | sort -u) || rc=1; fi
+    if [ "$SHARED" -eq 1 ]; then
+      log=$(mktemp); scripts/ci/deno-check-funcoes.sh >"$log" 2>&1 || { cat "$log"; rc=1; }; rm -f "$log"
+    else
+      mapfile -t FU < <(printf '%s\n' "${FUNCOES[@]}" | sort -u); scripts/ci/deno-check-funcoes.sh "${FU[@]}" || rc=1
+    fi
   fi
 fi
 if [ "${#DT[@]}" -gt 0 ]; then
@@ -51,15 +54,17 @@ for a in "${ARQS[@]}"; do
     services/coletor-externo/tests/test_*.py) COL_T+=("${a#services/coletor-externo/}") ;;
     services/coletor-externo/coletor/*.py) m=$(basename "$a" .py)
       for t in services/coletor-externo/tests/test_"$m"*.py; do [ -f "$t" ] && COL_T+=("${t#services/coletor-externo/}"); done ;;
-    scripts/*.py) m=$(basename "$a" .py); RAIZ_T+=($(grep -lwE "$m" tests/test_*.py 2>/dev/null)) ;;
+    scripts/*.py) m=$(basename "$a" .py); mapfile -t -O "${#RAIZ_T[@]}" RAIZ_T < <(grep -lwF -- "$m" tests/test_*.py 2>/dev/null) ;;
   esac
 done
 if [ "${#RAIZ_T[@]}" -gt 0 ] || [ "${#COL_T[@]}" -gt 0 ]; then
   echo "[pre-commit] 4/4 pytest"
   if ! "$PY" -c "import pytest" >/dev/null 2>&1; then echo "aviso: pytest não instalado para $PY, etapa pulada"
   else
-    [ "${#RAIZ_T[@]}" -gt 0 ] && { "$PY" -m pytest -q --tb=short $(printf '%s\n' "${RAIZ_T[@]}" | sort -u) || rc=1; }
-    [ "${#COL_T[@]}" -gt 0 ] && { (cd services/coletor-externo && "$PY" -m pytest -q --tb=short $(printf '%s\n' "${COL_T[@]}" | sort -u)) || rc=1; }
+    mapfile -t RAIZ_T < <(printf '%s\n' "${RAIZ_T[@]}" | sed '/^$/d' | sort -u)
+    mapfile -t COL_T < <(printf '%s\n' "${COL_T[@]}" | sed '/^$/d' | sort -u)
+    [ "${#RAIZ_T[@]}" -gt 0 ] && { "$PY" -m pytest -q --tb=short -- "${RAIZ_T[@]}" || rc=1; }
+    [ "${#COL_T[@]}" -gt 0 ] && { (cd services/coletor-externo && "$PY" -m pytest -q --tb=short -- "${COL_T[@]}") || rc=1; }
   fi
 fi
 

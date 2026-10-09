@@ -37,10 +37,14 @@ if [ "$pronto" -ne 1 ]; then echo "Postgres ($IMG) não respondeu em 60 s."; exi
 echo "Postgres: $(echo 'show server_version' | psql_)"
 
 PENDENTES="$(sed -e 's/#.*//' supabase/tests/pendentes.txt 2>/dev/null | awk 'NF{print $1}' | tr '\n' ' ')"
+# A lista só vale para checks: migration (ou pre.sql) listada derrubaria o portão em silêncio.
+for p in $PENDENTES; do
+  case "$p" in *_check.sql) ;; *) echo "supabase/tests/pendentes.txt só aceita *_check.sql (achei '$p')."; exit 2;; esac
+done
 falhas=0; pendentes=0
 aplicar() { # $1 arquivo, $2 rótulo
   local saida pend=0
-  case " $PENDENTES " in *" $(basename "$1") "*) pend=1;; esac
+  case "$2" in check*) case " $PENDENTES " in *" $(basename "$1") "*) pend=1;; esac;; esac
   case " $PULAR " in *" $(basename "$1") "*) echo "pulada $2 $(basename "$1") (extensão só no Supabase)"; return;; esac
   if saida=$(psql_ < "$1" 2>&1); then
     if [ "$pend" -eq 1 ]; then

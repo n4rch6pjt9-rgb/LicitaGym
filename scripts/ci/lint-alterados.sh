@@ -29,11 +29,11 @@ tem() { command -v "$1" >/dev/null 2>&1 && return 0
 rc=0
 if [ "${#TS[@]}" -gt 0 ] && tem deno; then
   echo "deno lint (${#TS[@]} arquivo(s))"
-  deno lint --rules-exclude="$DENO_EXCLUIR" "${TS[@]}" || rc=1
+  deno lint --rules-exclude="$DENO_EXCLUIR" -- "${TS[@]}" || rc=1
 fi
 if [ "${#PY[@]}" -gt 0 ] && tem ruff; then
   echo "ruff check (${#PY[@]} arquivo(s))"
-  ruff check --force-exclude "${PY[@]}" || rc=1
+  ruff check --force-exclude -- "${PY[@]}" || rc=1
 fi
 [ "${#TS[@]}" -eq 0 ] && [ "${#PY[@]}" -eq 0 ] && echo "nenhum .ts/.py para lint"
 exit "$rc"

@@ -597,9 +597,6 @@ function createRecordingMockClient(config: {
   headCountResult?: { count: number | null; error: unknown };
   rpcResult?: { data: unknown[] | null; error: unknown };
   pdmNomes?: Array<{ codigo_pdm: number; nome_pdm: string }>;
-  /** Consulta de escopo do recorte CATMAT (select("id") na view): ids que ficam. Padrão: todos. */
-  escopoIds?: (ids: number[]) => number[];
-  escopoError?: unknown;
 }) {
   const calls: RecordedCall[] = [];
 
@@ -711,26 +708,6 @@ function createRecordingMockClient(config: {
       return {
         select(cols?: string, opts?: { count?: string; head?: boolean }) {
           calls.push({ method: "select", args: [cols, opts] });
-          if (cols === "id" && !opts) {
-            // Escopo do recorte CATMAT: select("id").in("id", lote).eq|or(...)
-            let lote: number[] = [];
-            const escopo: Record<string, unknown> = {
-              then(onfulfilled?: (v: unknown) => unknown, onrejected?: (e: unknown) => unknown) {
-                const res = config.escopoError
-                  ? { data: null, error: config.escopoError }
-                  : { data: (config.escopoIds ?? ((x: number[]) => x))(lote).map((id) => ({ id })), error: null };
-                return Promise.resolve(res).then(onfulfilled, onrejected);
-              },
-            };
-            for (const m of ["eq", "in", "or"]) {
-              escopo[m] = (...args: unknown[]) => {
-                calls.push({ method: `escopo.${m}`, args });
-                if (m === "in") lote = args[1] as number[];
-                return escopo;
-              };
-            }
-            return escopo;
-          }
           if (opts?.head) {
             // Contagem (head): aceita os mesmos filtros encadeados e resolve com headCountResult
             const headResult = config.headCountResult ?? { count: 10, error: null };
@@ -1450,44 +1427,6 @@ Deno.test("list com recorte CATMAT: outro erro da RPC continua 500 genérico", a
   assertEquals(await res.json(), { error: "Erro interno no servidor" });
 });
 
-Deno.test("list com catalogo=true e 3098 casamentos (volume de prod): uma chamada à RPC única, sem range", async () => {
-  // 1103 licitações distintas, ~2,8 casamentos cada (como catalogo=true em prod em 02/10/2026; dados fictícios)
-  const data = Array.from({ length: 3098 }, (_, i) => ({
-    licitacao_id: String(1 + (i % 1103)),
-    codigo_pdm: 7115 + (i % 3),
-    codigo_item: i % 7 === 0 ? String(600000 + i) : null,
-    motivo: i % 7 === 0 ? "codigo" : "texto_item",
-  }));
-  const mockClient = createRecordingMockClient({
-    rpcResult: { data, error: null },
-    escopoIds: (ids) => ids.filter((id) => id <= 40),
-    listResult: { data: [{ id: 1 }], count: 40, error: null },
-  });
-  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list&catalogo=true&limit=1", { method: "GET" });
-  // deno-lint-ignore no-explicit-any
-  const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
-  assertEquals(res.status, 200);
-  const body = await res.json();
-  assertEquals(mockClient.calls.filter((c) => c.method === "rpc").map((c) => c.args[0]), [CATMAT_RPC]);
-  assertEquals(mockClient.calls.some((c) => c.method === "rpc.range" || c.method === "rpc.order"), false);
-  // 1103 ids > MAX_IDS_CATMAT: reduz ao escopo (3 lotes de até 500) e lista os 40 restantes
-  assertEquals(mockClient.calls.filter((c) => c.method === "escopo.in").map((c) => (c.args[1] as number[]).length), [500, 500, 103]);
-  assertEquals(body.total, 40);
-  // ids e codigo_item chegam como string (bigint no JSON) e viram number; casamentos da licitação 1 preservados
-  const casamentos1 = data.filter((d) => d.licitacao_id === "1").length;
-  assertEquals(body.items[0].catmat_match.length, casamentos1);
-  assertEquals(typeof body.items[0].catmat_match[0].codigo_item, "number");
-});
-
-Deno.test("list com recorte CATMAT acima de 1000 licitações: 422", async () => {
-  const data = Array.from({ length: 1001 }, (_, i) => ({ licitacao_id: i + 1, codigo_pdm: 7115, codigo_item: null, motivo: "texto_item" }));
-  const mockClient = createRecordingMockClient({ rpcResult: { data, error: null } });
-  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list&catmat_grupo=78", { method: "GET" });
-  // deno-lint-ignore no-explicit-any
-  const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
-  assertEquals(res.status, 422);
-});
-
 Deno.test("list sem recorte CATMAT (ou catalogo=false) não chama a RPC nem anexa catmat_match", async () => {
   for (const qs of ["action=list&uf=SP", "action=list&catalogo=false"]) {
     const mockClient = createRecordingMockClient({ listResult: { data: [{ id: 1 }], count: 1, error: null } });
@@ -1655,8 +1594,8 @@ Deno.test("get por codigo_externo e por orgao_cnpj + processo_norm leem a view, 
 
 
 // --------------------------------------------------------------------------
-// Recorte CATMAT x escopo de Oportunidades (review do #108): o teto MAX_IDS_CATMAT vale sobre as
-// Oportunidades do recorte, depois de tirar historico. Dados fictícios.
+// Recorte CATMAT acima de MAX_IDS_CATMAT_URL (lista em duas fases, spec 0004): testes em
+// api_dashboard_oportunidades_catmat_teto_test.ts. Aqui fica só o caminho até o limite da URL.
 // --------------------------------------------------------------------------
 
 function rpcComIds(n: number) {
@@ -1666,112 +1605,17 @@ function rpcComIds(n: number) {
   };
 }
 
-Deno.test("CATMAT: 1200 historico + 300 atuais não dá 422; lista só as atuais, escopo em lotes de 500", async () => {
-  // ids 1..1200 historico, 1201..1500 atuais (leads/monitorar)
-  const atuais = (ids: number[]) => ids.filter((id) => id > 1200);
-  const mockClient = createRecordingMockClient({
-    rpcResult: rpcComIds(1500),
-    escopoIds: atuais,
-    listResult: { data: [{ id: 1201 }, { id: 1202 }], count: 300, error: null },
-  });
-  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list&catmat_grupo=78&limit=2", { method: "GET" });
-  // deno-lint-ignore no-explicit-any
-  const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
-  assertEquals(res.status, 200);
-  const body = await res.json();
-  assertEquals(body.total, 300);
-  assertEquals(body.items.map((i: { id: number }) => i.id), [1201, 1202]);
-  assertEquals(body.items[0].catmat_match.length, 1);
-
-  // escopo: 3 lotes (500+500+500) na view, cada um com o or que exclui historico
-  // recorte resolvido numa chamada só, sem paginação PostgREST
-  assertEquals(mockClient.calls.filter((c) => c.method === "rpc").length, 1);
-  assertEquals(mockClient.calls.some((c) => c.method === "rpc.range"), false);
-  const lotes = mockClient.calls.filter((c) => c.method === "escopo.in");
-  assertEquals(lotes.map((c) => (c.args[1] as number[]).length), [500, 500, 500]);
-  assertEquals(lotes.every((c) => c.args[0] === "id"), true);
-  assertEquals(mockClient.calls.filter((c) => c.method === "escopo.or").map((c) => c.args[0]), [
-    ESCOPO_OPORTUNIDADES,
-    ESCOPO_OPORTUNIDADES,
-    ESCOPO_OPORTUNIDADES,
-  ]);
-  // sem prioridade, o único eq do escopo é o da canônica
-  assertEquals(mockClient.calls.filter((c) => c.method === "escopo.eq").map((c) => c.args), [
-    ["eh_canonica", true],
-    ["eh_canonica", true],
-    ["eh_canonica", true],
-  ]);
-  // consulta principal filtra pelos 300 ids atuais (e aplica o escopo de novo)
-  const inPrincipal = mockClient.calls.find((c) => c.method === "in" && c.args[0] === "id");
-  assertEquals((inPrincipal?.args[1] as number[]).length, 300);
-  assertEquals(Math.min(...(inPrincipal?.args[1] as number[])), 1201);
-  assertEquals(mockClient.calls.filter((c) => c.method === "from").map((c) => c.args[0]).filter((t) => t !== "catmat_pdms" && t !== "licitacoes_externas" && t !== "portal_consulta" && t !== "pipeline_oportunidades").every((t) => t === OPORTUNIDADES_VIEW), true);
-});
-
-Deno.test("CATMAT: mais de 1000 atuais depois do escopo continua 422 (com a contagem de oportunidades)", async () => {
-  // 1300 ids, 200 historico: sobram 1100 atuais
-  const mockClient = createRecordingMockClient({ rpcResult: rpcComIds(1300), escopoIds: (ids) => ids.filter((id) => id > 200) });
-  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list&catmat_grupo=78", { method: "GET" });
-  // deno-lint-ignore no-explicit-any
-  const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
-  assertEquals(res.status, 422);
-  assertEquals((await res.json()).error.includes("1100 oportunidades"), true);
-  // a consulta principal nem roda
-  assertEquals(mockClient.calls.some((c) => c.method === "select" && c.args[0] === OPORTUNIDADES_COLUMNS), false);
-});
-
-Deno.test("CATMAT com prioridade=leads acima do teto: escopo filtra eq(prioridade, leads) e a canônica, sem o or", async () => {
-  const mockClient = createRecordingMockClient({
-    rpcResult: rpcComIds(1001),
-    escopoIds: (ids) => ids.filter((id) => id % 2 === 0),
-    listResult: { data: [], count: 0, error: null },
-  });
-  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list&catmat_grupo=78&prioridade=leads", { method: "GET" });
-  // deno-lint-ignore no-explicit-any
-  const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
-  assertEquals(res.status, 200);
-  assertEquals(mockClient.calls.filter((c) => c.method === "escopo.eq").map((c) => c.args), [
-    ["prioridade", "leads"],
-    ["eh_canonica", true],
-    ["prioridade", "leads"],
-    ["eh_canonica", true],
-    ["prioridade", "leads"],
-    ["eh_canonica", true],
-  ]);
-  assertEquals(mockClient.calls.some((c) => c.method === "escopo.or"), false);
-  const inPrincipal = mockClient.calls.find((c) => c.method === "in" && c.args[0] === "id");
-  assertEquals((inPrincipal?.args[1] as number[]).length, 500);
-});
-
-Deno.test("CATMAT acima do teto só com historico: 200 vazio sem a consulta principal", async () => {
-  const mockClient = createRecordingMockClient({ rpcResult: rpcComIds(1500), escopoIds: () => [] });
-  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list&catmat_grupo=78", { method: "GET" });
-  // deno-lint-ignore no-explicit-any
-  const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
-  assertEquals(res.status, 200);
-  const body = await res.json();
-  assertEquals(body.total, 0);
-  assertEquals(body.items, []);
-  assertEquals(mockClient.calls.some((c) => c.method === "select" && c.args[0] === OPORTUNIDADES_COLUMNS), false);
-});
-
-Deno.test("CATMAT até o teto não faz a consulta de escopo (a consulta principal já recorta)", async () => {
+Deno.test("CATMAT até o limite da URL (1000 ids) usa uma consulta só, sem a lista em duas fases", async () => {
   const mockClient = createRecordingMockClient({ rpcResult: rpcComIds(1000), listResult: { data: [], count: 0, error: null } });
   const req = new Request("http://localhost/api-dashboard-oportunidades?action=list&catmat_grupo=78", { method: "GET" });
   // deno-lint-ignore no-explicit-any
   const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
   assertEquals(res.status, 200);
-  assertEquals(mockClient.calls.some((c) => c.method.startsWith("escopo.")), false);
+  assertEquals(mockClient.calls.some((c) => c.method === "select" && /^id,(data_fim|data_publicacao|valor_total)$/.test(String(c.args[0]))), false);
   assertEquals(mockClient.calls.some((c) => c.method === "or" && c.args[0] === ESCOPO_OPORTUNIDADES), true);
-});
-
-Deno.test("CATMAT acima do teto com falha na consulta de escopo: 500 genérico", async () => {
-  const mockClient = createRecordingMockClient({ rpcResult: rpcComIds(1001), escopoError: { message: "timeout" } });
-  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list&catmat_grupo=78", { method: "GET" });
-  // deno-lint-ignore no-explicit-any
-  const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
-  assertEquals(res.status, 500);
-  assertEquals((await res.json()).error, "Erro interno no servidor");
+  const inId = mockClient.calls.filter((c) => c.method === "in" && c.args[0] === "id");
+  assertEquals(inId.length, 1);
+  assertEquals((inId[0].args[1] as number[]).length, 1000);
 });
 
 

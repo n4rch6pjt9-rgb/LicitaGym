@@ -139,6 +139,12 @@ opcional da mesma coleta (ver Perguntas).
      duas unidades e não calcula a diferença, para não inventar comparação.
 5. **Catálogo:** com tenants desligados, vale o catálogo global da empresa (`catalogo_catmat_pdms_efetivos()`). Isso
    muda quando os tenants forem ligados.
+6. **CPF de pessoa física não é exibido (LGPD):** `ni_fornecedor` null e nome 'Pessoa física' (09/10). Na
+   `api-precos` (`amostras`), `ni_fornecedor` só sai com 14 dígitos (CNPJ, `ni_tipo: "cnpj"`); com 11 dígitos sai
+   `ni_tipo: "cpf"`; qualquer outro formato é ausente (`ni_fornecedor` e `ni_tipo` null). Em 09/10: 1 linha com 11
+   dígitos e 5 malformadas, de 25.465.
+7. **Alerta de coleta de preço:** crítico com 8 dias sem coleta, atenção com 7,5. Decisão do Marcelo 09/10: avisar já
+   na primeira semana perdida.
 
 ## Perguntas em aberto
 

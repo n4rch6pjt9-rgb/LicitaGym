@@ -218,6 +218,24 @@ function inteiro(v: unknown): number | null {
   return n !== null && Number.isInteger(n) ? n : null;
 }
 
+/**
+ * Fornecedor exibível (decisão do Marcelo, 09/10, LGPD):
+ *   14 dígitos (CNPJ)  -> ni_fornecedor como veio, ni_tipo "cnpj", nome como veio;
+ *   11 dígitos (CPF)   -> ni_fornecedor null, ni_tipo "cpf", nome "Pessoa física" (o nome civil também é dado pessoal);
+ *   qualquer outro valor (vazio, "0", 2, 7, 9 dígitos, com pontuação) -> ni_fornecedor e ni_tipo null (ausente).
+ * Em 09/10: 1 linha com 11 dígitos e 5 malformadas, de 25.465.
+ */
+export function fornecedorDe(ni: unknown, nome: unknown): {
+  ni_fornecedor: string | null;
+  ni_tipo: "cnpj" | "cpf" | null;
+  nome_fornecedor: string | null;
+} {
+  const s = typeof ni === "string" ? ni.trim() : "";
+  if (/^\d{14}$/.test(s)) return { ni_fornecedor: s, ni_tipo: "cnpj", nome_fornecedor: texto(nome) };
+  if (/^\d{11}$/.test(s)) return { ni_fornecedor: null, ni_tipo: "cpf", nome_fornecedor: "Pessoa física" };
+  return { ni_fornecedor: null, ni_tipo: null, nome_fornecedor: texto(nome) };
+}
+
 function amostraDe(raw: Record<string, unknown>): Record<string, unknown> {
   return {
     data_resultado: dataIso(raw.data_resultado),
@@ -235,8 +253,7 @@ function amostraDe(raw: Record<string, unknown>): Record<string, unknown> {
     sigla_unidade_medida: texto(raw.sigla_unidade_medida),
     nome_unidade_medida: texto(raw.nome_unidade_medida),
     marca: texto(raw.marca),
-    nome_fornecedor: texto(raw.nome_fornecedor),
-    ni_fornecedor: texto(raw.ni_fornecedor),
+    ...fornecedorDe(raw.ni_fornecedor, raw.nome_fornecedor),
     objeto_compra: texto(raw.objeto_compra),
     descricao_item: texto(raw.descricao_item),
     descricao_detalhada_item: texto(raw.descricao_detalhada_item),

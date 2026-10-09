@@ -344,7 +344,7 @@ begin
         ('11222333000180', 'false'),       -- CA-2: DV2 errado
         ('12345678000190', 'false'),       -- CA-2: DV errados
         ('00000000000000', 'false'),       -- CA-2: dígitos iguais
-        ('11111111111111', 'false'),       -- CA-2: dígitos iguais (passa no módulo 11, é recusado à parte)
+        ('11111111111111', 'false'),       -- CA-2: dígitos iguais (este já cai no DV; 00000000000000 é o que passa no módulo 11)
         ('123', 'false'),                  -- CA-2: curto
         ('', 'false'),                     -- CA-2: vazio
         (null, 'false'))                   -- CA-2: NULL

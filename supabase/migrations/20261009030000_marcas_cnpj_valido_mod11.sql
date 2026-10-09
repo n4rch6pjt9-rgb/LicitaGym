@@ -49,7 +49,7 @@ set search_path = ''
 as $fn$
   with d as (select regexp_replace(coalesce(cnpj_bruto, ''), '[^0-9]', '', 'g') as v)
   select case
-           -- 14 dígitos, nem todos iguais (00000000000000, 11111111111111... passam no módulo 11 e não existem)
+           -- 14 dígitos, nem todos iguais (00000000000000 passa no módulo 11 e não existe; os outros já caem no DV)
            when d.v !~ '^[0-9]{14}$' or d.v ~ '^([0-9])\1{13}$' then false
            else (
              select (case when x.s1 % 11 < 2 then 0 else 11 - x.s1 % 11 end) = substr(d.v, 13, 1)::int
@@ -64,7 +64,7 @@ as $fn$
 $fn$;
 
 comment on function private.cnpj_valido(text) is
-  'CNPJ (com ou sem máscara) -> true se tem 14 dígitos, não são todos iguais e os dois DV conferem pelo módulo 11 da Receita (DV1 sobre os 12 primeiros dígitos, DV2 sobre os 13). NULL, vazio ou outro tamanho -> false. EXECUTE só service_role.';
+  'CNPJ (com ou sem máscara) -> true se tem 14 dígitos, não são todos iguais e os dois DV conferem pelo módulo 11 da Receita (DV1 sobre os 12 primeiros dígitos, DV2 sobre os 13). NULL, vazio ou outro tamanho -> false. Só CNPJ numérico: o alfanumérico da Receita dá false (follow-up da #262). EXECUTE só service_role.';
 
 -- 2) Normalização idempotente ----------------------------------------------------------------------------------
 create or replace function private.marca_normalizar(p_valor text)

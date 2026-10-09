@@ -1,0 +1,140 @@
+-- Checagem da fila de planos do PCA (spec specs/0012-pca-sync-cpu-pagina.md, PR 2).
+-- Falha com EXCEPTION se:
+--   ACL  private.pca_plano_fila ou as funções ficarem acessíveis a anon/authenticated, RLS desligada, ou service_role
+--        sem acesso;
+--   ENF  reenfileirar o mesmo plano duplicar a linha aberta, ou uma linha 'processando' voltar para 'pendente';
+--   RES  pca_fila_reservar devolver mais que o limite, pegar plano 'feito', erro com tentativas esgotadas ou erro
+--        de menos de 10 minutos (recuo entre tentativas);
+--   DESC pca_marcar_descoberta não zerar o contador do plano visto, não somar no ausente com item da classe, ou somar
+--        no plano sem item da classe;
+--   CRON (só com pg_cron) os três jobs novos não existirem, ou o comando não usar "rotina".
+-- Fixtures com ids fictícios ('CHK-FILA-…') e ano 2099; tudo termina em rollback.
+
+begin;
+
+do $chk$
+declare
+  v_falhas text[] := array[]::text[];
+  v_r record;
+  v_n int;
+  v_id_proc bigint;
+  v_p1 uuid;
+begin
+  -- ACL
+  if to_regclass('private.pca_plano_fila') is null then
+    raise exception 'pca_plano_fila_check: tabela private.pca_plano_fila não existe';
+  end if;
+  if not (select relrowsecurity from pg_class where oid = 'private.pca_plano_fila'::regclass) then
+    v_falhas := v_falhas || 'RLS desligada em private.pca_plano_fila'::text;
+  end if;
+  for v_r in
+    select papel, priv from unnest(array['anon', 'authenticated']) papel
+     cross join unnest(array['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER']) priv
+     where has_table_privilege(papel, 'private.pca_plano_fila', priv)
+  loop
+    v_falhas := v_falhas || format('%s tem %s em private.pca_plano_fila', v_r.papel, v_r.priv);
+  end loop;
+  for v_r in
+    select papel, fn from unnest(array['anon', 'authenticated']) papel
+     cross join unnest(array[
+       'private.pca_fila_enfileirar(jsonb)',
+       'private.pca_fila_reservar(integer,integer)',
+       'private.pca_marcar_descoberta(integer,text[],text[])']) fn
+     where has_function_privilege(papel, fn, 'EXECUTE')
+  loop
+    v_falhas := v_falhas || format('%s executa %s', v_r.papel, v_r.fn);
+  end loop;
+  if not has_table_privilege('service_role', 'private.pca_plano_fila', 'SELECT')
+     or not has_table_privilege('service_role', 'private.pca_plano_fila', 'INSERT')
+     or not has_table_privilege('service_role', 'private.pca_plano_fila', 'UPDATE')
+     or not has_function_privilege('service_role', 'private.pca_fila_enfileirar(jsonb)', 'EXECUTE')
+     or not has_function_privilege('service_role', 'private.pca_fila_reservar(integer,integer)', 'EXECUTE')
+     or not has_function_privilege('service_role', 'private.pca_marcar_descoberta(integer,text[],text[])', 'EXECUTE') then
+    v_falhas := v_falhas || 'service_role sem acesso à fila ou às funções'::text;
+  end if;
+
+  -- ENF
+  perform private.pca_fila_enfileirar(jsonb_build_array(
+    jsonb_build_object('id_pca_pncp', 'CHK-FILA-A', 'orgao_cnpj', '99000001000101', 'ano', 2099, 'sequencial', 1,
+                       'motivo', 'novo', 'plano', '{"x":1}'::jsonb, 'data_atualizacao_fonte', '2099-01-01T00:00:00Z'),
+    jsonb_build_object('id_pca_pncp', 'CHK-FILA-B', 'orgao_cnpj', '99000001000101', 'ano', 2099, 'sequencial', 2,
+                       'motivo', 'novo')));
+  perform private.pca_fila_enfileirar(jsonb_build_array(
+    jsonb_build_object('id_pca_pncp', 'CHK-FILA-A', 'orgao_cnpj', '99000001000101', 'ano', 2099, 'sequencial', 1,
+                       'motivo', 'alterado', 'data_atualizacao_fonte', '2099-02-01T00:00:00Z')));
+  select count(*) into v_n from private.pca_plano_fila where id_pca_pncp = 'CHK-FILA-A';
+  if v_n <> 1 then
+    v_falhas := v_falhas || format('reenfileirar duplicou: %s linhas abertas de CHK-FILA-A', v_n);
+  end if;
+  if (select motivo || '|' || (plano is not null)::text from private.pca_plano_fila where id_pca_pncp = 'CHK-FILA-A')
+     <> 'alterado|true' then
+    v_falhas := v_falhas || 'reenfileirar não atualizou o motivo ou perdeu o cabeçalho do plano'::text;
+  end if;
+
+  -- RES
+  insert into private.pca_plano_fila (id_pca_pncp, orgao_cnpj, ano, sequencial, motivo, status, tentativas)
+    values ('CHK-FILA-FEITO', '99000001000101', 2099, 3, 'novo', 'feito', 0),
+           ('CHK-FILA-ESGOTADO', '99000001000101', 2099, 4, 'novo', 'erro', 5),
+           ('CHK-FILA-ERRO-RECENTE', '99000001000101', 2099, 5, 'novo', 'erro', 1);
+  select count(*) into v_n from private.pca_fila_reservar(1, 5) r where r.id_pca_pncp like 'CHK-FILA-%';
+  if v_n > 1 then
+    v_falhas := v_falhas || format('reservar com limite 1 devolveu %s linhas', v_n);
+  end if;
+  select count(*) into v_n from private.pca_fila_reservar(100, 5) r
+   where r.id_pca_pncp in ('CHK-FILA-FEITO', 'CHK-FILA-ESGOTADO', 'CHK-FILA-ERRO-RECENTE');
+  if v_n <> 0 then
+    v_falhas := v_falhas || 'reservar pegou plano feito, erro esgotado ou erro de menos de 10 min'::text;
+  end if;
+  select id into v_id_proc from private.pca_plano_fila where id_pca_pncp = 'CHK-FILA-A';
+  if (select status from private.pca_plano_fila where id = v_id_proc) <> 'processando' then
+    v_falhas := v_falhas || 'reservar não marcou o plano como processando'::text;
+  end if;
+  perform private.pca_fila_enfileirar(jsonb_build_array(
+    jsonb_build_object('id_pca_pncp', 'CHK-FILA-A', 'orgao_cnpj', '99000001000101', 'ano', 2099, 'sequencial', 1,
+                       'motivo', 'alterado')));
+  if (select status from private.pca_plano_fila where id = v_id_proc) <> 'processando' then
+    v_falhas := v_falhas || 'reenfileirar tirou o plano de processando'::text;
+  end if;
+
+  -- DESC
+  insert into public.pca_planos (id_pca_pncp, ano_exercicio, orgao_cnpj, titulo, payload_hash, ativo,
+                                 descoberta_ausente_seguidas)
+    values ('CHK-FILA-P-VISTO', 2099, '99000001000101', 'chk', 'chk', true, 3),
+           ('CHK-FILA-P-AUSENTE', 2099, '99000001000101', 'chk', 'chk', true, 1),
+           ('CHK-FILA-P-OUTRA-CLASSE', 2099, '99000001000101', 'chk', 'chk', true, 0);
+  select id into v_p1 from public.pca_planos where id_pca_pncp = 'CHK-FILA-P-AUSENTE';
+  insert into public.pca_itens (pca_plano_id, numero_item, classe_material_servico, payload_hash, ativo)
+    values (v_p1, 1, '7830', 'chk', true),
+           ((select id from public.pca_planos where id_pca_pncp = 'CHK-FILA-P-OUTRA-CLASSE'), 1, '7220', 'chk', true);
+  perform private.pca_marcar_descoberta(2099, array['CHK-FILA-P-VISTO'], array['7830']);
+  if (select descoberta_ausente_seguidas from public.pca_planos where id_pca_pncp = 'CHK-FILA-P-VISTO') <> 0 then
+    v_falhas := v_falhas || 'plano visto não zerou o contador'::text;
+  end if;
+  if (select descoberta_ausente_seguidas from public.pca_planos where id_pca_pncp = 'CHK-FILA-P-AUSENTE') <> 2 then
+    v_falhas := v_falhas || 'plano ausente com item 7830 não somou 1'::text;
+  end if;
+  if (select descoberta_ausente_seguidas from public.pca_planos where id_pca_pncp = 'CHK-FILA-P-OUTRA-CLASSE') <> 0 then
+    v_falhas := v_falhas || 'plano só com item de outra classe somou ausência'::text;
+  end if;
+
+  -- CRON (só onde o pg_cron existe)
+  if to_regclass('cron.job') is not null then
+    select count(*) into v_n from cron.job
+     where jobname in ('licitagym-sync-pncp-pca-fila', 'licitagym-sync-pncp-pca-fila-continuacao',
+                       'licitagym-sync-pncp-pca-reconciliacao')
+       and command like '%"rotina"%';
+    if v_n <> 3 then
+      v_falhas := v_falhas || format('jobs da fila do PCA: %s de 3 com "rotina"', v_n);
+    end if;
+  else
+    raise notice 'pca_plano_fila_check: sem pg_cron, checagem dos jobs pulada';
+  end if;
+
+  if array_length(v_falhas, 1) > 0 then
+    raise exception 'ACL CHECK FALHOU (pca_plano_fila): %', array_to_string(v_falhas, '; ');
+  end if;
+  raise notice 'SUCESSO: pca_plano_fila_check';
+end
+$chk$;
+
+rollback;

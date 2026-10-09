@@ -49,7 +49,7 @@ function chunks<T>(values: T[], size = IN_CHUNK): T[][] {
  * `select columns from table where column in (values) [and extra.column in (extra.values)]`, em blocos e
  * paginado com ordem estável por `id`. Erro de leitura lança: não é "nada no banco".
  */
-async function selectIn(
+export async function selectIn(
   client: SupabaseClient,
   table: string,
   columns: string,

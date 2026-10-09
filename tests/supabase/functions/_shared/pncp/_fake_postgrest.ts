@@ -16,6 +16,12 @@ export const CHAVES_UNICAS: Record<string, string[]> = {
   catalogo_ponte: ["catalogo_item_id", "entidade_tipo", "entidade_id"],
 };
 
+/** Defaults de coluna do schema real (aplicados no insert, como o Postgres). */
+export const DEFAULTS: Record<string, Row> = {
+  pca_planos: { ativo: true },
+  pca_itens: { ativo: true },
+};
+
 export type Falha = { table: string; op: "select" | "insert" | "update" | "upsert" };
 
 export class FakePostgrest {
@@ -69,6 +75,24 @@ export class FakePostgrest {
     return new Builder(this, table);
   }
 
+  /** Um só espaço de tabelas: `schema("private").from("x")` lê a mesma tabela "x". */
+  schema(_nome: string) {
+    return this;
+  }
+
+  /** Funções SQL simuladas pelo teste: rpcs[nome](args, db) devolve `data`; lançar vira `error`. */
+  rpcs: Record<string, (args: Row, db: FakePostgrest) => unknown> = {};
+  rpc(nome: string, args: Row): Promise<Resp> {
+    this.conta(nome, "rpc");
+    const fn = this.rpcs[nome];
+    if (!fn) return Promise.resolve({ data: null, error: { message: `rpc ${nome} não simulada` } });
+    try {
+      return Promise.resolve({ data: fn(args, this), error: null });
+    } catch (e) {
+      return Promise.resolve({ data: null, error: { message: e instanceof Error ? e.message : String(e) } });
+    }
+  }
+
   /** usado pelo Builder */
   executar(b: Builder): Resp {
     const { table, op } = b;
@@ -103,7 +127,7 @@ export class FakePostgrest {
         if (k && chaves.has(k)) return { data: null, error: { message: `duplicate key ${table} ${k}` } };
         if (k) chaves.add(k);
       }
-      const gravados = novos.map((r) => ({ id: this.idPara(table, r), ...structuredClone(r) }));
+      const gravados = novos.map((r) => ({ id: this.idPara(table, r), ...DEFAULTS[table], ...structuredClone(r) }));
       all.push(...gravados);
       return this.formato(b, gravados.map((r) => projetar(r, b.colunas)));
     }
@@ -127,7 +151,7 @@ export class FakePostgrest {
       vistos.add(k);
       const atual = all.find((x) => cols.every((c) => String(x[c]) === String(r[c])));
       if (atual) Object.assign(atual, structuredClone(r));
-      else all.push({ id: this.idPara(table, r), ...structuredClone(r) });
+      else all.push({ id: this.idPara(table, r), ...DEFAULTS[table], ...structuredClone(r) });
     }
     return { data: null, error: null };
   }
@@ -192,6 +216,10 @@ class Builder implements PromiseLike<Resp> {
   }
   neq(c: string, v: unknown) {
     this.filtros.push((r) => String(r[c]) !== String(v));
+    return this;
+  }
+  gte(c: string, v: number) {
+    this.filtros.push((r) => Number(r[c]) >= v);
     return this;
   }
   in(c: string, vs: unknown[]) {

@@ -1,0 +1,177 @@
+-- Spec 0012, PR 2 (#289): fila de planos do PCA.
+--
+-- Por quê: a consulta /pca/ por classe pula itens na paginação (medido em 09/10/2026), então os itens passam a vir da
+-- integração por plano (/orgaos/{cnpj}/pca/{ano}/{seq}/itens). A descoberta (consulta por classe) enfileira os planos
+-- novos ou alterados; a carga tira planos da fila em fatias cronometradas.
+--
+-- O que muda:
+--   1. private.pca_plano_fila: um plano por linha aberta (pendente, processando ou erro); feito fica como histórico.
+--   2. public.pca_planos.descoberta_ausente_seguidas: quantas descobertas completas seguidas não viram o plano.
+--      A reconciliação só inativa plano ausente em 2 descobertas seguidas e sem item do escopo na integração.
+--   3. Funções (só service_role, security invoker):
+--      private.pca_fila_enfileirar(jsonb), private.pca_fila_reservar(int, int) e
+--      private.pca_marcar_descoberta(int, text[], text[]).
+--
+-- Quem lê/escreve: só a Edge Function sync-pncp-pca (service_role, por client.schema('private')).
+-- Aditiva e idempotente. Nenhum cron muda aqui (ver 20261009210100_cron_pca_fila.sql).
+-- Verificar: supabase/tests/pca_plano_fila_check.sql.
+
+begin;
+
+create table if not exists private.pca_plano_fila (
+  id bigint generated always as identity primary key,
+  id_pca_pncp text not null,
+  orgao_cnpj text not null,
+  ano integer not null,
+  sequencial integer not null,
+  motivo text not null,
+  -- cabeçalho do plano como veio da consulta (sem itens); nulo para plano só conhecido do banco (motivo ausente)
+  plano jsonb,
+  data_atualizacao_fonte timestamptz,
+  status text not null default 'pendente',
+  tentativas integer not null default 0,
+  erro text,
+  chain_id uuid,
+  criado_em timestamptz not null default now(),
+  atualizado_em timestamptz not null default now(),
+  processado_em timestamptz
+);
+
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'pca_plano_fila_motivo_check') then
+    alter table private.pca_plano_fila add constraint pca_plano_fila_motivo_check
+      check (motivo in ('novo', 'alterado', 'backfill', 'reconciliacao', 'ausente'));
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'pca_plano_fila_status_check') then
+    alter table private.pca_plano_fila add constraint pca_plano_fila_status_check
+      check (status in ('pendente', 'processando', 'feito', 'erro'));
+  end if;
+end
+$$;
+
+-- Um plano aberto por vez: reenfileirar atualiza a linha aberta em vez de duplicar.
+create unique index if not exists pca_plano_fila_aberto_uq
+  on private.pca_plano_fila (id_pca_pncp)
+  where status in ('pendente', 'processando', 'erro');
+
+-- Reserva: pendentes e erros por ordem de chegada; saúde (PR 3): abertos antigos.
+create index if not exists pca_plano_fila_status_criado_idx
+  on private.pca_plano_fila (status, criado_em);
+
+comment on table private.pca_plano_fila is
+  'Spec 0012: fila de planos do PCA a carregar pela integração por plano. Escrita só pelo sync-pncp-pca (service_role).';
+
+alter table private.pca_plano_fila enable row level security;
+revoke all on table private.pca_plano_fila from PUBLIC, anon, authenticated;
+grant select, insert, update on table private.pca_plano_fila to service_role;
+
+alter table public.pca_planos
+  add column if not exists descoberta_ausente_seguidas integer not null default 0;
+
+comment on column public.pca_planos.descoberta_ausente_seguidas is
+  'Spec 0012: descobertas completas seguidas (consulta /pca/ por classe) em que o plano não apareceu. Zera quando aparece.';
+
+-- Enfileira (ou atualiza a linha aberta de) cada plano. p_itens: array de objetos com id_pca_pncp, orgao_cnpj, ano,
+-- sequencial, motivo, plano, data_atualizacao_fonte, chain_id. Linha em processamento não volta para pendente.
+create or replace function private.pca_fila_enfileirar(p_itens jsonb)
+returns integer
+language plpgsql
+security invoker
+set search_path = ''
+as $fn$
+declare
+  v_total integer;
+begin
+  insert into private.pca_plano_fila as f
+    (id_pca_pncp, orgao_cnpj, ano, sequencial, motivo, plano, data_atualizacao_fonte, chain_id)
+  select x.id_pca_pncp, x.orgao_cnpj, x.ano, x.sequencial, x.motivo, x.plano, x.data_atualizacao_fonte, x.chain_id
+    from jsonb_to_recordset(coalesce(p_itens, '[]'::jsonb)) as x(
+      id_pca_pncp text, orgao_cnpj text, ano integer, sequencial integer, motivo text,
+      plano jsonb, data_atualizacao_fonte timestamptz, chain_id uuid)
+  on conflict (id_pca_pncp) where status in ('pendente', 'processando', 'erro')
+  do update set
+    plano = coalesce(excluded.plano, f.plano),
+    data_atualizacao_fonte = coalesce(excluded.data_atualizacao_fonte, f.data_atualizacao_fonte),
+    motivo = excluded.motivo,
+    chain_id = excluded.chain_id,
+    status = case when f.status = 'processando' then f.status else 'pendente' end,
+    atualizado_em = now();
+  get diagnostics v_total = row_count;
+  return v_total;
+end
+$fn$;
+
+-- Reserva até p_limite planos: pendentes, erros com menos de p_max_tentativas e parados há mais de 10 min (recuo
+-- entre tentativas: a mesma invocação não repete o plano que acabou de falhar) e processando abandonados (> 15 min,
+-- worker que morreu). for update skip locked: duas invocações não pegam o mesmo plano.
+create or replace function private.pca_fila_reservar(p_limite integer, p_max_tentativas integer default 5)
+returns setof private.pca_plano_fila
+language sql
+security invoker
+set search_path = ''
+as $fn$
+  update private.pca_plano_fila f
+     set status = 'processando', atualizado_em = now()
+   where f.id in (
+     select g.id
+       from private.pca_plano_fila g
+      where g.status = 'pendente'
+         or (g.status = 'erro' and g.tentativas < p_max_tentativas
+             and g.atualizado_em < now() - interval '10 minutes')
+         or (g.status = 'processando' and g.atualizado_em < now() - interval '15 minutes')
+      order by g.criado_em, g.id
+      limit greatest(p_limite, 0)
+      for update skip locked
+   )
+  returning f.*;
+$fn$;
+
+-- Depois de uma descoberta COMPLETA (todas as páginas de todas as classes lidas sem erro): zera o contador dos planos
+-- vistos e soma 1 nos planos ativos do ano, com item ativo das classes descobertas, que não apareceram.
+-- Devolve quantos planos ficaram com 2 ou mais ausências seguidas.
+create or replace function private.pca_marcar_descoberta(p_ano integer, p_vistos text[], p_classes text[])
+returns integer
+language plpgsql
+security invoker
+set search_path = ''
+as $fn$
+declare
+  v_ausentes integer;
+begin
+  update public.pca_planos p
+     set descoberta_ausente_seguidas = 0
+   where p.ano_exercicio = p_ano
+     and p.id_pca_pncp = any(p_vistos)
+     and p.descoberta_ausente_seguidas <> 0;
+
+  update public.pca_planos p
+     set descoberta_ausente_seguidas = p.descoberta_ausente_seguidas + 1
+   where p.ano_exercicio = p_ano
+     and p.ativo
+     and not (p.id_pca_pncp = any(p_vistos))
+     and exists (
+       select 1 from public.pca_itens i
+        where i.pca_plano_id = p.id and i.ativo and i.classe_material_servico = any(p_classes)
+     );
+
+  select count(*) into v_ausentes
+    from public.pca_planos p
+   where p.ano_exercicio = p_ano and p.ativo and p.descoberta_ausente_seguidas >= 2;
+  return v_ausentes;
+end
+$fn$;
+
+comment on function private.pca_fila_enfileirar(jsonb) is 'Spec 0012: enfileira planos do PCA. EXECUTE só service_role.';
+comment on function private.pca_fila_reservar(integer, integer) is 'Spec 0012: reserva planos da fila (skip locked). EXECUTE só service_role.';
+comment on function private.pca_marcar_descoberta(integer, text[], text[]) is
+  'Spec 0012: atualiza descoberta_ausente_seguidas depois de descoberta completa. EXECUTE só service_role.';
+
+revoke all on function private.pca_fila_enfileirar(jsonb) from PUBLIC, anon, authenticated, service_role;
+revoke all on function private.pca_fila_reservar(integer, integer) from PUBLIC, anon, authenticated, service_role;
+revoke all on function private.pca_marcar_descoberta(integer, text[], text[]) from PUBLIC, anon, authenticated, service_role;
+grant execute on function private.pca_fila_enfileirar(jsonb) to service_role;
+grant execute on function private.pca_fila_reservar(integer, integer) to service_role;
+grant execute on function private.pca_marcar_descoberta(integer, text[], text[]) to service_role;
+
+commit;

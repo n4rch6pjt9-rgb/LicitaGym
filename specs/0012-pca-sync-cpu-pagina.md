@@ -1,6 +1,6 @@
 # 0012: Sincronizar o PCA em fatias com gravação em lote, sem estourar a CPU da Edge Function
 
-- **Status:** rascunho (reescrita em 09/10/2026, depois da avaliação das APIs)
+- **Status:** aprovada (09/10/2026; decisões do Marcelo em "Decisões")
 - **Issue:** #289 (P1)
 - **Área:** edge-functions (`sync-pncp-pca`), pncp (`_shared/pncp/upsert.ts`, `pca-origem-link.ts`,
   `integracao-client.ts`, `consulta-client.ts`), migrations (fila e saúde), saúde operacional
@@ -68,7 +68,7 @@ descoberta (T1, 13 req/classe/ano) ──► fila de planos ──► carga por 
      `08969291000132-0-000001/2026` (464).
    - **Alvo:** o normalizador e a gravação rodam contra um cliente falso que conta chamadas. O número de chamadas e o tempo
      de CPU por plano, antes e depois, vão para o PR.
-1. **Descoberta (fase A).**
+2. **Descoberta (fase A).**
    - **Leitura:** lê as páginas da consulta `/pca/?anoPca&codigoClassificacaoSuperior` com `tamanhoPagina=500`, por
      classe do escopo. Hoje é só 7830.
    - **Por plano:** deduplica por `idPcaPncp` e guarda `idPcaPncp`, CNPJ, unidade, sequencial e
@@ -79,13 +79,13 @@ descoberta (T1, 13 req/classe/ano) ──► fila de planos ──► carga por 
      distintos).
    - **Relógio:** a página 1 fria levou de 46 a 57 s. Há nova tentativa com espera, e há checkpoint por página. Se o
      orçamento de tempo acabar, a fase A termina `incompleta` e retoma da página seguinte.
-2. **Fila de planos.** Tabela nova `private.pca_plano_fila`, com uma linha por plano e ano. As colunas:
+3. **Fila de planos.** Tabela nova `private.pca_plano_fila`, com uma linha por plano e ano. As colunas:
    `id_pca_pncp`, `cnpj`, `ano`, `sequencial`, `motivo` (`novo` | `alterado` | `backfill` | `reconciliacao`),
    `data_atualizacao_fonte`, `status` (`pendente` | `processando` | `feito` | `erro`), `tentativas`, `erro`,
    `chain_id` e timestamps.
 
    A tabela é idempotente por `(id_pca_pncp, chain_id)` e não tem grant para `anon` nem `authenticated`.
-3. **Carga por plano (fase B), cronometrada em fatias.**
+4. **Carga por plano (fase B), cronometrada em fatias.**
    - **Leitura:** cada invocação tira planos `pendente` da fila (`for update skip locked`) até um orçamento de tempo `T`
      (proposta: 90 s, configurável no body e no env) ou `N` planos (proposta: 60).
    - **Requisição por plano:** `GET /api/pncp/v1/orgaos/{cnpj}/pca/{ano}/{seq}/itens?pagina=1&tamanhoPagina=2000`,
@@ -108,7 +108,7 @@ descoberta (T1, 13 req/classe/ano) ──► fila de planos ──► carga por 
      Os demais campos têm o mesmo nome. A normalização produz **a mesma linha e o mesmo `payload_hash`** que o caminho
      atual produziria para o mesmo item (CA-3).
    - **Ritmo:** 1 req/s ao PNCP. Usa o orçamento de rate limit compartilhado do `consulta-client`/`integracao-client`.
-4. **Gravação em lote por plano.** Substitui o item a item:
+5. **Gravação em lote por plano.** Substitui o item a item:
    - **plano:** upsert do cabeçalho, com histórico só se o hash mudar;
    - **itens:** um select de `numero_item, id, payload_hash` por `pca_plano_id`, seguido de um upsert em lote dos novos e
      alterados e de uma linha em `pca_alteracoes` por alterado;
@@ -120,12 +120,12 @@ descoberta (T1, 13 req/classe/ano) ──► fila de planos ──► carga por 
 6. **Rotinas.**
    - **Incremental diário:**
      - no cron atual (06:13), a fase A roda com `motivo` `novo`/`alterado`;
-     - em seguida, a fase B roda em elos até a fila esvaziar ou até um teto de elos por dia (pergunta 1);
+     - em seguida, a fase B roda em elos até a fila esvaziar, pelo cron de continuação (decisão 2);
      - esperado pelos números de 09/10: de 38 a 78 planos por dia, de 1 a 2 elos.
    - **Backfill cronometrado:**
      - `{"rotina":"backfill","ano":2026}` roda a fase A e enfileira **todos** os planos descobertos (`motivo = backfill`);
      - a fase B processa em fatias: 935 planos a 1 req/s dão uns 16 min de requisição, em cerca de 16 elos de 60 planos;
-     - é disparado pelo Marcelo depois do merge (pergunta 3).
+     - é disparado pelo Marcelo depois do incremental conferido (decisão 4).
    - **Reconciliação mensal:**
      - cron no dia 1, às 05:00;
      - enfileira todos os planos ativos do banco e os da descoberta (`motivo = reconciliacao`), e a fase B reprocessa;
@@ -137,8 +137,7 @@ descoberta (T1, 13 req/classe/ano) ──► fila de planos ──► carga por 
      plano (passo 4) e, para planos, pela regra da reconciliação.
 7. **Encadeamento.** Um cron de continuação a cada 10 min, das 06:20 às 08:00, chama a fase B com `somente_retomada: true`.
    Se não houver plano `pendente`, ela sai sem trabalho. O padrão é o mesmo de
-   `licitagym-sync-compras-catmat-catalogo-continuacao`. O backfill usa o mesmo cron. A alternativa (o elo chamar o
-   próximo via `pg_net`) está na pergunta 1.
+   `licitagym-sync-compras-catmat-catalogo-continuacao`. O backfill usa o mesmo cron (decisão 2).
 8. **Saúde.**
    - **`pca_sync_sem_concluir_horas`:** crítico quando a última fase A `concluida` tem mais de 36 h.
    - **`pca_fila_atrasada`:** crítico quando há plano `pendente` ou `erro` há mais de 24 h. Atenção quando há plano com
@@ -204,12 +203,19 @@ descoberta (T1, 13 req/classe/ano) ──► fila de planos ──► carga por 
 - **Dado oficial x derivado:** os itens vêm do PNCP (integração), e os campos são os mesmos de hoje. A fila e as
   contagens são operacionais. Nenhum valor é inventado.
 
+## Decisões (Marcelo, 09/10/2026)
+
+1. **Incremental:** só os planos que mudaram. A descoberta é por `dataAtualizacaoGlobalPCA`, e os itens vêm da
+   integração por plano. O `/pca/atualizacao` fica fora.
+2. **Encadeamento:** um cron de continuação a cada 10 min, das 06:20 às 08:00, com `somente_retomada: true` (padrão do
+   catmat). Não há chamada encadeada via `pg_net`.
+3. **Saúde:** `pca_sync_sem_concluir_horas` é crítico com mais de 36 h; `pca_fila_atrasada` é crítico com plano
+   `pendente` ou `erro` há mais de 24 h.
+4. **Primeira carga depois do merge:** primeiro um incremental de um dia, com a contagem conferida e anotada no PR. Só
+   depois vem o backfill completo (cerca de 935 planos, umas 16 fatias).
+5. **Ordem:** a 0012 vem antes da 0010. A 0010 entra depois, com uma reconciliação que regrava os itens com os campos
+   oficiais.
+
 ## Perguntas em aberto
 
-2. **Encadeamento:** um cron de continuação a cada 10 min das 06:20 às 08:00, com o mesmo padrão do catmat (proposta), ou
-   o elo chamar o próximo via `pg_net`, com um teto de elos por dia?
-3. **Limiares da saúde:** 36 h sem fase A `concluida` e 24 h com plano `pendente` são críticos?
-4. **Backfill depois do merge:** rodar logo o backfill completo (cerca de 16 elos), ou primeiro só o incremental para
-   conferir a contagem de um dia?
-5. **Ordem com a 0010:** a 0010 muda o normalizador e o hash. Implementar a 0012 primeiro, para trazer o que falta com o
-   hash atual, e a 0010 depois, com uma reconciliação?
+Nenhuma.

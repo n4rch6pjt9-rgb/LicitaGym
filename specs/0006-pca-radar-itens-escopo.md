@@ -30,7 +30,7 @@
 |---|---|---|
 | CA-1 | **Dado** um usuário sem JWT válido, **quando** chama `visao=radar`, **então** recebe 401, e nenhuma consulta com `service_role` é feita. | Deno `tests/supabase/functions/api_pncp_pca_radar_test.ts` |
 | CA-2 | **Dado** um usuário autenticado, **quando** chama `visao=radar&ano=2026`, **então** recebe 200 com `{ itens, total, valor_total_escopo, page, limit }`, lido de `v_bi_pca_radar` com `service_role` e filtrado por `ano_pca`. | idem (mock) |
-| CA-3 | Os filtros são aplicados no banco: `mes` (YYYY-MM), `pdm`, `orgao` (CNPJ ou parte do nome), `fonte` (pncp ou pgc), `valor_min`, `so_confirmados`. Parâmetro inválido devolve 400 com mensagem, e não lista vazia. | idem |
+| CA-3 | Os filtros são aplicados no banco: `mes` (YYYY-MM), `mes_de` (YYYY-MM, a partir do mês inclusive; item sem mês fica de fora; exclusivo com `mes`; adicionado em 09/10 pela revisão de UX: em outubro, a ordem por data abria pelos meses já passados), `pdm`, `orgao` (CNPJ ou parte do nome), `fonte` (pncp ou pgc), `valor_min`, `so_confirmados`. Parâmetro inválido devolve 400 com mensagem, e não lista vazia. | idem |
 | CA-4 | A ordenação é por `data_prevista` (padrão, ascendente: o que vira compra primeiro aparece antes) ou por `valor_total` (descendente), com os nulos por último. A paginação usa `limit` até 100. | idem |
 | CA-5 | Valor, data ou órgão ausentes chegam como `null`: nenhum 0 nem texto inventado. `valor_total_escopo` soma só os valores conhecidos e informa quantos itens ficaram sem valor. | idem |
 | CA-6 | Um erro do banco devolve 500 com mensagem, nunca `itens: []`. | idem |

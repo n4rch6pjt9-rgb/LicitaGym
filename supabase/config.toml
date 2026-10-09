@@ -162,3 +162,7 @@ verify_jwt = true
 # sync-portal-compras (issue #266): Bearer SYNC_CRON_SECRET validado no código. Uma vez por dia.
 [functions.sync-portal-compras]
 verify_jwt = false
+
+# sync-cnpj-verificacao (spec 0008): Bearer SYNC_CRON_SECRET validado no código. Uma vez por semana.
+[functions.sync-cnpj-verificacao]
+verify_jwt = false

@@ -47,21 +47,31 @@
 
 ### Cobertura (backend)
 
-`tests/supabase/functions/api_pncp_pca_radar_test.ts`, com 11 testes nomeados pelo CA:
-- **CA-1:** sem JWT, 401 e nenhum cliente service_role criado.
-- **CA-2:** envelope, view e `ano_pca`.
-- **CA-3:** três testes: cada filtro chega ao banco; curingas do PostgREST são removidos de `orgao`; 13 parâmetros
-  inválidos dão 400.
-- **CA-4:** dois testes: ordem por data e por valor, com nulos por último; paginação.
-- **CA-5:** dois testes: ausentes chegam como null, a soma é em centavos sobre todo o recorte, e sem nenhum valor a
-  soma é null.
-- **CA-6:** erro do banco dá 500.
-- **CA-7:** as visões existentes e o GET padrão continuam despachados.
+`tests/supabase/functions/api_pncp_pca_radar_test.ts`, com 15 testes nomeados pelo CA:
+
+| CA | Testes | O que provam |
+|---|---|---|
+| CA-1 | 1 | sem JWT, 401, e nenhum cliente service_role criado |
+| CA-2 | 1 | o envelope, a leitura de `v_bi_pca_radar` e o filtro `ano_pca` |
+| CA-3 | 3 | cada filtro chega ao banco; curingas do PostgREST são removidos de `orgao`; 15 parâmetros inválidos dão 400 (inclusive raiz de CNPJ e `orgao` com mais de 200 caracteres) |
+| CA-4 | 3 | ordem por data e por valor, com nulos por último; desempate por todas as colunas, igual na listagem e na soma; paginação |
+| CA-5 | 4 | ausentes chegam como null; soma em centavos sobre todo o recorte; recorte sem nenhum valor dá `null`; soma em 2 páginas de 1.000; acima do teto de 50.000, 500 "Não verificado" sem ler a soma |
+| CA-6 | 2 | erro do banco dá 500 com mensagem genérica, sem o detalhe do banco; count diferente das linhas lidas dá 500 "Não verificado" |
+| CA-7 | 1 | as visões existentes e o GET padrão continuam despachados |
 
 **Regra de arredondamento de `valor_total_escopo`:**
 - cada valor é convertido em centavos a partir do texto decimal, arredondando meio para longe do zero na 3ª casa;
 - a soma é feita em inteiros e dividida por 100 no fim;
 - quando nenhum item do recorte tem valor, a soma é `null`, não 0.
+
+**Diferença conhecida:** `v_bi_orgaos_match` soma primeiro e arredonda depois (`numeric(18,2)`). Como os valores são
+`numeric(18,4)`, as duas telas podem diferir em centavos para o mesmo recorte.
+
+**Limites conhecidos:**
+- A view não tem chave; o desempate usa todas as colunas da resposta, e só empatam linhas idênticas.
+- Se um item do PNCP tiver dois PDMs confirmados, a view gera duas linhas. Em 09/10 havia 0 casos.
+- Cada página recalcula a soma, com um count e `ceil(total/1000)` leituras da view.
+- Uma chave estável ou uma RPC de soma exigem migration e ficam para issue própria.
 
 ## Fora de escopo
 

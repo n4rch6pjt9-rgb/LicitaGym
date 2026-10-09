@@ -30,8 +30,11 @@ const COLUNAS = [
   "metodo_identificacao",
 ].join(", ");
 
-/** Desempate estável (a view não tem id): sem ele, a paginação pode repetir ou pular linhas empatadas. */
-const DESEMPATE = ["fonte", "orgao_cnpj", "codigo_uasg", "numero_item_pncp", "codigo_item", "descricao_item"];
+/**
+ * Desempate por TODAS as colunas da resposta (a view não tem id). Duas linhas que empatam em tudo são idênticas, então
+ * trocar uma pela outra entre execuções não muda nem a página nem a soma.
+ */
+export const DESEMPATE = COLUNAS.split(", ").filter((c) => c !== "data_prevista" && c !== "valor_total");
 
 const LIMIT_PADRAO = 20;
 const LIMIT_MAX = 100;
@@ -112,7 +115,9 @@ export function parseRadarParams(url: URL): RadarParams | { error: string } {
     const o = orgaoRaw!.trim();
     if (o.length > 200) return { error: "orgao inválido: termo longo demais" };
     const digitos = o.replace(/\D/g, "");
-    if (/^[\d.\/\-\s]+$/.test(o) && digitos.length === 14) {
+    if (/^[\d.\/\-\s]+$/.test(o)) {
+      // Só número: tem que ser o CNPJ completo (raiz ou pedaço de CNPJ não vira busca por nome).
+      if (digitos.length !== 14) return { error: "orgao inválido: use o CNPJ completo (14 dígitos) ou parte do nome" };
       orgaoCnpj = digitos;
     } else {
       // Curingas e separadores do PostgREST não viram padrão: o termo é literal.
@@ -183,7 +188,9 @@ function aplicarFiltros(q: RadarQuery, p: RadarParams): RadarQuery {
 function aplicarOrdem(q: RadarQuery, ordem: Ordem): RadarQuery {
   q = ordem === "valor"
     ? q.order("valor_total", { ascending: false, nullsFirst: false })
-    : q.order("data_prevista", { ascending: true, nullsFirst: false });
+        .order("data_prevista", { ascending: true, nullsFirst: false })
+    : q.order("data_prevista", { ascending: true, nullsFirst: false })
+        .order("valor_total", { ascending: false, nullsFirst: false });
   for (const col of DESEMPATE) q = q.order(col, { ascending: true, nullsFirst: false });
   return q;
 }
@@ -223,12 +230,21 @@ function itemDe(raw: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
-/** Soma de todo o recorte filtrado (não só da página). Erro ou recorte acima do teto: exceção, nunca soma parcial. */
+/**
+ * Soma de todo o recorte filtrado (não só da página). O teto é checado pelo count ANTES de ler; o número de páginas
+ * sai do count. Erro, recorte acima do teto ou linhas lidas ≠ count: exceção, nunca soma parcial.
+ */
 async function somarEscopo(client: RadarClient, p: RadarParams, total: number) {
+  if (total > PAGINA_SOMA * MAX_PAGINAS_SOMA) {
+    throw new RadarNaoVerificado(
+      `Não verificado: recorte com ${total} itens, acima de ${PAGINA_SOMA * MAX_PAGINAS_SOMA}; refine o filtro.`,
+    );
+  }
   let somaCentavos = 0;
   let conhecidos = 0;
   let lidos = 0;
-  for (let pagina = 0; pagina < MAX_PAGINAS_SOMA; pagina++) {
+  const paginas = Math.ceil(total / PAGINA_SOMA);
+  for (let pagina = 0; pagina < paginas; pagina++) {
     const from = pagina * PAGINA_SOMA;
     const q = aplicarOrdem(aplicarFiltros(client.from(RADAR_VIEW).select("valor_total"), p), p.ordem)
       .range(from, from + PAGINA_SOMA - 1);
@@ -243,14 +259,13 @@ async function somarEscopo(client: RadarClient, p: RadarParams, total: number) {
       }
     }
     lidos += linhas.length;
-    if (linhas.length < PAGINA_SOMA) {
-      if (lidos !== total) {
-        throw new RadarNaoVerificado(`Não verificado: a soma leu ${lidos} itens e a contagem deu ${total} (base mudou durante a leitura).`);
-      }
-      return { valor: conhecidos > 0 ? somaCentavos / 100 : null, semValor: lidos - conhecidos };
-    }
   }
-  throw new RadarNaoVerificado(`Não verificado: recorte acima de ${PAGINA_SOMA * MAX_PAGINAS_SOMA} itens; refine o filtro.`);
+  if (lidos !== total) {
+    throw new RadarNaoVerificado(
+      `Não verificado: a soma leu ${lidos} itens e a contagem deu ${total} (base mudou durante a leitura).`,
+    );
+  }
+  return { valor: conhecidos > 0 ? somaCentavos / 100 : null, semValor: lidos - conhecidos };
 }
 
 export async function responderRadar(req: Request, url: URL, deps: RadarDeps = {}): Promise<Response> {

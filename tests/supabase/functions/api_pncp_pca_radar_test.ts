@@ -2,7 +2,7 @@
 // Usa um PostgREST falso em memória (eq, ilike, gte, order com nulos, range e contagem) e registra cada chamada,
 // para provar que os filtros vão para o banco e que nada é lido com service_role antes da autenticação.
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { RADAR_VIEW, type RadarClient, responderRadar } from "../../../supabase/functions/api-pncp-pca/radar.ts";
+import { DESEMPATE, RADAR_VIEW, type RadarClient, responderRadar } from "../../../supabase/functions/api-pncp-pca/radar.ts";
 
 type Linha = Record<string, unknown>;
 
@@ -201,7 +201,7 @@ Deno.test("CA-3: parâmetro inválido devolve 400 com mensagem, não lista vazia
     const qs of [
       "&ano=abc", "&mes=2026-13", "&mes=03/2026", "&pdm=abc", "&fonte=sesc", "&valor_min=-1", "&valor_min=x",
       "&so_confirmados=talvez", "&page=0", "&limit=0", "&limit=101", "&ordem=nome", "&orgao=%25%25",
-      `&orgao=${"a".repeat(201)}`,
+      `&orgao=${"a".repeat(201)}`, "&orgao=12.345.678",
     ]
   ) {
     const { res, body, clientes } = await chamar(qs, BASE);
@@ -303,4 +303,47 @@ Deno.test("CA-7: index.ts mantém GET padrão e as visões existentes, e despach
   }
   assert(src.includes('.from("pca_planos")'));
   assert(src.includes("responderRadar(req, url)"));
+});
+
+Deno.test("CA-4: desempate por todas as colunas, na listagem e na soma", async () => {
+  const { chamadas } = await chamar("&ano=2026", BASE);
+  const ordens = chamadas.filter((c) => c.metodo === "order").map((c) => c.args[0]);
+  const esperado = ["data_prevista", "valor_total", ...DESEMPATE];
+  // listagem e soma usam a mesma sequência
+  assertEquals(ordens, [...esperado, ...esperado]);
+  assertEquals(DESEMPATE.length, 16);
+});
+
+Deno.test("CA-5: soma em várias páginas de 1.000 lê todo o recorte", async () => {
+  const linhas = Array.from({ length: 1001 }, (_, i) =>
+    linha({ numero_item_pncp: i + 1, valor_total: i === 1000 ? null : 1.5, data_prevista: "2026-01-01" }));
+  const { res, body, chamadas } = await chamar("&ano=2026&limit=5", linhas);
+  assertEquals(res.status, 200);
+  assertEquals(body.total, 1001);
+  assertEquals(body.itens.length, 5);
+  assertEquals(body.valor_total_escopo, 1500);
+  assertEquals(body.itens_sem_valor, 1);
+  const faixas = chamadas.filter((c) => c.metodo === "range").map((c) => c.args);
+  assertEquals(faixas, [[0, 4], [0, 999], [1000, 1999]]);
+});
+
+Deno.test("CA-5: recorte acima do teto dá 500 'Não verificado' sem ler a soma", async () => {
+  const leituras: string[] = [];
+  const q: Record<string, unknown> = {};
+  for (const m of ["eq", "gte", "ilike", "order", "range"]) q[m] = () => q;
+  let cols = "";
+  q.select = (c: string) => {
+    cols = c;
+    leituras.push(c);
+    return q;
+  };
+  q.then = (resolve: (r: unknown) => unknown) =>
+    Promise.resolve({ data: cols === "valor_total" ? [] : [linha({})], error: null, count: 50_001 }).then(resolve);
+  const client = { from: () => q } as unknown as RadarClient;
+  const [r, u] = req("&ano=2026");
+  const res = await responderRadar(r, u, { requireAuth: autenticado, criarCliente: () => client });
+  const body = await res.json();
+  assertEquals(res.status, 500);
+  assert(String(body.error).startsWith("Não verificado: recorte com 50001 itens"));
+  assertEquals(leituras.filter((c) => c === "valor_total").length, 0);
 });

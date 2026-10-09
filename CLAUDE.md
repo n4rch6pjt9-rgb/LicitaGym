@@ -9,6 +9,8 @@ Os `CLAUDE.md` de subpastas são logs do plugin claude-mem (histórico de sessõ
 ## O que é
 SaaS de monitoramento de licitações públicas (foco: equipamentos fitness e pisos de borracha). Este repositório
 é o backend: banco, Edge Functions e coletores. O frontend fica em `n4rch6pjt9-rgb/Dashboard---LicitaGym`.
+O produto lê compras públicas (PNCP, Compras.gov, Sistema S, Portal de Compras Públicas) e mostra ao fornecedor
+o que ele pode disputar agora, o que acompanhar e o que já foi homologado (preço, marca, vencedor), sem inventar dado.
 
 | Pasta | Conteúdo |
 |---|---|
@@ -66,7 +68,57 @@ SQL Editor com o usuário.
 | agente `revisor-migration` | revisão de migration (destrutivo, ACL, RLS, idempotência) antes do PR |
 | agente `revisor-seguranca` | revisão de segredos, auth e service_role antes do PR |
 
+## Convenções de código
+- **Edge Functions (Deno/TS):** auth sempre por `requireCronAuth` / `requireUserAuth` (com `await`) / `requireCronOrUserAuth`
+  de `_shared/http.ts`; `service_role` em `api-*` só depois de checar o usuário. Erro de página não é resultado vazio:
+  a execução fica parcial/falha. Importar de `_shared/`, nunca de `_shared_prod/` (cópia antiga, a eliminar).
+- **Python:** timeout explícito, retry com backoff e `Retry-After`; valor original guardado ao lado do normalizado;
+  `DELAY_SEGUNDOS >= 1` nos coletores. Teste unitário nunca chama API real.
+- **SQL:** uma migration por mudança, `YYYYMMDDHHMMSS_assunto.sql`, idempotente, `revoke all` + grant mínimo, RLS ligada,
+  SECURITY DEFINER com `search_path` fixo, e um `supabase/tests/<assunto>_check.sql`. Detalhe: skill `nova-migration`.
+- **Correção P0/P1** leva teste de regressão. Mudança de classificação leva contagem antes/depois (dry-run) no PR.
+- Texto (comentário, PR, mensagem de erro ao usuário) em português.
+
+## Regras de negócio de licitação (resumo; fonte: migrations e `.github/instructions/`)
+Itens com **CONFIRMAR** foram inferidos do código e ainda não foram validados pelo Marcelo como regra de produto.
+- **Fonte oficial manda.** Identificador oficial (CNPJ do órgão, UASG, nº de controle PNCP, `codigoItem` ≠ `codigoPdm`)
+  fica separado da chave interna, com proveniência. Dado ausente aparece como ausente (`AGENTS.md`).
+- **Prioridade da oportunidade:** `leads` (recebendo proposta), `monitorar` (em julgamento), `historico` (encerrada,
+  homologada, cancelada). A view `licitacoes_externas_prioridade_efetiva` só rebaixa: sinal de encerramento → `historico`;
+  prazo vencido (horário de Brasília) → `monitorar`. Status desconhecido nunca vira lead; falha de API nunca vira `historico`.
+- **Escopo:** contrato de serviço (credenciamento, locação, manutenção mesmo com peças, obra, oficineiros) nunca vira lead.
+  Termo de busca sozinho não torna a linha `forte`. Academia ao ar livre só conta junto com piso.
+  CATMAT núcleo 78/7830, extensão curada 72/7220, sem misturar automaticamente.
+- **Classificação de equipamento:** Musculação, Cárdio ou Acessórios; determinística, idempotente e editável à mão.
+- **Pisos de borracha:** SBR/EPDM (academia, crossfit, playground) = prioridade alta; piso modular PP/TPE = sinal de
+  concorrente.
+- **Taxonomia:** a fonte da verdade hoje são os JSON `services/coletor-externo/coletor/data/taxonomia-pisos-v0.2.json`
+  e `dicionario-aparelhos-v0.3.json`; o banco recebe cópia por migration, sem histórico de versão, e
+  `catalogo_itens.taxonomias` mistura atributo oficial do CATMAT com curadoria. Não gravar campo derivado nesse jsonb
+  nem mudar taxonomia sem migration; o redesenho (oficial × curadoria, versão, diff idempotente) é a issue #272.
+- **Mesma compra no PNCP:** a mesma compra publicada duas vezes (sistema do órgão + plataforma, ou republicação)
+  ganha dois números de controle. A view `licitacoes_pncp_canonica` trata como uma só as linhas com
+  `(orgao_cnpj, processo_norm, numero_edital)` iguais (ano e modalidade estão no `numero_edital`) e mostra a de prazo
+  mais recente; nada é apagado. **CONFIRMAR** como regra de produto (hoje são 11 grupos de 2).
+- **Regulamento:** PNCP segue a Lei 14.133; o Sistema S tem regulamento próprio (RLC antigo, RCA desde 2025). A coluna
+  `regulamento` está NULL em todas as linhas e nenhuma regra (status, prazo, prioridade, tarefas) a usa; o catálogo de
+  tarefas cobre só a 14.133. **CONFIRMAR** se o Sistema S precisa de fase, prazo ou tarefa própria.
+- **Preço, marca e fornecedor** vêm só de compra homologada e aparecem só no BI. Cálculo financeiro é determinístico,
+  com regra de arredondamento escrita.
+- **Pipeline:** entra só pela ação explícita "Enviar para pipeline"; descartar exige motivo.
+- **Habilitação (tenant):** documento sem validade informada vale emissão + 90 dias (marcado como calculado);
+  certidão de falência e balanço não são sanáveis. Os 90 dias são decisão de produto.
+- **Papéis:** admin da plataforma = `app_metadata.licitagym_role = 'admin'`; dentro do tenant, `admin` ou `operacao`
+  (`operacao` não vê dados bancários).
+- **Tabela com RLS e sem policy** (33 em `public`) é intencional: o cliente não lê direto, só via Edge Function
+  (validado em 08/10: nenhuma tem grant a `authenticated`, o Dashboard não lê nenhuma direto).
+- **Tenants em construção, desligados na prática** (1 empresa ativa, 0 membros, pipeline vazio). Antes de ligar:
+  todo `service_role` que lê tabela com `tenant_id` filtra por tenant (hoje `api-dashboard-oportunidades/portal.ts` e
+  `sync-portal-compras` leem `pipeline_oportunidades` sem filtro); vínculo com empresa inativa não pode cair em outra
+  (#263); `api-pipeline` passa a respeitar o papel `admin`/`operacao`; teste com duas empresas e dois usuários.
+
 ## O que o agente NÃO faz
+- Não altera schema, ACL ou dado de produção fora de migration versionada + PR (nem pelo MCP, nem por SQL avulso).
 - Não faz merge nem deploy sem o "ok" explícito do usuário (merge aplica em produção).
 - Não roda `supabase db reset/push`, `supabase migration repair`, `git push --force`, push direto na `main`,
   `terraform apply/destroy`, `wrangler deploy`, `wrangler delete`: `.claude/hooks/bloquear-destrutivo.mjs` bloqueia (casos de teste em

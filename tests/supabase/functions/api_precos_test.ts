@@ -92,6 +92,10 @@ function criarFake(opts: {
           return 0;
         });
         const total = r.length;
+        if (faixa && faixa[0] > 0 && faixa[0] >= total) {
+          const e416 = { code: "PGRST103", message: "Requested range not satisfiable", details: `0-${total}` };
+          return Promise.resolve({ data: null, error: e416, count: null }).then(resolve, reject);
+        }
         if (faixa) r = r.slice(faixa[0], faixa[1] + 1);
         return Promise.resolve({ data: r, error: null, count: contar ? total : null }).then(resolve, reject);
       },
@@ -146,6 +150,7 @@ function resumoLinha(p: Partial<Linha> = {}): Linha {
     unidade_sigla: "UN",
     unidade_nome: "UNIDADE",
     unidade_n: 9,
+    unidades: [{ sigla: "UN", nome: "UNIDADE", n: 9 }, { sigla: "PAR", nome: "PAR", n: 1 }],
     ultima_data_resultado: "2026-10-01",
     atualizado_em: "2026-10-03T02:09:15.381205+00:00",
     ...p,
@@ -222,9 +227,10 @@ Deno.test("CA-2: resumo confere o catálogo, chama a função do banco com o per
     p_fim: "2026-10-09",
     p_item: 480144,
     p_uf: "PR",
+    p_unidade: null,
   });
   assertEquals(body.fonte, FONTE);
-  assertEquals(body.filtro, { pdm: 2640, item: 480144, meses: 24, uf: "PR" });
+  assertEquals(body.filtro, { pdm: 2640, item: 480144, meses: 24, uf: "PR", unidade: null });
   assertEquals(body.periodo_inicio, "2024-10-10");
   assertEquals(body.periodo_fim, "2026-10-09");
   assertEquals(body.n, 10);
@@ -244,8 +250,15 @@ Deno.test("CA-2: resumo confere o catálogo, chama a função do banco com o per
 Deno.test("CA-2: meses padrão é 12; sem item e sem UF vão null para o banco", async () => {
   const { body, chamadas } = await chamar("action=resumo&pdm=2640", { resumo: [resumoLinha()] });
   const rpc = chamadas.find((c) => c.alvo === "precos_praticados_resumo" && c.metodo === "rpc");
-  assertEquals(rpc?.args[0], { p_pdm: 2640, p_inicio: "2025-10-10", p_fim: "2026-10-09", p_item: null, p_uf: null });
-  assertEquals(body.filtro, { pdm: 2640, item: null, meses: 12, uf: null });
+  assertEquals(rpc?.args[0], {
+    p_pdm: 2640,
+    p_inicio: "2025-10-10",
+    p_fim: "2026-10-09",
+    p_item: null,
+    p_uf: null,
+    p_unidade: null,
+  });
+  assertEquals(body.filtro, { pdm: 2640, item: null, meses: 12, uf: null, unidade: null });
 });
 
 Deno.test("CA-2: com n < 3 média e quartis vão null, com motivo, mesmo que o banco mande número", async () => {
@@ -367,7 +380,8 @@ Deno.test("CA-4: parâmetro inválido dá 400 com mensagem e não cria cliente",
       "action=resumo&pdm=2640&meses=6", "action=resumo&pdm=2640&meses=36", "action=resumo&pdm=2640&meses=12a",
       "action=resumo&pdm=2640&item=x", "action=resumo&pdm=2640&uf=Paraná", "action=resumo&pdm=2640&uf=P1",
       "action=amostras&pdm=2640&limit=0", "action=amostras&pdm=2640&limit=101", "action=amostras&pdm=2640&page=0",
-      "action=amostras&pdm=2640&page=x",
+      "action=amostras&pdm=2640&page=x", "action=resumo&pdm=2640&unidade=U%20N", "action=resumo&pdm=2640&unidade=UN!",
+      `action=amostras&pdm=2640&unidade=${"A".repeat(11)}`,
     ]
   ) {
     const { res, body, clientes } = await chamar(qs);
@@ -420,4 +434,52 @@ Deno.test("CA-4: amostras sem contagem é 500 (não verificado)", async () => {
     hoje: () => HOJE,
   });
   assertEquals(res.status, 500);
+});
+
+Deno.test("CA-2: resumo devolve todas as unidades do recorte, para o front saber que há mistura", async () => {
+  const { body } = await chamar("action=resumo&pdm=2640", { resumo: [resumoLinha()] });
+  assertEquals(body.unidades, [{ sigla: "UN", nome: "UNIDADE", n: 9 }, { sigla: "PAR", nome: "PAR", n: 1 }]);
+  const vazio = await chamar("action=resumo&pdm=2640", { resumo: [resumoLinha({ unidades: null })] });
+  assertEquals(vazio.body.unidades, []);
+  // sigla nula no recorte aparece na lista (unidade ausente na fonte), nunca inventada
+  const nula = await chamar("action=resumo&pdm=2640", {
+    resumo: [resumoLinha({ unidades: [{ sigla: null, nome: null, n: 3 }] })],
+  });
+  assertEquals(nula.body.unidades, [{ sigla: null, nome: null, n: 3 }]);
+});
+
+Deno.test("CA-2: unidade filtra no banco (p_unidade) e aparece no filtro, em maiúsculas", async () => {
+  const { res, body, chamadas } = await chamar("action=resumo&pdm=2640&unidade=un", { resumo: [resumoLinha()] });
+  assertEquals(res.status, 200);
+  const rpc = chamadas.find((c) => c.alvo === "precos_praticados_resumo" && c.metodo === "rpc");
+  assertEquals((rpc?.args[0] as Record<string, unknown>).p_unidade, "UN");
+  assertEquals(body.filtro.unidade, "UN");
+});
+
+Deno.test("CA-3: amostras com unidade filtra sigla_unidade_fornecimento no banco", async () => {
+  const linhas = [
+    amostra({ id_compra: "A", sigla_unidade_fornecimento: "UN" }),
+    amostra({ id_compra: "B", sigla_unidade_fornecimento: "PAR" }),
+    amostra({ id_compra: "C", sigla_unidade_fornecimento: null }),
+  ];
+  const { res, body, chamadas } = await chamar("action=amostras&pdm=2640&unidade=PAR", { linhas });
+  assertEquals(res.status, 200);
+  assert(chamadas.some((c) => c.metodo === "eq" && c.args[0] === "sigla_unidade_fornecimento" && c.args[1] === "PAR"));
+  assertEquals(body.total, 1);
+  assertEquals(body.itens.map((i: Linha) => i.id_compra), ["B"]);
+  assertEquals(body.filtro.unidade, "PAR");
+});
+
+Deno.test("CA-4: página além do total é 400 explícito (não 500 nem lista vazia)", async () => {
+  const linhas = [amostra({ id_compra: "A" }), amostra({ id_compra: "B" })];
+  const { res, body } = await chamar("action=amostras&pdm=2640&limit=2&page=2", { linhas });
+  assertEquals(res.status, 400);
+  assertEquals(body.codigo, "page_alem_do_total");
+  assert(typeof body.error === "string" && body.error.length > 0);
+  assertEquals(body.itens, undefined);
+  // recorte vazio na página 1 continua 200 com total 0
+  const vazio = await chamar("action=amostras&pdm=2640", { linhas: [] });
+  assertEquals(vazio.res.status, 200);
+  assertEquals(vazio.body.total, 0);
+  assertEquals(vazio.body.itens, []);
 });

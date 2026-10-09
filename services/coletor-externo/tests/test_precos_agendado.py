@@ -190,6 +190,34 @@ def test_ca5_main_falha_do_catalogo_sai_com_1_sem_lista_fixa(monkeypatch, sem_es
     assert sessao.chamadas == []
 
 
+def test_ca5_catalogo_vazio_falha_explicita_e_main_sai_com_1(monkeypatch, sem_espera):
+    sessao = SessaoFalsa()
+    sb = SupabaseFalso(pdms=[])
+    _main_com(monkeypatch, sessao, sb)
+
+    res = compras_precos.coletar(_cliente(sessao), sb)
+    assert res["sucesso"] is False
+    assert "vazio" in res["erro"]
+
+    assert M.main(["--coleta", "precos"]) == 1
+    assert sessao.chamadas == []
+    assert sb.selecoes == []  # sem catálogo não completa detalhe
+
+
+def test_ca5_falha_inesperada_no_sestsenat_nao_impede_precos(monkeypatch, sem_espera):
+    sessao = SessaoFalsa()
+    sb = SupabaseFalso(pdms=[2640])
+    _main_com(monkeypatch, sessao, sb, sestsenat={"status": "ok", "erros": 0})
+
+    def portal_quebrado(**_k):
+        raise RuntimeError("portal fora do ar")
+
+    monkeypatch.setattr(M, "PortalSestSenat", portal_quebrado)
+
+    assert M.main([]) == 1
+    assert any(c[0] == URL_MATERIAL for c in sessao.chamadas)
+
+
 def test_ca5_main_dry_run_de_precos_nao_grava_nem_completa_detalhe(monkeypatch, sem_espera):
     sessao = SessaoFalsa()
     criados: list[int] = []
@@ -261,7 +289,8 @@ def test_ca9_completa_so_as_linhas_sem_descricao(sem_espera):
     assert len(sb.selecoes) == 1
     tabela, filtros = sb.selecoes[0]
     assert tabela == "precos_praticados_itens"
-    assert filtros["or"] == "(descricao_detalhada_item.is.null,descricao_detalhada_item.eq.)"
+    # nula, vazia ou só espaço (operador match do PostgREST = ~ do Postgres)
+    assert filtros["or"] == "(descricao_detalhada_item.is.null,descricao_detalhada_item.match.^\\s*$)"
     assert filtros["detalhe_sincronizado_em"] == "is.null"
     # uma consulta por item de catálogo, com os parâmetros documentados (contract-matrix: codigoItemCatalogo)
     det = [c for c in sessao.chamadas if c[0] == URL_DETALHE]

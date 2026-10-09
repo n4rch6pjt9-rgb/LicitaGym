@@ -631,7 +631,7 @@ def completar_detalhes(cliente: ClienteComprasPrecos, sb: Supabase, limite_itens
             bruto = achados[chave]
             campos: dict[str, Any] = {"detalhe_sincronizado_em": agora}
             if isinstance(bruto, str) and bruto.strip():
-                campos["descricao_detalhada_item"] = bruto.strip()
+                campos["descricao_detalhada_item"] = bruto  # como veio da fonte (mesma regra do 1_)
             try:
                 n = sb.atualizar_onde("precos_praticados_itens",
                                       {"id_compra": f"eq.{chave[0]}", "id_item_compra": f"eq.{chave[1]}"}, campos)

@@ -186,8 +186,9 @@ export function parsePrecosParams(url: URL): PrecosParams | { error: string } {
   };
 }
 
+/** Texto como veio da fonte; vazio ou só espaço é ausente (null). */
 function texto(v: unknown): string | null {
-  if (typeof v === "string") return v.trim() === "" ? null : v.trim();
+  if (typeof v === "string") return v.trim() === "" ? null : v;
   if (typeof v === "number" && Number.isFinite(v)) return String(v);
   return null;
 }

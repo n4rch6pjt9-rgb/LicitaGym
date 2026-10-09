@@ -269,7 +269,8 @@ def test_ca9_completa_so_as_linhas_sem_descricao(sem_espera):
     assert all(c[1]["pagina"] == 1 and 10 <= c[1]["tamanhoPagina"] <= 100 for c in det)
 
     feitos = {(f["id_compra"], f["id_item_compra"]): c for _, f, c in sb.updates}
-    assert feitos[("eq.16021105900032024", "eq.1")]["descricao_detalhada_item"] == "Esteira com 12 programas"
+    # texto oficial gravado como veio (sem normalizar)
+    assert feitos[("eq.16021105900032024", "eq.1")]["descricao_detalhada_item"] == "  Esteira com 12 programas  "
     assert feitos[("eq.15851705900012026", "eq.3")]["descricao_detalhada_item"] == "Anilha 10 kg"
     assert "descricao_detalhada_item" not in feitos[("eq.16021105900032024", "eq.2")]
     assert all(c.get("detalhe_sincronizado_em") for c in feitos.values())

@@ -11,8 +11,9 @@
 -- O que faz:
 --   1. para toda relação própria do projeto em `public` e `private` (r, p, v, m, S), revoga de `anon` e `authenticated`
 --      os privilégios que não estão na lista intencional (igual ao banco limpo). Não mexe em `service_role`/`postgres`;
---   2. tira dos default privileges de `postgres` em `public` os grants automáticos a `anon`/`authenticated` (tabelas,
---      sequências e funções novas passam a depender de GRANT explícito na migration, como já manda a convenção);
+--   2. tira dos default privileges de `postgres` em `public` os grants automáticos a `anon`/`authenticated` (tabelas e
+--      sequências novas passam a depender de GRANT explícito na migration; função nova ainda herda EXECUTE de PUBLIC,
+--      ver o fim do arquivo);
 --   3. revoga grants por coluna (attacl) fora da lista;
 --   4. pós-checagem com has_table_privilege/has_sequence_privilege/has_any_column_privilege (inclui PUBLIC): sobrou
 --      algo fora da lista → aborta. Privilégios: os 7 clássicos + MAINTAIN (PG17).

@@ -127,7 +127,8 @@ Itens com **CONFIRMAR** foram inferidos do código e ainda não foram validados 
 - **Regulamento:** PNCP segue a Lei 14.133; o Sistema S tem regulamento próprio (RLC antigo, RCA desde 2025). A coluna
   `regulamento` está NULL em todas as linhas e nenhuma regra (status, prazo, prioridade, tarefas) a usa; o catálogo de
   tarefas cobre só a 14.133. **CONFIRMAR** se o Sistema S precisa de fase, prazo ou tarefa própria.
-- **Preço, marca e fornecedor** vêm só de compra homologada e aparecem só no BI. Cálculo financeiro é determinístico,
+- **Preço, marca e fornecedor** vêm só de compra homologada e aparecem no BI, em `/precos` e na aba Inteligência de
+  Preços da oportunidade, sempre com fonte e data (decisão de 09/10, spec 0009). Cálculo financeiro é determinístico,
   com regra de arredondamento escrita.
 - **Pipeline:** entra só pela ação explícita "Enviar para pipeline"; descartar exige motivo.
 - **Habilitação (tenant):** documento sem validade informada vale emissão + 90 dias (marcado como calculado);

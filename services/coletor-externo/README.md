@@ -299,7 +299,14 @@ A coleta é idempotente (upsert + só baixa o que está `pendente`/`erro`).
 | `GCS_BUCKET` | — | Sem ela, salva em `./dados`. |
 
 Flags: `--ids`, `--de/--ate`, `--modulo` (59 = pregão eletrônico), `--todos`
-(inclui processos em andamento), `--dry-run`.
+(inclui processos em andamento), `--dry-run`, `--coleta`.
+
+**Pesquisa de Preço no mesmo Job (spec 0009).** `--coleta` escolhe o que roda: `sestsenat`, `precos` ou `todas`
+(padrão). Com `precos`, o Job roda `coletor.compras_precos` em modo catálogo (PDMs de
+`catalogo_catmat_pdms_efetivos()`; se a RPC falhar, a coleta falha, sem lista fixa) e depois o
+`2_consultarMaterialDetalhe` só para as linhas sem descrição detalhada, gravando `detalhe_sincronizado_em`. Falha de
+qualquer parte (inclusive de uma linha do detalhe) faz o Job sair com código 1. Para um agendamento só de preços:
+`--args="--coleta,precos"`. A saúde operacional (`precos_dias_sem_coleta`) fica crítica com 8 dias sem gravar preço.
 
 ## Volume observado (piloto)
 

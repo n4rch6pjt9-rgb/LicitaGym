@@ -422,7 +422,9 @@ def test_coletar_precos_catalogo_vazio_nao_usa_pdms_padrao():
 
     res = compras_precos.coletar(cliente, sb)
 
-    assert res["sucesso"] is True
+    # Spec 0009 (revisão I5): catálogo vazio no modo catálogo é falha explícita, não coleta "bem-sucedida" sem nada.
+    assert res["sucesso"] is False
+    assert "vazio" in res["erro"]
     assert res["total_coletados"] == 0
     cliente.consultar_material.assert_not_called()
 

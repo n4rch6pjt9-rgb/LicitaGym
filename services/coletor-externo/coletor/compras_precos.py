@@ -6,9 +6,13 @@ Consulta:
   ou
     ?tipo=codigoItemCatalogo&codigo={codigo_item}&pagina={pagina}&tamanhoPagina={tamanhoPagina}
 
-Enriquecimento opcional (detalhes):
+Detalhe, só para completar (spec 0009, CA-9; função completar_detalhes):
   GET https://dadosabertos.compras.gov.br/modulo-pesquisa-preco/2_consultarMaterialDetalhe
-    ?codigoItemCatalogo={codigo_item}&pagina=1&tamanhoPagina=100
+    ?codigoItemCatalogo={codigo_item}&pagina={pagina}&tamanhoPagina={tamanhoPagina}
+  Parâmetro conferido em docs/pncp/contract-matrix.md (endpoint 2, "testado-ok" com codigoItemCatalogo=233523).
+  O script antigo scripts/collector_pesquisa_preco.py usava codigoMaterial, que não está documentado como testado.
+  Só as linhas gravadas sem descricao_detalhada_item (nula ou em branco) e ainda sem detalhe_sincronizado_em são
+  consultadas; o casamento é pela chave (idCompra, idItemCompra), a mesma do 1_.
 
 Grava em public.precos_praticados_itens via PostgREST (upsert idempotente em (id_compra, id_item_compra)).
 
@@ -24,7 +28,6 @@ import argparse
 import hashlib
 import json
 import logging
-import os
 import re
 import sys
 import time
@@ -98,6 +101,23 @@ def deduplicar_por_chave(linhas: list[dict[str, Any]]) -> tuple[list[dict[str, A
         if atual is None or str(linha.get("data_hora_atualizacao_item") or "") >= str(atual.get("data_hora_atualizacao_item") or ""):
             escolhidas[k] = linha
     return list(escolhidas.values()), len(linhas) - len(escolhidas)
+
+
+def sem_texto(val: Any) -> bool:
+    return val is None or (isinstance(val, str) and val.strip() == "")
+
+
+def lotes_upsert(linhas: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """Separa as linhas sem descricao_detalhada_item e tira a coluna delas.
+
+    O 1_ devolve a descrição detalhada em branco em parte das compras (4.082 de 25.465 em 09/10). Se a coluna fosse
+    no upsert, a descrição que completar_detalhes gravou pelo 2_ voltaria a vazio na coleta seguinte. Cada lote tem as
+    mesmas chaves em todas as linhas (o PostgREST recusa lote com chaves diferentes).
+    """
+    com = [ln for ln in linhas if not sem_texto(ln.get("descricao_detalhada_item"))]
+    sem = [{k: v for k, v in ln.items() if k != "descricao_detalhada_item"}
+           for ln in linhas if sem_texto(ln.get("descricao_detalhada_item"))]
+    return [lote for lote in (com, sem) if lote]
 
 
 class TipoInvalido(ValueError):
@@ -256,13 +276,29 @@ class ClienteComprasPrecos:
             "tamanhoPagina": clamp_tamanho(tamanho_pagina, padrao=TAMANHO_PAGINA_MAX, minimo=10,
                                            maximo=TAMANHO_PAGINA_MAX),
         }
-        contexto = f"Pesquisa Preco {tipo}={codigo} pagina {pagina}"
+        return self._get(url, params, f"Pesquisa Preco {tipo}={codigo}", f"Pesquisa Preco {tipo}={codigo} pagina {pagina}")
+
+    def consultar_detalhe(self, codigo_item: int, pagina: int = 1, tamanho_pagina: int = 100) -> dict[str, Any]:
+        """2_consultarMaterialDetalhe por item de catálogo (parâmetro documentado em docs/pncp/contract-matrix.md)."""
+        codigo_item = validar_codigo("codigoItemCatalogo", codigo_item)
+        params = {
+            "codigoItemCatalogo": codigo_item,
+            "pagina": pagina,
+            "tamanhoPagina": clamp_tamanho(tamanho_pagina, padrao=TAMANHO_PAGINA_MAX, minimo=10,
+                                           maximo=TAMANHO_PAGINA_MAX),
+        }
+        nome = f"Pesquisa Preco detalhe codigoItemCatalogo={codigo_item}"
+        return self._get(f"{BASE_URL}{ENDPOINT_DETALHE}", params, nome, f"{nome} pagina {pagina}")
+
+    def _get(self, url: str, params: dict[str, Any], nome: str, contexto: str) -> dict[str, Any]:
+        """GET com delay >= 1 s, timeout explícito e até 3 tentativas (Retry-After em 429; backoff em 502/503/504 e
+        erro de rede). 4xx permanente é erro sem retry, nunca lista vazia."""
         for tentativa in range(1, 4):
             try:
                 time.sleep(self.delay)
                 r = self.s.get(url, params=params, timeout=self.timeout)
             except requests.RequestException as e:
-                log.warning("Falha de rede em Pesquisa Preco %s=%d tentativa %d: %s", tipo, codigo, tentativa, e)
+                log.warning("Falha de rede em %s tentativa %d: %s", nome, tentativa, e)
                 if tentativa == 3:
                     raise
                 time.sleep(espera_retry(None, tentativa, base=2.0))
@@ -271,14 +307,14 @@ class ClienteComprasPrecos:
                 return corpo_json(r, contexto)
             if r.status_code in (429, 502, 503, 504):
                 if tentativa == 3:
-                    raise ErroApiCompras(f"HTTP {r.status_code} esgotado em Pesquisa Preco {tipo}={codigo}", status=r.status_code)
+                    raise ErroApiCompras(f"HTTP {r.status_code} esgotado em {nome}", status=r.status_code)
                 espera = espera_retry(r, tentativa, base=3.0)
-                log.warning("HTTP %d em Pesquisa Preco %s=%d (tentativa %d), aguardando %.1fs...", r.status_code, tipo, codigo, tentativa, espera)
+                log.warning("HTTP %d em %s (tentativa %d), aguardando %.1fs...", r.status_code, nome, tentativa, espera)
                 time.sleep(espera)
                 continue
             # 404 (parâmetro obrigatório faltando), 400 (codigo inválido) e demais: erro sem retry, nunca lista vazia.
             raise erro_http(r, contexto)
-        raise ErroApiCompras(f"Falha ao consultar Pesquisa Preco {tipo}={codigo} após retries")
+        raise ErroApiCompras(f"Falha ao consultar {nome} após retries")
 
 
 def coletar(
@@ -343,7 +379,18 @@ def _coletar_precos(
                     "amostras": [],
                 }
             if not pdms_efetivos:
-                log.warning("Catálogo de PDMs efetivos vazio: coleta de Pesquisa de Preço sem consultas")
+                # Modo catálogo com banco: catálogo vazio não é "coleta sem nada a fazer" com sucesso. Falha explícita
+                # (spec 0009, revisão I5), para o Job sair com código 1 e alguém olhar o catálogo.
+                msg = "catálogo de PDMs efetivos vazio: nenhuma consulta de Pesquisa de Preço"
+                log.error("Coleta de Pesquisa de Preço abortada: %s", msg)
+                return {
+                    "sucesso": False,
+                    "erro": msg,
+                    "total_coletados": 0,
+                    "total_gravados": 0,
+                    "erros": 1,
+                    "amostras": [],
+                }
         for p in pdms_efetivos:
             consultas.append(("codigoPdm", p))
 
@@ -423,13 +470,13 @@ def _coletar_precos(
                     arquivo.adicionar(
                         {"id_compra": ln["id_compra"], "id_item_compra": ln["id_item_compra"]}, bruto)
             if not dry_run and sb is not None and linhas_norm:
-                try:
-                    conflito = "id_compra,id_item_compra"
-                    sb.upsert("precos_praticados_itens", linhas_norm, conflito=conflito)
-                    total_gravados += len(linhas_norm)
-                except Exception as e:
-                    log.error("Erro no upsert de %d linhas de precos: %s", len(linhas_norm), e)
-                    erros += 1
+                for lote in lotes_upsert(linhas_norm):
+                    try:
+                        sb.upsert("precos_praticados_itens", lote, conflito="id_compra,id_item_compra")
+                        total_gravados += len(lote)
+                    except Exception as e:
+                        log.error("Erro no upsert de %d linhas de precos: %s", len(lote), e)
+                        erros += 1
 
             if limite and total_coletados >= limite:
                 log.info("Limite de %d itens atingido", limite)
@@ -472,6 +519,147 @@ def _coletar_precos(
         "por_tipo_ni": por_tipo_ni,
         "amostras": amostras,
     }
+
+
+# Sem descrição = nula, vazia ou só espaço em branco. `match` é o operador ~ (regex POSIX) do PostgREST; o valor vai
+# sem aspas no or=(...), então a barra invertida chega literal ao Postgres. Mesma regra de sem_texto().
+FILTRO_SEM_DESCRICAO = "(descricao_detalhada_item.is.null,descricao_detalhada_item.match.^\\s*$)"
+
+
+def _chave_detalhe(item: Any) -> tuple[str, int] | None:
+    """(id_compra de 17 dígitos, idItemCompra) de um registro do 2_; None se o registro não traz a chave."""
+    if not isinstance(item, dict):
+        return None
+    id_compra = id_compra_de(item)
+    try:
+        id_item = int(item.get("idItemCompra"))
+    except (TypeError, ValueError):
+        return None
+    if not id_compra:
+        return None
+    return id_compra, id_item
+
+
+def _ler_detalhe_item(cliente: ClienteComprasPrecos, codigo_item: int,
+                      faltam: set[tuple[str, int]]) -> tuple[dict[tuple[str, int], Any], int]:
+    """Pagina o 2_ de um item até achar todas as chaves pedidas ou os totais confirmarem o fim.
+
+    Devolve {chave: descricaoDetalhadaItem} das chaves pedidas e quantos registros vieram sem chave reconhecível.
+    Resposta inválida, página repetida ou fim não confirmado levantam ErroApiCompras (o item inteiro vira falha).
+    """
+    achados: dict[tuple[str, int], Any] = {}
+    sem_chave = 0
+    vistos: set[str] = set()
+    recebidos = 0
+    pagina = 1
+    while True:
+        resp = cliente.consultar_detalhe(codigo_item, pagina=pagina, tamanho_pagina=TAMANHO_PAGINA)
+        itens = resp.get("resultado") if isinstance(resp, dict) else None
+        if not isinstance(itens, list):
+            raise ErroApiCompras(f"detalhe do item {codigo_item} página {pagina}: resposta sem 'resultado' em lista")
+        if itens and pagina_repetida(itens, vistos):
+            raise ErroApiCompras(f"detalhe do item {codigo_item} página {pagina}: página repetida")
+        recebidos += len(itens)
+        for it in itens:
+            chave = _chave_detalhe(it)
+            if chave is None:
+                sem_chave += 1
+            elif chave in faltam:
+                achados[chave] = it.get("descricaoDetalhadaItem")
+        if faltam <= achados.keys():
+            return achados, sem_chave
+        decisao = avaliar_pagina(itens, tamanho=TAMANHO_PAGINA, pagina=pagina, corpo=resp, acumulado=recebidos)
+        if decisao.encerrar:
+            if decisao.aviso:
+                raise ErroApiCompras(f"detalhe do item {codigo_item}: {decisao.aviso}")
+            return achados, sem_chave
+        pagina += 1
+
+
+def completar_detalhes(cliente: ClienteComprasPrecos, sb: Supabase, limite_itens: int | None = None) -> dict[str, Any]:
+    """Completa a descrição detalhada pelo 2_consultarMaterialDetalhe só nas linhas que não a têm (spec 0009, CA-9).
+
+    Lê de precos_praticados_itens as linhas com descricao_detalhada_item nula ou em branco e detalhe_sincronizado_em
+    nulo, consulta o 2_ uma vez por item de catálogo e, para cada linha achada pela chave (id_compra, id_item_compra):
+      * grava descricao_detalhada_item (se o detalhe trouxer texto) e detalhe_sincronizado_em = agora;
+      * se o detalhe também vier sem texto, grava só detalhe_sincronizado_em (não consulta de novo toda semana).
+    Linha que o detalhe não devolve fica sem marca (tenta de novo na próxima execução) e é contada em nao_encontradas.
+    Falha (API do item, registro sem chave, gravação) não derruba a coleta: conta em `falhas` e `sucesso` sai False.
+    """
+    resumo: dict[str, Any] = {
+        "sucesso": True, "linhas_pendentes": 0, "itens_consultados": 0, "completadas": 0,
+        "sem_descricao_no_detalhe": 0, "nao_encontradas": 0, "falhas": 0, "erros": [],
+    }
+
+    def falhar(n: int, msg: str) -> None:
+        resumo["falhas"] += n
+        if len(resumo["erros"]) < 20:
+            resumo["erros"].append(msg[:300])
+        log.warning("Detalhe Pesquisa Preco: %s", msg)
+
+    try:
+        pendentes = sb.selecionar(
+            "precos_praticados_itens",
+            select="id_compra,id_item_compra,codigo_item_catalogo",
+            detalhe_sincronizado_em="is.null",
+            codigo_item_catalogo="not.is.null",
+            order="codigo_item_catalogo.asc,id_compra.asc,id_item_compra.asc",
+            **{"or": FILTRO_SEM_DESCRICAO},
+        )
+    except Exception as e:
+        falhar(1, f"leitura das linhas sem descrição falhou: {e}")
+        resumo["sucesso"] = False
+        return resumo
+
+    por_item: dict[int, set[tuple[str, int]]] = {}
+    for ln in pendentes:
+        try:
+            chave = (str(ln["id_compra"]), int(ln["id_item_compra"]))
+            item = int(ln["codigo_item_catalogo"])
+        except (KeyError, TypeError, ValueError):
+            falhar(1, f"linha pendente fora do contrato: {ln!r}")
+            continue
+        por_item.setdefault(item, set()).add(chave)
+    resumo["linhas_pendentes"] = len(pendentes)
+
+    itens = sorted(por_item)
+    if limite_itens is not None:
+        itens = itens[:limite_itens]
+    for codigo_item in itens:
+        faltam = por_item[codigo_item]
+        resumo["itens_consultados"] += 1
+        try:
+            achados, sem_chave = _ler_detalhe_item(cliente, codigo_item, faltam)
+        except Exception as e:
+            falhar(len(faltam), f"item {codigo_item}: {e}")
+            continue
+        if sem_chave:
+            falhar(1, f"item {codigo_item}: {sem_chave} registro(s) do detalhe sem idCompra/idItemCompra "
+                      "(contrato do 2_ não reconhecido)")
+        agora = datetime.now(timezone.utc).isoformat()
+        for chave in sorted(faltam):
+            if chave not in achados:
+                resumo["nao_encontradas"] += 1
+                continue
+            bruto = achados[chave]
+            campos: dict[str, Any] = {"detalhe_sincronizado_em": agora}
+            if isinstance(bruto, str) and bruto.strip():
+                campos["descricao_detalhada_item"] = bruto  # como veio da fonte (mesma regra do 1_)
+            try:
+                n = sb.atualizar_onde("precos_praticados_itens",
+                                      {"id_compra": f"eq.{chave[0]}", "id_item_compra": f"eq.{chave[1]}"}, campos)
+                if n != 1:
+                    raise RuntimeError(f"{n} linha(s) atualizada(s), esperado 1")
+            except Exception as e:
+                falhar(1, f"gravação de {chave[0]}/{chave[1]}: {e}")
+                continue
+            if "descricao_detalhada_item" in campos:
+                resumo["completadas"] += 1
+            else:
+                resumo["sem_descricao_no_detalhe"] += 1
+
+    resumo["sucesso"] = resumo["falhas"] == 0
+    return resumo
 
 
 def main(argv: list[str] | None = None) -> int:

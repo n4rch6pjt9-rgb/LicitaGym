@@ -22,7 +22,7 @@ O cliente vende produtos que casam com o CATMAT dele (equipamentos fitness). Nã
 - Fallback silencioso que troca a prioridade é Alto. Exemplo: API ou documento falhou e o código grava `encerradas` / `historico` como se o certame tivesse encerrado.
 
 ## Histórico, fornecedor e RAG
-- Marca, preço por item CATMAT e mapa de fornecedor (revenda ou fabricante) só de certames homologados, só no BI, com o certame na linha.
+- Marca, preço por item CATMAT e mapa de fornecedor (revenda ou fabricante) só de certames homologados, com o certame na linha; aparecem no BI, em `/precos` e na aba Inteligência de Preços, sempre com fonte e data (decisão de 09/10, spec 0009).
 - CPF e CNPJ em documentos de edital são públicos. Não mascarar no RAG.
 - Embedding: `text-multilingual-embedding-002`, 768 dimensões. Outro modelo sem plano de reindex aprovado no PR é Alto.
 

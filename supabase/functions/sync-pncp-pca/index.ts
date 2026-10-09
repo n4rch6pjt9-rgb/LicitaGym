@@ -32,12 +32,8 @@ import {
   storeSourceRecord,
   updateSyncHeartbeat,
 } from "../_shared/pncp/supabase-admin.ts";
-import {
-  normalizePcaItem,
-  normalizePcaPlano,
-} from "../_shared/pncp/normalize.ts";
-import { linkPcaItemOrigemCodes } from "../_shared/pncp/pca-origem-link.ts";
-import { inactivateNotSeen, upsertByHash } from "../_shared/pncp/upsert.ts";
+import { gravarPaginaPcaEmLote } from "../_shared/pncp/pca-lote.ts";
+import { inactivateNotSeen } from "../_shared/pncp/upsert.ts";
 
 type SyncBody = {
   ano?: number;
@@ -147,85 +143,17 @@ async function syncClassificacao(params: {
     const pagination = consulta.extractPagination(responseBody, pagina);
     paginasRestantes = pagination.paginasRestantes;
 
-    for (const raw of list) {
-      const plan = raw as Record<string, unknown>;
-      const planoRow = normalizePcaPlano(plan, ano);
-      if (!planoRow.id_pca_pncp) continue;
-
-      stats.recebidos++;
-      const planoResult = await upsertByHash(
-        client,
-        "pca_planos",
-        { id_pca_pncp: planoRow.id_pca_pncp },
-        planoRow,
-        {
-          historyTable: "pca_alteracoes",
-          historyFields: ({ rowId }) => ({ pca_plano_id: rowId }),
-          syncRunId: runId,
-          lastSeenSyncId: runId,
-          reactivateOnUnchanged: true,
-        },
-      );
-      if (planoResult === "novo") stats.novos++;
-      else if (planoResult === "alterado") stats.alterados++;
-      else if (planoResult === "inalterado") stats.inalterados++;
-      else stats.erros++;
-
-      const { data: planoRecord, error: planoLookupError } = await client
-        .from("pca_planos")
-        .select("id")
-        .eq("id_pca_pncp", planoRow.id_pca_pncp)
-        .maybeSingle();
-      if (planoLookupError || !planoRecord) {
-        if (planoLookupError) stats.erros++;
-        continue;
-      }
-
-      const itens = Array.isArray(plan.itens) ? plan.itens : [];
-      for (const rawItem of itens) {
-        const itemRow = normalizePcaItem(
-          rawItem as Record<string, unknown>,
-          plan,
-        );
-        if (!itemRow.numero_item) continue;
-
-        stats.recebidos++;
-        const itemResult = await upsertByHash(
-          client,
-          "pca_itens",
-          { pca_plano_id: planoRecord.id, numero_item: itemRow.numero_item },
-          { ...itemRow, pca_plano_id: planoRecord.id },
-          {
-            historyTable: "pca_alteracoes",
-            historyFields: ({ rowId }) => ({
-              pca_plano_id: planoRecord.id,
-              pca_item_id: rowId,
-            }),
-            syncRunId: runId,
-            lastSeenSyncId: runId,
-            reactivateOnUnchanged: true,
-          },
-        );
-        if (itemResult === "novo") stats.novos++;
-        else if (itemResult === "alterado") stats.alterados++;
-        else if (itemResult === "inalterado") stats.inalterados++;
-        else stats.erros++;
-
-        if (itemRow.pdm_codigo_origem || itemRow.codigo_item_origem) {
-          const { data: itemRecord, error: itemLookupError } = await client
-            .from("pca_itens")
-            .select("id")
-            .eq("pca_plano_id", planoRecord.id)
-            .eq("numero_item", itemRow.numero_item)
-            .maybeSingle();
-          if (itemLookupError) {
-            stats.erros++;
-          } else if (itemRecord) {
-            await linkPcaItemOrigemCodes(client, String(itemRecord.id), itemRow);
-          }
-        }
-      }
-    }
+    // Gravação em lote por página (spec 0012, PR 1): ~10 chamadas ao banco por página em vez de ~7,5 por item.
+    const pageStats = await gravarPaginaPcaEmLote(
+      client,
+      list as Record<string, unknown>[],
+      { ano, runId },
+    );
+    stats.recebidos += pageStats.recebidos;
+    stats.novos += pageStats.novos;
+    stats.alterados += pageStats.alterados;
+    stats.inalterados += pageStats.inalterados;
+    stats.erros += pageStats.erros;
 
     if (pagination.paginasRestantes <= 0) {
       params.onCheckpoint?.(pagina + 1);

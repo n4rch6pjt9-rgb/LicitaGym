@@ -511,10 +511,13 @@ async function handleGet(
  * Distingue resultado vazio (200 com items: []) de erro (400/500).
  */
 /**
- * Teto de proteção de licitações resolvidas pelo recorte CATMAT (spec 0004). licitacoes_ids_por_catmat_unica não
+ * Teto de proteção de licitações resolvidas pelo recorte CATMAT (spec 0004): até 10 lotes por página. Conta os ids da
+ * RPC antes do escopo (inclui historico): se a base de homologadas crescer perto disto, migrar para a abordagem (a)
+ * da spec (RPC paginada no banco). Em 09/10/2026
+ * licitacoes_externas inteira tinha ~1.660 linhas e o maior recorte, 1.103 ids. licitacoes_ids_por_catmat_unica não
  * trunca (sem LIMIT nem paginação), então r.ids é completo; acima deste teto a lista responde 422.
  */
-export const MAX_IDS_CATMAT = 20000;
+export const MAX_IDS_CATMAT = 5000;
 
 /**
  * Até este número de ids, a consulta principal filtra por `id in (...)` direto (uma URL só). Acima, a lista é
@@ -646,7 +649,9 @@ export async function chavesNoRecorte(
 /**
  * Ordena como a consulta principal (`order(order_by, { nullsFirst: false })` + `order("id")`): coluna no sentido
  * pedido, nulos por último nos dois sentidos, id crescente para desempatar. valor_total compara como número; as
- * datas, pelo instante (Date.parse), para não depender do formato do offset.
+ * datas, pelo instante (Date.parse), para não depender do formato do offset. Limites conhecidos: Date.parse trunca em
+ * milissegundo (o Postgres ordena pelo microssegundo; as fontes gravam em segundos) e 'infinity'/'NaN' contam como
+ * nulo.
  */
 export function ordenarChaves(chaves: ChaveOrdenacao[], orderBy: SortField, ascending: boolean): ChaveOrdenacao[] {
   const valor = (v: unknown): number => (orderBy === "valor_total" ? Number(v) : Date.parse(String(v)));
@@ -697,10 +702,20 @@ async function listarCatmatEmDuasFases(
   if (idsPagina.length === 0) {
     return jsonResponse({ action: "list", page, limit, total, order_by, order_direction, items: [] });
   }
-  const { data, error } = await comColunasDoObjeto((colunas) => client.from(OPORTUNIDADES_VIEW).select(colunas).in("id", idsPagina));
+  // Mesmos filtros e escopo da fase 1: uma compra que saiu do escopo entre as fases não volta na página.
+  const { data, error } = await comColunasDoObjeto((colunas) => {
+    let paginaQuery = client.from(OPORTUNIDADES_VIEW).select(colunas);
+    paginaQuery = applyOportunidadesScope(applyLicitacaoFilters(paginaQuery, { ...filtros, ids: idsPagina }), filtros);
+    return paginaQuery;
+  });
   if (error) throw error;
   const porId = new Map(((data ?? []) as unknown as Array<Record<string, unknown>>).map((row) => [Number(row.id), row]));
   const rows = idsPagina.map((id) => porId.get(id)).filter((row): row is Record<string, unknown> => row !== undefined);
+  if (rows.length < idsPagina.length) {
+    console.warn(
+      `[api-dashboard-oportunidades] recorte CATMAT: ${idsPagina.length - rows.length} compra(s) saíram do escopo entre as fases (página ${page})`,
+    );
+  }
   return jsonResponse({ action: "list", page, limit, total, order_by, order_direction, items: await montarItens(client, rows, matches) });
 }
 
@@ -743,7 +758,16 @@ async function handleList(
         }, 422);
       }
       if (r.ids.length > MAX_IDS_CATMAT_URL) {
-        return await listarCatmatEmDuasFases(client, r.ids, filtros, params, r.porLicitacao);
+        try {
+          return await listarCatmatEmDuasFases(client, r.ids, filtros, params, r.porLicitacao);
+        } catch (err: unknown) {
+          // statement_timeout num lote: indisponibilidade temporária (503), como na RPC
+          if (ehStatementTimeout(err)) {
+            console.error("[api-dashboard-oportunidades] Timeout na lista em duas fases do recorte CATMAT:", err);
+            return jsonResponse({ error: "filtro de catálogo indisponível" }, 503);
+          }
+          throw err;
+        }
       }
       filtros = { ...filtros, ids: r.ids };
       matches = r.porLicitacao;

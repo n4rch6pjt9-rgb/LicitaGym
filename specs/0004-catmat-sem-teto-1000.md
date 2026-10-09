@@ -30,8 +30,8 @@
 2. Ordenar em memória com a mesma regra da consulta de hoje: `order_by` no sentido pedido, nulos por último, `id`
    crescente para desempatar. O `total` é o número de ids que sobram.
 3. Fatiar a página pedida e ler as linhas completas só dos ids dessa página, no máximo `limit`, com URL curta.
-4. Manter um teto alto só como proteção, por exemplo 20.000 ids, com o mesmo 422. Isso equivale a cerca de 40
-   lotes; o tempo precisa ser medido no PR.
+4. Manter um teto alto só como proteção, 5.000 ids, com o mesmo 422. São até 10 lotes por página
+   (revisão de segurança); hoje a tabela inteira tem ~1.660 compras.
 
 Alternativas consideradas:
 - **(a) Recorte e paginação dentro do banco,** numa RPC nova que devolve a página já filtrada e ordenada. Escala
@@ -49,6 +49,12 @@ Alternativas consideradas:
 | CA-5 | Acima de 1.000 ids (lista em duas fases), nenhuma URL ao PostgREST leva mais de 500 ids. Até 1.000, o caminho de hoje (uma consulta) continua. | idem (mock conta os ids por chamada) |
 | CA-6 | Acima do teto de proteção, continua 422 com a contagem. Recorte vazio continua 200 vazio. Timeout da RPC continua 503. | idem (testes de hoje ajustados) |
 | CA-7 | Erro de banco em qualquer lote vira 500, nunca lista parcial apresentada como completa. | idem |
+
+## Limites conhecidos
+
+- O teto de 5.000 conta os ids da RPC antes do escopo, ou seja, inclui `historico`. Se a base de homologadas crescer
+  até perto disso, migrar para a abordagem (a).
+- `Date.parse` trunca em milissegundo. As fontes gravam em segundos, então isso não afeta a ordem na prática.
 
 ## Fora de escopo
 

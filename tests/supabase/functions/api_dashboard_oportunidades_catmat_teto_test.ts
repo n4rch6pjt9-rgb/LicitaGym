@@ -2,7 +2,7 @@
 // Usa um PostgREST falso em memória (filtros, ordenação, range e contagem) para comparar a lista em duas fases
 // com a ordenação direta, e para contar quantos ids vão em cada `in("id", ...)`.
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { handleRequest, MAX_IDS_CATMAT, OPORTUNIDADES_VIEW } from "../../../supabase/functions/api-dashboard-oportunidades/index.ts";
+import { handleRequest, MAX_IDS_CATMAT, OPORTUNIDADES_VIEW, ordenarChaves } from "../../../supabase/functions/api-dashboard-oportunidades/index.ts";
 
 type Linha = Record<string, unknown> & { id: number };
 
@@ -12,6 +12,8 @@ interface FakeOpts {
   idsRpc: number[];
   /** falha a N-ésima leitura da view (1-based), para o CA-7 */
   falharLeituraView?: number;
+  /** erro devolvido na N-ésima leitura da view (padrão: XX000) */
+  erroLeitura?: { code: string; message: string };
   /** linhas de matches da RPC; padrão: um match texto_item por id */
   matchesRpc?: Array<Record<string, unknown>>;
 }
@@ -96,7 +98,7 @@ function criarFake(opts: FakeOpts) {
         if (tabela === OPORTUNIDADES_VIEW) {
           leiturasView += 1;
           if (opts.falharLeituraView === leiturasView) {
-            return Promise.resolve({ data: null, count: null, error: { code: "XX000", message: "falha simulada" } }).then(ok, ko);
+            return Promise.resolve({ data: null, count: null, error: opts.erroLeitura ?? { code: "XX000", message: "falha simulada" } }).then(ok, ko);
           }
         }
         let rs = base.filter((l) => filtros.every((f) => f(l)));
@@ -249,8 +251,8 @@ Deno.test("CA-6: acima do teto de proteção continua 422 com a contagem", async
   assertEquals(fake.leiturasView(), 0);
 });
 
-Deno.test("CA-6: teto de proteção é pelo menos 20.000", () => {
-  assert(MAX_IDS_CATMAT >= 20000, `MAX_IDS_CATMAT=${MAX_IDS_CATMAT}`);
+Deno.test("CA-6: teto de proteção entre 2.000 (folga sobre o maior recorte real) e 5.000 (até 10 lotes)", () => {
+  assert(MAX_IDS_CATMAT >= 2000 && MAX_IDS_CATMAT <= 5000, `MAX_IDS_CATMAT=${MAX_IDS_CATMAT}`);
 });
 
 Deno.test("CA-7: erro em qualquer lote vira 500, nunca lista parcial", async () => {
@@ -295,7 +297,7 @@ Deno.test("catalogo=true com 3098 casamentos (volume de prod): RPC única, lotes
   assertEquals(typeof body.items[0].catmat_match[0].codigo_item, "number");
 });
 
-Deno.test("1200 historico + 300 atuais: total 300; cada lote aplica a canônica e o or do escopo", async () => {
+Deno.test("1200 historico + 300 atuais: total 300; cada lote e a página aplicam a canônica e o or do escopo", async () => {
   const fake = criarFake({ linhas: compras(1500, (id) => id > 1200), idsRpc: Array.from({ length: 1500 }, (_, i) => i + 1) });
   const { status, body } = await listar(fake, "limit=2");
   assertEquals(status, 200);
@@ -304,9 +306,10 @@ Deno.test("1200 historico + 300 atuais: total 300; cada lote aplica a canônica 
   const fase1 = fake.chamadas.filter((c) => c.tabela === OPORTUNIDADES_VIEW && c.metodo === "select" && FASE1.test(String(c.args[0])));
   assertEquals(fase1.length, 3);
   const ors = fake.chamadas.filter((c) => c.tabela === OPORTUNIDADES_VIEW && c.metodo === "or").map((c) => c.args[0]);
-  assertEquals(ors, ["prioridade.in.(leads,monitorar)", "prioridade.in.(leads,monitorar)", "prioridade.in.(leads,monitorar)"]);
+  // 3 lotes da fase 1 + a leitura da página
+  assertEquals(ors, Array(4).fill("prioridade.in.(leads,monitorar)"));
   const eqs = fake.chamadas.filter((c) => c.tabela === OPORTUNIDADES_VIEW && c.metodo === "eq").map((c) => c.args);
-  assertEquals(eqs, [["eh_canonica", true], ["eh_canonica", true], ["eh_canonica", true]]);
+  assertEquals(eqs, Array(4).fill(["eh_canonica", true]));
 });
 
 Deno.test("só historico acima do limite da URL: 200 vazio, sem ler as colunas completas", async () => {
@@ -318,16 +321,62 @@ Deno.test("só historico acima do limite da URL: 200 vazio, sem ler as colunas c
   assertEquals(fake.chamadas.some((c) => c.tabela === OPORTUNIDADES_VIEW && c.metodo === "select" && !FASE1.test(String(c.args[0]))), false);
 });
 
-Deno.test("prioridade=leads acima do limite da URL: cada lote filtra eq(prioridade, leads) e a canônica, sem o or", async () => {
+Deno.test("prioridade=leads acima do limite da URL: cada lote e a página filtram eq(prioridade, leads) e a canônica, sem o or", async () => {
   const fake = criarFake({ linhas: compras(1001, (id) => id % 2 === 0), idsRpc: Array.from({ length: 1001 }, (_, i) => i + 1) });
   const { status, body } = await listar(fake, "limit=20&prioridade=leads");
   assertEquals(status, 200);
   assertEquals(body.total, 500);
   const eqs = fake.chamadas.filter((c) => c.tabela === OPORTUNIDADES_VIEW && c.metodo === "eq").map((c) => c.args);
-  assertEquals(eqs, [
-    ["prioridade", "leads"], ["eh_canonica", true],
-    ["prioridade", "leads"], ["eh_canonica", true],
-    ["prioridade", "leads"], ["eh_canonica", true],
-  ]);
+  // 3 lotes da fase 1 + a leitura da página
+  assertEquals(eqs, Array(4).fill([["prioridade", "leads"], ["eh_canonica", true]]).flat());
   assertEquals(fake.chamadas.some((c) => c.tabela === OPORTUNIDADES_VIEW && c.metodo === "or"), false);
+});
+
+Deno.test("compra que sai do escopo entre as fases não volta na página", async () => {
+  const linhas = compras(1100, () => true);
+  const fake = criarFake({ linhas, idsRpc: linhas.map((l) => l.id) });
+  // depois da fase 1 (3 lotes), o id 1 vira historico: a leitura da página (4ª leitura) não pode trazê-lo
+  const original = fake.client.from;
+  let leituras = 0;
+  fake.client.from = (t: string) => {
+    if (t === OPORTUNIDADES_VIEW && ++leituras === 4) linhas[0].prioridade = "historico";
+    return original(t);
+  };
+  const { status, body } = await listar(fake, "limit=5&order_by=data_fim&order_direction=asc");
+  assertEquals(status, 200);
+  assertEquals(body.items.some((i: { id: number }) => i.id === 1), false);
+});
+
+Deno.test("ordenarChaves com ordem escrita à mão: offsets diferentes, frações, nulos, zero e negativos", () => {
+  // mesmo instante em -03:00 e +00:00 (ids 2 e 3) empata e desempata por id
+  const datas = [
+    { id: 5, chave: null },
+    { id: 3, chave: "2026-11-01T15:00:00+00:00" },
+    { id: 2, chave: "2026-11-01T12:00:00-03:00" },
+    { id: 4, chave: "2026-11-01T15:00:00.123456+00:00" },
+    { id: 1, chave: "2026-10-31T23:59:59+00:00" },
+  ];
+  assertEquals(ordenarChaves(datas, "data_fim", true).map((c) => c.id), [1, 2, 3, 4, 5]);
+  assertEquals(ordenarChaves(datas, "data_fim", false).map((c) => c.id), [4, 2, 3, 1, 5]);
+  const valores = [
+    { id: 1, chave: 0 },
+    { id: 2, chave: -10.5 },
+    { id: 3, chave: null },
+    { id: 4, chave: 1000.25 },
+    { id: 5, chave: 0 },
+  ];
+  assertEquals(ordenarChaves(valores, "valor_total", true).map((c) => c.id), [2, 1, 5, 4, 3]);
+  assertEquals(ordenarChaves(valores, "valor_total", false).map((c) => c.id), [4, 1, 5, 2, 3]);
+});
+
+Deno.test("statement_timeout num lote da fase 1 vira 503 'filtro de catálogo indisponível'", async () => {
+  const fake = criarFake({
+    linhas: LINHAS,
+    idsRpc: IDS,
+    falharLeituraView: 2,
+    erroLeitura: { code: "57014", message: "canceling statement due to statement timeout" },
+  });
+  const { status, body } = await listar(fake, "limit=20");
+  assertEquals(status, 503);
+  assertEquals(body, { error: "filtro de catálogo indisponível" });
 });

@@ -23,6 +23,7 @@ import {
   estadoDoPlano,
   notaMaterialidade,
 } from "../_shared/motor-oportunidade.ts";
+import { responderRadar } from "./radar.ts";
 
 function getUserClient(req: Request) {
   const url = Deno.env.get("SUPABASE_URL");
@@ -258,6 +259,7 @@ Deno.serve(async (req) => {
     if (visao === "conversao") return await responderConversao(req, url);
     if (visao === "priorizacao") return await responderPriorizacao(req, url);
     if (visao === "motor") return await responderMotor(req, url);
+    if (visao === "radar") return await responderRadar(req, url);
     const client = getUserClient(req);
     const ano = parseQueryInt(url, "ano", new Date().getUTCFullYear());
     const page = parseQueryInt(url, "page", 1);

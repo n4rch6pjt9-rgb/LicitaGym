@@ -2,7 +2,7 @@
 // Usa um PostgREST falso em memória (eq, ilike, gte, order com nulos, range e contagem) e registra cada chamada,
 // para provar que os filtros vão para o banco e que nada é lido com service_role antes da autenticação.
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { RADAR_VIEW, responderRadar } from "../../../supabase/functions/api-pncp-pca/radar.ts";
+import { RADAR_VIEW, type RadarClient, responderRadar } from "../../../supabase/functions/api-pncp-pca/radar.ts";
 
 type Linha = Record<string, unknown>;
 
@@ -109,7 +109,7 @@ function criarFake(linhas: Linha[], erro?: { message: string; code?: string }) {
     };
     return q;
   }
-  return { client: { from }, chamadas };
+  return { client: { from } as unknown as RadarClient, chamadas };
 }
 
 function req(qs: string): [Request, URL] {

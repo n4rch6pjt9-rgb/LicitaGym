@@ -55,6 +55,17 @@ scripts/validar-migrations.sh                       # Postgres 17 descartável (
 - Coletor externo: Cloud Run Job `coletor-sestsenat` (GCP), agendamento semanal; ver `services/coletor-externo/README.md`.
 - PR empilhado: merge commit (não squash), porque a branch é apagada no merge. Skill `merge-pilha`.
 
+## Banco: como uma mudança de schema chega à produção
+1. **Só por migration versionada + PR.** Nada de DDL, ACL ou dado pelo MCP, pelo SQL Editor ou pelo painel (exceção:
+   o que o Marcelo fizer à mão, depois registrado em migration). Skill `nova-migration`.
+2. **Portão:** job `migrations` do `pr-quality.yml` (Postgres 17 descartável: aplica tudo, reaplica as novas, roda os
+   `*_check.sql`). Local: `scripts/validar-migrations.sh`. Agente `revisor-migration` antes do PR.
+3. **Branch Supabase só sob demanda**, criada pelo Marcelo (tem custo): DDL destrutivo, backfill grande, mudança de
+   RLS em tabela de tenant, extensão (ex.: mover `vector`) ou migration que depende de objeto que o stub
+   `supabase/tests/pre.sql` não reproduz (pg_cron, storage, auth). O PR diz qual branch foi usada e o resultado.
+4. **Merge = produção** (~30 s). Depois: skill `verificar-producao` e `get_advisors` (security); achado novo vira issue.
+5. Último relatório de advisors: `docs/banco/advisors-2026-10-09.md`.
+
 ## Observabilidade
 - **Saúde consolidada:** `private.saude_operacional_resumo()` (limiares em `private.saude_limiares`), exposta pela
   Edge Function `api-saude` (cron secret ou admin). O workflow `.github/workflows/saude.yml` (a cada 30 min) abre/fecha

@@ -1,11 +1,11 @@
 # 0006: Rota /pca como radar de itens planejados no escopo
 
-- **Status:** rascunho
+- **Status:** aprovada (09/10)
 - **Issue:** nenhuma. Pedido do Marcelo em 09/10: "551 plano(s). Página 1 de 28. O frontend não está operando como
   propomos a construção da rota". A forma escolhida foi "Radar de itens no escopo".
 - **Área:** edge-functions (`api-pncp-pca`) e dashboard-contrato (`/pca` no repositório Dashboard---LicitaGym)
-- **Depende do ok do Marcelo:** sim. Esta spec precisa ser aprovada. Depois, o merge do backend e o do front, cada
-  um com o seu ok, nesta ordem.
+- **Depende do ok do Marcelo:** spec aprovada em 09/10 (sem UF; ordem padrão por data prevista). O merge do backend e
+  o do front precisam, cada um, do seu ok, nesta ordem.
 
 ## Problema
 
@@ -31,7 +31,7 @@
 | CA-1 | **Dado** um usuário sem JWT válido, **quando** chama `visao=radar`, **então** recebe 401, e nenhuma consulta com `service_role` é feita. | Deno `tests/supabase/functions/api_pncp_pca_radar_test.ts` |
 | CA-2 | **Dado** um usuário autenticado, **quando** chama `visao=radar&ano=2026`, **então** recebe 200 com `{ itens, total, valor_total_escopo, page, limit }`, lido de `v_bi_pca_radar` com `service_role` e filtrado por `ano_pca`. | idem (mock) |
 | CA-3 | Os filtros são aplicados no banco: `mes` (YYYY-MM), `pdm`, `orgao` (CNPJ ou parte do nome), `fonte` (pncp ou pgc), `valor_min`, `so_confirmados`. Parâmetro inválido devolve 400 com mensagem, e não lista vazia. | idem |
-| CA-4 | A ordenação é por `data_prevista` (padrão, ascendente) ou por `valor_total` (descendente), com os nulos por último. A paginação usa `limit` até 100. | idem |
+| CA-4 | A ordenação é por `data_prevista` (padrão, ascendente: o que vira compra primeiro aparece antes) ou por `valor_total` (descendente), com os nulos por último. A paginação usa `limit` até 100. | idem |
 | CA-5 | Valor, data ou órgão ausentes chegam como `null`: nenhum 0 nem texto inventado. `valor_total_escopo` soma só os valores conhecidos e informa quantos itens ficaram sem valor. | idem |
 | CA-6 | Um erro do banco devolve 500 com mensagem, nunca `itens: []`. | idem |
 | CA-7 | O GET padrão (lista de planos) e as outras visões (`leading`, `conversao`, `priorizacao` e `motor`) não mudam. | testes existentes |
@@ -49,6 +49,7 @@
 
 - Alterar a `v_bi_pca_radar` ou o escopo do catálogo (migration).
 - Ranking por órgão (`v_bi_orgaos_match`) e detalhe do plano. São possíveis próximas telas.
+- Filtro por UF: a view não tem UF, e incluir exigiria uma migration. Decidido em 09/10 que não entra.
 - Remover a lista de planos do backend. O GET padrão continua para quem o usa.
 
 ## Impacto em dados
@@ -63,6 +64,4 @@
 
 ## Perguntas em aberto
 
-- Os filtros de CA-3 são suficientes? Há algum outro, por exemplo UF? A view não tem UF; incluir exigiria uma
-  migration.
-- A ordenação padrão por mês previsto ascendente (o mais próximo de virar compra primeiro) atende?
+Nenhuma. Decisões de 09/10: sem filtro de UF; ordem padrão por `data_prevista` ascendente, com nulos por último.

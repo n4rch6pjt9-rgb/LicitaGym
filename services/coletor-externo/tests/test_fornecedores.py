@@ -133,3 +133,11 @@ def test_main_limite_corta_a_lista(monkeypatch):
                         lambda self, cnpjs: recebidos.extend(cnpjs) or {"erros": 0, "consultados": 0, "linhas": []})
     assert F.main(["--de-precos", "--limite", "2", "--dry-run"]) == 0
     assert recebidos == ["24608949000137", "06165288000130"]
+
+
+def test_cliente_supabase_fixa_schema_public():
+    # Sem Accept-Profile/Content-Profile o PostgREST usa o primeiro schema exposto no painel (em 09/10/2026: `api`,
+    # vazio) e responde 404 PGRST205 para toda tabela de public.
+    from coletor.destino import Supabase
+    h = Supabase("https://x.supabase.co", "chave").h
+    assert h["Accept-Profile"] == "public" and h["Content-Profile"] == "public"

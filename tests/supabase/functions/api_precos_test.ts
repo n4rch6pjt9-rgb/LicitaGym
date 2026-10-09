@@ -367,7 +367,7 @@ Deno.test("CA-3: amostra traz órgão, fornecedor, marca e fonte como vieram; au
     const k of [
       "data_resultado", "data_compra", "codigo_uasg", "nome_uasg", "codigo_orgao", "nome_orgao", "uf", "municipio",
       "quantidade", "preco_unitario", "sigla_unidade_fornecimento", "nome_unidade_fornecimento",
-      "sigla_unidade_medida", "nome_unidade_medida", "marca", "nome_fornecedor", "ni_fornecedor", "objeto_compra",
+      "sigla_unidade_medida", "nome_unidade_medida", "marca", "nome_fornecedor", "ni_fornecedor", "ni_tipo", "objeto_compra",
       "descricao_item", "descricao_detalhada_item", "id_compra", "id_item_compra", "codigo_item_catalogo", "fonte",
     ]
   ) assert(chaves.includes(k), `falta ${k}`);
@@ -482,4 +482,35 @@ Deno.test("CA-4: página além do total é 400 explícito (não 500 nem lista va
   assertEquals(vazio.res.status, 200);
   assertEquals(vazio.body.total, 0);
   assertEquals(vazio.body.itens, []);
+});
+
+Deno.test("CA-3: CPF de pessoa física não é exibido (LGPD); CNPJ mantido; NI malformado vira ausente", async () => {
+  const linhas = [
+    amostra({ id_compra: "A", ni_fornecedor: "04372852000160", nome_fornecedor: "W.E.V COMERCIAL LTDA" }),
+    amostra({ id_compra: "B", ni_fornecedor: "12345678901", nome_fornecedor: "FULANO DE TAL" }),
+    amostra({ id_compra: "C", ni_fornecedor: "0", nome_fornecedor: "EMPRESA X" }),
+    amostra({ id_compra: "D", ni_fornecedor: "12", nome_fornecedor: "EMPRESA Y" }),
+    amostra({ id_compra: "E", ni_fornecedor: "1234567", nome_fornecedor: "EMPRESA Z" }),
+    amostra({ id_compra: "F", ni_fornecedor: "123456789", nome_fornecedor: "EMPRESA W" }),
+    amostra({ id_compra: "G", ni_fornecedor: "", nome_fornecedor: "EMPRESA V" }),
+    amostra({ id_compra: "H", ni_fornecedor: "04.372.852/0001-60", nome_fornecedor: "EMPRESA FORMATADA" }),
+  ];
+  const { body } = await chamar("action=amostras&pdm=2640&limit=100", { linhas });
+  const por = Object.fromEntries(body.itens.map((i: Linha) => [i.id_compra, i]));
+
+  assertEquals(por.A.ni_fornecedor, "04372852000160");
+  assertEquals(por.A.ni_tipo, "cnpj");
+  assertEquals(por.A.nome_fornecedor, "W.E.V COMERCIAL LTDA");
+
+  assertEquals(por.B.ni_fornecedor, null);
+  assertEquals(por.B.ni_tipo, "cpf");
+  assertEquals(por.B.nome_fornecedor, "Pessoa física");
+  assert(!JSON.stringify(body).includes("12345678901"));
+  assert(!JSON.stringify(body).includes("FULANO"));
+
+  for (const id of ["C", "D", "E", "F", "G", "H"]) {
+    assertEquals(por[id].ni_fornecedor, null, id);
+    assertEquals(por[id].ni_tipo, null, id);
+  }
+  assertEquals(por.C.nome_fornecedor, "EMPRESA X");
 });

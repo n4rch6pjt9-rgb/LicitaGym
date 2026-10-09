@@ -52,9 +52,9 @@ begin
 
   -- Fixtures (CNPJs fictícios; DV calculado: 99000001000101, 99000002000148, 99000003000192, 99000004000137)
   insert into public.orgaos (codigo_orgao, compras_raw, compras_payload_hash, cnpj, nome_orgao) values
-    ('CHK-CNPJV-1', '{}'::jsonb, 'chk', '99.000.001/0001-02', 'CHK DV INVALIDO'),  -- CA-2: DV inválido (certo: 01)
-    ('CHK-CNPJV-4', '{}'::jsonb, 'chk', '99000004000137', 'CHK VALIDO COM NOME'), -- CA-5: válido, sem motivo
-    ('CHK-CNPJV-5', '{}'::jsonb, 'chk', '12345678909', 'CHK CPF');                -- CA-5: CPF fica de fora
+    (999990001, '{}'::jsonb, 'chk', '99.000.001/0001-02', 'CHK DV INVALIDO'),  -- CA-2: DV inválido (certo: 01)
+    (999990004, '{}'::jsonb, 'chk', '99000004000137', 'CHK VALIDO COM NOME'), -- CA-5: válido, sem motivo
+    (999990005, '{}'::jsonb, 'chk', '12345678909', 'CHK CPF');                -- CA-5: CPF fica de fora
   insert into public.pca_planos (id_pca_pncp, ano_exercicio, orgao_cnpj, titulo, payload_hash, ativo) values
     ('CHK-CNPJV-P2', 2099, '99000002000148', null, 'chk', true);                  -- CA-3: sem nome em lugar nenhum
   insert into public.pca_pgc_itens (codigo_uasg, orgao_cnpj, ano_pca_projeto_compra) values

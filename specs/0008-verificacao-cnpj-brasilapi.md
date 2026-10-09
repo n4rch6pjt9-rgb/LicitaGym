@@ -1,6 +1,6 @@
 # 0008: Verificar na BrasilAPI os CNPJs que a base não consegue confirmar
 
-- **Status:** aprovada (09/10). Escopo desta entrega: só a verificação local; a BrasilAPI entra quando o PGC for carregado
+- **Status:** em implementação (entrega 1; aprovada em 09/10). Escopo desta entrega: só a verificação local; a BrasilAPI entra quando o PGC for carregado
 - **Issue:** nenhuma. Pedido do Marcelo em 09/10: "para os casos de não verificados, rodar Brasil API para verificar se o
   CNPJ realmente existe". Relacionadas: #262 (mod-11), #282 e spec 0007 (PGC × PNCP).
 - **Área:** migrations, edge-functions ou coletor (ver Perguntas), pncp

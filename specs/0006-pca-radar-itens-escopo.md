@@ -15,7 +15,7 @@
 - **O que falta nessa lista:** não há item, valor, mês previsto nem recorte do escopo fitness. O fornecedor não
   consegue ver o que vai ser comprado.
 - **O que já existe no banco:** a view `public.v_bi_pca_radar` (migrations `20261002100000` e `20261002130000`,
-  documentada em `docs/bi-cruzamento-apis.md` §4.1). Ela traz os **itens** planejados (PNCP e PGC, sem duplicar) que
+  documentada em `docs/bi-cruzamento-apis.md` §4.1). Ela traz os **itens** planejados (PNCP e PGC; ver a deduplicação em "Limites conhecidos") que
   estão no escopo do catálogo da empresa (`catalogo_catmat_pdms_efetivos()`), com órgão, PDM, item, quantidade,
   valor, data e mês previstos, e se o casamento é confirmado.
 - **Por que o front não lê a view direto:** só `service_role` tem acesso a ela. Nenhuma Edge Function a expõe hoje.
@@ -70,6 +70,11 @@
 **Limites conhecidos:**
 - A view não tem chave; o desempate usa todas as colunas da resposta, e só empatam linhas idênticas.
 - Se um item do PNCP tiver dois PDMs confirmados, a view gera duas linhas. Em 09/10 havia 0 casos.
+- **Deduplicação PNCP × PGC:** a view descarta o item do PNCP que já está no PGC só quando órgão, UASG, ano e
+  `numero_item_pncp` são iguais e **não nulos**. Se faltar UASG no plano ou `numero_item_pncp` no PGC, o mesmo item
+  aparece nas duas fontes e infla `total` e `valor_total_escopo`. Em 09/10 isso não acontecia: o PGC tinha 0 itens,
+  nenhum plano estava sem UASG e nenhum item estava sem número. Corrigir exige migration na view (null-safe ou outra
+  chave) e fica para issue antes de carregar o PGC.
 - Cada página recalcula a soma, com um count e `ceil(total/1000)` leituras da view.
 - Uma chave estável ou uma RPC de soma exigem migration e ficam para issue própria.
 

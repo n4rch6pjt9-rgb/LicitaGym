@@ -1,5 +1,5 @@
 -- =============================================================================
--- Checagem da migration 20261009161000_saude_coleta_precos (spec 0009, CA-6).
+-- Checagem da migration 20261009181000_saude_coleta_precos (spec 0009, CA-6).
 --
 -- A verificação precos_dias_sem_coleta de private.saude_operacional_resumo():
 --   1. tem limiar em private.saude_limiares (crítico a partir de 8 dias; sem dado = crítico);

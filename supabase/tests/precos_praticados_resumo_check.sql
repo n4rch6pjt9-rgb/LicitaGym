@@ -1,5 +1,5 @@
 -- =============================================================================
--- Checagem da migration 20261009160000_precos_praticados_resumo (spec 0009, CA-2).
+-- Checagem da migration 20261009180000_precos_praticados_resumo (spec 0009, CA-2).
 --
 -- 1. ACL: public.precos_praticados_resumo e public.precos_percentil_linear com EXECUTE só para service_role,
 --    security invoker e search_path fixo.

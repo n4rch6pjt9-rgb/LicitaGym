@@ -96,3 +96,48 @@ def test_mei_mascara_cpf_e_nao_guarda_contato():
     assert l["uf"] == "BA" and l["cnpj"] == "32068708000170"      # CNPJ não é mascarado
     pj = F.linha_fornecedor("24608949000137", BRASILAPI_JA, "brasilapi")
     assert pj["titular_pessoa_fisica"] is False and pj["telefones"] == ["7133333333"]
+
+
+def test_cnpjs_de_precos_le_por_offset_na_pk_e_deduplica():
+    sb = MagicMock()
+    sb.selecionar.return_value = [{"ni_fornecedor": "24608949000137"}, {"ni_fornecedor": "06165288000130"},
+                                  {"ni_fornecedor": "24608949000137"}]
+    assert F.cnpjs_de_precos(sb) == ["06165288000130", "24608949000137"]
+    tabela = sb.selecionar.call_args.args[0]
+    kw = sb.selecionar.call_args.kwargs
+    assert tabela == "precos_praticados_itens"
+    assert kw["select"] == "ni_fornecedor" and kw["ni_fornecedor"] == "not.is.null"
+    assert kw["order"] == "id_compra.asc,id_item_compra.asc"
+
+
+def test_main_de_precos_junta_os_vencedores(monkeypatch):
+    sb = MagicMock()
+    monkeypatch.setattr(F, "cnpjs_de_precos", lambda _sb: ["24608949000137", "ESTRANGEIRO"])
+    import coletor.destino as D
+    monkeypatch.setattr(D, "Supabase", lambda *_a, **_k: sb)
+    monkeypatch.setattr(D, "env", lambda *_a, **_k: "x")
+    recebidos = []
+    monkeypatch.setattr(F.CadastroFornecedores, "cadastrar",
+                        lambda self, cnpjs: recebidos.extend(cnpjs) or {"erros": 0, "consultados": 0, "linhas": []})
+    assert F.main(["--de-precos", "--dry-run"]) == 0
+    assert recebidos == ["24608949000137", "ESTRANGEIRO"]
+
+
+def test_main_limite_corta_a_lista(monkeypatch):
+    monkeypatch.setattr(F, "cnpjs_de_precos", lambda _sb: ["24608949000137", "06165288000130", "11222333000181"])
+    import coletor.destino as D
+    monkeypatch.setattr(D, "Supabase", lambda *_a, **_k: MagicMock())
+    monkeypatch.setattr(D, "env", lambda *_a, **_k: "x")
+    recebidos = []
+    monkeypatch.setattr(F.CadastroFornecedores, "cadastrar",
+                        lambda self, cnpjs: recebidos.extend(cnpjs) or {"erros": 0, "consultados": 0, "linhas": []})
+    assert F.main(["--de-precos", "--limite", "2", "--dry-run"]) == 0
+    assert recebidos == ["24608949000137", "06165288000130"]
+
+
+def test_cliente_supabase_fixa_schema_public():
+    # Sem Accept-Profile/Content-Profile o PostgREST usa o primeiro schema exposto no painel (em 09/10/2026: `api`,
+    # vazio) e responde 404 PGRST205 para toda tabela de public.
+    from coletor.destino import Supabase
+    h = Supabase("https://x.supabase.co", "chave").h
+    assert h["Accept-Profile"] == "public" and h["Content-Profile"] == "public"

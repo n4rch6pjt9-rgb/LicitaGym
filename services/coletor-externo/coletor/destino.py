@@ -113,10 +113,14 @@ class Supabase:
 
     def __init__(self, url: str, service_key: str):
         self.base = url.rstrip("/") + "/rest/v1"
+        # Schema explícito: sem estes cabeçalhos o PostgREST usa o primeiro schema exposto no painel. Em 09/10/2026 esse
+        # schema era `api` (vazio) e toda leitura/gravação dos coletores dava 404 PGRST205 ("api.<tabela>").
         self.h = {
             "apikey": service_key,
             "Authorization": f"Bearer {service_key}",
             "Content-Type": "application/json",
+            "Accept-Profile": "public",
+            "Content-Profile": "public",
         }
         self._textos_sem_drenar = 0
 

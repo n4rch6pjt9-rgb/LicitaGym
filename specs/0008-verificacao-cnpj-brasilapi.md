@@ -1,6 +1,6 @@
 # 0008: Verificar na BrasilAPI os CNPJs que a base não consegue confirmar
 
-- **Status:** rascunho
+- **Status:** aprovada (09/10). Escopo desta entrega: só a verificação local; a BrasilAPI entra quando o PGC for carregado
 - **Issue:** nenhuma. Pedido do Marcelo em 09/10: "para os casos de não verificados, rodar Brasil API para verificar se o
   CNPJ realmente existe". Relacionadas: #262 (mod-11), #282 e spec 0007 (PGC × PNCP).
 - **Área:** migrations, edge-functions ou coletor (ver Perguntas), pncp
@@ -43,40 +43,66 @@ Os 9 CNPJs inválidos (todos em `orgaos`, que é gravada por `sync-pncp-orgaos`)
 
 ## Abordagem
 
-1. **Migration** com `private.cnpj_verificacao`. Só `service_role` tem acesso; RLS ligada, sem policy.
-   - **Colunas:**
-     - `cnpj` (14 dígitos, PK);
-     - `dv_valido`;
-     - `status`: `ok` | `nao_encontrado` | `dv_invalido` | `erro_consulta`;
-     - `http_status`, `situacao_cadastral`, `razao_social`, `nome_fantasia`, `municipio`, `uf`, `natureza_juridica`;
-     - `resposta` (jsonb bruto);
-     - `fonte` = `'brasilapi'`;
-     - `motivos` text[]: `orgao_sem_nome`, `dv_invalido`, `pgc_pncp_sem_par`;
-     - `consultado_em`, `erro`.
-   - Mais `private.cnpj_verificacao_pendentes()`, que devolve os CNPJs dos três alvos ainda não verificados ou
-     vencidos.
-2. **Coleta:**
-   - consulta a BrasilAPI só para os CNPJs com DV válido;
-   - DV inválido é gravado direto como `dv_invalido`, sem chamada;
-   - timeout explícito, retry com backoff e `Retry-After`, `DELAY_SEGUNDOS >= 1`;
-   - 404 vira `nao_encontrado`; 5xx ou timeout vira `erro_consulta`, nunca `nao_encontrado`.
-3. **Exposição:** a saúde operacional ganha a contagem por `status`. As telas (radar e órgãos) passam a mostrar, quando
-   o nome oficial faltar, a razão social da BrasilAPI marcada como "Receita via BrasilAPI, consultado em ...". Isso
-   fica num PR de front separado.
-4. **Correção na origem:** para cada `dv_invalido` em `orgaos`, uma issue apontando a linha e a API de origem. O dado
+Decisões do Marcelo (09/10): a coleta roda numa **Edge Function**. **Agora** entra só a verificação local; a
+**BrasilAPI** entra quando o PGC for carregado, numa entrega 2 desta spec.
+
+### Entrega 1 (este PR)
+
+1. **Migration `<timestamp>_cnpj_verificacao.sql`:**
+   - **Tabela `private.cnpj_verificacao`:** RLS ligada, sem policy, `revoke all` de PUBLIC, anon e authenticated, e
+     DML só para `service_role`.
+     - `cnpj` (14 dígitos, PK) e `dv_valido`;
+     - `status`: `dv_invalido` | `aguardando_consulta`, mais os da entrega 2: `ok` | `nao_encontrado` |
+       `erro_consulta`;
+     - `motivos` text[]: `dv_invalido`, `orgao_sem_nome`, `pgc_pncp_sem_par`;
+     - `ocorrencias` jsonb: `tabela.coluna` → quantidade de linhas;
+     - `primeira_vez_em`, `ultima_vez_no_alvo`;
+     - as colunas da BrasilAPI, todas nulas nesta entrega: `fonte`, `http_status`, `situacao_cadastral`,
+       `razao_social`, `nome_fantasia`, `municipio`, `uf`, `natureza_juridica`, `resposta`, `consultado_em` e `erro`.
+   - **Função `private.cnpj_verificacao_atualizar()`:** `security definer`, `search_path` vazio, EXECUTE só para
+     `service_role`. Ela:
+     - lê as colunas de CNPJ das tabelas de dado oficial;
+     - aplica `private.cnpj_valido` (#262), aceitando só valores com 14 dígitos (CPF fica de fora);
+     - junta os três alvos;
+     - faz upsert em `cnpj_verificacao` e devolve as contagens.
+     - **Não altera nenhuma tabela de dado oficial.**
+   - **Cron semanal** com `private.cron_chamar_edge(...)`. Sem pg_cron, a migration avisa e segue, como a
+     `20261004004000`.
+2. **Edge Function `sync-cnpj-verificacao`:**
+   - `requireCronAuth`; aceita só POST;
+   - chama a RPC com `service_role` e devolve as contagens;
+   - erro dá 500;
+   - nesta entrega não faz nenhuma chamada HTTP externa.
+3. **Correção na origem:** para cada `dv_invalido` em `orgaos`, uma issue apontando a linha e a API de origem. O dado
    não é corrigido à mão.
+
+### Entrega 2 (quando o PGC entrar)
+
+1. **Consulta à BrasilAPI**, dentro da mesma Edge Function, só para quem está em `aguardando_consulta`:
+   - timeout, retry com backoff e `Retry-After`, 1 consulta por segundo;
+   - 404 vira `nao_encontrado`; 5xx ou timeout vira `erro_consulta`.
+2. **Saúde e telas:** a saúde ganha a contagem por `status`; as telas mostram a razão social marcada como "Receita via
+   BrasilAPI, consultado em ...".
 
 ## Critérios de aceite
 
+### Entrega 1
+
 | ID | Dado / Quando / Então | Teste que prova |
 |---|---|---|
-| CA-1 | A tabela existe, só `service_role` lê e grava, e anon e authenticated não têm nenhum grant. | SQL `supabase/tests/cnpj_verificacao_check.sql` |
-| CA-2 | **Dado** um CNPJ com DV inválido, **quando** a coleta roda, **então** grava `status='dv_invalido'` e **não** chama a BrasilAPI. | teste unitário com mock HTTP (conta as chamadas) |
-| CA-3 | **Dado** a BrasilAPI responder 200, **então** grava `status='ok'`, os campos e a `resposta` bruta, com `fonte='brasilapi'` e `consultado_em`. | idem |
-| CA-4 | **Dado** 404, **então** `nao_encontrado`. **Dado** 429/5xx/timeout, **então** retry com backoff (respeitando `Retry-After`) e, esgotado, `erro_consulta`. Nunca `nao_encontrado`. | idem |
-| CA-5 | `cnpj_verificacao_pendentes()` devolve os três alvos, sem repetir CNPJ e juntando os motivos, e não devolve o que foi verificado com `ok` há menos de N dias. | SQL check com fixtures |
-| CA-6 | Nenhuma coluna de tabela de dado oficial (`orgaos`, `pca_planos` etc.) é alterada pela coleta. | check SQL compara o hash das linhas antes e depois, no banco descartável |
-| CA-7 | Os testes unitários nunca chamam a BrasilAPI real. | o mock é obrigatório; o teste falha se houver fetch não mockado |
+| CA-1 | Só `service_role` lê e grava `private.cnpj_verificacao` e executa `cnpj_verificacao_atualizar()`. anon e authenticated não têm grant, inclusive via PUBLIC. | SQL `supabase/tests/cnpj_verificacao_check.sql`, mais `funcoes_acl_check`/`tabelas_acl_check` |
+| CA-2 | **Dado** um CNPJ de 14 dígitos com DV inválido numa coluna de dado oficial (ex.: `orgaos.cnpj`), **quando** a função roda, **então** existe a linha `status='dv_invalido'`, `dv_valido=false`, com `dv_invalido` em `motivos` e a contagem em `ocorrencias`. | SQL check com fixture |
+| CA-3 | **Dado** um órgão do PCA sem nome (sem `titulo` e sem nome em `orgaos`) com DV válido, **então** `status='aguardando_consulta'` e `orgao_sem_nome` em `motivos`. | idem |
+| CA-4 | **Dado** um CNPJ de órgão do PGC sem plano no PNCP no mesmo ano, com DV válido, **então** `aguardando_consulta` com `pgc_pncp_sem_par`. | idem |
+| CA-5 | CPF (11 dígitos), valor vazio e CNPJ válido sem nenhum outro motivo não entram. Rodar duas vezes não duplica linha nem motivo; `ultima_vez_no_alvo` avança. | idem |
+| CA-6 | A função não altera nenhuma linha das tabelas de dado oficial lidas: o hash de cada tabela é igual antes e depois. | idem |
+| CA-7 | **Edge:** sem o segredo do cron, 401 e nenhuma RPC; GET dá 405; com o segredo, chama a RPC `cnpj_verificacao_atualizar` e devolve 200 com as contagens; erro da RPC dá 500. Nenhum `fetch` externo. | Deno `tests/supabase/functions/sync_cnpj_verificacao_test.ts` |
+
+### Entrega 2 (BrasilAPI, depois)
+
+Os CA de consulta continuam como estavam: 200 vira `ok` com a resposta bruta; 404 vira `nao_encontrado`; 429, 5xx ou
+timeout vira `erro_consulta`, com retry; os testes nunca chamam a API real. Eles serão detalhados quando a entrega 2
+começar.
 
 ## Fora de escopo
 
@@ -101,14 +127,4 @@ Os 9 CNPJs inválidos (todos em `orgaos`, que é gravada por `sync-pncp-orgaos`)
 
 ## Perguntas em aberto
 
-1. **Onde roda a coleta:**
-   - **Edge Function `sync-cnpj-verificacao` com cron:** mesmo padrão dos `sync-*`, lock e saúde.
-   - **Python no `coletor-externo`:** Cloud Run Job, que já tem o cliente HTTP com retry.
-   - A sessão cloud não alcança `brasilapi.com.br` (proxy 403). Isso só afeta o teste manual, porque os testes usam
-     mock.
-2. **Validade:** depois de quantos dias um `ok` é verificado de novo? A proposta é 90 dias.
-3. **Limite da BrasilAPI:** não há SLA documentado; a proposta é 1 consulta por segundo. Hoje o volume é 0 com DV
-   válido, então o limite só pesa quando o PGC for carregado ou aparecerem órgãos sem nome.
-4. **Vale a pena agora?** Com os números de hoje (0 / 9 / 0), a parte da BrasilAPI não teria nada para consultar.
-   Alternativa: entregar já só a verificação local de DV (CA-1, CA-2, CA-5, CA-6) e ligar a BrasilAPI quando o PGC
-   entrar.
+Nenhuma para a entrega 1.

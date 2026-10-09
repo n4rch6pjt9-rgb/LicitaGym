@@ -201,6 +201,7 @@ Deno.test("CA-3: parâmetro inválido devolve 400 com mensagem, não lista vazia
     const qs of [
       "&ano=abc", "&mes=2026-13", "&mes=03/2026", "&pdm=abc", "&fonte=sesc", "&valor_min=-1", "&valor_min=x",
       "&so_confirmados=talvez", "&page=0", "&limit=0", "&limit=101", "&ordem=nome", "&orgao=%25%25",
+      `&orgao=${"a".repeat(201)}`,
     ]
   ) {
     const { res, body, clientes } = await chamar(qs, BASE);
@@ -266,7 +267,32 @@ Deno.test("CA-5: nenhum valor conhecido dá valor_total_escopo null, não 0", as
 Deno.test("CA-6: erro do banco devolve 500 com mensagem, nunca itens vazios", async () => {
   const { res, body } = await chamar("&ano=2026", BASE, { message: "canceling statement due to statement timeout" });
   assertEquals(res.status, 500);
-  assert(String(body.error).includes("statement timeout"));
+  assertEquals(body.error, "Falha ao ler o radar do PCA.");
+  // detalhe do banco fica no log, não vai ao cliente (revisão de segurança)
+  assert(!String(body.error).includes("statement timeout"));
+  assertEquals(body.itens, undefined);
+});
+
+Deno.test("CA-6: contagem divergente da soma devolve 500 'Não verificado', nunca soma parcial", async () => {
+  const fake = criarFake(BASE);
+  const client = {
+    from(t: string) {
+      const q = fake.client.from(t);
+      const selectOriginal = q.select.bind(q);
+      return Object.assign(q, {
+        select(cols: string, o?: { count?: "exact" }) {
+          // a leitura da soma "perde" uma linha: simula a base mudando entre as consultas
+          if (cols === "valor_total") return selectOriginal(cols, o).eq("numero_item_pncp", 1);
+          return selectOriginal(cols, o);
+        },
+      });
+    },
+  } as unknown as RadarClient;
+  const [r, u] = req("&ano=2026");
+  const res = await responderRadar(r, u, { requireAuth: autenticado, criarCliente: () => client });
+  const body = await res.json();
+  assertEquals(res.status, 500);
+  assert(String(body.error).startsWith("Não verificado"));
   assertEquals(body.itens, undefined);
 });
 

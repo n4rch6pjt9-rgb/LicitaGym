@@ -62,6 +62,9 @@ export interface RadarDeps {
 
 type Ordem = "data" | "valor";
 
+/** Erro de domínio que pode ir ao cliente (resultado não verificado). Qualquer outro erro vira mensagem genérica. */
+export class RadarNaoVerificado extends Error {}
+
 interface RadarParams {
   ano: number;
   mes: string | null;
@@ -107,6 +110,7 @@ export function parseRadarParams(url: URL): RadarParams | { error: string } {
   const orgaoRaw = q("orgao");
   if (!vazio(orgaoRaw)) {
     const o = orgaoRaw!.trim();
+    if (o.length > 200) return { error: "orgao inválido: termo longo demais" };
     const digitos = o.replace(/\D/g, "");
     if (/^[\d.\/\-\s]+$/.test(o) && digitos.length === 14) {
       orgaoCnpj = digitos;
@@ -241,12 +245,12 @@ async function somarEscopo(client: RadarClient, p: RadarParams, total: number) {
     lidos += linhas.length;
     if (linhas.length < PAGINA_SOMA) {
       if (lidos !== total) {
-        throw new Error(`Não verificado: a soma leu ${lidos} itens e a contagem deu ${total} (base mudou durante a leitura).`);
+        throw new RadarNaoVerificado(`Não verificado: a soma leu ${lidos} itens e a contagem deu ${total} (base mudou durante a leitura).`);
       }
       return { valor: conhecidos > 0 ? somaCentavos / 100 : null, semValor: lidos - conhecidos };
     }
   }
-  throw new Error(`Não verificado: recorte acima de ${PAGINA_SOMA * MAX_PAGINAS_SOMA} itens; refine o filtro.`);
+  throw new RadarNaoVerificado(`Não verificado: recorte acima de ${PAGINA_SOMA * MAX_PAGINAS_SOMA} itens; refine o filtro.`);
 }
 
 export async function responderRadar(req: Request, url: URL, deps: RadarDeps = {}): Promise<Response> {
@@ -265,7 +269,7 @@ export async function responderRadar(req: Request, url: URL, deps: RadarDeps = {
     ).range(offset, offset + p.limit - 1);
     const { data, error, count } = await pagina;
     if (error) throw error;
-    if (typeof count !== "number") throw new Error("Não verificado: contagem ausente na leitura do radar.");
+    if (typeof count !== "number") throw new RadarNaoVerificado("Não verificado: contagem ausente na leitura do radar.");
 
     const soma = await somarEscopo(client, p, count);
     return jsonResponse({
@@ -279,6 +283,8 @@ export async function responderRadar(req: Request, url: URL, deps: RadarDeps = {
     });
   } catch (error) {
     console.error("[api-pncp-pca] radar", errorDetail(error));
-    return jsonResponse({ error: `Falha ao ler o radar do PCA: ${errorDetail(error)}` }, 500);
+    // Detalhe do banco (view, coluna, hint) fica só no log.
+    const msg = error instanceof RadarNaoVerificado ? error.message : "Falha ao ler o radar do PCA.";
+    return jsonResponse({ error: msg }, 500);
   }
 }

@@ -1,6 +1,6 @@
 # 0009: Preços históricos e a aba "Inteligência de Preços" a partir da Pesquisa de Preço do Compras.gov
 
-- **Status:** rascunho
+- **Status:** aprovada (09/10)
 - **Issue:** nenhuma. Pedido do Marcelo em 09/10: os preços históricos vêm de
   `/modulo-pesquisa-preco/1_consultarMaterial` (via catálogo do tenant), com o detalhe de
   `/modulo-pesquisa-preco/2_consultarMaterialDetalhe`. Eles alimentam a tela "Preços Históricos" e a aba "Inteligência
@@ -90,13 +90,14 @@ opcional da mesma coleta (ver Perguntas).
 | ID | Dado / Quando / Então | Teste que prova |
 |---|---|---|
 | CA-1 | Sem JWT, 401 e nenhuma consulta com service_role. | Deno `tests/supabase/functions/api_precos_test.ts` |
-| CA-2 | `resumo` com `pdm` devolve n, mín, p25, mediana, p75 e máx do período; com `n < 3`, os quartis vêm `null` com o motivo. | idem, mais SQL check da função ou view de resumo |
+| CA-2 | `resumo` com `pdm` e `meses` (12 ou 24; outro valor dá 400) devolve n, média, mín, p25, mediana, p75 e máx do período, e a unidade de fornecimento predominante. Com `n < 3`, média e quartis vêm `null`, com o motivo. | idem, mais SQL check da função ou view de resumo |
 | CA-3 | `amostras` pagina, ordena por `data_resultado desc` e devolve marca e fornecedor como vieram da API (ausente vira `null`). | idem |
 | CA-4 | Parâmetro inválido dá 400; erro de banco dá 500 genérico, nunca `[]`. | idem |
 | CA-5 | A coleta agendada roda `compras_precos` em modo catálogo; o teste unitário não chama a API real. | pytest `services/coletor-externo/tests/` |
 | CA-6 | A saúde acusa coleta de preço com mais de 8 dias. | SQL check da saúde |
 | CA-7 | `/precos` mostra os KPIs e as amostras do recorte; valor ausente aparece como "—"; n pequeno não mostra mediana. | vitest |
-| CA-8 | A aba "Inteligência de Preços" mostra o resumo por PDM da aderência; só compara com o estimado quando a unidade bate. | vitest |
+| CA-8 | A aba "Inteligência de Preços" mostra, para cada item da oportunidade com PDM, o valor unitário estimado contra a média, a mediana e o p25–p75 do PDM no período escolhido (12 ou 24 meses), com a diferença em R$ e em %. Com unidade diferente ou `n < 3`, não mostra diferença e diz o motivo. | vitest |
+| CA-9 | A coleta completa a descrição detalhada pelo `2_consultarMaterialDetalhe` só nas linhas sem descrição, e marca `detalhe_sincronizado_em`. | pytest |
 
 ## Fora de escopo
 
@@ -119,14 +120,26 @@ opcional da mesma coleta (ver Perguntas).
 - **Dado oficial x derivado:** os preços são homologações oficiais (Compras.gov). Mediana e quartis são derivados,
   com `n`, período e regra de arredondamento escritos.
 
+## Decisões do Marcelo (09/10)
+
+1. **Regra do CLAUDE.md:** a aba e `/precos` mostram tudo (estatísticas, marca, fornecedor com nome e CNPJ, órgão e
+   data), sempre com fonte e data. O mesmo PR atualiza a regra no `CLAUDE.md` para "aparecem no BI, em `/precos` e na
+   aba Inteligência de Preços, com fonte e data".
+2. **Coleta:** Cloud Run Job. `coletor.main` passa a chamar `compras_precos` em modo catálogo. O agendamento no Cloud
+   Scheduler é do Marcelo.
+3. **`2_consultarMaterialDetalhe`:** só para completar os preços sem descrição detalhada (4.082 em 09/10), gravando
+   `detalhe_sincronizado_em`.
+4. **Período e comparação:**
+   - o período é um **filtro de 12 ou 24 meses**, não um valor fixo;
+   - a aba cruza, **item a item**, o **valor unitário estimado do item da oportunidade** (do edital/PNCP, o mesmo
+     exibido no detalhamento) com a **média do PDM** no período escolhido;
+   - mostra também a mediana e o p25–p75, porque a média sozinha é puxada por outlier, e o `n`;
+   - a diferença sai em R$ e em %, com regra de arredondamento escrita (2 casas, meio para longe do zero);
+   - **só compara quando a unidade de fornecimento do item bate com a predominante do PDM.** Se não bater, mostra as
+     duas unidades e não calcula a diferença, para não inventar comparação.
+5. **Catálogo:** com tenants desligados, vale o catálogo global da empresa (`catalogo_catmat_pdms_efetivos()`). Isso
+   muda quando os tenants forem ligados.
+
 ## Perguntas em aberto
 
-1. **Regra do CLAUDE.md:** "preço, marca e fornecedor aparecem só no BI" passa a valer também para `/precos` e para
-   a aba da oportunidade? Ou a aba mostra só as estatísticas, sem fornecedor e marca?
-2. **Agendamento:** Cloud Run Job semanal (Python, já pronto) ou Edge Function com cron? A recomendação é o Cloud Run,
-   porque o coletor existe e tem retry e paginação testados.
-3. **`2_consultarMaterialDetalhe`:** usar para completar os 4.082 sem descrição detalhada, ou ignorar, já que o `1_`
-   traz quase tudo?
-4. **Período padrão** das estatísticas: 12 ou 24 meses?
-5. **"Via catálogo tenant":** com tenants desligados, usar o catálogo global da empresa é o comportamento esperado
-   agora?
+Nenhuma.

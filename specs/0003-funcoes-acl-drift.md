@@ -8,16 +8,18 @@
 ## Problema
 
 Medição só de leitura em produção, em 09/10/2026:
-- **11 de 11 funções de `private`** e **35 de 62 de `public`** são executáveis por `anon` e/ou `authenticated`, por
-  GRANT explícito a esses papéis. Exemplos: `private.cron_chamar_edge`, `private.acquire_sync_lock` e
-  `public.fn_escopo_match_atualizar`.
+- **42 funções fora do previsto** (14 de `private`, 28 de `public`; 81 pares função × papel) são executáveis por
+  `anon` e/ou `authenticated`, todas por GRANT explícito com grantor `postgres` (nenhuma via PUBLIC ou ACL nula).
+  Exemplos: `private.cron_chamar_edge`, `private.acquire_sync_lock` e `public.fn_escopo_match_atualizar`.
 - **As migrations dizem o contrário:** elas revogam o EXECUTE desses papéis. Num banco limpo, gerado só pelas
   migrations, apenas 10 funções são executáveis por esses papéis, e todas são intencionais.
 - **Origem provável:** o painel do Supabase (Data API, "Exposed functions" ou exposição automática). O banco não
   registra quando aconteceu.
 - **Por que não é explorável hoje:**
   - `anon` e `authenticated` não têm USAGE em `private`;
-  - as funções de `public` liberadas a `anon` são SECURITY INVOKER e esses papéis não têm grant em tabela.
+  - as 4 SECURITY DEFINER do drift (`acquire_http_slot`, `acquire_sync_lock`, `report_http_rate_limit`,
+    `saude_operacional_resumo`) estão em `private`; as de `public` são SECURITY INVOKER e esses papéis não têm grant
+    em tabela.
 
   Mesmo assim, a defesa em camadas sumiu, e produção diverge das migrations.
 - **Efeito colateral encontrado:** três funções de `private` (`marca_normalizar`, `marca_resolver` e
@@ -33,6 +35,7 @@ Medição só de leitura em produção, em 09/10/2026:
 | CA-3 | `service_role` continua executando as funções que as Edge Functions chamam (`acquire_http_slot`, `report_http_rate_limit`, `acquire_sync_lock`, `saude_operacional_resumo`), e `authenticated` mantém as 8 intencionais. | `funcoes_acl_check.sql` blocos 2 e 3 |
 | CA-4 | **Dado** `anon`, **quando** chama uma função revogada, **então** recebe `permission denied`. | Teste manual registrado no PR |
 | CA-5 | Reaplicar a migration não muda nada: "0 concessões revogadas". | `validar-migrations.sh` (2ª aplicação) |
+| CA-6 | **Dado** EXECUTE que o REVOKE não remove (via PUBLIC ou outro grantor), **então** a migration aborta (pós-checagem), em vez de terminar incompleta. | Simulação com `grant ... to public` |
 
 ## Fora de escopo
 
@@ -44,7 +47,7 @@ Medição só de leitura em produção, em 09/10/2026:
 ## Impacto em dados
 
 - **Migration:** `supabase/migrations/20261009120000_funcoes_acl_drift.sql`. Só faz REVOKE e é idempotente.
-- **ACL:** remove o EXECUTE de `anon`/`authenticated` em cerca de 46 funções. Não mexe em `service_role`, `postgres`
+- **ACL:** remove o EXECUTE de `anon`/`authenticated` em 42 funções (81 concessões). Não mexe em `service_role`, `postgres`
   nem PUBLIC.
 - **Clientes:** todas as chamadas `.rpc()` das Edge Functions e do coletor Python usam `service_role`. O Dashboard
   não chama RPC direto.

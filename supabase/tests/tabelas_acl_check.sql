@@ -19,7 +19,8 @@ declare
   v_tab_privs constant text[] := array['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN'];
   v_seq_privs constant text[] := array['USAGE','SELECT','UPDATE'];
 begin
-  -- Lista intencional: mesma da migration 20261009130000_tabelas_acl_drift.sql (mudou aqui, mude lá).
+  -- Lista viva de grants intencionais (a da migration 20261009130000 ficou congelada em 09/10). Migration nova que der
+  -- grant a anon/authenticated atualiza esta lista no mesmo PR.
   create temporary table tabelas_acl_intencional_chk (rel text, papel text, privs text[], primary key (rel, papel)) on commit drop;
   insert into tabelas_acl_intencional_chk values
     ('public.catalogo_chunks', 'authenticated', '{SELECT}'),

@@ -30,7 +30,7 @@ Medição só de leitura em produção, em 09/10/2026, com `has_table_privilege`
 
 | ID | Dado / Quando / Então | Teste que prova |
 |---|---|---|
-| CA-1 | **Dado** grants `arwd` a `anon` e `authenticated` em todas as relações de `public` e `private` (a simulação de produção), **quando** a migration roda, **então** só sobram os 88 pares intencionais. | `tabelas_acl_check.sql` falha antes (1.070 falhas) e passa depois |
+| CA-1 | **Dado** grants `arwd` a `anon` e `authenticated` em todas as relações de `public` e `private` (a simulação de produção), **quando** a migration roda, **então** só sobram os 88 pares intencionais. | `tabelas_acl_check.sql` falha antes (1.997 falhas, com MAINTAIN e grant por coluna na simulação) e passa depois (1.317 revogados) |
 | CA-2 | Nenhuma materialized view continua legível por `anon`. | `tabelas_acl_check.sql`, bloco 3 |
 | CA-3 | `authenticated` mantém os grants intencionais: as tabelas com policy de leitura e as tabelas de tenant, com as policies `*_desenvolvedor` para o admin. `service_role` não muda. | `tabelas_acl_check.sql`, bloco 2, e a simulação |
 | CA-4 | Uma tabela nova criada por `postgres` em `public` não nasce aberta a `anon` nem a `authenticated` (default privileges). | `tabelas_acl_check.sql`, bloco 4, e a simulação |

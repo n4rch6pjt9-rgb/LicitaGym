@@ -1,7 +1,8 @@
 -- Corrige drift de grants de tabela, view, materialized view e sequência em produção (spec specs/0005-tabelas-acl-drift.md).
 --
 -- Contexto (medição só leitura em produção, 09/10/2026, com has_table_privilege/has_sequence_privilege): quase todas as
--- relações de `public` e `private` davam SELECT/INSERT/UPDATE/DELETE a `anon` e `authenticated` (grantor `postgres`),
+-- relações de `public` e `private` davam SELECT/INSERT/UPDATE/DELETE (e MAINTAIN em 33) a `anon` e `authenticated`
+-- (grantor e dono `postgres` em todas),
 -- inclusive as materialized views `catmat_item_completo` e `mv_escopo_demanda` (sem RLS: legíveis por qualquer um com a
 -- chave publishable). Num banco limpo (scripts/validar-migrations.sh) `anon` não tem nenhum grant de tabela/view/matview
 -- e `authenticated` tem os 88 pares da lista abaixo. Origem provável: o painel do Supabase (Data API, "Exposed tables" e
@@ -30,7 +31,8 @@ declare
   v_tab_privs constant text[] := array['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN'];
   v_seq_privs constant text[] := array['USAGE','SELECT','UPDATE'];
 begin
-  -- Lista intencional: mesma de supabase/tests/tabelas_acl_check.sql (gerada do banco limpo; mudou aqui, mude lá).
+  -- Lista intencional congelada em 09/10/2026 (gerada do banco limpo). A lista viva fica em
+  -- supabase/tests/tabelas_acl_check.sql: migration nova que der grant a anon/authenticated atualiza a lista do check.
   create temporary table tabelas_acl_intencional (rel text, papel text, privs text[], primary key (rel, papel)) on commit drop;
   insert into tabelas_acl_intencional values
     ('public.catalogo_chunks', 'authenticated', '{SELECT}'),

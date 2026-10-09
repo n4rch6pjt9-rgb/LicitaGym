@@ -39,6 +39,9 @@ scripts/validar-migrations.sh                       # Postgres 17 descartável (
 - **Lint é por arquivo inteiro:** quem toca um arquivo resolve a dívida dele (em 08/10: 12 `no-unused-vars` no Deno,
   95 achados F no ruff, 93 com `ruff check --fix`). Não acrescente regra sem limpar a base antes.
 - Fluxos críticos ainda sem teste: `docs/testes-minimos-fluxos-criticos.md`.
+- **GitHub Actions sem `uses:`:** este repo não roda actions do marketplace (o run termina em `startup_failure`, sem
+  job). Workflow novo segue `pr-quality.yml`/`saude.yml`: checkout por `git`, ferramentas do runner ou release oficial
+  com SHA-256 conferido.
 
 ## Ambientes e entrega
 - **Um ambiente: produção** (Supabase `ifaiagegyicjzlpskafh`). Não há staging.

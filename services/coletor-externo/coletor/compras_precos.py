@@ -379,7 +379,18 @@ def _coletar_precos(
                     "amostras": [],
                 }
             if not pdms_efetivos:
-                log.warning("Catálogo de PDMs efetivos vazio: coleta de Pesquisa de Preço sem consultas")
+                # Modo catálogo com banco: catálogo vazio não é "coleta sem nada a fazer" com sucesso. Falha explícita
+                # (spec 0009, revisão I5), para o Job sair com código 1 e alguém olhar o catálogo.
+                msg = "catálogo de PDMs efetivos vazio: nenhuma consulta de Pesquisa de Preço"
+                log.error("Coleta de Pesquisa de Preço abortada: %s", msg)
+                return {
+                    "sucesso": False,
+                    "erro": msg,
+                    "total_coletados": 0,
+                    "total_gravados": 0,
+                    "erros": 1,
+                    "amostras": [],
+                }
         for p in pdms_efetivos:
             consultas.append(("codigoPdm", p))
 
@@ -510,7 +521,9 @@ def _coletar_precos(
     }
 
 
-FILTRO_SEM_DESCRICAO = "(descricao_detalhada_item.is.null,descricao_detalhada_item.eq.)"
+# Sem descrição = nula, vazia ou só espaço em branco. `match` é o operador ~ (regex POSIX) do PostgREST; o valor vai
+# sem aspas no or=(...), então a barra invertida chega literal ao Postgres. Mesma regra de sem_texto().
+FILTRO_SEM_DESCRICAO = "(descricao_detalhada_item.is.null,descricao_detalhada_item.match.^\\s*$)"
 
 
 def _chave_detalhe(item: Any) -> tuple[str, int] | None:

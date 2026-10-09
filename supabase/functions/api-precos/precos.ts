@@ -2,11 +2,17 @@
 // Preços homologados da Pesquisa de Preço do Compras.gov (public.precos_praticados_itens), por PDM do catálogo da
 // empresa, para a tela /precos e a aba "Inteligência de Preços" da oportunidade.
 //
-//   ?action=resumo&pdm=<int>[&item=<int>][&meses=12|24][&uf=XX]
+//   ?action=resumo&pdm=<int>[&item=<int>][&meses=12|24][&uf=XX][&unidade=SIGLA]
 //       estatísticas do recorte calculadas no banco (public.precos_praticados_resumo): n, média, mín, p25, mediana,
-//       p75, máx e unidade de fornecimento predominante. n < 3: média e quartis null, com motivo.
-//   ?action=amostras&pdm=<int>[&item][&meses][&uf][&page=1][&limit=20, até 100]
+//       p75, máx, unidade de fornecimento predominante e todas as unidades do recorte (`unidades`). n < 3: média e
+//       quartis null, com motivo.
+//   ?action=amostras&pdm=<int>[&item][&meses][&uf][&unidade][&page=1][&limit=20, até 100]
 //       as linhas do mesmo recorte, por data_resultado desc (desempate pela chave id_compra, id_item_compra).
+//       Página além do total: 400 com codigo "page_alem_do_total" (o PostgREST responde 416/PGRST103).
+//
+// Unidade (decisão 4 da spec): sem `unidade` o recorte pode misturar unidades de fornecimento (UN, PAR, M2...). Para
+// comparar com o valor estimado de um item da oportunidade, o front passa `unidade` = sigla de fornecimento do item;
+// sem isso não compara.
 //
 // Período: os últimos `meses` (padrão 12) até hoje no horário de Brasília, por data_resultado: de (hoje − N meses
 // + 1 dia) até hoje, inclusive. Só entra preço > 0 (nulo ou zero não é preço), nas duas actions.
@@ -90,6 +96,9 @@ export interface PrecosDeps {
 /** Erro de domínio que pode ir ao cliente (resultado não verificado). Qualquer outro erro vira mensagem genérica. */
 export class PrecosNaoVerificado extends Error {}
 
+/** Página pedida além do total de amostras: erro de chamada (400), não falha de banco. */
+class PaginaAlemDoTotal extends Error {}
+
 type Action = "resumo" | "amostras";
 
 interface PrecosParams {
@@ -98,6 +107,7 @@ interface PrecosParams {
   item: number | null;
   meses: number;
   uf: string | null;
+  unidade: string | null;
   page: number;
   limit: number;
 }
@@ -165,6 +175,11 @@ export function parsePrecosParams(url: URL): PrecosParams | { error: string } {
   const ufRaw = q("uf");
   if (!vazio(ufRaw) && !/^[A-Za-z]{2}$/.test(ufRaw!.trim())) return { error: "uf inválida: use a sigla (ex.: PR)" };
 
+  const unidadeRaw = q("unidade");
+  if (!vazio(unidadeRaw) && !/^[A-Za-z0-9]{1,10}$/.test(unidadeRaw!.trim())) {
+    return { error: "unidade inválida: use a sigla da unidade de fornecimento (ex.: UN, PAR)" };
+  }
+
   const pageRaw = q("page");
   if (!vazio(pageRaw) && !/^[1-9]\d{0,5}$/.test(pageRaw!.trim())) return { error: "page inválida: use 1 ou mais" };
   const limitRaw = q("limit");
@@ -181,6 +196,7 @@ export function parsePrecosParams(url: URL): PrecosParams | { error: string } {
     item: vazio(itemRaw) ? null : Number(itemRaw!.trim()),
     meses: vazio(mesesRaw) ? MESES_PADRAO : Number(mesesRaw!.trim()),
     uf: vazio(ufRaw) ? null : ufRaw!.trim().toUpperCase(),
+    unidade: vazio(unidadeRaw) ? null : unidadeRaw!.trim().toUpperCase(),
     page: vazio(pageRaw) ? 1 : Number(pageRaw!.trim()),
     limit: vazio(limitRaw) ? LIMIT_PADRAO : Number(limitRaw!.trim()),
   };
@@ -233,6 +249,23 @@ function amostraDe(raw: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
+/** Lista {sigla, nome, n} das unidades do recorte; sigla/nome ausentes ficam null (não inventa unidade). */
+function unidadesDe(raw: unknown): Array<{ sigla: string | null; nome: string | null; n: number }> {
+  if (raw === null || raw === undefined) return [];
+  if (!Array.isArray(raw)) throw new PrecosNaoVerificado("Não verificado: lista de unidades fora do contrato.");
+  return raw.map((u) => {
+    const o = (u ?? {}) as Record<string, unknown>;
+    const n = inteiro(o.n);
+    if (n === null) throw new PrecosNaoVerificado("Não verificado: unidade sem contagem.");
+    return { sigla: texto(o.sigla), nome: texto(o.nome), n };
+  });
+}
+
+/** Erro de "faixa fora do total" do PostgREST (offset além das linhas). */
+function foraDoTotal(error: unknown): boolean {
+  return !!error && typeof error === "object" && (error as { code?: unknown }).code === "PGRST103";
+}
+
 async function pdmNoCatalogo(client: PrecosClient, pdm: number): Promise<boolean> {
   const { data, error } = await client.rpc(RPC_CATALOGO).select("codigo_pdm").eq("codigo_pdm", pdm);
   if (error) throw error;
@@ -247,6 +280,7 @@ async function resumo(client: PrecosClient, p: PrecosParams, periodo: { inicio: 
     p_fim: periodo.fim,
     p_item: p.item,
     p_uf: p.uf,
+    p_unidade: p.unidade,
   });
   if (error) throw error;
   if (!Array.isArray(data) || data.length !== 1) {
@@ -277,6 +311,7 @@ async function resumo(client: PrecosClient, p: PrecosParams, periodo: { inicio: 
     unidade_fornecimento_predominante: n > 0 && unidadeN !== null && unidadeN > 0
       ? { sigla: texto(r.unidade_sigla), nome: texto(r.unidade_nome), n: unidadeN }
       : null,
+    unidades: unidadesDe(r.unidades),
     ultima_data_resultado: dataIso(r.ultima_data_resultado),
     atualizado_em: typeof r.atualizado_em === "string" && r.atualizado_em !== "" ? r.atualizado_em : null,
     arredondamento: ARREDONDAMENTO,
@@ -291,12 +326,14 @@ async function amostras(client: PrecosClient, p: PrecosParams, periodo: { inicio
     .gt("preco_unitario", 0);
   if (p.item !== null) q = q.eq("codigo_item_catalogo", p.item);
   if (p.uf !== null) q = q.eq("estado", p.uf);
+  if (p.unidade !== null) q = q.eq("sigla_unidade_fornecimento", p.unidade);
   const offset = (p.page - 1) * p.limit;
   const { data, error, count } = await q
     .order("data_resultado", { ascending: false, nullsFirst: false })
     .order("id_compra", { ascending: true })
     .order("id_item_compra", { ascending: true })
     .range(offset, offset + p.limit - 1);
+  if (foraDoTotal(error)) throw new PaginaAlemDoTotal();
   if (error) throw error;
   if (typeof count !== "number") throw new PrecosNaoVerificado("Não verificado: contagem ausente na leitura dos preços.");
   if (!Array.isArray(data)) throw new PrecosNaoVerificado("Não verificado: leitura dos preços sem linhas.");
@@ -321,13 +358,19 @@ export async function responderPrecos(req: Request, url: URL, deps: PrecosDeps =
     }
     const base = {
       fonte: FONTE,
-      filtro: { pdm: p.pdm, item: p.item, meses: p.meses, uf: p.uf },
+      filtro: { pdm: p.pdm, item: p.item, meses: p.meses, uf: p.uf, unidade: p.unidade },
       periodo_inicio: periodo.inicio,
       periodo_fim: periodo.fim,
     };
     const corpo = p.action === "resumo" ? await resumo(client, p, periodo) : await amostras(client, p, periodo);
     return jsonResponse({ ...base, ...corpo });
   } catch (error) {
+    if (error instanceof PaginaAlemDoTotal) {
+      return jsonResponse({
+        error: `page ${p.page} além do total de amostras do recorte`,
+        codigo: "page_alem_do_total",
+      }, 400);
+    }
     console.error(`[api-precos] ${p.action}`, errorDetail(error));
     // Detalhe do banco (função, coluna, hint) fica só no log.
     const msg = error instanceof PrecosNaoVerificado ? error.message : "Falha ao ler os preços.";

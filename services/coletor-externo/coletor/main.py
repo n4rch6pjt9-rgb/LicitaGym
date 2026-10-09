@@ -206,15 +206,18 @@ def main(argv: list[str] | None = None) -> int:
     roda_sestsenat = args.coleta in ("sestsenat", "todas")
     roda_precos = args.coleta in ("precos", "todas")
 
-    sb = arm = None
+    sb = None
     if not args.dry_run:
         sb = Supabase(env("SUPABASE_URL", obrigatorio=True), env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True))
-        if roda_sestsenat:
-            arm = Armazenamento.do_ambiente()
 
     falhou = False
     if roda_sestsenat:
-        falhou = coletar_sestsenat(args, sb, arm) > 0
+        try:
+            arm = None if args.dry_run else Armazenamento.do_ambiente()
+            falhou = coletar_sestsenat(args, sb, arm) > 0
+        except Exception as e:  # erro inesperado no SEST SENAT: execução falha, mas os preços ainda rodam
+            log.error("sestsenat falhou: %s", e)
+            falhou = True
     if roda_precos:
         try:
             ok = coletar_precos(sb, args.dry_run, float(env("DELAY_SEGUNDOS", "1.5")))

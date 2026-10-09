@@ -101,6 +101,9 @@ verify_jwt = false
 [functions.api-pncp-pca]
 verify_jwt = false
 
+[functions.api-precos]
+verify_jwt = false
+
 [functions.api-pncp-legislacao]
 verify_jwt = false
 

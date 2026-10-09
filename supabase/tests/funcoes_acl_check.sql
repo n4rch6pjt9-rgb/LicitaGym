@@ -15,6 +15,7 @@ declare
   v_falhas text[] := array[]::text[];
   r record;
 begin
+  -- Lista intencional: mesma da migration 20261009120000_funcoes_acl_drift.sql (mudou aqui, mude lá).
   create temporary table funcoes_acl_intencional_chk (sig text primary key, papeis text[] not null) on commit drop;
   insert into funcoes_acl_intencional_chk values
     ('public.catalogo_condicao_avaliar(jsonb,jsonb)',                 array['authenticated']),

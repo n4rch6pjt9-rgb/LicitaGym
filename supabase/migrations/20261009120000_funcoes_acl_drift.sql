@@ -27,6 +27,7 @@ declare
   v_ausentes text;
   v_sobra text;
 begin
+  -- Lista intencional: mesma de supabase/tests/funcoes_acl_check.sql (mudou aqui, mude lá).
   create temporary table funcoes_acl_intencional (sig text primary key, papeis text[] not null) on commit drop;
   insert into funcoes_acl_intencional values
     -- Concessões intencionais a `authenticated` (fluxos com JWT do usuário).

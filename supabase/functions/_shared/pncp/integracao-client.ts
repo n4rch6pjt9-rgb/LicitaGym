@@ -1,5 +1,5 @@
 import { withRetry } from "./retry.ts";
-import { UnifiedHttpClient } from "../http-client/index.ts";
+import { type UnifiedFetchOptions, UnifiedHttpClient } from "../http-client/index.ts";
 
 const DEFAULT_BASE = "https://pncp.gov.br/api/pncp/v1";
 
@@ -42,6 +42,55 @@ export class PncpIntegracaoClient {
       return res;
     });
     return (await response.json()) as T;
+  }
+
+  /**
+   * GET com status: 204 e 404 chegam a quem chama (getJson perde o status e devolve {} no 204).
+   * `options` vai para o UnifiedHttpClient (orçamento, timeout por tentativa, telemetria por syncRunId).
+   */
+  async getJsonComStatus<T = unknown>(
+    path: string,
+    options: UnifiedFetchOptions = {},
+  ): Promise<{ status: number; body: T | null }> {
+    const url = `${this.baseUrl.replace(/\/+$/, "")}${path}`;
+    if (this.httpClient) {
+      const res = await this.httpClient.getJson<T>(url, { headers: this.headers() }, { endpoint: path, ...options });
+      return { status: res.status, body: res.status === 204 ? null : res.body };
+    }
+    const response = await withRetry(async () => {
+      const res = await fetch(url, { headers: this.headers() });
+      if (res.status === 429 || res.status >= 500) {
+        throw new Error(`PNCP integração HTTP ${res.status}`);
+      }
+      return res;
+    });
+    if (response.status === 204) return { status: 204, body: null };
+    const text = await response.text();
+    return { status: response.status, body: text.trim() ? JSON.parse(text) as T : ({} as T) };
+  }
+
+  /** Página de itens do plano, com status (spec 0012: 204 = fim, não erro). */
+  async getPcaItensPagina(
+    cnpj: string,
+    ano: number,
+    sequencial: number,
+    pagina: number,
+    tamanhoPagina: number,
+    options: UnifiedFetchOptions = {},
+  ) {
+    const params = new URLSearchParams({ pagina: String(pagina), tamanhoPagina: String(tamanhoPagina) });
+    return this.getJsonComStatus(
+      `/orgaos/${normalizeIntegracaoCnpj(cnpj)}/pca/${ano}/${sequencial}/itens?${params}`,
+      { ...options, pagina },
+    );
+  }
+
+  /** Quantidade de itens do plano (todas as categorias): confere que a leitura paginada não foi truncada. */
+  async getPcaItensQuantidade(cnpj: string, ano: number, sequencial: number, options: UnifiedFetchOptions = {}) {
+    return this.getJsonComStatus(
+      `/orgaos/${normalizeIntegracaoCnpj(cnpj)}/pca/${ano}/${sequencial}/itens/quantidade`,
+      options,
+    );
   }
 
   async getOrgao(cnpj: string) {

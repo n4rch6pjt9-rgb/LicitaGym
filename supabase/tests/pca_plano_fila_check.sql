@@ -4,11 +4,14 @@
 --        sem acesso;
 --   ENF  reenfileirar o mesmo plano duplicar a linha aberta, ou uma linha 'processando' voltar para 'pendente';
 --   RES  pca_fila_reservar devolver mais que o limite, pegar plano 'feito', erro com tentativas esgotadas ou erro
---        de menos de 10 minutos (recuo entre tentativas);
+--        de menos de 10 minutos (recuo entre tentativas); ou se processando abandonado não contar tentativa;
 --   DESC pca_marcar_descoberta não zerar o contador do plano visto, não somar no ausente com item da classe, ou somar
 --        no plano sem item da classe;
 --   CRON (só com pg_cron) os três jobs novos não existirem, ou o comando não usar "rotina".
 -- Fixtures com ids fictícios ('CHK-FILA-…') e ano 2099; tudo termina em rollback.
+-- Feito para o banco descartável (scripts/validar-migrations.sh). Em produção, com a fila real em uso, a parte RES
+-- reserva linhas reais mais antigas que as do teste (falso negativo) e as trava até o rollback: não rodar lá fora do
+-- bloco ACL.
 
 begin;
 
@@ -29,7 +32,7 @@ begin
   end if;
   for v_r in
     select papel, priv from unnest(array['anon', 'authenticated']) papel
-     cross join unnest(array['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER']) priv
+     cross join unnest(array['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER', 'MAINTAIN']) priv
      where has_table_privilege(papel, 'private.pca_plano_fila', priv)
   loop
     v_falhas := v_falhas || format('%s tem %s em private.pca_plano_fila', v_r.papel, v_r.priv);
@@ -38,7 +41,7 @@ begin
     select papel, fn from unnest(array['anon', 'authenticated']) papel
      cross join unnest(array[
        'private.pca_fila_enfileirar(jsonb)',
-       'private.pca_fila_reservar(integer,integer)',
+       'private.pca_fila_reservar(integer,integer,integer)',
        'private.pca_marcar_descoberta(integer,text[],text[])']) fn
      where has_function_privilege(papel, fn, 'EXECUTE')
   loop
@@ -48,7 +51,7 @@ begin
      or not has_table_privilege('service_role', 'private.pca_plano_fila', 'INSERT')
      or not has_table_privilege('service_role', 'private.pca_plano_fila', 'UPDATE')
      or not has_function_privilege('service_role', 'private.pca_fila_enfileirar(jsonb)', 'EXECUTE')
-     or not has_function_privilege('service_role', 'private.pca_fila_reservar(integer,integer)', 'EXECUTE')
+     or not has_function_privilege('service_role', 'private.pca_fila_reservar(integer,integer,integer)', 'EXECUTE')
      or not has_function_privilege('service_role', 'private.pca_marcar_descoberta(integer,text[],text[])', 'EXECUTE') then
     v_falhas := v_falhas || 'service_role sem acesso à fila ou às funções'::text;
   end if;
@@ -85,6 +88,18 @@ begin
   if v_n <> 0 then
     v_falhas := v_falhas || 'reservar pegou plano feito, erro esgotado ou erro de menos de 10 min'::text;
   end if;
+  -- processando abandonado (> 15 min) volta e conta tentativa; com tentativas esgotadas, não volta
+  insert into private.pca_plano_fila (id_pca_pncp, orgao_cnpj, ano, sequencial, motivo, status, tentativas, atualizado_em)
+    values ('CHK-FILA-ABANDONADO', '99000001000101', 2099, 6, 'novo', 'processando', 4, now() - interval '1 hour'),
+           ('CHK-FILA-ABANDONADO-ESGOTADO', '99000001000101', 2099, 7, 'novo', 'processando', 5, now() - interval '1 hour');
+  select count(*) into v_n from private.pca_fila_reservar(100, 5) r where r.id_pca_pncp = 'CHK-FILA-ABANDONADO-ESGOTADO';
+  if v_n <> 0 then
+    v_falhas := v_falhas || 'reservar pegou processando abandonado com tentativas esgotadas'::text;
+  end if;
+  if (select tentativas from private.pca_plano_fila where id_pca_pncp = 'CHK-FILA-ABANDONADO') <> 5 then
+    v_falhas := v_falhas || 'processando abandonado não contou tentativa ao ser reservado de novo'::text;
+  end if;
+
   select id into v_id_proc from private.pca_plano_fila where id_pca_pncp = 'CHK-FILA-A';
   if (select status from private.pca_plano_fila where id = v_id_proc) <> 'processando' then
     v_falhas := v_falhas || 'reservar não marcou o plano como processando'::text;

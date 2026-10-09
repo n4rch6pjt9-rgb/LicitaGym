@@ -2,7 +2,8 @@
 --
 -- O que muda: cria três jobs, todos com active = false na primeira vez:
 --   licitagym-sync-pncp-pca-fila              diário 03:13 BRT ('13 6 * * *')     descoberta + carga (incremental)
---   licitagym-sync-pncp-pca-fila-continuacao  a cada 10 min, 03:00–04:50 BRT ('*/10 6-7 * * *')  só a carga da fila
+--   licitagym-sync-pncp-pca-fila-continuacao  a cada 10 min, 06:00–07:50 UTC ('*/10 6-7 * * *')  só a carga da fila;
+--                                             os disparos antes das 06:13 só acham a fila vazia (somente_retomada)
 --   licitagym-sync-pncp-pca-reconciliacao     dia 1, 02:13 BRT ('13 5 1 * *')    descoberta completa + ausentes
 -- Reaplicar não dá unschedule: se o jobname já existe, só cron.alter_job(schedule, command), sem mexer em active.
 -- Os jobs antigos (licitagym-sync-pncp-pca e licitagym-sync-pncp-pca-continuacao) NÃO mudam aqui.

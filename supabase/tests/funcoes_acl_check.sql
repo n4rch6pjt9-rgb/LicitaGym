@@ -64,7 +64,10 @@ begin
       'private.acquire_http_slot(text,integer)',
       'private.report_http_rate_limit(text,integer)',
       'private.acquire_sync_lock(text,text,jsonb,interval,interval)',
-      'private.saude_operacional_resumo()']) as f
+      'private.saude_operacional_resumo()',
+      'private.pca_fila_enfileirar(jsonb)',
+      'private.pca_fila_reservar(integer,integer,integer)',
+      'private.pca_marcar_descoberta(integer,text[],text[])']) as f
      where to_regprocedure(f) is null
         or not has_function_privilege('service_role', to_regprocedure(f), 'EXECUTE')
   loop

@@ -200,6 +200,14 @@ async function gravar(
     if (error) {
       refazer.push(...alterados);
     } else {
+      // Linha inativa que voltou na fonte com outro conteúdo: o upsert não mexe em `ativo`, então reativa aqui
+      // (inalterado já recebe ativo = true no toque). Histórico não muda: `ativo` não entra no payload_hash.
+      const inativas = alterados.filter((p) => existentes.get(p.key)!.ativo === false)
+        .map((p) => String(existentes.get(p.key)!.id));
+      for (const bloco of chunks(inativas)) {
+        const { error: e2 } = await client.from(t.table).update({ ativo: true }).in("id", bloco);
+        avisarFalha(t.table, "update", bloco.length, runId, e2);
+      }
       for (const p of alterados) {
         const atual = existentes.get(p.key)!;
         const id = String(atual.id);
@@ -290,11 +298,41 @@ export async function gravarPaginaPcaEmLote(
   stats.erros += rPlanos.falhas.size;
 
   // Itens dos planos com id. Plano novo cuja inserção falhou não tem id: os itens são pulados, como no caminho
-  // item a item. A mesma chave de item repetida: a última ocorrência vence.
-  const itensPorChave = new Map<string, Row>();
+  // item a item.
+  const entradas: { planoId: string; raw: Row; itens: Row[] }[] = [];
   for (const [chave, { raw, itens }] of planosPorChave) {
     const planoId = rPlanos.ids.get(chave);
-    if (!planoId) continue;
+    if (planoId) entradas.push({ planoId, raw, itens });
+  }
+  await gravarItensEmLote(client, entradas, stats, runId, now);
+  return stats;
+}
+
+/**
+ * Grava os itens de um plano que já existe no banco (sem regravar o cabeçalho). Usado pela fila (spec 0012) quando o
+ * plano não apareceu na descoberta mas a integração ainda traz itens do escopo.
+ */
+export async function gravarItensDePlanoExistente(
+  client: SupabaseClient,
+  planoId: string,
+  itens: Row[],
+  opts: { runId: string },
+): Promise<LoteStats> {
+  const stats: LoteStats = { recebidos: 0, novos: 0, alterados: 0, inalterados: 0, erros: 0 };
+  await gravarItensEmLote(client, [{ planoId, raw: {}, itens }], stats, opts.runId, new Date().toISOString());
+  return stats;
+}
+
+async function gravarItensEmLote(
+  client: SupabaseClient,
+  entradas: { planoId: string; raw: Row; itens: Row[] }[],
+  stats: LoteStats,
+  runId: string,
+  now: string,
+): Promise<void> {
+  // A mesma chave de item repetida: a última ocorrência vence.
+  const itensPorChave = new Map<string, Row>();
+  for (const { planoId, raw, itens } of entradas) {
     for (const rawItem of itens) {
       const itemRow = normalizePcaItem(rawItem, raw) as Row;
       if (!itemRow.numero_item) continue;
@@ -303,7 +341,7 @@ export async function gravarPaginaPcaEmLote(
       itensPorChave.set(itemKey(row), row);
     }
   }
-  if (itensPorChave.size === 0) return stats;
+  if (itensPorChave.size === 0) return;
 
   const itensPrep = await Promise.all(
     [...itensPorChave.entries()].map(([k, row]) => preparar(row, k, runId, now)),
@@ -330,7 +368,6 @@ export async function gravarPaginaPcaEmLote(
   stats.erros += rItens.falhas.size;
 
   stats.erros += await vincularOrigemEmLote(client, itensPorChave, rItens.ids, now, runId);
-  return stats;
 }
 
 /**

@@ -2,6 +2,3 @@
 # Formato: <arquivo> | <trecho exato da mensagem de erro esperada> | <issue e motivo>
 # A falha só vira PENDENTE se a saída contiver o trecho; outra falha no mesmo arquivo é FALHA.
 # Se o arquivo passar, a validação falha até ele sair desta lista. A lista só diminui.
-advisors_warn_security_check.sql  | FALHA nenhuma função de usuário em public/private sem search_path | #262 private.cnpj_valido sem search_path fixo (também em produção)
-marcas_resolvedor_acl_check.sql   | WITH query "casos" has 2 columns available but 3 columns specified | #262 bloco 7 (cnpj_valido) com CTE quebrada desde o #235/#241
-marcas_resolvedor_views_check.sql | INSERT has more target columns than expressions | #262 fixture de marca_aliases com colunas a mais desde o #235/#241

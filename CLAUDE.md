@@ -91,6 +91,11 @@ SQL Editor com o usuário.
 | agente `revisor-codigo` | revisão geral do diff (corretude, regras de produto, contrato com o Dashboard, testes) antes do PR |
 | agente `revisor-migration` | revisão de migration (destrutivo, ACL, RLS, idempotência) antes do PR |
 | agente `revisor-seguranca` | revisão de segredos, auth e service_role antes do PR |
+| agente `backend-licitagym` | implementa uma issue deste repositório até um PR em draft verificado, a pedido do orquestrador (sem merge nem deploy) |
+
+**Orquestração entre repositórios:** uma sessão orquestradora divide o trabalho entre `backend-licitagym` (este repo) e
+`frontend-dashboard` (repo do Dashboard), define a ordem (backend mergeado e publicado antes do front que depende dele),
+revisa as entregas e leva ao Marcelo as decisões de produto e os pedidos de merge.
 
 ## Convenções de código
 - **Edge Functions (Deno/TS):** auth sempre por `requireCronAuth` / `requireUserAuth` (com `await`) / `requireCronOrUserAuth`

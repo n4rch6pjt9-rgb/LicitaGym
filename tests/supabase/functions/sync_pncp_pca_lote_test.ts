@@ -235,3 +235,74 @@ Deno.test("chave repetida na página (paginação instável): grava uma linha, a
   assertEquals(db.rows("pca_itens").length, 3);
   assertEquals(db.rows("pca_itens").find((r) => r.numero_item === 1)?.valor_unitario_estimado, 999);
 });
+
+// --- Regressões da revisão do PR 1 ---
+
+Deno.test("plano repetido na página com itens diferentes: grava os itens de todas as ocorrências (bloqueante da revisão)", async () => {
+  const [plano] = paginaSintetica(1, 3);
+  const itens = plano.itens as Row[];
+  const pagina = [{ ...plano, itens: itens.slice(0, 2) }, { ...plano, itens: itens.slice(2) }];
+  const a = bancoInicial();
+  const b = a.clone();
+  const sa = await gravarItemAItem(a, pagina, 2026);
+  const sb = await gravarPaginaPcaEmLote(b as never, pagina, { ano: 2026, runId: RUN });
+  assertEquals(b.rows("pca_itens").map((r) => r.numero_item).sort(), [1, 2, 3]);
+  assertEquals(estado(b).pca_itens, estado(a).pca_itens);
+  assertEquals(sb.erros, 0);
+  // O plano aparece duas vezes: o caminho antigo grava novo + inalterado; o lote grava uma vez (documentado).
+  assertEquals(sb.recebidos, sa.recebidos);
+});
+
+Deno.test("linha que o banco rejeita derruba só ela: o lote refaz o bloco linha a linha", async () => {
+  const pagina = paginaSintetica(2, 4);
+  const rejeita = (table: string, row: Row) => table === "pca_itens" && row.numero_item === 2;
+  const a = bancoInicial();
+  const b = a.clone();
+  a.falhaLinha = rejeita;
+  b.falhaLinha = rejeita;
+  const sa = await gravarItemAItem(a, pagina, 2026);
+  const sb = await gravarPaginaPcaEmLote(b as never, pagina, { ano: 2026, runId: RUN });
+  assertEquals(sb, sa);
+  assertEquals(sb.erros, 2);
+  assertEquals(b.rows("pca_itens").length, 6);
+  assertEquals(estado(b), estado(a));
+});
+
+Deno.test("linha rejeitada num plano já gravado: o update em lote cai para linha a linha", async () => {
+  const base = bancoInicial();
+  await gravarItemAItem(base, paginaSintetica(2, 4, 0), 2026);
+  const pagina = paginaSintetica(2, 4, 1);
+  const rejeita = (table: string, row: Row) => table === "pca_itens" && row.numero_item === 3;
+  const a = base.clone();
+  const b = base.clone();
+  a.falhaLinha = rejeita;
+  b.falhaLinha = rejeita;
+  const sa = await gravarItemAItem(a, pagina, 2026);
+  const sb = await gravarPaginaPcaEmLote(b as never, pagina, { ano: 2026, runId: RUN });
+  assertEquals(sb, sa);
+  assertEquals(estado(b), estado(a));
+});
+
+Deno.test("max-rows menor que o pedido: a leitura dos existentes não trunca", async () => {
+  const base = bancoInicial();
+  await gravarItemAItem(base, paginaSintetica(3, 8, 0), 2026);
+  const pagina = paginaSintetica(3, 8, 1);
+  const a = base.clone();
+  const b = base.clone();
+  b.maxRows = 3;
+  const sa = await gravarItemAItem(a, pagina, 2026);
+  const sb = await gravarPaginaPcaEmLote(b as never, pagina, { ano: 2026, runId: RUN });
+  assertEquals(sb, sa);
+  assertEquals(sb.novos, 0);
+  assertEquals(estado(b), estado(a));
+});
+
+Deno.test("falha na leitura do catálogo conta erro, não vincula e não aborta a página", async () => {
+  const db = bancoInicial();
+  db.falhas.push({ table: "catmat_pdms", op: "select" });
+  const s = await gravarPaginaPcaEmLote(db as never, paginaSintetica(1, 4), { ano: 2026, runId: RUN });
+  assertEquals(s.novos, 1 + 4);
+  assertEquals(s.erros, 1);
+  assertEquals(db.rows("pca_item_pdm").length, 0);
+  assert(db.rows("catalogo_ponte").length > 0);
+});

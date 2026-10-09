@@ -1,6 +1,10 @@
 // PostgREST em memória para testes de gravação (sem rede). Cobre o subconjunto usado por upsert.ts,
 // pca-origem-link.ts e pca-lote.ts: select/eq/in/neq/range/limit/maybeSingle/single, insert(+select),
-// update + filtros, upsert com onConflict. Conta as chamadas (cada operação aguardada conta 1).
+// update + filtros, upsert com onConflict, order. Conta as chamadas (cada operação aguardada conta 1).
+//
+// O que ele NÃO reproduz (não tomar os testes como prova contra o PostgREST real): tipos, NOT NULL, FK, triggers,
+// concorrência entre execuções, limite de URL. `maxRows` imita o max-rows do PostgREST; `falhaLinha` imita uma
+// linha que o Postgres rejeita (a instrução inteira falha, como no insert/upsert/update em lote real).
 
 type Row = Record<string, unknown>;
 type Resp = { data: unknown; error: { message: string } | null };
@@ -19,6 +23,10 @@ export class FakePostgrest {
   chamadas = 0;
   porOperacao: Record<string, number> = {};
   falhas: Falha[] = [];
+  /** linha que o banco rejeita: qualquer instrução que a escreva falha por inteiro. */
+  falhaLinha: ((table: string, row: Row) => boolean) | null = null;
+  /** max-rows do PostgREST: limite de linhas por resposta de select. */
+  maxRows = 1000;
   private seq = 0;
 
   constructor(inicial: Record<string, Row[]> = {}) {
@@ -71,13 +79,24 @@ export class FakePostgrest {
 
     if (op === "select") {
       let out = all.filter(casa);
+      if (b.ordem) {
+        const c = b.ordem;
+        out = [...out].sort((x, y) => String(x[c]).localeCompare(String(y[c])));
+      }
       if (b.faixa) out = out.slice(b.faixa[0], b.faixa[1] + 1);
+      out = out.slice(0, this.maxRows);
       if (b.limite != null) out = out.slice(0, b.limite);
       out = out.map((r) => projetar(r, b.colunas));
       return this.formato(b, out);
     }
+    const rejeita = (rows: Row[]) =>
+      this.falhaLinha && rows.some((r) => this.falhaLinha!(table, r))
+        ? { data: null, error: { message: `linha rejeitada em ${table}.${op}` } }
+        : null;
     if (op === "insert") {
       const novos = b.payload as Row[];
+      const r = rejeita(novos);
+      if (r) return r;
       const chaves = new Set(all.map((r) => this.chave(table, r)));
       for (const r of novos) {
         const k = this.chave(table, r);
@@ -89,10 +108,15 @@ export class FakePostgrest {
       return this.formato(b, gravados.map((r) => projetar(r, b.colunas)));
     }
     if (op === "update") {
-      for (const r of all.filter(casa)) Object.assign(r, structuredClone(b.payload as Row));
+      const alvo = all.filter(casa);
+      const r = rejeita(alvo.map((x) => ({ ...x, ...(b.payload as Row) })));
+      if (r) return r;
+      for (const r of alvo) Object.assign(r, structuredClone(b.payload as Row));
       return { data: null, error: null };
     }
     // upsert
+    const rj = rejeita(b.payload as Row[]);
+    if (rj) return rj;
     const cols = (b.onConflict ?? "").split(",").map((c) => c.trim()).filter(Boolean);
     const vistos = new Set<string>();
     for (const r of b.payload as Row[]) {
@@ -135,6 +159,7 @@ class Builder implements PromiseLike<Resp> {
   faixa: [number, number] | null = null;
   limite: number | null = null;
   modo: "lista" | "maybeSingle" | "single" = "lista";
+  ordem: string | null = null;
   payload: unknown = null;
   onConflict: string | null = null;
 
@@ -172,6 +197,10 @@ class Builder implements PromiseLike<Resp> {
   in(c: string, vs: unknown[]) {
     const s = new Set(vs.map(String));
     this.filtros.push((r) => s.has(String(r[c])));
+    return this;
+  }
+  order(c: string) {
+    this.ordem = c;
     return this;
   }
   range(from: number, to: number) {

@@ -60,9 +60,9 @@ function criarFake(linhas: Linha[], erro?: { message: string; code?: string }) {
         filtros.push((l) => l[col] === v);
         return q;
       },
-      gte(col: string, v: number) {
+      gte(col: string, v: number | string) {
         gravar("gte", [col, v]);
-        filtros.push((l) => typeof l[col] === "number" && (l[col] as number) >= v);
+        filtros.push((l) => l[col] !== null && l[col] !== undefined && typeof l[col] === typeof v && cmp(l[col], v) >= 0);
         return q;
       },
       ilike(col: string, padrao: string) {
@@ -177,6 +177,7 @@ Deno.test("CA-3: cada filtro vai para o banco", async () => {
     ["&fonte=pgc", "eq", "fonte", "pgc"],
     ["&valor_min=500", "gte", "valor_total", 500],
     ["&so_confirmados=true", "eq", "casamento_confirmado", true],
+    ["&mes_de=2026-10", "gte", "mes_previsto", "2026-10"],
   ];
   for (const [qs, metodo, col, valor] of casos) {
     const { res, chamadas } = await chamar(`&ano=2026${qs}`, BASE);
@@ -201,7 +202,8 @@ Deno.test("CA-3: parâmetro inválido devolve 400 com mensagem, não lista vazia
     const qs of [
       "&ano=abc", "&mes=2026-13", "&mes=03/2026", "&pdm=abc", "&fonte=sesc", "&valor_min=-1", "&valor_min=x",
       "&so_confirmados=talvez", "&page=0", "&limit=0", "&limit=101", "&ordem=nome", "&orgao=%25%25",
-      `&orgao=${"a".repeat(201)}`, "&orgao=12.345.678",
+      `&orgao=${"a".repeat(201)}`, "&orgao=12.345.678", "&mes_de=2026-13", "&mes_de=10/2026",
+      "&mes=2026-03&mes_de=2026-02",
     ]
   ) {
     const { res, body, clientes } = await chamar(qs, BASE);
@@ -346,4 +348,10 @@ Deno.test("CA-5: recorte acima do teto dá 500 'Não verificado' sem ler a soma"
   assertEquals(res.status, 500);
   assert(String(body.error).startsWith("Não verificado: recorte com 50001 itens"));
   assertEquals(leituras.filter((c) => c === "valor_total").length, 0);
+});
+
+Deno.test("CA-3: mes_de filtra a partir do mês (inclusive) e deixa de fora item sem mês", async () => {
+  const { body } = await chamar("&ano=2026&mes_de=2026-05", BASE);
+  assertEquals(body.itens.map((i: Linha) => i.numero_item_pncp), [1]);
+  assertEquals(body.total, 1);
 });

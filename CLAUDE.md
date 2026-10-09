@@ -60,6 +60,8 @@ SQL Editor com o usuário.
 ## Skills e agentes (`.claude/`)
 | Nome | Quando usar |
 |---|---|
+| comando `/spec <ideia>` | antes de mudança não trivial: gera `specs/NNNN-slug.md` (template em `specs/_template.md`) |
+| comando `/implement <spec>` | spec `aprovada`: testes dos critérios de aceite primeiro (red), depois o código, até PR em draft |
 | skill `nova-migration` | antes de escrever qualquer migration |
 | skill `validar-migrations` | antes de abrir PR com migration |
 | skill `merge-pilha` | quando o usuário pedir merge de PRs empilhados |

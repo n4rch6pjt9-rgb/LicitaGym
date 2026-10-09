@@ -8,7 +8,7 @@ export const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, idempotency-key",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
 };
-import type { ActionParams, AcompanhamentoActionParams, GetActionParams, LicitacaoFiltros, ListActionParams } from "./types.ts";
+import type { ActionParams, GetActionParams, LicitacaoFiltros, ListActionParams, SortField } from "./types.ts";
 import { parseActionFromBody, parseActionFromUrl } from "./validation.ts";
 import { applyLicitacaoFilters, applyOportunidadesScope, calculateRange } from "./query.ts";
 import { buildEditalUrl } from "../_shared/edital-url.ts";
@@ -511,13 +511,18 @@ async function handleGet(
  * Distingue resultado vazio (200 com items: []) de erro (400/500).
  */
 /**
- * Teto de licitações resolvidas pelo recorte CATMAT antes do filtro por id (evita URL gigante no PostgREST).
- * licitacoes_ids_por_catmat_unica não trunca (sem LIMIT nem paginação), então r.ids é completo. Acima do teto, os ids são
- * primeiro reduzidos ao escopo de Oportunidades (idsNoEscopo) e o teto vale sobre o que sobra.
+ * Teto de proteção de licitações resolvidas pelo recorte CATMAT (spec 0004). licitacoes_ids_por_catmat_unica não
+ * trunca (sem LIMIT nem paginação), então r.ids é completo; acima deste teto a lista responde 422.
  */
-export const MAX_IDS_CATMAT = 1000;
+export const MAX_IDS_CATMAT = 20000;
 
-/** Tamanho do lote de ids por consulta ao reduzir o recorte CATMAT ao escopo (URL curta no PostgREST). */
+/**
+ * Até este número de ids, a consulta principal filtra por `id in (...)` direto (uma URL só). Acima, a lista é
+ * montada em duas fases (listarCatmatEmDuasFases), com lotes de CATMAT_ESCOPO_LOTE ids por URL.
+ */
+export const MAX_IDS_CATMAT_URL = 1000;
+
+/** Tamanho do lote de ids por consulta na lista em duas fases (URL curta no PostgREST). */
 export const CATMAT_ESCOPO_LOTE = 500;
 
 export interface CatmatMatch {
@@ -608,29 +613,95 @@ async function resolverCatmat(
   return { ids: (resultado.ids ?? []).map(Number), porLicitacao };
 }
 
+/** Chave de ordenação de uma compra na lista em duas fases. */
+export interface ChaveOrdenacao {
+  id: number;
+  chave: unknown;
+}
+
 /**
- * Reduz os ids do recorte CATMAT ao escopo pedido, na view da prioridade efetiva: sem filtro de
- * prioridade, só leads e monitorar; com filtro, só aquela prioridade; nos dois casos só a publicação
- * canônica (applyOportunidadesScope, o mesmo recorte da consulta principal). Assim um
- * recorte com muitas compras arquivadas (historico) e poucas Oportunidades não bate no teto à toa.
- * Consulta em lotes de CATMAT_ESCOPO_LOTE ids; falha de consulta levanta (vira 500).
+ * Fase 1 da lista em duas fases: para os ids do recorte CATMAT, lê só `id` e a coluna de ordenação, em lotes de
+ * CATMAT_ESCOPO_LOTE, com TODOS os filtros e o escopo de Oportunidades (os mesmos da consulta principal). Falha
+ * de qualquer lote levanta (vira 500): nunca devolve um recorte parcial.
  */
-export async function idsNoEscopo(
+export async function chavesNoRecorte(
   client: SupabaseClient,
   ids: number[],
   filtros: LicitacaoFiltros,
-): Promise<number[]> {
-  const mantidos: number[] = [];
+  orderBy: SortField,
+): Promise<ChaveOrdenacao[]> {
+  const chaves: ChaveOrdenacao[] = [];
   for (let i = 0; i < ids.length; i += CATMAT_ESCOPO_LOTE) {
     const lote = ids.slice(i, i + CATMAT_ESCOPO_LOTE);
-    let query = client.from(OPORTUNIDADES_VIEW).select("id").in("id", lote);
-    if (filtros.prioridade) query = query.eq("prioridade", filtros.prioridade);
-    query = applyOportunidadesScope(query, filtros);
-    const { data, error } = await query;
+    const query = client.from(OPORTUNIDADES_VIEW).select(`id,${orderBy}`);
+    const { data, error } = await applyOportunidadesScope(applyLicitacaoFilters(query, { ...filtros, ids: lote }), filtros);
     if (error) throw error;
-    for (const row of (data ?? []) as Array<{ id: number }>) mantidos.push(Number(row.id));
+    for (const row of (data ?? []) as unknown as Array<Record<string, unknown>>) {
+      chaves.push({ id: Number(row.id), chave: row[orderBy] });
+    }
   }
-  return mantidos;
+  return chaves;
+}
+
+/**
+ * Ordena como a consulta principal (`order(order_by, { nullsFirst: false })` + `order("id")`): coluna no sentido
+ * pedido, nulos por último nos dois sentidos, id crescente para desempatar. valor_total compara como número; as
+ * datas, pelo instante (Date.parse), para não depender do formato do offset.
+ */
+export function ordenarChaves(chaves: ChaveOrdenacao[], orderBy: SortField, ascending: boolean): ChaveOrdenacao[] {
+  const valor = (v: unknown): number => (orderBy === "valor_total" ? Number(v) : Date.parse(String(v)));
+  const nulo = (v: unknown): boolean => v === null || v === undefined || Number.isNaN(valor(v));
+  return [...chaves].sort((x, y) => {
+    const xn = nulo(x.chave);
+    const yn = nulo(y.chave);
+    if (xn !== yn) return xn ? 1 : -1;
+    if (!xn && !yn) {
+      const d = valor(x.chave) - valor(y.chave);
+      if (d !== 0) return ascending ? d : -d;
+    }
+    return x.id - y.id;
+  });
+}
+
+/** Linhas da view -> itens da lista (url do edital, catmat_match e alerta do Portal). */
+async function montarItens(
+  client: SupabaseClient,
+  rows: Array<Record<string, unknown>>,
+  matches: Map<number, CatmatMatch[]> | null,
+): Promise<Array<Record<string, unknown>>> {
+  return await anexarAlertaPortal(client, rows.map((row) => ({
+    ...row,
+    url_edital: buildEditalUrl(row),
+    ...(matches ? { catmat_match: matches.get(Number(row.id)) ?? [] } : {}),
+  })));
+}
+
+/**
+ * Lista do recorte CATMAT acima de MAX_IDS_CATMAT_URL ids (spec 0004), sem lista gigante de ids na URL:
+ * 1) chavesNoRecorte: id + coluna de ordenação, com todos os filtros, em lotes;
+ * 2) ordena em memória (ordenarChaves) e fatia a página; total = ids que sobraram;
+ * 3) lê as colunas completas só dos ids da página (no máximo `limit`) e devolve na ordem da fase 2.
+ */
+async function listarCatmatEmDuasFases(
+  client: SupabaseClient,
+  ids: number[],
+  filtros: LicitacaoFiltros,
+  params: ListActionParams,
+  matches: Map<number, CatmatMatch[]>,
+): Promise<Response> {
+  const { page, limit, order_by, order_direction } = params;
+  const { from, to } = calculateRange(page, limit);
+  const ordenadas = ordenarChaves(await chavesNoRecorte(client, ids, filtros, order_by), order_by, order_direction === "asc");
+  const total = ordenadas.length;
+  const idsPagina = ordenadas.slice(from, to + 1).map((c) => c.id);
+  if (idsPagina.length === 0) {
+    return jsonResponse({ action: "list", page, limit, total, order_by, order_direction, items: [] });
+  }
+  const { data, error } = await comColunasDoObjeto((colunas) => client.from(OPORTUNIDADES_VIEW).select(colunas).in("id", idsPagina));
+  if (error) throw error;
+  const porId = new Map(((data ?? []) as unknown as Array<Record<string, unknown>>).map((row) => [Number(row.id), row]));
+  const rows = idsPagina.map((id) => porId.get(id)).filter((row): row is Record<string, unknown> => row !== undefined);
+  return jsonResponse({ action: "list", page, limit, total, order_by, order_direction, items: await montarItens(client, rows, matches) });
 }
 
 async function handleList(
@@ -666,21 +737,15 @@ async function handleList(
       if (r.ids.length === 0) {
         return jsonResponse({ action: "list", page, limit, total: 0, order_by, order_direction, items: [] });
       }
-      let ids = r.ids;
-      if (ids.length > MAX_IDS_CATMAT) {
-        // O teto vale sobre as Oportunidades do recorte, não sobre as compras arquivadas (historico):
-        // reduz ao escopo pedido antes de decidir o 422. Abaixo do teto, a consulta principal já recorta.
-        ids = await idsNoEscopo(client, ids, filtros);
-        if (ids.length === 0) {
-          return jsonResponse({ action: "list", page, limit, total: 0, order_by, order_direction, items: [] });
-        }
-        if (ids.length > MAX_IDS_CATMAT) {
-          return jsonResponse({
-            error: `O recorte CATMAT casa ${ids.length} oportunidades (limite ${MAX_IDS_CATMAT}). Refine por classe, PDM ou outro filtro.`,
-          }, 422);
-        }
+      if (r.ids.length > MAX_IDS_CATMAT) {
+        return jsonResponse({
+          error: `O recorte CATMAT casa ${r.ids.length} licitações (limite ${MAX_IDS_CATMAT}). Refine por classe, PDM ou outro filtro.`,
+        }, 422);
       }
-      filtros = { ...filtros, ids };
+      if (r.ids.length > MAX_IDS_CATMAT_URL) {
+        return await listarCatmatEmDuasFases(client, r.ids, filtros, params, r.porLicitacao);
+      }
+      filtros = { ...filtros, ids: r.ids };
       matches = r.porLicitacao;
     }
 
@@ -730,11 +795,7 @@ async function handleList(
     }
 
     const rawItems = (data ?? []) as unknown as Array<Record<string, unknown>>;
-    const items = await anexarAlertaPortal(client, rawItems.map((row) => ({
-      ...row,
-      url_edital: buildEditalUrl(row),
-      ...(matches ? { catmat_match: matches.get(Number(row.id)) ?? [] } : {}),
-    })));
+    const items = await montarItens(client, rawItems, matches);
 
     return jsonResponse({
       action: "list",

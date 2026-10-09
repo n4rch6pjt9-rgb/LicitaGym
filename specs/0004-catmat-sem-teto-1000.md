@@ -1,9 +1,10 @@
 # 0004: Listar oportunidades do recorte CATMAT acima de 1.000 sem o 422
 
-- **Status:** rascunho
+- **Status:** em implementação
 - **Issue:** nenhuma. Relato do Marcelo em 09/10: "O recorte CATMAT casa 1012 oportunidades (limite 1000)".
 - **Área:** edge-functions (`api-dashboard-oportunidades`)
-- **Depende do ok do Marcelo:** sim. Escolher a abordagem antes do código. O merge publica a Edge Function.
+- **Depende do ok do Marcelo:** sim. Abordagem (c) aprovada em 09/10; o filtro que deu 1.012 foi "Catálogo da
+  empresa". O merge publica a Edge Function e precisa de ok próprio.
 
 ## Problema
 
@@ -45,7 +46,7 @@ Alternativas consideradas:
 | CA-2 | **Dado** o mesmo recorte, **quando** pede a última página, **então** devolve só o restante; uma página além do fim devolve `items: []` com o `total` correto. | idem |
 | CA-3 | A ordenação em duas fases é igual à da consulta direta: nulos por último, `id` desempata, nos três `order_by` e nos dois sentidos. | idem (caso com nulos e empates) |
 | CA-4 | Os filtros de UF, texto e datas são aplicados antes de contar. Um recorte com 1.100 ids que cai para 300 com UF responde 200, com `total = 300`. | idem |
-| CA-5 | Nenhuma URL ao PostgREST leva mais de 500 ids. | idem (mock conta os ids por chamada) |
+| CA-5 | Acima de 1.000 ids (lista em duas fases), nenhuma URL ao PostgREST leva mais de 500 ids. Até 1.000, o caminho de hoje (uma consulta) continua. | idem (mock conta os ids por chamada) |
 | CA-6 | Acima do teto de proteção, continua 422 com a contagem. Recorte vazio continua 200 vazio. Timeout da RPC continua 503. | idem (testes de hoje ajustados) |
 | CA-7 | Erro de banco em qualquer lote vira 500, nunca lista parcial apresentada como completa. | idem |
 
@@ -68,5 +69,4 @@ Alternativas consideradas:
 
 ## Perguntas em aberto
 
-- Aprovar a abordagem (c) e o teto de proteção de 20.000, ou preferir (a)?
-- Qual filtro CATMAT deu os 1.012: grupo, classe ou "Catálogo"? Ajuda a montar o caso real do CA-1.
+Nenhuma.

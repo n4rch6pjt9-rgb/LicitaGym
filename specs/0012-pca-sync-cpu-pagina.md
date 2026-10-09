@@ -203,6 +203,36 @@ descoberta (T1, 13 req/classe/ano) ──► fila de planos ──► carga por 
 - **Dado oficial x derivado:** os itens vêm do PNCP (integração), e os campos são os mesmos de hoje. A fila e as
   contagens são operacionais. Nenhum valor é inventado.
 
+## Medição do passo 1 (09/10/2026)
+
+Caminho atual (item a item) rodado contra um cliente falso que conta chamadas. A página 2 real da consulta
+`/pca/?anoPca=2026&codigoClassificacaoSuperior=7830&tamanhoPagina=500` foi baixada em 09/10 às 14:42: 94 planos, 500 itens,
+445 KB.
+
+| Cenário | Chamadas ao banco | Por item | CPU local de normalização e hash |
+|---|---|---|---|
+| Banco vazio (tudo novo) | 3.777 | 7,55 | 40 ms |
+| Tudo alterado | 3.777 | 7,55 | 28 ms |
+| Tudo inalterado (calculado: o mesmo caminho, sem as 594 linhas de histórico) | 3.183 | 6,37 | não medido |
+
+Chamadas por tabela, no cenário de banco vazio:
+
+| Tabela | Operação | Chamadas |
+|---|---|---|
+| `pca_planos` | select | 188 |
+| `pca_planos` | insert | 94 |
+| `pca_alteracoes` | insert | 594 |
+| `pca_itens` | select | 895 |
+| `pca_itens` | insert | 500 |
+| `catmat_pdms` | select | 395 |
+| `pca_item_pdm` | upsert | 395 |
+| `catalogo_itens` | select | 358 |
+| `catalogo_ponte` | upsert | 358 |
+
+O parse do JSON da página leva 1,6 ms. O custo não está no hash nem na normalização: está nas cerca de 3.800 chamadas
+PostgREST por página, cada uma com montagem da requisição e parse da resposta pelo `supabase-js`. Isso confirma a
+causa provável e o alvo do CA-1: no máximo 12 chamadas por plano.
+
 ## Decisões (Marcelo, 09/10/2026)
 
 1. **Incremental:** só os planos que mudaram. A descoberta é por `dataAtualizacaoGlobalPCA`, e os itens vêm da

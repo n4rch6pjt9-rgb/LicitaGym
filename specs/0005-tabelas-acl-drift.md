@@ -49,6 +49,14 @@ Medição só de leitura em produção, em 09/10/2026, com `has_table_privilege`
 - Policies de RLS. O acesso do admin/dev fora de vínculo com tenant em `tenant_documentos` e no storage
   `tenant-documentos` hoje não existe (não há policy `_desenvolvedor`). Isso fica para um PR próprio.
 - Os default privileges de `supabase_admin`, que `postgres` não consegue alterar.
+- O EXECUTE que toda função nova herda de PUBLIC (padrão global do Postgres).
+  - `alter default privileges ... in schema public revoke execute on functions from public` não tem efeito: o default
+    por schema só soma ao global (testado no PG17).
+  - O revoke global (`for role postgres`, sem schema) vale para extensão criada depois: no teste, as 118 funções do
+    pgvector instalado num schema novo perderam o EXECUTE de PUBLIC. Isso quebraria a mudança do `vector` para
+    `extensions`.
+  - Quem barra função nova aberta é `funcoes_acl_check.sql`, bloco 1, que roda na CI (`has_function_privilege`
+    inclui PUBLIC). A convenção continua: a migration que cria função faz `revoke all ... from public`.
 - A migração da API para o schema `api`.
 
 ## Impacto em dados

@@ -200,6 +200,10 @@ end $acl$;
 
 -- Default privileges: objetos novos de `postgres` em `public` não nascem abertos a anon/authenticated. Função nova ainda
 -- herda EXECUTE de PUBLIC (padrão do Postgres): a migration que cria a função continua precisando de `revoke ... from public`.
+-- Não revogamos esse padrão aqui: `... in schema public revoke execute on functions from public` não tem efeito (o padrão
+-- é global, e o default por schema só soma), e o revoke global (`for role postgres` sem schema) também vale para extensão
+-- criada depois (testado: as 118 funções do pgvector num schema novo perdem o EXECUTE de PUBLIC). Quem barra função nova
+-- aberta é supabase/tests/funcoes_acl_check.sql, bloco 1 (has_function_privilege inclui PUBLIC), que roda na CI.
 alter default privileges for role postgres in schema public revoke all on tables from anon, authenticated;
 alter default privileges for role postgres in schema public revoke all on sequences from anon, authenticated;
 alter default privileges for role postgres in schema public revoke all on functions from anon, authenticated;

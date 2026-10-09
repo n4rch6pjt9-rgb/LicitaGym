@@ -5,7 +5,8 @@
 --   2. alguma relação da lista perder o privilégio previsto (quebraria fluxo com JWT do usuário);
 --   3. `anon` puder ler alguma materialized view (sem RLS);
 --   4. os default privileges de `postgres` em `public` ainda concederem algo a `anon`/`authenticated` (função nova ainda
---      herda EXECUTE de PUBLIC, que é padrão do Postgres e não aparece aqui: ver funcoes_acl_check.sql).
+--      herda EXECUTE de PUBLIC, que é padrão global do Postgres e não aparece aqui: quem barra é funcoes_acl_check.sql,
+--      bloco 1; o motivo de não revogar o padrão está no fim da migration 20261009130000).
 -- Também acusa grant por coluna (bloco 1b). Privilégios conferidos: os 7 clássicos + MAINTAIN (PG17).
 -- Só lê o catálogo (cria uma tabela temporária e termina em rollback). Roda no banco descartável
 -- (scripts/validar-migrations.sh) e pode rodar em produção pelo SQL Editor; não roda em transação read only.

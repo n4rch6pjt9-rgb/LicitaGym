@@ -5,7 +5,9 @@
 -- Falha com EXCEPTION se:
 --   A) item com PDM oficial e sem vínculo não sair confirmado (metodo 'pncp_pdm_origem');
 --   B) item com vínculo confirmado deixar de sair confirmado (metodo 'pncp_pdm_confirmado');
---   C) item identificado só por codigoItem (catmat_itens), sem PDM oficial nem vínculo, sair confirmado.
+--   C) item identificado só por codigoItem (catmat_itens), sem PDM oficial nem vínculo, sair confirmado;
+--   D) vínculo em pca_item_pdm com confirmado = false não impedir o PDM oficial de sair confirmado;
+--   E) pdm_codigo_origem não numérico (com codigoItem válido) sair confirmado ou derrubar a view por cast.
 -- Fixtures fictícias (grupo 99, PDM 999911, CNPJ 99000002000100, ano 2099); termina em rollback.
 
 begin;
@@ -17,6 +19,9 @@ declare
   v_a boolean; v_a_met text;
   v_b boolean; v_b_met text;
   v_c boolean; v_c_met text;
+  v_d boolean; v_d_met text;
+  v_e boolean; v_e_met text;
+  v_item_d uuid;
 begin
   insert into public.catmat_grupos (codigo_grupo, nome, status, payload_hash) values (99, 'CHK GRUPO', true, 'chk');
   insert into public.catmat_classes (codigo_grupo, codigo_classe, nome, status, payload_hash) values (99, 9901, 'CHK CLASSE', true, 'chk');
@@ -47,12 +52,29 @@ begin
                                 data_prevista_contratacao, payload_hash, ativo)
     values (v_plano, 3, '999911001', 500, '2099-10-01', 'chk', true);
 
+  -- D: PDM oficial com vínculo NÃO confirmado
+  insert into public.pca_itens (pca_plano_id, numero_item, pdm_codigo_origem, valor_total_estimado,
+                                data_prevista_contratacao, payload_hash, ativo)
+    values (v_plano, 4, '999911', 700, '2099-10-01', 'chk', true)
+    returning id into v_item_d;
+  insert into public.pca_item_pdm (pca_item_id, codigo_pdm, tipo_correspondencia, evidencia, confirmado)
+    values (v_item_d, 999911, 'incerta', 'chk', false);
+  -- E: pdm_codigo_origem não numérico + codigoItem válido
+  insert into public.pca_itens (pca_plano_id, numero_item, pdm_codigo_origem, codigo_item_origem, valor_total_estimado,
+                                data_prevista_contratacao, payload_hash, ativo)
+    values (v_plano, 5, '999911A', '999911001', 300, '2099-10-01', 'chk', true);
+
   select casamento_confirmado, metodo_identificacao into v_a, v_a_met
     from public.v_bi_pca_radar where orgao_cnpj = '99000002000100' and ano_pca = 2099 and numero_item_pncp = 1;
   select casamento_confirmado, metodo_identificacao into v_b, v_b_met
     from public.v_bi_pca_radar where orgao_cnpj = '99000002000100' and ano_pca = 2099 and numero_item_pncp = 2;
   select casamento_confirmado, metodo_identificacao into v_c, v_c_met
     from public.v_bi_pca_radar where orgao_cnpj = '99000002000100' and ano_pca = 2099 and numero_item_pncp = 3;
+
+  select casamento_confirmado, metodo_identificacao into v_d, v_d_met
+    from public.v_bi_pca_radar where orgao_cnpj = '99000002000100' and ano_pca = 2099 and numero_item_pncp = 4;
+  select casamento_confirmado, metodo_identificacao into v_e, v_e_met
+    from public.v_bi_pca_radar where orgao_cnpj = '99000002000100' and ano_pca = 2099 and numero_item_pncp = 5;
 
   if v_a is not true or v_a_met is distinct from 'pncp_pdm_origem' then
     raise exception 'pca_radar_pdm_oficial_check A: PDM oficial sem vínculo deveria ser confirmado (veio %, %)',
@@ -65,6 +87,14 @@ begin
   if v_c is not false or v_c_met is distinct from 'pncp_catmat_item' then
     raise exception 'pca_radar_pdm_oficial_check C: item só por codigoItem não pode sair confirmado (veio %, %)',
       coalesce(v_c::text, 'NULL'), coalesce(v_c_met, 'NULL');
+  end if;
+  if v_d is not true or v_d_met is distinct from 'pncp_pdm_origem' then
+    raise exception 'pca_radar_pdm_oficial_check D: vínculo não confirmado não pode anular o PDM oficial (veio %, %)',
+      coalesce(v_d::text, 'NULL'), coalesce(v_d_met, 'NULL');
+  end if;
+  if v_e is not false or v_e_met is distinct from 'pncp_pdm_origem' then
+    raise exception 'pca_radar_pdm_oficial_check E: PDM de origem não numérico não pode sair confirmado (veio %, %)',
+      coalesce(v_e::text, 'NULL'), coalesce(v_e_met, 'NULL');
   end if;
   raise notice 'SUCESSO: pca_radar_pdm_oficial_check: PDM oficial confirmado, vínculo mantido, codigoItem sozinho não';
 end $chk$;

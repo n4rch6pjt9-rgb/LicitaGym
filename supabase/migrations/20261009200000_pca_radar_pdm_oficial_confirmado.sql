@@ -9,7 +9,10 @@
 --
 -- Regra nova (decisão do Marcelo, 09/10): o PDM vindo do campo oficial pdmCodigo do PNCP, se existe em catmat_pdms,
 -- é confirmado. O vínculo de pca_item_pdm continua valendo (inclusive o confirmado por catálogo/jaccard).
--- metodo_identificacao não muda: 'pncp_pdm_confirmado' quando há vínculo, 'pncp_pdm_origem' quando só o PDM oficial.
+-- metodo_identificacao não muda: 'pncp_pdm_confirmado' quando há vínculo, 'pncp_pdm_origem' quando há pdm_codigo_origem.
+-- 'pncp_pdm_origem' agora pode vir com casamento_confirmado true (PDM oficial numérico) ou false (valor não numérico);
+-- api-pncp-pca só lê o booleano. O exists em catmat_pdms é redundante com o filtro de escopo (pdms_escopo só tem PDM
+-- de catmat_pdms), mas deixa a regra explícita; custa uma busca pela PK.
 -- Item identificado só por codigoItem (catmat_itens) ou só pela classe continua não confirmado.
 -- Mesmas colunas, mesma ordem e mesma cardinalidade da 20261009170000; nada é apagado.
 -- ACL igual: revoke de anon/authenticated/PUBLIC; select só service_role.

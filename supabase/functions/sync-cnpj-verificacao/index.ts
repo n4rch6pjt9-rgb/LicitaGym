@@ -1,6 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { authenticateCron, corsHeaders, errorDetail, jsonResponse } from "../_shared/http.ts";
+import { corsHeaders, errorDetail, jsonResponse, requireCronAuth } from "../_shared/http.ts";
 
 /**
  * sync-cnpj-verificacao (spec specs/0008-verificacao-cnpj-brasilapi.md, entrega 1).
@@ -13,7 +13,6 @@ import { authenticateCron, corsHeaders, errorDetail, jsonResponse } from "../_sh
 export type ResultadoVerificacao = Record<string, unknown>;
 
 export interface Contexto {
-  isCron?: (req: Request) => boolean;
   atualizar?: () => Promise<ResultadoVerificacao>;
 }
 
@@ -32,15 +31,16 @@ export async function handleRequest(req: Request, ctx: Contexto = {}): Promise<R
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return jsonResponse({ error: "Método não permitido. Utilize POST." }, 405);
 
-  const cron = (ctx.isCron ?? ((r: Request) => authenticateCron(r) === "CRON_AUTHENTICATED"))(req);
-  if (!cron) return jsonResponse({ error: "Unauthorized" }, 401);
+  const negado = requireCronAuth(req);
+  if (negado) return negado;
 
   try {
     const resultado = await (ctx.atualizar ?? atualizarNoBanco)();
     return jsonResponse({ resultado, consulta_externa: false });
   } catch (error) {
+    // Detalhe do banco fica só no log.
     console.error("[sync-cnpj-verificacao]", errorDetail(error));
-    return jsonResponse({ error: `Falha na verificação de CNPJ: ${errorDetail(error)}` }, 500);
+    return jsonResponse({ error: "Falha na verificação de CNPJ." }, 500);
   }
 }
 

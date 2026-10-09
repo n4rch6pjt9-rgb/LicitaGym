@@ -3,11 +3,15 @@
 import { assert, assertEquals } from "jsr:@std/assert@1";
 import { handleRequest } from "../../../supabase/functions/sync-cnpj-verificacao/index.ts";
 
-function post(body: unknown = {}) {
+Deno.env.set("SYNC_CRON_SECRET", "segredo-de-teste");
+
+function post(auth: string | null = "Bearer segredo-de-teste") {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (auth !== null) headers.Authorization = auth;
   return new Request("https://x.supabase.co/functions/v1/sync-cnpj-verificacao", {
     method: "POST",
-    headers: { Authorization: "Bearer segredo", "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    headers,
+    body: "{}",
   });
 }
 
@@ -22,24 +26,24 @@ async function semFetch<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-Deno.test("CA-7: sem o segredo do cron responde 401 e não chama a RPC", async () => {
-  let chamadas = 0;
-  const res = await semFetch(() =>
-    handleRequest(post(), {
-      isCron: () => false,
-      atualizar: () => {
-        chamadas++;
-        return Promise.resolve({ dv_invalido: 0, aguardando_consulta: 0, total: 0 });
-      },
-    })
-  );
-  assertEquals(res.status, 401);
-  assertEquals(chamadas, 0);
+Deno.test("CA-7: sem header ou com Bearer errado responde 401 e não chama a RPC", async () => {
+  for (const auth of [null, "Bearer errado", "segredo-de-teste"]) {
+    let chamadas = 0;
+    const res = await semFetch(() =>
+      handleRequest(post(auth), {
+        atualizar: () => {
+          chamadas++;
+          return Promise.resolve({ dv_invalido: 0, aguardando_consulta: 0, total: 0 });
+        },
+      })
+    );
+    assertEquals(res.status, 401, String(auth));
+    assertEquals(chamadas, 0, String(auth));
+  }
 });
 
 Deno.test("CA-7: GET responde 405", async () => {
   const res = await handleRequest(new Request("https://x/functions/v1/sync-cnpj-verificacao"), {
-    isCron: () => true,
     atualizar: () => Promise.reject(new Error("não deveria chamar")),
   });
   assertEquals(res.status, 405);
@@ -49,7 +53,6 @@ Deno.test("CA-7: com o segredo chama a RPC uma vez e devolve as contagens", asyn
   let chamadas = 0;
   const res = await semFetch(() =>
     handleRequest(post(), {
-      isCron: () => true,
       atualizar: () => {
         chamadas++;
         return Promise.resolve({ dv_invalido: 9, aguardando_consulta: 0, total: 9 });
@@ -66,13 +69,13 @@ Deno.test("CA-7: com o segredo chama a RPC uma vez e devolve as contagens", asyn
 Deno.test("CA-7: erro da RPC devolve 500 com mensagem, sem contagem", async () => {
   const res = await semFetch(() =>
     handleRequest(post(), {
-      isCron: () => true,
       atualizar: () => Promise.reject(new Error("permission denied for function cnpj_verificacao_atualizar")),
     })
   );
   assertEquals(res.status, 500);
   const body = await res.json();
-  assert(typeof body.error === "string" && body.error.length > 0);
+  assertEquals(body.error, "Falha na verificação de CNPJ.");
+  assert(!String(body.error).includes("permission denied"), "detalhe do banco não vai ao chamador");
   assertEquals(body.resultado, undefined);
 });
 

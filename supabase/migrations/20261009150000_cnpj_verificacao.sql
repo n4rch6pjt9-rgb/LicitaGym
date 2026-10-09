@@ -16,8 +16,18 @@
 --      DV válido com motivo -> 'aguardando_consulta' (a entrega 2 consulta a BrasilAPI). Não muda status já consultado
 --      (ok / nao_encontrado / erro_consulta). Não altera nenhuma tabela de dado oficial; não apaga nada: quem sai do
 --      alvo mantém a linha com ultima_vez_no_alvo antiga.
---   3. Cron semanal chamando a Edge Function (sem pg_cron, avisa e segue, como 20261004004000).
+--   3. Cron semanal chamando a Edge Function (sem pg_cron, avisa e segue, como 20261004004000). Diferente da
+--      20261004004000, o job nasce ATIVO: a função é nova, não chama HTTP externo, só grava em private, e o deploy dela
+--      sai no mesmo merge; a 1ª execução é a segunda seguinte às 06:37 UTC. Se o deploy falhar, o efeito é um 404
+--      semanal em private.cron_edge_chamadas.
+-- security invoker: quem chama é só service_role, que já lê as tabelas de public (BYPASSRLS), executa
+-- private.cnpj_valido e grava em private.cnpj_verificacao. Não há motivo para rodar com o dono.
+-- Custo (produção, 09/10): as 11 tabelas lidas somam ~52 mil linhas (homologacoes_itens fica de fora: é view sobre elas) (maior: precos_praticados_itens, 25.465), bem
+-- abaixo do statement_timeout de 8 s do PostgREST. "Alvo atual" = linhas com ultima_vez_no_alvo da última execução.
 -- Idempotente. Verificação: supabase/tests/cnpj_verificacao_check.sql.
+--
+-- ROLLBACK do job (não executado; rodar à mão se precisar):
+--   select cron.unschedule(jobid) from cron.job where jobname = 'licitagym-sync-cnpj-verificacao';
 
 begin;
 
@@ -56,7 +66,7 @@ grant select, insert, update, delete on table private.cnpj_verificacao to servic
 create or replace function private.cnpj_verificacao_atualizar()
 returns jsonb
 language plpgsql
-security definer
+security invoker
 set search_path = ''
 as $fn$
 declare
@@ -71,7 +81,6 @@ begin
     union all select 'contratacoes_editais.orgao_cnpj', regexp_replace(orgao_cnpj, '\D', '', 'g') from public.contratacoes_editais
     union all select 'fornecedores.cnpj', regexp_replace(cnpj, '\D', '', 'g') from public.fornecedores
     union all select 'licitacao_resultados.fornecedor_cnpj', regexp_replace(fornecedor_cnpj, '\D', '', 'g') from public.licitacao_resultados
-    union all select 'homologacoes_itens.fornecedor_cnpj', regexp_replace(fornecedor_cnpj, '\D', '', 'g') from public.homologacoes_itens
     union all select 'precos_praticados_itens.ni_fornecedor', regexp_replace(ni_fornecedor, '\D', '', 'g') from public.precos_praticados_itens
     union all select 'atas_rp_itens.ni_fornecedor', regexp_replace(ni_fornecedor, '\D', '', 'g') from public.atas_rp_itens
     union all select 'contratacoes_atas.ni_fornecedor', regexp_replace(ni_fornecedor, '\D', '', 'g') from public.contratacoes_atas
@@ -80,23 +89,28 @@ begin
   ocorr14 as (
     select origem, c, count(*)::int as n from ocorr where c ~ '^\d{14}$' group by origem, c
   ),
+  occ_agg as (
+    select c, jsonb_object_agg(origem, n) as ocorrencias from ocorr14 group by c
+  ),
   dv as (
-    select d.c, private.cnpj_valido(d.c) as valido from (select distinct c from ocorr14) d
+    select o.c, private.cnpj_valido(o.c) as valido, o.ocorrencias from occ_agg o
   ),
   sem_nome as (
-    select distinct regexp_replace(pl.orgao_cnpj, '\D', '', 'g') as c
+    -- por órgão (CNPJ normalizado), não por plano: basta um plano com título ou um nome em orgaos
+    select regexp_replace(pl.orgao_cnpj, '\D', '', 'g') as c
       from public.pca_planos pl
       left join public.orgaos o on regexp_replace(o.cnpj, '\D', '', 'g') = regexp_replace(pl.orgao_cnpj, '\D', '', 'g')
      where pl.ativo
-     group by pl.orgao_cnpj, pl.titulo
-    having coalesce(nullif(btrim(pl.titulo), ''),
+     group by 1
+    having coalesce(max(nullif(btrim(pl.titulo), '')),
                     max(nullif(btrim(o.nome_orgao), '')),
                     max(nullif(btrim(o.razao_social), ''))) is null
   ),
   pgc_sem_par as (
     select distinct regexp_replace(p.orgao_cnpj, '\D', '', 'g') as c
       from public.pca_pgc_itens p
-     where not exists (select 1 from public.pca_planos pl
+     where p.ano_pca_projeto_compra is not null  -- sem ano é dado ausente, não "sem par"
+       and not exists (select 1 from public.pca_planos pl
                         where pl.ativo
                           and regexp_replace(pl.orgao_cnpj, '\D', '', 'g') = regexp_replace(p.orgao_cnpj, '\D', '', 'g')
                           and pl.ano_exercicio = p.ano_pca_projeto_compra)
@@ -108,7 +122,7 @@ begin
              case when d.valido and d.c in (select c from sem_nome) then 'orgao_sem_nome' end,
              case when d.valido and d.c in (select c from pgc_sem_par) then 'pgc_pncp_sem_par' end
            ], null) as motivos,
-           (select jsonb_object_agg(o.origem, o.n) from ocorr14 o where o.c = d.c) as ocorrencias
+           d.ocorrencias
       from dv d
   )
   insert into private.cnpj_verificacao as cv

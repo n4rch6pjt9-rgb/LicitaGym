@@ -138,6 +138,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--parar-apos-vazios", type=int, default=15,
                     help="encerra a varredura após N IDs inexistentes seguidos")
     ap.add_argument("--dry-run", action="store_true", help="só consulta o portal; não grava nada")
+    ap.add_argument("--coleta", default="todas", choices=["sestsenat", "precos", "todas"],
+                    help="stub (spec 0009, fase red)")
     args = ap.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")

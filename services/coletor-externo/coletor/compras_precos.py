@@ -280,6 +280,10 @@ class ClienteComprasPrecos:
             raise erro_http(r, contexto)
         raise ErroApiCompras(f"Falha ao consultar Pesquisa Preco {tipo}={codigo} após retries")
 
+    def consultar_detalhe(self, codigo_item: int, pagina: int = 1, tamanho_pagina: int = 100) -> dict[str, Any]:
+        """Stub (spec 0009, fase red)."""
+        return {}
+
 
 def coletar(
     cliente: ClienteComprasPrecos,
@@ -472,6 +476,11 @@ def _coletar_precos(
         "por_tipo_ni": por_tipo_ni,
         "amostras": amostras,
     }
+
+
+def completar_detalhes(cliente: ClienteComprasPrecos, sb: Supabase, limite_itens: int | None = None) -> dict[str, Any]:
+    """Stub (spec 0009, fase red)."""
+    return {}
 
 
 def main(argv: list[str] | None = None) -> int:

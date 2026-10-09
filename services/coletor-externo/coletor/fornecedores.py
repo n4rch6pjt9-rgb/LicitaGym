@@ -12,8 +12,9 @@ Regras:
   - Falha de rede/limite (429/5xx) em todos os provedores -> erro contado; nunca vira cadastro vazio.
   - Cache: não reconsulta CNPJ consultado há menos de `validade_dias` (padrão 30).
 
-Uso avulso (backfill a partir do que já está em licitacao_resultados):
-  python -m coletor.fornecedores --de-resultados [--dry-run]
+Uso avulso (backfill a partir do que já está no banco):
+  python -m coletor.fornecedores --de-resultados [--dry-run]   # participantes de licitacao_resultados
+  python -m coletor.fornecedores --de-precos [--dry-run]       # vencedores de precos_praticados_itens
   python -m coletor.fornecedores --cnpj 24.608.949/0001-37 --dry-run
 """
 from __future__ import annotations
@@ -251,20 +252,35 @@ def cnpjs_de_resultados(sb, pagina: int = 100) -> list[str]:
     return sorted({r["fornecedor_cnpj"] for r in rows})
 
 
+def cnpjs_de_precos(sb) -> list[str]:
+    """NIs distintos dos vencedores em precos_praticados_itens (Pesquisa de Preço do Compras.gov).
+
+    A tabela não tem `id`: a leitura é por offset na PK composta (id_compra, id_item_compra) e traz só a coluna do NI.
+    CPF e NI estrangeiro passam adiante e `cadastrar` descarta como inválidos (só CNPJ com dígito válido é consultado).
+    """
+    rows = sb.selecionar("precos_praticados_itens", select="ni_fornecedor", ni_fornecedor="not.is.null",
+                         order="id_compra.asc,id_item_compra.asc")
+    return sorted({r["ni_fornecedor"] for r in rows})
+
+
 def main(argv: list[str] | None = None) -> int:
     from .destino import Supabase, env
 
     ap = argparse.ArgumentParser(description="Cadastro de fornecedores por CNPJ")
     ap.add_argument("--cnpj", action="append", help="CNPJ (pode repetir)")
     ap.add_argument("--de-resultados", action="store_true", help="todos os CNPJs de licitacao_resultados")
+    ap.add_argument("--de-precos", action="store_true", help="todos os vencedores de precos_praticados_itens")
+    ap.add_argument("--limite", type=int, help="consulta só os N primeiros CNPJs da lista (teste antes da carga toda)")
     ap.add_argument("--validade-dias", type=int, default=30)
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    precisa_banco = args.de_resultados or not args.dry_run
+    precisa_banco = args.de_resultados or args.de_precos or not args.dry_run
     sb = Supabase(env("SUPABASE_URL", obrigatorio=True), env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True)) \
         if precisa_banco else None
-    cnpjs = list(args.cnpj or []) + (cnpjs_de_resultados(sb) if args.de_resultados else [])
+    cnpjs = list(args.cnpj or []) + (cnpjs_de_resultados(sb) if args.de_resultados else [])         + (cnpjs_de_precos(sb) if args.de_precos else [])
+    if args.limite is not None:
+        cnpjs = cnpjs[:max(args.limite, 0)]
     r = CadastroFornecedores(sb, validade_dias=args.validade_dias, dry_run=args.dry_run).cadastrar(cnpjs)
     for l in r.pop("linhas"):
         print(f"{l['cnpj']} | {l.get('razao_social')} | {l.get('porte')} | {l.get('uf')}/{l.get('municipio')} | "

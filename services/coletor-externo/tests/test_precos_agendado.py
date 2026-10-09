@@ -368,3 +368,52 @@ def test_ca9_main_completa_detalhe_depois_do_1(monkeypatch, sem_espera):
     urls = [c[0] for c in sessao.chamadas]
     assert urls.index(URL_DETALHE) > urls.index(URL_MATERIAL)
     assert len(sb.updates) == 1
+
+
+def test_ca9_supabase_atualizar_onde_filtra_pela_chave_e_conta_linhas(monkeypatch):
+    from coletor import destino
+
+    chamadas = []
+
+    def patch(url, params=None, json=None, headers=None, timeout=None):
+        chamadas.append((url, params, json, headers, timeout))
+        return _resp(200, [{"id_compra": "X", "id_item_compra": 1}])
+
+    monkeypatch.setattr(destino.requests, "patch", patch)
+    sb = destino.Supabase("https://exemplo.supabase.co", "chave-de-teste")
+    n = sb.atualizar_onde("precos_praticados_itens", {"id_compra": "eq.X", "id_item_compra": "eq.1"},
+                          {"detalhe_sincronizado_em": "2026-10-09T00:00:00+00:00"})
+
+    assert n == 1
+    url, params, _corpo, headers, timeout = chamadas[0]
+    assert url.endswith("/rest/v1/precos_praticados_itens")
+    assert params == {"id_compra": "eq.X", "id_item_compra": "eq.1", "select": "id_compra,id_item_compra"}
+    assert headers["Prefer"] == "return=representation"
+    assert timeout
+
+    with pytest.raises(ValueError):
+        sb.atualizar_onde("precos_praticados_itens", {}, {"x": 1})
+    monkeypatch.setattr(destino.requests, "patch", lambda *a, **k: _resp(500))
+    with pytest.raises(RuntimeError):
+        sb.atualizar_onde("precos_praticados_itens", {"id_compra": "eq.X"}, {"x": 1})
+
+
+def test_ca9_supabase_selecionar_precos_usa_offset_e_order_pedido(monkeypatch):
+    """precos_praticados_itens não tem coluna id: a leitura não pode cair no keyset por id."""
+    from coletor import destino
+
+    pedidos = []
+
+    def get(url, params=None, headers=None, timeout=None):
+        pedidos.append(dict(params))
+        r = _resp(200, [])
+        r.raise_for_status = lambda: None
+        return r
+
+    monkeypatch.setattr(destino.requests, "get", get)
+    sb = destino.Supabase("https://exemplo.supabase.co", "chave-de-teste")
+    assert sb.selecionar("precos_praticados_itens", order="codigo_item_catalogo.asc,id_compra.asc,id_item_compra.asc",
+                         **{"or": compras_precos.FILTRO_SEM_DESCRICAO}) == []
+    assert pedidos[0]["order"] == "codigo_item_catalogo.asc,id_compra.asc,id_item_compra.asc"
+    assert pedidos[0]["offset"] == "0"
+    assert "id" not in pedidos[0]

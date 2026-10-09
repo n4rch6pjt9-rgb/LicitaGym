@@ -1,10 +1,18 @@
-"""Coletor SEST SENAT -> Supabase + Cloud Storage.
+"""Cloud Run Job do coletor externo: SEST SENAT -> Supabase + Cloud Storage, e Pesquisa de Preço do Compras.gov.
 
 Uso (piloto em 5 processos, sem gravar nada, só listar):
-    python -m coletor.main --ids 1,10,30,41,81 --dry-run
+    python -m coletor.main --ids 1,10,30,41,81 --dry-run --coleta sestsenat
 
-Uso (Cloud Run Job, varre IDs 1..120 e grava tudo):
+Uso (Cloud Run Job, varre IDs 1..120 e grava tudo; depois coleta os preços):
     python -m coletor.main --de 1 --ate 120
+
+--coleta escolhe o que roda (padrão: todas):
+    sestsenat  só o portal SEST SENAT
+    precos     só a Pesquisa de Preço (spec 0009): compras_precos em modo catálogo (PDMs de
+               catalogo_catmat_pdms_efetivos(), nunca a lista fixa) e, em seguida, o 2_consultarMaterialDetalhe só
+               para completar as linhas sem descrição detalhada. No --dry-run não grava nem completa o detalhe.
+    todas      os dois, um depois do outro; a falha de um não impede o outro.
+O código de saída é 1 se qualquer parte falhar (inclusive falha de uma linha do detalhe).
 
 Variáveis de ambiente:
     SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY   (obrigatórias fora do --dry-run)
@@ -19,6 +27,9 @@ import argparse
 import logging
 import sys
 
+import json
+
+from . import compras_precos
 from .destino import Armazenamento, Supabase, drenar_licitacao_match, env, parece_html, sha256
 from .portal import (SECOES_CONTRATACAO, ArquivoGrande, PortalSestSenat, encerrado, no_escopo_fitness,
                      processo_para_linha)
@@ -126,32 +137,31 @@ def coletar_processo(portal: PortalSestSenat, sb: Supabase | None, arm: Armazena
     return resumo
 
 
-def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Coletor de licitações do portal SEST SENAT")
-    ap.add_argument("--ids", help="lista de nCdProcesso separados por vírgula")
-    ap.add_argument("--de", type=int, default=1)
-    ap.add_argument("--ate", type=int, default=120)
-    ap.add_argument("--modulo", type=int, default=59, help="59 = pregão eletrônico")
-    ap.add_argument("--todos", action="store_true", help="inclui processos ainda em andamento")
-    ap.add_argument("--escopo", default="fitness", choices=["fitness", "tudo"],
-                    help="fitness (padrão) = só academia/esporte; tudo = qualquer objeto")
-    ap.add_argument("--parar-apos-vazios", type=int, default=15,
-                    help="encerra a varredura após N IDs inexistentes seguidos")
-    ap.add_argument("--dry-run", action="store_true", help="só consulta o portal; não grava nada")
-    ap.add_argument("--coleta", default="todas", choices=["sestsenat", "precos", "todas"],
-                    help="stub (spec 0009, fase red)")
-    args = ap.parse_args(argv)
+def coletar_precos(sb: Supabase | None, dry_run: bool, delay: float) -> bool:
+    """Pesquisa de Preço em modo catálogo + detalhe só para completar. True se tudo deu certo."""
+    cliente = compras_precos.ClienteComprasPrecos(delay=max(1.0, delay))
+    res = compras_precos.coletar(cliente, sb, dry_run=dry_run)
+    ok = bool(res.get("sucesso"))
+    resumo = {k: v for k, v in res.items() if k not in ("amostras", "arquivo_raw")}
+    if dry_run or sb is None:
+        log.info("precos (dry-run) -> %s", json.dumps(resumo, ensure_ascii=False, default=str))
+        return ok
+    if res.get("erro"):
+        # catálogo indisponível: nada foi consultado; o detalhe também não roda
+        log.error("precos -> %s", json.dumps(resumo, ensure_ascii=False, default=str))
+        return False
+    detalhe = compras_precos.completar_detalhes(cliente, sb)
+    resumo["detalhe"] = detalhe
+    ok = ok and bool(detalhe.get("sucesso"))
+    (log.info if ok else log.error)("precos -> %s", json.dumps(resumo, ensure_ascii=False, default=str))
+    return ok
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
+def coletar_sestsenat(args, sb: Supabase | None, arm: Armazenamento | None) -> int:
+    """Varredura do portal SEST SENAT. Devolve o número de falhas operacionais."""
     secoes = {s.strip() for s in (env("SECOES_DOWNLOAD", SECOES_DOWNLOAD_PADRAO) or "").split(",") if s.strip()}
     max_bytes = int(float(env("MAX_MB", "80")) * 1024 * 1024)
     portal = PortalSestSenat(delay=float(env("DELAY_SEGUNDOS", "1.5")))
-
-    sb = arm = None
-    if not args.dry_run:
-        sb = Supabase(env("SUPABASE_URL", obrigatorio=True), env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True))
-        arm = Armazenamento.do_ambiente()
 
     ids = [int(x) for x in args.ids.split(",")] if args.ids else list(range(args.de, args.ate + 1))
     vazios = 0
@@ -172,7 +182,47 @@ def main(argv: list[str] | None = None) -> int:
             log.info("%s IDs vazios seguidos; fim da varredura.", vazios)
             break
     drenar_licitacao_match(sb)  # recorte CATMAT por texto: zera a pendência de licitacao_match (sem efeito no dry-run)
-    return 1 if falhas_operacionais else 0
+    return falhas_operacionais
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="Coletor externo: portal SEST SENAT e Pesquisa de Preço do Compras.gov")
+    ap.add_argument("--ids", help="lista de nCdProcesso separados por vírgula")
+    ap.add_argument("--de", type=int, default=1)
+    ap.add_argument("--ate", type=int, default=120)
+    ap.add_argument("--modulo", type=int, default=59, help="59 = pregão eletrônico")
+    ap.add_argument("--todos", action="store_true", help="inclui processos ainda em andamento")
+    ap.add_argument("--escopo", default="fitness", choices=["fitness", "tudo"],
+                    help="fitness (padrão) = só academia/esporte; tudo = qualquer objeto")
+    ap.add_argument("--parar-apos-vazios", type=int, default=15,
+                    help="encerra a varredura após N IDs inexistentes seguidos")
+    ap.add_argument("--dry-run", action="store_true", help="só consulta as fontes; não grava nada")
+    ap.add_argument("--coleta", default="todas", choices=["sestsenat", "precos", "todas"],
+                    help="o que rodar: sestsenat, precos (Pesquisa de Preço, modo catálogo) ou todas (padrão)")
+    args = ap.parse_args(argv)
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+    roda_sestsenat = args.coleta in ("sestsenat", "todas")
+    roda_precos = args.coleta in ("precos", "todas")
+
+    sb = arm = None
+    if not args.dry_run:
+        sb = Supabase(env("SUPABASE_URL", obrigatorio=True), env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True))
+        if roda_sestsenat:
+            arm = Armazenamento.do_ambiente()
+
+    falhou = False
+    if roda_sestsenat:
+        falhou = coletar_sestsenat(args, sb, arm) > 0
+    if roda_precos:
+        try:
+            ok = coletar_precos(sb, args.dry_run, float(env("DELAY_SEGUNDOS", "1.5")))
+        except Exception as e:  # erro inesperado na coleta de preços: execução falha, nunca sucesso silencioso
+            log.error("precos falhou: %s", e)
+            ok = False
+        falhou = falhou or not ok
+    return 1 if falhou else 0
 
 
 if __name__ == "__main__":

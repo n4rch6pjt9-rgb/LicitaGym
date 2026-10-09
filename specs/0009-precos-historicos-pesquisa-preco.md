@@ -1,6 +1,6 @@
 # 0009: Preços históricos e a aba "Inteligência de Preços" a partir da Pesquisa de Preço do Compras.gov
 
-- **Status:** aprovada (09/10)
+- **Status:** em implementação (backend: CA-1 a CA-6 e CA-9; front: CA-7 e CA-8 no Dashboard)
 - **Issue:** nenhuma. Pedido do Marcelo em 09/10: os preços históricos vêm de
   `/modulo-pesquisa-preco/1_consultarMaterial` (via catálogo do tenant), com o detalhe de
   `/modulo-pesquisa-preco/2_consultarMaterialDetalhe`. Eles alimentam a tela "Preços Históricos" e a aba "Inteligência
@@ -89,15 +89,15 @@ opcional da mesma coleta (ver Perguntas).
 
 | ID | Dado / Quando / Então | Teste que prova |
 |---|---|---|
-| CA-1 | Sem JWT, 401 e nenhuma consulta com service_role. | Deno `tests/supabase/functions/api_precos_test.ts` |
-| CA-2 | `resumo` com `pdm` e `meses` (12 ou 24; outro valor dá 400) devolve n, média, mín, p25, mediana, p75 e máx do período, e a unidade de fornecimento predominante. Com `n < 3`, média e quartis vêm `null`, com o motivo. | idem, mais SQL check da função ou view de resumo |
-| CA-3 | `amostras` pagina, ordena por `data_resultado desc` e devolve marca e fornecedor como vieram da API (ausente vira `null`). | idem |
-| CA-4 | Parâmetro inválido dá 400; erro de banco dá 500 genérico, nunca `[]`. | idem |
-| CA-5 | A coleta agendada roda `compras_precos` em modo catálogo; o teste unitário não chama a API real. | pytest `services/coletor-externo/tests/` |
-| CA-6 | A saúde acusa coleta de preço com mais de 8 dias. | SQL check da saúde |
+| CA-1 | Sem JWT, 401 e nenhuma consulta com service_role. | Deno `tests/supabase/functions/api_precos_test.ts` (`CA-1: ...`) |
+| CA-2 | `resumo` com `pdm` e `meses` (12 ou 24; outro valor dá 400) devolve n, média, mín, p25, mediana, p75 e máx do período, e a unidade de fornecimento predominante. Com `n < 3`, média e quartis vêm `null`, com o motivo. | idem (`CA-2: ...`), mais `supabase/tests/precos_praticados_resumo_check.sql` |
+| CA-3 | `amostras` pagina, ordena por `data_resultado desc` e devolve marca e fornecedor como vieram da API (ausente vira `null`). | idem (`CA-3: ...`) |
+| CA-4 | Parâmetro inválido dá 400; erro de banco dá 500 genérico, nunca `[]`. | idem (`CA-4: ...`) |
+| CA-5 | A coleta agendada roda `compras_precos` em modo catálogo; o teste unitário não chama a API real. | pytest `services/coletor-externo/tests/test_precos_agendado.py` (`test_ca5_*`) |
+| CA-6 | A saúde acusa coleta de preço com mais de 8 dias. | `supabase/tests/saude_coleta_precos_check.sql` |
 | CA-7 | `/precos` mostra os KPIs e as amostras do recorte; valor ausente aparece como "—"; n pequeno não mostra mediana. | vitest |
 | CA-8 | A aba "Inteligência de Preços" mostra, para cada item da oportunidade com PDM, o valor unitário estimado contra a média, a mediana e o p25–p75 do PDM no período escolhido (12 ou 24 meses), com a diferença em R$ e em %. Com unidade diferente ou `n < 3`, não mostra diferença e diz o motivo. | vitest |
-| CA-9 | A coleta completa a descrição detalhada pelo `2_consultarMaterialDetalhe` só nas linhas sem descrição, e marca `detalhe_sincronizado_em`. | pytest |
+| CA-9 | A coleta completa a descrição detalhada pelo `2_consultarMaterialDetalhe` só nas linhas sem descrição, e marca `detalhe_sincronizado_em`. | pytest `services/coletor-externo/tests/test_precos_agendado.py` (`test_ca9_*`) |
 
 ## Fora de escopo
 

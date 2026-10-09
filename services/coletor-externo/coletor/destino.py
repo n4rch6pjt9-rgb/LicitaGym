@@ -22,6 +22,8 @@ POSTGREST_MAX_ROWS = max(1, min(100, int(os.environ.get("SUPABASE_PAGE_SIZE", "1
 _PK_SEM_ID = {
     "fornecedores": "cnpj",
     "portal_visitante": "fonte",
+    # PK composta (id_compra, id_item_compra): quem lê passa o order completo; aqui só evita o `,id.asc` e o keyset.
+    "precos_praticados_itens": "id_compra",
 }
 
 
@@ -170,6 +172,23 @@ class Supabase:
             raise RuntimeError(f"Supabase {tabela}#{id_}: {r.status_code} {r.text[:500]}")
         if TABELAS_TEXTO_CATMAT.get(tabela, set()) & set(campos):
             self._contar_textos(tabela, 1)
+
+    def atualizar_onde(self, tabela: str, filtros: dict[str, str], campos: dict) -> int:
+        """PATCH pelas colunas do filtro (PostgREST, ex.: {"id_compra": "eq.X"}). Devolve quantas linhas mudaram.
+
+        Filtro vazio é recusado (atualizaria a tabela inteira)."""
+        if not filtros:
+            raise ValueError(f"Supabase {tabela}: atualizar_onde sem filtro")
+        r = requests.patch(
+            f"{self.base}/{tabela}", params={**filtros, "select": ",".join(filtros)}, json=campos,
+            headers={**self.h, "Prefer": "return=representation"}, timeout=60,
+        )
+        if r.status_code >= 300:
+            raise RuntimeError(f"Supabase {tabela} {filtros}: {r.status_code} {r.text[:500]}")
+        linhas = r.json()
+        if not isinstance(linhas, list):
+            raise RuntimeError(f"Supabase {tabela} {filtros}: resposta inesperada ao atualizar")
+        return len(linhas)
 
     def remover_pendentes_exceto(self, licitacao_id: int, manter_ids: list[int]) -> None:
         """Apaga linhas desta licitação que não correspondem mais a nenhum documento do

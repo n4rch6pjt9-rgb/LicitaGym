@@ -1,6 +1,6 @@
 # 0006: Rota /pca como radar de itens planejados no escopo
 
-- **Status:** aprovada (09/10)
+- **Status:** em implementação (backend: CA-1 a CA-7; front: CA-8 a CA-11 depois do merge do backend)
 - **Issue:** nenhuma. Pedido do Marcelo em 09/10: "551 plano(s). Página 1 de 28. O frontend não está operando como
   propomos a construção da rota". A forma escolhida foi "Radar de itens no escopo".
 - **Área:** edge-functions (`api-pncp-pca`) e dashboard-contrato (`/pca` no repositório Dashboard---LicitaGym)
@@ -19,8 +19,8 @@
   estão no escopo do catálogo da empresa (`catalogo_catmat_pdms_efetivos()`), com órgão, PDM, item, quantidade,
   valor, data e mês previstos, e se o casamento é confirmado.
 - **Por que o front não lê a view direto:** só `service_role` tem acesso a ela. Nenhuma Edge Function a expõe hoje.
-- **Volume:** não medido. O MCP só leitura não executa a função de escopo usada pela view; a medição sai no PR do
-  backend.
+- **Volume:** o MCP só leitura não executa a função de escopo usada pela view. Teto medido em 09/10: 3.686 itens
+  ativos do PNCP em 2026 antes do filtro de escopo, e 0 itens do PGC. A soma lê no máximo 4 páginas de 1.000.
 
 ## Critérios de aceite
 
@@ -44,6 +44,24 @@
 | CA-9 | Os filtros (ano, mês, PDM, órgão, fonte, valor mínimo, só confirmados) ficam na URL (`useSearchParams`) e vão para a API. A paginação funciona. | idem |
 | CA-10 | Quando a lista está vazia, a tela diz "nenhum item planejado no escopo para o filtro", e o erro aparece num estado de erro com "tentar de novo". No modo demo, o comportamento continua o de hoje (indisponível no demo). | idem |
 | CA-11 | Um valor ausente aparece como "—", e não como R$ 0,00. | idem |
+
+### Cobertura (backend)
+
+`tests/supabase/functions/api_pncp_pca_radar_test.ts`, com 11 testes nomeados pelo CA:
+- **CA-1:** sem JWT, 401 e nenhum cliente service_role criado.
+- **CA-2:** envelope, view e `ano_pca`.
+- **CA-3:** três testes: cada filtro chega ao banco; curingas do PostgREST são removidos de `orgao`; 13 parâmetros
+  inválidos dão 400.
+- **CA-4:** dois testes: ordem por data e por valor, com nulos por último; paginação.
+- **CA-5:** dois testes: ausentes chegam como null, a soma é em centavos sobre todo o recorte, e sem nenhum valor a
+  soma é null.
+- **CA-6:** erro do banco dá 500.
+- **CA-7:** as visões existentes e o GET padrão continuam despachados.
+
+**Regra de arredondamento de `valor_total_escopo`:**
+- cada valor é convertido em centavos a partir do texto decimal, arredondando meio para longe do zero na 3ª casa;
+- a soma é feita em inteiros e dividida por 100 no fim;
+- quando nenhum item do recorte tem valor, a soma é `null`, não 0.
 
 ## Fora de escopo
 

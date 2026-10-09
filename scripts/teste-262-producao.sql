@@ -4,7 +4,7 @@
 -- Saída esperada (contagens de 09/10/2026; a base cresce com a coleta, então os números podem subir um pouco):
 --   ANTES   md5_cnpj_valido = 8facd335d32286cba681a314a54f6afb | search_path = (vazio) | cnpj_validos = 102
 --           | cnpj_14_digitos = 2706 | vendas_no_ranking = 917 (medido na #262 em 08/10) | normalizar_nao_idempotente = 0
---   DEPOIS  md5_cnpj_valido = a1a194b226a94cf3dbbffa9cf1061209 | search_path = search_path="" | cnpj_validos = 2706 (= cnpj_14_digitos)
+--   DEPOIS  md5_cnpj_valido = 93c4f56b407d7712c60be16bf639a8a3 | search_path = search_path="" | cnpj_validos = 2706 (= cnpj_14_digitos)
 --           | vendas_no_ranking perto de 18.495 | normalizar_nao_idempotente = 0
 begin read only;
 set local statement_timeout = '20s';

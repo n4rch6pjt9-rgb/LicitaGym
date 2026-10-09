@@ -4,8 +4,10 @@
 #   2. deno check das funções tocadas     (scripts/ci/deno-check-funcoes.sh; _shared tocado = todas)
 #   3. deno test dos testes afetados      (testes staged + testes que citam a função ou o módulo _shared)
 #   4. pytest dos testes afetados         (testes staged + test_<modulo>*.py do pacote)
-#   5. migration staged: lembra de rodar scripts/validar-migrations.sh (Docker, ~1,5 min; a CI roda)
+#   5. migration ou check SQL staged: lembra de rodar scripts/validar-migrations.sh (Docker, ~1,5 min; a CI roda)
 # Ferramenta ausente (deno, ruff, python) vira aviso, não bloqueio; a CI roda tudo de novo.
+# Limitações: lint e testes rodam na árvore de trabalho, não só no que está staged (com `git add -p` o resultado
+# pode divergir do commit; a CI decide). Requer bash 4+ (Linux, Git Bash no Windows; no macOS, bash do Homebrew).
 # Instalar: git config core.hooksPath .githooks      Pular uma vez: git commit --no-verify
 set -uo pipefail
 cd "$(git rev-parse --show-toplevel)"
@@ -15,7 +17,7 @@ mapfile -t ARQS < <(git diff --cached --name-only --diff-filter=ACMR)
 tem() { command -v "$1" >/dev/null 2>&1 || { echo "aviso: $1 não instalado, etapa pulada"; return 1; }; }
 PY=python3; command -v python3 >/dev/null 2>&1 || PY=python
 
-echo "[pre-commit] 1/4 lint"
+echo "[pre-commit] lint"
 PULAR_SEM_FERRAMENTA=1 scripts/ci/lint-alterados.sh "${ARQS[@]}" || rc=1
 
 # Funções e módulos _shared tocados; testes Deno afetados.
@@ -29,7 +31,7 @@ for a in "${ARQS[@]}"; do
   esac
 done
 if [ "${#FUNCOES[@]}" -gt 0 ] || [ "$SHARED" -eq 1 ]; then
-  echo "[pre-commit] 2/4 deno check"
+  echo "[pre-commit] deno check"
   if tem deno; then
     if [ "$SHARED" -eq 1 ]; then
       log=$(mktemp); scripts/ci/deno-check-funcoes.sh >"$log" 2>&1 || { cat "$log"; rc=1; }; rm -f "$log"
@@ -41,7 +43,7 @@ fi
 if [ "${#DT[@]}" -gt 0 ]; then
   mapfile -t DT < <(printf '%s\n' "${DT[@]}" | grep -E '(_test|\.test)\.ts$' | sort -u)
   if [ "${#DT[@]}" -gt 0 ]; then
-    echo "[pre-commit] 3/4 deno test (${#DT[@]} arquivo(s))"
+    echo "[pre-commit] deno test (${#DT[@]} arquivo(s))"
     tem deno && { NO_COLOR=1 deno test --allow-read --allow-write --allow-env --no-prompt --reporter=dot "${DT[@]}" || rc=1; }
   fi
 fi
@@ -58,7 +60,7 @@ for a in "${ARQS[@]}"; do
   esac
 done
 if [ "${#RAIZ_T[@]}" -gt 0 ] || [ "${#COL_T[@]}" -gt 0 ]; then
-  echo "[pre-commit] 4/4 pytest"
+  echo "[pre-commit] pytest"
   if ! "$PY" -c "import pytest" >/dev/null 2>&1; then echo "aviso: pytest não instalado para $PY, etapa pulada"
   else
     mapfile -t RAIZ_T < <(printf '%s\n' "${RAIZ_T[@]}" | sed '/^$/d' | sort -u)

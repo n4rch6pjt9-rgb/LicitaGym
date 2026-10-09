@@ -36,6 +36,8 @@ scripts/validar-migrations.sh                       # Postgres 17 descartável (
   clone. Ferramenta ausente vira aviso; pular uma vez: `git commit --no-verify`.
 - **Pendências conhecidas** (podem falhar sem derrubar a CI; se passarem, saem da lista): `.github/ci/deno-check-pendentes.txt`
   (typecheck) e `supabase/tests/pendentes.txt` (checks SQL). A lista só diminui: não acrescente item sem issue.
+- **Lint é por arquivo inteiro:** quem toca um arquivo resolve a dívida dele (em 08/10: 12 `no-unused-vars` no Deno,
+  95 achados F no ruff, 93 com `ruff check --fix`). Não acrescente regra sem limpar a base antes.
 - Fluxos críticos ainda sem teste: `docs/testes-minimos-fluxos-criticos.md`.
 
 ## Ambientes e entrega

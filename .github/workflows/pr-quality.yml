@@ -23,7 +23,8 @@ on:
 
 concurrency:
   group: pr-quality-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Em PR, um push novo cancela o run anterior; na main, todo merge é validado.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   deno-edge:

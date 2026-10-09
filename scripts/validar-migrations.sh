@@ -36,23 +36,30 @@ for _ in $(seq 1 30); do echo 'select 1' | psql_ >/dev/null 2>&1 && { pronto=1; 
 if [ "$pronto" -ne 1 ]; then echo "Postgres ($IMG) não respondeu em 60 s."; exit 2; fi
 echo "Postgres: $(echo 'show server_version' | psql_)"
 
-PENDENTES="$(sed -e 's/#.*//' supabase/tests/pendentes.txt 2>/dev/null | awk 'NF{print $1}' | tr '\n' ' ')"
-# A lista só vale para checks: migration (ou pre.sql) listada derrubaria o portão em silêncio.
-for p in $PENDENTES; do
-  case "$p" in *_check.sql) ;; *) echo "supabase/tests/pendentes.txt só aceita *_check.sql (achei '$p')."; exit 2;; esac
-done
+# Lista: "<arquivo> | <trecho do erro esperado> | <issue>". Só vale para checks: migration (ou pre.sql) listada
+# derrubaria o portão em silêncio, e o trecho garante que só a falha conhecida vira PENDENTE.
+declare -A PEND
+if [ -f supabase/tests/pendentes.txt ]; then
+  while IFS='|' read -r nome trecho _; do
+    nome="$(echo "$nome" | xargs)"; case "$nome" in ''|\#*) continue;; esac
+    case "$nome" in *_check.sql) ;; *) echo "supabase/tests/pendentes.txt só aceita *_check.sql (achei '$nome')."; exit 2;; esac
+    trecho="$(echo "$trecho" | sed 's/^ *//; s/ *$//')"
+    [ -n "$trecho" ] || { echo "supabase/tests/pendentes.txt: '$nome' sem trecho de erro esperado."; exit 2; }
+    PEND["$nome"]="$trecho"
+  done < supabase/tests/pendentes.txt
+fi
 falhas=0; pendentes=0
 aplicar() { # $1 arquivo, $2 rótulo
   local saida pend=0
-  case "$2" in check*) case " $PENDENTES " in *" $(basename "$1") "*) pend=1;; esac;; esac
+  case "$2" in check*) [ -n "${PEND[$(basename "$1")]+x}" ] && pend=1;; esac
   case " $PULAR " in *" $(basename "$1") "*) echo "pulada $2 $(basename "$1") (extensão só no Supabase)"; return;; esac
   if saida=$(psql_ < "$1" 2>&1); then
     if [ "$pend" -eq 1 ]; then
       echo "FALHA  $2 $(basename "$1"): passou, mas está em supabase/tests/pendentes.txt (tire da lista)"; falhas=$((falhas + 1)); return
     fi
     echo "ok     $2 $(basename "$1") $(grep -o 'SUCESSO.*' <<<"$saida" | head -1)"
-  elif [ "$pend" -eq 1 ]; then
-    echo "PENDENTE $2 $(basename "$1"): $(grep -m1 ERROR <<<"$saida")"; pendentes=$((pendentes + 1))
+  elif [ "$pend" -eq 1 ] && grep -qF -- "${PEND[$(basename "$1")]}" <<<"$saida"; then
+    echo "PENDENTE $2 $(basename "$1"): ${PEND[$(basename "$1")]}"; pendentes=$((pendentes + 1))
   else
     echo "FALHA  $2 $(basename "$1"): $(grep -m1 ERROR <<<"$saida")"; falhas=$((falhas + 1))
   fi

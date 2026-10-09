@@ -29,7 +29,7 @@ tem() { command -v "$1" >/dev/null 2>&1 && return 0
 rc=0
 if [ "${#TS[@]}" -gt 0 ] && tem deno; then
   echo "deno lint (${#TS[@]} arquivo(s))"
-  deno lint --rules-exclude="$DENO_EXCLUIR" -- "${TS[@]}" || rc=1
+  deno lint --rules-exclude="$DENO_EXCLUIR" "${TS[@]}" || rc=1  # sem "--": o deno trataria os arquivos como args e lintaria a pasta toda; os caminhos já começam com supabase/ ou tests/
 fi
 if [ "${#PY[@]}" -gt 0 ] && tem ruff; then
   echo "ruff check (${#PY[@]} arquivo(s))"

@@ -12,7 +12,9 @@
 --      os privilégios que não estão na lista intencional (igual ao banco limpo). Não mexe em `service_role`/`postgres`;
 --   2. tira dos default privileges de `postgres` em `public` os grants automáticos a `anon`/`authenticated` (tabelas,
 --      sequências e funções novas passam a depender de GRANT explícito na migration, como já manda a convenção);
---   3. pós-checagem com has_table_privilege/has_sequence_privilege (inclui PUBLIC): sobrou algo fora da lista → aborta.
+--   3. revoga grants por coluna (attacl) fora da lista;
+--   4. pós-checagem com has_table_privilege/has_sequence_privilege/has_any_column_privilege (inclui PUBLIC): sobrou
+--      algo fora da lista → aborta. Privilégios: os 7 clássicos + MAINTAIN (PG17).
 -- Ignora objetos de extensão. Idempotente. Verificação: supabase/tests/tabelas_acl_check.sql.
 
 begin;
@@ -25,7 +27,7 @@ declare
   v_priv text;
   v_revogados int := 0;
   v_sobra text;
-  v_tab_privs constant text[] := array['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER'];
+  v_tab_privs constant text[] := array['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN'];
   v_seq_privs constant text[] := array['USAGE','SELECT','UPDATE'];
 begin
   -- Lista intencional: mesma de supabase/tests/tabelas_acl_check.sql (gerada do banco limpo; mudou aqui, mude lá).
@@ -143,6 +145,23 @@ begin
     end loop;
   end loop;
 
+  -- Grants por coluna (pg_attribute.attacl) fora da lista: has_table_privilege não os enxerga
+  for r in
+    select format('%I.%I', n.nspname, c.relname) as nome, a.attname, x.papel, x.privilege_type as priv
+      from pg_attribute a
+      join pg_class c on c.oid = a.attrelid
+      join pg_namespace n on n.oid = c.relnamespace
+      cross join lateral (select e.privilege_type, g.rolname as papel
+                            from aclexplode(a.attacl) e join pg_roles g on g.oid = e.grantee
+                           where g.rolname in ('anon', 'authenticated')) x
+      left join tabelas_acl_intencional i on i.rel = n.nspname || '.' || c.relname and i.papel = x.papel
+     where n.nspname in ('public', 'private') and a.attacl is not null and a.attnum > 0 and not a.attisdropped
+       and not (x.privilege_type = any (coalesce(i.privs, array[]::text[])))
+  loop
+    execute format('revoke %s (%I) on table %s from %I', r.priv, r.attname, r.nome, r.papel);
+    v_revogados := v_revogados + 1;
+  end loop;
+
   -- Pós-checagem (inclui privilégio herdado de PUBLIC)
   select string_agg(format('%s.%s %s (%s)', n.nspname, c.relname, pr, p.papel), ', ' order by 1) into v_sobra
     from pg_class c
@@ -156,6 +175,19 @@ begin
                       where d.classid = 'pg_class'::regclass and d.objid = c.oid and d.deptype = 'e')
      and (case when c.relkind = 'S' then has_sequence_privilege(p.papel, c.oid, pr) else has_table_privilege(p.papel, c.oid, pr) end)
      and not (pr = any (coalesce(i.privs, array[]::text[])));
+  if v_sobra is null then
+    select string_agg(format('%s.%s %s por coluna (%s)', n.nspname, c.relname, pr, p.papel), ', ') into v_sobra
+      from pg_class c
+      join pg_namespace n on n.oid = c.relnamespace
+      cross join (values ('anon'), ('authenticated')) as p(papel)
+      cross join unnest(array['SELECT', 'INSERT', 'UPDATE', 'REFERENCES']) as pr
+      left join tabelas_acl_intencional i on i.rel = n.nspname || '.' || c.relname and i.papel = p.papel
+     where n.nspname in ('public', 'private') and c.relkind in ('r', 'p', 'v', 'm')
+       and not exists (select 1 from pg_depend d
+                        where d.classid = 'pg_class'::regclass and d.objid = c.oid and d.deptype = 'e')
+       and has_any_column_privilege(p.papel, c.oid, pr)
+       and not (pr = any (coalesce(i.privs, array[]::text[])));
+  end if;
   if v_sobra is not null then
     raise exception '20261009130000: depois do revoke, ainda há privilégio fora da lista: %', v_sobra
       using hint = 'Grant via PUBLIC ou com outro grantor; revogue com o grantor certo numa migration nova.';
@@ -164,7 +196,8 @@ begin
   raise notice '20261009130000: % privilégio(s) revogado(s) de anon/authenticated', v_revogados;
 end $acl$;
 
--- 2) Default privileges: objetos novos de `postgres` em `public` não nascem abertos a anon/authenticated.
+-- Default privileges: objetos novos de `postgres` em `public` não nascem abertos a anon/authenticated. Função nova ainda
+-- herda EXECUTE de PUBLIC (padrão do Postgres): a migration que cria a função continua precisando de `revoke ... from public`.
 alter default privileges for role postgres in schema public revoke all on tables from anon, authenticated;
 alter default privileges for role postgres in schema public revoke all on sequences from anon, authenticated;
 alter default privileges for role postgres in schema public revoke all on functions from anon, authenticated;

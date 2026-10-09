@@ -4,7 +4,9 @@
 --      (inclui o herdado de PUBLIC);
 --   2. alguma relação da lista perder o privilégio previsto (quebraria fluxo com JWT do usuário);
 --   3. `anon` puder ler alguma materialized view (sem RLS);
---   4. os default privileges de `postgres` em `public` ainda concederem algo a `anon`/`authenticated`.
+--   4. os default privileges de `postgres` em `public` ainda concederem algo a `anon`/`authenticated` (função nova ainda
+--      herda EXECUTE de PUBLIC, que é padrão do Postgres e não aparece aqui: ver funcoes_acl_check.sql).
+-- Também acusa grant por coluna (bloco 1b). Privilégios conferidos: os 7 clássicos + MAINTAIN (PG17).
 -- Só lê o catálogo (cria uma tabela temporária e termina em rollback). Roda no banco descartável
 -- (scripts/validar-migrations.sh) e pode rodar em produção pelo SQL Editor; não roda em transação read only.
 
@@ -14,7 +16,7 @@ do $chk$
 declare
   v_falhas text[] := array[]::text[];
   r record;
-  v_tab_privs constant text[] := array['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER'];
+  v_tab_privs constant text[] := array['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN'];
   v_seq_privs constant text[] := array['USAGE','SELECT','UPDATE'];
 begin
   -- Lista intencional: mesma da migration 20261009130000_tabelas_acl_drift.sql (mudou aqui, mude lá).
@@ -122,6 +124,24 @@ begin
        and not exists (select 1 from pg_depend d
                         where d.classid = 'pg_class'::regclass and d.objid = c.oid and d.deptype = 'e')
        and (case when c.relkind = 'S' then has_sequence_privilege(p.papel, c.oid, pr) else has_table_privilege(p.papel, c.oid, pr) end)
+       and not (pr = any (coalesce(i.privs, array[]::text[])))
+     order by 1
+  loop
+    v_falhas := v_falhas || r.f;
+  end loop;
+
+  -- 1b) Grant por coluna fora da lista (has_table_privilege não enxerga)
+  for r in
+    select format('%s.%s %s por coluna (%s)', n.nspname, c.relname, pr, p.papel) as f
+      from pg_class c
+      join pg_namespace n on n.oid = c.relnamespace
+      cross join (values ('anon'), ('authenticated')) as p(papel)
+      cross join unnest(array['SELECT', 'INSERT', 'UPDATE', 'REFERENCES']) as pr
+      left join tabelas_acl_intencional_chk i on i.rel = n.nspname || '.' || c.relname and i.papel = p.papel
+     where n.nspname in ('public', 'private') and c.relkind in ('r', 'p', 'v', 'm')
+       and not exists (select 1 from pg_depend d
+                        where d.classid = 'pg_class'::regclass and d.objid = c.oid and d.deptype = 'e')
+       and has_any_column_privilege(p.papel, c.oid, pr)
        and not (pr = any (coalesce(i.privs, array[]::text[])))
      order by 1
   loop

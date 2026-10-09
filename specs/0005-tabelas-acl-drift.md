@@ -36,8 +36,15 @@ Medição só de leitura em produção, em 09/10/2026, com `has_table_privilege`
 | CA-4 | Uma tabela nova criada por `postgres` em `public` não nasce aberta a `anon` nem a `authenticated` (default privileges). | `tabelas_acl_check.sql`, bloco 4, e a simulação |
 | CA-5 | Reaplicar a migration não muda nada: "0 privilégios revogados". | `validar-migrations.sh`, na segunda aplicação |
 | CA-6 | **Dado** um privilégio que o REVOKE não remove (por exemplo, herdado de PUBLIC), **então** a migration aborta pela pós-checagem. | Simulação com `grant ... to public` |
+| CA-7 | Grants por coluna fora da lista e o MAINTAIN do PG17 também são revogados e conferidos. Em produção, 33 relações tinham MAINTAIN para `authenticated` e nenhuma tinha grant por coluna. | Simulação com `grant select (col)` e `grant maintain` |
 
 ## Fora de escopo
+
+- **Endurecer a lista intencional.** Cerca de 35 tabelas de dados oficiais dão a `authenticated` também INSERT, UPDATE,
+  DELETE, TRUNCATE, REFERENCES e TRIGGER, que vêm dos default privileges do stub e não de uma decisão.
+  - A RLS só permite SELECT, e o PostgREST não emite TRUNCATE. Mesmo assim, o certo é deixar só SELECT.
+  - Também ficam para depois as sequências abertas a `anon`, que vêm da mesma origem.
+  - Os dois pontos vão para uma issue própria.
 
 - Policies de RLS. O acesso do admin/dev fora de vínculo com tenant em `tenant_documentos` e no storage
   `tenant-documentos` hoje não existe (não há policy `_desenvolvedor`). Isso fica para um PR próprio.

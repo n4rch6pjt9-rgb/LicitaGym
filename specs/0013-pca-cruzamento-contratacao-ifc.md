@@ -80,7 +80,8 @@ UASG, quanto do planejado já foi licitado. Medido em 09/10/2026, só leitura no
    `licitacoes_externas`: hoje ela só tem `fonte` e `link_sistema_origem`, e `licitacao_itens.fonte_carga` está nula nas
    92.295 linhas. As compras atuais ficam com `null`, que quer dizer "por termo de busca". Assim ela passa pelo mesmo escopo, pelos
    resultados e pelos documentos das outras, e a coleta deixa de depender só de termo para o que o PCA já anunciou.
-   Ver a pergunta 1.
+   Decisão do Marcelo (09/10): as compras já executadas entram na base porque viram histórico de análise do BI
+   (passo 10).
 4. **Situação do grupo.** Pelos itens da compra no PNCP (`situacaoCompraItemNome`):
    - `concluida`: algum item `Homologado`;
    - `em_aberto`: nenhum homologado e algum `Em andamento`;
@@ -144,6 +145,40 @@ UASG, quanto do planejado já foi licitado. Medido em 09/10/2026, só leitura no
    - `api-pncp-pca?visao=uasg` (ou a ação da 0011): resumo por UASG do retrato mais recente, com série histórica opcional
      (`desde=AAAA-MM-DD`).
 
+10. **Histórico do BI por PDM** (decisão do Marcelo: compra já executada de um PDM vira histórico de análise do BI).
+    - **Pareamento item do PCA ↔ item da compra, dentro do grupo vinculado.** Medido nos 30 grupos casados na base (93
+      itens do PCA, em 09/10):
+
+      | Regra | Confiança | Itens pareados |
+      |---|---|---|
+      | `qtd_valor`: mesma quantidade e mesmo valor unitário estimado (diferença menor que R$ 0,01) | alta | 31 (20 com descrição também parecida) |
+      | `descricao`: semelhança de termos da descrição ≥ 0,5 (Jaccard, sem acento e sem palavras de formulário CATMAT) | média | 26 |
+      | nenhuma | — | 36: ficam atribuídos só ao grupo |
+
+      O pareamento é 1:1 dentro do grupo. Um item da compra não serve a dois itens do PCA.
+    - **Atribuição ao PDM:**
+      - item pareado: o PDM vem do item do PCA (`pdmCodigo`, oficial);
+      - grupo com um único PDM (335 dos 1.210 grupos, 460 itens): o grupo inteiro é atribuído a esse PDM, com confiança
+        `grupo_pdm_unico`;
+      - grupo com 2 ou mais PDM e item sem par: não há atribuição por PDM. Entra só nos totais do grupo e da UASG.
+    - **Gravação:** tabela `public.pca_item_compra_item`, com `pca_item_id`, `licitacao_item_id`, `regra`
+      (`qtd_valor` | `descricao` | `grupo_pdm_unico`), `confianca`, `similaridade` e `data_referencia`. É idempotente
+      pelo par.
+    - **Resultado da compra:** só 3 dos 57 itens pareados têm resultado em `licitacao_resultados` hoje. A etapa enfileira
+      as compras `concluida` sem resultado no carregador de resultados do coletor, que é o mesmo das demais.
+    - **View `v_bi_pca_execucao_pdm`:**
+      - recorte: por PDM, UASG, órgão e mês da publicação;
+      - quantidade e valor planejados, quantidade e valor licitados, valor unitário homologado;
+      - variação homologado × planejado;
+      - fornecedor e marca vencedores, que vêm de `licitacao_resultados`;
+      - `dias_desejada_ate_publicacao`;
+      - colunas `regra` e `confianca`, para que o BI filtre por qualidade do vínculo.
+
+      O padrão é o mesmo das outras `v_bi_*`: `security_invoker` e sem grant para `anon`/`authenticated`. Entra no
+      contrato de `docs/bi-cruzamento-apis.md`.
+    - **Exemplo medido:** grupo `153063-745/2026`, item 8930, PDM 11503 (rede de esporte): planejado R$ 349,34 no PCA,
+      homologado R$ 338,57.
+
 ## Critérios de aceite
 
 | ID | Dado / Quando / Então | Teste que prova |
@@ -160,6 +195,9 @@ UASG, quanto do planejado já foi licitado. Medido em 09/10/2026, só leitura no
 | CA-10 | **Dado** `dry_run=true`, **então** a resposta traz o resumo por UASG (grupos, licitados, atrasados, no prazo, valor planejado × licitado, compras achadas) e nenhuma tabela é escrita. | idem |
 | CA-11 | `anon` e `authenticated` sem papel não escrevem nas três tabelas. A leitura segue a mesma regra de `pca_itens`. Só `service_role` executa as funções de gravação. | SQL `supabase/tests/pca_grupo_contratacao_check.sql` |
 | CA-12 | `api-pncp-pca?visao=radar` traz `contratacao` por item, com `sugestao` só quando a situação é `nao_licitado_*`. A sugestão nunca aparece como `situacao`. Os campos atuais não mudam. | Deno `tests/supabase/functions/api_pncp_pca_radar_test.ts` |
+| CA-14 | **Dado** um item do PCA e um item da compra do mesmo grupo com a mesma quantidade e o mesmo valor unitário, **então** o par é `qtd_valor`. **Dado** só a descrição com semelhança ≥ 0,5, **então** é `descricao`. **Dado** dois itens do PCA disputando o mesmo item da compra, **então** fica com o de maior pontuação e o outro fica sem par. | Deno `tests/supabase/functions/pca_pareamento_item_test.ts` |
+| CA-15 | **Dado** um grupo com um único PDM e itens sem par, **então** os itens ficam atribuídos ao PDM com `grupo_pdm_unico`. **Dado** um grupo com 2 PDM, **então** o item sem par não recebe PDM. | idem |
+| CA-16 | `v_bi_pca_execucao_pdm` não tem grant para `anon` nem `authenticated`, e cada linha traz `regra` e `confianca`. | SQL `supabase/tests/pca_grupo_contratacao_check.sql` |
 | CA-13 | **Regressão com dado real (pós-merge):** os grupos `180152-131/2026`, `158587-25/2026`, `158195-181/2026`, `102171-126/2026`, `102333-11/2026` e `785600-46/2026` ficam vinculados às compras `46377800000127-1-003879/2026`, `10764307000112-1-000217/2026`, `05055128000176-1-000153/2026`, `63025530000104-1-003857/2026`, `48031918000124-1-000622/2026` e `00394502000144-1-002874/2026`. O grupo `120645-183/2026` (Galeão) nunca fica vinculado a `00394429000100-1-002061/2026`. | verificação pós-merge (skill `verificar-producao`), anotada no PR |
 
 ## Fora de escopo
@@ -173,7 +211,8 @@ UASG, quanto do planejado já foi licitado. Medido em 09/10/2026, só leitura no
 ## Impacto em dados
 
 - **Migration:** `<timestamp>_pca_grupo_contratacao.sql`, aditiva e idempotente. Tem:
-  - as três tabelas;
+  - as quatro tabelas (`pca_grupo_contratacao`, `pca_grupo_contratacao_evento`, `pca_uasg_execucao_diaria` e
+    `pca_item_compra_item`) e a view `v_bi_pca_execucao_pdm`;
   - a coluna `licitacoes_externas.origem_descoberta text` (nula = termo de busca);
   - os índices por `(uasg, numero, ano)`, `pca_plano_id` e `(data_referencia, uasg)`;
   - as funções de gravação em `private` com `security definer` e `search_path` fixo;
@@ -200,8 +239,7 @@ UASG, quanto do planejado já foi licitado. Medido em 09/10/2026, só leitura no
 
 ## Perguntas em aberto
 
-1. **Compras achadas pelo IFC na base:** a proposta é gravá-las em `licitacoes_externas` com `origem_descoberta='pca_ifc'`
-   (passo 3), o que amplia a coleta com compras de objeto genérico. Elas passam pelo escopo normal, e itens fora do
-   nosso escopo ficam com `categoria_escopo` nulo, como hoje. Confirma?
-2. **Resumo por UASG:** fica na `api-pncp-pca` (`visao=uasg`) desta spec, ou entra na 0011 (radar por unidade), que já
+1. **Resumo por UASG:** fica na `api-pncp-pca` (`visao=uasg`) desta spec, ou entra na 0011 (radar por unidade), que já
    trata a visão por UASG?
+2. **Limiar da regra `descricao`:** 0,5 de semelhança foi o usado na medição (26 pares). Antes de liberar no BI, conferir
+   uma amostra de pares `descricao` à mão, ou só liberar a regra `qtd_valor` primeiro?

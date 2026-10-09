@@ -60,8 +60,11 @@ Também tem um erro conhecido no radar (#282). Medido em 09/10/2026, só leitura
    - **Pareamento 1:1:** um item da compra serve a um único item do PCA, e em disputa fica o de maior pontuação.
    - **Sem regra:** um item de grupo com 2 ou mais PDM que não pareou não recebe PDM. Entra só nos totais do grupo e da
      UASG.
-2. **Resultados das compras concluídas.** Compra `concluida` (0013) sem linha em `licitacao_resultados` é enfileirada no
-   carregador de resultados do coletor, o mesmo das demais compras. Não é coletor novo.
+2. **Resultados por item.** Todo item de compra `Homologado` sem linha correspondente em `licitacao_resultados`
+   (`licitacao_id`, `numero_item`) entra na fila do carregador de resultados do coletor, o mesmo das demais compras.
+   - A completude é conferida **item a item**, não pela compra inteira. Uma compra `parcial` ou com resultado só de
+     alguns itens continua voltando para a fila até cada item homologado ter resultado (apontamento do Codex no #290).
+   - Não é coletor novo.
 3. **View `public.v_bi_pca_execucao_pdm`.**
    - **Recorte:** uma linha por PDM × UASG × órgão × mês de publicação × regra.
    - **Planejado:** quantidade, valor e valor unitário médio do PCA.
@@ -105,6 +108,7 @@ Também tem um erro conhecido no radar (#282). Medido em 09/10/2026, só leitura
 | CA-6 | `v_bi_pca_execucao_pdm` e `v_bi_pca_tendencia_uasg` não têm grant para `anon` nem `authenticated` e são `security_invoker`. | idem |
 | CA-7 | **#282:** **dado** um item no PGC e no PNCP com UASG e número preenchidos e iguais, **então** conta uma vez. **Dado** a UASG nula em um dos lados, **então** as duas linhas aparecem com `possivel_duplicata = true` e ficam fora de `total` e `valor_total_escopo`. Um caso para cada chave nula. | SQL `supabase/tests/bi_pca_radar_dedup_check.sql` |
 | CA-8 | **Dado** duas linhas do PGC idênticas, **quando** a carga do PGC grava, **então** fica uma linha. | pytest `services/coletor-externo/tests/test_pgc_dedup.py` (ou o teste da carga do PGC, onde ela estiver) |
+| CA-10 | **Dado** uma compra com 3 itens homologados e resultado gravado só para 1, **então** os outros 2 itens entram na fila de resultados. Depois que os 3 têm resultado, nenhum entra. | Deno `tests/supabase/functions/pca_pareamento_item_test.ts` |
 | CA-9 | Contagem antes e depois do total do radar e da execução por PDM, em dry-run, anotada no PR. | verificação pré-merge, anotada no PR |
 
 ## Fora de escopo

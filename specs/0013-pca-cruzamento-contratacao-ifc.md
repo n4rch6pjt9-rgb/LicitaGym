@@ -57,7 +57,8 @@ UASG, quanto do planejado já foi licitado. Medido em 09/10/2026, só leitura no
    - fora de `^\d{5,6}-\d+/\d{4}$` o item fica `sem_identificador`. Não há heurística.
 2. **Busca da compra, nesta ordem:**
    1. **na base:** `licitacoes_externas` com `raw->>'unidade_codigo' = uasg`, `ltrim(raw->>'numero','0') = numero` e
-      `raw->>'ano' = ano`. Custo zero de API.
+      `raw->>'ano' = ano`. Custo zero de API. A chave `numero` é o número da compra: está nas 1.651 compras, por exemplo
+      "131". Não é a `numero_sequencial`, que é o sequencial do PNCP, por exemplo "3879".
    2. **no Compras.gov:** `1.1_consultarContratacoes_PNCP_14133_Id?tipo=idCompra&codigo={uasg}{MM}{numero:05}{ano}`.
       - **Modalidades:** medido em 09/10 com `1_consultarContratacoes_PNCP_14133`, compras de 01/09 a 08/10/2026. Os
         códigos de `codigoModalidade` 1, 2, 4 e de 8 a 20 voltam vazios. Ficam quatro, tentados pelo volume:
@@ -72,7 +73,13 @@ UASG, quanto do planejado já foi licitado. Medido em 09/10/2026, só leitura no
       - **Custo:** até 4 requisições por grupo a 1 req/s. O primeiro resultado com `numeroControlePNCP` fecha a busca.
       - **Fora:** a busca no sentido contrário (número de controle → `idCompra`) achou só 1 de 6 compras conhecidas, e não
         é usada. O pregão internacional (PNCP 18) não foi medido e não entra.
-   3. **não achou:** o grupo fica `nao_licitado_*` (passo 4) e volta a ser buscado no próximo ciclo.
+   3. **não achou:**
+      - o grupo só vira `nao_licitado_*` (passo 4) quando a busca foi **completa**: as 4 modalidades consultadas sem
+        erro e o plano publicado pelo Compras.gov (`usuario = "Compras.gov.br"` no `consolidado` do plano). As 4 são todas
+        as que o Compras.gov devolveu na varredura de `codigoModalidade` de 1 a 20;
+      - se o plano vem de outro sistema, ou se alguma consulta deu erro, o grupo fica `nao_verificado`. Ele não entra
+        em atraso nem nos totais de "não licitado" (apontamento do Codex no #290);
+      - nos dois casos, o grupo volta a ser buscado no próximo ciclo.
    - A consulta do PNCP por unidade (`/v1/contratacoes/publicacao`) fica só como conferência manual. Leva de 13 a 25 s
      por chamada, exige modalidade e janela de no máximo 365 dias, e devolveu 429 na medição.
 3. **Compra achada pelo IFC entra na base.** Ela é gravada em `licitacoes_externas` e `licitacao_itens` pelo mesmo
@@ -83,13 +90,16 @@ UASG, quanto do planejado já foi licitado. Medido em 09/10/2026, só leitura no
    Decisão do Marcelo (09/10): as compras já executadas entram na base porque viram histórico de análise do BI
    (spec 0014).
 4. **Situação do grupo.** Pelos itens da compra no PNCP (`situacaoCompraItemNome`):
-   - `concluida`: algum item `Homologado`;
+   - `concluida`: todos os itens em situação final e pelo menos um `Homologado`;
+   - `parcial`: algum `Homologado` e algum `Em andamento`. Continua sendo atualizado todo dia até todos os itens ficarem
+     em situação final (apontamento do Codex no #290);
    - `em_aberto`: nenhum homologado e algum `Em andamento`;
    - `sem_sucesso`: todos `Fracassado`, `Deserto` ou `Anulado/Revogado/Cancelado`;
    - sem compra:
      - `nao_licitado_atrasado` quando a menor data desejada dos itens do grupo é anterior à data de referência
        (decisão: passou, está em atraso, sem folga);
      - `nao_licitado_no_prazo` caso contrário;
+   - `nao_verificado`: a busca não foi completa (passo 2.3);
    - `sem_identificador`: o item não tem grupo válido.
 
    Os itens da compra não têm código de catálogo, então a situação vale para o **grupo** (o IFC), não item a item. A
@@ -134,7 +144,7 @@ UASG, quanto do planejado já foi licitado. Medido em 09/10/2026, só leitura no
    - nunca preenche `situacao` nem `numero_controle_pncp_compra`.
 8. **Rotina:**
    - **diária**, depois do sync do PCA: grupos novos; grupos `nao_licitado_*` com data desejada até hoje + 30 dias;
-     grupos `em_aberto`. Depois, o retrato diário por UASG;
+     grupos `em_aberto`, `parcial` e `nao_verificado`. Depois, o retrato diário por UASG;
    - **primeira carga:** os 1.166 grupos, até 4.664 requisições no pior caso, umas 1 h 20 a 1 req/s, em fatias, com
      dry-run antes;
    - **erro de HTTP** (429, 5xx, timeout) deixa o grupo com `erro` e mantém a `situacao` anterior. Erro não é "não
@@ -155,8 +165,8 @@ UASG, quanto do planejado já foi licitado. Medido em 09/10/2026, só leitura no
 | CA-2 | **Dado** uma compra na base com `unidade_codigo=180152`, `numero=131` e `ano=2026`, **quando** o grupo `180152-131/2026` é processado, **então** o vínculo é `metodo=ifc_base` e não há requisição externa. | Deno `tests/supabase/functions/link_pca_edital_ifc_test.ts` |
 | CA-3 | **Dado** um grupo fora da base e um cliente falso que responde vazio para `MM=06` e responde a compra para `MM=05`, **então** o vínculo é `metodo=ifc_compras_gov` com `modalidade_mm=05`, os `idCompra` consultados são `{uasg}06…` e `{uasg}05…` nessa ordem, e não há terceira tentativa. | idem |
 | CA-4 | **Dado** uma compra achada pelo IFC fora da base, **quando** a etapa não é dry-run, **então** ela é gravada em `licitacoes_externas` com `origem_descoberta='pca_ifc'` e seus itens em `licitacao_itens`. Uma segunda execução não duplica (mesma chave `numero_controle_pncp`). | idem |
-| CA-5 | **Dado** uma compra com itens `Homologado` e `Em andamento`, **então** a situação é `concluida`. Só `Em andamento` dá `em_aberto`. Só `Fracassado`, `Deserto` ou `Anulado/Revogado/Cancelado` dá `sem_sucesso`. | idem |
-| CA-6 | **Dado** um grupo sem compra com data desejada mínima de 08/10 e `data_referencia` de 09/10, **então** a situação é `nao_licitado_atrasado`. Com data desejada de 09/10, é `nao_licitado_no_prazo`. | idem |
+| CA-5 | **Dado** uma compra com itens `Homologado` e `Em andamento`, **então** a situação é `parcial`, e o grupo segue na rotina diária. Só itens finais com algum homologado dá `concluida`. Só `Em andamento` dá `em_aberto`. Só `Fracassado`, `Deserto` ou `Anulado/Revogado/Cancelado` dá `sem_sucesso`. | idem |
+| CA-6 | **Dado** um grupo sem compra com data desejada mínima de 08/10 e `data_referencia` de 09/10, **então** a situação é `nao_licitado_atrasado`. Com data desejada de 09/10, é `nao_licitado_no_prazo`. **Dado** um plano de outro sistema, ou uma das 4 consultas com erro, **então** é `nao_verificado` e o grupo não conta como atrasado. | idem |
 | CA-7 | **Idempotência:** **dado** as mesmas entradas e a mesma `data_referencia`, **quando** a etapa roda duas vezes, **então** `pca_grupo_contratacao`, `pca_grupo_contratacao_evento` e `pca_uasg_execucao_diaria` ficam iguais (mesmo número de linhas e mesmos valores). | idem + SQL `supabase/tests/pca_grupo_contratacao_check.sql` |
 | CA-8 | **Dado** um grupo que passa de `nao_licitado_atrasado` para `em_aberto`, **então** grava um evento com as duas situações. Sem mudança, não grava evento. | idem |
 | CA-9 | **Dado** que o Compras.gov devolve 429 ou 5xx, **então** o grupo fica com `erro` e `tentativas + 1`, e mantém a `situacao` anterior. Nunca vira `nao_licitado_*`. | Deno `link_pca_edital_ifc_test.ts` |

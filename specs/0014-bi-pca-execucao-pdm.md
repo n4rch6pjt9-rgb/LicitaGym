@@ -108,8 +108,8 @@ Também tem um erro conhecido no radar (#282). Medido em 09/10/2026, só leitura
 | CA-6 | `v_bi_pca_execucao_pdm` e `v_bi_pca_tendencia_uasg` não têm grant para `anon` nem `authenticated` e são `security_invoker`. | idem |
 | CA-7 | **#282:** **dado** um item no PGC e no PNCP com UASG e número preenchidos e iguais, **então** conta uma vez. **Dado** a UASG nula em um dos lados, **então** as duas linhas aparecem com `possivel_duplicata = true` e ficam fora de `total` e `valor_total_escopo`. Um caso para cada chave nula. | SQL `supabase/tests/bi_pca_radar_dedup_check.sql` |
 | CA-8 | **Dado** duas linhas do PGC idênticas, **quando** a carga do PGC grava, **então** fica uma linha. | pytest `services/coletor-externo/tests/test_pgc_dedup.py` (ou o teste da carga do PGC, onde ela estiver) |
-| CA-10 | **Dado** uma compra com 3 itens homologados e resultado gravado só para 1, **então** os outros 2 itens entram na fila de resultados. Depois que os 3 têm resultado, nenhum entra. | Deno `tests/supabase/functions/pca_pareamento_item_test.ts` |
 | CA-9 | Contagem antes e depois do total do radar e da execução por PDM, em dry-run, anotada no PR. | verificação pré-merge, anotada no PR |
+| CA-10 | **Dado** uma compra com 3 itens homologados e resultado gravado só para 1, **então** os outros 2 itens entram na fila de resultados. Depois que os 3 têm resultado, nenhum entra. | Deno `tests/supabase/functions/pca_pareamento_item_test.ts` |
 
 ## Fora de escopo
 

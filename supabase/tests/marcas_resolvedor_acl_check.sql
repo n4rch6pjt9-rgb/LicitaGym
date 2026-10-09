@@ -330,26 +330,35 @@ begin
     v_falhas := v_falhas || '[6 resolver] pulado: private.marca_resolver(text,text) ou public.marca_aliases ausente'::text;
   end if;
 
-  -- ===================================================================== bloco 7: CNPJ validation (fix #228)
-  -- private.cnpj_valido valida formato (14 dígitos), rejeita zeros (00000000000000) e checksum (RFC 10291)
+  -- ===================================================================== bloco 7: private.cnpj_valido (#228, #262)
+  -- Módulo 11 da Receita: DV1 sobre os 12 primeiros dígitos (pesos 5..2,9..2), DV2 sobre os 13 primeiros (6..2,9..2);
+  -- 14 dígitos iguais são recusados. Entrada sem 14 dígitos (NULL, '', curta) devolve false sem erro.
   if to_regprocedure('private.cnpj_valido(text)') is not null then
     for v_chk in execute $q$
-      with casos(entrada, cnpj, esperado) as (values
-        ('11222333000181', 'true'),    -- válido: 14 dígitos + checksum correto
-        ('00000000000000', 'false'),   -- inválido: todos zeros (fix #228)
-        ('11222333000180', 'false'),   -- inválido: checksum errado (dígito 9 deveria ser 81, não 80)
-        ('12345678000190', 'true'),    -- válido: checksum correto
-        ('00000000000001', 'false'),   -- inválido: quase tudo zeros (checksum deve rejeitar)
-        ('11222333000181 ', 'true'),   -- formatado com espaço, deve limpar
-        ('11.222.333/0001-81', 'true'), -- formatado com máscara, deve limpar
-        (null, 'false'),               -- NULL = false
-        ('', 'false'),                 -- vazio = false
-        ('123', 'false'))              -- menos de 14 dígitos = false
-      select '7 cnpj_valido' as grupo,
-             coalesce(c.entrada, '<null>') || ' → ' || c.cnpj as objeto,
-             c.cnpj as esperado,
-             (private.cnpj_valido(c.entrada))::text as atual
+      with casos(entrada, esperado) as (values
+        ('11222333000181', 'true'),        -- CA-1: DV corretos
+        ('12345678000195', 'true'),        -- CA-1
+        ('08973569000145', 'true'),        -- CA-1: CNPJ da semente (alias PRÓPRIA)
+        ('11.222.333/0001-81', 'true'),    -- CA-1: máscara é limpa
+        (' 11222333000181 ', 'true'),      -- CA-1: espaços são limpos
+        ('11222333000180', 'false'),       -- CA-2: DV2 errado
+        ('12345678000190', 'false'),       -- CA-2: DV errados
+        ('00000000000000', 'false'),       -- CA-2: dígitos iguais
+        ('11111111111111', 'false'),       -- CA-2: dígitos iguais (passa no módulo 11, é recusado à parte)
+        ('123', 'false'),                  -- CA-2: curto
+        ('', 'false'),                     -- CA-2: vazio
+        (null, 'false'))                   -- CA-2: NULL
+      select '7 cnpj_valido' as grupo, coalesce(c.entrada, '<null>') as objeto, c.esperado,
+             coalesce((private.cnpj_valido(c.entrada))::text, 'NULL') as atual
         from casos c
+      union all
+      -- CA-3: search_path fixo, parâmetro com o nome de produção (create or replace não renomeia: 42P13 no #236)
+      select '7 cnpj_valido', 'search_path fixo', 'true',
+             (coalesce(p.proconfig, '{}') && array['search_path=""', 'search_path=pg_catalog', 'search_path=pg_catalog, pg_temp'])::text
+        from pg_proc p where p.oid = 'private.cnpj_valido(text)'::regprocedure
+      union all
+      select '7 cnpj_valido', 'parâmetro', 'cnpj_bruto text',
+             pg_get_function_identity_arguments('private.cnpj_valido(text)'::regprocedure)
     $q$
     loop
       n := n + 1;
@@ -360,6 +369,36 @@ begin
   else
     n := n + 1;
     v_falhas := v_falhas || '[7 cnpj_valido] pulado: private.cnpj_valido(text) ausente (migration 20261005160000 não aplicada)'::text;
+  end if;
+
+  -- ===================================================================== bloco 8: marca_normalizar idempotente (#262)
+  -- CA-4: a frase repetida colapsa até o ponto fixo; normalizar duas vezes = normalizar uma vez.
+  if v_tem_norm then
+    for v_chk in execute $q$
+      with casos(entrada, esperado) as (values
+        ('FUNDIBAN FUNDIBAN', 'FUNDIBAN'),
+        ('Fundiban Fundiban Fundiban Fundiban', 'FUNDIBAN'),
+        ('Acme Fit Acme Fit Acme Fit Acme Fit', 'ACME FIT'),
+        ('ZZQ ZZQ ZZQ', 'ZZQ ZZQ ZZQ'))   -- ímpar: fora do escopo da #262, fica como está
+      select '8 normalizar' as grupo, c.entrada as objeto, c.esperado,
+             coalesce(private.marca_normalizar(c.entrada), 'NULL') as atual
+        from casos c
+      union all
+      select '8 idempotente', t.entrada, coalesce(private.marca_normalizar(t.entrada), 'NULL'),
+             coalesce(private.marca_normalizar(private.marca_normalizar(t.entrada)), 'NULL')
+        from (values (' Flex  Equipment Ltda '), ('Fundiban Fundiban'), ('FUNDIBAN FUNDIBAN FUNDIBAN FUNDIBAN'),
+                     ('A A A A A A A A'), ('Açúcar & Cia.'), ('LTDA LTDA'), ('Acme Ltda. Ltda'), ('ULTDA LTDAX'),
+                     ('X LTDA X')) as t(entrada)
+    $q$
+    loop
+      n := n + 1;
+      if v_chk.atual is distinct from v_chk.esperado then
+        v_falhas := v_falhas || format('[%s] %s: esperado "%s", atual "%s"', v_chk.grupo, v_chk.objeto, v_chk.esperado, v_chk.atual);
+      end if;
+    end loop;
+  else
+    n := n + 1;
+    v_falhas := v_falhas || '[8 normalizar] pulado: private.marca_normalizar(text) ausente'::text;
   end if;
 
   -- ===================================================================== resultado: uma exceção com a lista

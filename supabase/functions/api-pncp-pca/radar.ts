@@ -48,7 +48,7 @@ type Resultado = { data: Record<string, unknown>[] | null; error: unknown; count
 export interface RadarQuery extends PromiseLike<Resultado> {
   select(cols: string, opts?: { count?: "exact" }): RadarQuery;
   eq(col: string, v: unknown): RadarQuery;
-  gte(col: string, v: number): RadarQuery;
+  gte(col: string, v: number | string): RadarQuery;
   ilike(col: string, padrao: string): RadarQuery;
   order(col: string, opts?: { ascending?: boolean; nullsFirst?: boolean }): RadarQuery;
   range(from: number, to: number): RadarQuery;
@@ -71,6 +71,7 @@ export class RadarNaoVerificado extends Error {}
 interface RadarParams {
   ano: number;
   mes: string | null;
+  mesDe: string | null;
   pdm: number | null;
   orgaoCnpj: string | null;
   orgaoNome: string | null;
@@ -104,6 +105,12 @@ export function parseRadarParams(url: URL): RadarParams | { error: string } {
   if (!vazio(mesRaw) && !/^\d{4}-(0[1-9]|1[0-2])$/.test(mesRaw!.trim())) {
     return { error: "mes inválido: use AAAA-MM" };
   }
+
+  const mesDeRaw = q("mes_de");
+  if (!vazio(mesDeRaw) && !/^\d{4}-(0[1-9]|1[0-2])$/.test(mesDeRaw!.trim())) {
+    return { error: "mes_de inválido: use AAAA-MM" };
+  }
+  if (!vazio(mesRaw) && !vazio(mesDeRaw)) return { error: "use mes ou mes_de, não os dois" };
 
   const pdmRaw = q("pdm");
   if (!vazio(pdmRaw) && !/^\d{1,9}$/.test(pdmRaw!.trim())) return { error: "pdm inválido: use o código numérico" };
@@ -161,6 +168,7 @@ export function parseRadarParams(url: URL): RadarParams | { error: string } {
   return {
     ano,
     mes: vazio(mesRaw) ? null : mesRaw!.trim(),
+    mesDe: vazio(mesDeRaw) ? null : mesDeRaw!.trim(),
     pdm: vazio(pdmRaw) ? null : Number(pdmRaw!.trim()),
     orgaoCnpj,
     orgaoNome,
@@ -176,6 +184,8 @@ export function parseRadarParams(url: URL): RadarParams | { error: string } {
 function aplicarFiltros(q: RadarQuery, p: RadarParams): RadarQuery {
   q = q.eq("ano_pca", p.ano);
   if (p.mes) q = q.eq("mes_previsto", p.mes);
+  // a partir do mês (inclusive); item sem mês previsto fica de fora quando o filtro está ativo
+  if (p.mesDe) q = q.gte("mes_previsto", p.mesDe);
   if (p.pdm !== null) q = q.eq("codigo_pdm", p.pdm);
   if (p.orgaoCnpj) q = q.eq("orgao_cnpj", p.orgaoCnpj);
   if (p.orgaoNome) q = q.ilike("orgao_nome", `%${p.orgaoNome}%`);

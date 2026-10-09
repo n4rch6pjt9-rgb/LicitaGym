@@ -1,107 +1,234 @@
-# Gate de qualidade em PRs — Deno (Edge) + pytest (collectors).
-# Qualquer erro de typecheck, teste Deno ou pytest falha o job.
-# Nenhum passo é condicional: sem testes descobertos, o job falha.
+# Gate de qualidade em PRs: typecheck, lint, testes e migrations.
+# Qualquer erro derruba o job. Os mesmos scripts rodam no pre-commit (.githooks/pre-commit) e à mão.
+#   deno-edge          deno check de todas as funções (pendências em .github/ci/deno-check-pendentes.txt)
+#                      + deno test tests/supabase
+#   lint               deno lint / ruff só nos arquivos alterados (scripts/ci/lint-alterados.sh)
+#   migrations         scripts/validar-migrations.sh: Postgres 17 descartável, todas as migrations, reaplicação das
+#                      novas (idempotência) e todos os supabase/tests/*_check.sql (pendências em supabase/tests/pendentes.txt)
+#   python-*           pytest
+#   hook-agente        casos do .claude/hooks/bloquear-destrutivo.mjs
+# Sem `uses:`: este repositório não roda actions do marketplace (o run termina em startup_failure, sem job, como
+# em 06/10 e 08/10). Checkout por git, Python/Node/Docker do runner e Deno do release oficial com SHA-256 conferido,
+# como em saude.yml e deploy-supabase-functions.yml. Nenhum job usa segredo nem fala com o Supabase de produção.
 
 name: PR Quality
 
 permissions:
   contents: read
 
-# Desativado em 06/10/2026: o GitHub Actions não aloca runner para este repositório (jobs terminam em ~3 s,
-# sem log) e a validação passou para o Supabase. Só roda manualmente (Actions → PR Quality → Run workflow).
-# Para reativar, volte os gatilhos pull_request e push (branches: [main]).
 on:
+  pull_request:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
   group: pr-quality-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Em PR, um push novo cancela o run anterior; na main, todo merge é validado.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  DENO_VERSION: "2.9.6"
+  DENO_SHA256: "394f07f4da2bebe6ce6f1e7ce0fa16429b29b08c35e3fac3fe25972676dff4b2"
+  NO_COLOR: "1"
 
 jobs:
   deno-edge:
-    name: Deno check + PNCP tests
+    name: Deno check (todas as funções) + testes
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
-        with:
-          persist-credentials: false
-
-      - uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.x
-
-      - name: Typecheck PNCP shared modules and importers
+      - name: Checkout (git, sem actions de terceiros)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           set -euo pipefail
-          deno check \
-            supabase/functions/_shared/pncp/pagination-budget.ts \
-            supabase/functions/_shared/pncp/catmat-scope-resolver.ts \
-            supabase/functions/_shared/pncp/lock.ts \
-            supabase/functions/_shared/pncp/licitagym-catmat.ts \
-            supabase/functions/_shared/pncp/licitagym-scope-gate.ts \
-            supabase/functions/_shared/pncp/upsert.ts \
-            supabase/functions/_shared/pncp/retry.ts \
-            supabase/functions/_shared/pncp/consulta-client.ts \
-            supabase/functions/_shared/pncp/search-client.ts \
-            supabase/functions/sync-pncp-pca/index.ts \
-            supabase/functions/sync-pncp-contratacoes-editais/index.ts \
-            supabase/functions/sync-pncp-contratacoes-atas/index.ts \
-            supabase/functions/sync-pncp-contratacoes-contratos/index.ts \
-            supabase/functions/sync-pncp-orgaos/index.ts \
-            supabase/functions/link-catmat-pca/index.ts \
-            supabase/functions/sync-compras-catmat/index.ts \
-            supabase/functions/_shared/edital-url.ts \
-            supabase/functions/api-dashboard-oportunidades/acompanhamento.ts \
-            supabase/functions/api-dashboard-oportunidades/index.ts \
-            supabase/functions/api-catmat/index.ts \
-            supabase/functions/api-fornecedores-homologados/index.ts \
-            supabase/functions/api-saude/index.ts
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          # Token só no cabeçalho de cada fetch, sem gravar em .git/config (equivale a persist-credentials: false).
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c http.extraheader="$auth" fetch -q --depth=1 origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+
+      - name: Instalar Deno (release oficial, SHA-256 conferido)
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/deno.zip "https://github.com/denoland/deno/releases/download/v${DENO_VERSION}/deno-x86_64-unknown-linux-gnu.zip"
+          echo "${DENO_SHA256}  /tmp/deno.zip" | sha256sum -c -
+          unzip -q -o /tmp/deno.zip -d "$HOME/.deno-bin"
+          echo "$HOME/.deno-bin" >> "$GITHUB_PATH"
+          "$HOME/.deno-bin/deno" --version
+
+      - name: Typecheck de todos os entrypoints
+        run: scripts/ci/deno-check-funcoes.sh
 
       # deno test descobre *_test.ts / *.test.ts e já faz typecheck dos testes.
       # Sem --allow-net: teste que tente rede real falha (suíte determinística).
       - name: Deno tests (tests/supabase)
+        run: deno test tests/supabase --allow-read --allow-write --allow-env --no-prompt --reporter=dot
+
+  lint:
+    name: Lint dos arquivos alterados
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout (git, sem actions de terceiros)
         env:
-          NO_COLOR: "1"
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           set -euo pipefail
-          deno test tests/supabase --allow-read --allow-write --allow-env --no-prompt --reporter=dot
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          # Token só no cabeçalho de cada fetch, sem gravar em .git/config (equivale a persist-credentials: false).
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c http.extraheader="$auth" fetch -q --depth=50 origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+          if [ -n "${BASE_SHA}" ] && [ "${BASE_SHA}" != "0000000000000000000000000000000000000000" ]; then
+            git -c http.extraheader="$auth" fetch -q --depth=50 origin "$BASE_SHA" || echo "base ${BASE_SHA} não baixou"
+          fi
+
+      - name: Instalar Deno (release oficial, SHA-256 conferido)
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/deno.zip "https://github.com/denoland/deno/releases/download/v${DENO_VERSION}/deno-x86_64-unknown-linux-gnu.zip"
+          echo "${DENO_SHA256}  /tmp/deno.zip" | sha256sum -c -
+          unzip -q -o /tmp/deno.zip -d "$HOME/.deno-bin"
+          echo "$HOME/.deno-bin" >> "$GITHUB_PATH"
+          "$HOME/.deno-bin/deno" --version
+
+      - name: Python (venv no python3 do runner)
+        run: |
+          set -euo pipefail
+          python3 --version
+          python3 -m venv /tmp/venv
+          echo /tmp/venv/bin >> "$GITHUB_PATH"
+          /tmp/venv/bin/python -m pip install -q "ruff==0.16.8"
+
+      - name: deno lint + ruff nos arquivos do PR
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BASE_SHA}" ] || ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            BASE_SHA="$(git rev-parse HEAD~1)"
+          fi
+          echo "base: ${BASE_SHA}"
+          git diff --name-only --diff-filter=ACMR "${BASE_SHA}" HEAD | scripts/ci/lint-alterados.sh -
+
+  migrations:
+    name: Migrations (Postgres 17 descartável)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout (git, sem actions de terceiros)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          # Token só no cabeçalho de cada fetch, sem gravar em .git/config (equivale a persist-credentials: false).
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c http.extraheader="$auth" fetch -q --depth=50 origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+          if [ -n "${BASE_SHA}" ] && [ "${BASE_SHA}" != "0000000000000000000000000000000000000000" ]; then
+            git -c http.extraheader="$auth" fetch -q --depth=50 origin "$BASE_SHA" || echo "base ${BASE_SHA} não baixou"
+          fi
+
+      - name: Baixar a imagem do Postgres
+        run: docker pull pgvector/pgvector:pg17
+
+      - name: validar-migrations (aplica tudo, reaplica as novas, roda os checks)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BASE_SHA}" ] || ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            BASE_SHA="$(git rev-parse HEAD~1)"
+          fi
+          scripts/validar-migrations.sh "${BASE_SHA}"
 
   python-tests:
-    name: pytest (collectors)
+    name: pytest (scripts)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
-        with:
-          persist-credentials: false
+      - name: Checkout (git, sem actions de terceiros)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          # Token só no cabeçalho de cada fetch, sem gravar em .git/config (equivale a persist-credentials: false).
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c http.extraheader="$auth" fetch -q --depth=1 origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
 
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
+      - name: Python (venv no python3 do runner)
+        run: |
+          set -euo pipefail
+          python3 --version
+          python3 -m venv /tmp/venv
+          echo /tmp/venv/bin >> "$GITHUB_PATH"
+          /tmp/venv/bin/python -m pip install -q -r requirements-dev.txt
 
-      - name: Install root test deps
-        run: python -m pip install -r requirements-dev.txt
-
-      # Só scripts/collectors da raiz — sem duplicatas do coletor-externo.
+      # Só scripts/collectors da raiz, sem duplicatas do coletor-externo.
       - name: Run pytest (tests/)
         run: pytest tests/ -q --tb=short
 
   python-coletor-externo:
     name: pytest (coletor-externo)
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: services/coletor-externo
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
-        with:
-          persist-credentials: false
+      - name: Checkout (git, sem actions de terceiros)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          # Token só no cabeçalho de cada fetch, sem gravar em .git/config (equivale a persist-credentials: false).
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c http.extraheader="$auth" fetch -q --depth=1 origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
 
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      - name: Install coletor-externo deps
-        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Python (venv no python3 do runner)
+        run: |
+          set -euo pipefail
+          python3 --version
+          python3 -m venv /tmp/venv
+          echo /tmp/venv/bin >> "$GITHUB_PATH"
+          /tmp/venv/bin/python -m pip install -q -r services/coletor-externo/requirements.txt -r services/coletor-externo/requirements-dev.txt
 
       - name: Run pytest (coletor-externo)
+        working-directory: services/coletor-externo
         run: python -m pytest -q --tb=short
+
+  hook-agente:
+    name: Hook bloquear-destrutivo (casos)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout (git, sem actions de terceiros)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          # Token só no cabeçalho de cada fetch, sem gravar em .git/config (equivale a persist-credentials: false).
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c http.extraheader="$auth" fetch -q --depth=1 origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+
+      # Node já vem no ubuntu-latest.
+      - name: Casos do hook
+        run: node --version && node .claude/hooks/bloquear-destrutivo.test.mjs

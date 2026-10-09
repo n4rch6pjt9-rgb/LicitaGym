@@ -23,14 +23,25 @@ o que ele pode disputar agora, o que acompanhar e o que já foi homologado (pre�
 | `Kuib-Harness/` | app desktop de administração (Electron + Vue) |
 | `docs/` | arquitetura, schemas das APIs oficiais, runbooks |
 
-## Como testar (os mesmos comandos da CI `pr-quality.yml`)
+## Como testar (os mesmos comandos da CI `pr-quality.yml`, que roda em todo PR e push na `main`)
 ```bash
-deno check supabase/functions/<funcao>/index.ts
+scripts/ci/deno-check-funcoes.sh [funcao ...]       # deno check de todas (ou das nomeadas)
 deno test tests/supabase --allow-read --allow-write --allow-env --no-prompt
+git diff --name-only origin/main... | scripts/ci/lint-alterados.sh -   # deno lint + ruff só no que mudou
 pip install -r requirements-dev.txt && pytest tests/ -q
 cd services/coletor-externo && pip install -r requirements.txt -r ../../requirements-dev.txt && python -m pytest -q
+scripts/validar-migrations.sh                       # Postgres 17 descartável (Docker); a CI roda em todo PR
 ```
-Migration nova: skill `validar-migrations` (Postgres descartável) antes do PR.
+- **Pre-commit** (lint + testes afetados pelo commit, ~segundos): `git config core.hooksPath .githooks` uma vez por
+  clone. Ferramenta ausente vira aviso; pular uma vez: `git commit --no-verify`.
+- **Pendências conhecidas** (podem falhar sem derrubar a CI; se passarem, saem da lista): `.github/ci/deno-check-pendentes.txt`
+  (typecheck) e `supabase/tests/pendentes.txt` (checks SQL). A lista só diminui: não acrescente item sem issue.
+- **Lint é por arquivo inteiro:** quem toca um arquivo resolve a dívida dele (em 08/10: 12 `no-unused-vars` no Deno,
+  95 achados F no ruff, 93 com `ruff check --fix`). Não acrescente regra sem limpar a base antes.
+- Fluxos críticos ainda sem teste: `docs/testes-minimos-fluxos-criticos.md`.
+- **GitHub Actions sem `uses:`:** este repo não roda actions do marketplace (o run termina em `startup_failure`, sem
+  job). Workflow novo segue `pr-quality.yml`/`saude.yml`: checkout por `git`, ferramentas do runner ou release oficial
+  com SHA-256 conferido.
 
 ## Ambientes e entrega
 - **Um ambiente: produção** (Supabase `ifaiagegyicjzlpskafh`). Não há staging.

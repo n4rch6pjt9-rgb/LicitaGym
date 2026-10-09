@@ -1,0 +1,8 @@
+# Lint Python da CI e do pre-commit (scripts/ci/lint-alterados.sh): só arquivos alterados.
+# Regras: pyflakes (F: import/variável não usada, nome indefinido) e erros de sintaxe (E9). Estilo fica de fora
+# porque o legado tem ~4.700 linhas longas; amplie aqui quando a base estiver limpa.
+target-version = "py312"
+extend-exclude = ["Kuib-Harness", "untitled", "licitagym-coletor-sistema-s"]
+
+[lint]
+select = ["F", "E9"]

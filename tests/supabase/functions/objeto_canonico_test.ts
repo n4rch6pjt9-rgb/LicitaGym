@@ -1,5 +1,5 @@
 import { assertEquals } from "jsr:@std/assert@1";
-import { CATALOGO_PDMS_PAGINA, handleRequest, ITENS_ADERENCIA_LOTE, MAX_ITENS_ADERENCIA } from "../../../supabase/functions/api-dashboard-oportunidades/index.ts";
+import { CATALOGO_PDMS_PAGINA, handleRequest, ITENS_ADERENCIA_LOTE, MAX_ITENS_ADERENCIA, OPORTUNIDADES_VIEW } from "../../../supabase/functions/api-dashboard-oportunidades/index.ts";
 import { applyLicitacaoFilters, type FilterableQuery } from "../../../supabase/functions/api-dashboard-oportunidades/query.ts";
 import { parseActionFromBody } from "../../../supabase/functions/api-dashboard-oportunidades/validation.ts";
 
@@ -378,7 +378,8 @@ Deno.test("get: view sem as colunas do objeto (função publicada antes da migra
       const q: Record<string, unknown> = {};
       for (const m of ["eq", "in", "order", "limit"]) q[m] = () => q;
       q.select = (cols: string) => {
-        if (tabela !== "licitacao_match") selects.push(cols);
+        // Só a view importa aqui; o get também lê licitacao_match e, desde o #269, portal_consulta e pipeline.
+        if (tabela === OPORTUNIDADES_VIEW) selects.push(cols);
         return q;
       };
       q.maybeSingle = () => {

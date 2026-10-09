@@ -11,13 +11,16 @@ scripts/validar-migrations.sh <base>     # outra base (ex.: a branch de baixo nu
 ```
 
 O script:
-1. sobe `pgvector/pgvector:pg16` e aplica `supabase/tests/pre.sql` (stubs de roles, `auth.uid()`, `auth.jwt()`,
-   `auth.users`, `storage.buckets/objects`, `vector` e os default privileges do Supabase);
+1. sobe `pgvector/pgvector:pg17` (major da produção; outra com `PG_IMAGE=...`) e aplica `supabase/tests/pre.sql`
+   (stubs de roles, `auth.uid()`, `auth.jwt()`, `auth.users`, `storage.buckets/objects`, `storage.foldername`,
+   `vector` e os default privileges do Supabase);
 2. aplica todas as migrations em ordem (pula `202609180008_cron.sql`: `pg_cron` só existe no Supabase);
 3. reaplica as migrations novas/alteradas em relação à base (tem que passar de novo: idempotência);
 4. roda todos os `supabase/tests/*_check.sql`.
 
-Saída esperada: `Tudo OK.` Qualquer `FALHA` impede o PR.
+Saída esperada: `Tudo OK.` Qualquer `FALHA` impede o PR. `PENDENTE` é falha conhecida listada em
+`supabase/tests/pendentes.txt` (com issue); se um pendente passar, vira `FALHA` até sair da lista. A CI
+(`pr-quality.yml`, job `migrations`) roda o mesmo script em todo PR.
 
 Para testar o comportamento de uma função (ex.: `licitacoes_ids_por_catmat`), depois do passo 2 insira dados de
 teste mínimos e faça `select` — nunca use dados reais copiados de produção no repositório.

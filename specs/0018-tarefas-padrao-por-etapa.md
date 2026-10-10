@@ -1,6 +1,6 @@
 # 0018: Criar as tarefas padrão quando a oportunidade entra numa etapa do pipeline
 
-- **Status:** rascunho (10/10/2026; decisões 1 a 4 do Marcelo em "Decisões")
+- **Status:** rascunho (10/10/2026; decisões 1 a 5 do Marcelo em "Decisões")
 - **Issue:** Dashboard #29 (mãe). Depende da LicitaGym #252 (instância de tarefas por certame, `tarefas_equipe`).
   Tela: Dashboard #72 (tarefas da equipe) e a futura `/configuracoes/pipeline`.
 - **Área:** migrations (tabela nova + mudança em `pipeline_mover`), edge-functions (`api-pipeline`), dashboard-contrato
@@ -74,7 +74,7 @@ Marcelo: aprovado em 10/10 sem tarefa da empresa no padrão (decisão 1).
 | Etapa padrão | Tarefas do catálogo | Por quê |
 |---|---|---|
 | Nova, Triagem, Em análise, Interessante | nenhuma | ainda não se decidiu participar |
-| Qualificação | F01-T01 a T06 (registrar edital, conferir prazo, pedir esclarecimento, impugnar, acompanhar resposta, reabertura de prazo) | esclarecimento e impugnação vencem 3 dias úteis antes da abertura |
+| Qualificação | F01-T01 e T03 a T06 (registrar edital, pedir esclarecimento, impugnar, acompanhar resposta, reabertura de prazo). F01-T02 sai: virou o gate da seção 2a | esclarecimento e impugnação vencem 3 dias úteis antes da abertura |
 | Preparando proposta | F01-T07 a T10 (vistoria, garantia de proposta, declarações, montar e cadastrar a proposta) | |
 | Documentação | F01-T11 (habilitação antecipada) e F04-T01 a T05 (documentos de habilitação, diligência) | |
 | Proposta enviada, Disputa | F02-T01 a T05 (lances, empate, preferência ME/EPP) e F03-T01 a T05 (negociação, exequibilidade, garantia adicional) | |
@@ -82,6 +82,29 @@ Marcelo: aprovado em 10/10 sem tarefa da empresa no padrão (decisão 1).
 | Vencida | F06-T01, T04 e F07-T01 a T07 (homologação, assinatura, garantia contratual, publicação no PNCP) | |
 | Perdida | F05-T01 a T05 (recorrer do resultado) e F06-T03 (recorrer de anulação/revogação) | |
 | Descartada | nenhuma | |
+
+### 2a. Gate de prazo mínimo de propostas (monitoramento, não tarefa)
+
+Decisão 5: o prazo mínimo entre a divulgação do edital e a abertura (14.133, art. 55) é obrigação do **órgão**. O sistema
+confere sozinho, a partir da publicação; não é tarefa do fornecedor. A `F01-T02` "Conferir prazo mínimo de propostas"
+deixa de ser criada pela etapa.
+
+- **Entradas (PNCP):** data de divulgação no PNCP, data fim de recebimento de propostas (abertura), objeto (bens ×
+  serviços/obras), critério de julgamento, regime de execução; e o regulamento (seção 3).
+- **Regra:** dias úteis contados com exclusão do dia do começo e inclusão do vencimento, só dias com expediente no órgão
+  (art. 183, III). Mínimos do art. 55: bens 8 (menor preço/maior desconto) ou 15; serviços e obras comuns 10, especiais 25,
+  contratação integrada 60, semi-integrada/demais 35; maior lance 15; técnica e preço/melhor técnica 35. Na 14.981, a
+  **metade** (art. 2º, II).
+- **Estados:** `dentro_do_prazo` (com a folga em dias úteis), `abaixo_do_minimo`, `nao_verificado` (falta entrada, ou a
+  folga é tão pequena que um feriado local não verificado mudaria o resultado: sem calendário de feriados, não se afirma).
+- **Reavaliação:** edital retificado reabre o prazo (art. 55, § 1º): o gate roda de novo a cada nova versão/retificação.
+- **Efeito:** `abaixo_do_minimo` gera alerta na oportunidade e sugere a tarefa `F01-T04` "Impugnar o edital" (essa sim,
+  do fornecedor). Não muda prioridade nem fase sozinho.
+- **Exemplo conferido em 10/10:** Pregão Eletrônico nº 114655/2025 (Estado de Goiás, Casa Militar; academia; PNCP
+  `01409580000138-1-002061/2025`): divulgado 15/08/2025, abertura 03/09/2025 09:00, bens e menor preço → mínimo 8 dias
+  úteis; 13 contados → `dentro_do_prazo` (folga 5; feriados locais não verificados).
+- **Onde mora:** cálculo determinístico na ingestão/reconciliação (não nesta spec de tarefas). Vira PR próprio, com
+  testes dos incisos do art. 55 e da 14.981.
 
 Tarefa com `parent_codigo` (ex.: F04-T02 "↳ Regularidade fiscal") entra com a mãe. F07-T08 (empresa estrangeira) e
 F08–F12 (execução, alteração, extinção, sanção, ata) ficam fora do pipeline comercial no v1; a condição do catálogo
@@ -108,9 +131,8 @@ Regras que valem já no #252 e continuam aqui:
 - **Prazo legal:** contado do `prazo_evento` quando a data do evento é conhecida. Evento sem data, ou prazo em dias
   úteis sem calendário de feriados → **"prazo não calculado"**. Nenhuma data inventada.
 - **Regulamento (decisão 4):** tarefas do catálogo só para `LEI_14133` e `LEI_14981`. Na 14.981 (calamidade, aplica a
-  14.133 com ajustes, art. 23), a `F01-T02` "Conferir prazo mínimo de propostas" usa a **metade** dos mínimos do art. 55
-  da 14.133 (Lei 14.981, art. 2º, II) e mostra "conforme edital"; o envio da proposta (`F01-T10`) não muda (vai até o
-  evento `DATA_ABERTURA`). Demais regimes (13.303, RLC, RCA, SEST SENAT, sem regulamento) recebem só as tarefas
+  14.133 com ajustes, art. 23), o gate de prazo mínimo (seção 2a) usa a **metade** dos mínimos do art. 55 da 14.133
+  (Lei 14.981, art. 2º, II); o envio da proposta (`F01-T10`) não muda (vai até o evento `DATA_ABERTURA`). Demais regimes (13.303, RLC, RCA, SEST SENAT, sem regulamento) recebem só as tarefas
   `origem = empresa`, com o aviso "regulamento sem catálogo". 10.847 (dispensa para contratar a EPE) não tem disputa:
   nenhuma tarefa do catálogo. Pré-requisito: `licitacoes_externas.regulamento` preenchido pelo `amparoLegal` do detalhe
   do PNCP (hoje nulo em todas as linhas), com os valores `LEI_14981` e `LEI_13303` acrescentados ao check.
@@ -194,12 +216,15 @@ Do Marcelo, 10/10/2026:
    escolhida, porque a empresa pode ter mais de um admin), e o admin define depois o operador. Só admin (ou o
    desenvolvedor) atribui ou reatribui; operação vê as tarefas atribuídas a ela e as conclui.
 
-4. **Regimes com catálogo: Lei 14.133 e Lei 14.981.** Na 14.981, o prazo mínimo de propostas é "conforme edital"
-   (metade do art. 55 da 14.133). Comparativo dos regimes, com artigos e fontes oficiais, conferido em 10/10: 13.303
+4. **Regimes com catálogo: Lei 14.133 e Lei 14.981.** Na 14.981, o prazo mínimo de propostas é a metade do art. 55 da
+   14.133 (vale no gate da decisão 5). Comparativo dos regimes, com artigos e fontes oficiais, conferido em 10/10: 13.303
    (estatais) tem rito próprio (impugnação 5 dias úteis, art. 87, § 1º; recurso único em 5 dias úteis após a
    habilitação, art. 59, § 1º); 10.847 é dispensa para contratar a EPE (art. 6º); Sistema S tem RLC (Sesc/Senac) e RCA
    (SESI/SENAI, 2023) próprios. Amostra de 8 das 43 licitações PNCP sem normativo no `raw`: as 8 têm `amparoLegal` Lei
    14.133 no detalhe do PNCP.
+
+5. **Prazo mínimo de propostas é gate, não tarefa.** O sistema confere o art. 55 a partir da publicação do edital
+   (seção 2a); a `F01-T02` sai do modelo. Abaixo do mínimo, alerta e sugestão de impugnar (`F01-T04`).
 
 ## Perguntas em aberto
 

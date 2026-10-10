@@ -177,6 +177,13 @@ begin
   if v_desfecho is null then
     raise exception 'produto e preço só são gravados no desfecho' using errcode = '22023';
   end if;
+  -- Produto de outro tenant não entra no resultado deste tenant. Produto sem tenant (catálogo compartilhado) entra.
+  if p_produto is not null and not exists (
+       select 1 from public.catalogo_produtos cp
+        where cp.id = p_produto and (cp.tenant_id = p_tenant or cp.tenant_id is null)
+     ) then
+    raise exception 'produto % não é do tenant %', p_produto, p_tenant using errcode = '42501';
+  end if;
   update public.pipeline_oportunidades
      set produto_id = p_produto,
          preco_ofertado_centavos = p_preco_centavos,

@@ -62,3 +62,50 @@ begin
 
   raise notice 'SUCESSO: pipeline portao e resultado';
 end $$;
+
+-- Comportamento (dados fictícios, desfeitos ao fim do bloco): o resultado só aceita produto do próprio tenant ou sem
+-- tenant (catálogo compartilhado).
+do $$
+declare
+  v_t1 bigint;
+  v_t2 bigint;
+  v_lic bigint;
+  v_venc bigint;
+  v_prod_outro bigint;
+  v_prod_meu bigint;
+  v_prod_comum bigint;
+  v_u uuid := '00000000-0000-0000-0000-0000000000b1';
+  v_ok boolean;
+begin
+  begin
+    insert into public.tenants (slug, nome) values ('check-resultado-1', 'Check resultado 1') returning id into v_t1;
+    insert into public.tenants (slug, nome) values ('check-resultado-2', 'Check resultado 2') returning id into v_t2;
+    select id into v_venc from public.pipeline_etapas where tenant_id = v_t1 and desfecho = 'vencida';
+    insert into public.licitacoes_externas (fonte) values ('pncp') returning id into v_lic;
+    perform public.pipeline_mover(v_t1, array[v_lic], v_venc, null, v_u);
+    insert into public.catalogo_produtos (marca, url, tenant_id) values ('CHK', 'https://chk.test/r-outro', v_t2)
+      returning id into v_prod_outro;
+    insert into public.catalogo_produtos (marca, url, tenant_id) values ('CHK', 'https://chk.test/r-meu', v_t1)
+      returning id into v_prod_meu;
+    insert into public.catalogo_produtos (marca, url, tenant_id) values ('CHK', 'https://chk.test/r-comum', null)
+      returning id into v_prod_comum;
+
+    v_ok := false;
+    begin
+      perform public.pipeline_registrar_resultado(v_t1, v_lic, v_prod_outro, 100000, null, v_u);
+    exception when insufficient_privilege then v_ok := true;
+    end;
+    if not v_ok then raise exception 'CHECK FALHOU: resultado aceitou produto de outro tenant'; end if;
+
+    perform public.pipeline_registrar_resultado(v_t1, v_lic, v_prod_meu, 100000, null, v_u);
+    perform public.pipeline_registrar_resultado(v_t1, v_lic, v_prod_comum, 100000, null, v_u);
+    if (select produto_id from public.pipeline_oportunidades where tenant_id = v_t1 and licitacao_id = v_lic)
+       <> v_prod_comum then
+      raise exception 'CHECK FALHOU: produto do próprio tenant ou compartilhado não foi gravado';
+    end if;
+
+    raise exception 'DESFAZER' using errcode = 'P0099';
+  exception when sqlstate 'P0099' then null;
+  end;
+  raise notice 'SUCESSO: pipeline resultado (produto do tenant)';
+end $$;

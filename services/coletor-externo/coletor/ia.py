@@ -127,15 +127,15 @@ class Gemini:
         """Transcreve UMA página de PDF escaneado (o indexador separa as páginas). Devolve (texto, finish_reason).
         PDF inteiro numa chamada perdeu o vínculo com a página e degenerou (medição de 09/10/2026, spec 0016);
         `max_output_tokens` corta a degeneração antes de consumir tempo e custo. O pensamento do 2.5-flash conta
-        nesse limite, por isso fica desligado no OCR."""
+        nesse limite, por isso fica desligado no OCR (só no flash: o 2.5-pro recusa thinking_budget=0)."""
         parte = self.types.Part.from_bytes(data=pdf, mime_type="application/pdf")
+        pensamento = self.types.ThinkingConfig(thinking_budget=0) if "flash" in GEN_MODEL else None
         r = self._retry(lambda: self.client.models.generate_content(
             model=GEN_MODEL,
             contents=[parte, "Transcreva integralmente o texto desta página, em português, mantendo a ordem. "
                              "Não resuma e não comente."],
             config=self.types.GenerateContentConfig(
-                temperature=0, max_output_tokens=OCR_MAX_TOKENS,
-                thinking_config=self.types.ThinkingConfig(thinking_budget=0))))
+                temperature=0, max_output_tokens=OCR_MAX_TOKENS, thinking_config=pensamento)))
         return r.text or "", motivo_fim(r)
 
     def responder(self, pergunta: str, trechos: list[dict]) -> str:

@@ -123,7 +123,7 @@ def indexar_grupo(sb: Supabase, ia, docs: list[dict], lic: dict, com_extracao: b
     if len(texto_total) < 50:
         degeneradas = [p["pagina"] for p in nao_aceitas if p["estado"] == OCR_DEGENERADO]
         # Sem estado próprio em status_processamento (issue #299): o motivo vai no começo do erro.
-        erro = (f"{OCR_DEGENERADO}: páginas {degeneradas}; nenhuma página aceita" if degeneradas
+        erro = (f"{OCR_DEGENERADO}: páginas {degeneradas}; texto aceito insuficiente" if degeneradas
                 else f"sem texto aproveitável; ignorados: {res.ignorados[:5]}")
         return {"status": "ignorado", "erro": erro,
                 "extracao": {"ocr_paginas": ocr_paginas} if ocr_paginas else None}
@@ -178,6 +178,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--reprocessar-erros", action="store_true")
     ap.add_argument("--refazer", action="store_true",
                     help="reindexa também o que já foi indexado (ex.: após trocar EMBED_MODEL)")
+    ap.add_argument("--reprocessar-ocr", action="store_true",
+                    help="refaz também os 'ignorado' por OCR_DEGENERADO (ex.: após mudar OCR_MAX_TOKENS ou o limiar)")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     for ruidoso in ("httpx", "google_genai", "google_genai.models"):
@@ -189,9 +191,13 @@ def main(argv: list[str] | None = None) -> int:
 
     status = ("in.(baixado,erro,indexado)" if args.refazer
               else "in.(baixado,erro)" if args.reprocessar_erros else "eq.baixado")
+    campos = "id,licitacao_id,secao,nome_original,arquivo_origem,fornecedor_nome,sha256,storage_uri"
     docs = sb.selecionar("licitacao_documentos", status_processamento=status, sha256="not.is.null",
-                         storage_uri="not.is.null", order="id",
-                         select="id,licitacao_id,secao,nome_original,arquivo_origem,fornecedor_nome,sha256,storage_uri")
+                         storage_uri="not.is.null", order="id", select=campos)
+    if args.reprocessar_ocr:
+        docs += sb.selecionar("licitacao_documentos", status_processamento="eq.ignorado",
+                              erro=f"like.{OCR_DEGENERADO}*", sha256="not.is.null", storage_uri="not.is.null",
+                              order="id", select=campos)
     lics = {l["id"]: l for l in sb.selecionar("licitacoes_externas", select="id,numero_processo,numero_edital,fonte,entidade,orgao_nome")}
 
     grupos: dict[tuple, list[dict]] = {}

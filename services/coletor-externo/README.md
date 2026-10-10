@@ -359,11 +359,13 @@ IAM e administrador → Cotas → "online prediction requests per base model …
 `max_output_tokens=OCR_MAX_TOKENS` (padrão 4096) e pensamento desligado. Cada página passa pelo detector de
 degeneração (`coletor/ocr.py`): repetição seguida da mesma unidade (caractere, padrão curto ou linha) com ao menos
 `OCR_DEGENERADO_MIN_REP` repetições (padrão 20) cobrindo ao menos `OCR_DEGENERADO_MIN_CHARS` caracteres (padrão 300).
+A repetição precisa terminar a página (até `OCR_DEGENERADO_MAX_CAUDA`=80 caracteres depois) ou cobrir
+`OCR_DEGENERADO_MIN_CHARS_MEIO`=3000 caracteres: formulário ou tabela em branco no meio da página não conta.
 Estados por página, gravados sem texto em `licitacao_documentos.extracao.ocr_paginas`:
 `extraido` (vira chunk), `OCR_DEGENERADO` (repetição ou `MAX_TOKENS`; não vira chunk) e `OCR_REQUIRED` (OCR sem texto).
 Documento com alguma página não aceita fica com `extracao.ocr_incompleto = true`; se nenhuma página for aceita,
 fica `ignorado` com `erro` começando por `OCR_DEGENERADO` (o estado próprio em `status_processamento` é migration
-separada, issue #299). Medição que motivou: spec 0016, seção 5 (Baraúna, 09/10/2026).
+separada, issue #299). `--reprocessar-ocr` refaz esses documentos. Medição que motivou: spec 0016, seção 5 (Baraúna, 09/10/2026).
 
 **Importante para o app:** a pergunta do usuário precisa ser convertida em vetor com o
 **mesmo modelo** (`text-multilingual-embedding-002`, 768d, `RETRIEVAL_QUERY`) antes de chamar

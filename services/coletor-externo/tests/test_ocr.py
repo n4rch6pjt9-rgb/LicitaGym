@@ -176,3 +176,49 @@ def test_motivo_fim_sem_candidato():
     assert IA.motivo_fim(SimpleNamespace(candidates=[])) is None
     assert IA.motivo_fim(SimpleNamespace(candidates=None)) is None
     assert IA.motivo_fim(SimpleNamespace(candidates=[SimpleNamespace(finish_reason="STOP")])) == "STOP"
+
+
+# --- achados da revisão: formulário em branco, reprocessamento, motivo sem conteúdo, modelo pro ---
+
+FORMULARIO = "|" + "      |" * 6 + "\n"
+
+
+@pytest.mark.parametrize("meio", [FORMULARIO * 40, ("_" * 70 + "\n") * 25])
+def test_formulario_em_branco_no_meio_da_pagina_nao_e_degenerado(meio):
+    texto = UTIL + meio + "Local e data. Assinatura do representante legal da empresa licitante.\n" * 3
+    assert detectar_degeneracao(texto) is None
+    assert avaliar_pagina(texto).estado == EXTRAIDO
+
+
+def test_repeticao_enorme_no_meio_conta_mesmo_com_texto_depois():
+    assert detectar_degeneracao(UTIL + "." * 5000 + UTIL * 3) is not None
+
+
+def test_motivo_nao_carrega_conteudo_do_documento():
+    linha = "CPF 123.456.789-01 FULANO DE TAL\n"
+    p = avaliar_pagina(UTIL + linha * 30)
+    assert p.estado == OCR_DEGENERADO
+    assert "123" not in p.motivo and "FULANO" not in p.motivo and "texto" in p.motivo
+
+
+def test_reprocessar_ocr_seleciona_ignorados_por_degeneracao(monkeypatch):
+    sb = MagicMock()
+    sb.selecionar.side_effect = [[], [], []]
+    monkeypatch.setattr(IX, "Supabase", lambda *a: sb)
+    monkeypatch.setattr(IX, "env", lambda *a, **k: "x")
+    monkeypatch.setattr("coletor.ia.Gemini", lambda: MagicMock())
+    IX.main(["--reprocessar-ocr"])
+    filtros = sb.selecionar.call_args_list[1].kwargs
+    assert filtros["status_processamento"] == "eq.ignorado" and filtros["erro"] == "like.OCR_DEGENERADO*"
+
+
+def test_ocr_pagina_sem_thinking_budget_fora_do_flash(monkeypatch):
+    from google.genai import types
+    monkeypatch.setattr(IA, "GEN_MODEL", "gemini-2.5-pro")
+    g = object.__new__(IA.Gemini)
+    g.types = types
+    g.client = MagicMock()
+    g.client.models.generate_content.return_value = SimpleNamespace(text="t", candidates=[])
+    assert g.ocr_pagina(b"%PDF-1.4") == ("t", None)
+    cfg = g.client.models.generate_content.call_args.kwargs["config"]
+    assert cfg.thinking_config is None and cfg.max_output_tokens == IA.OCR_MAX_TOKENS

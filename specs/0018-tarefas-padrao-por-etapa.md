@@ -1,7 +1,8 @@
 # 0018: Criar as tarefas padrão quando a oportunidade entra numa etapa do pipeline
 
-- **Status:** rascunho (10/10/2026; decisões 1 a 9 do Marcelo em "Decisões"; sem pergunta em aberto)
-- **Issue:** Dashboard #29 (mãe). Depende da LicitaGym #252 (instância de tarefas por certame, `tarefas_equipe`).
+- **Status:** aprovada (Marcelo, 10/10/2026; decisões 1 a 10 em "Decisões"; sem pergunta em aberto)
+- **Issue:** Dashboard #29 (mãe). Depende da LicitaGym #252 (instância de tarefas por certame, `tarefas_equipe`) e do PR #308
+  (aderência e portão comercial: schema de `pipeline_etapas` e `pipeline_oportunidades`).
   Tela: Dashboard #72 (tarefas da equipe) e a futura `/configuracoes/pipeline`.
 - **Área:** migrations (tabela nova + mudança em `pipeline_mover`), edge-functions (`api-pipeline`), dashboard-contrato
 - **Depende do ok do Marcelo:** sim. Decisão de produto (qual tarefa nasce em qual etapa), migration de produção e
@@ -272,7 +273,10 @@ registradas. A etapa nunca altera prazo legal nem fecha tarefa do certame.
 
 ### Ordem dos PRs
 
-1. LicitaGym #252: `tarefas_equipe` (pré-requisito, em PR próprio e antes desta spec: decisão 9).
+0. LicitaGym PR #308: aderência e portão comercial (migration `20261010100400_pipeline_portao_resultado.sql`, trigger
+   `pipeline_oportunidades_portao`). Mergeado antes desta spec (decisão 10).
+1. LicitaGym #252: `tarefas_equipe` (pré-requisito, em PR próprio e antes desta spec: decisão 9). Pode correr em
+   paralelo ao #308: não toca `pipeline_*` nem `api-pipeline`.
 2. LicitaGym: `pipeline_etapa_tarefas` + semente padrão + criação em `pipeline_mover` + checks SQL (este desenho).
 3. LicitaGym: ações `etapa_tarefas_*` na `api-pipeline`.
 4. Dashboard: `/configuracoes/pipeline` (etapas e tarefas por etapa) e contagem no card; lista na #72.
@@ -366,6 +370,10 @@ Do Marcelo, 10/10/2026:
 
 9. **Ordem: #252 antes, depois esta spec.** `tarefas_equipe` entra em PR próprio; os PRs desta spec (seção "Ordem dos
    PRs", passos 2 a 4) começam depois do merge do #252.
+
+10. **#308 antes desta spec.** O #308 muda `pipeline_etapas` e `pipeline_oportunidades` e cria o trigger
+    `pipeline_oportunidades_portao`; a mudança em `pipeline_mover` desta spec nasce sobre esse schema. Ordem: #308 e #252
+    (em paralelo), depois esta spec. Spec aprovada.
 
 ## Perguntas em aberto
 

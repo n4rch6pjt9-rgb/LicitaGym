@@ -266,6 +266,42 @@ Deno.test("CA-8: carga grava só o escopo, inativa o item que sumiu e marca o pl
   assertEquals(db.rows("pca_plano_fila")[0].status, "feito");
 });
 
+Deno.test("carga arquiva a página de itens e a quantidade da integração em source_record, com a requisição", async () => {
+  const db = banco();
+  enfileirarPlano(db);
+  const brutos = [itemIntegracao(1), itemIntegracao(900, "6505")];
+  const integ = integracaoFake({ [`${CNPJ}/2026/4`]: brutos });
+  const s = await processarFila(db as never, integ, { ano: ANO, limite: 10, prazoEsgotado: nunca, runId: RUN });
+  assertEquals(s.planos_feitos, 1);
+  const arq = db.rows("source_record");
+  assertEquals(arq.map((r) => r.endpoint), [
+    `/orgaos/${CNPJ}/pca/2026/4/itens?pagina=1&tamanhoPagina=${TAMANHO_PAGINA_INTEGRACAO}`,
+    `/orgaos/${CNPJ}/pca/2026/4/itens/quantidade`,
+  ]);
+  assertEquals(arq[0].payload, brutos); // bruto, com o item fora do escopo e os nomes da integração
+  assertEquals(arq[1].payload, 2);
+  assert(arq.every((r) => r.sync_run_id === RUN && r.resource_type === "pca"));
+  assertEquals(arq[0].request_hash, await hashPayload({
+    cnpj: CNPJ,
+    ano: ANO,
+    sequencial: 4,
+    pagina: 1,
+    tamanhoPagina: TAMANHO_PAGINA_INTEGRACAO,
+  }));
+});
+
+Deno.test("falha ao arquivar a resposta bruta deixa o plano 'erro' e não inativa nada", async () => {
+  const db = banco();
+  await gravarPaginaPcaEmLote(db as never, [{ ...cabecalho(), itens: [itemConsulta(413)] }], { ano: ANO, runId: "r" });
+  enfileirarPlano(db);
+  db.falhas = [{ table: "source_record", op: "upsert" }];
+  const integ = integracaoFake({ [`${CNPJ}/2026/4`]: [itemIntegracao(412)] });
+  const s = await processarFila(db as never, integ, { ano: ANO, limite: 10, prazoEsgotado: nunca, runId: RUN });
+  assertEquals([s.planos_erro, s.itens_inativados], [1, 0]);
+  assertEquals(db.rows("pca_itens").every((r) => r.ativo !== false), true);
+  assertEquals(db.rows("pca_plano_fila")[0].status, "erro");
+});
+
 Deno.test("CA-8: item inativado que volta alterado é reativado", async () => {
   const db = banco();
   await gravarPaginaPcaEmLote(db as never, [{ ...cabecalho(), itens: [itemConsulta(413)] }], { ano: ANO, runId: "r0" });

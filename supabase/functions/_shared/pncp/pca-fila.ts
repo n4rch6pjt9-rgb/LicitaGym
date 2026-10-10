@@ -2,6 +2,8 @@ import { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { gravarItensDePlanoExistente, gravarPaginaPcaEmLote, type LoteStats, selectIn } from "./pca-lote.ts";
 import { BudgetExhaustedError, type RequestBudget } from "./retry.ts";
 import { RateLimitPauseError } from "../http-client/index.ts";
+import { storeSourceRecord } from "./supabase-admin.ts";
+import { hashPayload, sha256Hex } from "./hash.ts";
 
 /**
  * Sync do PCA por fila de planos (spec 0012, PR 2).
@@ -300,9 +302,32 @@ const MAX_PAGINAS_PLANO = 20;
 /** Timeout por tentativa na integração (respostas medidas de 0,2 a 0,4 s; o orçamento corta antes, se precisar). */
 const TIMEOUT_TENTATIVA_INTEGRACAO_MS = 30_000;
 
+/** Resposta bruta da integração com a requisição que a produziu (AGENTS.md: arquivar antes de normalizar). */
+export type RespostaBruta = { endpoint: string; requisicao: Row; status: number; body: unknown };
+export type Arquivar = (r: RespostaBruta) => Promise<void>;
+
+/**
+ * Arquiva a resposta bruta em private.source_record, como o fluxo antigo (sync-pncp-pca/index.ts) faz com a página da
+ * consulta. Falha ao arquivar propaga, como lá: o plano fica 'erro' e nada é inativado. Página de 2.000 itens dá
+ * cerca de 1 MB de payload (o maior plano medido, 1.800 itens, cabe numa página).
+ */
+export function arquivarNoSourceRecord(client: SupabaseClient, syncRunId: string): Arquivar {
+  return async (r) => {
+    await storeSourceRecord(client, {
+      syncRunId,
+      resourceType: "pca",
+      endpoint: r.endpoint,
+      requestHash: await hashPayload(r.requisicao),
+      contentHash: await sha256Hex(JSON.stringify(r.body)),
+      payload: r.body,
+    });
+  };
+}
+
 /**
  * Lê todos os itens do plano pela integração e confere com a quantidade. 204 = fim; HTTP ≥ 400, resposta que não é
- * lista ou total que não fecha = erro (nunca "plano sem itens").
+ * lista ou total que não fecha = erro (nunca "plano sem itens"). Com `arquivar`, cada resposta com corpo (páginas e
+ * quantidade) é arquivada antes de qualquer conferência ou normalização.
  */
 export async function lerItensPlano(
   integracao: IntegracaoPca,
@@ -310,8 +335,10 @@ export async function lerItensPlano(
   ano: number,
   sequencial: number,
   http: OpcoesHttp = {},
+  arquivar?: Arquivar,
 ) {
   const opcoes = { ...http, attemptTimeoutMs: TIMEOUT_TENTATIVA_INTEGRACAO_MS };
+  const base = `/orgaos/${cnpj}/pca/${ano}/${sequencial}/itens`;
   const itens: Row[] = [];
   let terminou = false;
   for (let pagina = 1; pagina <= MAX_PAGINAS_PLANO && !terminou; pagina++) {
@@ -324,6 +351,14 @@ export async function lerItensPlano(
       opcoes,
     );
     if (status === 204) break;
+    if (arquivar && body != null) {
+      await arquivar({
+        endpoint: `${base}?pagina=${pagina}&tamanhoPagina=${TAMANHO_PAGINA_INTEGRACAO}`,
+        requisicao: { cnpj, ano, sequencial, pagina, tamanhoPagina: TAMANHO_PAGINA_INTEGRACAO },
+        status,
+        body,
+      });
+    }
     if (status >= 400 || !Array.isArray(body)) {
       throw new Error(`integração ${cnpj}/${ano}/${sequencial} página ${pagina}: HTTP ${status} ou resposta não é lista`);
     }
@@ -331,6 +366,14 @@ export async function lerItensPlano(
     terminou = body.length < TAMANHO_PAGINA_INTEGRACAO;
   }
   const q = await integracao.getPcaItensQuantidade(cnpj, ano, sequencial, opcoes);
+  if (arquivar && q.body != null) {
+    await arquivar({
+      endpoint: `${base}/quantidade`,
+      requisicao: { cnpj, ano, sequencial, quantidade: true },
+      status: q.status,
+      body: q.body,
+    });
+  }
   const quantidade = Number(q.body);
   if (q.status !== 200 || !Number.isInteger(quantidade)) {
     throw new Error(`integração ${cnpj}/${ano}/${sequencial}: quantidade inválida (HTTP ${q.status})`);
@@ -465,6 +508,7 @@ export async function processarFila(
     itens_inativados: 0,
     planos_inativados: 0,
   };
+  const arquivar = arquivarNoSourceRecord(client, opts.runId);
   let processados = 0;
   while (processados < opts.limite && !opts.prazoEsgotado()) {
     const { data, error } = await client.schema("private").rpc("pca_fila_reservar", {
@@ -493,6 +537,7 @@ export async function processarFila(
           Number(linha.ano),
           Number(linha.sequencial),
           { ...opts.http, syncRunId: opts.runId },
+          arquivar,
         );
         const escopo = todos.filter((it) => doEscopo.has(String(it.classificacaoSuperiorCodigo ?? "")));
         const numeros = new Set(escopo.map((it) => Number(it.numeroItem)));

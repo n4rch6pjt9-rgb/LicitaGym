@@ -86,6 +86,15 @@ FONTES: dict[str, Fonte] = {
     "sescba": Fonte("sescba", "Sesc BA", "BA", "https://egov.paradigmabs.com.br/sescba/portal", False),
 }
 
+# Decisão de 05/10/2026: robots.txt desses hosts não impede a coleta. O webservice
+# público do mural entra com o mesmo intervalo do adaptador. FIEMG fica de fora (WAF).
+FONTES_MURAL_AUTORIZADO = frozenset({"sescsp", "sesc_senac_rs", "sescdn", "sescrj", "sescba"})
+
+
+def autorizado_para_coleta(fonte: Fonte) -> bool:
+    """Override explícito do bloqueio de robots.txt. Não cobre bloqueio de WAF."""
+    return fonte.slug in FONTES_MURAL_AUTORIZADO
+
 MODULO_PADRAO = 59
 
 # Filtro "Tipo" do catálogo (CatalogoProdutos.aspx: Todos / Produto / Serviço)
@@ -541,6 +550,17 @@ def linha_licitacao(fonte: Fonte, d: dict, categoria: str | None, borracha: bool
     return row
 
 
+# perfil_item devolve campos de BI que licitacao_itens não tem. PostgREST recusa a linha inteira.
+_PERFIL_FORA_DA_TABELA = ("cinematica", "produto_padronizado")
+
+
+def _perfil_gravavel(descricao: str | None) -> dict:
+    perfil = perfil_item(descricao)
+    for chave in _PERFIL_FORA_DA_TABELA:
+        perfil.pop(chave, None)
+    return perfil
+
+
 def linhas_itens(lic_id: int | None, itens: list[dict], produtos: dict[int, dict] | None = None,
                  contexto: bool = False) -> list[dict]:
     out = []
@@ -564,7 +584,7 @@ def linhas_itens(lic_id: int | None, itens: list[dict], produtos: dict[int, dict
             "valor_unitario_estimado": vref,
             "valor_total_estimado": round(vref * qtd, 2) if vref and qtd else None,
             "catalogo_codigo_item": prod.get("codigo") or (m_cod.group(1) if m_cod else None),
-            **perfil_item(p["descricao"]),
+            **_perfil_gravavel(p["descricao"]),
             "situacao": it.get("sStItem"),
             "categoria_escopo": cat,
             "interesse_borracha": borr,
@@ -856,7 +876,9 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("--paginas deve ser >= 1")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    portal = PortalParadigma(FONTES[args.fonte], delay=float(env("DELAY_SEGUNDOS", "1.5")))
+    fonte = FONTES[args.fonte]
+    portal = PortalParadigma(
+        fonte, delay=float(env("DELAY_SEGUNDOS", "1.5")), autorizado=autorizado_para_coleta(fonte))
     sb = None if args.dry_run else Supabase(env("SUPABASE_URL", obrigatorio=True),
                                             env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True))
     termos = [t.strip() for t in args.termos.split(";")] if args.termos else TERMOS_SISTEMA_S

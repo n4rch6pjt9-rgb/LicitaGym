@@ -215,6 +215,13 @@ def test_linha_licitacao_omite_prioridade_quando_desconhecida():
     assert li_homolog["prioridade"] == "historico"
 
 
+def test_linhas_itens_nao_grava_cinematica():
+    li = P.linhas_itens(1, [{"nCdItemSequencial": 1, "sDsItem": "SUPINO RETO CONVERGENTE"}])
+    assert li[0]["no_taxonomia"] == "supino_maquina"
+    assert "cinematica" not in li[0]
+    assert "produto_padronizado" not in li[0]
+
+
 def test_linhas_itens_e_resultados():
     li = P.linhas_itens(10, ITENS_7752)
     assert [i["numero_item"] for i in li] == [1, 4]
@@ -273,8 +280,11 @@ def test_modulo_de_sentinela_e_ausente():
 def test_novos_tenants_paradigmabs_bloqueados():
     for slug in ("sescdn", "sescrj", "sescba", "sescsp", "sesc_senac_rs"):
         assert P.FONTES[slug].coleta_automatica is False
+        assert P.autorizado_para_coleta(P.FONTES[slug]) is True
         assert "paradigmabs.com.br" in P.FONTES[slug].base
+        P.PortalParadigma(P.FONTES[slug], autorizado=True, sessao=MagicMock())
     assert P.FONTES["fiemg"].coleta_automatica is False  # Cloudflare bloqueia cliente automatizado
+    assert P.autorizado_para_coleta(P.FONTES["fiemg"]) is False
     for slug in ("firjan", "fiergs", "findes", "fieb", "fiems", "fiemt", "sfiec"):
         assert P.FONTES[slug].coleta_automatica is True
 

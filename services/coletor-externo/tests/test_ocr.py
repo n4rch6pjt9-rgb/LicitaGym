@@ -126,6 +126,9 @@ def test_indexador_ocr_por_pagina_e_degenerada_fora_dos_chunks(tmp_path):
     assert [(p["pagina"], p["estado"]) for p in extracao["ocr_paginas"]] == [
         (1, EXTRAIDO), (2, OCR_DEGENERADO), (3, OCR_DEGENERADO), (4, OCR_REQUIRED)]
     assert extracao["ocr_paginas"][2]["finish_reason"] == "MAX_TOKENS"
+    cfg = extracao["ocr_config"]
+    assert cfg["modelo"] == IA.GEN_MODEL and cfg["max_output_tokens"] == IA.OCR_MAX_TOKENS
+    assert cfg["limiar"]["min_chars"] == Limiar().min_chars and cfg["limiar"]["min_rep"] == Limiar().min_rep
     assert not any("texto" in p for p in extracao["ocr_paginas"])   # relatório sem conteúdo
 
 
@@ -209,7 +212,8 @@ def test_reprocessar_ocr_seleciona_ignorados_por_degeneracao(monkeypatch):
     monkeypatch.setattr("coletor.ia.Gemini", lambda: MagicMock())
     IX.main(["--reprocessar-ocr"])
     filtros = sb.selecionar.call_args_list[1].kwargs
-    assert filtros["status_processamento"] == "eq.ignorado" and filtros["erro"] == "like.OCR_DEGENERADO*"
+    assert filtros["status_processamento"] == "eq.ignorado"
+    assert filtros["or"] == "(erro.like.OCR_DEGENERADO*,erro.like.OCR_REQUIRED*)"
 
 
 def test_ocr_pagina_sem_thinking_budget_fora_do_flash(monkeypatch):
@@ -236,3 +240,20 @@ def test_pagina_grande_demais_entra_no_relatorio_e_marca_incompleto(tmp_path, mo
     assert extracao["ocr_incompleto"] is True
     assert [(p["pagina"], p["estado"]) for p in extracao["ocr_paginas"]] == [
         (1, EXTRAIDO), (2, OCR_REQUIRED), (3, EXTRAIDO)]
+
+
+def test_pdf_que_o_pypdf_nao_separa_fica_ocr_required_sem_ocr(tmp_path, monkeypatch):
+    monkeypatch.setattr(IX, "paginas_pdf", lambda pdf: [(None, pdf)])
+    ia, _ = _ia_falsa([])
+    sb = MagicMock()
+    r = IX.indexar_grupo(sb, ia, _docs(tmp_path, _pdf_escaneado(2)), {"numero_processo": "999/2026"}, True)
+    ia.ocr_pagina.assert_not_called()                      # nada de OCR do documento inteiro
+    assert r["status"] == "ignorado" and r["erro"].startswith(OCR_REQUIRED)
+    assert [(p["pagina"], p["estado"]) for p in r["extracao"]["ocr_paginas"]] == [(None, OCR_REQUIRED)]
+    assert r["extracao"]["ocr_config"]["modelo"] == IA.GEN_MODEL
+
+
+def test_ocr_vazio_em_todas_as_paginas_e_reprocessavel(tmp_path):
+    ia, _ = _ia_falsa([("", "STOP"), ("", "STOP")])
+    r = IX.indexar_grupo(MagicMock(), ia, _docs(tmp_path, _pdf_escaneado(2)), {"numero_processo": "999/2026"}, True)
+    assert r["status"] == "ignorado" and r["erro"].startswith(f"{OCR_REQUIRED}: páginas [1, 2]")

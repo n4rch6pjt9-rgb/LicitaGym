@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 from . import ia as ia_mod
@@ -61,6 +62,11 @@ def paginas_pdf(pdf: bytes) -> list[tuple[int | None, bytes]]:
     return out
 
 
+def config_ocr(lim: Limiar) -> dict:
+    """Modelo, teto de saída e limiares efetivos que decidiram o estado das páginas (para reprocessar e auditar)."""
+    return {"modelo": ia_mod.GEN_MODEL, "max_output_tokens": ia_mod.OCR_MAX_TOKENS, "limiar": asdict(lim)}
+
+
 def ocr_escaneados(ia, pdfs_escaneados: list[tuple[str, bytes]], ignorados: list[str],
                    limiar: Limiar | None = None) -> tuple[list[Pagina], list[dict]]:
     """OCR página a página. Só página `extraido` vira Pagina (e depois chunk); `OCR_DEGENERADO` e `OCR_REQUIRED`
@@ -71,6 +77,14 @@ def ocr_escaneados(ia, pdfs_escaneados: list[tuple[str, bytes]], ignorados: list
     for origem, pdf in pdfs_escaneados:
         for numero, parte in paginas_pdf(pdf):
             rotulo = f"pág. {numero}" if numero else "documento inteiro"
+            if numero is None:
+                # O pypdf não separou as páginas: OCR do documento inteiro perde o número da página e foi o que
+                # degenerou em 09/10. Sem OCR aqui; o arquivo fica OCR_REQUIRED para outra engine.
+                relatorio.append({"origem": origem, "pagina": None, "finish_reason": None, "estado": OCR_REQUIRED,
+                                  "chars_ocr": 0, "chars_parcial": 0,
+                                  "motivo": "pypdf nao separou as paginas; sem OCR do documento inteiro"})
+                log.warning("    %s: pypdf não separou as páginas; OCR_REQUIRED", origem)
+                continue
             if len(parte) > 19 * 1024 * 1024:
                 ignorados.append(f"{origem} ({rotulo} escaneada > 19 MB)")
                 relatorio.append({"origem": origem, "pagina": numero, "finish_reason": None, "estado": OCR_REQUIRED,
@@ -117,18 +131,25 @@ def indexar_grupo(sb: Supabase, ia, docs: list[dict], lic: dict, com_extracao: b
     conteudo = ler_arquivo(doc["storage_uri"])
     res = extrair(conteudo, nome)
     paginas = list(res.paginas)
-    paginas_ocr, ocr_paginas = ocr_escaneados(ia, res.pdfs_escaneados, res.ignorados)
+    limiar = Limiar.do_ambiente()
+    paginas_ocr, ocr_paginas = ocr_escaneados(ia, res.pdfs_escaneados, res.ignorados, limiar)
     paginas += paginas_ocr
     nao_aceitas = [p for p in ocr_paginas if p["estado"] != EXTRAIDO]
 
     texto_total = limpar_texto("\n".join(p.texto for p in paginas))
     if len(texto_total) < 50:
         degeneradas = [p["pagina"] for p in nao_aceitas if p["estado"] == OCR_DEGENERADO]
-        # Sem estado próprio em status_processamento (issue #299): o motivo vai no começo do erro.
-        erro = (f"{OCR_DEGENERADO}: páginas {degeneradas}; texto aceito insuficiente" if degeneradas
-                else f"sem texto aproveitável; ignorados: {res.ignorados[:5]}")
+        requeridas = [p["pagina"] for p in nao_aceitas if p["estado"] == OCR_REQUIRED]
+        # Sem estado próprio em status_processamento (issue #299): o motivo vai no começo do erro, e
+        # --reprocessar-ocr seleciona pelos dois prefixos.
+        if degeneradas:
+            erro = f"{OCR_DEGENERADO}: páginas {degeneradas}; texto aceito insuficiente"
+        elif requeridas:
+            erro = f"{OCR_REQUIRED}: páginas {requeridas}; texto aceito insuficiente"
+        else:
+            erro = f"sem texto aproveitável; ignorados: {res.ignorados[:5]}"
         return {"status": "ignorado", "erro": erro,
-                "extracao": {"ocr_paginas": ocr_paginas} if ocr_paginas else None}
+                "extracao": {"ocr_paginas": ocr_paginas, "ocr_config": config_ocr(limiar)} if ocr_paginas else None}
 
     extracao = {}
     if com_extracao:
@@ -163,6 +184,7 @@ def indexar_grupo(sb: Supabase, ia, docs: list[dict], lic: dict, com_extracao: b
         extracao["arquivos_ignorados"] = res.ignorados[:50]
     if ocr_paginas:
         extracao["ocr_paginas"] = ocr_paginas
+        extracao["ocr_config"] = config_ocr(limiar)
         extracao["ocr_incompleto"] = bool(nao_aceitas)
     sb.atualizar("licitacao_documentos", doc["id"], {"status_processamento": "indexado", "extracao": extracao, "erro": None})
     for copia in docs:
@@ -181,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--refazer", action="store_true",
                     help="reindexa também o que já foi indexado (ex.: após trocar EMBED_MODEL)")
     ap.add_argument("--reprocessar-ocr", action="store_true",
-                    help="refaz também os 'ignorado' por OCR_DEGENERADO (ex.: após mudar OCR_MAX_TOKENS ou o limiar)")
+                    help="refaz também os 'ignorado' por OCR_DEGENERADO ou OCR_REQUIRED (ex.: após mudar OCR_MAX_TOKENS ou o limiar)")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     for ruidoso in ("httpx", "google_genai", "google_genai.models"):
@@ -198,7 +220,8 @@ def main(argv: list[str] | None = None) -> int:
                          storage_uri="not.is.null", order="id", select=campos)
     if args.reprocessar_ocr:
         docs += sb.selecionar("licitacao_documentos", status_processamento="eq.ignorado",
-                              erro=f"like.{OCR_DEGENERADO}*", sha256="not.is.null", storage_uri="not.is.null",
+                              sha256="not.is.null", storage_uri="not.is.null",
+                              **{"or": f"(erro.like.{OCR_DEGENERADO}*,erro.like.{OCR_REQUIRED}*)"},
                               order="id", select=campos)
     lics = {l["id"]: l for l in sb.selecionar("licitacoes_externas", select="id,numero_processo,numero_edital,fonte,entidade,orgao_nome")}
 

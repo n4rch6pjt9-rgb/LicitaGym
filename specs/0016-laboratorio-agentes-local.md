@@ -1,7 +1,7 @@
 # 0016: Montar o laboratório local de agentes e os casos congelados que barram regressão antes de produção
 
 - **Status:** rascunho (decisões do Marcelo de 09/10/2026 em "Decisões"; abertas só as perguntas de preview)
-- **Issue:** nenhuma
+- **Issue:** #301 (esta spec). Relacionadas: #299 (reconciliação documental), #298 (plano 2B), #300 (conector TCU)
 - **Área:** coletor (`services/coletor-externo`), documentos (pipeline documental), agentes (`_shared/agentes`),
   CI (`pr-quality.yml`), operação (ambiente de validação)
 - **Depende do ok do Marcelo:** sim. As decisões de 09/10 estão em "Decisões". Falta só a verificação do preview
@@ -102,8 +102,8 @@ o CLI `sbx`, que **não está instalado**. Até lá, os agentes de desenvolvimen
      fica fora do git. O SHA-256 do arquivo tem de bater com o do caso. Se não bater, o caso é marcado `documento_mudou`
      e não é avaliado.
   2. **Texto por página:** sempre por página. Página sem texto extraível vira `OCR_REQUIRED` no resultado do
-     laboratório, nunca `extraido` vazio. Depois entra o OCR local (seção 5), registrando engine, versão e confiança
-     quando a engine der.
+     laboratório, nunca `extraido` vazio. Depois entra o OCR local, uma chamada por página (seção 5), registrando
+     engine, versão e confiança quando a engine der. Página com texto degenerado vira `OCR_DEGENERADO`.
   3. **Extração com schema:** chamada ao Ollama com `format` = JSON Schema do evento (seção 2), `temperature 0` e
      `num_ctx 8192`. O resultado guarda modelo, digest do modelo, opções e `REGRA_VERSAO`.
   4. **Validadores determinísticos** (descartam ou rebaixam, nunca completam):
@@ -332,9 +332,40 @@ Daí o desenho:
   - tempo por página;
   - caracteres extraídos;
   - se os trechos esperados aparecem no texto do OCR.
-- **Referência do Gemini (decisão 6):** o OCR do Gemini (`ia.ocr_pdf()`) no arquivo 3 de Baraúna está autorizado como
-  referência. O Marcelo roda à parte e informa o resultado, e o laboratório não chama o Gemini. O texto de referência
-  entra na etapa 5 só para comparar com o OCR local. Até ele chegar, essa comparação fica pendente.
+- **Referência do Gemini (decisão 6):** o OCR do Gemini (`ia.ocr_pdf()`) no arquivo 3 de Baraúna foi autorizado como
+  referência e rodado à parte pelo Marcelo. O laboratório não chama o Gemini.
+
+**OCR de referência medido em 09/10/2026.** Configuração: `coletor/ia.py`, `Gemini.ocr_pdf`, `gemini-2.5-flash`,
+`temperature 0`. Documento: arquivo 3 de Baraúna, SHA-256 `8f6429b0223e149a034f80f38d3209201257b4495cb5ed9acf0f6143d53b97f2`,
+4 páginas escaneadas.
+
+| Modo | Página | Tempo | Caracteres | Resultado |
+|---|---|---|---|---|
+| (a) PDF inteiro, 1 chamada | 1 a 4 | 30,1 s | 55.653 | 1 só marcador de página; o texto degenerou em repetição de pontos depois de parte da página 1 |
+| (b) Página a página, 4 chamadas | 1 | 13,7 s | 3.410 | ok |
+| | 2 | 34,9 s | 50.129 | degenerou em repetição de pontos depois do conteúdo útil |
+| | 3 | 38,1 s | 42.106 | idem |
+| | 4 | 28,9 s | 30.017 | idem |
+
+O conteúdo útil do modo (b) trouxe a prova documental:
+- o trecho "SUSPENDER 'sine die' o andamento do Pregão Eletrônico nº 016/2026 e a sessão pública";
+- as datas "17 de agosto de 2026" e "18 de agosto de 2026".
+
+O número de caracteres alto das páginas 2 a 4 é efeito da degeneração, não de conteúdo.
+
+**Conclusões para o desenho:**
+- **OCR por página, sempre.** Com o PDF inteiro numa chamada, o vínculo com a página se perdeu (1 marcador para 4 páginas)
+  e o texto degenerou ainda na página 1.
+- **Detector de degeneração antes de aceitar a página.** Exemplo: uma sequência longa do mesmo caractere ou do mesmo
+  padrão curto, como a repetição de pontos. A página que casar sai marcada como `OCR_DEGENERADO` e não é aceita como
+  `extraido`. O conteúdo útil antes do trecho degenerado pode ser guardado à parte, marcado como parcial, e só serve
+  para conferir trecho literal. O limiar do detector se define nos casos, sem número fixado aqui.
+- **Limite de tokens de saída** na chamada de OCR por página (`max_output_tokens`), para a degeneração não consumir
+  tempo nem custo. O valor do limite se mede nos casos.
+- **Comparação na etapa 5:** Tesseract/`ocrmypdf` contra esta referência, página a página, com as mesmas métricas:
+  tempo por página, se os trechos e datas acima aparecem e se houve degeneração.
+- **Fora desta spec:** o `indexador.py` de produção hoje manda o PDF escaneado em partes para `ia.ocr_pdf()` e não tem
+  detector de degeneração. Isso afeta produção e vira PR próprio.
 
 ### 6. Ambiente de validação antes de produção (camadas)
 
@@ -362,7 +393,7 @@ Daí o desenho:
 | 2 | Teste de alcance do Ollama do host a partir do container (`host.docker.internal:11434`), depois `laboratorio/compose.yml` + `worker-documentos` sem modelo: download sob demanda por URL + SHA-256, texto por página, `OCR_REQUIRED`, saída JSONL | não | 1 |
 | 3 | Schema de evento + chamada Ollama + validadores (trecho literal, data por regex, cronologia, condicional, dedup) | não | 2; `_shared/agentes` na `main` (PRs `claude/resgate-*`) |
 | 4 | Avaliador camada `modelo` em lote noturno + relatório A × B × C nos casos, com o teto de 60 s por página | não | 3 |
-| 5 | OCR local (Tesseract/ocrmypdf) medido nos escaneados, comparado com a referência do Gemini que o Marcelo informar | não | 2 |
+| 5 | OCR local por página (Tesseract/ocrmypdf) + detector de degeneração + limite de saída, medido nos escaneados e comparado com a referência do Gemini de 09/10 | não | 2 |
 | 6 | Registro do que o Marcelo encontrar sobre preview Supabase + Dashboard (documento, sem mudança de infra) | não | verificação do Marcelo no painel |
 
 A tabela sombra em produção não é etapa desta spec (decisão 4). Se vier, é uma spec nova depois das medições das etapas
@@ -391,6 +422,8 @@ produção.
 | CA-13 | **Dado** o relatório do avaliador da camada `modelo`, **quando** é gerado, **então** contém, por variante: modelo, digest, `num_ctx`, eventos certos/errados por tipo, falsos positivos de suspensão e segundos por página. | pytest `laboratorio/tests/test_avaliador.py` (saída do Ollama gravada como fixture) |
 | CA-14 | **Dado** um caso cujo `entradas.documentos[]` traz PDF ou outro binário dentro de `laboratorio/casos/`, **quando** o carregador lê, **então** recusa: documento só por URL + SHA-256. | pytest `test_casos_congelados.py` |
 | CA-15 | **Dado** o relatório da camada `modelo`, **quando** uma variante passa de 60 s por página em algum documento, **então** ela sai marcada como fora do teto e não é escolhida. | pytest `laboratorio/tests/test_avaliador.py` |
+| CA-16 | **Dado** o texto de OCR de uma página que termina em sequência longa de pontos repetidos (fixture no padrão do arquivo 3 de Baraúna, páginas 2 a 4), **quando** o detector de degeneração roda, **então** a página sai `OCR_DEGENERADO`, não `extraido`, e o conteúdo útil anterior fica marcado como parcial. | pytest `laboratorio/tests/test_ocr.py` |
+| CA-17 | **Dado** um PDF de várias páginas, **quando** o `worker-documentos` faz OCR, **então** faz uma chamada por página, com limite de tokens de saída, e cada texto mantém o número da sua página. | pytest `laboratorio/tests/test_ocr.py` (engine falsa que conta chamadas) |
 
 ## Fora de escopo
 
@@ -402,6 +435,7 @@ produção.
 - Ativar branching do Supabase ou preview do Dashboard (a etapa 6 só registra).
 - Instalar o CLI `sbx` ou migrar os agentes de desenvolvimento para Docker Sandboxes (decisão 7).
 - Chamar o Gemini a partir do laboratório (a referência de OCR vem do Marcelo).
+- Pôr detector de degeneração e OCR por página no `indexador.py` de produção (PR próprio).
 - Rodar a camada de modelo fora do lote noturno.
 - Usar modelo local para escrever código do repositório.
 - Processar proposta ou documento de habilitação de cliente no laboratório (política de IA, item 2): só documento
@@ -437,8 +471,8 @@ produção.
    `host.docker.internal:11434` é o primeiro passo da etapa 2.
 4. **Laboratório só local por enquanto.** Tabela sombra em produção fica como decisão futura, depois da medição.
 5. **Camada de modelo:** só em lote noturno, com teto de até 60 s por página.
-6. **OCR do Gemini no arquivo 3 de Baraúna:** autorizado como referência. O Marcelo roda à parte e informa o
-   resultado.
+6. **OCR do Gemini no arquivo 3 de Baraúna:** autorizado como referência. O Marcelo rodou em 09/10, e o resultado
+   está na seção 5.
 7. **Docker Sandboxes:** não instalar o `sbx` agora; seguir com worktrees.
 8. **Arquivos de agentes do checkout local:** estão sendo resgatados em PRs próprios (branches `claude/resgate-*`).
 9. **Dados do caso:**

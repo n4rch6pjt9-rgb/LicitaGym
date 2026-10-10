@@ -3,18 +3,26 @@
 --
 -- O que muda:
 --   1. private.catalogo_classes_efetivas(): as classes CATMAT que o catálogo da empresa (catalogo_empresa_catmat)
---      deixa efetivas, depois da herança e das exclusões: as dos PDMs efetivos (catalogo_catmat_pdms_efetivos) e as
---      dos itens incluídos um a um. É o padrão de classes do histórico e do link-pca-edital; nada fica fixo no código.
+--      deixa efetivas, depois da herança e das exclusões: classe com regra efetiva incluída no nível classe ou grupo
+--      (a regra da classe vence a do grupo; incluido=false exclui), mais as classes com ao menos um PDM efetivo
+--      incluído (catalogo_catmat_pdms_efetivos; PDM reincluído em classe excluída traz a classe). Item avulso
+--      (nivel='item') sozinho não traz a classe: item avulso casa só por código, não expande (20260930100000).
+--      É o padrão de classes do histórico e do link-pca-edital; nada fica fixo no código.
 --   2. public.pca_historico_orgao_ano(p_classes, p_ano_inicio, p_ano_fim): uma linha por CNPJ e ano, só com itens de
 --      PCA das classes pedidas. Função, e não view, para contar planos e execuções sem repetir o plano que tem itens
 --      em mais de uma classe.
 --      - Planejado: soma dos itens (não do plano), e classes_presentes lista as classes que apareceram.
---      - Compra observada no escopo: licitação já coletada do mesmo CNPJ, no ano da publicação, nas categorias de
---        objeto do escopo fitness. Os itens de licitação não trazem classe CATMAT (catalogo_codigo_item em 239 de
---        92.295, nenhum casando com catmat_itens em 10/10/2026), então essa parte não é por classe: é o escopo
---        inteiro, e os nomes dizem isso (compras_escopo_observadas, valor_escopo_observado). Republicação do PNCP
---        conta uma vez (licitacoes_pncp_canonica.eh_canonica).
+--      - Compra observada no escopo: licitação já coletada do mesmo CNPJ, no ano da publicação (em Brasília), nas
+--        categorias de objeto do escopo fitness. Os itens de licitação não trazem classe CATMAT (catalogo_codigo_item
+--        em 239 de 92.295, nenhum casando com catmat_itens em 10/10/2026), então essa parte não é por classe: é o
+--        escopo inteiro, e os nomes dizem isso (compras_escopo_observadas, valor_escopo_observado). Republicação do
+--        PNCP conta uma vez (licitacoes_pncp_canonica.eh_canonica). A lista de categorias do escopo é fixa no código
+--        da função (não lê objeto_categorias). Se a linha canônica de um grupo republicado cair fora da categoria ou
+--        do ano, a compra não conta (as não canônicas do grupo não a substituem).
 --      - Execução confirmada: só plano com pca_plano_id e pca_link_evidencia, e com item ativo das classes pedidas.
+--      - Prazo: dias entre a data prevista do item e a publicação (data em Brasília) da primeira evidência do plano.
+--        lag_medio_dias é a média do ano; lag_soma_dias e lag_n deixam o chamador ponderar vários anos por item.
+--      Ano e data seguem o horário de Brasília (America/Sao_Paulo), como private.pncp_instante_brt (20260930200000).
 --   Nada aqui grava vínculo.
 --
 -- Quem lê: service_role, via api-pncp-pca (depois do login) e link-pca-edital. authenticated não executa: a função
@@ -33,20 +41,31 @@ stable
 security invoker
 set search_path = ''
 as $fn$
+  with classes as (
+    select k.codigo_grupo, k.codigo_classe from public.catmat_classes k
+    union
+    select r.codigo_grupo, r.codigo_classe
+      from public.catalogo_empresa_catmat r
+     where r.nivel = 'classe'
+  )
   select coalesce(array_agg(distinct c.classe order by c.classe), '{}'::text[])
     from (
-      select e.codigo_classe::text as classe
+      -- regra da classe vence a do grupo; incluido=false exclui
+      select k.codigo_classe::text as classe
+        from classes k
+        left join public.catalogo_empresa_catmat rc on rc.nivel = 'classe' and rc.codigo_classe = k.codigo_classe
+        left join public.catalogo_empresa_catmat rg on rg.nivel = 'grupo' and rg.codigo_grupo = k.codigo_grupo
+       where coalesce(rc.incluido, rg.incluido) is true
+      union
+      -- PDM efetivo incluído traz a classe (inclusive reincluído em classe excluída); item avulso não
+      select e.codigo_classe::text
         from public.catalogo_catmat_pdms_efetivos() e
        where e.codigo_classe is not null
-      union
-      select r.codigo_classe::text
-        from public.catalogo_empresa_catmat r
-       where r.nivel = 'item' and r.incluido and r.codigo_classe is not null
     ) c;
 $fn$;
 
 comment on function private.catalogo_classes_efetivas() is
-  'Classes CATMAT efetivas do catálogo da empresa (PDMs efetivos e itens incluídos). Padrão de classes do histórico do PCA e do link-pca-edital. EXECUTE só service_role.';
+  'Classes CATMAT efetivas do catálogo da empresa: regra incluída no nível classe ou grupo (classe vence grupo; incluido=false exclui) mais as classes com PDM efetivo incluído. Item avulso sozinho não traz a classe (casa só por código). Padrão de classes do histórico do PCA e do link-pca-edital. EXECUTE só service_role.';
 
 revoke all on function private.catalogo_classes_efetivas() from PUBLIC, anon, authenticated, service_role;
 grant execute on function private.catalogo_classes_efetivas() to service_role;
@@ -70,7 +89,9 @@ returns table (
   compras_escopo_observadas integer,
   valor_escopo_observado numeric,
   execucoes_confirmadas integer,
-  lag_medio_dias numeric
+  lag_medio_dias numeric,
+  lag_soma_dias numeric,
+  lag_n integer
 )
 language sql
 stable
@@ -85,7 +106,7 @@ with orgao as (
     from public.orgaos o
    where o.ativo
      and nullif(regexp_replace(o.cnpj, '\D', '', 'g'), '') is not null
-   order by regexp_replace(o.cnpj, '\D', '', 'g'), (o.uf is null), o.uf
+   order by regexp_replace(o.cnpj, '\D', '', 'g'), (nullif(btrim(o.uf), '') is null), o.uf
 ),
 itens as (
   select regexp_replace(p.orgao_cnpj, '\D', '', 'g') as cnpj,
@@ -125,11 +146,13 @@ evidencia as (
    where e.ativo
      and e.pca_plano_id is not null
      and e.pca_link_evidencia is not null
+     and e.pca_plano_id in (select plano_id from itens)
   union all
   select l.pca_plano_id, l.data_publicacao
     from public.licitacoes_externas l
    where l.pca_plano_id is not null
      and l.pca_link_evidencia is not null
+     and l.pca_plano_id in (select plano_id from itens)
 ),
 uma as (
   select distinct on (pca_plano_id) pca_plano_id, data_publicacao
@@ -140,22 +163,28 @@ confirmado as (
   select it.cnpj,
          it.ano_exercicio,
          count(distinct it.plano_id)::int as execucoes_confirmadas,
-         avg(((u.data_publicacao at time zone 'utc')::date - it.data_prevista_contratacao))
-           filter (where u.data_publicacao is not null and it.data_prevista_contratacao is not null) as lag_medio_dias
+         avg(((u.data_publicacao at time zone 'America/Sao_Paulo')::date - it.data_prevista_contratacao))
+           filter (where u.data_publicacao is not null and it.data_prevista_contratacao is not null) as lag_medio_dias,
+         (sum(((u.data_publicacao at time zone 'America/Sao_Paulo')::date - it.data_prevista_contratacao))
+           filter (where u.data_publicacao is not null and it.data_prevista_contratacao is not null))::numeric as lag_soma_dias,
+         (count(*) filter (where u.data_publicacao is not null and it.data_prevista_contratacao is not null))::int as lag_n
     from itens it
     join uma u on u.pca_plano_id = it.plano_id
    group by 1, 2
 ),
 compras as (
   select regexp_replace(l.orgao_cnpj, '\D', '', 'g') as cnpj,
-         extract(year from (l.data_publicacao at time zone 'utc'))::int as ano,
+         extract(year from (l.data_publicacao at time zone 'America/Sao_Paulo'))::int as ano,
          count(*)::int as compras,
          sum(l.valor_total) filter (where l.valor_total is not null) as valor
     from public.licitacoes_externas l
     left join public.licitacoes_pncp_canonica c on c.id = l.id
    where coalesce(c.eh_canonica, true)
-     and l.data_publicacao is not null
-     and nullif(regexp_replace(l.orgao_cnpj, '\D', '', 'g'), '') is not null
+     -- só os CNPJs com plano nas classes e os anos pedidos (ano em Brasília)
+     and regexp_replace(l.orgao_cnpj, '\D', '', 'g') in (select cnpj from itens)
+     and l.data_publicacao >= make_timestamptz(p_ano_inicio, 1, 1, 0, 0, 0, 'America/Sao_Paulo')
+     and l.data_publicacao < make_timestamptz(p_ano_fim + 1, 1, 1, 0, 0, 0, 'America/Sao_Paulo')
+     -- lista fixa no código; não acompanha edição de objeto_categorias
      and l.objeto_categoria in (
        'academia_ar_livre',
        'equipamento_musculacao',
@@ -180,7 +209,9 @@ select pl.cnpj,
        coalesce(c.compras, 0),
        c.valor,
        coalesce(cf.execucoes_confirmadas, 0),
-       cf.lag_medio_dias
+       cf.lag_medio_dias,
+       cf.lag_soma_dias,
+       coalesce(cf.lag_n, 0)
   from planejado pl
   left join orgao og on og.cnpj = pl.cnpj
   left join compras c on c.cnpj = pl.cnpj and c.ano = pl.ano_exercicio
@@ -189,7 +220,7 @@ select pl.cnpj,
 $fn$;
 
 comment on function public.pca_historico_orgao_ano(text[], integer, integer) is
-  'Histórico do PCA por CNPJ e ano nas classes pedidas. valor_planejado soma itens, não o plano. compras_escopo_* é licitação das categorias do escopo fitness no mesmo CNPJ e ano (não é por classe nem execução; republicação conta uma vez). execucoes_confirmadas exige pca_link_evidencia. EXECUTE só service_role.';
+  'Histórico do PCA por CNPJ e ano nas classes pedidas. valor_planejado soma itens, não o plano. compras_escopo_* é licitação das categorias do escopo fitness (lista fixa no código da função) no mesmo CNPJ e ano de publicação em Brasília (não é por classe nem execução; republicação conta uma vez pela linha canônica, e se a canônica cair fora da categoria ou do ano a compra não conta). execucoes_confirmadas exige pca_link_evidencia. lag_soma_dias/lag_n: soma e contagem dos itens com prazo, para média ponderada por item. EXECUTE só service_role.';
 
 revoke all on function public.pca_historico_orgao_ano(text[], integer, integer) from PUBLIC, anon, authenticated, service_role;
 grant execute on function public.pca_historico_orgao_ano(text[], integer, integer) to service_role;

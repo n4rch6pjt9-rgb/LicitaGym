@@ -25,6 +25,9 @@ export interface LinhaHistorico {
   valor_escopo_observado: number | null;
   execucoes_confirmadas: number;
   lag_medio_dias: number | null;
+  /** Soma e contagem dos itens com lag: o prazo do órgão pondera por item, não pela média de cada ano. */
+  lag_soma_dias: number | null;
+  lag_n: number;
 }
 
 export function linhaHistorico(raw: Record<string, unknown>): LinhaHistorico | null {
@@ -48,18 +51,26 @@ export function linhaHistorico(raw: Record<string, unknown>): LinhaHistorico | n
     valor_escopo_observado: numeroOuNulo(raw.valor_escopo_observado),
     execucoes_confirmadas: numeroOuNulo(raw.execucoes_confirmadas) ?? 0,
     lag_medio_dias: numeroOuNulo(raw.lag_medio_dias),
+    lag_soma_dias: numeroOuNulo(raw.lag_soma_dias),
+    lag_n: numeroOuNulo(raw.lag_n) ?? 0,
   };
 }
 
+/** Soma de valor em reais, arredondada a centavos (0,1 + 0,2 = 0,3). */
 export function somaOuAusente(valores: Array<number | null>): number | null {
   const presentes = valores.filter((v): v is number => v != null);
   if (presentes.length === 0) return null;
-  return presentes.reduce((a, b) => a + b, 0);
+  return Math.round(presentes.reduce((a, b) => a + b, 0) * 100) / 100;
 }
 
 export function montarHistorico(linhas: LinhaHistorico[], anoAberto: number) {
   const porOrgao = new Map<string, LinhaHistorico[]>();
+  const vistas = new Set<string>();
   for (const linha of linhas) {
+    // A paginação reexecuta a função: linha repetida de (CNPJ, ano) não soma de novo.
+    const chave = `${linha.orgao_cnpj}:${linha.ano_exercicio}`;
+    if (vistas.has(chave)) continue;
+    vistas.add(chave);
     const grupo = porOrgao.get(linha.orgao_cnpj) ?? [];
     grupo.push(linha);
     porOrgao.set(linha.orgao_cnpj, grupo);
@@ -82,7 +93,8 @@ export function montarHistorico(linhas: LinhaHistorico[], anoAberto: number) {
       unidades: linha.unidades,
     }));
     const fechados = grupo.filter((linha) => linha.ano_exercicio < anoAberto);
-    const lags = fechados.map((linha) => linha.lag_medio_dias);
+    const lagN = fechados.reduce((n, linha) => n + (linha.lag_soma_dias == null ? 0 : linha.lag_n), 0);
+    const lagSoma = fechados.reduce((n, linha) => n + (linha.lag_soma_dias ?? 0), 0);
     return {
       cnpj: primeira.orgao_cnpj,
       nome: primeira.orgao_nome,
@@ -91,9 +103,7 @@ export function montarHistorico(linhas: LinhaHistorico[], anoAberto: number) {
       compras_escopo_observadas: grupo.reduce((n, linha) => n + linha.compras_escopo_observadas, 0),
       valor_escopo_observado: somaOuAusente(grupo.map((linha) => linha.valor_escopo_observado)),
       execucoes_confirmadas: fechados.reduce((n, linha) => n + linha.execucoes_confirmadas, 0),
-      lag_medio_dias: somaOuAusente(lags) == null
-        ? null
-        : (somaOuAusente(lags) as number) / lags.filter((v) => v != null).length,
+      lag_medio_dias: lagN > 0 ? lagSoma / lagN : null,
       anos,
     };
   }).sort((a, b) => (b.valor_planejado ?? -1) - (a.valor_planejado ?? -1));

@@ -94,9 +94,17 @@ o CLI `sbx`, que **não está instalado**. Até lá, os agentes de desenvolvimen
     `D:\AI-IDE-Data\Ollama\start-ollama-localhost.ps1`.
   - **Teste de alcance (passo da etapa 2):** ligado só em `127.0.0.1`, o Ollama do host pode não aceitar conexão vinda
     do container. Isso **não foi testado**. A etapa 2 começa com um teste: de dentro de um container do compose,
-    `GET http://host.docker.internal:11434/api/tags`, registrando o resultado no PR. Se falhar, a correção do bind do
-    host volta ao Marcelo antes de seguir. O compose não sobe um Ollama próprio.
-  - A porta não é exposta fora da máquina.
+    `GET http://host.docker.internal:11434/api/tags`, registrando o resultado no PR.
+  - **A API do Ollama não tem autenticação.** Quem alcança a porta usa os modelos e pode baixar ou apagar modelos.
+    Por isso, o bind do host fica **só em loopback (`127.0.0.1`) ou na interface virtual do Docker**. **Nunca**
+    `0.0.0.0` nem endereço da LAN/Wi-Fi.
+  - **Se o container não alcançar o `127.0.0.1` do host,** a saída não é abrir o bind. Volta ao Marcelo com uma de
+    duas alternativas:
+    - (a) Ollama dentro do compose, numa rede interna (`internal: true`) sem `ports:` publicada, lendo
+      `D:\ollama\models` só para leitura; só os workers dessa rede o alcançam;
+    - (b) um proxy local que escuta só na interface do Docker e encaminha para `127.0.0.1:11434`.
+  - **Teste de exposição na etapa 2:** depois de configurado, uma tentativa de conexão em `11434` pelo endereço da LAN
+    da máquina tem de falhar. O resultado vai registrado no PR.
 - **`worker-documentos`** (Python, reusa `coletor/indexador.py` e `coletor/textos.py` onde servir):
   1. **Download:** baixa da URL oficial (PNCP/portal) ou lê do cache local `laboratorio/.cache/docs/<sha256>`. O cache
      fica fora do git. O SHA-256 do arquivo tem de bater com o do caso. Se não bater, o caso é marcado `documento_mudou`
@@ -147,7 +155,7 @@ o CLI `sbx`, que **não está instalado**. Até lá, os agentes de desenvolvimen
 
 ```json
 {
-  "tipo": "suspensao | retomada | republicacao | retificacao | adiamento | aviso_sem_efeito | revogacao | anulacao | homologacao | ata_assinada | outro",
+  "tipo": "suspensao | retomada | republicacao | retificacao | adiamento | aviso_sem_efeito | retirada | revogacao | anulacao | adjudicacao | homologacao | ata_assinada | outro",
   "alvo": "certame | aviso | item | lote | ata",
   "efetividade": "efetivo | condicional",
   "data_ato": { "valor": "AAAA-MM-DD | null", "bruto": "texto como está no documento | null", "motivo_ausencia": "texto | null" },
@@ -312,9 +320,11 @@ Daí o desenho:
   - `mxbai-embed-large`, que é embedding e não extrai. O embedding de produção é `text-multilingual-embedding-002`
     (768 dimensões), e trocá-lo é "Alto" pela instrução do pipeline documental.
 - **Critério de escolha** (definido antes de medir, sem número inventado):
-  - descartar a variante que tiver qualquer falso positivo de suspensão ou anulação em caso bloqueante;
+  - descartar a variante que tiver **qualquer** falso positivo de evento que muda fase, em qualquer caso. Contam como
+    evento que muda fase: `suspensao`, `anulacao`, `revogacao`, `homologacao`, `adjudicacao`, `retirada` e
+    `republicacao` com `efetividade = efetivo`. A lista fica no código do avaliador como constante versionada;
   - descartar a variante acima do teto de 60 s por página (decisão 5);
-  - entre as que sobrarem, escolher a de mais eventos certos;
+  - entre as que sobrarem, escolher a de maior pontuação: eventos certos menos falsos positivos dos demais tipos;
   - em empate, a mais rápida por página;
   - se A empatar com B ou C em eventos certos, fica A (sem modelo).
 - **Execução e teto (decisão 5):** a camada de modelo roda **só em lote noturno**, nunca no caminho síncrono de uma
@@ -409,7 +419,7 @@ produção.
 |---|---|---|
 | CA-1 | **Dado** o caso congelado 135 com `bloqueante: true`, **quando** `fase_da_compra()` recebe as entradas do caso, **então** `fase = "Recebendo propostas"` e `prioridade = "leads"` (não `Suspensa (documento)`). | pytest `services/coletor-externo/tests/test_casos_congelados.py` |
 | CA-2 | **Dado** o caso 129, **quando** a camada `regras` roda, **então** `fase = "Registro de Preço"`, `prioridade = "historico"` (não `monitorar`), e `datas_normalizadas` traz `campo = "data_fim"`, `bruto = "2604-04-16"`, com `evidencia` e `origem` preenchidas. | pytest `test_casos_congelados.py` |
-| CA-3 | **Dado** um caso bloqueante cujo `esperado.fase` difere da saída, **quando** a CI roda, **então** o job `python-coletor-externo` falha e nomeia o caso. | pytest `test_casos_congelados.py` (caso sintético com esperado errado, marcado `xfail(strict=True)`) |
+| CA-3 | **Dado** um caso bloqueante cujo `esperado.fase` difere da saída, **quando** o portão roda, **então** termina com exit code diferente de 0 e nomeia o caso. A prova não usa `xfail`, que deixaria o pytest verde: um teste roda o avaliador em subprocesso (`python -m` do portão) apontando para um diretório temporário com um caso adulterado (cópia de um caso real com `esperado.fase` trocado). Ele afirma `returncode != 0` e o id do caso na saída. Com o caso original, afirma `returncode == 0`. O comparador também tem teste direto: com saída diferente do esperado, devolve a divergência e o caso. | pytest `test_casos_congelados.py` (`test_portao_falha_com_caso_adulterado`, `test_portao_passa_com_caso_original`, `test_comparador_aponta_divergencia`) |
 | CA-4 | **Dado** um `caso.json` sem `entradas.documentos[].sha256` com 64 hex, ou sem `esperado.fase`, **quando** o carregador lê, **então** recusa com erro de validação. | pytest `test_casos_congelados.py` |
 | CA-5 | **Dado** um PDF cujo SHA-256 difere do declarado no caso, **quando** o `worker-documentos` baixa, **então** o caso sai como `documento_mudou` e não é avaliado. | pytest `laboratorio/tests/test_worker_documentos.py` |
 | CA-6 | **Dado** uma página sem texto extraível, **quando** o `worker-documentos` extrai, **então** a página sai `OCR_REQUIRED` e nenhum evento é gerado dela. | pytest `laboratorio/tests/test_worker_documentos.py` |
@@ -419,6 +429,8 @@ produção.
 | CA-10 | **Dado** dois eventos de mesmo tipo, data e trecho sobreposto no mesmo documento, **quando** o validador roda, **então** sobra um. | pytest `test_validadores.py` |
 | CA-11 | **Dado** uma data bruta com duas correções de digitação candidatas coerentes com a cronologia, **quando** a normalização roda, **então** `valor = null` e `evidencia = limite_pelos_fatos`. | pytest `services/coletor-externo/tests/test_normalizacao_origem.py` |
 | CA-12 | **Dado** o compose do laboratório, **quando** `docker compose config` roda, **então** nenhum serviço define `SUPABASE_SERVICE_ROLE_KEY` nem `SUPABASE_URL` de produção. | pytest `laboratorio/tests/test_compose.py` (lê o YAML) |
+| CA-18 | **Dado** o compose do laboratório, **quando** é lido, **então**: nenhum serviço publica a porta `11434` (sem `ports:` para ela); se houver serviço `ollama`, ele está só numa rede `internal: true`; e nenhuma variável `OLLAMA_HOST` usa `0.0.0.0`. | pytest `laboratorio/tests/test_compose.py` |
+| CA-19 | **Dado** o relatório da camada `modelo`, **quando** uma variante tem um falso positivo de qualquer evento que muda fase (`suspensao`, `anulacao`, `revogacao`, `homologacao`, `adjudicacao`, `retirada`, `republicacao` efetiva), **então** ela sai desclassificada mesmo com mais eventos certos que as outras. | pytest `laboratorio/tests/test_avaliador.py` |
 | CA-13 | **Dado** o relatório do avaliador da camada `modelo`, **quando** é gerado, **então** contém, por variante: modelo, digest, `num_ctx`, eventos certos/errados por tipo, falsos positivos de suspensão e segundos por página. | pytest `laboratorio/tests/test_avaliador.py` (saída do Ollama gravada como fixture) |
 | CA-14 | **Dado** um caso cujo `entradas.documentos[]` traz PDF ou outro binário dentro de `laboratorio/casos/`, **quando** o carregador lê, **então** recusa: documento só por URL + SHA-256. | pytest `test_casos_congelados.py` |
 | CA-15 | **Dado** o relatório da camada `modelo`, **quando** uma variante passa de 60 s por página em algum documento, **então** ela sai marcada como fora do teto e não é escolhida. | pytest `laboratorio/tests/test_avaliador.py` |

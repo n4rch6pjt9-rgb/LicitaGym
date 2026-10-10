@@ -377,6 +377,24 @@ Deno.test("CA-10: ausente sem item do escopo é inativado; com item, os itens s�
   assertEquals(db.rows("pca_itens").filter((i) => i.pca_plano_id === planos[outro].id).length, 2);
 });
 
+Deno.test("CA-10: ausente sem item do escopo inativa só os itens do escopo; item de outra classe mantém o plano", async () => {
+  const db = banco();
+  // plano com um item 7830 e um 7220; a reconciliação é só de 7830 e a integração não traz mais o 7830
+  await gravarPaginaPcaEmLote(db as never, [{ ...cabecalho(), itens: [itemConsulta(1), itemConsulta(2, "7220")] }], {
+    ano: ANO,
+    runId: "r",
+  });
+  db.rows("pca_planos")[0].descoberta_ausente_seguidas = 2;
+  enfileirarPlano(db, ID, 4, { motivo: "ausente", plano: null, classes: ["7830"] });
+  const integ = integracaoFake({ [`${CNPJ}/2026/4`]: [itemIntegracao(2, "7220")] });
+  const s = await processarFila(db as never, integ, { ano: ANO, limite: 10, prazoEsgotado: nunca, runId: RUN });
+  assertEquals([s.planos_feitos, s.planos_inativados, s.itens_inativados], [1, 0, 1]);
+  const plano = db.rows("pca_planos")[0];
+  assertEquals([plano.ativo, plano.descoberta_ausente_seguidas], [true, 0]);
+  const porNumero = Object.fromEntries(db.rows("pca_itens").map((i) => [i.numero_item, i.ativo]));
+  assertEquals(porNumero, { 1: false, 2: true });
+});
+
 Deno.test("CA-10: incremental não enfileira ausentes, só atualiza o contador", async () => {
   const db = banco();
   await gravarPaginaPcaEmLote(db as never, [{ ...cabecalho(), itens: [itemConsulta(1)] }], { ano: ANO, runId: "r" });

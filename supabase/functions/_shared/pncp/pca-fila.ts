@@ -380,11 +380,26 @@ async function inativarItensAusentes(
   return ativos.length;
 }
 
-async function inativarPlano(client: SupabaseClient, planoId: string): Promise<void> {
-  const { error: e1 } = await client.from("pca_itens").update({ ativo: false }).eq("pca_plano_id", planoId);
-  if (e1) throw e1;
-  const { error: e2 } = await client.from("pca_planos").update({ ativo: false }).eq("id", planoId);
+/**
+ * Plano ausente sem item do escopo na integração: inativa só os itens das classes do escopo. O plano só é inativado se
+ * não sobrar item ativo de outra classe (um plano com 7220 numa reconciliação só de 7830 continua ativo, com os itens
+ * 7220). Se o plano continua ativo, o contador de ausência zera: ele não tem mais item do escopo, e a ausência
+ * medida pela descoberta dessas classes não diz nada sobre as outras.
+ */
+async function inativarAusenteNoEscopo(
+  client: SupabaseClient,
+  planoId: string,
+  classes: string[],
+): Promise<{ itens: number; plano: boolean }> {
+  const itens = await inativarItensAusentes(client, planoId, new Set(), classes);
+  const { data, error } = await client.from("pca_itens").select("id")
+    .eq("pca_plano_id", planoId).eq("ativo", true).limit(1);
+  if (error) throw error;
+  const restam = ((data ?? []) as Row[]).length > 0;
+  const { error: e2 } = await client.from("pca_planos")
+    .update(restam ? { descoberta_ausente_seguidas: 0 } : { ativo: false }).eq("id", planoId);
   if (e2) throw e2;
+  return { itens, plano: !restam };
 }
 
 export type FilaStats = LoteStats & {
@@ -485,8 +500,9 @@ export async function processarFila(
         let r: LoteStats;
         let planoId: string | null;
         if (linha.motivo === "ausente") {
-          // Ausente em 2 descobertas seguidas. Sem item do escopo na integração: inativa. Com item: a consulta pulou o
-          // plano, então grava os itens no plano que já existe e zera o contador.
+          // Ausente em 2 descobertas seguidas. Sem item do escopo na integração: inativa os itens do escopo (e o plano,
+          // se não sobrar item de outra classe). Com item: a consulta pulou o plano, então grava os itens no plano que
+          // já existe e zera o contador.
           planoId = await idDoPlano(client, idPca);
           if (!planoId) {
             await marcarFila(client, linha, true, null);
@@ -494,8 +510,9 @@ export async function processarFila(
             continue;
           }
           if (escopo.length === 0) {
-            await inativarPlano(client, planoId);
-            stats.planos_inativados++;
+            const r0 = await inativarAusenteNoEscopo(client, planoId, classes);
+            stats.itens_inativados += r0.itens;
+            if (r0.plano) stats.planos_inativados++;
             await marcarFila(client, linha, true, null);
             stats.planos_feitos++;
             continue;

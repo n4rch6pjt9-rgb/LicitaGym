@@ -137,6 +137,10 @@ verify_jwt = false
 [functions.api-agentes]
 verify_jwt = false
 
+# api-tenant valida o JWT do usuário no código (auth.getUser); papel pelo vínculo em tenant_membros ou app_metadata (spec 0017)
+[functions.api-tenant]
+verify_jwt = false
+
 # api-saude: cron secret (workflow saude.yml) ou usuário admin, validados no código
 [functions.api-saude]
 verify_jwt = false

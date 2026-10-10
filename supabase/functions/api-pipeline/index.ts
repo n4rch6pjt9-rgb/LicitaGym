@@ -1,6 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { type AuthenticatedUser, authenticateUser, corsHeaders, isLicitagymAdmin, jsonResponse } from "../_shared/http.ts";
+import { ErroTenantAcesso } from "../_shared/tenant.ts";
 import { createSupabaseRepo, ErroPipeline, type PipelineRepo } from "./repo.ts";
 import { ACOES_ADMIN } from "./types.ts";
 import { parseActionFromBody } from "./validation.ts";
@@ -8,9 +9,11 @@ import { parseActionFromBody } from "./validation.ts";
 /**
  * api-pipeline: pipeline comercial da equipe (Dashboard #29).
  *   Leitura e movimentação (etapas_listar, pipeline_listar/estado/historico, pipeline_adicionar/mover/remover):
- *   qualquer usuário autenticado. Configuração das etapas (etapa_criar/atualizar/excluir): só
- *   app_metadata.licitagym_role = 'admin'. O banco é acessado com service_role; o JWT só identifica e autoriza.
- *   O pipeline é do tenant. tenant_membros liga o usuário; sem vínculo, só vale se houver uma empresa ativa.
+ *   qualquer usuário da empresa (admin ou operação). Configuração das etapas (etapa_criar/atualizar/excluir): admin
+ *   da empresa (tenant_membros.papel = 'admin') ou o desenvolvedor (app_metadata.licitagym_role = 'admin').
+ *   O banco é acessado com service_role; o JWT só identifica e autoriza. O pipeline é do tenant
+ *   (_shared/tenant.ts): vínculo só com empresa desativada, vínculo desligado ou conta sem vínculo → 403 (#263);
+ *   só o desenvolvedor sem vínculo cai na única empresa ativa.
  */
 
 export interface ApiPipelineContext {
@@ -44,13 +47,12 @@ export async function handleRequest(req: Request, ctx: ApiPipelineContext = {}):
 
   const params = parseActionFromBody(body as Record<string, unknown>);
   if ("error" in params) return jsonResponse({ error: params.error }, 400);
-  if (ACOES_ADMIN.has(params.action) && !isLicitagymAdmin(user)) {
-    return jsonResponse({ error: "Sem permissão: só administradores configuram as etapas do pipeline." }, 403);
-  }
-
   try {
     const repo = (ctx.getRepo ?? (() => createSupabaseRepo(getDefaultServiceClient())))();
-    const tenant = await repo.tenantDoUsuario(user.id);
+    const { tenant, papel } = await repo.tenantDoUsuario(user.id, isLicitagymAdmin(user));
+    if (ACOES_ADMIN.has(params.action) && !(isLicitagymAdmin(user) || papel === "admin")) {
+      return jsonResponse({ error: "Sem permissão: só o admin da empresa configura as etapas do pipeline." }, 403);
+    }
 
     switch (params.action) {
       case "etapas_listar":
@@ -108,7 +110,7 @@ export async function handleRequest(req: Request, ctx: ApiPipelineContext = {}):
       }
     }
   } catch (e) {
-    if (e instanceof ErroPipeline) return jsonResponse({ error: e.message }, e.status);
+    if (e instanceof ErroPipeline || e instanceof ErroTenantAcesso) return jsonResponse({ error: e.message }, e.status);
     console.error("[api-pipeline] erro interno:", e);
     return jsonResponse({ error: "Erro interno no servidor" }, 500);
   }

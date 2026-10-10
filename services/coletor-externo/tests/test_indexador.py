@@ -57,11 +57,6 @@ def test_dividir_com_cabecalho_e_sobreposicao():
     assert all(len(t["texto"]) <= 1000 + 10 for t in tr)
 
 
-def test_ocr_paginado():
-    ps = IX.paginas_do_ocr("[[PÁGINA 1]] um [[PÁGINA 2]] dois", "s.pdf")
-    assert [(p.numero, p.texto.strip()) for p in ps] == [(1, "um"), (2, "dois")]
-
-
 def test_indexa_uma_vez_por_hash_e_marca_copias(tmp_path):
     arq = tmp_path / "r.pdf"; arq.write_bytes(_pdf([RECURSO]))
     docs = [

@@ -93,8 +93,10 @@ atribuídas ao papel admin (decisão 3):
 |---|---|---|
 | Nova | nenhuma | — |
 | Triagem | **Confirmar a aderência item a item** (descrição, especificação e quantidade contra o catálogo da empresa) | **agente de aderência** (PR #308, `aderencia.ts`): produto × item por atributo, veredito `atende`, `supera`, `nao_atende`, `nao_comprovado`, `ausente` ou `ambiguo`; o selo `catmat_match` é só a pré-triagem |
+| Triagem | **Conferir as restrições de participação por lote** (lote exclusivo ME/EPP contra o porte da empresa; marca de referência; norma de certificação exigida; assistência técnica local) | agente de edital (#307), com os sinais que faltam listados na seção 2c; porte da empresa pelo CNPJ |
 | Em análise | **Ler o edital** (exigências técnicas, amostra, atestados, prazo de entrega) | **agente de edital** (PR #307, `edital.ts`): localiza no texto indexado amostra, visita técnica, atestado de capacidade, garantia de proposta e contratual, laudo/certificação (INMETRO/ABNT), marca/modelo e prazo de entrega, cada achado com trecho e página; calcula o limite de impugnação (3 dias úteis antes da abertura, só fins de semana: feriados não verificados). **Agente jurídico** (`juridico.ts`): sugere a peça (esclarecimento, impugnação, demonstração de exequibilidade) com o artigo da 14.133. Gate de prazo mínimo (seção 2a) |
 | Em análise | **Conferir o preço de referência contra o piso da empresa** | **agente de preço** (`preco.ts`): referência praticada do item (mínimo de 5 amostras homologadas), faixa de exequibilidade e piso da empresa (`catalogo_precos`: preço de tabela menos desconto máximo, #254) |
+| Em análise | **Montar o dossiê por item antes da sessão** (catálogo ou ficha, manual e certificado de conformidade específicos do modelo, em português; declarações; atestado compatível com nota fiscal; balanço) | agente de edital lista o exigido por item com trecho e página; a empresa anexa. Motivo: no caso da seção 2c, a convocação dá **4 horas** para mandar tudo |
 | Em análise | **Confirmar o frete até o local de entrega** | sem agente: distância (`calculate-distance-webrouter`) só como indicador aproximado ("frete não verificado") |
 | Interessante | **Decidir GO, GO condicionado ou NO-GO** (decisão humana, com motivo) | **recomendação** (PR #308, `decisao.ts`): `go`, `go_condicionado`, `no_go` ou `monitorar`, explicável e **sem pontuação**; a decisão humana pode divergir e é ela que vale (#250) |
 
@@ -144,13 +146,86 @@ deixa de ser criada pela etapa.
   do fornecedor). Não muda prioridade nem fase sozinho.
 - **Exemplo conferido em 10/10:** Pregão Eletrônico nº 114655/2025 (Estado de Goiás, Casa Militar; academia; PNCP
   `01409580000138-1-002061/2025`): divulgado 15/08/2025, abertura 03/09/2025 09:00, bens e menor preço → mínimo 8 dias
-  úteis; 13 contados → `dentro_do_prazo` (folga 5; feriados locais não verificados).
+  úteis; 13 contados → `dentro_do_prazo` (folga 5; feriados locais não verificados). A plataforma do órgão (sislog-GO) registra outra data, a publicação no DOE em 19/08/2025 08:00; contada dela, a folga cai para 2 (10 dias úteis). O gate usa a divulgação no PNCP e mostra a data usada.
 - **Onde mora:** cálculo determinístico na ingestão/reconciliação (não nesta spec de tarefas). Vira PR próprio, com
   testes dos incisos do art. 55 e da 14.981.
 
 Tarefa com `parent_codigo` (ex.: F04-T02 "↳ Regularidade fiscal") entra com a mãe. F07-T08 (empresa estrangeira) e
 F08–F12 (execução, alteração, extinção, sanção, ata) ficam fora do pipeline comercial no v1; a condição do catálogo
 decide as que não se aplicam ao certame.
+
+### 2c. Caso real: PE 114655/2025 (Casa Militar de Goiás, academia), do edital ao aditivo
+
+Lido em 10/10 a partir dos documentos públicos do certame: edital, TR, ETP, chat da sessão na plataforma do órgão
+(sislog-GO), termo de julgamento e homologação, e os dois termos aditivos. Nada desses arquivos foi copiado para o
+repositório; aqui só as contagens e as citações (cláusula e página).
+
+**O certame.** Lei 14.133 e Decreto GO 10.247/2023. Pregão eletrônico, menor preço por lote, modo aberto, 9 lotes, 77
+itens, R$ 3.373.060,18 (a soma dos lotes bate com o total do edital).
+- Lotes 04, 06, 07, 08 e 09 são **exclusivos ME/EPP** (TR 10.8), R$ 231.933,12, entre eles o **piso emborrachado**
+  (lote 08, 360 m²).
+- **Marca de referência** admitida nos lotes 01 a 03 (TR 6.3, art. 41). O ETP (7.1, p. 60) lista 12 marcas, entre elas a
+  Konnen. Outra marca precisa de laudo de equivalência (art. 42, TR 10.15.5).
+- Sem amostra física. Por item, a proposta leva catálogo ou ficha, manual, ano de fabricação, garantia, peso e código
+  (TR 6.4 a 6.7), com tolerância de 5% nas dimensões (TR 6.5).
+- **Certificado de conformidade** por equipamento nos lotes 01 a 03, numa norma do rol: ABNT ISO 20957, ASTM F2276,
+  F2216, F1250, F3104 ou F3105, ou EN 957 (TR 6.8).
+- **Declarações:**
+  - visita técnica ou renúncia (TR 10.17 e 10.18);
+  - infraestrutura de assistência técnica em Goiânia (TR 10.15.2);
+  - sustentabilidade (ETP 6.17.1).
+- **Habilitação:**
+  - atestado de fornecimento compatível; nos lotes 01 a 03, de equipamento elétrico ou articulado (TR 10.14 e 10.15.1);
+  - balanço dos 2 últimos exercícios, com LG, LC e SG ≥ 1, ou capital/PL de 10% do lote (TR 10.10).
+- **Execução:**
+  - entrega e instalação no 11º andar, com acesso por escada;
+  - frete e montagem inclusos;
+  - até 150 dias da ordem de fornecimento (TR 7.1, 7.2 e 10.3.2);
+  - garantia de 3 anos nos lotes 01 a 03 e de 1 ano nos demais (TR 7.5.1).
+- **Preço unitário acima do estimado não é adjudicado**, mesmo com o total do lote abaixo (TR 3.4).
+- Esclarecimento e impugnação até 29/08/2025 às 23:59:59 (3 dias úteis antes da abertura, edital 13.1; a plataforma
+  confirma). Houve 1 esclarecimento e nenhuma impugnação.
+
+**O julgamento (chat da sessão: 1.067 mensagens, de 03/09 a 14/11/2025).**
+- No lote 01 foram cerca de 10 inabilitações em sequência, do lance de R$ 500 mil para cima. Venceu quem ofertou o
+  **valor estimado** (R$ 1.445.259,47).
+- Lotes 03, 04 e 06 terminaram fracassados (R$ 322.043,04).
+- Valor adjudicado: R$ 2.829.574,87.
+- **Motivos de inabilitação:**
+  - certificado ausente, genérico ou em outra língua;
+  - manual ou prospecto incompleto;
+  - dimensão ou peso fora da tolerância;
+  - marca fora do rol sem laudo;
+  - material diferente do especificado (PVC em vez de uretano; borracha injetada em vez de vulcanizada);
+  - falta da declaração de visita técnica ou da de assistência local;
+  - atestado incompatível ou sem nota fiscal;
+  - balanço incompleto;
+  - preço unitário acima do estimado;
+  - não mandar a proposta ajustada e a habilitação no **prazo de 4 horas** da convocação (edital 7.14, 8.1 e 8.14).
+- Convocação e diligência saem só no chat da plataforma, nunca no PNCP.
+
+**O contrato.** Em 23/06/2026, os dois contratos receberam acréscimo quantitativo (art. 124, I, b, e art. 125), pelo
+mesmo preço unitário homologado:
+- lote 01: + R$ 333.377,26 (≈23%);
+- lote 02: + R$ 112.000,00 (≈10,18%).
+
+O valor contratado passou do homologado. A coleta de contratos e termos aditivos é a #316.
+
+**O que o caso muda nesta spec:**
+- Duas tarefas novas no modelo padrão da seção 2b: **restrições de participação por lote** (Triagem) e **dossiê por
+  item antes da sessão** (Em análise).
+- A aderência (Triagem) é por item e atributo, não por categoria: material, dimensões e peso com ±5%, componentes (rodas,
+  tela). O agente de aderência (#308) precisa ler esses atributos no TR.
+- A Triagem decide **por lote**: a oportunidade pode seguir com parte dos lotes. O motivo do descarte fica por lote.
+
+**Sinais que faltam aos agentes** (vão para os PRs #307 e #308, não para esta spec):
+- exclusividade ME/EPP por lote;
+- marca de referência citada e laudo de equivalência;
+- norma de certificação exigida e idioma do documento;
+- assistência técnica numa cidade;
+- declaração de visita técnica ou renúncia;
+- teto do preço unitário;
+- restrição de acesso no local de entrega (andar, escada).
 
 ### 3. Criação das tarefas ao entrar na etapa
 
@@ -223,6 +298,7 @@ registradas. A etapa nunca altera prazo legal nem fecha tarefa do certame.
 | CA-15 | **Dado** uma tarefa na fila do admin, **quando** um admin a atribui a um membro de operação da mesma empresa, **então** ela passa a esse usuário; operação tentando atribuir recebe 403; atribuir a usuário de outra empresa recebe 400. | Deno `tests/supabase/functions/api_pipeline_test.ts` (ou a função da #252 que atribui) |
 | CA-16 | **Dado** uma empresa nova, **quando** recebe o modelo padrão, **então** Triagem, Em análise e Interessante têm as tarefas `origem = empresa` da seção 2b e nenhuma tarefa do catálogo; Nova não tem tarefa. | SQL `pipeline_etapa_tarefas_check.sql` |
 | CA-17 | **Dado** uma licitação sem chunks, **quando** entra em Triagem, **então** vai para a fila de download, indexação e agentes, e as tarefas mostram "análise em preparação" até a execução terminar; sem documento, a execução fica `sem_documento` e nenhum achado é inventado. | SQL `pipeline_etapa_tarefas_check.sql` + Deno `tests/supabase/functions/api_agentes_test.ts` |
+| CA-18 | **Dado** uma empresa nova, **quando** recebe o modelo padrão, **então** Triagem tem "Conferir as restrições de participação por lote" e Em análise tem "Montar o dossiê por item antes da sessão", ambas `origem = empresa` e do papel admin. | SQL `pipeline_etapa_tarefas_check.sql` |
 
 ## Fora de escopo
 
@@ -232,6 +308,10 @@ registradas. A etapa nunca altera prazo legal nem fecha tarefa do certame.
 - Tarefas de execução de contrato (F08–F12) no pipeline comercial.
 - Catálogo para regulamento do Sistema S.
 - Notificação (e-mail, WhatsApp) de tarefa criada.
+- Alerta de convocação e diligência com prazo de horas: sai só no chat da plataforma do órgão (no caso da seção 2c,
+  4 horas), que não coletamos. Fica como ideia de fonte nova, sem issue.
+- Contratos e termos aditivos (valor contratado atual além do homologado): #316.
+- Sinais novos dos agentes listados na seção 2c (PRs #307 e #308).
 
 ## Impacto em dados
 
@@ -279,6 +359,10 @@ Do Marcelo, 10/10/2026:
 7. **Apoio da fase de análise são os agentes.** Triagem → agente de aderência; Em análise → agentes de edital,
    jurídico e preço; Interessante → recomendação sem pontuação. Pré-requisito: edital indexado (fila ao entrar em
    Triagem). A tarefa continua da equipe; o agente entrega achados com fonte para revisão.
+
+8. **Caso real registrado (seção 2c).** O PE 114655/2025 vira o exemplo da fase 1. O modelo padrão ganha duas
+   tarefas da empresa: restrições de participação por lote (Triagem) e dossiê por item antes da sessão (Em análise,
+   CA-18). Contratos e aditivos: #316.
 
 ## Perguntas em aberto
 

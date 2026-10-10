@@ -34,6 +34,16 @@ pela empresa (ex.: "pedir cotação ao fabricante" em Preparando proposta).
 
 ## Desenho
 
+### 0. Perspectiva: o fornecedor
+
+Todas as tarefas desta spec são **do fornecedor** (a empresa cliente do LicitaGym), nunca do órgão licitante:
+- o catálogo 14.133 já é assim (`docs/tarefas/catalogo-tarefas-14133.md`, seção 5): `tarefas_catalogo.ator` só aceita
+  `licitante`, `contratado` ou `licitante_ou_contratado` (produção, 10/10: 45, 32 e 7);
+- os atos do órgão (29 dos 44 eventos, ex.: convocação para habilitação, resultado, convocação para assinar) entram
+  como **eventos** que abrem a janela ou contam o prazo da tarefa do fornecedor, não como tarefa;
+- as tarefas escritas pela empresa (`origem = empresa`) também são da equipe do fornecedor;
+- a tarefa nasce para a equipe da empresa dona do pipeline (`tenant_id`), quando ela move o card.
+
 ### 1. Modelo de tarefas por etapa (configuração da empresa)
 
 Tabela nova `public.pipeline_etapa_tarefas` (uma linha = uma tarefa padrão de uma etapa):
@@ -138,6 +148,7 @@ registradas. A etapa nunca altera prazo legal nem fecha tarefa do certame.
 | CA-10 | **Dado** `tarefa_codigo` inexistente ou inativo, **quando** `etapa_tarefas_salvar`, **então** 400 e nada é gravado. | Deno `api_pipeline_test.ts` |
 | CA-11 | **Dado** `anon` e `authenticated`, **quando** leem `pipeline_etapa_tarefas` por REST, **então** sem acesso. | SQL `pipeline_etapa_tarefas_check.sql` (ACL) |
 | CA-12 | **Dado** a empresa A, **quando** move card, **então** nenhuma tarefa é criada para a empresa B nem lê o modelo de B. | SQL `pipeline_etapa_tarefas_check.sql` |
+| CA-13 | **Dado** o modelo padrão, **quando** é semeado ou salvo pela `api-pipeline`, **então** nenhuma tarefa do catálogo com `ator` fora de `licitante`, `contratado` e `licitante_ou_contratado` é aceita (o check recusa). | SQL `pipeline_etapa_tarefas_check.sql` |
 
 ## Fora de escopo
 

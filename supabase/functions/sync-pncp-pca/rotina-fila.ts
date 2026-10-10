@@ -41,12 +41,32 @@ export type RotinaBody = {
   async?: boolean;
 };
 
-/** Guardado em pncp_sync_run.parametros.continuation e herdado pela próxima execução do mesmo lock. */
+/**
+ * Guardado em pncp_sync_run.parametros.continuation e herdado pela próxima execução do mesmo lock.
+ *
+ * `pending` é o marcador que `private.acquire_sync_lock` reconhece (migration 20260929000001): quando o worker morre
+ * sem `finishSyncRun`, a execução parada (sem heartbeat há 3 min) só vira 'incompleta', e a continuation só é
+ * herdada, se `continuation.pending` for array não vazio. Os outros syncs guardam ali fatias de data; aqui são rótulos:
+ * "descoberta" (há posição de descoberta a retomar) e "fila" (a carga pode ter deixado plano aberto). O lock
+ * `pca-fila:{ano}` é só deste fluxo, então nenhum leitor de fatias (`pendingFromPriorRun`) vê estes rótulos.
+ */
 type ContinuacaoFila = {
+  pending: string[];
   rotina: Rotina;
   classes: string[];
   descoberta?: PosicaoDescoberta | null;
+  /**
+   * Planos vistos pela cadeia desde a página 1, enquanto a descoberta não termina (some quando termina). null: a
+   * cadeia não pode contar ausência (houve erro de página, ou a posição herdada não traz os vistos). Uns 1.000 ids
+   * de 30 caracteres no pior caso medido (935 planos 7830/2026).
+   */
+  vistos?: string[] | null;
 };
+
+function marcarPendencia(c: ContinuacaoFila, filaAberta: boolean): ContinuacaoFila {
+  c.pending = [...(c.descoberta ? ["descoberta"] : []), ...(filaAberta ? ["fila"] : [])];
+  return c;
+}
 
 /**
  * Sync do PCA por fila (spec 0012, PR 2). `rotina`:
@@ -84,11 +104,13 @@ export async function handleRotinaFila(params: {
   );
   const lockKey = `pca-fila:${ano}`;
 
-  // Continuação sem nada a fazer (fila vazia e nenhuma execução incompleta para retomar): não abre execução.
+  // Continuação sem nada a fazer (fila vazia e nenhuma execução incompleta para retomar): não abre execução. Uma
+  // execução ainda 'executando' também conta: se o worker morreu, só o acquire_sync_lock a converte em 'incompleta'
+  // (e herda a continuation); se está viva, o acquire responde already_running.
   if (somenteRetomada) {
     const { abertos } = await situacaoFila(client, ano);
     const { data: pendente, error } = await client.schema("private").from("pncp_sync_run").select("id")
-      .eq("lock_key", lockKey).eq("status", "incompleta").limit(1).maybeSingle();
+      .eq("lock_key", lockKey).in("status", ["incompleta", "executando"]).limit(1).maybeSingle();
     if (error) throw error;
     if (abertos === 0 && !pendente) {
       return jsonResponse({ status: "ignorado", motivo: "fila vazia e nada para retomar", ano });
@@ -111,16 +133,33 @@ export async function handleRotinaFila(params: {
 
   const executar = async (): Promise<Response> => {
     const resumo: Record<string, unknown> = { sync_id: runId, rotina, ano, classes, somente_retomada: somenteRetomada };
-    const continuacao: ContinuacaoFila = { rotina, classes, descoberta: null };
+    // Descoberta: nova (rotina) ou retomada (continuação com posição pendente). Continuação sem posição: só a carga.
+    const posicao = somenteRetomada ? herdada?.descoberta ?? null : { classe_idx: 0, pagina: 1 };
+    // Planos vistos pela cadeia: começa vazio quando a descoberta parte da página 1; numa retomada do meio, vem da
+    // continuation (sem ela, a cadeia não conta ausência).
+    const doInicio = posicao != null && posicao.classe_idx === 0 && posicao.pagina === 1;
+    let vistosCadeia: Set<string> | null = doInicio
+      ? new Set()
+      : (posicao && Array.isArray(herdada?.vistos) ? new Set(herdada.vistos.map(String)) : null);
+    const continuacao: ContinuacaoFila = {
+      pending: [],
+      rotina,
+      classes,
+      descoberta: posicao,
+      vistos: posicao ? (vistosCadeia ? [...vistosCadeia] : null) : undefined,
+    };
     let erroPrincipal: string | undefined;
+    // Durante a execução a fila conta como aberta: se o worker morrer, a execução vira 'incompleta' e a continuação
+    // confere a fila (abrir uma execução que acha a fila vazia não faz mal; perder a posição da descoberta faz).
     const heartbeat = () =>
       updateSyncHeartbeat(client, runId, {
-        continuation: continuacao as unknown as Record<string, unknown>,
+        continuation: marcarPendencia(continuacao, true) as unknown as Record<string, unknown>,
         baseParametros: { ...body, ano },
       });
     try {
-      // Descoberta: nova (rotina) ou retomada (continuação com posição pendente). Continuação sem posição: só a carga.
-      const posicao = somenteRetomada ? herdada?.descoberta ?? null : { classe_idx: 0, pagina: 1 };
+      // Antes de qualquer requisição: grava a posição de onde esta execução parte. Sem isso, um worker morto no meio
+      // da descoberta deixaria a continuation herdada (ou nenhuma) no lugar desta.
+      await heartbeat();
       if (posicao) {
         const desc = await descobrirPlanos(consulta, {
           ano,
@@ -132,8 +171,14 @@ export async function handleRotinaFila(params: {
         });
         continuacao.descoberta = desc.retomar_de;
         if (desc.erro) erroPrincipal = `descoberta: ${desc.erro}`.slice(0, 500);
+        // Erro de página: a cadeia não prova mais ausência (nem depois que a continuação reler a página).
+        if (desc.erro_pagina) vistosCadeia = null;
+        for (const id of desc.planos.keys()) vistosCadeia?.add(id);
+        const terminou = desc.retomar_de == null;
+        continuacao.vistos = terminou ? undefined : (vistosCadeia ? [...vistosCadeia] : null);
         resumo.descoberta = {
           completo: desc.completo,
+          cadeia_completa: terminou && vistosCadeia != null,
           retomada: posicao.classe_idx !== 0 || posicao.pagina !== 1,
           retomar_de: desc.retomar_de,
           paginas: desc.paginas,
@@ -144,9 +189,11 @@ export async function handleRotinaFila(params: {
           erro: desc.erro ? "descoberta_incompleta" : null,
         };
         resumo.fila = await enfileirarDescobertos(client, desc, rotina, { chainId: runId, classes });
-        // Contador de ausência só com descoberta completa numa execução só: página que falhou não prova que o plano
-        // sumiu, e uma descoberta retomada não viu as páginas da execução anterior.
-        if (desc.completo) resumo.ausentes = await tratarAusentes(client, desc, { ano, classes, rotina, chainId: runId });
+        // Contador de ausência uma vez por cadeia, quando a última página da descoberta termina, com os planos vistos
+        // por todas as execuções da cadeia. Página que falhou em qualquer elo não prova que o plano sumiu: não conta.
+        if (terminou && vistosCadeia) {
+          resumo.ausentes = await tratarAusentes(client, vistosCadeia, { ano, classes, rotina, chainId: runId });
+        }
         await heartbeat();
       }
 
@@ -177,7 +224,12 @@ export async function handleRotinaFila(params: {
         totalInalterados: carga.inalterados,
         totalErros: carga.erros,
         erroPrincipal,
-        parametros: { ...body, ano, resumo, ...(pendente ? { continuation: continuacao } : {}) },
+        parametros: {
+          ...body,
+          ano,
+          resumo,
+          ...(pendente ? { continuation: marcarPendencia(continuacao, fila.abertos > 0) } : {}),
+        },
       });
       return jsonResponse({ status, ...resumo });
     } catch (error) {
@@ -187,7 +239,7 @@ export async function handleRotinaFila(params: {
       await finishSyncRun(client, runId, {
         status: pausa ? "incompleta" : "falhou",
         erroPrincipal: mensagem.slice(0, 500),
-        parametros: { ...body, ano, resumo, ...(pausa ? { continuation: continuacao } : {}) },
+        parametros: { ...body, ano, resumo, ...(pausa ? { continuation: marcarPendencia(continuacao, true) } : {}) },
       }).catch((e) =>
         console.error(JSON.stringify({
           evento: "pca_fila_finish_falhou",

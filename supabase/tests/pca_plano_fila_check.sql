@@ -7,6 +7,8 @@
 --        de menos de 10 minutos (recuo entre tentativas); ou se processando abandonado não contar tentativa;
 --   DESC pca_marcar_descoberta não zerar o contador do plano visto, não somar no ausente com item da classe, ou somar
 --        no plano sem item da classe;
+--   LOCK private.acquire_sync_lock não preservar (e herdar) a execução da fila que parou sem heartbeat com a
+--        continuation que o sync-pncp-pca grava (pending com rótulo, rotina, classes, descoberta);
 --   CRON (só com pg_cron) os três jobs novos não existirem, ou o comando não usar "rotina".
 -- Fixtures com ids fictícios ('CHK-FILA-…') e ano 2099; tudo termina em rollback.
 -- Feito para o banco descartável (scripts/validar-migrations.sh). Em produção, com a fila real em uso, a parte RES
@@ -22,6 +24,8 @@ declare
   v_n int;
   v_id_proc bigint;
   v_p1 uuid;
+  v_stale uuid;
+  v_lock jsonb;
 begin
   -- ACL
   if to_regclass('private.pca_plano_fila') is null then
@@ -130,6 +134,25 @@ begin
   end if;
   if (select descoberta_ausente_seguidas from public.pca_planos where id_pca_pncp = 'CHK-FILA-P-OUTRA-CLASSE') <> 0 then
     v_falhas := v_falhas || 'plano só com item de outra classe somou ausência'::text;
+  end if;
+
+  -- LOCK: worker morto (sem heartbeat há 10 min) no meio da descoberta, com a continuation no formato da fila
+  insert into private.pncp_sync_run (resource_type, lock_key, status, parametros, iniciada_em, last_heartbeat_at)
+  values ('pca', 'pca-fila:2099', 'executando',
+          jsonb_build_object('rotina', 'incremental', 'ano', 2099, 'continuation', jsonb_build_object(
+            'pending', jsonb_build_array('descoberta', 'fila'), 'rotina', 'incremental',
+            'classes', jsonb_build_array('7830'), 'descoberta', jsonb_build_object('classe_idx', 0, 'pagina', 3))),
+          now() - interval '20 minutes', now() - interval '10 minutes')
+  returning id into v_stale;
+  v_lock := private.acquire_sync_lock('pca-fila:2099', 'pca',
+    '{"rotina":"incremental","somente_retomada":true,"ano":2099}'::jsonb);
+  if coalesce((v_lock->>'already_running')::boolean, true)
+     or v_lock->'continuation'->'descoberta'->>'pagina' is distinct from '3'
+     or v_lock->'continuation'->>'rotina' is distinct from 'incremental' then
+    v_falhas := v_falhas || format('acquire_sync_lock não herdou a continuation da fila: %s', v_lock);
+  end if;
+  if (select status from private.pncp_sync_run where id = v_stale) <> 'retomada' then
+    v_falhas := v_falhas || 'execução stale da fila com pending não virou retomada'::text;
   end if;
 
   -- CRON (só onde o pg_cron existe)

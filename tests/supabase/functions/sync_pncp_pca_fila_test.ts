@@ -16,6 +16,7 @@ import {
 import { gravarPaginaPcaEmLote } from "../../../supabase/functions/_shared/pncp/pca-lote.ts";
 import { normalizePcaItem } from "../../../supabase/functions/_shared/pncp/normalize.ts";
 import { hashPayload } from "../../../supabase/functions/_shared/pncp/hash.ts";
+import { BudgetExhaustedError } from "../../../supabase/functions/_shared/pncp/retry.ts";
 import { handleRotinaFila } from "../../../supabase/functions/sync-pncp-pca/rotina-fila.ts";
 
 type Row = Record<string, unknown>;
@@ -107,22 +108,32 @@ function banco(): FakePostgrest {
     }
     return d.rows("pca_planos").filter((p) => p.ativo !== false && Number(p.descoberta_ausente_seguidas) >= 2).length;
   };
-  // private.acquire_sync_lock: novo run 'executando'; herda a continuation do último 'incompleta' do mesmo lock.
+  // private.acquire_sync_lock (20260929000001): execução 'executando' sem heartbeat há mais de 3 min é stale e vira
+  // 'incompleta' só se continuation.pending for array não vazio (senão 'falhou'); novo run 'executando' herda a
+  // continuation do último 'incompleta' do mesmo lock e já nasce com ela nos parâmetros.
   let runSeq = 0;
   db.rpcs.acquire_sync_lock = (args, d) => {
     const runs = d.rows("pncp_sync_run");
-    if (runs.some((r) => r.lock_key === args.p_lock_key && r.status === "executando")) {
-      return { already_running: true, run_id: "ocupado" };
+    const rodando = runs.find((r) => r.lock_key === args.p_lock_key && r.status === "executando");
+    if (rodando) {
+      if (Date.now() - Date.parse(String(rodando.last_heartbeat_at)) <= 180_000) {
+        return { already_running: true, run_id: "ocupado" };
+      }
+      const pending = ((rodando.parametros as Row)?.continuation as Row | undefined)?.pending;
+      rodando.status = Array.isArray(pending) && pending.length > 0 ? "incompleta" : "falhou";
     }
     const anterior = runs.filter((r) => r.lock_key === args.p_lock_key && r.status === "incompleta").pop();
     if (anterior) anterior.status = "retomada";
+    const continuation = (anterior?.parametros as Row | undefined)?.continuation ?? null;
     const id = `00000000-0000-0000-0000-00000000010${++runSeq}`;
-    runs.push({ id, lock_key: args.p_lock_key, status: "executando", parametros: args.p_parametros });
-    return {
-      already_running: false,
-      run_id: id,
-      continuation: (anterior?.parametros as Row | undefined)?.continuation ?? null,
-    };
+    runs.push({
+      id,
+      lock_key: args.p_lock_key,
+      status: "executando",
+      last_heartbeat_at: new Date().toISOString(),
+      parametros: { ...(args.p_parametros as Row), ...(continuation ? { continuation } : {}) },
+    });
+    return { already_running: false, run_id: id, continuation };
   };
   return db;
 }
@@ -384,16 +395,7 @@ Deno.test("CA-10: ausente sem item do escopo é inativado; com item, os itens s�
     await gravarPaginaPcaEmLote(db as never, [{ ...cabecalho(id), itens: [itemConsulta(1)] }], { ano: ANO, runId: "r" });
   }
   for (const p of db.rows("pca_planos")) p.descoberta_ausente_seguidas = 1;
-  const vazia = {
-    planos: new Map(),
-    completo: true,
-    retomar_de: null,
-    paginas: 1,
-    linhas: 0,
-    pares_distintos: 0,
-    erro: null,
-  };
-  const a = await tratarAusentes(db as never, vazia, {
+  const a = await tratarAusentes(db as never, [], {
     ano: ANO,
     classes: ["7830"],
     rotina: "reconciliacao",
@@ -435,16 +437,7 @@ Deno.test("CA-10: incremental não enfileira ausentes, só atualiza o contador",
   const db = banco();
   await gravarPaginaPcaEmLote(db as never, [{ ...cabecalho(), itens: [itemConsulta(1)] }], { ano: ANO, runId: "r" });
   db.rows("pca_planos")[0].descoberta_ausente_seguidas = 5;
-  const vazia = {
-    planos: new Map(),
-    completo: true,
-    retomar_de: null,
-    paginas: 1,
-    linhas: 0,
-    pares_distintos: 0,
-    erro: null,
-  };
-  const a = await tratarAusentes(db as never, vazia, { ano: ANO, classes: ["7830"], rotina: "incremental", chainId: RUN });
+  const a = await tratarAusentes(db as never, [], { ano: ANO, classes: ["7830"], rotina: "incremental", chainId: RUN });
   assertEquals(a.enfileirados, 0);
   assertEquals(db.rows("pca_plano_fila").length, 0);
 });
@@ -524,6 +517,93 @@ Deno.test("handler: descoberta que para no meio é retomada pela continuação d
   assertEquals([r2.status, r2.descoberta.retomada, r2.descoberta.completo], ["concluida", true, false]);
   assertEquals(chamadas, [1, 2, 2]);
   assertEquals(db.rows("pca_planos").length, 2);
+});
+
+Deno.test("handler: worker morto no meio da descoberta deixa execução stale que a continuação herda e retoma", async () => {
+  const db = banco();
+  let morto = true;
+  const chamadas: number[] = [];
+  const consulta = {
+    fetchPcaPage(_a: number, p: number) {
+      chamadas.push(p);
+      // worker morto: a requisição da página 2 nunca volta e o finishSyncRun não roda
+      if (p === 2 && morto) return new Promise<never>(() => {});
+      const id = `${CNPJ}-0-00000${p}/2026`;
+      return Promise.resolve({
+        status: 200,
+        body: { data: [{ ...cabecalho(id), itens: [itemConsulta(1)] }], paginasRestantes: 2 - p },
+      });
+    },
+  };
+  const integ = integracaoFake({ [`${CNPJ}/2026/1`]: [itemIntegracao(1)], [`${CNPJ}/2026/2`]: [itemIntegracao(1)] });
+  void rodar(db, { rotina: "incremental" }, consulta, integ); // nunca termina
+  await new Promise((r) => setTimeout(r, 0));
+  const [run1] = db.rows("pncp_sync_run");
+  assertEquals(run1.status, "executando");
+  const cont = (run1.parametros as Row).continuation as Row;
+  assertEquals([cont.pending, cont.descoberta], [["descoberta", "fila"], { classe_idx: 0, pagina: 1 }]);
+  run1.last_heartbeat_at = new Date(Date.now() - 10 * 60_000).toISOString(); // sem heartbeat há 10 min
+
+  morto = false;
+  const r2 = await rodar(db, { rotina: "incremental", somente_retomada: true }, consulta, integ);
+  assertEquals(run1.status, "retomada"); // stale com pending → incompleta → herdada (não 'falhou')
+  assertEquals([r2.status, r2.rotina], ["concluida", "incremental"]);
+  assertEquals(chamadas, [1, 2, 1, 2]); // a continuação refez a descoberta da posição gravada
+  assertEquals(db.rows("pca_planos").length, 2);
+});
+
+/** Três planos com item 7830 ativo e uma ausência anterior; a consulta mostra o 1 na página 1 e o 2 na página 2. */
+async function cadeiaDeDescoberta(falhaPagina2: () => { status: number; body: unknown } | "pausa" | null) {
+  const db = banco();
+  for (const s of [1, 2, 3]) {
+    const id = `${CNPJ}-0-00000${s}/2026`;
+    await gravarPaginaPcaEmLote(db as never, [{ ...cabecalho(id), itens: [itemConsulta(1)] }], { ano: ANO, runId: "r" });
+  }
+  for (const p of db.rows("pca_planos")) Object.assign(p, { ano_exercicio: ANO, descoberta_ausente_seguidas: 1 });
+  const consulta = {
+    fetchPcaPage(_a: number, p: number) {
+      const falha = p === 2 ? falhaPagina2() : null;
+      if (falha === "pausa") return Promise.reject(new BudgetExhaustedError());
+      if (falha) return Promise.resolve(falha);
+      const id = `${CNPJ}-0-00000${p}/2026`;
+      return Promise.resolve({
+        status: 200,
+        body: { data: [{ ...cabecalho(id), itens: [itemConsulta(1)] }], paginasRestantes: 2 - p },
+      });
+    },
+  };
+  const integ = integracaoFake({});
+  const r1 = await rodar(db, { rotina: "incremental" }, consulta, integ);
+  const r2 = await rodar(db, { rotina: "incremental", somente_retomada: true }, consulta, integ);
+  const contador = Object.fromEntries(
+    db.rows("pca_planos").map((p) => [String(p.id_pca_pncp).slice(-6, -5), p.descoberta_ausente_seguidas]),
+  );
+  return { r1, r2, contador };
+}
+
+Deno.test("handler: descoberta dividida entre execuções conta ausência uma vez, com os planos da cadeia toda", async () => {
+  let primeira = true;
+  const { r1, r2, contador } = await cadeiaDeDescoberta(() => {
+    if (!primeira) return null;
+    primeira = false;
+    return "pausa"; // fim do orçamento na página 2: a continuação lê a página 2 inteira
+  });
+  assertEquals([r1.status, r1.descoberta.retomar_de, r1.ausentes], ["incompleta", { classe_idx: 0, pagina: 2 }, undefined]);
+  assertEquals([r2.status, r2.descoberta.completo, r2.descoberta.cadeia_completa], ["concluida", false, true]);
+  // 1 (página 1, execução anterior) e 2 (página 2, continuação) vistos; 3 ausente → 2 ausências seguidas
+  assertEquals(contador, { 1: 0, 2: 0, 3: 2 });
+  assertEquals(r2.ausentes.ausentes_2_ou_mais, 1);
+});
+
+Deno.test("handler: erro de página em qualquer elo da cadeia impede a contagem de ausência", async () => {
+  let primeira = true;
+  const { r2, contador } = await cadeiaDeDescoberta(() => {
+    if (!primeira) return null;
+    primeira = false;
+    return { status: 502, body: null };
+  });
+  assertEquals([r2.status, r2.descoberta.cadeia_completa, r2.ausentes], ["concluida", false, undefined]);
+  assertEquals(contador, { 1: 1, 2: 1, 3: 1 });
 });
 
 Deno.test("handler: rotina inválida devolve 400 sem abrir execução", async () => {

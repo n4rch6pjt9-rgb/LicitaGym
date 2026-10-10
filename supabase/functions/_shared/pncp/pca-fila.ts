@@ -102,7 +102,14 @@ export type Descoberta = {
   linhas: number;
   pares_distintos: number;
   erro: string | null;
+  /**
+   * parou por erro de página (HTTP, envelope): a página não foi lida, então o que a cadeia viu não prova ausência.
+   * Prazo e pausa de cota não contam: a página seguinte é lida inteira pela continuação.
+   */
+  erro_pagina: boolean;
 };
+
+class PrazoDescoberta extends Error {}
 
 /**
  * Fase A: lê as páginas da consulta por classe até o fim ou até o prazo. Erro de página, prazo ou pausa de cota
@@ -128,6 +135,7 @@ export async function descobrirPlanos(
     linhas: 0,
     pares_distintos: 0,
     erro: null,
+    erro_pagina: false,
   };
   const pares = new Set<string>();
   let pos = { ...inicio };
@@ -135,7 +143,7 @@ export async function descobrirPlanos(
     for (; pos.classe_idx < opts.classes.length; pos = { classe_idx: pos.classe_idx + 1, pagina: 1 }) {
       const codigo = opts.classes[pos.classe_idx];
       for (;; pos.pagina++) {
-        if (opts.prazoEsgotado()) throw new Error("prazo esgotado na descoberta");
+        if (opts.prazoEsgotado()) throw new PrazoDescoberta("prazo esgotado na descoberta");
         const { status, body } = await consulta.fetchPcaPage(opts.ano, pos.pagina, codigo, opts.tamanhoPagina, {
           ...opts.http,
         });
@@ -162,6 +170,7 @@ export async function descobrirPlanos(
   } catch (error) {
     res.retomar_de = { ...pos };
     res.erro = ePausa(error) ? "pausa de cota" : (error instanceof Error ? error.message : String(error));
+    res.erro_pagina = !ePausa(error) && !(error instanceof PrazoDescoberta);
   } finally {
     res.pares_distintos = pares.size;
   }
@@ -235,15 +244,19 @@ export async function enfileirarDescobertos(
   return out;
 }
 
-/** Depois de descoberta completa: atualiza o contador de ausência e, na reconciliação, enfileira os ausentes. */
+/**
+ * Depois de descoberta completa (todas as páginas de todas as classes, numa execução ou numa cadeia de continuações
+ * sem erro de página): atualiza o contador de ausência e, na reconciliação, enfileira os ausentes. `vistos`: os
+ * planos que a descoberta inteira viu.
+ */
 export async function tratarAusentes(
   client: SupabaseClient,
-  descoberta: Descoberta,
+  vistos: Iterable<string>,
   opts: { ano: number; classes: string[]; rotina: Rotina; chainId: string },
 ): Promise<{ ausentes_2_ou_mais: number; enfileirados: number }> {
   const { data, error } = await client.schema("private").rpc("pca_marcar_descoberta", {
     p_ano: opts.ano,
-    p_vistos: [...descoberta.planos.keys()],
+    p_vistos: [...new Set(vistos)],
     p_classes: opts.classes,
   });
   if (error) throw error;

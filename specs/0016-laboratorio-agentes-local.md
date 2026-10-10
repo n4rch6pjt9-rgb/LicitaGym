@@ -1,11 +1,11 @@
 # 0016: Montar o laboratório local de agentes e os casos congelados que barram regressão antes de produção
 
-- **Status:** rascunho
+- **Status:** rascunho (decisões do Marcelo de 09/10/2026 em "Decisões"; abertas só as perguntas de preview)
 - **Issue:** nenhuma
 - **Área:** coletor (`services/coletor-externo`), documentos (pipeline documental), agentes (`_shared/agentes`),
   CI (`pr-quality.yml`), operação (ambiente de validação)
-- **Depende do ok do Marcelo:** sim. Decide onde a saída de modelo pode ser gravada, se o Supabase passa a ter
-  branch de preview paga por hora e o que pode ser versionado como caso congelado.
+- **Depende do ok do Marcelo:** sim. As decisões de 09/10 estão em "Decisões". Falta só a verificação do preview
+  Supabase/Cloudflare no painel.
 - **Base de evidência:** medições de 09/10/2026 na máquina do Marcelo (abaixo), casos 129 e 135 do Dashboard, código
   da `main` em `c9ff533` e arquivos ainda não versionados do checkout local (citados como tal).
 
@@ -48,8 +48,9 @@
 | Compose com GPU (outro serviço) | `docs/agente-juridico-ml/docker-compose.gpu.yml` (`gpus: all`) | na `main` |
 | Postgres descartável da CI | job de migrations em `.github/workflows/pr-quality.yml` com `pgvector/pgvector:pg17` | na `main` |
 
-Esta spec depende de os arquivos marcados como "checkout local" entrarem na `main` pelo PR próprio deles. Sem isso, as
-etapas 3 e 4 abaixo ficam bloqueadas.
+Esta spec depende de os arquivos marcados como "checkout local" entrarem na `main` pelo PR próprio deles. Eles estão
+sendo resgatados em PRs próprios (branches `claude/resgate-*`, decisão 8). Até lá, as etapas 3 e 4 abaixo ficam
+bloqueadas.
 
 ## Duas famílias de agentes (não misturar)
 
@@ -87,15 +88,15 @@ o CLI `sbx`, que **não está instalado**. Até lá, os agentes de desenvolvimen
 
 **Serviços:**
 
-- **`ollama`:** por padrão, o compose **não** sobe Ollama. Os workers falam com o Ollama do host em
-  `http://host.docker.internal:11434`.
+- **`ollama`:** o compose **não** sobe Ollama (decisão 3). Os workers usam o Ollama do host, com os modelos em
+  `D:\ollama\models`, pelo endereço `http://host.docker.internal:11434`.
   - O Ollama do host já roda com `OLLAMA_HOST=127.0.0.1:11434` e `OLLAMA_MODELS=D:\ollama\models`, pelo script
     `D:\AI-IDE-Data\Ollama\start-ollama-localhost.ps1`.
-  - **Atenção:** ligado só em `127.0.0.1`, o Ollama do host pode não aceitar conexão vinda do container. Isso **não
-    foi testado**. A etapa 2 mede e escolhe entre duas opções:
-    - (a) mudar o bind do host para a interface que o Docker alcança;
-    - (b) perfil `ollama` no compose (`image: ollama/ollama`, `gpus: all`, volume só leitura para `D:\ollama\models`).
-  - Em qualquer opção, a porta não é exposta fora da máquina.
+  - **Teste de alcance (passo da etapa 2):** ligado só em `127.0.0.1`, o Ollama do host pode não aceitar conexão vinda
+    do container. Isso **não foi testado**. A etapa 2 começa com um teste: de dentro de um container do compose,
+    `GET http://host.docker.internal:11434/api/tags`, registrando o resultado no PR. Se falhar, a correção do bind do
+    host volta ao Marcelo antes de seguir. O compose não sobe um Ollama próprio.
+  - A porta não é exposta fora da máquina.
 - **`worker-documentos`** (Python, reusa `coletor/indexador.py` e `coletor/textos.py` onde servir):
   1. **Download:** baixa da URL oficial (PNCP/portal) ou lê do cache local `laboratorio/.cache/docs/<sha256>`. O cache
      fica fora do git. O SHA-256 do arquivo tem de bater com o do caso. Se não bater, o caso é marcado `documento_mudou`
@@ -128,14 +129,17 @@ o CLI `sbx`, que **não está instalado**. Até lá, os agentes de desenvolvimen
 
 **Onde o laboratório escreve (regra):**
 
-1. **Etapas 1 a 5: nada no Supabase.** A saída vai só para arquivos JSONL em `laboratorio/saida/` (fora do git) e para o
-   Postgres local. O laboratório não recebe `SUPABASE_SERVICE_ROLE_KEY`.
+1. **Laboratório só local (decisão 4): nada no Supabase.** A saída vai só para arquivos JSONL em
+   `laboratorio/saida/` (fora do git) e para o Postgres local. O laboratório não recebe `SUPABASE_SERVICE_ROLE_KEY`.
 2. **Leitura de produção, se precisar,** só por export que o Marcelo faz (SQL Editor) ou pelas APIs públicas
    (PNCP/portal), já que o MCP do repositório é só leitura. Caso congelado não depende de leitura viva.
-3. **Etapa 6 (opcional, depende do ok):** tabela sombra em produção (proposta: `private.normalizacao_sombra`). Ela nasce
-   de migration + PR e é gravada **apenas por coletor existente** (Cloud Run Job do `coletor-externo`), com a camada
-   de regras. Nenhuma linha dela altera `licitacoes_externas.fase`, `prioridade` nem a view de prioridade efetiva.
-   Promover uma regra da sombra para a fase de produção é um PR à parte, com o avaliador verde e o ok do Marcelo.
+3. **Tabela sombra em produção: decisão futura, depois da medição (decisão 4).** Não faz parte desta spec. Se vier,
+   o desenho previsto é:
+   - nasce de migration + PR (proposta de nome: `private.normalizacao_sombra`);
+   - é gravada **apenas por coletor existente** (Cloud Run Job do `coletor-externo`), com a camada de regras;
+   - nenhuma linha dela altera `licitacoes_externas.fase`, `prioridade` nem a view de prioridade efetiva.
+
+   Promover uma regra para a fase de produção é sempre um PR à parte, com o avaliador verde e o ok do Marcelo.
 4. Saída de modelo nunca chega a produção sem passar pelo validador e sem `metodo = "modelo"` no rastro, conforme a
    política de IA.
 
@@ -176,26 +180,38 @@ com `motivo_ausencia`.
     "portal": null,
     "documentos": [
       { "sha256": "b955ec87e18e46d2cc2639b09113d0cba4bd0d9d145f570f0ed549ae0d9936f5", "origem": "pncp", "sequencial_arquivo": 4, "url": "<url oficial>", "paginas": 2 },
-      { "sha256": "<64 hex completos do arquivo 3>", "origem": "pncp", "sequencial_arquivo": 3, "url": "<url oficial>", "paginas": 4, "exige_ocr": true }
+      { "sha256": "8f6429b0223e149a034f80f38d3209201257b4495cb5ed9acf0f6143d53b97f2", "origem": "pncp", "sequencial_arquivo": 3, "url": "<url oficial>", "paginas": 4, "exige_ocr": true }
     ]
   },
   "esperado": {
-    "fase": "<constante de pncp.py>",
-    "prioridade": "leads | monitorar | historico",
+    "fase": "Recebendo propostas",
+    "prioridade": "leads",
     "eventos": [ { "tipo": "...", "alvo": "...", "efetividade": "...", "data_ato": "AAAA-MM-DD | null", "documento_sha256": "...", "pagina": 1 } ],
-    "datas_normalizadas": [ { "campo": "data_encerramento_proposta", "valor": "AAAA-MM-DD | null", "bruto": "...", "regra": "...", "origem": "pncp | portal | edital | inferido" } ]
+    "datas_normalizadas": [ { "campo": "data_fim", "valor": "AAAA-MM-DD | null", "bruto": "...", "regra": "...", "origem": "pncp | portal | edital | inferido" } ]
   }
 }
 ```
 
-- **Quem escreve o esperado:** o Marcelo, ou o agente com revisão do Marcelo, lendo o documento oficial. O esperado de
-  `eventos` e `datas_normalizadas` só entra no caso com página e trecho conferidos. Esta spec **não** preenche o
-  esperado dos casos 129 e 135: isso é a etapa 1, depois que `claude/fase-reconciliada` for mergeada.
-- **SHA-256 do arquivo 3 de Baraúna:** a medição de 09/10 registrou só o prefixo e o sufixo (`8f6429b0…97f2`). O caso
-  precisa do hash completo, recalculado no download.
-- **Documentos não vão para o git** (`CLAUDE.md`: não versionar dados de coleta). O caso guarda SHA-256 + URL oficial.
-  JSON do PNCP é dado público de órgão. Se o Marcelo aprovar (pergunta 2), entra como fixture mínima, só com os campos
-  que `fase_da_compra()` lê, como a spec 0012 já fez com fixtures de PCA.
+- **Esperado dos casos-semente (decisão 1):**
+
+  | Caso | `fase` | `prioridade` |
+  |---|---|---|
+  | 135 (Baraúna, PE 016/2026) | `Recebendo propostas` | `leads` |
+  | 129 (Lagoa Nova) | `Registro de Preço` | `historico` |
+
+  Os dois só são congelados depois do merge de `claude/fase-reconciliada` (etapa 1).
+- **`eventos` e `datas_normalizadas` do esperado:** escritos pelo Marcelo, ou pelo agente com revisão do Marcelo, lendo
+  o documento oficial. Só entram no caso com página e trecho conferidos.
+- **`data_fim`** = fim do recebimento de propostas. É o campo onde o caso 129 traz "2604-04-16".
+- **SHA-256 completo do arquivo 3 de Baraúna:**
+  `8f6429b0223e149a034f80f38d3209201257b4495cb5ed9acf0f6143d53b97f2`. É conferido de novo a cada download.
+- **O que entra no git (decisão 2):**
+  - JSON público do PNCP, só com os campos mínimos que `fase_da_compra()` e a normalização leem, como fixture em
+    `laboratorio/casos/<id>/`;
+  - PDFs **não** entram. O caso guarda URL oficial + SHA-256, e o `worker-documentos` baixa sob demanda para o cache
+    local fora do git.
+
+  Por isso a camada `regras` da CI não precisa de rede nem de documento binário.
 
 **Métricas por execução** (todas medidas, nenhuma estimada):
 
@@ -231,7 +247,7 @@ com `motivo_ausencia`.
 Todo valor normalizado guarda quatro coisas:
 
 ```json
-{ "campo": "data_encerramento_proposta", "valor": "AAAA-MM-DD | null", "bruto": "2604-04-16", "regra": "data.ano_implausivel.v1", "origem": "pncp | portal | edital | inferido", "evidencia": "outra_fonte_oficial | digitacao_validada_por_cronologia | limite_pelos_fatos" }
+{ "campo": "data_fim", "valor": "AAAA-MM-DD | null", "bruto": "2604-04-16", "regra": "data.ano_implausivel.v1", "origem": "pncp | portal | edital | inferido", "evidencia": "outra_fonte_oficial | digitacao_validada_por_cronologia | limite_pelos_fatos" }
 ```
 
 - **`bruto` nunca é apagado.** O valor da fonte oficial não é sobrescrito, conforme `AGENTS.md`, "Integridade dos dados".
@@ -245,7 +261,7 @@ Todo valor normalizado guarda quatro coisas:
   3. **Limite pelos fatos:** sem 1 nem 2, o valor fica `null` (desconhecido), com `bruto` preservado. A decisão usa só
      os fatos que existem (por exemplo, "ata de SRP assinada e vigência expirada" é fato oficial que não depende da
      data errada) e não inventa a data.
-- **Caso 129:** o "2604-04-16" passa pela escala acima. O valor corrigido só aparece se 1 ou 2 se aplicarem, e o caso
+- **Caso 129:** o "2604-04-16" está em `data_fim` (fim do recebimento de propostas) e passa pela escala acima. O valor corrigido só aparece se 1 ou 2 se aplicarem, e o caso
   congelado registra qual se aplicou. Esta spec não afirma qual é a data certa.
 - **Antecipar dado desatualizado:** o `worker-reconcilia` emite um alerta (não muda fase) quando:
   - um fato oficial já implica mudança de estado e a fonte ainda não a refletiu. Exemplos: vigência de ata terminada,
@@ -297,11 +313,14 @@ Daí o desenho:
     (768 dimensões), e trocá-lo é "Alto" pela instrução do pipeline documental.
 - **Critério de escolha** (definido antes de medir, sem número inventado):
   - descartar a variante que tiver qualquer falso positivo de suspensão ou anulação em caso bloqueante;
+  - descartar a variante acima do teto de 60 s por página (decisão 5);
   - entre as que sobrarem, escolher a de mais eventos certos;
   - em empate, a mais rápida por página;
   - se A empatar com B ou C em eventos certos, fica A (sem modelo).
-- **Teto de tempo por página:** pergunta ao Marcelo (pergunta 5). Hoje há um único número: 105 s para 2 páginas, com
-  `qwen2.5:7b`.
+- **Execução e teto (decisão 5):** a camada de modelo roda **só em lote noturno**, nunca no caminho síncrono de uma
+  requisição. O teto é de até 60 s por página, por documento, medido e registrado no relatório. Hoje há um único
+  número: 105 s para 2 páginas, com `qwen2.5:7b`. Uma única medição não basta para dizer se cabe no teto; a etapa 4
+  mede em todos os casos.
 
 **OCR local (proposta, a medir):**
 
@@ -313,8 +332,9 @@ Daí o desenho:
   - tempo por página;
   - caracteres extraídos;
   - se os trechos esperados aparecem no texto do OCR.
-- **Comparação com produção:** o mesmo arquivo passa pelo `ia.ocr_pdf()` (Gemini) para comparar, só se o Marcelo
-  autorizar o custo dessa chamada.
+- **Referência do Gemini (decisão 6):** o OCR do Gemini (`ia.ocr_pdf()`) no arquivo 3 de Baraúna está autorizado como
+  referência. O Marcelo roda à parte e informa o resultado, e o laboratório não chama o Gemini. O texto de referência
+  entra na etapa 5 só para comparar com o OCR local. Até ele chegar, essa comparação fica pendente.
 
 ### 6. Ambiente de validação antes de produção (camadas)
 
@@ -323,7 +343,7 @@ Daí o desenho:
 | **1. Casos congelados na CI** (camada `regras`, job `python-coletor-externo`) | regressão de fase/prioridade/normalização em caso conhecido | minutos de CI do GitHub: a medir | só pega o que já virou caso; fixture desatualizada se a fonte mudar (o SHA-256 detecta no documento, não no JSON) | proposto (etapa 1) |
 | **2a. Branch de preview do Supabase por PR** | migration e Edge Function rodando antes do merge, com banco isolado | cobrado por hora de branch ativa: valor a medir no plano da conta | sem `seed.sql` (`supabase/config.toml`: `[db.seed] enabled = false`), o banco do preview nasce vazio, e o seed precisa ser escrito sem dado pessoal; segredos das funções precisam existir no preview; cron/coletores não podem apontar para o preview por engano | **não verificado** |
 | **2b. Preview do Dashboard (Cloudflare)** | UI do PR apontando para o backend de preview | a medir | o front de preview precisa apontar para o Supabase de preview, não para produção | **não verificado** (repositório `Dashboard---LicitaGym`) |
-| **3. Docker Sandboxes** para agentes de desenvolvimento | agente de código isolado do host (rede, disco, credenciais) | tempo de máquina local; licença/plano: a verificar | exige o CLI `sbx`, não instalado; sem ele, seguem os worktrees, que não isolam rede nem credencial | não instalado |
+| **3. Docker Sandboxes** para agentes de desenvolvimento | agente de código isolado do host (rede, disco, credenciais) | tempo de máquina local; licença/plano: a verificar | exige o CLI `sbx`, não instalado; sem ele, seguem os worktrees, que não isolam rede nem credencial | **adiado (decisão 7):** não instalar o `sbx` agora; seguir com worktrees |
 
 **Sobre a camada 2a:**
 
@@ -331,19 +351,22 @@ Daí o desenho:
   produção no merge**;
 - **não foi verificado** se a conta tem branching por PR habilitado, nem o custo, nem se a integração atual cria um
   branch por PR ou só reporta;
-- a etapa 7 verifica isso (leitura do painel com o Marcelo) antes de propor qualquer mudança.
+- o Marcelo vai verificar no painel (perguntas em aberto 1 e 2). Até lá, 2a e 2b continuam "não verificado", e a etapa 6 só
+  documenta o que ele encontrar.
 
 ## Etapas de entrega (PRs pequenos)
 
 | # | PR | Migration | Depende de |
 |---|---|---|---|
-| 1 | Formato do caso + `test_casos_congelados.py` (camada `regras`) + casos 129 e 135 com esperado revisado pelo Marcelo | não | merge de `claude/fase-reconciliada`; resposta às perguntas 1 e 2 |
-| 2 | `laboratorio/compose.yml` + `worker-documentos` sem modelo: download por SHA-256, texto por página, `OCR_REQUIRED`, saída JSONL. Medição host × container do Ollama | não | 1 |
-| 3 | Schema de evento + chamada Ollama + validadores (trecho literal, data por regex, cronologia, condicional, dedup) | não | 2; `_shared/agentes` na `main` |
-| 4 | Avaliador camada `modelo` + relatório A × B × C nos casos | não | 3 |
-| 5 | OCR local (Tesseract/ocrmypdf) medido nos escaneados | não | 2 |
-| 6 | Tabela sombra em produção, gravada pelo coletor com a camada `regras` | **sim** (aditiva, `private`, sem grant a `anon`/`authenticated`) | ok do Marcelo; 1 a 4 |
-| 7 | Avaliação de preview Supabase + Dashboard (documento, sem mudança de infra) | não | ok do Marcelo para ler custo no painel |
+| 1 | Formato do caso + `test_casos_congelados.py` (camada `regras`) + casos 135 (`Recebendo propostas`/`leads`) e 129 (`Registro de Preço`/`historico`), com fixtures JSON mínimas do PNCP | não | merge de `claude/fase-reconciliada` |
+| 2 | Teste de alcance do Ollama do host a partir do container (`host.docker.internal:11434`), depois `laboratorio/compose.yml` + `worker-documentos` sem modelo: download sob demanda por URL + SHA-256, texto por página, `OCR_REQUIRED`, saída JSONL | não | 1 |
+| 3 | Schema de evento + chamada Ollama + validadores (trecho literal, data por regex, cronologia, condicional, dedup) | não | 2; `_shared/agentes` na `main` (PRs `claude/resgate-*`) |
+| 4 | Avaliador camada `modelo` em lote noturno + relatório A × B × C nos casos, com o teto de 60 s por página | não | 3 |
+| 5 | OCR local (Tesseract/ocrmypdf) medido nos escaneados, comparado com a referência do Gemini que o Marcelo informar | não | 2 |
+| 6 | Registro do que o Marcelo encontrar sobre preview Supabase + Dashboard (documento, sem mudança de infra) | não | verificação do Marcelo no painel |
+
+A tabela sombra em produção não é etapa desta spec (decisão 4). Se vier, é uma spec nova depois das medições das etapas
+4 e 5, com migration própria.
 
 Fora destas etapas, mas recomendado: PR próprio para o estado `OCR_REQUIRED` em `licitacao_documentos.status_processamento`
 e para os metadados de chunk que faltam. Ambos são exigidos pela instrução do pipeline documental e são migration de
@@ -353,8 +376,8 @@ produção.
 
 | ID | Dado / Quando / Então | Teste que prova |
 |---|---|---|
-| CA-1 | **Dado** o caso congelado 135 com `bloqueante: true`, **quando** `fase_da_compra()` recebe as entradas do caso, **então** `fase` e `prioridade` são iguais ao `esperado` e a fase não é `Suspensa (documento)`. | pytest `services/coletor-externo/tests/test_casos_congelados.py` |
-| CA-2 | **Dado** o caso 129, **quando** a camada `regras` roda, **então** a prioridade é a do `esperado` (não `monitorar`) e `datas_normalizadas` traz `bruto = "2604-04-16"` com `evidencia` e `origem` preenchidas. | pytest `test_casos_congelados.py` |
+| CA-1 | **Dado** o caso congelado 135 com `bloqueante: true`, **quando** `fase_da_compra()` recebe as entradas do caso, **então** `fase = "Recebendo propostas"` e `prioridade = "leads"` (não `Suspensa (documento)`). | pytest `services/coletor-externo/tests/test_casos_congelados.py` |
+| CA-2 | **Dado** o caso 129, **quando** a camada `regras` roda, **então** `fase = "Registro de Preço"`, `prioridade = "historico"` (não `monitorar`), e `datas_normalizadas` traz `campo = "data_fim"`, `bruto = "2604-04-16"`, com `evidencia` e `origem` preenchidas. | pytest `test_casos_congelados.py` |
 | CA-3 | **Dado** um caso bloqueante cujo `esperado.fase` difere da saída, **quando** a CI roda, **então** o job `python-coletor-externo` falha e nomeia o caso. | pytest `test_casos_congelados.py` (caso sintético com esperado errado, marcado `xfail(strict=True)`) |
 | CA-4 | **Dado** um `caso.json` sem `entradas.documentos[].sha256` com 64 hex, ou sem `esperado.fase`, **quando** o carregador lê, **então** recusa com erro de validação. | pytest `test_casos_congelados.py` |
 | CA-5 | **Dado** um PDF cujo SHA-256 difere do declarado no caso, **quando** o `worker-documentos` baixa, **então** o caso sai como `documento_mudou` e não é avaliado. | pytest `laboratorio/tests/test_worker_documentos.py` |
@@ -366,7 +389,8 @@ produção.
 | CA-11 | **Dado** uma data bruta com duas correções de digitação candidatas coerentes com a cronologia, **quando** a normalização roda, **então** `valor = null` e `evidencia = limite_pelos_fatos`. | pytest `services/coletor-externo/tests/test_normalizacao_origem.py` |
 | CA-12 | **Dado** o compose do laboratório, **quando** `docker compose config` roda, **então** nenhum serviço define `SUPABASE_SERVICE_ROLE_KEY` nem `SUPABASE_URL` de produção. | pytest `laboratorio/tests/test_compose.py` (lê o YAML) |
 | CA-13 | **Dado** o relatório do avaliador da camada `modelo`, **quando** é gerado, **então** contém, por variante: modelo, digest, `num_ctx`, eventos certos/errados por tipo, falsos positivos de suspensão e segundos por página. | pytest `laboratorio/tests/test_avaliador.py` (saída do Ollama gravada como fixture) |
-| CA-14 | (etapa 6) **Dado** a tabela sombra, **quando** `anon` ou `authenticated` tentam `select`, **então** recebem erro de permissão. | SQL `supabase/tests/normalizacao_sombra_check.sql` |
+| CA-14 | **Dado** um caso cujo `entradas.documentos[]` traz PDF ou outro binário dentro de `laboratorio/casos/`, **quando** o carregador lê, **então** recusa: documento só por URL + SHA-256. | pytest `test_casos_congelados.py` |
+| CA-15 | **Dado** o relatório da camada `modelo`, **quando** uma variante passa de 60 s por página em algum documento, **então** ela sai marcada como fora do teto e não é escolhida. | pytest `laboratorio/tests/test_avaliador.py` |
 
 ## Fora de escopo
 
@@ -374,22 +398,25 @@ produção.
 - Mudar `fase`/`prioridade` de produção a partir de saída de modelo.
 - Trocar o embedding ou reindexar `licitacao_chunks`.
 - Estado `OCR_REQUIRED` e metadados de chunk em produção (PR próprio, ver acima).
-- Ativar branching do Supabase ou preview do Dashboard (a etapa 7 só avalia).
-- Instalar o CLI `sbx` ou migrar os agentes de desenvolvimento para Docker Sandboxes.
+- Tabela sombra em produção (decisão futura, depois da medição).
+- Ativar branching do Supabase ou preview do Dashboard (a etapa 6 só registra).
+- Instalar o CLI `sbx` ou migrar os agentes de desenvolvimento para Docker Sandboxes (decisão 7).
+- Chamar o Gemini a partir do laboratório (a referência de OCR vem do Marcelo).
+- Rodar a camada de modelo fora do lote noturno.
 - Usar modelo local para escrever código do repositório.
 - Processar proposta ou documento de habilitação de cliente no laboratório (política de IA, item 2): só documento
   público de edital.
 
 ## Impacto em dados
 
-- **Migration:** não nas etapas 1 a 5 e 7. Sim na etapa 6 (proposta `private.normalizacao_sombra`, aditiva,
-  idempotente, sem grant a `anon`/`authenticated`), só com ok.
+- **Migration:** não, em nenhuma etapa.
 - **Tabelas/views/funções tocadas:**
-  - nenhuma em produção nas etapas 1 a 5;
+  - nenhuma em produção;
   - o laboratório lê fixtures e documentos públicos e escreve em `laboratorio/saida/` e no Postgres local.
-- **ACL/RLS:** nenhum até a etapa 6.
+- **Arquivos versionados:** código, schema do caso e fixtures JSON mínimas do PNCP. PDFs nunca.
+- **ACL/RLS:** nenhum.
 - **Backfill/reprocessamento:** não.
-- **Edge Functions republicadas no merge:** todas, como em todo merge na `main`, mas nenhuma muda nas etapas 1 a 5.
+- **Edge Functions republicadas no merge:** todas, como em todo merge na `main`, mas nenhuma muda.
 - **Contrato com o Dashboard:** inalterado.
 - **Dado oficial x derivado:**
   - **oficial:** JSON PNCP, documento por SHA-256, `bruto`;
@@ -397,22 +424,31 @@ produção.
     desatualizado;
   - nenhum valor inventado: sem evidência, `null`.
 
+## Decisões (Marcelo, 09/10/2026)
+
+1. **Esperado dos casos-semente:**
+   - 135 = `Recebendo propostas` / `leads`;
+   - 129 = `Registro de Preço` / `historico`.
+
+   Os dois só são congelados depois do merge de `claude/fase-reconciliada`.
+2. **Fixtures:** JSON público do PNCP, só com os campos mínimos, pode entrar no repositório. PDFs não: o caso guarda
+   URL + SHA-256 e o documento é baixado sob demanda.
+3. **Ollama:** o do host (modelos em `D:\ollama\models`). O teste de alcance do container em
+   `host.docker.internal:11434` é o primeiro passo da etapa 2.
+4. **Laboratório só local por enquanto.** Tabela sombra em produção fica como decisão futura, depois da medição.
+5. **Camada de modelo:** só em lote noturno, com teto de até 60 s por página.
+6. **OCR do Gemini no arquivo 3 de Baraúna:** autorizado como referência. O Marcelo roda à parte e informa o
+   resultado.
+7. **Docker Sandboxes:** não instalar o `sbx` agora; seguir com worktrees.
+8. **Arquivos de agentes do checkout local:** estão sendo resgatados em PRs próprios (branches `claude/resgate-*`).
+9. **Dados do caso:**
+   - SHA-256 completo do arquivo 3 de Baraúna:
+     `8f6429b0223e149a034f80f38d3209201257b4495cb5ed9acf0f6143d53b97f2`;
+   - `data_fim` = fim do recebimento de propostas.
+
 ## Perguntas em aberto
 
-1. **Quem preenche o `esperado` dos casos 129 e 135?** E podemos esperar o merge de `claude/fase-reconciliada` para
-   congelá-los já com a regra corrigida?
-2. **O que pode ser versionado?** O `CLAUDE.md` proíbe versionar dados de coleta. Os JSONs públicos do PNCP (campos
-   mínimos) e trechos curtos de documento público podem entrar como fixture em `laboratorio/casos/`, como na spec 0012?
-   Ou o caso guarda só URL + SHA-256 e a CI baixa? Baixar na CI depende do PNCP estar no ar.
-3. **Ollama no container ou no host?** Aceita mudar o bind do Ollama do host (hoje `127.0.0.1`) para o Docker
-   alcançar, ou prefere o serviço `ollama` no compose lendo `D:\ollama\models` só para leitura?
-4. **Tabela sombra em produção (etapa 6):** quer, ou o laboratório fica só local até a regra ser promovida por PR?
-5. **Teto de tempo por página para a camada de modelo:** qual é aceitável? A única medição é de 105 s para 2 páginas.
-6. **OCR de comparação com Gemini:** autoriza rodar `ia.ocr_pdf()` no arquivo 3 de Baraúna como referência (tem custo)?
-7. **Preview do Supabase:** a conta tem branching por PR habilitado? Topa olhar o custo por hora no painel antes da
-   etapa 7?
-8. **Preview do Dashboard:** o repositório `Dashboard---LicitaGym` já gera URL de preview por PR no Cloudflare? E dá
-   para apontá-la para outro backend?
-9. **Docker Sandboxes:** quer instalar o CLI `sbx` agora, ou os worktrees bastam até a camada 1 estar de pé?
-10. **Arquivos não versionados:** `_shared/agentes/`, `api-agentes/`, a migration `agente_execucoes` e
-    `docs/agentes/politica-uso-ia.md` estão só no checkout local. Eles têm PR próprio previsto antes das etapas 3 e 4?
+1. **Preview do Supabase:** a conta tem branching por PR habilitado, e qual o custo por hora? O Marcelo vai verificar
+   no painel. Até lá: não verificado.
+2. **Preview do Dashboard:** o repositório `Dashboard---LicitaGym` já gera URL de preview por PR no Cloudflare, e dá
+   para apontá-la para outro backend? O Marcelo vai verificar. Até lá: não verificado.

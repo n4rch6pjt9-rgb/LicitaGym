@@ -1,6 +1,6 @@
 # 0018: Criar as tarefas padrão quando a oportunidade entra numa etapa do pipeline
 
-- **Status:** rascunho (10/10/2026; decisões 1 a 7 do Marcelo em "Decisões")
+- **Status:** rascunho (10/10/2026; decisões 1 a 9 do Marcelo em "Decisões"; sem pergunta em aberto)
 - **Issue:** Dashboard #29 (mãe). Depende da LicitaGym #252 (instância de tarefas por certame, `tarefas_equipe`).
   Tela: Dashboard #72 (tarefas da equipe) e a futura `/configuracoes/pipeline`.
 - **Área:** migrations (tabela nova + mudança em `pipeline_mover`), edge-functions (`api-pipeline`), dashboard-contrato
@@ -272,7 +272,7 @@ registradas. A etapa nunca altera prazo legal nem fecha tarefa do certame.
 
 ### Ordem dos PRs
 
-1. LicitaGym #252: `tarefas_equipe` (pré-requisito; já tem spec na issue).
+1. LicitaGym #252: `tarefas_equipe` (pré-requisito, em PR próprio e antes desta spec: decisão 9).
 2. LicitaGym: `pipeline_etapa_tarefas` + semente padrão + criação em `pipeline_mover` + checks SQL (este desenho).
 3. LicitaGym: ações `etapa_tarefas_*` na `api-pipeline`.
 4. Dashboard: `/configuracoes/pipeline` (etapas e tarefas por etapa) e contagem no card; lista na #72.
@@ -364,6 +364,9 @@ Do Marcelo, 10/10/2026:
    tarefas da empresa: restrições de participação por lote (Triagem) e dossiê por item antes da sessão (Em análise,
    CA-18). Contratos e aditivos: #316.
 
+9. **Ordem: #252 antes, depois esta spec.** `tarefas_equipe` entra em PR próprio; os PRs desta spec (seção "Ordem dos
+   PRs", passos 2 a 4) começam depois do merge do #252.
+
 ## Perguntas em aberto
 
-1. **Ordem:** fazer o #252 antes (proposta) ou juntar `tarefas_equipe` e esta spec num PR só?
+Nenhuma.

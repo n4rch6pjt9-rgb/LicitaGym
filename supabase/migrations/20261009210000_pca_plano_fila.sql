@@ -7,7 +7,8 @@
 -- O que muda:
 --   1. private.pca_plano_fila: um plano por linha aberta (pendente, processando ou erro); feito fica como histórico.
 --   2. public.pca_planos.descoberta_ausente_seguidas: quantas descobertas completas seguidas não viram o plano, e
---      descoberta_ausente_escopo: as classes em que o contador foi medido (outro escopo o reinicia).
+--      descoberta_ausente_escopo: as classes em que o contador foi medido (outro escopo o reinicia), e
+--      reprocessar: a carga falhou depois de gravar o cabeçalho (o incremental reenfileira).
 --      A reconciliação só inativa plano ausente em 2 descobertas seguidas do mesmo escopo e sem item do escopo na
 --      integração.
 --   3. Funções (só service_role, security invoker):
@@ -86,6 +87,15 @@ comment on column public.pca_planos.descoberta_ausente_seguidas is
 -- ausência medida só na 7220). Ordenado e sem repetição, para comparar por igualdade.
 alter table public.pca_planos
   add column if not exists descoberta_ausente_escopo text[];
+
+-- Plano cuja carga falhou depois de gravar o cabeçalho: o incremental o reenfileira mesmo com a data da fonte igual à
+-- gravada (a fila pode ter esgotado as tentativas). Fica fora dos campos da fonte (data_atualizacao_origem,
+-- payload_hash), que guardam só o último dado oficial gravado. A fila desliga a marca quando o plano termina 'feito'.
+alter table public.pca_planos
+  add column if not exists reprocessar boolean not null default false;
+
+comment on column public.pca_planos.reprocessar is
+  'Spec 0012: carga do plano falhou depois de gravar o cabeçalho; o incremental reenfileira. Desligada quando a fila termina o plano.';
 
 comment on column public.pca_planos.descoberta_ausente_escopo is
   'Spec 0012: classes (ordenadas) da descoberta que mediu descoberta_ausente_seguidas. Outro escopo reinicia o contador.';

@@ -129,13 +129,25 @@ export async function handleRotinaFila(params: {
   if (alreadyRunning) return jsonResponse({ status: "already_running", sync_id: runId });
 
   const herdada = (continuation && typeof continuation === "object" ? continuation : null) as ContinuacaoFila | null;
-  const rotina: Rotina = herdada?.rotina && somenteRetomada ? herdada.rotina : body.rotina as Rotina;
-  const classes = herdada?.classes?.length && somenteRetomada ? herdada.classes : params.classes;
+  // Descoberta herdada pela metade é retomada por qualquer rotina que pegue a trava: as rotinas dividem o lock, e
+  // recomeçar da página 1 perderia a posição e os planos vistos da cadeia anterior (ex.: a reconciliação do dia 1
+  // incompleta e o incremental das 06:13 chegando antes da continuação). Nesse caso a rotina herdada segue; a pedida
+  // fica para a próxima execução (a reconciliação já enfileira tudo o que o incremental enfileiraria).
+  const retomar = somenteRetomada || herdada?.descoberta != null;
+  const rotina: Rotina = herdada?.rotina && retomar ? herdada.rotina : body.rotina as Rotina;
+  const classes = herdada?.classes?.length && retomar ? herdada.classes : params.classes;
 
   const executar = async (): Promise<Response> => {
-    const resumo: Record<string, unknown> = { sync_id: runId, rotina, ano, classes, somente_retomada: somenteRetomada };
+    const resumo: Record<string, unknown> = {
+      sync_id: runId,
+      rotina,
+      ano,
+      classes,
+      somente_retomada: somenteRetomada,
+      ...(retomar && !somenteRetomada ? { retomou_herdada: true, rotina_pedida: body.rotina } : {}),
+    };
     // Descoberta: nova (rotina) ou retomada (continuação com posição pendente). Continuação sem posição: só a carga.
-    const posicao = somenteRetomada ? herdada?.descoberta ?? null : { classe_idx: 0, pagina: 1 };
+    const posicao = retomar ? herdada?.descoberta ?? null : { classe_idx: 0, pagina: 1 };
     // Planos vistos pela cadeia: começa vazio quando a descoberta parte da página 1; numa retomada do meio, vem da
     // continuation (sem ela, a cadeia não conta ausência).
     const doInicio = posicao != null && posicao.classe_idx === 0 && posicao.pagina === 1;

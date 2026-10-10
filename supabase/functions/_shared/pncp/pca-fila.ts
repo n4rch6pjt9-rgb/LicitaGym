@@ -230,7 +230,7 @@ export async function enfileirarDescobertos(
   const planos = [...descoberta.planos.values()];
   if (planos.length === 0) return out;
   const banco = new Map(
-    (await selectIn(client, "pca_planos", "id, id_pca_pncp, data_atualizacao_origem, ativo", "id_pca_pncp",
+    (await selectIn(client, "pca_planos", "id, id_pca_pncp, data_atualizacao_origem, ativo, reprocessar", "id_pca_pncp",
       planos.map((p) => p.id_pca_pncp)))
       .map((r) => [String(r.id_pca_pncp), r]),
   );
@@ -245,7 +245,10 @@ export async function enfileirarDescobertos(
     } else {
       const fonte = instante(p.data_atualizacao_fonte);
       const gravada = instante(atual.data_atualizacao_origem);
-      motivo = atual.ativo === false || gravada == null || (fonte != null && fonte > gravada) ? "alterado" : null;
+      motivo = atual.ativo === false || atual.reprocessar === true || gravada == null ||
+          (fonte != null && fonte > gravada)
+        ? "alterado"
+        : null;
     }
     if (!motivo) {
       out.sem_mudanca++;
@@ -501,6 +504,12 @@ async function marcarFila(client: SupabaseClient, linha: Row, ok: boolean, erro:
   // Sem chain_id no patch: um reenfileiramento durante o processamento pode ter gravado um chain_id mais novo.
   const { error } = await client.schema("private").from("pca_plano_fila").update(patch).eq("id", linha.id);
   if (error) throw error;
+  if (ok) {
+    // Plano terminado: desliga a marca de reprocessar. Se falhar, o pior é o incremental reenfileirar uma vez a mais.
+    const { error: eMarca } = await client.from("pca_planos").update({ reprocessar: false })
+      .eq("id_pca_pncp", String(linha.id_pca_pncp)).eq("reprocessar", true);
+    if (eMarca) console.warn(`[pca-fila] marca reprocessar de ${linha.id_pca_pncp} não desligou: ${eMarca.message}`);
+  }
 }
 
 /**
@@ -650,13 +659,13 @@ export async function processarFila(
 }
 
 /**
- * O cabeçalho pode ter ficado com a data nova depois de uma falha. Zera a data (o incremental reenfileira o plano mesmo
- * se a fila esgotar as tentativas) e o hash (a próxima gravação vê "alterado" e regrava a linha inteira, data inclusa;
- * com o hash antigo ela seria "inalterado" e a data ficaria nula para sempre). Plano que não existe no banco: nada muda.
+ * O cabeçalho pode ter ficado com a data nova depois de uma falha. Liga `reprocessar` para o incremental reenfileirar o
+ * plano mesmo se a fila esgotar as tentativas. Os campos da fonte (data, hash) ficam com o último dado oficial gravado:
+ * a nova tentativa relê os itens da integração de qualquer jeito. Plano que não existe no banco: nada muda (o
+ * incremental o vê como novo).
  */
 async function marcarCabecalhoParaReprocessar(client: SupabaseClient, idPca: string): Promise<{ message: string } | null> {
-  const { error } = await client.from("pca_planos")
-    .update({ data_atualizacao_origem: null, payload_hash: "reprocessar" }).eq("id_pca_pncp", idPca);
+  const { error } = await client.from("pca_planos").update({ reprocessar: true }).eq("id_pca_pncp", idPca);
   return error;
 }
 

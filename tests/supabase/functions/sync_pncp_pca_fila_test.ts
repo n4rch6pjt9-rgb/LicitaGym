@@ -386,7 +386,7 @@ Deno.test("CA-8: falha ao reativar item que volta alterado deixa o plano 'erro',
   assertEquals(db.rows("pca_plano_fila")[0].status, "erro");
 });
 
-Deno.test("falha depois de gravar o cabeçalho zera a data e o hash do plano para o incremental reenfileirar", async () => {
+Deno.test("falha depois de gravar o cabeçalho liga reprocessar sem mexer nos campos da fonte", async () => {
   const db = banco();
   await gravarPaginaPcaEmLote(db as never, [{ ...cabecalho(), itens: [itemConsulta(412), itemConsulta(413)] }], {
     ano: ANO,
@@ -399,7 +399,8 @@ Deno.test("falha depois de gravar o cabeçalho zera a data e o hash do plano par
   const s = await processarFila(db as never, integ, { ano: ANO, limite: 10, prazoEsgotado: nunca, runId: RUN });
   assertEquals([s.planos_feitos, s.planos_erro], [0, 1]);
   const plano = db.rows("pca_planos")[0];
-  assertEquals([plano.data_atualizacao_origem, plano.payload_hash], [null, "reprocessar"]);
+  assertEquals(plano.reprocessar, true);
+  assert(plano.data_atualizacao_origem != null && plano.payload_hash !== "reprocessar"); // dado oficial intacto
   assertEquals(db.rows("pca_plano_fila")[0].status, "erro");
 });
 
@@ -421,7 +422,7 @@ Deno.test("CA-8: resposta inválida, 404 ou total que não fecha com a quantidad
   }
 });
 
-Deno.test("CA-8: erro na gravação marca o plano para reprocessar (data e hash zerados)", async () => {
+Deno.test("CA-8: erro na gravação marca o plano para reprocessar, sem zerar data e hash", async () => {
   const db = banco();
   enfileirarPlano(db);
   db.falhaLinha = (t, row) => t === "pca_itens" && row.numero_item === 1;
@@ -429,7 +430,39 @@ Deno.test("CA-8: erro na gravação marca o plano para reprocessar (data e hash 
   const s = await processarFila(db as never, integ, { ano: ANO, limite: 10, prazoEsgotado: nunca, runId: RUN });
   assertEquals(s.planos_erro, 1);
   const plano = db.rows("pca_planos")[0];
-  assertEquals([plano.data_atualizacao_origem, plano.payload_hash], [null, "reprocessar"]);
+  assertEquals(plano.reprocessar, true);
+  assert(plano.data_atualizacao_origem != null && plano.payload_hash !== "reprocessar");
+});
+
+Deno.test("incremental reenfileira plano marcado para reprocessar mesmo com a data da fonte igual", async () => {
+  const db = banco();
+  const id = `${CNPJ}-0-000001/2026`;
+  db.rows("pca_planos").push({
+    id: "pl-1",
+    id_pca_pncp: id,
+    data_atualizacao_origem: "2026-09-21T11:31:57+00:00",
+    ativo: true,
+    reprocessar: true,
+  });
+  const d = await descobrirPlanos(consultaFake([{ data: [cabecalho(id)], paginasRestantes: 0 }]), {
+    ano: ANO,
+    classes: ["7830"],
+    tamanhoPagina: 500,
+    prazoEsgotado: nunca,
+  });
+  const r = await enfileirarDescobertos(db as never, d, "incremental", { chainId: RUN, classes: ["7830"] });
+  assertEquals([r.alterados, r.sem_mudanca], [1, 0]);
+});
+
+Deno.test("plano marcado para reprocessar que termina 'feito' desliga a marca", async () => {
+  const db = banco();
+  await gravarPaginaPcaEmLote(db as never, [{ ...cabecalho(), itens: [itemConsulta(1)] }], { ano: ANO, runId: "r0" });
+  db.rows("pca_planos")[0].reprocessar = true;
+  enfileirarPlano(db);
+  const integ = integracaoFake({ [`${CNPJ}/2026/4`]: [itemIntegracao(1)] });
+  const s = await processarFila(db as never, integ, { ano: ANO, limite: 10, prazoEsgotado: nunca, runId: RUN });
+  assertEquals(s.planos_feitos, 1);
+  assertEquals(db.rows("pca_planos")[0].reprocessar, false);
 });
 
 Deno.test("CA-7: limite de 2 planos com 5 na fila processa 2 e deixa 3 pendentes, sem repetir plano", async () => {
@@ -690,7 +723,11 @@ Deno.test("handler: worker morto no meio da descoberta deixa execução stale qu
 });
 
 /** Três planos com item 7830 ativo e uma ausência anterior; a consulta mostra o 1 na página 1 e o 2 na página 2. */
-async function cadeiaDeDescoberta(falhaPagina2: () => { status: number; body: unknown } | "pausa" | null) {
+async function cadeiaDeDescoberta(
+  falhaPagina2: () => { status: number; body: unknown } | "pausa" | null,
+  corpo1: Row = { rotina: "incremental" },
+  corpo2: Row = { rotina: "incremental", somente_retomada: true },
+) {
   const db = banco();
   for (const s of [1, 2, 3]) {
     const id = `${CNPJ}-0-00000${s}/2026`;
@@ -712,13 +749,39 @@ async function cadeiaDeDescoberta(falhaPagina2: () => { status: number; body: un
     },
   };
   const integ = integracaoFake({});
-  const r1 = await rodar(db, { rotina: "incremental" }, consulta, integ);
-  const r2 = await rodar(db, { rotina: "incremental", somente_retomada: true }, consulta, integ);
+  const chamadas: number[] = [];
+  const consultaComLog = {
+    fetchPcaPage(a: number, p: number) {
+      chamadas.push(p);
+      return consulta.fetchPcaPage(a, p);
+    },
+  };
+  const r1 = await rodar(db, corpo1, consultaComLog, integ);
+  const depoisDaPrimeira = chamadas.length;
+  const r2 = await rodar(db, corpo2, consultaComLog, integ);
   const contador = Object.fromEntries(
     db.rows("pca_planos").map((p) => [String(p.id_pca_pncp).slice(-6, -5), p.descoberta_ausente_seguidas]),
   );
-  return { r1, r2, contador };
+  return { r1, r2, contador, paginasDaSegunda: chamadas.slice(depoisDaPrimeira) };
 }
+
+Deno.test("handler: incremental que pega a trava retoma a reconciliação herdada pela metade, sem voltar à página 1", async () => {
+  let primeira = true;
+  const { r1, r2, contador, paginasDaSegunda } = await cadeiaDeDescoberta(
+    () => {
+      if (!primeira) return null;
+      primeira = false;
+      return "pausa";
+    },
+    { rotina: "reconciliacao" },
+    { rotina: "incremental" }, // cron do incremental chega antes da continuação
+  );
+  assertEquals([r1.status, r1.rotina], ["incompleta", "reconciliacao"]);
+  assertEquals([r2.rotina, r2.rotina_pedida, r2.retomou_herdada], ["reconciliacao", "incremental", true]);
+  assertEquals(paginasDaSegunda, [2]); // continua da página 2
+  assertEquals(r2.descoberta.cadeia_completa, true);
+  assertEquals(contador["3"], 2); // ausência contada com os planos vistos pela cadeia toda
+});
 
 Deno.test("handler: descoberta dividida entre execuções conta ausência uma vez, com os planos da cadeia toda", async () => {
   let primeira = true;

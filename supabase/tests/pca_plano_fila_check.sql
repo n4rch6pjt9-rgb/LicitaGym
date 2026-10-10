@@ -8,6 +8,7 @@
 --        de menos de 10 minutos (recuo entre tentativas); ou se processando abandonado não contar tentativa;
 --   DESC pca_marcar_descoberta não zerar o contador do plano visto, não somar no ausente com item da classe, somar
 --        no plano sem item da classe, ou somar sobre contador medido em outro escopo de classes;
+--   REPROC pca_planos.reprocessar não existir como boolean not null default false;
 --   LOCK private.acquire_sync_lock não preservar (e herdar) a execução da fila que parou sem heartbeat com a
 --        continuation que o sync-pncp-pca grava (pending com rótulo, rotina, classes, descoberta);
 --   CRON (só com pg_cron) os três jobs novos não existirem, ou o comando não usar "rotina".
@@ -59,6 +60,13 @@ begin
      or not has_function_privilege('service_role', 'private.pca_fila_reservar(integer,integer,integer)', 'EXECUTE')
      or not has_function_privilege('service_role', 'private.pca_marcar_descoberta(integer,text[],text[])', 'EXECUTE') then
     v_falhas := v_falhas || 'service_role sem acesso à fila ou às funções'::text;
+  end if;
+
+  -- REPROC: marca separada dos campos da fonte, desligada por padrão
+  if not exists (select 1 from information_schema.columns
+                  where table_schema = 'public' and table_name = 'pca_planos' and column_name = 'reprocessar'
+                    and data_type = 'boolean' and is_nullable = 'NO' and column_default = 'false') then
+    v_falhas := v_falhas || 'pca_planos.reprocessar ausente ou sem boolean not null default false'::text;
   end if;
 
   -- ENF

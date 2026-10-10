@@ -9,7 +9,7 @@
 --   EXE   execução confirmada (pca_plano_id + pca_link_evidencia) contar por classe em vez de por plano, ou o prazo
 --         (lag_medio_dias, lag_soma_dias, lag_n) sair diferente do esperado (data da publicação em Brasília);
 --   FUSO  publicação de 31/12 às 23h30 em Brasília (já 1º/1 em UTC) cair no ano seguinte;
---   UF    uf vazia do órgão vencer a uf preenchida do mesmo CNPJ.
+--   UF    uf ausente do órgão vencer a uf preenchida do mesmo CNPJ (orgaos_uf_check não aceita '', só null).
 -- Fixtures fictícias (CNPJs 99000002000101 e 99000003000101, anos 2025/2026/2099, códigos CATMAT 99xx); tudo termina
 -- em rollback.
 
@@ -75,9 +75,9 @@ begin
     v_falhas := v_falhas || 'classe 9940 excluída sem PDM incluído entrou nas classes efetivas'::text;
   end if;
 
-  -- UF: o mesmo CNPJ com uf vazia e uf preenchida; a preenchida vence.
+  -- UF: o mesmo CNPJ com uf ausente e uf preenchida; a preenchida vence.
   insert into public.orgaos (codigo_orgao, compras_raw, compras_payload_hash, cnpj, nome_orgao, uf, ativo) values
-    (999990101, '{}'::jsonb, 'chk', '99000002000101', 'CHK ORGAO HIST', '', true),
+    (999990101, '{}'::jsonb, 'chk', '99000002000101', 'CHK ORGAO HIST', null, true),
     (999990102, '{}'::jsonb, 'chk', '99.000.002/0001-01', 'CHK ORGAO HIST', 'SP', true);
 
   -- HIST: um plano com itens 9910 e 9920 (prevista 01/03/2099), um item 9940 (não pedido) e um inativo
@@ -137,7 +137,7 @@ begin
         v_r.lag_medio_dias, v_r.lag_soma_dias, v_r.lag_n);
     end if;
     if v_r.uf <> 'SP' then
-      v_falhas := v_falhas || format('uf %s (esperado SP: uf vazia não vence a preenchida)', v_r.uf);
+      v_falhas := v_falhas || format('uf %s (esperado SP: uf ausente não vence a preenchida)', v_r.uf);
     end if;
   end if;
   if exists (select 1 from public.pca_historico_orgao_ano(array['9930'], 2099, 2099) where orgao_cnpj = '99000002000101') then

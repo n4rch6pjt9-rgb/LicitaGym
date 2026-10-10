@@ -202,17 +202,22 @@ async function gravar(
     } else {
       // Linha inativa que voltou na fonte com outro conteúdo: o upsert não mexe em `ativo`, então reativa aqui
       // (inalterado já recebe ativo = true no toque). Histórico não muda: `ativo` não entra no payload_hash.
+      // Falha ao reativar conta como falha da linha (o plano vai para 'erro' e volta à fila); o histórico fica,
+      // porque o upsert do conteúdo gravou.
       const inativas = alterados.filter((p) => existentes.get(p.key)!.ativo === false)
         .map((p) => String(existentes.get(p.key)!.id));
+      const naoReativadas = new Set<string>();
       for (const bloco of chunks(inativas)) {
         const { error: e2 } = await client.from(t.table).update({ ativo: true }).in("id", bloco);
         avisarFalha(t.table, "update", bloco.length, runId, e2);
+        if (e2) for (const id of bloco) naoReativadas.add(id);
       }
       for (const p of alterados) {
         const atual = existentes.get(p.key)!;
         const id = String(atual.id);
         res.ids.set(p.key, id);
-        res.alterados++;
+        if (naoReativadas.has(id)) res.falhas.add(p.key);
+        else res.alterados++;
         historico.push({
           ...t.historyFields(id, p),
           tipo_operacao: "update",

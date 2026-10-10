@@ -324,6 +324,20 @@ Deno.test("CA-8: item inativado que volta alterado é reativado", async () => {
   assertEquals([it.ativo, it.valor_unitario_estimado], [true, 999]);
 });
 
+Deno.test("CA-8: falha ao reativar item que volta alterado deixa o plano 'erro', não 'feito'", async () => {
+  const db = banco();
+  await gravarPaginaPcaEmLote(db as never, [{ ...cabecalho(), itens: [itemConsulta(413)] }], { ano: ANO, runId: "r0" });
+  db.rows("pca_itens")[0].ativo = false;
+  enfileirarPlano(db);
+  db.falhas = [{ table: "pca_itens", op: "update" }];
+  const integ = integracaoFake({ [`${CNPJ}/2026/4`]: [itemIntegracao(413, "7830", 999)] });
+  const s = await processarFila(db as never, integ, { ano: ANO, limite: 10, prazoEsgotado: nunca, runId: RUN });
+  assertEquals([s.planos_feitos, s.planos_erro], [0, 1]);
+  const it = db.rows("pca_itens")[0];
+  assertEquals([it.ativo, it.valor_unitario_estimado], [false, 999]); // conteúdo gravou, reativação não
+  assertEquals(db.rows("pca_plano_fila")[0].status, "erro");
+});
+
 Deno.test("CA-8: resposta inválida, 404 ou total que não fecha com a quantidade não inativam nada", async () => {
   const casos: [string, ReturnType<typeof integracaoFake>][] = [
     ["resposta não é lista", integracaoFake({ [`${CNPJ}/2026/4`]: { status: 200, body: { message: "x" } } })],

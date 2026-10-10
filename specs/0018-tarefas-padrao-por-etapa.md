@@ -107,7 +107,7 @@ Regras que valem já no #252 e continuam aqui:
   úteis sem calendário de feriados → **"prazo não calculado"**. Nenhuma data inventada.
 - **Regulamento:** o catálogo é da Lei 14.133. Licitação de regulamento próprio (Sistema S) recebe só as tarefas
   `origem = empresa` da etapa; as do catálogo não são criadas (a coluna `regulamento` hoje está nula em todas as
-  linhas: Pergunta 4).
+  linhas: Pergunta 2).
 
 ### 4. Certame × etapa
 

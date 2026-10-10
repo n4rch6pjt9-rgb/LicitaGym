@@ -54,7 +54,11 @@ export class PncpIntegracaoClient {
   ): Promise<{ status: number; body: T | null }> {
     const url = `${this.baseUrl.replace(/\/+$/, "")}${path}`;
     if (this.httpClient) {
-      const res = await this.httpClient.getJson<T>(url, { headers: this.headers() }, { endpoint: path, ...options });
+      const res = await this.httpClient.getJson<T>(url, { headers: this.headers() }, {
+        endpoint: path,
+        devolver4xx: true,
+        ...options,
+      });
       return { status: res.status, body: res.status === 204 ? null : res.body };
     }
     const response = await withRetry(async () => {
@@ -66,7 +70,13 @@ export class PncpIntegracaoClient {
     });
     if (response.status === 204) return { status: 204, body: null };
     const text = await response.text();
-    return { status: response.status, body: text.trim() ? JSON.parse(text) as T : ({} as T) };
+    if (!text.trim()) return { status: response.status, body: {} as T };
+    try {
+      return { status: response.status, body: JSON.parse(text) as T };
+    } catch (error) {
+      if (response.status < 400) throw error;
+      return { status: response.status, body: text as T };
+    }
   }
 
   /** Página de itens do plano, com status (spec 0012: 204 = fim, não erro). */

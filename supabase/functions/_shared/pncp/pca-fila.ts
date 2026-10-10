@@ -596,11 +596,7 @@ export async function processarFila(
         stats.inalterados += r.inalterados;
         stats.erros += r.erros;
         if (r.erros > 0 || !planoId) {
-          // O cabeçalho pode ter ficado com a data nova. Zera a data (o incremental reenfileira o plano mesmo se a fila
-          // esgotar as tentativas) e o hash (a próxima gravação vê "alterado" e regrava a linha inteira, data inclusa;
-          // com o hash antigo ela seria "inalterado" e a data ficaria nula para sempre).
-          const { error: eReset } = await client.from("pca_planos")
-            .update({ data_atualizacao_origem: null, payload_hash: "reprocessar" }).eq("id_pca_pncp", idPca);
+          const eReset = await marcarCabecalhoParaReprocessar(client, idPca);
           if (eReset) throw eReset;
           await marcarFila(client, linha, false, `${r.erros} erro(s) na gravação em lote`);
           stats.planos_erro++;
@@ -617,6 +613,10 @@ export async function processarFila(
         }
         stats.erros++;
         stats.planos_erro++;
+        // A falha pode ter vindo depois de gravar o cabeçalho (inativação, contador de ausência): sem o reset, um plano
+        // que esgota as tentativas ficaria com a data nova e o incremental não o reenfileiraria.
+        const eReset = await marcarCabecalhoParaReprocessar(client, idPca);
+        if (eReset) console.warn(`[pca-fila] reset do cabeçalho ${idPca} falhou: ${eReset.message}`);
         await marcarFila(client, linha, false, error instanceof Error ? error.message : String(error));
       } finally {
         await opts.aoTerminarPlano?.();
@@ -624,6 +624,17 @@ export async function processarFila(
     }
   }
   return stats;
+}
+
+/**
+ * O cabeçalho pode ter ficado com a data nova depois de uma falha. Zera a data (o incremental reenfileira o plano mesmo
+ * se a fila esgotar as tentativas) e o hash (a próxima gravação vê "alterado" e regrava a linha inteira, data inclusa;
+ * com o hash antigo ela seria "inalterado" e a data ficaria nula para sempre). Plano que não existe no banco: nada muda.
+ */
+async function marcarCabecalhoParaReprocessar(client: SupabaseClient, idPca: string): Promise<{ message: string } | null> {
+  const { error } = await client.from("pca_planos")
+    .update({ data_atualizacao_origem: null, payload_hash: "reprocessar" }).eq("id_pca_pncp", idPca);
+  return error;
 }
 
 /** Planos do ano ainda abertos e que a reserva ainda pode pegar, e os que esgotaram as tentativas. */

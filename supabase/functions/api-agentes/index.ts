@@ -5,7 +5,9 @@ import { agenteEdital } from "../_shared/agentes/edital.ts";
 import { agenteJuridico } from "../_shared/agentes/juridico.ts";
 import { agentePreco, type PropostaItem } from "../_shared/agentes/preco.ts";
 import { REGRA_VERSAO, type Achado, type Agente, type ResultadoAgente } from "../_shared/agentes/tipos.ts";
-import { type AuthenticatedUser, authenticateUser, corsHeaders, jsonResponse } from "../_shared/http.ts";
+import { type AuthenticatedUser, authenticateUser, corsHeaders, isLicitagymAdmin, jsonResponse } from "../_shared/http.ts";
+import { ErroTenantAcesso } from "../_shared/tenant.ts";
+import type { ChunkEdital } from "../_shared/agentes/edital.ts";
 import { createSupabaseRepo, ErroAgentes, type AgentesRepo, type Dossie, type Execucao } from "./repo.ts";
 import { parseActionFromBody } from "./validation.ts";
 
@@ -23,6 +25,19 @@ function getDefaultServiceClient(): SupabaseClient {
   return createClient(url, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } });
 }
 
+async function sha256Hex(texto: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(texto));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Impressão dos chunks analisados: o documento ganha SHA antes do indexador gravar os chunks. */
+export async function impressaoChunks(chunks: ChunkEdital[]): Promise<Array<[number, number, number | null, string]>> {
+  const ordenados = [...chunks].sort((a, b) => a.id - b.id);
+  const saida: Array<[number, number, number | null, string]> = [];
+  for (const c of ordenados) saida.push([c.id, c.documento_id, c.pagina, await sha256Hex(c.texto)]);
+  return saida;
+}
+
 export async function contextos(d: Dossie, proposta: PropostaItem[] | null): Promise<Record<Agente, string>> {
   const edital = await hashContexto({
     agente: "edital",
@@ -30,12 +45,15 @@ export async function contextos(d: Dossie, proposta: PropostaItem[] | null): Pro
     licitacao: d.licitacao.payload_hash,
     abertura: d.licitacao.data_abertura,
     documentos: d.documentos_sha256,
+    chunks: await impressaoChunks(d.chunks),
   });
   const preco = await hashContexto({
     agente: "preco",
     regra: REGRA_VERSAO,
+    natureza: d.natureza,
     itens: d.itens.map((item) => [
       item.numero_item,
+      item.unidade,
       item.estimado_centavos,
       item.amostras.map((a) => [a.id_compra_item, a.preco_centavos, a.unidade]),
       item.piso_centavos,
@@ -58,7 +76,7 @@ function rodar(agente: Agente, dossie: Dossie, proposta: PropostaItem[] | null, 
     case "edital":
       return agenteEdital({ chunks: dossie.chunks, data_abertura: dossie.licitacao.data_abertura });
     case "preco":
-      return agentePreco({ natureza: "bens_servicos_gerais", itens: dossie.itens, proposta });
+      return agentePreco({ natureza: dossie.natureza, itens: dossie.itens, proposta });
     case "juridico":
       return agenteJuridico({ sinais, dispositivos: dossie.dispositivos });
     default: {
@@ -137,7 +155,7 @@ export async function handleRequest(req: Request, ctx: ApiAgentesContext = {}): 
 
   try {
     const repo = (ctx.getRepo ?? (() => createSupabaseRepo(getDefaultServiceClient())))();
-    const tenant = await repo.tenantDoUsuario(user.id);
+    const { tenant } = await repo.tenantDoUsuario(user.id, isLicitagymAdmin(user));
 
     switch (params.action) {
       case "analise_executar": {
@@ -173,7 +191,7 @@ export async function handleRequest(req: Request, ctx: ApiAgentesContext = {}): 
       }
     }
   } catch (e) {
-    if (e instanceof ErroAgentes) return jsonResponse({ error: e.message }, e.status);
+    if (e instanceof ErroAgentes || e instanceof ErroTenantAcesso) return jsonResponse({ error: e.message }, e.status);
     console.error("[api-agentes] erro interno:", e instanceof Error ? e.message : e);
     return jsonResponse({ error: "Erro interno no servidor" }, 500);
   }

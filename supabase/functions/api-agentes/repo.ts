@@ -2,12 +2,22 @@ import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import type { Achado, Agente, ResultadoAgente, Situacao } from "../_shared/agentes/tipos.ts";
 import type { ChunkEdital } from "../_shared/agentes/edital.ts";
 import { NORMA, type Dispositivo } from "../_shared/agentes/juridico.ts";
-import { pisoTenantCentavos, type ItemPreco, type PropostaItem } from "../_shared/agentes/preco.ts";
+import {
+  JANELA_MESES,
+  LIMITE_AMOSTRAS,
+  type ItemPreco,
+  type NaturezaContratacao,
+  pisoTenantCentavos,
+  type PropostaItem,
+} from "../_shared/agentes/preco.ts";
+import { lerTenantDoUsuario, type TenantResolvido } from "../_shared/tenant.ts";
 
 export interface Dossie {
   licitacao: { id: number; payload_hash: string | null; data_abertura: string | null };
   documentos_sha256: string[];
   chunks: ChunkEdital[];
+  /** null: natureza da contratação não verificada em dado oficial. */
+  natureza: NaturezaContratacao;
   itens: ItemPreco[];
   dispositivos: Dispositivo[];
 }
@@ -36,7 +46,8 @@ export class ErroAgentes extends Error {
 }
 
 export interface AgentesRepo {
-  tenantDoUsuario(userId: string): Promise<number>;
+  /** Regra de _shared/tenant.ts (#263); ErroTenantAcesso vira 403/409. */
+  tenantDoUsuario(userId: string, desenvolvedor: boolean): Promise<TenantResolvido>;
   carregarDossie(tenant: number, licitacaoId: number): Promise<Dossie | null>;
   buscarExecucao(tenant: number, licitacaoId: number, agente: Agente, contextoHash: string): Promise<Execucao | null>;
   gravarExecucao(
@@ -95,14 +106,8 @@ function codigoCatalogo(valor: unknown): number | null {
 
 export function createSupabaseRepo(client: SupabaseClient): AgentesRepo {
   return {
-    async tenantDoUsuario(_userId) {
-      const { data, error } = await client.from("tenants").select("id").eq("ativo", true).order("id").limit(2);
-      if (error) throw new Error(error.message);
-      if (!data || data.length === 0) throw new ErroAgentes("Nenhuma empresa ativa cadastrada.", 409);
-      if (data.length > 1) {
-        throw new ErroAgentes("Há mais de uma empresa cadastrada e o usuário ainda não está ligado a uma.", 409);
-      }
-      return data[0].id as number;
+    tenantDoUsuario(userId, desenvolvedor) {
+      return lerTenantDoUsuario(client, userId, desenvolvedor);
     },
 
     async carregarDossie(tenant, licitacaoId) {
@@ -143,7 +148,7 @@ export function createSupabaseRepo(client: SupabaseClient): AgentesRepo {
       if (eItens) throw new Error(eItens.message);
 
       const desde = new Date();
-      desde.setUTCMonth(desde.getUTCMonth() - 24);
+      desde.setUTCMonth(desde.getUTCMonth() - JANELA_MESES);
       const desdeIso = desde.toISOString().slice(0, 10);
       const hoje = new Date().toISOString().slice(0, 10);
 
@@ -157,7 +162,10 @@ export function createSupabaseRepo(client: SupabaseClient): AgentesRepo {
             .select("id_compra_item,preco_unitario,sigla_unidade_fornecimento")
             .eq("codigo_item_catalogo", codigo)
             .gte("data_resultado", desdeIso)
-            .limit(200);
+            // As LIMITE_AMOSTRAS homologações mais recentes; id_compra_item desempata para a amostra ser estável.
+            .order("data_resultado", { ascending: false })
+            .order("id_compra_item", { ascending: true })
+            .limit(LIMITE_AMOSTRAS);
           if (eAm) throw new Error(eAm.message);
           amostras = ((amostrasRaw ?? []) as Array<Record<string, unknown>>)
             .filter((a) => typeof a.id_compra_item === "string")
@@ -220,6 +228,8 @@ export function createSupabaseRepo(client: SupabaseClient): AgentesRepo {
         licitacao: { id: Number(lic.id), payload_hash: null, data_abertura: null },
         documentos_sha256,
         chunks: ((chunks ?? []) as ChunkEdital[]),
+        // licitacoes_externas.raw não traz a categoria do processo: a natureza fica desconhecida.
+        natureza: null,
         itens,
         dispositivos: ((dispositivos ?? []) as Dispositivo[]),
       };

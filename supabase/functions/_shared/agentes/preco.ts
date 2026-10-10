@@ -1,22 +1,27 @@
 import { REGRA_VERSAO, type Achado, type ResultadoAgente } from "./tipos.ts";
 
 export type NaturezaObjeto = "bens_servicos_gerais" | "obras_servicos_engenharia";
+/** null: nenhum dado oficial gravado diz a natureza da contratação. Não se presume uma. */
+export type NaturezaContratacao = NaturezaObjeto | null;
 export type Faixa =
   | "sem_referencia"
   | "acima_do_estimado"
   | "normal"
   | "garantia_adicional"
   | "indicio_inexequibilidade"
-  | "inexequivel_presumida";
+  | "inexequivel_presumida"
+  | "natureza_nao_verificada";
 
 export function classificarExequibilidade(
   precoCentavos: number,
   estimadoCentavos: number | null,
-  natureza: NaturezaObjeto,
+  natureza: NaturezaContratacao,
 ): Faixa {
   const e = estimadoCentavos;
   if (e === null || e <= 0) return "sem_referencia";
+  // Acima do estimado não depende da natureza; os limites inferiores (50%, 75%, 85%) dependem.
   if (precoCentavos > e) return "acima_do_estimado";
+  if (natureza === null) return "natureza_nao_verificada";
   if (natureza === "obras_servicos_engenharia") {
     if (precoCentavos * 100 < e * 75) return "inexequivel_presumida";
     if (precoCentavos * 100 < e * 85) return "garantia_adicional";
@@ -33,15 +38,23 @@ export interface AmostraPreco {
 }
 
 export interface ReferenciaPreco {
-  situacao: "ok" | "amostra_insuficiente";
+  situacao: "ok" | "amostra_insuficiente" | "referencia_ausente";
+  /** Só em referencia_ausente. */
+  motivo?: string;
   n: number;
   descartadas: number;
   mediana_centavos: number | null;
   min_centavos: number | null;
   max_centavos: number | null;
+  /** Amostras usadas no cálculo (mesma unidade, preço > 0), na ordem recebida. */
+  amostras: AmostraPreco[];
 }
 
 export const MIN_AMOSTRAS = 5;
+/** Amostra lida de precos_praticados_itens: as LIMITE_AMOSTRAS homologações mais recentes dos últimos JANELA_MESES. */
+export const LIMITE_AMOSTRAS = 200;
+export const JANELA_MESES = 24;
+export const MOTIVO_SEM_UNIDADE = "unidade do item não informada";
 
 function unidadeNorm(u: string | null): string | null {
   if (u === null) return null;
@@ -60,12 +73,24 @@ function mediana(valores: number[]): number {
 
 export function referenciaPraticada(amostras: AmostraPreco[], unidade: string | null): ReferenciaPreco {
   const alvo = unidadeNorm(unidade);
+  // Sem unidade no item não há como comparar UN com KIT ou CAIXA: nenhuma amostra vale.
+  if (alvo === null) {
+    return {
+      situacao: "referencia_ausente",
+      motivo: MOTIVO_SEM_UNIDADE,
+      n: 0,
+      descartadas: amostras.length,
+      mediana_centavos: null,
+      min_centavos: null,
+      max_centavos: null,
+      amostras: [],
+    };
+  }
   const mantidas: AmostraPreco[] = [];
   let descartadas = 0;
   for (const amostra of amostras) {
     const uni = unidadeNorm(amostra.unidade);
-    const unidadeOk = alvo === null || uni === alvo;
-    if (!unidadeOk || amostra.preco_centavos <= 0) {
+    if (uni !== alvo || amostra.preco_centavos <= 0) {
       descartadas++;
       continue;
     }
@@ -79,6 +104,7 @@ export function referenciaPraticada(amostras: AmostraPreco[], unidade: string | 
       mediana_centavos: null,
       min_centavos: null,
       max_centavos: null,
+      amostras: mantidas,
     };
   }
   const precos = mantidas.map((a) => a.preco_centavos);
@@ -89,6 +115,7 @@ export function referenciaPraticada(amostras: AmostraPreco[], unidade: string | 
     mediana_centavos: mediana(precos),
     min_centavos: Math.min(...precos),
     max_centavos: Math.max(...precos),
+    amostras: mantidas,
   };
 }
 
@@ -119,11 +146,13 @@ const FAIXA_ACHADO: Partial<Record<Faixa, { codigo: string; severidade: Achado["
 
 const DETALHE_INDICIO =
   "Preço abaixo de 50% do estimado. Não é desclassificação automática: prepare a demonstração de exequibilidade (art. 59, § 2º).";
+const DETALHE_NATUREZA =
+  "Natureza da contratação não verificada; exequibilidade não classificada. Confira no edital se é obra/serviço de engenharia ou bem/serviço comum (art. 59, §§ 3º e 4º).";
 const DETALHE_CUSTO_ZERO =
   "Item com custo zero. Justifique: bem próprio, custo em outra rubrica ou renúncia à remuneração.";
 
 export function agentePreco(entrada: {
-  natureza: NaturezaObjeto;
+  natureza: NaturezaContratacao;
   itens: ItemPreco[];
   proposta: PropostaItem[] | null;
 }): ResultadoAgente {
@@ -133,10 +162,12 @@ export function agentePreco(entrada: {
   const porNumero = new Map(entrada.itens.map((item) => [item.numero_item, item]));
   const achados: Achado[] = [];
   let temReferencia = false;
+  const naoClassificados: number[] = [];
   for (const proposta of entrada.proposta) {
     const item = porNumero.get(proposta.numero_item);
     if (!item) continue;
     const faixa = classificarExequibilidade(proposta.preco_unitario_centavos, item.estimado_centavos, entrada.natureza);
+    if (faixa === "natureza_nao_verificada") naoClassificados.push(item.numero_item);
     const faixaAchado = FAIXA_ACHADO[faixa];
     if (faixaAchado && item.estimado_centavos !== null && item.estimado_centavos > 0) {
       achados.push({
@@ -188,25 +219,33 @@ export function agentePreco(entrada: {
         metodo: "regra",
         severidade: "info",
         titulo: "preco.referencia_praticada",
-        detalhe: "Mediana dos preços homologados da mesma unidade, com amostra suficiente.",
+        detalhe:
+          `Mediana dos preços homologados da mesma unidade, com amostra suficiente (até as ${LIMITE_AMOSTRAS} homologações mais recentes dos últimos ${JANELA_MESES} meses).`,
+        // Todas as amostras do cálculo, sem cortar: no máximo LIMITE_AMOSTRAS por item.
         dados: {
           numero_item: item.numero_item,
           n: ref.n,
           mediana_centavos: ref.mediana_centavos,
           min_centavos: ref.min_centavos,
           max_centavos: ref.max_centavos,
+          amostras: ref.amostras.map((a) => ({ id: a.id_compra_item, preco_centavos: a.preco_centavos, unidade: a.unidade })),
         },
-        fontes: item.amostras
-          .filter((a) => {
-            const alvo = unidadeNorm(item.unidade);
-            const uni = unidadeNorm(a.unidade);
-            return a.preco_centavos > 0 && (alvo === null || uni === alvo);
-          })
-          .slice(0, 20)
-          .map((a) => ({ tipo: "registro" as const, tabela: "precos_praticados_itens", id: a.id_compra_item })),
+        fontes: ref.amostras.map((a) => ({ tipo: "registro" as const, tabela: "precos_praticados_itens", id: a.id_compra_item })),
       });
     }
     if (item.estimado_centavos !== null && item.estimado_centavos > 0) temReferencia = true;
+  }
+  if (naoClassificados.length > 0) {
+    achados.push({
+      codigo: "preco.natureza_nao_verificada",
+      natureza: "analise",
+      metodo: "regra",
+      severidade: "atencao",
+      titulo: "preco.natureza_nao_verificada",
+      detalhe: DETALHE_NATUREZA,
+      dados: { itens_nao_classificados: naoClassificados },
+      fontes: [{ tipo: "calculo", regra: "exequibilidade_natureza_desconhecida", versao: REGRA_VERSAO }],
+    });
   }
   const situacao = temReferencia ? "ok" : "sem_referencia";
   return { agente: "preco", situacao, achados, regra_versao: REGRA_VERSAO };

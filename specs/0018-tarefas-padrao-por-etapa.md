@@ -1,6 +1,6 @@
 # 0018: Criar as tarefas padrão quando a oportunidade entra numa etapa do pipeline
 
-- **Status:** rascunho (10/10/2026; decisões 1 a 6 do Marcelo em "Decisões")
+- **Status:** rascunho (10/10/2026; decisões 1 a 7 do Marcelo em "Decisões")
 - **Issue:** Dashboard #29 (mãe). Depende da LicitaGym #252 (instância de tarefas por certame, `tarefas_equipe`).
   Tela: Dashboard #72 (tarefas da equipe) e a futura `/configuracoes/pipeline`.
 - **Área:** migrations (tabela nova + mudança em `pipeline_mover`), edge-functions (`api-pipeline`), dashboard-contrato
@@ -89,14 +89,30 @@ As etapas da fase 1 (Nova, Triagem, Em análise, Interessante) não recebem tare
 participar. Recebem tarefas `origem = empresa` semeadas no modelo padrão (o admin edita), sempre do fornecedor e
 atribuídas ao papel admin (decisão 3):
 
-| Etapa | Tarefa da empresa (padrão) | Apoio automático que a tarefa usa (sinal, não tarefa) |
+| Etapa | Tarefa da empresa (padrão) | Apoio automático (decisão 7: em Triagem, Em análise e Interessante, os **agentes**) |
 |---|---|---|
 | Nova | nenhuma | — |
-| Triagem | **Confirmar a aderência item a item** (o selo CATMAT/PDM sozinho não garante: conferir descrição, especificação e quantidade de cada item contra o catálogo da empresa) | `catmat_match` e catálogo da empresa (`catalogo_empresa_catmat`) |
-| Em análise | **Ler o edital** (exigências técnicas, amostra, atestados, prazo de entrega) | documentos da licitação (PNCP), gate de prazo mínimo (seção 2a) |
-| Em análise | **Conferir o preço de referência contra o piso da empresa** | preço estimado do item; piso em `catalogo_precos` (#254); histórico homologado do órgão (BI) |
-| Em análise | **Confirmar o frete até o local de entrega** | distância (`calculate-distance-webrouter`), só como indicador aproximado: "frete não verificado" até a cotação |
-| Interessante | **Decidir GO, GO condicionado ou NO-GO** (decisão humana, com motivo) | recomendação da #250 (sem score) e os sinais acima |
+| Triagem | **Confirmar a aderência item a item** (descrição, especificação e quantidade contra o catálogo da empresa) | **agente de aderência** (PR #308, `aderencia.ts`): produto × item por atributo, veredito `atende`, `supera`, `nao_atende`, `nao_comprovado`, `ausente` ou `ambiguo`; o selo `catmat_match` é só a pré-triagem |
+| Em análise | **Ler o edital** (exigências técnicas, amostra, atestados, prazo de entrega) | **agente de edital** (PR #307, `edital.ts`): localiza no texto indexado amostra, visita técnica, atestado de capacidade, garantia de proposta e contratual, laudo/certificação (INMETRO/ABNT), marca/modelo e prazo de entrega, cada achado com trecho e página; calcula o limite de impugnação (3 dias úteis antes da abertura, só fins de semana: feriados não verificados). **Agente jurídico** (`juridico.ts`): sugere a peça (esclarecimento, impugnação, demonstração de exequibilidade) com o artigo da 14.133. Gate de prazo mínimo (seção 2a) |
+| Em análise | **Conferir o preço de referência contra o piso da empresa** | **agente de preço** (`preco.ts`): referência praticada do item (mínimo de 5 amostras homologadas), faixa de exequibilidade e piso da empresa (`catalogo_precos`: preço de tabela menos desconto máximo, #254) |
+| Em análise | **Confirmar o frete até o local de entrega** | sem agente: distância (`calculate-distance-webrouter`) só como indicador aproximado ("frete não verificado") |
+| Interessante | **Decidir GO, GO condicionado ou NO-GO** (decisão humana, com motivo) | **recomendação** (PR #308, `decisao.ts`): `go`, `go_condicionado`, `no_go` ou `monitorar`, explicável e **sem pontuação**; a decisão humana pode divergir e é ela que vale (#250) |
+
+Como os agentes funcionam hoje (PRs #307 e #308, conferido em 10/10): são **determinísticos** (`metodo = regra`, sem modelo
+de IA), gravam cada execução em `agente_execucoes` com hash do contexto e `REGRA_VERSAO`, e todo achado tem fonte (chunk,
+página e trecho). A equipe revisa e aprova ou rejeita (`analise_revisar`): o agente apoia, a tarefa continua sendo da
+equipe.
+
+**Pré-requisito: o edital indexado.** Os agentes de edital e jurídico leem `licitacao_chunks`. Em produção, 10/10: das
+**66** licitações abertas e em escopo, só **11** têm chunks; **52** têm documento ainda `pendente` de download. O download
+(`pncp.py --baixar-pendentes`) e a indexação (`indexador.py`) rodam em lote, sem disparo por licitação. Proposta: ao entrar
+em **Triagem**, a licitação vai para uma fila (`private.job_queue`, hoje sem uso) que baixa os documentos, indexa e roda
+os agentes; enquanto não termina, a tarefa mostra "análise em preparação" e, se não houver documento, "sem documento"
+(`situacao = sem_documento`), nunca uma análise vazia como se estivesse completa. Os agentes são regra (podem rodar sob
+demanda); o OCR do indexador usa o Gemini (spec 0016 trata o laboratório local, não este fluxo).
+
+**Antes do merge dos agentes (#307):** a `api-agentes` resolve a empresa pelo fallback antigo ("único tenant ativo"). Ela
+precisa usar `_shared/tenant.ts` (#314: vínculo desligado, conta sem vínculo e empresa desativada → 403).
 
 Sinais automáticos da triagem (aderência, comprador, PCA ligado, histórico do órgão, distância, regulamento, prazo
 mínimo, documento de habilitação vencendo antes da sessão) são **cálculo do sistema**, não tarefa: ficam numa spec
@@ -206,6 +222,7 @@ registradas. A etapa nunca altera prazo legal nem fecha tarefa do certame.
 | CA-14 | **Dado** uma licitação que entra numa etapa com modelo, **quando** as tarefas são criadas, **então** todas ficam com `responsavel_papel = 'admin'` e `responsavel_user_id` nulo. | SQL `pipeline_etapa_tarefas_check.sql` |
 | CA-15 | **Dado** uma tarefa na fila do admin, **quando** um admin a atribui a um membro de operação da mesma empresa, **então** ela passa a esse usuário; operação tentando atribuir recebe 403; atribuir a usuário de outra empresa recebe 400. | Deno `tests/supabase/functions/api_pipeline_test.ts` (ou a função da #252 que atribui) |
 | CA-16 | **Dado** uma empresa nova, **quando** recebe o modelo padrão, **então** Triagem, Em análise e Interessante têm as tarefas `origem = empresa` da seção 2b e nenhuma tarefa do catálogo; Nova não tem tarefa. | SQL `pipeline_etapa_tarefas_check.sql` |
+| CA-17 | **Dado** uma licitação sem chunks, **quando** entra em Triagem, **então** vai para a fila de download, indexação e agentes, e as tarefas mostram "análise em preparação" até a execução terminar; sem documento, a execução fica `sem_documento` e nenhum achado é inventado. | SQL `pipeline_etapa_tarefas_check.sql` + Deno `tests/supabase/functions/api_agentes_test.ts` |
 
 ## Fora de escopo
 
@@ -258,6 +275,10 @@ Do Marcelo, 10/10/2026:
    modelo padrão (seção 2b): confirmar aderência item a item; ler o edital; conferir preço de referência contra o piso;
    confirmar frete; decidir GO, GO condicionado ou NO-GO. Os sinais automáticos da triagem são outra spec. **Score:
    segue a regra canônica** (sem score numérico até aprovar as fórmulas; prioridade Alta/Média/Baixa com evidências).
+
+7. **Apoio da fase de análise são os agentes.** Triagem → agente de aderência; Em análise → agentes de edital,
+   jurídico e preço; Interessante → recomendação sem pontuação. Pré-requisito: edital indexado (fila ao entrar em
+   Triagem). A tarefa continua da equipe; o agente entrega achados com fonte para revisão.
 
 ## Perguntas em aberto
 

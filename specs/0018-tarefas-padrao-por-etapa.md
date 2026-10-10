@@ -1,0 +1,176 @@
+# 0018: Criar as tarefas padrão quando a oportunidade entra numa etapa do pipeline
+
+- **Status:** rascunho (10/10/2026)
+- **Issue:** Dashboard #29 (mãe). Depende da LicitaGym #252 (instância de tarefas por certame, `tarefas_equipe`).
+  Tela: Dashboard #72 (tarefas da equipe) e a futura `/configuracoes/pipeline`.
+- **Área:** migrations (tabela nova + mudança em `pipeline_mover`), edge-functions (`api-pipeline`), dashboard-contrato
+- **Depende do ok do Marcelo:** sim. Decisão de produto (qual tarefa nasce em qual etapa), migration de produção e
+  mudança no comportamento de mover card.
+
+## Problema
+
+O Marcelo perguntou em 10/10: "existe uma configuração de default de tarefas por etapa?". **Não existe.** Medição em
+produção, só leitura, 10/10/2026:
+
+| O quê | Produção |
+|---|---|
+| Catálogo de tarefas 14.133 (`tarefas_catalogo`, ativas) | 84 tarefas em 12 fases (F01 11, F02 5, F03 5, F04 5, F05 7, F06 4, F07 8, F08 12, F09 9, F10 8, F11 7, F12 3) |
+| Eventos (`processo_eventos`) | 44. Uma tarefa sem `evento_abertura` |
+| Instância de tarefa por certame (`tarefas_equipe`, #252) | **não existe** |
+| Etapas do pipeline da Konnen (`pipeline_etapas`) | 13 (as padrão) |
+| Licitações no pipeline | 0 |
+
+O que existe e como se relaciona:
+- **Etapas do pipeline** (`pipeline_etapas`, `20261006020000`): onde a equipe está. Nascem 13 por empresa (gatilho
+  `tenants_pipeline_semear_etapas`) e o admin edita. O card só muda de etapa por ação humana (`pipeline_mover`).
+- **Catálogo 14.133** (`20260927100000`, `docs/tarefas/catalogo-tarefas-14133.md`): o que a lei permite ou exige do
+  fornecedor, por **fase do certame** (F01–F12) e liberado por **evento** (ex.: `ATA_HABILITACAO`), com prazo legal,
+  condição e artigo. Consultado por `catalogo_tarefas_da_fase()` e `catalogo_tarefas_do_evento()`.
+- **#252** cria a instância por certame (`tarefas_equipe`: certame, tarefa, responsável, prazo, status), disparada pelo
+  andamento do certame, e diz que ela "não abre nem trava etapa".
+
+Falta a ponte: **ao entrar numa etapa, a equipe recebe as tarefas daquela etapa**, sejam do catálogo, sejam escritas
+pela empresa (ex.: "pedir cotação ao fabricante" em Preparando proposta).
+
+## Desenho
+
+### 1. Modelo de tarefas por etapa (configuração da empresa)
+
+Tabela nova `public.pipeline_etapa_tarefas` (uma linha = uma tarefa padrão de uma etapa):
+
+| Coluna | Uso |
+|---|---|
+| `id` | identidade |
+| `tenant_id`, `etapa_id` | FK `(tenant_id, etapa_id) → pipeline_etapas(tenant_id, id)`, `on delete cascade` |
+| `origem` | `catalogo` ou `empresa` |
+| `tarefa_codigo` | FK `tarefas_catalogo(codigo)`, obrigatório quando `origem = catalogo`, nulo quando `empresa` |
+| `titulo`, `descricao` | obrigatório quando `origem = empresa`; quando `catalogo`, vem do catálogo (não copiado) |
+| `prazo_horas` | só `empresa`: prazo contado da entrada na etapa (nulo = sem prazo). Tarefa do catálogo usa o prazo legal |
+| `ordem`, `ativo` | ordenação e desligar sem apagar |
+| `created_at`, `updated_by` | rastro mínimo |
+
+- Única por `(etapa_id, tarefa_codigo)` quando `origem = catalogo` (índice único parcial).
+- RLS ligada, sem policy para o cliente; só `service_role` (a `api-pipeline` confere o papel), como as outras tabelas
+  do pipeline.
+- Tenant novo: o gatilho que semeia as 13 etapas passa a semear também o modelo padrão (seção 2). `on conflict do
+  nothing`: não desfaz edição do admin.
+
+### 2. Modelo padrão das 13 etapas (proposta, CONFIRMAR com o Marcelo)
+
+Ligação etapa → **tarefas** do catálogo (não fase inteira: a F01 mistura esclarecimento/impugnação com montagem da
+proposta). Códigos conferidos na árvore de `docs/tarefas/catalogo-tarefas-14133.md` em 10/10. Só **proposta**: decide o
+Marcelo (Pergunta 1).
+
+| Etapa padrão | Tarefas do catálogo | Por quê |
+|---|---|---|
+| Nova, Triagem, Em análise, Interessante | nenhuma | ainda não se decidiu participar |
+| Qualificação | F01-T01 a T06 (registrar edital, conferir prazo, pedir esclarecimento, impugnar, acompanhar resposta, reabertura de prazo) | esclarecimento e impugnação vencem 3 dias úteis antes da abertura |
+| Preparando proposta | F01-T07 a T10 (vistoria, garantia de proposta, declarações, montar e cadastrar a proposta) | |
+| Documentação | F01-T11 (habilitação antecipada) e F04-T01 a T05 (documentos de habilitação, diligência) | |
+| Proposta enviada, Disputa | F02-T01 a T05 (lances, empate, preferência ME/EPP) e F03-T01 a T05 (negociação, exequibilidade, garantia adicional) | |
+| Aguardando resultado | F05-T01 a T07 (intenção e razões de recurso, vista, contrarrazões) | prazos recursais curtos |
+| Vencida | F06-T01, T04 e F07-T01 a T07 (homologação, assinatura, garantia contratual, publicação no PNCP) | |
+| Perdida | F05-T01 a T05 (recorrer do resultado) e F06-T03 (recorrer de anulação/revogação) | |
+| Descartada | nenhuma | |
+
+Tarefa com `parent_codigo` (ex.: F04-T02 "↳ Regularidade fiscal") entra com a mãe. F07-T08 (empresa estrangeira) e
+F08–F12 (execução, alteração, extinção, sanção, ata) ficam fora do pipeline comercial no v1; a condição do catálogo
+decide as que não se aplicam ao certame.
+
+### 3. Criação das tarefas ao entrar na etapa
+
+Na mesma transação de `pipeline_mover` (inclusive `pipeline_adicionar`, que entra na primeira etapa), para cada
+licitação que **entrou** numa etapa:
+
+1. lê o modelo ativo da etapa (`pipeline_etapa_tarefas`);
+2. cria a instância em `tarefas_equipe` (#252) com `origem_etapa_id` e `origem_modelo_id`;
+3. **idempotente:** uma instância por `(tenant_id, licitacao_id, tarefa_codigo)` para tarefa do catálogo e por
+   `(tenant_id, licitacao_id, origem_modelo_id)` para tarefa da empresa. Voltar para a etapa, ou a mesma tarefa já
+   criada pelo evento do certame (#252), não duplica;
+4. sair da etapa **não apaga nem fecha** tarefa (Pergunta 2).
+
+Regras que valem já no #252 e continuam aqui:
+- **Condição do catálogo** (`tarefas_catalogo.condicao`) avaliada com o contexto do certame (`inversao_fases`,
+  `modo_disputa`, `srp`...). Chave ausente no contexto → a tarefa é criada com o selo **"condição não verificada"**,
+  nunca descartada como "não se aplica".
+- **Prazo legal:** contado do `prazo_evento` quando a data do evento é conhecida. Evento sem data, ou prazo em dias
+  úteis sem calendário de feriados → **"prazo não calculado"**. Nenhuma data inventada.
+- **Regulamento:** o catálogo é da Lei 14.133. Licitação de regulamento próprio (Sistema S) recebe só as tarefas
+  `origem = empresa` da etapa; as do catálogo não são criadas (a coluna `regulamento` hoje está nula em todas as
+  linhas: Pergunta 4).
+
+### 4. Certame × etapa
+
+As duas fontes convivem e não se sobrepõem:
+- o **evento do certame** (#252) libera a tarefa quando a lei abre a janela;
+- a **etapa** cria a tarefa quando a equipe decide entrar naquele trabalho.
+
+Se as duas apontarem para a mesma tarefa do catálogo, existe **uma** instância (regra 3 do item 3), com as duas origens
+registradas. A etapa nunca altera prazo legal nem fecha tarefa do certame.
+
+### 5. API e telas
+
+- `api-pipeline` (admin da empresa ou desenvolvedor): `etapa_tarefas_listar` (`etapa_id`) e `etapa_tarefas_salvar`
+  (lista completa da etapa; valida `tarefa_codigo` contra o catálogo ativo). Operação só lê.
+- Dashboard `/configuracoes/pipeline`: por etapa, escolher tarefas do catálogo (agrupadas por fase, com artigo) e
+  escrever tarefas da empresa. Cartão do Kanban mostra "N tarefas abertas"; a lista fica na #72.
+
+### Ordem dos PRs
+
+1. LicitaGym #252: `tarefas_equipe` (pré-requisito; já tem spec na issue).
+2. LicitaGym: `pipeline_etapa_tarefas` + semente padrão + criação em `pipeline_mover` + checks SQL (este desenho).
+3. LicitaGym: ações `etapa_tarefas_*` na `api-pipeline`.
+4. Dashboard: `/configuracoes/pipeline` (etapas e tarefas por etapa) e contagem no card; lista na #72.
+
+## Critérios de aceite
+
+| ID | Dado / Quando / Então | Teste que prova |
+|---|---|---|
+| CA-1 | **Dado** a etapa Documentação com F04-T01 a T05 no modelo, **quando** `pipeline_mover` leva a licitação para ela, **então** `tarefas_equipe` tem uma instância por tarefa ativa do modelo cuja condição não é falsa, com `origem_etapa_id` preenchido. | SQL `supabase/tests/pipeline_etapa_tarefas_check.sql` |
+| CA-2 | **Dado** a licitação que já passou por Documentação, **quando** volta para ela, **então** nenhuma tarefa é duplicada. | SQL `pipeline_etapa_tarefas_check.sql` |
+| CA-3 | **Dado** uma tarefa do catálogo já criada pelo evento do certame (#252), **quando** a etapa pede a mesma tarefa, **então** continua uma instância só. | SQL `pipeline_etapa_tarefas_check.sql` |
+| CA-4 | **Dado** contexto do certame sem a chave da condição (ex.: `inversao_fases` ausente), **quando** a tarefa é criada, **então** ela existe com o selo "condição não verificada". | SQL `pipeline_etapa_tarefas_check.sql` |
+| CA-5 | **Dado** prazo em dias úteis sem calendário, ou evento sem data, **quando** a tarefa é criada, **então** o prazo fica "não calculado" (sem data). | SQL `pipeline_etapa_tarefas_check.sql` |
+| CA-6 | **Dado** a licitação que sai de Documentação para Disputa, **quando** move, **então** as tarefas criadas em Documentação continuam abertas. | SQL `pipeline_etapa_tarefas_check.sql` |
+| CA-7 | **Dado** licitação de regulamento próprio (Sistema S), **quando** entra numa etapa, **então** só as tarefas `origem = empresa` são criadas. | SQL `pipeline_etapa_tarefas_check.sql` |
+| CA-8 | **Dado** uma empresa nova, **quando** é criada, **então** recebe as 13 etapas e o modelo padrão; reaplicar a semente não desfaz edição do admin. | SQL `pipeline_etapa_tarefas_check.sql` |
+| CA-9 | **Dado** um usuário de operação, **quando** chama `etapa_tarefas_salvar`, **então** 403; admin da empresa salva. | Deno `tests/supabase/functions/api_pipeline_test.ts` |
+| CA-10 | **Dado** `tarefa_codigo` inexistente ou inativo, **quando** `etapa_tarefas_salvar`, **então** 400 e nada é gravado. | Deno `api_pipeline_test.ts` |
+| CA-11 | **Dado** `anon` e `authenticated`, **quando** leem `pipeline_etapa_tarefas` por REST, **então** sem acesso. | SQL `pipeline_etapa_tarefas_check.sql` (ACL) |
+| CA-12 | **Dado** a empresa A, **quando** move card, **então** nenhuma tarefa é criada para a empresa B nem lê o modelo de B. | SQL `pipeline_etapa_tarefas_check.sql` |
+
+## Fora de escopo
+
+- A própria `tarefas_equipe` e a liberação por evento do certame (#252).
+- Calendário de feriados e prazo em dias úteis (continua "prazo não calculado").
+- Fechar ou cancelar tarefa automaticamente ao sair da etapa ou ao chegar em Perdida/Descartada (Pergunta 2).
+- Tarefas de execução de contrato (F08–F12) no pipeline comercial.
+- Catálogo para regulamento do Sistema S.
+- Notificação (e-mail, WhatsApp) de tarefa criada.
+
+## Impacto em dados
+
+- **Migration:** sim. Tabela nova `pipeline_etapa_tarefas` (aditiva, idempotente), semente do modelo padrão para os
+  tenants existentes (`on conflict do nothing`), extensão de `pipeline_semear_etapas` e de `pipeline_mover` (criação
+  das tarefas na mesma transação). Depende da tabela `tarefas_equipe` do #252.
+- **Tabelas/funções tocadas:** `pipeline_etapa_tarefas` (nova), `pipeline_mover`, `pipeline_semear_etapas`,
+  `tarefas_equipe` (escrita), `tarefas_catalogo` e `processo_eventos` (leitura).
+- **ACL/RLS:** tabela nova só `service_role`, RLS ligada sem policy; funções `security definer` com `search_path` fixo,
+  como as do pipeline. Check `supabase/tests/pipeline_etapa_tarefas_check.sql`.
+- **Backfill:** só a semente do modelo padrão (hoje 1 empresa, 13 etapas). Nenhuma tarefa retroativa: hoje há 0
+  licitações no pipeline.
+- **Edge Functions republicadas no merge:** todas; muda a `api-pipeline`.
+- **Contrato com o Dashboard:** novas ações `etapa_tarefas_*`; `pipeline_listar` pode ganhar `tarefas_abertas` por card.
+- **Dado oficial x derivado:** tarefa, prazo legal e artigo vêm do catálogo (fonte: Lei 14.133, conferido no catálogo);
+  a ligação etapa → tarefa é configuração da empresa. Nenhum prazo é inventado.
+
+## Perguntas em aberto
+
+1. **Modelo padrão:** a ligação etapa → fase da seção 2 está certa? Alguma tarefa da empresa deve nascer no padrão
+   (ex.: "pedir cotação ao fabricante" em Preparando proposta)?
+2. **Saída da etapa:** tarefa aberta continua aberta ao mudar de etapa (proposta)? E ao chegar em Perdida ou
+   Descartada: fecha, cancela ou fica?
+3. **Responsável:** a tarefa nasce sem responsável, com quem moveu o card, ou com um responsável padrão por etapa?
+4. **Regulamento:** a coluna `licitacoes_externas.regulamento` está nula em todas as linhas. Sem ela, como distinguir
+   14.133 de Sistema S na hora de criar tarefa do catálogo? (proposta: pela `fonte`, até o regulamento ser preenchido)
+5. **Ordem:** fazer o #252 antes (proposta) ou juntar `tarefas_equipe` e esta spec num PR só?

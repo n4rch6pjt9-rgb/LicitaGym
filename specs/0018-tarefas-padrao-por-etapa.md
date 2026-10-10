@@ -1,6 +1,6 @@
 # 0018: Criar as tarefas padrão quando a oportunidade entra numa etapa do pipeline
 
-- **Status:** rascunho (10/10/2026; decisões 1 a 3 do Marcelo em "Decisões")
+- **Status:** rascunho (10/10/2026; decisões 1 a 4 do Marcelo em "Decisões")
 - **Issue:** Dashboard #29 (mãe). Depende da LicitaGym #252 (instância de tarefas por certame, `tarefas_equipe`).
   Tela: Dashboard #72 (tarefas da equipe) e a futura `/configuracoes/pipeline`.
 - **Área:** migrations (tabela nova + mudança em `pipeline_mover`), edge-functions (`api-pipeline`), dashboard-contrato
@@ -107,9 +107,13 @@ Regras que valem já no #252 e continuam aqui:
   nunca descartada como "não se aplica".
 - **Prazo legal:** contado do `prazo_evento` quando a data do evento é conhecida. Evento sem data, ou prazo em dias
   úteis sem calendário de feriados → **"prazo não calculado"**. Nenhuma data inventada.
-- **Regulamento:** o catálogo é da Lei 14.133. Licitação de regulamento próprio (Sistema S) recebe só as tarefas
-  `origem = empresa` da etapa; as do catálogo não são criadas (a coluna `regulamento` hoje está nula em todas as
-  linhas: Pergunta 1).
+- **Regulamento (decisão 4):** tarefas do catálogo só para `LEI_14133` e `LEI_14981`. Na 14.981 (calamidade, aplica a
+  14.133 com ajustes, art. 23), a `F01-T02` "Conferir prazo mínimo de propostas" usa a **metade** dos mínimos do art. 55
+  da 14.133 (Lei 14.981, art. 2º, II) e mostra "conforme edital"; o envio da proposta (`F01-T10`) não muda (vai até o
+  evento `DATA_ABERTURA`). Demais regimes (13.303, RLC, RCA, SEST SENAT, sem regulamento) recebem só as tarefas
+  `origem = empresa`, com o aviso "regulamento sem catálogo". 10.847 (dispensa para contratar a EPE) não tem disputa:
+  nenhuma tarefa do catálogo. Pré-requisito: `licitacoes_externas.regulamento` preenchido pelo `amparoLegal` do detalhe
+  do PNCP (hoje nulo em todas as linhas), com os valores `LEI_14981` e `LEI_13303` acrescentados ao check.
 
 ### 4. Certame × etapa
 
@@ -190,8 +194,13 @@ Do Marcelo, 10/10/2026:
    escolhida, porque a empresa pode ter mais de um admin), e o admin define depois o operador. Só admin (ou o
    desenvolvedor) atribui ou reatribui; operação vê as tarefas atribuídas a ela e as conclui.
 
+4. **Regimes com catálogo: Lei 14.133 e Lei 14.981.** Na 14.981, o prazo mínimo de propostas é "conforme edital"
+   (metade do art. 55 da 14.133). Comparativo dos regimes, com artigos e fontes oficiais, conferido em 10/10: 13.303
+   (estatais) tem rito próprio (impugnação 5 dias úteis, art. 87, § 1º; recurso único em 5 dias úteis após a
+   habilitação, art. 59, § 1º); 10.847 é dispensa para contratar a EPE (art. 6º); Sistema S tem RLC (Sesc/Senac) e RCA
+   (SESI/SENAI, 2023) próprios. Amostra de 8 das 43 licitações PNCP sem normativo no `raw`: as 8 têm `amparoLegal` Lei
+   14.133 no detalhe do PNCP.
+
 ## Perguntas em aberto
 
-1. **Regulamento:** a coluna `licitacoes_externas.regulamento` está nula em todas as linhas. Sem ela, como distinguir
-   14.133 de Sistema S na hora de criar tarefa do catálogo? (proposta: pela `fonte`, até o regulamento ser preenchido)
-2. **Ordem:** fazer o #252 antes (proposta) ou juntar `tarefas_equipe` e esta spec num PR só?
+1. **Ordem:** fazer o #252 antes (proposta) ou juntar `tarefas_equipe` e esta spec num PR só?

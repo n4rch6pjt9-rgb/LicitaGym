@@ -1,6 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, SupabaseClient } from "npm:@supabase/supabase-js@2";
-import { jsonResponse, requireUserAuth } from "../_shared/http.ts";
+import { type AuthenticatedUser, isLicitagymAdmin, jsonResponse, requireUserAuth } from "../_shared/http.ts";
 
 export const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -13,7 +13,8 @@ import { parseActionFromBody, parseActionFromUrl } from "./validation.ts";
 import { applyLicitacaoFilters, applyOportunidadesScope, calculateRange } from "./query.ts";
 import { buildEditalUrl } from "../_shared/edital-url.ts";
 import { handleAcompanhamento } from "./acompanhamento.ts";
-import { anexarAlertaPortal } from "./portal.ts";
+import { anexarAlertaPortal, type TenantDoUsuario } from "./portal.ts";
+import { ErroTenantAcesso, lerTenantDoUsuario } from "../_shared/tenant.ts";
 import type { UnifiedHttpClient } from "../_shared/http-client/index.ts";
 
 /**
@@ -115,6 +116,30 @@ export interface DashboardOportunidadesClientContext {
   getClient?: () => SupabaseClient;
   requireAuth?: (req: Request) => Promise<Response | null> | Response | null;
   httpClient?: UnifiedHttpClient;
+  /** Empresa de quem chama (resolvida pelo JWT em handleRequest). Ausente = nenhuma: nada conta como "no pipeline". */
+  tenantDoUsuario?: TenantDoUsuario;
+}
+
+const semTenant: TenantDoUsuario = () => Promise.resolve(null);
+
+/**
+ * Empresa do usuário, resolvida uma vez e só quando a seção do Portal precisa (_shared/tenant.ts). Recusa de acesso
+ * (sem vínculo, vínculo desligado, empresa desativada) → null: o alerta trata a licitação como fora do pipeline e a
+ * lista continua, sem mostrar pipeline de outra empresa. Erro de banco propaga (erro não é vazio).
+ */
+function tenantPreguicoso(client: () => SupabaseClient, user: AuthenticatedUser | undefined): TenantDoUsuario {
+  let pendente: Promise<number | null> | null = null;
+  return () => {
+    if (!user) return Promise.resolve(null);
+    pendente ??= lerTenantDoUsuario(client(), user.id, isLicitagymAdmin(user))
+      .then((r) => r.tenant)
+      .catch((e) => {
+        // Só a recusa de acesso (sem vínculo, empresa desativada) vira "sem empresa". Falha de banco é falha.
+        if (e instanceof ErroTenantAcesso) return null;
+        throw e;
+      });
+    return pendente;
+  };
 }
 
 /**
@@ -399,7 +424,7 @@ async function handleGet(
         ...itemRecord,
         url_edital: buildEditalUrl(itemRecord),
       }, await aderenciaPorLicitacao(client, [Number(itemRecord.id)]));
-      const [itemComPortal] = await anexarAlertaPortal(client, [itemWithUrl]);
+      const [itemComPortal] = await anexarAlertaPortal(client, [itemWithUrl], ctx?.tenantDoUsuario ?? semTenant);
 
       return jsonResponse({ item: itemComPortal });
     }
@@ -439,7 +464,7 @@ async function handleGet(
         ...itemRecord,
         url_edital: buildEditalUrl(itemRecord),
       }, await aderenciaPorLicitacao(client, [Number(itemRecord.id)]));
-      const [itemComPortal] = await anexarAlertaPortal(client, [itemWithUrl]);
+      const [itemComPortal] = await anexarAlertaPortal(client, [itemWithUrl], ctx?.tenantDoUsuario ?? semTenant);
 
       return jsonResponse({ item: itemComPortal });
     }
@@ -476,7 +501,7 @@ async function handleGet(
       const items = await anexarAlertaPortal(client, rawItems.map((row) => comAderencia({
         ...row,
         url_edital: buildEditalUrl(row),
-      }, ader)));
+      }, ader)), ctx?.tenantDoUsuario ?? semTenant);
       const total = count;
       if (total === 0 && items.length === 0) {
         return jsonResponse(
@@ -673,12 +698,13 @@ async function montarItens(
   client: SupabaseClient,
   rows: Array<Record<string, unknown>>,
   matches: Map<number, CatmatMatch[]> | null,
+  tenantDoUsuario: TenantDoUsuario,
 ): Promise<Array<Record<string, unknown>>> {
   return await anexarAlertaPortal(client, rows.map((row) => ({
     ...row,
     url_edital: buildEditalUrl(row),
     ...(matches ? { catmat_match: matches.get(Number(row.id)) ?? [] } : {}),
-  })));
+  })), tenantDoUsuario);
 }
 
 /**
@@ -693,6 +719,7 @@ async function listarCatmatEmDuasFases(
   filtros: LicitacaoFiltros,
   params: ListActionParams,
   matches: Map<number, CatmatMatch[]>,
+  tenantDoUsuario: TenantDoUsuario,
 ): Promise<Response> {
   const { page, limit, order_by, order_direction } = params;
   const { from, to } = calculateRange(page, limit);
@@ -716,7 +743,7 @@ async function listarCatmatEmDuasFases(
       `[api-dashboard-oportunidades] recorte CATMAT: ${idsPagina.length - rows.length} compra(s) saíram do escopo entre as fases (página ${page})`,
     );
   }
-  return jsonResponse({ action: "list", page, limit, total, order_by, order_direction, items: await montarItens(client, rows, matches) });
+  return jsonResponse({ action: "list", page, limit, total, order_by, order_direction, items: await montarItens(client, rows, matches, tenantDoUsuario) });
 }
 
 async function handleList(
@@ -759,7 +786,7 @@ async function handleList(
       }
       if (r.ids.length > MAX_IDS_CATMAT_URL) {
         try {
-          return await listarCatmatEmDuasFases(client, r.ids, filtros, params, r.porLicitacao);
+          return await listarCatmatEmDuasFases(client, r.ids, filtros, params, r.porLicitacao, ctx?.tenantDoUsuario ?? semTenant);
         } catch (err: unknown) {
           // statement_timeout num lote: indisponibilidade temporária (503), como na RPC
           if (ehStatementTimeout(err)) {
@@ -819,7 +846,7 @@ async function handleList(
     }
 
     const rawItems = (data ?? []) as unknown as Array<Record<string, unknown>>;
-    const items = await montarItens(client, rawItems, matches);
+    const items = await montarItens(client, rawItems, matches, ctx?.tenantDoUsuario ?? semTenant);
 
     return jsonResponse({
       action: "list",
@@ -880,14 +907,21 @@ export async function handleRequest(
   if (authError) {
     return authError;
   }
+  // requireUserAuth anexa o usuário em req.user; o pipeline do alerta do Portal é o da empresa dele.
+  const user = (req as unknown as { user?: AuthenticatedUser }).user;
+  const ctxTenant: DashboardOportunidadesClientContext = {
+    ...ctx,
+    tenantDoUsuario: ctx?.tenantDoUsuario ??
+      tenantPreguicoso(() => (ctx?.getClient ? ctx.getClient() : getDefaultServiceClient()), user),
+  };
 
   switch (actionParams.action) {
     case "get":
-      return await handleGet(actionParams, ctx);
+      return await handleGet(actionParams, ctxTenant);
     case "list":
-      return await handleList(actionParams, ctx);
+      return await handleList(actionParams, ctxTenant);
     case "acompanhamento":
-      return await handleAcompanhamento(actionParams, ctx, getDefaultServiceClient);
+      return await handleAcompanhamento(actionParams, ctxTenant, getDefaultServiceClient);
     case "objeto_categorias":
       return await handleObjetoCategorias(ctx);
     default:

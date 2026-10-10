@@ -24,6 +24,7 @@ import {
   notaMaterialidade,
 } from "../_shared/motor-oportunidade.ts";
 import { responderRadar } from "./radar.ts";
+import { linhaHistorico, type LinhaHistorico, montarHistorico } from "./historico.ts";
 
 function getUserClient(req: Request) {
   const url = Deno.env.get("SUPABASE_URL");
@@ -229,6 +230,70 @@ async function responderPriorizacao(req: Request, url: URL): Promise<Response> {
   });
 }
 
+function serviceClient() {
+  const serviceUrl = Deno.env.get("SUPABASE_URL");
+  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!serviceUrl || !serviceKey) throw new Error("Service role não configurado");
+  return createClient(serviceUrl, serviceKey, { auth: { persistSession: false } });
+}
+
+async function responderHistorico(req: Request, url: URL): Promise<Response> {
+  const denied = await requireUserAuth(req);
+  if (denied) return denied;
+  const classe = url.searchParams.get("classe") ?? "7830";
+  if (classe !== "7830") {
+    return jsonResponse({ error: "classe fora do recorte: v1 só lê 7830" }, 400);
+  }
+  const anoAberto = anoUtc();
+  const anoFim = parseQueryInt(url, "ano_fim", anoAberto);
+  const anoInicio = parseQueryInt(url, "ano_inicio", anoFim - 2);
+  if (anoInicio > anoFim || anoFim - anoInicio > 5 || anoInicio < 2000 || anoFim > 2100) {
+    return jsonResponse({ error: "janela de anos inválida" }, 400);
+  }
+
+  let admin;
+  try {
+    admin = serviceClient();
+  } catch (error) {
+    return jsonResponse({ error: errorDetail(error) }, 500);
+  }
+
+  const linhas: LinhaHistorico[] = [];
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const from = page * PAGE;
+    const to = from + PAGE - 1;
+    const { data, error } = await admin
+      .from("pca_historico_orgao_ano")
+      .select("orgao_cnpj, orgao_nome, uf, ano_exercicio, planos, itens, itens_sem_valor, valor_planejado, unidades, compras_observadas, valor_observado, execucoes_confirmadas, lag_medio_dias")
+      .eq("classe_material_servico", classe)
+      .gte("ano_exercicio", anoInicio)
+      .lte("ano_exercicio", anoFim)
+      .order("orgao_cnpj", { ascending: true })
+      .order("ano_exercicio", { ascending: true })
+      .range(from, to);
+    if (error) return jsonResponse({ error: error.message }, 400);
+    const batch = data ?? [];
+    for (const raw of batch) {
+      const linha = linhaHistorico(raw as Record<string, unknown>);
+      if (linha) linhas.push(linha);
+    }
+    if (batch.length < PAGE) break;
+    if (page === MAX_PAGES - 1) {
+      return jsonResponse({ error: "Leitura interrompida: a janela não coube no limite de páginas." }, 500);
+    }
+  }
+
+  const montado = montarHistorico(linhas, anoAberto);
+  return jsonResponse({
+    classe,
+    ano_inicio: anoInicio,
+    ano_fim: anoFim,
+    ano_aberto: anoAberto,
+    nota: "Contagem dos planos já sincronizados. Compra observada não é execução. Execução confirmada exige evidência gravada. Prazo e execução usam só ano fechado. O ano em curso entra no planejado como exercício aberto.",
+    ...montado,
+  });
+}
+
 async function responderMotor(req: Request, url: URL): Promise<Response> {
   const denied = await requireUserAuth(req);
   if (denied) return denied;
@@ -260,6 +325,7 @@ Deno.serve(async (req) => {
     if (visao === "priorizacao") return await responderPriorizacao(req, url);
     if (visao === "motor") return await responderMotor(req, url);
     if (visao === "radar") return await responderRadar(req, url);
+    if (visao === "historico") return await responderHistorico(req, url);
     const client = getUserClient(req);
     const ano = parseQueryInt(url, "ano", new Date().getUTCFullYear());
     const page = parseQueryInt(url, "page", 1);

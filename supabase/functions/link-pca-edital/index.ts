@@ -28,9 +28,39 @@ Deno.serve(async (req) => {
   const janelaDias = Math.min(Math.max(body.janela_dias ?? 90, 1), 365);
   const limite = Math.min(Math.max(body.limite ?? 500, 1), 2000);
   const dryRun = body.dry_run === true;
-  const classes = body.classes?.length ? body.classes : ["7830", "7220"];
+  const classes = body.classes?.length ? body.classes : ["7830"];
+  const ano = new Date().getUTCFullYear();
 
   const client = createServiceClient();
+
+  if (dryRun) {
+    const { count: planos, error: planosError } = await client
+      .from("pca_planos")
+      .select("id, pca_itens!inner(id)", { count: "exact", head: true })
+      .eq("ativo", true)
+      .eq("ano_exercicio", ano)
+      .eq("pca_itens.ativo", true)
+      .eq("pca_itens.classe_material_servico", "7830");
+    if (planosError) return jsonResponse({ error: planosError.message }, 500);
+
+    return jsonResponse({
+      status: "ok",
+      dry_run: true,
+      escopo: {
+        fonte: "pncp",
+        grupo: "78",
+        classe: "7830",
+        ano,
+        finalidade: "previsibilidade do segmento por órgão e UF",
+      },
+      planos_na_classe: planos ?? 0,
+      candidatos_codigo: 0,
+      candidatos_pdm_janela: 0,
+      vinculados: 0,
+      vinculados_externas: 0,
+      nota: "Dry-run de classe e grupo. Não casa item, não usa janela de PDM e não grava pca_plano_id.",
+    });
+  }
 
   const { data: editais, error: editaisError } = await client
     .from("contratacoes_editais")

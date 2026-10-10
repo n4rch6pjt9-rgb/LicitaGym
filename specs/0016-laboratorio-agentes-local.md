@@ -43,7 +43,7 @@
 | Indexação e OCR atuais | `services/coletor-externo/coletor/indexador.py`: PDF escaneado vai para `ia.ocr_pdf()`. `coletor/ia.py` usa Gemini, com `GEN_MODEL` padrão `gemini-2.5-flash`. Texto com menos de 50 caracteres é gravado como `ignorado` | na `main` |
 | Agentes do produto | `supabase/functions/_shared/agentes/` (`edital.ts`, `preco.ts`, `juridico.ts`, `aderencia.ts`, `achados.ts`, `decisao.ts`, `tipos.ts`) e `supabase/functions/api-agentes/` (`index.ts`, `repo.ts`, `validation.ts`) | **no checkout local, não versionado na `main`** |
 | Contrato de achado | `tipos.ts`: `natureza: "fato" \| "analise" \| "inferencia"`, `metodo: "regra" \| "modelo" \| "cliente"`, `fontes: Fonte[]` (chunk com página e trecho, registro, dispositivo, cálculo, cliente) e `REGRA_VERSAO` | **checkout local** |
-| Execuções | `supabase/migrations/20261006220000_agente_execucoes.sql`: `public.agente_execucoes` com `contexto_hash`, `regra_versao`, `modelo`, revisão `aguardando/aprovada/rejeitada`, só `service_role` | **checkout local** |
+| Execuções | `supabase/migrations/20261010100100_agente_execucoes.sql`: `public.agente_execucoes` com `contexto_hash`, `regra_versao`, `modelo`, revisão `aguardando/aprovada/rejeitada`, só `service_role` | **checkout local** |
 | Política de IA | `docs/agentes/politica-uso-ia.md`: achado sem fonte não grava, trecho literal, ausência é ausência, rastro do modelo, texto gerado identificado | **checkout local** |
 | Compose com GPU (outro serviço) | `docs/agente-juridico-ml/docker-compose.gpu.yml` (`gpus: all`) | na `main` |
 | Postgres descartável da CI | job de migrations em `.github/workflows/pr-quality.yml` com `pgvector/pgvector:pg17` | na `main` |

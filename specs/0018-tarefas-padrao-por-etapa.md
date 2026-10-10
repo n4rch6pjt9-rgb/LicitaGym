@@ -1,6 +1,6 @@
 # 0018: Criar as tarefas padrão quando a oportunidade entra numa etapa do pipeline
 
-- **Status:** rascunho (10/10/2026)
+- **Status:** rascunho (10/10/2026; decisões 1 e 2 do Marcelo em "Decisões")
 - **Issue:** Dashboard #29 (mãe). Depende da LicitaGym #252 (instância de tarefas por certame, `tarefas_equipe`).
   Tela: Dashboard #72 (tarefas da equipe) e a futura `/configuracoes/pipeline`.
 - **Área:** migrations (tabela nova + mudança em `pipeline_mover`), edge-functions (`api-pipeline`), dashboard-contrato
@@ -65,11 +65,11 @@ Tabela nova `public.pipeline_etapa_tarefas` (uma linha = uma tarefa padrão de u
 - Tenant novo: o gatilho que semeia as 13 etapas passa a semear também o modelo padrão (seção 2). `on conflict do
   nothing`: não desfaz edição do admin.
 
-### 2. Modelo padrão das 13 etapas (proposta, CONFIRMAR com o Marcelo)
+### 2. Modelo padrão das 13 etapas (aprovado pelo Marcelo em 10/10)
 
 Ligação etapa → **tarefas** do catálogo (não fase inteira: a F01 mistura esclarecimento/impugnação com montagem da
 proposta). Códigos conferidos na árvore de `docs/tarefas/catalogo-tarefas-14133.md` em 10/10. Só **proposta**: decide o
-Marcelo (Pergunta 1).
+Marcelo: aprovado em 10/10 sem tarefa da empresa no padrão (decisão 1).
 
 | Etapa padrão | Tarefas do catálogo | Por quê |
 |---|---|---|
@@ -97,7 +97,7 @@ licitação que **entrou** numa etapa:
 3. **idempotente:** uma instância por `(tenant_id, licitacao_id, tarefa_codigo)` para tarefa do catálogo e por
    `(tenant_id, licitacao_id, origem_modelo_id)` para tarefa da empresa. Voltar para a etapa, ou a mesma tarefa já
    criada pelo evento do certame (#252), não duplica;
-4. sair da etapa **não apaga nem fecha** tarefa (Pergunta 2).
+4. sair da etapa **não apaga nem fecha** tarefa, inclusive ao chegar em Perdida ou Descartada; fechar é ação da equipe (decisão 2).
 
 Regras que valem já no #252 e continuam aqui:
 - **Condição do catálogo** (`tarefas_catalogo.condicao`) avaliada com o contexto do certame (`inversao_fases`,
@@ -154,7 +154,7 @@ registradas. A etapa nunca altera prazo legal nem fecha tarefa do certame.
 
 - A própria `tarefas_equipe` e a liberação por evento do certame (#252).
 - Calendário de feriados e prazo em dias úteis (continua "prazo não calculado").
-- Fechar ou cancelar tarefa automaticamente ao sair da etapa ou ao chegar em Perdida/Descartada (Pergunta 2).
+- Fechar ou cancelar tarefa automaticamente ao sair da etapa ou ao chegar em Perdida/Descartada (decisão 2: não fecha).
 - Tarefas de execução de contrato (F08–F12) no pipeline comercial.
 - Catálogo para regulamento do Sistema S.
 - Notificação (e-mail, WhatsApp) de tarefa criada.
@@ -175,13 +175,17 @@ registradas. A etapa nunca altera prazo legal nem fecha tarefa do certame.
 - **Dado oficial x derivado:** tarefa, prazo legal e artigo vêm do catálogo (fonte: Lei 14.133, conferido no catálogo);
   a ligação etapa → tarefa é configuração da empresa. Nenhum prazo é inventado.
 
+## Decisões
+
+Do Marcelo, 10/10/2026:
+1. **Modelo padrão da seção 2 aprovado** como está: tarefas do catálogo por etapa, sem tarefa da empresa no padrão
+   (a empresa acrescenta as suas pela configuração).
+2. **Tarefas continuam abertas** ao sair da etapa, inclusive em Perdida e Descartada. Fechar ou cancelar é ação da
+   equipe.
+
 ## Perguntas em aberto
 
-1. **Modelo padrão:** a ligação etapa → fase da seção 2 está certa? Alguma tarefa da empresa deve nascer no padrão
-   (ex.: "pedir cotação ao fabricante" em Preparando proposta)?
-2. **Saída da etapa:** tarefa aberta continua aberta ao mudar de etapa (proposta)? E ao chegar em Perdida ou
-   Descartada: fecha, cancela ou fica?
-3. **Responsável:** a tarefa nasce sem responsável, com quem moveu o card, ou com um responsável padrão por etapa?
-4. **Regulamento:** a coluna `licitacoes_externas.regulamento` está nula em todas as linhas. Sem ela, como distinguir
+1. **Responsável:** a tarefa nasce sem responsável, com quem moveu o card, ou com um responsável padrão por etapa?
+2. **Regulamento:** a coluna `licitacoes_externas.regulamento` está nula em todas as linhas. Sem ela, como distinguir
    14.133 de Sistema S na hora de criar tarefa do catálogo? (proposta: pela `fonte`, até o regulamento ser preenchido)
-5. **Ordem:** fazer o #252 antes (proposta) ou juntar `tarefas_equipe` e esta spec num PR só?
+3. **Ordem:** fazer o #252 antes (proposta) ou juntar `tarefas_equipe` e esta spec num PR só?

@@ -40,7 +40,9 @@ function logErro(contexto: string, error: ErroSupabase | unknown): void {
  * Uma execução de sync-portal-compras: lê compras abertas do Portal de Compras Públicas (e as do pipeline),
  * consulta o portal num lote e grava portal_consulta. Fecha a execução (private.pncp_sync_run) em todos os
  * caminhos: concluida (ok), concluida_com_erros (parcial: 429 ou erro de leitura/gravação) e falhou (erro).
- * Erro numa leitura de apoio (pipeline_oportunidades, portal_consulta, extras) conta em `erros`; não é ignorado.
+ * Erro numa leitura de apoio (portal_consulta, extras) conta em `erros`; não é ignorado. Falha ao ler as empresas
+ * ativas ou o pipeline é falha do sync (não "pipeline vazio"). Falha ao fechar a execução também vira erro: a execução
+ * ficaria 'executando' e o agendador receberia sucesso.
  */
 export async function executarSyncPortal(
   client: SupabaseClient,
@@ -53,30 +55,49 @@ export async function executarSyncPortal(
   const agora = deps.agora ?? new Date();
   const stats: StatsPortal = { lidos: 0, atualizados: 0, erros: 0, interrompido: false };
 
-  const fechar = async (status: string, erroPrincipal?: string) => {
-    try {
-      await finalizar(client, runId, {
-        status,
-        totalRecebidos: stats.lidos,
-        totalAtualizados: stats.atualizados,
-        totalErros: stats.erros,
-        erroPrincipal,
-        parametros: { limite, interrompido: stats.interrompido },
-      });
-    } catch (err: unknown) {
-      logErro("falha ao fechar a execução", err);
+  /** Fecha a execução, com uma nova tentativa. Devolve false se não conseguiu (quem chama devolve erro). */
+  const fechar = async (status: string, erroPrincipal?: string): Promise<boolean> => {
+    for (let tentativa = 1; tentativa <= 2; tentativa++) {
+      try {
+        await finalizar(client, runId, {
+          status,
+          totalRecebidos: stats.lidos,
+          totalAtualizados: stats.atualizados,
+          totalErros: stats.erros,
+          erroPrincipal,
+          parametros: { limite, interrompido: stats.interrompido },
+        });
+        return true;
+      } catch (err: unknown) {
+        logErro(`falha ao fechar a execução (tentativa ${tentativa})`, err);
+      }
     }
+    return false;
   };
 
   try {
-    const pipeline = await client.from("pipeline_oportunidades").select("licitacao_id").limit(LIMITE_LEITURA);
+    // pipeline_oportunidades é por empresa: só contam os pipelines de empresas ativas (empresa desativada não
+    // dispara consulta ao Portal). Falha na leitura é falha do sync, não "pipeline vazio" (#263).
+    const ativas = await client.from("tenants").select("id").eq("ativo", true);
+    if (ativas.error || !Array.isArray(ativas.data)) {
+      stats.erros += 1;
+      logErro("leitura das empresas ativas", ativas.error);
+      await fechar("falhou", "Falha ao ler as empresas ativas");
+      return { status: "erro", stats };
+    }
+    const tenantsAtivos = (ativas.data as Array<{ id: number }>).map((r) => Number(r.id));
+    const pipeline = tenantsAtivos.length === 0
+      ? { data: [] as Array<{ licitacao_id: number }>, error: null }
+      : await client.from("pipeline_oportunidades").select("licitacao_id").in("tenant_id", tenantsAtivos)
+        .limit(LIMITE_LEITURA);
     const noPipeline = new Set<number>();
-    if (pipeline.error) {
+    if (pipeline.error || !Array.isArray(pipeline.data)) {
       stats.erros += 1;
       logErro("leitura de pipeline_oportunidades", pipeline.error);
-    } else if (Array.isArray(pipeline.data)) {
-      for (const row of pipeline.data as Array<{ licitacao_id: number }>) noPipeline.add(Number(row.licitacao_id));
+      await fechar("falhou", "Falha ao ler o pipeline");
+      return { status: "erro", stats };
     }
+    for (const row of pipeline.data as Array<{ licitacao_id: number }>) noPipeline.add(Number(row.licitacao_id));
 
     const abertas = await client
       .from("licitacoes_externas")
@@ -191,10 +212,11 @@ export async function executarSyncPortal(
     }
 
     const parcial = stats.interrompido || stats.erros > 0;
-    await fechar(
+    const fechou = await fechar(
       parcial ? "concluida_com_erros" : "concluida",
       stats.interrompido ? "Portal respondeu 429; lote interrompido" : undefined,
     );
+    if (!fechou) return { status: "erro", stats };
     return { status: parcial ? "parcial" : "ok", stats };
   } catch (err: unknown) {
     stats.erros += 1;

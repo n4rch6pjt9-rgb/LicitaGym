@@ -137,10 +137,11 @@ Itens com **CONFIRMAR** foram inferidos do código e ainda não foram validados 
   (`operacao` não vê dados bancários).
 - **Tabela com RLS e sem policy** (33 em `public`) é intencional: o cliente não lê direto, só via Edge Function
   (validado em 08/10: nenhuma tem grant a `authenticated`, o Dashboard não lê nenhuma direto).
-- **Tenants em construção, desligados na prática** (1 empresa ativa, 0 membros, pipeline vazio). Antes de ligar:
-  todo `service_role` que lê tabela com `tenant_id` filtra por tenant (hoje `api-dashboard-oportunidades/portal.ts` e
-  `sync-portal-compras` leem `pipeline_oportunidades` sem filtro); vínculo com empresa inativa não pode cair em outra
-  (#263); `api-pipeline` passa a respeitar o papel `admin`/`operacao`; teste com duas empresas e dois usuários.
+- **Tenants:** cadastro pela `api-tenant` (spec 0017); em 10/10 a Konnen tem CNPJ e membros. Empresa do usuário em
+  `_shared/tenant.ts`: todo `service_role` que lê tabela com `tenant_id` filtra pela empresa de quem chama
+  (`api-pipeline`, `portal.ts`; o cron `sync-portal-compras` lê só empresas ativas). Vínculo só com empresa desativada
+  → 403, nunca cai em outra (#263); vínculo desligado e conta sem vínculo → 403; `tenant_papel()` exige empresa ativa
+  (migration `20261010140000`). Só o desenvolvedor sem vínculo cai na única empresa ativa. Configurar etapas: admin da empresa ou desenvolvedor.
 
 ## O que o agente NÃO faz
 - Não altera schema, ACL ou dado de produção fora de migration versionada + PR (nem pelo MCP, nem por SQL avulso).

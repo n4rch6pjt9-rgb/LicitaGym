@@ -1,6 +1,7 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import {
   ACOMPANHAMENTO_LICITACAO_COLUMNS,
+  ataDoPncp,
   ataVigente,
   enriquecerAcompanhamento,
   mapItemAcompanhamento,
@@ -82,4 +83,21 @@ Deno.test("enriquecerAcompanhamento acrescenta fase, vigente e situacaoExibida s
   assertEquals(enriquecerAcompanhamento(payload, null, new Date("2025-05-10T02:00:00Z")).atas.dados?.[0].vigente, true);
   const semAtas = enriquecerAcompanhamento({ ...payload, atas: { dados: null, total: 0, erro: "x" } }, null, new Date());
   assertEquals(semAtas.atas.dados, null);
+});
+
+Deno.test("ataDoPncp: dataCancelamento preenchida cancela a ata mesmo com cancelado=false", () => {
+  const base = {
+    numeroAtaRegistroPreco: "00129/2025",
+    anoAta: 2025,
+    dataVigenciaInicio: "2025-01-01",
+    dataVigenciaFim: "2099-12-31",
+  };
+  const cancelada = ataDoPncp({ ...base, cancelado: false, dataCancelamento: "2025-06-01T10:00:00" });
+  assertEquals([cancelada.cancelado, cancelada.dataCancelamento], [true, "2025-06-01T10:00:00"]);
+  assertEquals(ataVigente(cancelada, "2025-07-01"), false);
+  assertEquals(situacaoExibidaItem({} as never, { fase: null, atas: [cancelada] }) === "Registro de Preço", false);
+  const ativa = ataDoPncp({ ...base, cancelado: false, dataCancelamento: "  " });
+  assertEquals([ativa.cancelado, ativa.dataCancelamento], [false, null]);
+  assertEquals(ataVigente(ativa, "2025-07-01"), true);
+  assertEquals(ataDoPncp({ ...base, cancelado: true }).cancelado, true);
 });

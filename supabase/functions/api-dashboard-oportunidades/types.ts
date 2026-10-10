@@ -152,7 +152,10 @@ export interface AtaAcompanhamento {
   vigenciaInicio: string | null;
   vigenciaFim: string | null;
   dataAssinatura?: string | null;
+  /** cancelado do PNCP OU dataCancelamento preenchida (o PNCP pode mandar a data com cancelado=false). */
   cancelado: boolean;
+  /** dataCancelamento do PNCP (AtaRegistroPrecoPeriodoDTO), quando vier. */
+  dataCancelamento?: string | null;
   objeto?: string | null;
   /**
    * Ata vigente hoje (America/Sao_Paulo): não cancelada e vigenciaInicio <= hoje <= vigenciaFim. null = sem

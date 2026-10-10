@@ -1019,6 +1019,15 @@ def normalizacao_prazo(compra: dict, *, agora: datetime | None = None, atas: lis
         limite=limite, regra_limite=regra)
 
 
+def visao_para_prazo(visao: dict, data_homologacao: datetime | None) -> dict:
+    """A visão da compra para normalizacao_prazo com a homologação recém-lida dos resultados (a mesma que a coleta
+    grava em data_homologacao). Sem ela, limitado_por_resultado não é alcançável na coleta: a visão vem do detalhe e da
+    busca, que não trazem essa data, e a linha gravada não é relida. Data já presente na visão prevalece."""
+    if data_homologacao is None or _campo(visao, "data_homologacao"):
+        return visao
+    return {**visao, "data_homologacao": data_homologacao.isoformat()}
+
+
 def decisao_oficial(prioridade: str | None, motivo: str) -> bool:
     """A decisão de motivo_prioridade é por sinal OFICIAL (P1-P4: resultado, encerramento, itens finalizados,
     Suspensa oficial), que vence ata, documentos e prazo?"""
@@ -1360,7 +1369,7 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
         visao, tem_resultado, agora=agora, status_busca=status_busca, itens=itens,
         documentos=arquivos if isinstance(arquivos, list) else None,
         retificada_em=atualizacao_da_compra(det, c), excluida=excluida, atas=atas)
-    normalizacao = normalizacao_prazo(visao, agora=agora, atas=atas)
+    normalizacao = normalizacao_prazo(visao_para_prazo(visao, data_homologacao), agora=agora, atas=atas)
     # SRP com /atas indisponível: só a decisão oficial (P0-P4) é gravada; ata, documentos e prazo ficam para a
     # próxima coleta (a ata venceria todos eles).
     sem_atas = atas_indisponiveis and not excluida and not decisao_oficial(

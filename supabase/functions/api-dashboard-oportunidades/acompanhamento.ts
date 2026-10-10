@@ -1,7 +1,7 @@
 import { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { errorDetail, jsonResponse } from "../_shared/http.ts";
 import { buildAcompanhamentoUrl, buildEditalUrl, buildPncpEditalUrl } from "../_shared/edital-url.ts";
-import { secaoPortal } from "./portal.ts";
+import { secaoPortal, type TenantDoUsuario } from "./portal.ts";
 import { diaBrasilia } from "../_shared/portal-compras.ts";
 import { UnifiedHttpClient } from "../_shared/http-client/index.ts";
 import type {
@@ -19,6 +19,8 @@ export interface DashboardOportunidadesClientContext {
   getClient?: () => SupabaseClient;
   requireAuth?: (req: Request) => Promise<Response | null> | Response | null;
   httpClient?: UnifiedHttpClient;
+  /** Empresa de quem chama (index.ts resolve pelo JWT). Ausente = nenhuma: nada conta como "no pipeline". */
+  tenantDoUsuario?: TenantDoUsuario;
 }
 
 export interface PncpKey {
@@ -408,17 +410,7 @@ async function fetchAtas(
 
       if (pageAtas.length === 0) break;
 
-      for (const a of pageAtas) {
-        atasList.push({
-          numero: (a.numeroAtaRegistroPreco as string) ?? (a.numero as string) ?? null,
-          ano: typeof a.anoAta === "number" ? a.anoAta : (a.anoAta ? Number(a.anoAta) : null),
-          vigenciaInicio: (a.dataVigenciaInicio as string) ?? null,
-          vigenciaFim: (a.dataVigenciaFim as string) ?? null,
-          dataAssinatura: (a.dataAssinatura as string) ?? null,
-          cancelado: Boolean(a.cancelado),
-          objeto: (a.objetoCompra as string) ?? (a.objeto as string) ?? null,
-        });
-      }
+      for (const a of pageAtas) atasList.push(ataDoPncp(a));
 
       if (paginasRestantes === 0 && pageAtas.length < tamanhoPagina) break;
       pagina++;
@@ -582,6 +574,26 @@ export const ACOMPANHAMENTO_LICITACAO_COLUMNS: readonly string[] = [
 // -----------------------------------------------------------------------------
 
 /**
+ * Ata da consulta do PNCP (AtaRegistroPrecoPeriodoDTO). Cancelada = `cancelado` verdadeiro OU `dataCancelamento`
+ * preenchida: o PNCP pode mandar a data com `cancelado: false`, e a ata não pode aparecer como vigente.
+ */
+export function ataDoPncp(a: Record<string, unknown>): AtaAcompanhamento {
+  const dataCancelamento = typeof a.dataCancelamento === "string" && a.dataCancelamento.trim() !== ""
+    ? a.dataCancelamento
+    : null;
+  return {
+    numero: (a.numeroAtaRegistroPreco as string) ?? (a.numero as string) ?? null,
+    ano: typeof a.anoAta === "number" ? a.anoAta : (a.anoAta ? Number(a.anoAta) : null),
+    vigenciaInicio: (a.dataVigenciaInicio as string) ?? null,
+    vigenciaFim: (a.dataVigenciaFim as string) ?? null,
+    dataAssinatura: (a.dataAssinatura as string) ?? null,
+    cancelado: Boolean(a.cancelado) || dataCancelamento != null,
+    dataCancelamento,
+    objeto: (a.objetoCompra as string) ?? (a.objeto as string) ?? null,
+  };
+}
+
+/**
  * Ata vigente no dia `hoje` (YYYY-MM-DD, America/Sao_Paulo): cancelada => false; sem vigenciaFim => null (não dá
  * para afirmar); vigenciaInicio no futuro => false; senão hoje <= vigenciaFim. Datas do PNCP comparadas pelo dia.
  */
@@ -643,6 +655,8 @@ export function linkSistemaOrigemFromRaw(raw: unknown): string | null {
   const value = (raw as Record<string, unknown>).linkSistemaOrigem;
   return typeof value === "string" && value.trim() !== "" ? value : null;
 }
+
+const semTenant: TenantDoUsuario = () => Promise.resolve(null);
 
 export async function handleAcompanhamento(
   params: AcompanhamentoActionParams,
@@ -770,7 +784,7 @@ export async function handleAcompanhamento(
       (payload.disponivel ? payload.compra.dados?.linkSistemaOrigem : null) ??
       linkSistemaOrigemFromRaw(row.raw);
     const portal = payload.disponivel
-      ? await secaoPortal(client, Number(row.id), linkPortal, params.atualizar === true)
+      ? await secaoPortal(client, Number(row.id), linkPortal, params.atualizar === true, ctx?.tenantDoUsuario ?? semTenant)
       : null;
 
     const fase = typeof row.fase === "string" && row.fase.trim() !== "" ? row.fase : null;

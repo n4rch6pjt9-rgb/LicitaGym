@@ -228,3 +228,19 @@ def test_reclassificador_mantem_registro_de_preco_sem_atas():
           "data_fim": None, "situacao": "Divulgada no PNCP"}
     prio, _, trava, fase = _nova_prioridade(ln, None, AGORA, det=C129["detalhe"])
     assert (prio, trava, fase) == (None, "registro_preco_mantido_sem_atas", None)
+
+
+def test_caso_129_sem_ata_limitado_pela_homologacao_lida_na_coleta():
+    """Sem ata, a homologação lida dos resultados na mesma coleta limita o prazo absurdo (limitado_por_resultado)."""
+    visao = P.compra_com_detalhe(C129["busca"], C129["detalhe"])
+    assert P.normalizacao_prazo(visao, agora=AGORA) is None  # sem a data, nada limita
+    homologada = datetime(2024, 6, 3, 15, 0, tzinfo=timezone.utc)
+    norm = P.normalizacao_prazo(P.visao_para_prazo(visao, homologada), agora=AGORA)
+    assert norm is not None
+    assert "limitado_por_resultado" in json.dumps(norm)
+
+
+def test_visao_para_prazo_nao_sobrescreve_data_ja_presente():
+    visao = {"data_homologacao": "2024-05-01"}
+    assert P.visao_para_prazo(visao, datetime(2024, 6, 3, tzinfo=timezone.utc)) is visao
+    assert P.visao_para_prazo({"x": 1}, None) == {"x": 1}

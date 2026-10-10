@@ -1,4 +1,4 @@
--- Verificação da migration 20261009210000_licitacoes_externas_normalizacoes (09/10/2026).
+-- Verificação da migration 20261010080000_licitacoes_externas_normalizacoes (09/10/2026).
 -- Confere: coluna normalizacoes jsonb + constraint de objeto; view prioridade_efetiva lê o prazo normalizado
 -- (leads com normalizado vencido sai monitorar, mesmo com raw.data_fim_vigencia implausível); ACL da view.
 -- A parte de regra usa uma linha de teste dentro de um savepoint desfeito (nada fica gravado).

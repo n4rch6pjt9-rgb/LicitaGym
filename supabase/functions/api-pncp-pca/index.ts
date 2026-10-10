@@ -25,6 +25,7 @@ import {
 } from "../_shared/motor-oportunidade.ts";
 import { responderRadar } from "./radar.ts";
 import { linhaHistorico, type LinhaHistorico, montarHistorico } from "./historico.ts";
+import { classesDaQuery, classesDoCatalogo, resolverClasses } from "../_shared/catalogo-classes.ts";
 
 function getUserClient(req: Request) {
   const url = Deno.env.get("SUPABASE_URL");
@@ -240,10 +241,6 @@ function serviceClient() {
 async function responderHistorico(req: Request, url: URL): Promise<Response> {
   const denied = await requireUserAuth(req);
   if (denied) return denied;
-  const classe = url.searchParams.get("classe") ?? "7830";
-  if (classe !== "7830") {
-    return jsonResponse({ error: "classe fora do recorte: v1 só lê 7830" }, 400);
-  }
   const anoAberto = anoUtc();
   const anoFim = parseQueryInt(url, "ano_fim", anoAberto);
   const anoInicio = parseQueryInt(url, "ano_inicio", anoFim - 2);
@@ -252,29 +249,33 @@ async function responderHistorico(req: Request, url: URL): Promise<Response> {
   }
 
   let admin;
+  let catalogo: string[];
   try {
     admin = serviceClient();
+    catalogo = await classesDoCatalogo(admin as never);
   } catch (error) {
     return jsonResponse({ error: errorDetail(error) }, 500);
   }
+  // Padrão: as classes do catálogo CATMAT da empresa; ?classes=7830,7220 (ou ?classe=) só aceita classes dele.
+  const pedidas = classesDaQuery(url);
+  const resolvidas = resolverClasses(pedidas, catalogo);
+  if (!resolvidas.ok) return jsonResponse({ error: resolvidas.erro }, resolvidas.status);
+  const classes = resolvidas.classes;
 
   const linhas: LinhaHistorico[] = [];
   for (let page = 0; page < MAX_PAGES; page++) {
     const from = page * PAGE;
     const to = from + PAGE - 1;
     const { data, error } = await admin
-      .from("pca_historico_orgao_ano")
-      .select("orgao_cnpj, orgao_nome, uf, ano_exercicio, planos, itens, itens_sem_valor, valor_planejado, unidades, compras_observadas, valor_observado, execucoes_confirmadas, lag_medio_dias")
-      .eq("classe_material_servico", classe)
-      .gte("ano_exercicio", anoInicio)
-      .lte("ano_exercicio", anoFim)
+      .rpc("pca_historico_orgao_ano", { p_classes: classes, p_ano_inicio: anoInicio, p_ano_fim: anoFim })
+      .select("orgao_cnpj, orgao_nome, uf, ano_exercicio, classes_presentes, planos, itens, itens_sem_valor, valor_planejado, unidades, compras_escopo_observadas, valor_escopo_observado, execucoes_confirmadas, lag_medio_dias")
       .order("orgao_cnpj", { ascending: true })
       .order("ano_exercicio", { ascending: true })
       .range(from, to);
     if (error) return jsonResponse({ error: error.message }, 400);
-    const batch = data ?? [];
+    const batch = (Array.isArray(data) ? data : []) as Record<string, unknown>[];
     for (const raw of batch) {
-      const linha = linhaHistorico(raw as Record<string, unknown>);
+      const linha = linhaHistorico(raw);
       if (linha) linhas.push(linha);
     }
     if (batch.length < PAGE) break;
@@ -285,11 +286,12 @@ async function responderHistorico(req: Request, url: URL): Promise<Response> {
 
   const montado = montarHistorico(linhas, anoAberto);
   return jsonResponse({
-    classe,
+    classes,
+    origem_classes: pedidas ? "pedido" : "catalogo_catmat",
     ano_inicio: anoInicio,
     ano_fim: anoFim,
     ano_aberto: anoAberto,
-    nota: "Contagem dos planos já sincronizados. Compra observada não é execução. Execução confirmada exige evidência gravada. Prazo e execução usam só ano fechado. O ano em curso entra no planejado como exercício aberto.",
+    nota: "Contagem dos planos já sincronizados, nas classes pedidas. Compra observada é do escopo inteiro (categoria do objeto da licitação; os itens de licitação não trazem classe CATMAT), não da classe, e não é execução; republicação do PNCP conta uma vez. Execução confirmada exige evidência gravada. Prazo e execução usam só ano fechado. O ano em curso entra no planejado como exercício aberto.",
     ...montado,
   });
 }

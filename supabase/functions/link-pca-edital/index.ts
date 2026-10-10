@@ -7,6 +7,7 @@ import {
   pickUniquePlanoLinks,
   type LinkMatchRow,
 } from "./_shared_prod/pncp/link-pca-edital.ts";
+import { classesDoCatalogo, resolverClasses } from "../_shared/catalogo-classes.ts";
 
 type LinkBody = {
   /** Janela |prevista − pub| em dias (default 90). */
@@ -15,7 +16,7 @@ type LinkBody = {
   limite?: number;
   /** dry_run=true não grava — só reporta candidatos únicos. */
   dry_run?: boolean;
-  /** Classes PCA no fallback PDM (default fitness + piso). */
+  /** Classes PCA no fallback PDM. Padrão: as classes efetivas do catálogo CATMAT da empresa; pedidas, só as dele. */
   classes?: string[];
 };
 
@@ -28,10 +29,19 @@ Deno.serve(async (req) => {
   const janelaDias = Math.min(Math.max(body.janela_dias ?? 90, 1), 365);
   const limite = Math.min(Math.max(body.limite ?? 500, 1), 2000);
   const dryRun = body.dry_run === true;
-  const classes = body.classes?.length ? body.classes : ["7830"];
   const ano = new Date().getUTCFullYear();
 
   const client = createServiceClient();
+
+  let catalogo: string[];
+  try {
+    catalogo = await classesDoCatalogo(client as never);
+  } catch (error) {
+    return jsonResponse({ error: error instanceof Error ? error.message : String(error) }, 500);
+  }
+  const resolvidas = resolverClasses(body.classes, catalogo);
+  if (!resolvidas.ok) return jsonResponse({ error: resolvidas.erro }, resolvidas.status);
+  const classes = resolvidas.classes;
 
   if (dryRun) {
     const { count: planos, error: planosError } = await client
@@ -40,7 +50,7 @@ Deno.serve(async (req) => {
       .eq("ativo", true)
       .eq("ano_exercicio", ano)
       .eq("pca_itens.ativo", true)
-      .eq("pca_itens.classe_material_servico", "7830");
+      .in("pca_itens.classe_material_servico", classes);
     if (planosError) return jsonResponse({ error: planosError.message }, 500);
 
     return jsonResponse({
@@ -48,17 +58,17 @@ Deno.serve(async (req) => {
       dry_run: true,
       escopo: {
         fonte: "pncp",
-        grupo: "78",
-        classe: "7830",
+        classes,
+        origem_classes: body.classes?.length ? "pedido" : "catalogo_catmat",
         ano,
         finalidade: "previsibilidade do segmento por órgão e UF",
       },
-      planos_na_classe: planos ?? 0,
+      planos_nas_classes: planos ?? 0,
       candidatos_codigo: 0,
       candidatos_pdm_janela: 0,
       vinculados: 0,
       vinculados_externas: 0,
-      nota: "Dry-run de classe e grupo. Não casa item, não usa janela de PDM e não grava pca_plano_id.",
+      nota: "Dry-run das classes. Não casa item, não usa janela de PDM e não grava pca_plano_id.",
     });
   }
 

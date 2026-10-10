@@ -353,8 +353,17 @@ python3 -m coletor.buscar "Por que a Freedom Motors recorreu e qual foi a decis�
 **Cota do Vertex (projeto novo):** o modelo de embeddings começa com **5 requisições/min**
 por região. O indexador já respeita isso (`EMBED_INTERVALO=12.5`). Para acelerar, peça aumento em
 IAM e administrador → Cotas → "online prediction requests per base model … textembedding-gecko"
-(us-central1) e reduza `EMBED_INTERVALO`. PDFs escaneados passam por OCR em partes de
-`OCR_PAGINAS=8` páginas.
+(us-central1) e reduza `EMBED_INTERVALO`.
+
+**OCR (PDF escaneado):** uma chamada ao Gemini **por página** (`ia.ocr_pagina`), com `temperature 0`,
+`max_output_tokens=OCR_MAX_TOKENS` (padrão 4096) e pensamento desligado. Cada página passa pelo detector de
+degeneração (`coletor/ocr.py`): repetição seguida da mesma unidade (caractere, padrão curto ou linha) com ao menos
+`OCR_DEGENERADO_MIN_REP` repetições (padrão 20) cobrindo ao menos `OCR_DEGENERADO_MIN_CHARS` caracteres (padrão 300).
+Estados por página, gravados sem texto em `licitacao_documentos.extracao.ocr_paginas`:
+`extraido` (vira chunk), `OCR_DEGENERADO` (repetição ou `MAX_TOKENS`; não vira chunk) e `OCR_REQUIRED` (OCR sem texto).
+Documento com alguma página não aceita fica com `extracao.ocr_incompleto = true`; se nenhuma página for aceita,
+fica `ignorado` com `erro` começando por `OCR_DEGENERADO` (o estado próprio em `status_processamento` é migration
+separada, issue #299). Medição que motivou: spec 0016, seção 5 (Baraúna, 09/10/2026).
 
 **Importante para o app:** a pergunta do usuário precisa ser convertida em vetor com o
 **mesmo modelo** (`text-multilingual-embedding-002`, 768d, `RETRIEVAL_QUERY`) antes de chamar

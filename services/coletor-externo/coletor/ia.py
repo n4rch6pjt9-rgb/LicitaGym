@@ -16,6 +16,9 @@ EMBED_MAX_CHARS = int(os.environ.get("EMBED_MAX_CHARS", "45000"))  # ~15 mil tok
 EMBED_INTERVALO = float(os.environ.get("EMBED_INTERVALO", "12.5"))  # 60s / 5 req = 12s
 TIMEOUT_MS = int(os.environ.get("TIMEOUT_MS", "90000"))
 GEN_MODEL = os.environ.get("GEN_MODEL", "gemini-2.5-flash")
+# Teto de saída do OCR por página. Página A4 densa fica perto de 2 mil tokens; as páginas degeneradas de 09/10/2026
+# passaram de 15 mil caracteres. O valor fino se mede nos casos da spec 0016.
+OCR_MAX_TOKENS = int(os.environ.get("OCR_MAX_TOKENS", "4096"))
 DIM = 768  # mesma dimensão de legislacao_embeddings / licitacao_chunks
 
 TIPOS = ["edital", "aviso", "termo_referencia", "esclarecimento", "impugnacao", "ata_sessao",
@@ -40,6 +43,17 @@ Não invente: use null ou [] quando não houver a informação.
 
 TEXTO:
 {texto}"""
+
+
+def motivo_fim(resposta) -> str | None:
+    """finish_reason do primeiro candidato como texto ("STOP", "MAX_TOKENS"...), ou None."""
+    try:
+        fr = resposta.candidates[0].finish_reason
+    except (AttributeError, IndexError, TypeError):
+        return None
+    if fr is None:
+        return None
+    return getattr(fr, "name", None) or str(fr)
 
 
 class Gemini:
@@ -109,16 +123,20 @@ class Gemini:
         except (json.JSONDecodeError, TypeError) as e:
             raise RuntimeError(f"Gemini retornou JSON inválido na extração: {(r.text or '')[:500]}") from e
 
-    def ocr_pdf(self, pdf: bytes) -> str:
-        """Transcreve PDF escaneado. Limite prático de ~20 MB por chamada."""
+    def ocr_pagina(self, pdf: bytes) -> tuple[str, str | None]:
+        """Transcreve UMA página de PDF escaneado (o indexador separa as páginas). Devolve (texto, finish_reason).
+        PDF inteiro numa chamada perdeu o vínculo com a página e degenerou (medição de 09/10/2026, spec 0016);
+        `max_output_tokens` corta a degeneração antes de consumir tempo e custo. O pensamento do 2.5-flash conta
+        nesse limite, por isso fica desligado no OCR."""
         parte = self.types.Part.from_bytes(data=pdf, mime_type="application/pdf")
         r = self._retry(lambda: self.client.models.generate_content(
             model=GEN_MODEL,
-            contents=[parte, "Transcreva integralmente o texto deste documento, em português, "
-                             "mantendo a ordem. Marque o início de cada página com '[[PÁGINA n]]'. "
+            contents=[parte, "Transcreva integralmente o texto desta página, em português, mantendo a ordem. "
                              "Não resuma e não comente."],
-            config=self.types.GenerateContentConfig(temperature=0)))
-        return r.text or ""
+            config=self.types.GenerateContentConfig(
+                temperature=0, max_output_tokens=OCR_MAX_TOKENS,
+                thinking_config=self.types.ThinkingConfig(thinking_budget=0))))
+        return r.text or "", motivo_fim(r)
 
     def responder(self, pergunta: str, trechos: list[dict]) -> str:
         # Envelope por nível de confiança (documento_publico × alegacao_de_parte) e regras de dados,

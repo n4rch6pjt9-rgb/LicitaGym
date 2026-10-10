@@ -215,6 +215,46 @@ Deno.test("CA-5: descoberta junta planos repetidos entre páginas e conta linhas
   ]);
 });
 
+Deno.test("descoberta arquiva cada página da consulta antes de ler os planos", async () => {
+  const paginas = [
+    { data: [{ ...cabecalho(), itens: [itemConsulta(1)] }], paginasRestantes: 1 },
+    { data: [{ ...cabecalho(), itens: [itemConsulta(2)] }], paginasRestantes: 0 },
+  ];
+  const arquivadas: Row[] = [];
+  const d = await descobrirPlanos(consultaFake(paginas), {
+    ano: ANO,
+    classes: ["7830"],
+    tamanhoPagina: 500,
+    prazoEsgotado: nunca,
+    arquivar: (r) => {
+      arquivadas.push(r as unknown as Row);
+      return Promise.resolve();
+    },
+  });
+  assertEquals(d.completo, true);
+  assertEquals(arquivadas.map((r) => r.endpoint), [
+    `/pca/?anoPca=${ANO}&codigoClassificacaoSuperior=7830&pagina=1`,
+    `/pca/?anoPca=${ANO}&codigoClassificacaoSuperior=7830&pagina=2`,
+  ]);
+  assertEquals(arquivadas[0].body, paginas[0]); // bruto, antes de normalizar
+  assertEquals(arquivadas[1].requisicao, { ano: ANO, codigoClassificacao: "7830", pagina: 2, tamanhoPagina: 500 });
+});
+
+Deno.test("descoberta: falha ao arquivar a página é erro de página, sem ler os planos dela", async () => {
+  const d = await descobrirPlanos(
+    consultaFake([{ data: [{ ...cabecalho(), itens: [itemConsulta(1)] }], paginasRestantes: 0 }]),
+    {
+      ano: ANO,
+      classes: ["7830"],
+      tamanhoPagina: 500,
+      prazoEsgotado: nunca,
+      arquivar: () => Promise.reject(new Error("falha injetada source_record")),
+    },
+  );
+  assertEquals([d.completo, d.erro_pagina, d.planos.size], [false, true, 0]);
+  assertEquals(d.retomar_de, { classe_idx: 0, pagina: 1 });
+});
+
 Deno.test("descoberta: envelope inválido deixa incompleta, com os planos lidos e onde retomar", async () => {
   const consulta = consultaFake([{ data: [cabecalho()], paginasRestantes: 2 }, {}]);
   const d = await descobrirPlanos(consulta, { ano: ANO, classes: ["7830"], tamanhoPagina: 500, prazoEsgotado: nunca });
@@ -505,6 +545,26 @@ Deno.test("handler: incremental com a fila esvaziada termina 'concluida'", async
   assertEquals(r.status, "concluida");
   assertEquals(db.rows("pncp_sync_run")[0].status, "concluida");
   assertEquals(db.rows("pca_itens").length, 1);
+});
+
+Deno.test("handler: heartbeat que não grava a continuation interrompe antes da primeira requisição", async () => {
+  const db = banco();
+  const consulta = consultaFake([{ data: [{ ...cabecalho(), itens: [itemConsulta(1)] }], paginasRestantes: 0 }]);
+  const integ = integracaoFake({ [`${CNPJ}/2026/4`]: [itemIntegracao(1)] });
+  db.falhas = [{ table: "pncp_sync_run", op: "update" }];
+  const r = await rodar(db, { rotina: "incremental" }, consulta, integ);
+  assertEquals(r.status, "falhou");
+  assertEquals(consulta.chamadas, []); // nenhuma página lida sem a posição gravada
+  assertEquals(db.rows("pca_itens").length, 0);
+});
+
+Deno.test("handler: descoberta grava a página bruta em source_record", async () => {
+  const db = banco();
+  const consulta = consultaFake([{ data: [{ ...cabecalho(), itens: [itemConsulta(1)] }], paginasRestantes: 0 }]);
+  const integ = integracaoFake({ [`${CNPJ}/2026/4`]: [itemIntegracao(1)] });
+  await rodar(db, { rotina: "incremental" }, consulta, integ);
+  const endpoints = db.rows("source_record").map((r) => String(r.endpoint));
+  assert(endpoints.includes(`/pca/?anoPca=${ANO}&codigoClassificacaoSuperior=7830&pagina=1`));
 });
 
 Deno.test("handler: fila que sobra termina 'incompleta' e a continuação termina o trabalho", async () => {

@@ -3,6 +3,7 @@ import { jsonResponse } from "../_shared/http.ts";
 import { acquireSyncLock } from "../_shared/pncp/lock.ts";
 import { finishSyncRun, updateSyncHeartbeat } from "../_shared/pncp/supabase-admin.ts";
 import {
+  arquivarNoSourceRecord,
   type ConsultaPca,
   descobrirPlanos,
   enfileirarDescobertos,
@@ -151,11 +152,15 @@ export async function handleRotinaFila(params: {
     let erroPrincipal: string | undefined;
     // Durante a execução a fila conta como aberta: se o worker morrer, a execução vira 'incompleta' e a continuação
     // confere a fila (abrir uma execução que acha a fila vazia não faz mal; perder a posição da descoberta faz).
-    const heartbeat = () =>
-      updateSyncHeartbeat(client, runId, {
+    // A continuation gravada é o que salva a posição se o worker morrer: falha ao gravá-la interrompe a execução
+    // (seguir sem ela daria uma garantia falsa; o RPC de trava marcaria a execução 'falhou' e a posição se perderia).
+    const heartbeat = async () => {
+      const erro = await updateSyncHeartbeat(client, runId, {
         continuation: marcarPendencia(continuacao, true) as unknown as Record<string, unknown>,
         baseParametros: { ...body, ano },
       });
+      if (erro) throw new Error(`heartbeat da fila não gravou a continuation: ${erro.message}`);
+    };
     try {
       // Antes de qualquer requisição: grava a posição de onde esta execução parte. Sem isso, um worker morto no meio
       // da descoberta deixaria a continuation herdada (ou nenhuma) no lugar desta.
@@ -168,6 +173,7 @@ export async function handleRotinaFila(params: {
           prazoEsgotado,
           inicio: posicao,
           http: { budget, syncRunId: runId },
+          arquivar: arquivarNoSourceRecord(client, runId),
         });
         continuacao.descoberta = desc.retomar_de;
         if (desc.erro) erroPrincipal = `descoberta: ${desc.erro}`.slice(0, 500);

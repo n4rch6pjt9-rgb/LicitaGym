@@ -124,6 +124,8 @@ export async function descobrirPlanos(
     prazoEsgotado: () => boolean;
     inicio?: PosicaoDescoberta;
     http?: OpcoesHttp;
+    /** Arquiva cada página da consulta antes de ler os planos (como o fluxo antigo). Falha conta como erro de página. */
+    arquivar?: Arquivar;
   },
 ): Promise<Descoberta> {
   const inicio = opts.inicio ?? { classe_idx: 0, pagina: 1 };
@@ -149,6 +151,19 @@ export async function descobrirPlanos(
         });
         res.paginas++;
         if (status === 204) break; // fim válido, sem conteúdo
+        if (opts.arquivar && body != null) {
+          await opts.arquivar({
+            endpoint: `/pca/?anoPca=${opts.ano}&codigoClassificacaoSuperior=${codigo}&pagina=${pos.pagina}`,
+            requisicao: {
+              ano: opts.ano,
+              codigoClassificacao: codigo,
+              pagina: pos.pagina,
+              tamanhoPagina: opts.tamanhoPagina,
+            },
+            status,
+            body,
+          });
+        }
         const obj = (body && typeof body === "object" ? body : null) as Row | null;
         if (status >= 400 || !obj || !Array.isArray(obj.data)) {
           throw new Error(`consulta /pca/ classe ${codigo} página ${pos.pagina}: HTTP ${status} ou envelope sem data[]`);

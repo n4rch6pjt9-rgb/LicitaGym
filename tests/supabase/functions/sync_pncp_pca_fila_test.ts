@@ -5,6 +5,7 @@ import { assert, assertEquals } from "jsr:@std/assert@1";
 import { FakePostgrest } from "./_shared/pncp/_fake_postgrest.ts";
 import {
   descobrirPlanos,
+  escopoDeClasses,
   enfileirarDescobertos,
   itemIntegracaoParaConsulta,
   lerItensPlano,
@@ -76,7 +77,7 @@ function banco(): FakePostgrest {
       );
       if (aberto) {
         Object.assign(aberto, { ...it, plano: it.plano ?? aberto.plano });
-        if (aberto.status !== "processando") aberto.status = "pendente";
+        if (aberto.status !== "processando") Object.assign(aberto, { status: "pendente", tentativas: 0, erro: null });
       } else {
         fila.push({ id: ++seq, status: "pendente", tentativas: 0, ...it });
       }
@@ -100,13 +101,20 @@ function banco(): FakePostgrest {
   };
   db.rpcs.pca_marcar_descoberta = (args, d) => {
     const vistos = new Set(args.p_vistos as string[]);
+    const escopo = [...new Set((args.p_classes as string[]).map(String))].sort();
+    const chave = escopo.join(",");
+    const mesmo = (p: Row) => escopoDeClasses(p.descoberta_ausente_escopo) === chave;
     for (const p of d.rows("pca_planos")) {
       if (p.ano_exercicio !== args.p_ano) continue;
-      p.descoberta_ausente_seguidas = vistos.has(String(p.id_pca_pncp))
-        ? 0
-        : Number(p.descoberta_ausente_seguidas ?? 0) + (p.ativo !== false ? 1 : 0);
+      if (vistos.has(String(p.id_pca_pncp))) {
+        Object.assign(p, { descoberta_ausente_seguidas: 0, descoberta_ausente_escopo: escopo });
+      } else if (p.ativo !== false) {
+        const antes = mesmo(p) ? Number(p.descoberta_ausente_seguidas ?? 0) : 0;
+        Object.assign(p, { descoberta_ausente_seguidas: antes + 1, descoberta_ausente_escopo: escopo });
+      }
     }
-    return d.rows("pca_planos").filter((p) => p.ativo !== false && Number(p.descoberta_ausente_seguidas) >= 2).length;
+    return d.rows("pca_planos")
+      .filter((p) => p.ativo !== false && Number(p.descoberta_ausente_seguidas) >= 2 && mesmo(p)).length;
   };
   // private.acquire_sync_lock (20260929000001): execução 'executando' sem heartbeat há mais de 3 min é stale e vira
   // 'incompleta' só se continuation.pending for array não vazio (senão 'falhou'); novo run 'executando' herda a
@@ -465,7 +473,9 @@ Deno.test("CA-10: ausente sem item do escopo é inativado; com item, os itens s�
   for (const id of [ID, outro]) {
     await gravarPaginaPcaEmLote(db as never, [{ ...cabecalho(id), itens: [itemConsulta(1)] }], { ano: ANO, runId: "r" });
   }
-  for (const p of db.rows("pca_planos")) p.descoberta_ausente_seguidas = 1;
+  for (const p of db.rows("pca_planos")) {
+    Object.assign(p, { descoberta_ausente_seguidas: 1, descoberta_ausente_escopo: ["7830"] });
+  }
   const a = await tratarAusentes(db as never, [], {
     ano: ANO,
     classes: ["7830"],
@@ -502,6 +512,42 @@ Deno.test("CA-10: ausente sem item do escopo inativa só os itens do escopo; ite
   assertEquals([plano.ativo, plano.descoberta_ausente_seguidas], [true, 0]);
   const porNumero = Object.fromEntries(db.rows("pca_itens").map((i) => [i.numero_item, i.ativo]));
   assertEquals(porNumero, { 1: false, 2: true });
+});
+
+Deno.test("CA-10: contador medido em outro escopo de classes recomeça e não enfileira na reconciliação", async () => {
+  const db = banco();
+  await gravarPaginaPcaEmLote(db as never, [{ ...cabecalho(), itens: [itemConsulta(1)] }], { ano: ANO, runId: "r" });
+  // ausente 1 vez numa descoberta só da 7220; agora a reconciliação é da 7830
+  Object.assign(db.rows("pca_planos")[0], { descoberta_ausente_seguidas: 1, descoberta_ausente_escopo: ["7220"] });
+  const a = await tratarAusentes(db as never, [], {
+    ano: ANO,
+    classes: ["7830"],
+    rotina: "reconciliacao",
+    chainId: RUN,
+  });
+  assertEquals([a.ausentes_2_ou_mais, a.enfileirados], [0, 0]);
+  const p = db.rows("pca_planos")[0];
+  assertEquals([p.descoberta_ausente_seguidas, p.descoberta_ausente_escopo], [1, ["7830"]]);
+});
+
+Deno.test("CA-10: reconciliação não enfileira plano cujo contador de 2 é de outro escopo", async () => {
+  const db = banco();
+  await gravarPaginaPcaEmLote(db as never, [{ ...cabecalho(), itens: [itemConsulta(1)] }], { ano: ANO, runId: "r" });
+  // o RPC devolve ausentes no escopo pedido; aqui o plano já tem 2 medidos na 7220 e a reconciliação da 7830 o vê
+  db.rpcs.pca_marcar_descoberta = () => 1;
+  Object.assign(db.rows("pca_planos")[0], { descoberta_ausente_seguidas: 2, descoberta_ausente_escopo: ["7220"] });
+  const a = await tratarAusentes(db as never, [], {
+    ano: ANO,
+    classes: ["7830"],
+    rotina: "reconciliacao",
+    chainId: RUN,
+  });
+  assertEquals(a.enfileirados, 0);
+});
+
+Deno.test("escopoDeClasses ordena e tira repetição", () => {
+  assertEquals(escopoDeClasses(["7830", "7220", "7830"]), "7220,7830");
+  assertEquals(escopoDeClasses(null), "");
 });
 
 Deno.test("CA-10: incremental não enfileira ausentes, só atualiza o contador", async () => {
@@ -650,7 +696,9 @@ async function cadeiaDeDescoberta(falhaPagina2: () => { status: number; body: un
     const id = `${CNPJ}-0-00000${s}/2026`;
     await gravarPaginaPcaEmLote(db as never, [{ ...cabecalho(id), itens: [itemConsulta(1)] }], { ano: ANO, runId: "r" });
   }
-  for (const p of db.rows("pca_planos")) Object.assign(p, { ano_exercicio: ANO, descoberta_ausente_seguidas: 1 });
+  for (const p of db.rows("pca_planos")) {
+    Object.assign(p, { ano_exercicio: ANO, descoberta_ausente_seguidas: 1, descoberta_ausente_escopo: ["7830"] });
+  }
   const consulta = {
     fetchPcaPage(_a: number, p: number) {
       const falha = p === 2 ? falhaPagina2() : null;

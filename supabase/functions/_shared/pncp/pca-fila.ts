@@ -264,6 +264,11 @@ export async function enfileirarDescobertos(
  * sem erro de página): atualiza o contador de ausência e, na reconciliação, enfileira os ausentes. `vistos`: os
  * planos que a descoberta inteira viu.
  */
+/** Conjunto de classes como chave comparável (ordenado e sem repetição), igual ao escopo gravado pela migration. */
+export function escopoDeClasses(classes: unknown): string {
+  return Array.isArray(classes) ? [...new Set(classes.map(String))].sort().join(",") : "";
+}
+
 export async function tratarAusentes(
   client: SupabaseClient,
   vistos: Iterable<string>,
@@ -279,12 +284,15 @@ export async function tratarAusentes(
   if (opts.rotina !== "reconciliacao" || ausentes === 0) return { ausentes_2_ou_mais: ausentes, enfileirados: 0 };
 
   const linhas = await lerTudo((de, ate) =>
-    client.from("pca_planos").select("id, id_pca_pncp")
+    client.from("pca_planos").select("id, id_pca_pncp, descoberta_ausente_escopo")
       .eq("ano_exercicio", opts.ano).eq("ativo", true).gte("descoberta_ausente_seguidas", 2)
       .order("id").range(de, ate)
   );
+  // Só o contador medido neste escopo de classes (pca_marcar_descoberta grava o escopo junto do contador).
+  const escopo = escopoDeClasses(opts.classes);
   const fila: ItemFila[] = [];
   for (const r of linhas) {
+    if (escopoDeClasses(r.descoberta_ausente_escopo) !== escopo) continue;
     const m = ID_PCA.exec(String(r.id_pca_pncp));
     if (!m) continue;
     fila.push({

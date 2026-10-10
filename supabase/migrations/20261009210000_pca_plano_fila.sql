@@ -6,8 +6,10 @@
 --
 -- O que muda:
 --   1. private.pca_plano_fila: um plano por linha aberta (pendente, processando ou erro); feito fica como histórico.
---   2. public.pca_planos.descoberta_ausente_seguidas: quantas descobertas completas seguidas não viram o plano.
---      A reconciliação só inativa plano ausente em 2 descobertas seguidas e sem item do escopo na integração.
+--   2. public.pca_planos.descoberta_ausente_seguidas: quantas descobertas completas seguidas não viram o plano, e
+--      descoberta_ausente_escopo: as classes em que o contador foi medido (outro escopo o reinicia).
+--      A reconciliação só inativa plano ausente em 2 descobertas seguidas do mesmo escopo e sem item do escopo na
+--      integração.
 --   3. Funções (só service_role, security invoker):
 --      private.pca_fila_enfileirar(jsonb), private.pca_fila_reservar(int, int, int) e
 --      private.pca_marcar_descoberta(int, text[], text[]).
@@ -79,9 +81,19 @@ alter table public.pca_planos
 comment on column public.pca_planos.descoberta_ausente_seguidas is
   'Spec 0012: descobertas completas seguidas (consulta /pca/ por classe) em que o plano não apareceu. Zera quando aparece.';
 
+-- O contador só vale para o conjunto de classes em que foi medido: uma descoberta de outro escopo o reinicia, e a
+-- reconciliação só age sobre contador do próprio escopo (uma descoberta só da 7830 não usa nem zera em silêncio a
+-- ausência medida só na 7220). Ordenado e sem repetição, para comparar por igualdade.
+alter table public.pca_planos
+  add column if not exists descoberta_ausente_escopo text[];
+
+comment on column public.pca_planos.descoberta_ausente_escopo is
+  'Spec 0012: classes (ordenadas) da descoberta que mediu descoberta_ausente_seguidas. Outro escopo reinicia o contador.';
+
 -- Enfileira (ou atualiza a linha aberta de) cada plano. p_itens: array de objetos com id_pca_pncp, orgao_cnpj, ano,
 -- sequencial, motivo, plano, classes, data_atualizacao_fonte, chain_id. Linha em processamento não volta para pendente: se ela
--- terminar 'feito' com a versão anterior, a próxima descoberta vê a data maior e reenfileira.
+-- terminar 'feito' com a versão anterior, a próxima descoberta vê a data maior e reenfileira. Linha pendente ou em erro
+-- que recebe trabalho novo recomeça as tentativas: a versão nova da fonte não herda as falhas da anterior.
 create or replace function private.pca_fila_enfileirar(p_itens jsonb)
 returns integer
 language plpgsql
@@ -106,6 +118,8 @@ begin
     motivo = excluded.motivo,
     chain_id = excluded.chain_id,
     status = case when f.status = 'processando' then f.status else 'pendente' end,
+    tentativas = case when f.status = 'processando' then f.tentativas else 0 end,
+    erro = case when f.status = 'processando' then f.erro else null end,
     atualizado_em = now();
   get diagnostics v_total = row_count;
   return v_total;
@@ -144,8 +158,9 @@ as $fn$
 $fn$;
 
 -- Depois de uma descoberta COMPLETA (todas as páginas de todas as classes lidas sem erro): zera o contador dos planos
--- vistos e soma 1 nos planos ativos do ano, com item ativo das classes descobertas, que não apareceram.
--- Devolve quantos planos ficaram com 2 ou mais ausências seguidas.
+-- vistos e soma 1 nos planos ativos do ano, com item ativo das classes descobertas, que não apareceram. O contador fica
+-- com o escopo (classes ordenadas): medido em outro escopo, recomeça em 1. Devolve quantos planos ficaram com 2 ou mais
+-- ausências seguidas neste escopo.
 create or replace function private.pca_marcar_descoberta(p_ano integer, p_vistos text[], p_classes text[])
 returns integer
 language plpgsql
@@ -154,15 +169,19 @@ set search_path = ''
 as $fn$
 declare
   v_ausentes integer;
+  v_escopo text[] := array(select distinct c from unnest(coalesce(p_classes, '{}'::text[])) c order by c);
 begin
   update public.pca_planos p
-     set descoberta_ausente_seguidas = 0
+     set descoberta_ausente_seguidas = 0,
+         descoberta_ausente_escopo = v_escopo
    where p.ano_exercicio = p_ano
      and p.id_pca_pncp = any(p_vistos)
-     and p.descoberta_ausente_seguidas <> 0;
+     and (p.descoberta_ausente_seguidas <> 0 or p.descoberta_ausente_escopo is distinct from v_escopo);
 
   update public.pca_planos p
-     set descoberta_ausente_seguidas = p.descoberta_ausente_seguidas + 1
+     set descoberta_ausente_seguidas = case when p.descoberta_ausente_escopo = v_escopo
+                                            then p.descoberta_ausente_seguidas + 1 else 1 end,
+         descoberta_ausente_escopo = v_escopo
    where p.ano_exercicio = p_ano
      and p.ativo
      and not (p.id_pca_pncp = any(p_vistos))
@@ -173,7 +192,8 @@ begin
 
   select count(*) into v_ausentes
     from public.pca_planos p
-   where p.ano_exercicio = p_ano and p.ativo and p.descoberta_ausente_seguidas >= 2;
+   where p.ano_exercicio = p_ano and p.ativo and p.descoberta_ausente_seguidas >= 2
+     and p.descoberta_ausente_escopo = v_escopo;
   return v_ausentes;
 end
 $fn$;

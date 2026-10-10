@@ -2,11 +2,12 @@
 -- Falha com EXCEPTION se:
 --   ACL  private.pca_plano_fila ou as funções ficarem acessíveis a anon/authenticated, RLS desligada, ou service_role
 --        sem acesso;
---   ENF  reenfileirar o mesmo plano duplicar a linha aberta, ou uma linha 'processando' voltar para 'pendente';
+--   ENF  reenfileirar o mesmo plano duplicar a linha aberta, uma linha 'processando' voltar para 'pendente', ou uma
+--        linha em erro reenfileirada não recomeçar as tentativas;
 --   RES  pca_fila_reservar devolver mais que o limite, pegar plano 'feito', erro com tentativas esgotadas ou erro
 --        de menos de 10 minutos (recuo entre tentativas); ou se processando abandonado não contar tentativa;
---   DESC pca_marcar_descoberta não zerar o contador do plano visto, não somar no ausente com item da classe, ou somar
---        no plano sem item da classe;
+--   DESC pca_marcar_descoberta não zerar o contador do plano visto, não somar no ausente com item da classe, somar
+--        no plano sem item da classe, ou somar sobre contador medido em outro escopo de classes;
 --   LOCK private.acquire_sync_lock não preservar (e herdar) a execução da fila que parou sem heartbeat com a
 --        continuation que o sync-pncp-pca grava (pending com rótulo, rotina, classes, descoberta);
 --   CRON (só com pg_cron) os três jobs novos não existirem, ou o comando não usar "rotina".
@@ -114,18 +115,29 @@ begin
   if (select status from private.pca_plano_fila where id = v_id_proc) <> 'processando' then
     v_falhas := v_falhas || 'reenfileirar tirou o plano de processando'::text;
   end if;
+  -- linha em erro com tentativas esgotadas que recebe trabalho novo recomeça (status, tentativas e erro)
+  update private.pca_plano_fila set erro = 'falha antiga' where id_pca_pncp = 'CHK-FILA-ESGOTADO';
+  perform private.pca_fila_enfileirar(jsonb_build_array(
+    jsonb_build_object('id_pca_pncp', 'CHK-FILA-ESGOTADO', 'orgao_cnpj', '99000001000101', 'ano', 2099, 'sequencial', 4,
+                       'motivo', 'alterado')));
+  if (select status || '|' || tentativas || '|' || coalesce(erro, '-') from private.pca_plano_fila
+       where id_pca_pncp = 'CHK-FILA-ESGOTADO') <> 'pendente|0|-' then
+    v_falhas := v_falhas || 'reenfileirar linha em erro não zerou tentativas e erro'::text;
+  end if;
 
   -- DESC
   insert into public.pca_planos (id_pca_pncp, ano_exercicio, orgao_cnpj, titulo, payload_hash, ativo,
-                                 descoberta_ausente_seguidas)
-    values ('CHK-FILA-P-VISTO', 2099, '99000001000101', 'chk', 'chk', true, 3),
-           ('CHK-FILA-P-AUSENTE', 2099, '99000001000101', 'chk', 'chk', true, 1),
-           ('CHK-FILA-P-OUTRA-CLASSE', 2099, '99000001000101', 'chk', 'chk', true, 0);
+                                 descoberta_ausente_seguidas, descoberta_ausente_escopo)
+    values ('CHK-FILA-P-VISTO', 2099, '99000001000101', 'chk', 'chk', true, 3, array['7830']),
+           ('CHK-FILA-P-AUSENTE', 2099, '99000001000101', 'chk', 'chk', true, 1, array['7830']),
+           ('CHK-FILA-P-OUTRA-CLASSE', 2099, '99000001000101', 'chk', 'chk', true, 0, null),
+           ('CHK-FILA-P-OUTRO-ESCOPO', 2099, '99000001000101', 'chk', 'chk', true, 1, array['7220']);
   select id into v_p1 from public.pca_planos where id_pca_pncp = 'CHK-FILA-P-AUSENTE';
   insert into public.pca_itens (pca_plano_id, numero_item, classe_material_servico, payload_hash, ativo)
     values (v_p1, 1, '7830', 'chk', true),
-           ((select id from public.pca_planos where id_pca_pncp = 'CHK-FILA-P-OUTRA-CLASSE'), 1, '7220', 'chk', true);
-  perform private.pca_marcar_descoberta(2099, array['CHK-FILA-P-VISTO'], array['7830']);
+           ((select id from public.pca_planos where id_pca_pncp = 'CHK-FILA-P-OUTRA-CLASSE'), 1, '7220', 'chk', true),
+           ((select id from public.pca_planos where id_pca_pncp = 'CHK-FILA-P-OUTRO-ESCOPO'), 1, '7830', 'chk', true);
+  v_n := private.pca_marcar_descoberta(2099, array['CHK-FILA-P-VISTO'], array['7830']);
   if (select descoberta_ausente_seguidas from public.pca_planos where id_pca_pncp = 'CHK-FILA-P-VISTO') <> 0 then
     v_falhas := v_falhas || 'plano visto não zerou o contador'::text;
   end if;
@@ -134,6 +146,19 @@ begin
   end if;
   if (select descoberta_ausente_seguidas from public.pca_planos where id_pca_pncp = 'CHK-FILA-P-OUTRA-CLASSE') <> 0 then
     v_falhas := v_falhas || 'plano só com item de outra classe somou ausência'::text;
+  end if;
+  -- contador medido só na 7220 não vale para a descoberta da 7830: recomeça em 1, com o escopo novo
+  if (select descoberta_ausente_seguidas || '|' || array_to_string(descoberta_ausente_escopo, ',')
+        from public.pca_planos where id_pca_pncp = 'CHK-FILA-P-OUTRO-ESCOPO') <> '1|7830' then
+    v_falhas := v_falhas || 'plano com contador de outro escopo somou em vez de recomeçar'::text;
+  end if;
+  if (select array_to_string(descoberta_ausente_escopo, ',') from public.pca_planos
+       where id_pca_pncp = 'CHK-FILA-P-VISTO') is distinct from '7830' then
+    v_falhas := v_falhas || 'plano visto não ficou com o escopo da descoberta'::text;
+  end if;
+  -- só P-AUSENTE chega a 2 no escopo 7830 (planos reais de 2099 não existem no banco descartável)
+  if v_n <> 1 then
+    v_falhas := v_falhas || format('marcar_descoberta devolveu %s ausentes com 2 ou mais no escopo (esperado 1)', v_n);
   end if;
 
   -- LOCK: worker morto (sem heartbeat há 10 min) no meio da descoberta, com a continuation no formato da fila

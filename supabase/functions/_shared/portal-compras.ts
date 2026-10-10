@@ -123,9 +123,19 @@ export function decidirAtualizacaoPortal(
   return "consultado";
 }
 
+/**
+ * Situação do processo no Portal de Compras Públicas. A API v2 devolve `statusProcesso` como objeto
+ * (`{"codigo": 1, "descricao": "Recebendo Propostas"}`): vale a `descricao`; sem ela, o `codigo`.
+ * Número ou texto soltos (formato antigo) continuam aceitos.
+ */
 export function situacaoPortal(body: unknown): string | null {
   if (!body || typeof body !== "object" || Array.isArray(body)) return null;
-  const status = (body as Record<string, unknown>).statusProcesso;
+  let status = (body as Record<string, unknown>).statusProcesso;
+  if (status && typeof status === "object" && !Array.isArray(status)) {
+    const obj = status as Record<string, unknown>;
+    if (typeof obj.descricao === "string" && obj.descricao.trim() !== "") return obj.descricao.trim();
+    status = obj.codigo;
+  }
   if (typeof status === "number" && Number.isFinite(status)) return String(status);
   if (typeof status === "string" && status.trim() !== "") return status.trim();
   return null;

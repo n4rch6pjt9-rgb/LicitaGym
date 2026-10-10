@@ -1,0 +1,4 @@
+{
+  "_fonte": "Formato real da API pública v2 do Portal de Compras Públicas (statusProcesso como objeto), conferido em 09/10/2026 no processo do caso 135 (Baraúna/RN). Só o campo usado.",
+  "statusProcesso": { "codigo": 1, "descricao": "Recebendo Propostas" }
+}

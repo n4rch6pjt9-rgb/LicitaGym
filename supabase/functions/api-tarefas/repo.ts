@@ -1,0 +1,112 @@
+import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
+import { lerTenantDoUsuario, type TenantResolvido } from "../_shared/tenant.ts";
+import type { Bloqueio, Status, Tarefa, TarefaPrevia } from "./types.ts";
+
+const TAREFA_COLUMNS = [
+  "id", "tenant_id", "licitacao_id", "origem", "tarefa_codigo", "titulo", "descricao", "liberada_por_fase",
+  "liberada_por_evento", "condicao_verificada", "contexto", "prazo_situacao", "prazo_em", "status", "responsavel_papel",
+  "responsavel_user_id", "criada_em", "atualizada_em", "concluida_em",
+].join(",") +
+  ",catalogo:tarefas_catalogo(titulo,descricao,fase_codigo,natureza,prazo_quantidade,prazo_unidade,prazo_sentido,prazo_evento)";
+
+export const LIMITE_LISTA = 500;
+
+export interface FiltroTarefas {
+  licitacao_id: number | null;
+  status: Status | null;
+  /** user_id do responsável; null = qualquer (inclusive a fila dos admins). */
+  responsavel: string | null;
+}
+
+export interface TarefasRepo {
+  tenantDoUsuario(userId: string, desenvolvedor: boolean): Promise<TenantResolvido>;
+  estaNoPipeline(tenant: number, licitacaoId: number): Promise<boolean>;
+  /** licitacoes_externas.regulamento (null = não informado). */
+  regulamento(licitacaoId: number): Promise<string | null>;
+  /** Tarefas que a fase ou o evento liberam, com a condição avaliada no contexto oficial do certame. Não grava. */
+  previa(licitacaoId: number, fase: string | null, evento: string | null): Promise<TarefaPrevia[]>;
+  liberar(tenant: number, licitacaoId: number, fase: string | null, evento: string | null, userId: string): Promise<{
+    criadas: number;
+    existentes: number;
+    bloqueio: Bloqueio | null;
+  }>;
+  listar(tenant: number, filtro: FiltroTarefas): Promise<Tarefa[]>;
+  obter(tenant: number, id: number): Promise<Tarefa | null>;
+  atualizar(tenant: number, id: number, campos: Partial<Tarefa>, userId: string): Promise<Tarefa>;
+  /** Membro ativo (tenant_membros.ativo) da empresa. */
+  membroAtivo(tenant: number, userId: string): Promise<boolean>;
+}
+
+export function createSupabaseRepo(client: SupabaseClient): TarefasRepo {
+  return {
+    tenantDoUsuario(userId, desenvolvedor) {
+      return lerTenantDoUsuario(client, userId, desenvolvedor);
+    },
+
+    async estaNoPipeline(tenant, licitacaoId) {
+      const { data, error } = await client.from("pipeline_oportunidades").select("licitacao_id")
+        .eq("tenant_id", tenant).eq("licitacao_id", licitacaoId).maybeSingle();
+      if (error) throw new Error(error.message);
+      return data !== null;
+    },
+
+    async regulamento(licitacaoId) {
+      const { data, error } = await client.from("licitacoes_externas").select("regulamento").eq("id", licitacaoId).maybeSingle();
+      if (error) throw new Error(error.message);
+      return (data?.regulamento as string | null | undefined) ?? null;
+    },
+
+    async previa(licitacaoId, fase, evento) {
+      const { data: contexto, error: e1 } = await client.rpc("tarefas_contexto_certame", { p_licitacao_id: licitacaoId });
+      if (e1) throw new Error(e1.message);
+      const { data, error } = fase
+        ? await client.rpc("catalogo_tarefas_da_fase", { p_fase: fase, p_contexto: contexto ?? {} })
+        : await client.rpc("catalogo_tarefas_do_evento", { p_evento: evento, p_contexto: contexto ?? {} });
+      if (error) throw new Error(error.message);
+      return (data ?? []) as TarefaPrevia[];
+    },
+
+    async liberar(tenant, licitacaoId, fase, evento, userId) {
+      const { data, error } = await client.rpc("tarefas_equipe_liberar", {
+        p_tenant_id: tenant, p_licitacao_id: licitacaoId, p_fase: fase, p_evento: evento, p_user_id: userId,
+      });
+      if (error) throw new Error(error.message);
+      const linha = (Array.isArray(data) ? data[0] : data) as { criadas: number; existentes: number; bloqueio: Bloqueio | null };
+      return { criadas: Number(linha?.criadas ?? 0), existentes: Number(linha?.existentes ?? 0), bloqueio: linha?.bloqueio ?? null };
+    },
+
+    async listar(tenant, f) {
+      let q = client.from("tarefas_equipe").select(TAREFA_COLUMNS).eq("tenant_id", tenant)
+        .order("criada_em", { ascending: false }).limit(LIMITE_LISTA);
+      if (f.licitacao_id !== null) q = q.eq("licitacao_id", f.licitacao_id);
+      if (f.status !== null) q = q.eq("status", f.status);
+      if (f.responsavel !== null) q = q.eq("responsavel_user_id", f.responsavel);
+      const { data, error } = await q;
+      if (error) throw new Error(error.message);
+      return (data ?? []) as unknown as Tarefa[];
+    },
+
+    async obter(tenant, id) {
+      const { data, error } = await client.from("tarefas_equipe").select(TAREFA_COLUMNS)
+        .eq("tenant_id", tenant).eq("id", id).maybeSingle();
+      if (error) throw new Error(error.message);
+      return (data as unknown as Tarefa) ?? null;
+    },
+
+    async atualizar(tenant, id, campos, userId) {
+      const { data, error } = await client.from("tarefas_equipe")
+        .update({ ...campos, atualizada_por: userId, atualizada_em: new Date().toISOString() })
+        .eq("tenant_id", tenant).eq("id", id)
+        .select(TAREFA_COLUMNS).single();
+      if (error) throw new Error(error.message);
+      return data as unknown as Tarefa;
+    },
+
+    async membroAtivo(tenant, userId) {
+      const { data, error } = await client.from("tenant_membros").select("user_id")
+        .eq("tenant_id", tenant).eq("user_id", userId).eq("ativo", true).maybeSingle();
+      if (error) throw new Error(error.message);
+      return data !== null;
+    },
+  };
+}

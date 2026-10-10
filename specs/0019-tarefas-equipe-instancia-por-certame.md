@@ -1,6 +1,6 @@
 # 0019: Tarefas da equipe: instância por certame em cima do catálogo 14.133
 
-- **Status:** rascunho (10/10/2026)
+- **Status:** aprovada (Marcelo, 10/10/2026; decisões em "Decisões")
 - **Issue:** #252 (sub-issue da Dashboard #29; tela na Dashboard #72). Pré-requisito da spec 0018 (decisões 9 e 10).
 - **Área:** migrations (tabela nova `tarefas_equipe` + funções), edge-functions (nova `api-tarefas`), dashboard-contrato
 - **Depende do ok do Marcelo:** sim. Migration de produção, função nova e as decisões da seção "Perguntas em aberto".
@@ -65,7 +65,11 @@ Medido em produção (só leitura, 10/10):
 - **`tarefas_contexto_certame(p_licitacao_id bigint) → jsonb`:** monta o contexto **só com dado oficial**. No v1 a
   única chave é `srp`, de `objeto_registro_preco`, e só quando esse campo não é nulo. As outras chaves ficam ausentes, e
   chave ausente vira "condição não verificada", nunca "não se aplica".
-- **`tarefas_equipe_liberar(p_tenant_id, p_licitacao_id, p_fase, p_evento, p_user_id) → (criadas int, existentes int)`:**
+- **`tarefas_equipe_liberar(p_tenant_id, p_licitacao_id, p_fase, p_evento, p_user_id) → (criadas int, existentes int, bloqueio text)`:**
+  - **gate de regulamento (decisão 1):** só libera quando `licitacoes_externas.regulamento` é `LEI_14133` ou
+    `LEI_14981`. Regulamento nulo → nada é gravado, `bloqueio = 'regulamento_nao_informado'`; outro regulamento →
+    `bloqueio = 'regulamento_sem_catalogo'`. Em 10/10 o regulamento é nulo em todas as linhas: até o backfill (pelo
+    `amparoLegal` do detalhe do PNCP), nenhuma tarefa do catálogo nasce;
   - recebe exatamente um de `p_fase` ou `p_evento`;
   - chama `catalogo_tarefas_da_fase` ou `catalogo_tarefas_do_evento` com o contexto;
   - insere com `on conflict do nothing`;
@@ -94,12 +98,13 @@ acessado com `service_role` só depois de conferir o usuário.
 | Ação | Quem | O quê |
 |---|---|---|
 | `catalogo_liberadas` | admin ou operação | prévia sem gravar: tarefas que a fase ou o evento liberam para a licitação, com `aplicavel` (true ou nulo), prazo e base legal |
-| `tarefas_liberar` | admin ou operação | grava as tarefas da fase ou do evento (`tarefas_equipe_liberar`); devolve `criadas` e `existentes` |
+| `tarefas_liberar` | só admin (ou o desenvolvedor) (decisão 3) | grava as tarefas da fase ou do evento (`tarefas_equipe_liberar`); devolve `criadas` e `existentes`; com bloqueio de regulamento, 409 com a mensagem do bloqueio e nada gravado |
 | `tarefas_listar` | admin: todas da empresa; operação: só as atribuídas a ela | filtros `licitacao_id`, `status`, `minhas` |
 | `tarefa_atualizar` | admin: qualquer uma; operação: só as dela | `status`, `prazo_em` (admin) |
 | `tarefa_atribuir` | só admin (ou o desenvolvedor) | `user_id` precisa ser membro ativo da mesma empresa; `null` devolve à fila dos admins |
 
-Uma licitação só recebe tarefa se estiver no pipeline da empresa (pergunta 2). Fora dele, a resposta é 404 "Licitação
+A prévia `catalogo_liberadas` também devolve o `bloqueio` de regulamento, quando houver. Uma licitação só recebe
+tarefa se estiver no pipeline da empresa (decisão 2). Fora dele, a resposta é 404 "Licitação
 fora do pipeline da empresa".
 
 ## Critérios de aceite
@@ -117,6 +122,8 @@ fora do pipeline da empresa".
 | CA-9 | **Dado** um usuário de operação, **quando** chama `tarefas_listar`, **então** só recebe as atribuídas a ele; admin recebe todas da empresa e nenhuma de outra. | Deno `api_tarefas_test.ts` |
 | CA-10 | **Dado** uma licitação fora do pipeline da empresa, **quando** chama `tarefas_liberar`, **então** 404 e nada é gravado. | Deno `api_tarefas_test.ts` |
 | CA-11 | **Dado** requisição sem JWT, **então** 401; corpo sem `fase` nem `evento`, ou com os dois, **então** 400. | Deno `api_tarefas_test.ts` |
+| CA-12 | **Dado** licitação com `regulamento` nulo, `RLC`, `RCA` ou `OUTRO`, **quando** `tarefas_equipe_liberar` roda, **então** nada é gravado e `bloqueio` diz o motivo; com `LEI_14133`, as tarefas nascem. | SQL `tarefas_equipe_check.sql` |
+| CA-13 | **Dado** um usuário de operação, **quando** chama `tarefas_liberar`, **então** 403; com bloqueio de regulamento, o admin recebe 409 e nada é gravado. | Deno `api_tarefas_test.ts` |
 
 ## Fora de escopo
 
@@ -148,14 +155,15 @@ fora do pipeline da empresa".
   - são da empresa: responsável, status e prazo manual;
   - nenhuma condição é presumida.
 
+## Decisões
+
+Do Marcelo, 10/10/2026:
+1. **Regulamento: bloquear até o backfill.** Só `LEI_14133` e `LEI_14981` recebem tarefa do catálogo; regulamento nulo
+   não libera nada (em 10/10, todas as linhas). O backfill do `regulamento` pelo `amparoLegal` é pré-requisito para a
+   função produzir efeito em produção, e vem em PR próprio.
+2. **Só licitação no pipeline da empresa recebe tarefa** (proposta mantida; sem objeção do Marcelo). Fora dele, 404.
+3. **Só o admin libera** (ou o desenvolvedor). A operação vê e conclui as tarefas atribuídas a ela.
+
 ## Perguntas em aberto
 
-1. **Regulamento.** Hoje `licitacoes_externas.regulamento` é nulo em todas as linhas. Proposta:
-   - regulamento conhecido fora de `LEI_14133` e `LEI_14981` → sem tarefa do catálogo (decisão 4 da 0018);
-   - **nulo** → a tarefa nasce com o selo "condição não verificada" e `regulamento` ausente no contexto (regra de ouro:
-     ausência não vira "não se aplica").
-
-   A alternativa seria bloquear tudo até o backfill do regulamento.
-2. **Só licitação no pipeline da empresa recebe tarefa?** Proposta: sim (404 fora dele). É o momento em que a empresa
-   já decidiu acompanhar.
-3. **Quem libera:** proposta é admin e operação (a tarefa sempre nasce na fila do admin). A alternativa é só admin.
+Nenhuma.

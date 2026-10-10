@@ -71,12 +71,14 @@ Pendências:
 - **Ganho:** Sesc (licitantes com valores + vencedor) e CNI (`itensLotes.participantes`) trazem propostas e vencedores
   reais, que viram rótulos de vitória para o Passo 1.
 - Portais só para os DRs de SESI/SENAI sem dados na API da CNI. Autorizações obrigatórias: Sistema FIEP (PR) e FIEA
-  (AL). **Não contornar** bloqueios (403/WAF/Cloudflare/robots.txt).
+  (AL). Decisão de 05/10/2026: `robots.txt` que bloqueia o portal não impede a coleta. WAF e desafio
+  Cloudflare (403) continuam fora.
 - O conector é Python (`services/coletor-externo/coletor/paradigma.py`); não há Edge Function de coleta do Sistema S.
   As Edge Functions só usam a lista de hosts Paradigma para validar links de edital (`_shared/edital-url.ts`).
 - **Regulamento próprio:** o Sistema S não segue a Lei 14.133, então `tarefas_catalogo`/`processo_fases` precisam de
   uma variante por regulamento. Preencher `entidade` e `regulamento`, hoje nulos.
-- Fontes `aviso_fornecedor` (robots.txt proíbe): não coletar; ingerir os avisos recebidos por e-mail após o cadastro.
+- Fontes em paradigmabs.com.br com `robots.txt` recusando o coletor entram pela coleta do webservice do mural.
+  O modo `aviso_fornecedor` deixa de ser a trava dessas fontes.
 
 ## Passo 3: classificador de escopo via SFT (Tunix)
 

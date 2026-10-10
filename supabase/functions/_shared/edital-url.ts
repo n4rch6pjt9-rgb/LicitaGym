@@ -16,9 +16,10 @@ import { parsePortalProcessoUrl } from "./portal-compras.ts";
  *      (`https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/acompanhamento-compra?compra={idCompra}`, rota a confirmar).
  *    - `id_externo` não é usado: é `int` e guarda o `nCdProcesso` do SEST SENAT.
  *    - Fallback: se houver `linkSistemaOrigem` ou `url`: valida protocolo https.
- * 3. SEST SENAT (`sestsenat` / `sest_senat`):
- *    - Portal Paradigma em `https://compras.sestsenat.org.br/portal/`.
- *    - Se houver `linkSistemaOrigem` https válido, usa-o; sem ele retorna null (não há rota pública por `id_externo`).
+ * 3. Paradigma / Sistema S (slug de `FONTES` em `coletor/paradigma.py`):
+ *    - Se houver `linkSistemaOrigem` https e host autorizado, usa esse link.
+ *    - Senão, monta o mural público do portal (`{base}/Mural.aspx`), inclusive os tenants
+ *      em `paradigmabs.com.br`. Não há página estável por `id_externo`.
  * 4. Genérica / outras fontes:
  *    - Se houver `linkSistemaOrigem` (ou `url_edital`, `url` em colunas/raw): aceita se for https e host em `ALLOWED_ORIGEM_HOSTS`.
  *
@@ -74,6 +75,29 @@ export const ALLOWED_ORIGEM_HOSTS = new Set([
   ...PARADIGMA_HOSTS,
   ...Object.keys(PARADIGMA_SAAS_TENANTS),
 ]);
+
+/**
+ * Mural público de cada fonte Paradigma. O link específico da origem, quando autorizado, vence.
+ * Sem ele, a rota do portal entra assim mesmo — inclusive os tenants SaaS.
+ */
+export const PARADIGMA_MURAL: Readonly<Record<string, string>> = {
+  sestsenat: "https://compras.sestsenat.org.br/portal/Mural.aspx",
+  sest_senat: "https://compras.sestsenat.org.br/portal/Mural.aspx",
+  fiesc: "https://portaldecompras.fiesc.com.br/portal/Mural.aspx",
+  firjan: "https://portaldecompras.firjan.com.br/portal/Mural.aspx",
+  fiergs: "https://compras.sistemafiergs.org.br/portal/Mural.aspx",
+  findes: "https://portaldecompras.findes.org.br/portal/Mural.aspx",
+  fieb: "https://compras.fieb.org.br/portal/Mural.aspx",
+  fiems: "https://compras.fiems.com.br/portal/Mural.aspx",
+  fiemt: "https://compras.sfiemt.ind.br/portal/Mural.aspx",
+  sfiec: "https://portaldecompras.sfiec.org.br/portal/Mural.aspx",
+  fiemg: "https://compras.fiemg.com.br/portal/Mural.aspx",
+  sescsp: "https://scr360.paradigmabs.com.br/sescsp/portal/Mural.aspx",
+  sesc_senac_rs: "https://egov.paradigmabs.com.br/sesc_senac_rs/portal/Mural.aspx",
+  sescdn: "https://egov-br.paradigmabs.com.br/sescdn/portal/Mural.aspx",
+  sescrj: "https://egov.paradigmabs.com.br/SESCRJ/portal/Mural.aspx",
+  sescba: "https://egov.paradigmabs.com.br/sescba/portal/Mural.aspx",
+};
 
 /** Domínio dos hosts SaaS compartilhados do Paradigma. */
 const PARADIGMA_SAAS_DOMINIO = "paradigmabs.com.br";
@@ -368,14 +392,12 @@ export function buildEditalUrl(row: LicitacaoRowForEdital | null | undefined): s
     return null;
   }
 
-  if (fonte === "sestsenat" || fonte === "sest_senat") {
-    // SEST SENAT (Portal Paradigma)
-    // Se houver linkSistemaOrigem https
-    if (validOrigemUrl) {
-      return validOrigemUrl;
-    }
-
-    return null;
+  const mural = PARADIGMA_MURAL[fonte];
+  if (mural) {
+    if (validOrigemUrl) return validOrigemUrl;
+    const linkInformado = rawLinkSistemaOrigem != null && String(rawLinkSistemaOrigem).trim() !== "";
+    if (linkInformado) return null;
+    return mural;
   }
 
   // Outras fontes ou fonte não informada

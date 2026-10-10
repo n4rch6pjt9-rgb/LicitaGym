@@ -82,7 +82,7 @@ python3 -m coletor.paradigma --fonte fiesc --dry-run --paginas 1        # só li
 python3 -m coletor.paradigma --fonte fiesc                                # grava licitação + itens + ranking
 python3 -m coletor.paradigma --fonte sestsenat --termos "academia;esporte e lazer"
 ```
-Sesc SP e Sesc/Senac RS (paradigmabs.com.br) são recusados: o robots.txt do host proíbe coleta automatizada.
+Decisão de 05/10/2026: quando o `robots.txt` bloqueia o portal, a coleta segue. Sesc SP (`sescsp`), Sesc/Senac RS (`sesc_senac_rs`), Sesc DN (`sescdn`), Sesc RJ (`sescrj`) e Sesc BA (`sescba`), em paradigmabs.com.br, entram pelo webservice público do mural, com o mesmo intervalo do adaptador. A decisão antiga (recusar e esperar aviso de fornecedor) não vale mais para esses hosts. Bloqueio de WAF continua fora: FIEMG responde 403 de desafio Cloudflare e não entra por esse caminho. O CLI passa `autorizado=True` só nessas cinco. `fiemg` continua em `PermissionError`.
 
 ---
 

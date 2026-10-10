@@ -222,7 +222,7 @@ async function handleReadiness(
 }
 
 /**
- * Aderência ao catálogo CATMAT de licitações já carregadas (detalhe): lê public.licitacao_match (texto do item ou do
+ * Escopo CATMAT de licitações já carregadas (detalhe): lê public.licitacao_match (texto do item ou do
  * objeto casando com padrões de PDM), mantém só os PDMs efetivos do catálogo da empresa (sem excluídos nem PDMs fora
  * dele, como a lista com catalogo=true) e devolve, por licitação, a mesma forma do catmat_match da lista. É um extra:
  * se a consulta falhar, o detalhe sai sem aderência (com log) em vez de falhar.
@@ -231,7 +231,7 @@ async function handleReadiness(
  * Só no detalhe, cada entrada traz `itens`: os numero_item (licitacao_itens) que casaram para aquele (PDM, motivo),
  * sem repetição, em ordem crescente, no máximo MAX_ITENS_ADERENCIA ([] para texto_objeto ou se a leitura falhar).
  */
-async function aderenciaPorLicitacao(
+async function escopoCatmatPorLicitacao(
   client: SupabaseClient,
   ids: number[],
 ): Promise<Map<number, CatmatMatchDetalhe[]>> {
@@ -398,7 +398,7 @@ async function handleGet(
       const itemWithUrl = comAderencia({
         ...itemRecord,
         url_edital: buildEditalUrl(itemRecord),
-      }, await aderenciaPorLicitacao(client, [Number(itemRecord.id)]));
+      }, await escopoCatmatPorLicitacao(client, [Number(itemRecord.id)]));
       const [itemComPortal] = await anexarAlertaPortal(client, [itemWithUrl]);
 
       return jsonResponse({ item: itemComPortal });
@@ -438,7 +438,7 @@ async function handleGet(
       const itemWithUrl = comAderencia({
         ...itemRecord,
         url_edital: buildEditalUrl(itemRecord),
-      }, await aderenciaPorLicitacao(client, [Number(itemRecord.id)]));
+      }, await escopoCatmatPorLicitacao(client, [Number(itemRecord.id)]));
       const [itemComPortal] = await anexarAlertaPortal(client, [itemWithUrl]);
 
       return jsonResponse({ item: itemComPortal });
@@ -472,7 +472,7 @@ async function handleGet(
       }
 
       const rawItems = (data ?? []) as unknown as Array<Record<string, unknown>>;
-      const ader = await aderenciaPorLicitacao(client, rawItems.map((r) => Number(r.id)));
+      const ader = await escopoCatmatPorLicitacao(client, rawItems.map((r) => Number(r.id)));
       const items = await anexarAlertaPortal(client, rawItems.map((row) => comAderencia({
         ...row,
         url_edital: buildEditalUrl(row),

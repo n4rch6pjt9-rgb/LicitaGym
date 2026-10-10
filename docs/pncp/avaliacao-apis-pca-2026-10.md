@@ -1,6 +1,7 @@
 # Avaliação das APIs de PCA (outubro/2026)
 
-- **Data da medição:** 09/10/2026, entre 14:30 e 14:47 (horário de Brasília).
+- **Data da medição:** 09/10/2026, entre 14:30 e 14:47 (horário de Brasília). A T2 foi medida de novo em 10/10/2026,
+  entre 08:39 e 08:41 (ver "Nova medição sem `cnpj`").
 - **Motivo:** reescrever a spec 0012 (issue #289). O `sync-pncp-pca` morre com `CPU Time exceeded` desde 26/09.
 - **Regras da medição:** só GET público, sem credencial, no máximo 1 requisição por segundo, timeout de 90 s por
   requisição. Nada foi escrito em produção. As respostas ficaram fora do repositório. Aqui só entram os números e os
@@ -20,15 +21,16 @@ Toda latência abaixo é de uma única requisição, medida do cliente. "Fria" �
 | Filtro de classe | **sim** (`codigoClassificacaoSuperior`) | **não** | não; só `categoria` (1 = Material) | **sim** no `2_` (`tipo` + `codigo`); não no `1_` |
 | Página máxima | 500 (OpenAPI e medido) | 500 (OpenAPI) | sem máximo no OpenAPI; 2000 aceito e devolveu os 1800 itens | 500 (OpenAPI) |
 | Envelope | `data[]` por plano com `itens[]`, `totalRegistros` (itens), `totalPaginas` | igual ao T1 | array puro, sem total. Total em `.../itens/quantidade` | `resultado[]`, `totalRegistros`, `totalPaginas` |
-| Volume medido | 6.018 itens 7830/2026, 935 planos, 325 órgãos, 13 páginas de 500 (5,2 MB) | 21.593 itens num único dia de 2025. Os dias de outubro/2026 não responderam | Galeão: 256 itens (274 KB). Maior plano visto: 1.800 itens (1,6 MB) | 1.714 linhas 7830/2026, 983 itens distintos, 70 órgãos, 154 UASG |
-| Latência | fria 46 a 57 s na página 1; quente 0,2 a 3 s | 500 após cerca de 50 s (janela de um dia de out/2026); 42 s (um dia de 2025) | 0,2 a 0,4 s | 0,4 a 3,2 s |
-| Confiável para completude | **não**: a paginação repete e pula itens (ver T1) | não medido (não respondeu) | **sim** no que foi conferido | não: linhas duplicadas e cobertura menor |
+| Volume medido | 6.018 itens 7830/2026, 935 planos, 325 órgãos, 13 páginas de 500 (5,2 MB) | 21.593 itens num único dia de 2025. Em 09/10, os dias de outubro/2026 não responderam; em 10/10, um dia (08..09) trouxe 277.153 itens | Galeão: 256 itens (274 KB). Maior plano visto: 1.800 itens (1,6 MB) | 1.714 linhas 7830/2026, 983 itens distintos, 70 órgãos, 154 UASG |
+| Latência | fria 46 a 57 s na página 1; quente 0,2 a 3 s | 09/10: 500 após cerca de 50 s (um dia de out/2026). 10/10: 0,2 a 10,5 s (um dia), 500 em 50 s (sete dias). 42 s (um dia de 2025) | 0,2 a 0,4 s | 0,4 a 3,2 s |
+| Confiável para completude | **não**: a paginação repete e pula itens (ver T1) | não medido (sem resposta em 09/10; uma medição só em 10/10) | **sim** no que foi conferido | não: linhas duplicadas e cobertura menor |
 
 **Recomendação:**
 - **Descoberta diária:** a consulta por classe (T1), só para listar planos e `dataAtualizacaoGlobalPCA`.
 - **Itens de cada plano:** a integração por plano (T3), que é estável e rápida.
-- **Incremental:** `/pca/atualizacao` (T2) não serve hoje. Sem `cnpj` ele estoura em 50 s, e com `cnpj` não acrescenta
-  nada ao par T1 + T3.
+- **Incremental:** `/pca/atualizacao` (T2) não serve hoje. Sem `cnpj` ele estourou em 50 s em 09/10. Em 10/10, um dia
+  respondeu (277.153 itens, todas as classes), mas sete dias continuaram dando 500. Com `cnpj` não acrescenta nada ao
+  par T1 + T3.
 - **PGC (T4):** só como enriquecimento futuro (DFD, projeto de compra, status da contratação), nunca como fonte de
   carga do PCA.
 
@@ -129,9 +131,34 @@ Com `cnpj`:
 **Prós:** é o único endpoint pensado para incremental.
 
 **Contras:**
-- sem `cnpj`, hoje não responde (500 em 50 s);
+- sem `cnpj`, a janela de um dia deu 500 em 50 s em 09/10 e 200 em 10/10; sete dias continuam em 500. Falta repetição para
+  mostrar estabilidade;
 - não filtra classe;
 - com `cnpj`, não traz nada que a T1 (descoberta) mais a T3 (itens) já não tragam.
+
+### Nova medição sem `cnpj` (10/10/2026, entre 08:39 e 08:41)
+
+Mesmas regras da medição de 09/10: só GET público, 1 req/s, timeout explícito (70 s). Nada gravado.
+
+- **Acesso:** `treina.pncp.gov.br` e `dadosabertos.compras.gov.br` deram 302 na raiz. A raiz de `pncp.gov.br` fechou
+  a conexão TLS (`curl: (56) schannel: server closed abruptly`), mas a API em `pncp.gov.br/api/...` respondeu.
+
+| Janela | Status | Tempo |
+|---|---|---|
+| 20261008..20261008 e 20261009..20261009 (`dataInicio = dataFim`) | 204 | 0,5 s e 0,2 s |
+| 20261008..20261009 (um dia) | 200: `totalRegistros = 277153`, 13.858 páginas de 20 | 0,2 s |
+| 20261009..20261010 (um dia) | 200 | 10,5 s |
+| 20261001..20261008 (sete dias) | 500 "Erro ao processar a consulta." | 50,3 s |
+
+- **O que mudou:** a janela de um dia (08..09), que em 09/10 deu 500 em 50,5 s, deu 200 em 0,2 s. A causa não foi
+  identificada. Foi uma medição só, e não prova que o endpoint ficou estável.
+- **O que não mudou:** a janela de sete dias continua dando 500 no corte de cerca de 50 s.
+- **Volume:** a página 1 com `tamanhoPagina=20` trouxe 1 plano com 20 itens, de várias classes. `totalRegistros` conta
+  itens. São 277.153 itens num dia, de todas as classes e anos de PCA, sem filtro de classe: pelo menos 555 páginas de
+  500 para achar os da 7830.
+- **Efeito na recomendação:** nenhum. A janela de um dia voltou a responder dentro de 50 s, que é a condição para
+  reavaliar (ver "O que reavaliar se mudar"). Mas o volume diário sem filtro de classe é muito maior que as 13 páginas
+  da T1, e falta repetição para mostrar estabilidade. A descoberta diária continua pela T1.
 
 ## T3: integração, GET público por plano
 
@@ -280,7 +307,7 @@ Os três devolvem `PaginaRetornoPlanoContratacaoComItensDoUsuarioDTO`.
 | **Descoberta de planos com itens da classe** | T1 `/api/consulta/v1/pca/` (13 páginas de 500 por classe e ano) | É o único filtro por classe no PNCP. Dá `idPcaPncp` e `dataAtualizacaoGlobalPCA` de cada plano. Lida com deduplicação. Não serve sozinha para provar ausência. |
 | **Itens de um plano (carga e atualização)** | T3 `/api/pncp/v1/orgaos/{cnpj}/pca/{ano}/{seq}/itens?tamanhoPagina=2000`, filtrando `classificacaoSuperiorCodigo` no cliente | É completa e estável, leva de 0,2 a 0,4 s e não pula item. Resolve os itens que a T1 pula. |
 | **Backfill** | T1 para listar os 935 planos, depois a T3 plano a plano em fatias com orçamento de tempo | São cerca de 13 + 935 requisições, uns 16 min a 1 req/s. A gravação é em lote por plano. |
-| **Incremental diário** | T1 (descoberta), comparando `dataAtualizacaoGlobalPCA` com o banco, e depois a T3 só nos planos novos ou alterados | Pelos números de 09/10, são de 38 (média de 7 dias: 269) a 78 (últimas 24 h) planos por dia. A T2 global não responde hoje, e a T2 com `cnpj` é redundante. |
+| **Incremental diário** | T1 (descoberta), comparando `dataAtualizacaoGlobalPCA` com o banco, e depois a T3 só nos planos novos ou alterados | Pelos números de 09/10, são de 38 (média de 7 dias: 269) a 78 (últimas 24 h) planos por dia. A T2 global deu 500 em 09/10 e respondeu um dia em 10/10, mas sem filtro de classe (277.153 itens num dia) e sem estabilidade demonstrada. A T2 com `cnpj` é redundante. |
 | **Reconciliação mensal** | T3 em todos os planos conhecidos, mais a comparação de contagem com a T1 | A ausência só se prova pela T3 (o plano inteiro). Um item some do banco só se a T3 do plano não o trouxer, ou se o plano sumir da T1 em duas varreduras seguidas e a T3 confirmar. |
 | **Enriquecimento (futuro, fora da 0012)** | T4 PGC `2_consultarPgcDetalheCatalogo` | DFD e projeto de compra para órgãos SISG, com deduplicação obrigatória. |
 

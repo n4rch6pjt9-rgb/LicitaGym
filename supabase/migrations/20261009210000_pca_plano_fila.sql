@@ -6,14 +6,13 @@
 --
 -- O que muda:
 --   1. private.pca_plano_fila: um plano por linha aberta (pendente, processando ou erro); feito fica como histórico.
---   2. public.pca_planos.descoberta_ausente_seguidas: quantas descobertas completas seguidas não viram o plano, e
---      descoberta_ausente_escopo: as classes em que o contador foi medido (outro escopo o reinicia), e
---      reprocessar: a carga falhou depois de gravar o cabeçalho (o incremental reenfileira).
---      A reconciliação só inativa plano ausente em 2 descobertas seguidas do mesmo escopo e sem item do escopo na
---      integração.
+--   2. public.pca_planos.descoberta_ausente (jsonb): por escopo de classes ("7220,7830"), quantas descobertas
+--      completas seguidas daquele escopo não viram o plano; e reprocessar: a carga falhou depois de gravar o
+--      cabeçalho (o incremental reenfileira). A reconciliação só inativa plano ausente em 2 descobertas seguidas do
+--      mesmo escopo e sem item do escopo na integração.
 --   3. Funções (só service_role, security invoker):
 --      private.pca_fila_enfileirar(jsonb), private.pca_fila_reservar(int, int, int) e
---      private.pca_marcar_descoberta(int, text[], text[]).
+--      private.pca_marcar_descoberta(int, text[], text[]) e private.pca_zerar_ausencia(uuid, text[]).
 --
 -- Quem lê/escreve: só a Edge Function sync-pncp-pca (service_role, por client.schema('private')).
 -- Aditiva e idempotente. Nenhum cron muda aqui (ver 20261009210100_cron_pca_fila.sql).
@@ -76,17 +75,14 @@ alter table private.pca_plano_fila enable row level security;
 revoke all on table private.pca_plano_fila from PUBLIC, anon, authenticated;
 grant select, insert, update on table private.pca_plano_fila to service_role;
 
+-- Um contador por escopo de classes (chave: classes ordenadas, sem repetição, separadas por vírgula). Cada descoberta
+-- só lê e escreve a chave do próprio escopo: a da 7830 não zera nem usa a ausência medida só na 7220. Chave ausente
+-- vale 0.
 alter table public.pca_planos
-  add column if not exists descoberta_ausente_seguidas integer not null default 0;
+  add column if not exists descoberta_ausente jsonb not null default '{}'::jsonb;
 
-comment on column public.pca_planos.descoberta_ausente_seguidas is
-  'Spec 0012: descobertas completas seguidas (consulta /pca/ por classe) em que o plano não apareceu. Zera quando aparece.';
-
--- O contador só vale para o conjunto de classes em que foi medido: uma descoberta de outro escopo o reinicia, e a
--- reconciliação só age sobre contador do próprio escopo (uma descoberta só da 7830 não usa nem zera em silêncio a
--- ausência medida só na 7220). Ordenado e sem repetição, para comparar por igualdade.
-alter table public.pca_planos
-  add column if not exists descoberta_ausente_escopo text[];
+comment on column public.pca_planos.descoberta_ausente is
+  'Spec 0012: {"<classes ordenadas>": n}, descobertas completas seguidas daquele escopo em que o plano não apareceu.';
 
 -- Plano cuja carga falhou depois de gravar o cabeçalho: o incremental o reenfileira mesmo com a data da fonte igual à
 -- gravada (a fila pode ter esgotado as tentativas). Fica fora dos campos da fonte (data_atualizacao_origem,
@@ -96,9 +92,6 @@ alter table public.pca_planos
 
 comment on column public.pca_planos.reprocessar is
   'Spec 0012: carga do plano falhou depois de gravar o cabeçalho; o incremental reenfileira. Desligada quando a fila termina o plano.';
-
-comment on column public.pca_planos.descoberta_ausente_escopo is
-  'Spec 0012: classes (ordenadas) da descoberta que mediu descoberta_ausente_seguidas. Outro escopo reinicia o contador.';
 
 -- Enfileira (ou atualiza a linha aberta de) cada plano. p_itens: array de objetos com id_pca_pncp, orgao_cnpj, ano,
 -- sequencial, motivo, plano, classes, data_atualizacao_fonte, chain_id. Linha em processamento não volta para pendente: se ela
@@ -167,10 +160,19 @@ as $fn$
   returning f.*;
 $fn$;
 
--- Depois de uma descoberta COMPLETA (todas as páginas de todas as classes lidas sem erro): zera o contador dos planos
--- vistos e soma 1 nos planos ativos do ano, com item ativo das classes descobertas, que não apareceram. O contador fica
--- com o escopo (classes ordenadas): medido em outro escopo, recomeça em 1. Devolve quantos planos ficaram com 2 ou mais
--- ausências seguidas neste escopo.
+-- Chave do escopo em descoberta_ausente: classes ordenadas, sem repetição, separadas por vírgula.
+create or replace function private.pca_escopo_ausencia(p_classes text[])
+returns text
+language sql
+immutable
+set search_path = ''
+as $fn$
+  select coalesce(string_agg(c, ',' order by c), '') from (select distinct c from unnest(p_classes) c) x;
+$fn$;
+
+-- Depois de uma descoberta COMPLETA (todas as páginas de todas as classes lidas sem erro), só na chave deste escopo:
+-- tira a chave dos planos vistos e soma 1 nos planos ativos do ano, com item ativo das classes descobertas, que não
+-- apareceram. Devolve quantos planos ficaram com 2 ou mais ausências seguidas neste escopo.
 create or replace function private.pca_marcar_descoberta(p_ano integer, p_vistos text[], p_classes text[])
 returns integer
 language plpgsql
@@ -179,19 +181,17 @@ set search_path = ''
 as $fn$
 declare
   v_ausentes integer;
-  v_escopo text[] := array(select distinct c from unnest(coalesce(p_classes, '{}'::text[])) c order by c);
+  v_chave text := private.pca_escopo_ausencia(p_classes);
 begin
   update public.pca_planos p
-     set descoberta_ausente_seguidas = 0,
-         descoberta_ausente_escopo = v_escopo
+     set descoberta_ausente = p.descoberta_ausente - v_chave
    where p.ano_exercicio = p_ano
      and p.id_pca_pncp = any(p_vistos)
-     and (p.descoberta_ausente_seguidas <> 0 or p.descoberta_ausente_escopo is distinct from v_escopo);
+     and p.descoberta_ausente ? v_chave;
 
   update public.pca_planos p
-     set descoberta_ausente_seguidas = case when p.descoberta_ausente_escopo = v_escopo
-                                            then p.descoberta_ausente_seguidas + 1 else 1 end,
-         descoberta_ausente_escopo = v_escopo
+     set descoberta_ausente = jsonb_set(p.descoberta_ausente, array[v_chave],
+                                        to_jsonb(coalesce((p.descoberta_ausente ->> v_chave)::integer, 0) + 1))
    where p.ano_exercicio = p_ano
      and p.ativo
      and not (p.id_pca_pncp = any(p_vistos))
@@ -202,22 +202,42 @@ begin
 
   select count(*) into v_ausentes
     from public.pca_planos p
-   where p.ano_exercicio = p_ano and p.ativo and p.descoberta_ausente_seguidas >= 2
-     and p.descoberta_ausente_escopo = v_escopo;
+   where p.ano_exercicio = p_ano and p.ativo and coalesce((p.descoberta_ausente ->> v_chave)::integer, 0) >= 2;
   return v_ausentes;
 end
+$fn$;
+
+-- Plano ausente que ainda tem item do escopo na integração: a ausência daquele escopo não vale, zera só a chave dele.
+create or replace function private.pca_zerar_ausencia(p_plano_id uuid, p_classes text[])
+returns void
+language sql
+security invoker
+set search_path = ''
+as $fn$
+  update public.pca_planos p
+     set descoberta_ausente = p.descoberta_ausente - private.pca_escopo_ausencia(p_classes)
+   where p.id = p_plano_id
+     and p.descoberta_ausente ? private.pca_escopo_ausencia(p_classes);
 $fn$;
 
 comment on function private.pca_fila_enfileirar(jsonb) is 'Spec 0012: enfileira planos do PCA. EXECUTE só service_role.';
 comment on function private.pca_fila_reservar(integer, integer, integer) is 'Spec 0012: reserva planos da fila (skip locked). EXECUTE só service_role.';
 comment on function private.pca_marcar_descoberta(integer, text[], text[]) is
-  'Spec 0012: atualiza descoberta_ausente_seguidas depois de descoberta completa. EXECUTE só service_role.';
+  'Spec 0012: atualiza descoberta_ausente (chave do escopo) depois de descoberta completa. EXECUTE só service_role.';
+comment on function private.pca_zerar_ausencia(uuid, text[]) is
+  'Spec 0012: zera a ausência de um plano num escopo de classes. EXECUTE só service_role.';
+comment on function private.pca_escopo_ausencia(text[]) is
+  'Spec 0012: chave do escopo de classes em pca_planos.descoberta_ausente. EXECUTE só service_role.';
 
 revoke all on function private.pca_fila_enfileirar(jsonb) from PUBLIC, anon, authenticated, service_role;
 revoke all on function private.pca_fila_reservar(integer, integer, integer) from PUBLIC, anon, authenticated, service_role;
 revoke all on function private.pca_marcar_descoberta(integer, text[], text[]) from PUBLIC, anon, authenticated, service_role;
+revoke all on function private.pca_zerar_ausencia(uuid, text[]) from PUBLIC, anon, authenticated, service_role;
+revoke all on function private.pca_escopo_ausencia(text[]) from PUBLIC, anon, authenticated, service_role;
 grant execute on function private.pca_fila_enfileirar(jsonb) to service_role;
 grant execute on function private.pca_fila_reservar(integer, integer, integer) to service_role;
 grant execute on function private.pca_marcar_descoberta(integer, text[], text[]) to service_role;
+grant execute on function private.pca_zerar_ausencia(uuid, text[]) to service_role;
+grant execute on function private.pca_escopo_ausencia(text[]) to service_role;
 
 commit;

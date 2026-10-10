@@ -267,9 +267,25 @@ export async function enfileirarDescobertos(
  * sem erro de página): atualiza o contador de ausência e, na reconciliação, enfileira os ausentes. `vistos`: os
  * planos que a descoberta inteira viu.
  */
-/** Conjunto de classes como chave comparável (ordenado e sem repetição), igual ao escopo gravado pela migration. */
+/** Chave do escopo em pca_planos.descoberta_ausente: classes ordenadas, sem repetição (= pca_escopo_ausencia). */
 export function escopoDeClasses(classes: unknown): string {
   return Array.isArray(classes) ? [...new Set(classes.map(String))].sort().join(",") : "";
+}
+
+/** Ausências seguidas do plano neste escopo (chave ausente = 0). */
+export function ausenciaNoEscopo(descobertaAusente: unknown, escopo: string): number {
+  const mapa = descobertaAusente && typeof descobertaAusente === "object" ? descobertaAusente as Row : {};
+  const n = Number(mapa[escopo] ?? 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** Zera a ausência do plano só no escopo destas classes (as dos outros escopos ficam). */
+async function zerarAusencia(client: SupabaseClient, planoId: string, classes: string[]) {
+  const { error } = await client.schema("private").rpc("pca_zerar_ausencia", {
+    p_plano_id: planoId,
+    p_classes: classes,
+  });
+  if (error) throw error;
 }
 
 export async function tratarAusentes(
@@ -287,15 +303,15 @@ export async function tratarAusentes(
   if (opts.rotina !== "reconciliacao" || ausentes === 0) return { ausentes_2_ou_mais: ausentes, enfileirados: 0 };
 
   const linhas = await lerTudo((de, ate) =>
-    client.from("pca_planos").select("id, id_pca_pncp, descoberta_ausente_escopo")
-      .eq("ano_exercicio", opts.ano).eq("ativo", true).gte("descoberta_ausente_seguidas", 2)
+    client.from("pca_planos").select("id, id_pca_pncp, descoberta_ausente")
+      .eq("ano_exercicio", opts.ano).eq("ativo", true)
       .order("id").range(de, ate)
   );
-  // Só o contador medido neste escopo de classes (pca_marcar_descoberta grava o escopo junto do contador).
+  // Só o contador deste escopo de classes (a chave em descoberta_ausente, igual à de pca_escopo_ausencia).
   const escopo = escopoDeClasses(opts.classes);
   const fila: ItemFila[] = [];
   for (const r of linhas) {
-    if (escopoDeClasses(r.descoberta_ausente_escopo) !== escopo) continue;
+    if (ausenciaNoEscopo(r.descoberta_ausente, escopo) < 2) continue;
     const m = ID_PCA.exec(String(r.id_pca_pncp));
     if (!m) continue;
     fila.push({
@@ -478,9 +494,12 @@ async function inativarAusenteNoEscopo(
     .eq("pca_plano_id", planoId).eq("ativo", true).limit(1);
   if (error) throw error;
   const restam = ((data ?? []) as Row[]).length > 0;
-  const { error: e2 } = await client.from("pca_planos")
-    .update(restam ? { descoberta_ausente_seguidas: 0 } : { ativo: false }).eq("id", planoId);
-  if (e2) throw e2;
+  if (restam) {
+    await zerarAusencia(client, planoId, classes);
+  } else {
+    const { error: e2 } = await client.from("pca_planos").update({ ativo: false }).eq("id", planoId);
+    if (e2) throw e2;
+  }
   return { itens, plano: !restam };
 }
 
@@ -610,9 +629,7 @@ export async function processarFila(
           r = await gravarItensDePlanoExistente(client, planoId, escopo.map(itemIntegracaoParaConsulta), {
             runId: opts.runId,
           });
-          const { error: e0 } = await client.from("pca_planos").update({ descoberta_ausente_seguidas: 0 })
-            .eq("id", planoId);
-          if (e0) throw e0;
+          await zerarAusencia(client, planoId, classes);
         } else {
           if (!linha.plano || typeof linha.plano !== "object") throw new Error("fila sem cabeçalho do plano");
           r = await gravarPaginaPcaEmLote(

@@ -6,8 +6,9 @@
 --        linha em erro reenfileirada não recomeçar as tentativas;
 --   RES  pca_fila_reservar devolver mais que o limite, pegar plano 'feito', erro com tentativas esgotadas ou erro
 --        de menos de 10 minutos (recuo entre tentativas); ou se processando abandonado não contar tentativa;
---   DESC pca_marcar_descoberta não zerar o contador do plano visto, não somar no ausente com item da classe, somar
---        no plano sem item da classe, ou somar sobre contador medido em outro escopo de classes;
+--   DESC pca_marcar_descoberta não zerar a chave do escopo no plano visto, não somar no ausente com item da classe,
+--        somar no plano sem item da classe, ou mexer na ausência de outro escopo; pca_zerar_ausencia tirar mais que a
+--        chave do escopo;
 --   REPROC pca_planos.reprocessar não existir como boolean not null default false;
 --   LOCK private.acquire_sync_lock não preservar (e herdar) a execução da fila que parou sem heartbeat com a
 --        continuation que o sync-pncp-pca grava (pending com rótulo, rotina, classes, descoberta);
@@ -48,7 +49,9 @@ begin
      cross join unnest(array[
        'private.pca_fila_enfileirar(jsonb)',
        'private.pca_fila_reservar(integer,integer,integer)',
-       'private.pca_marcar_descoberta(integer,text[],text[])']) fn
+       'private.pca_marcar_descoberta(integer,text[],text[])',
+       'private.pca_zerar_ausencia(uuid,text[])',
+       'private.pca_escopo_ausencia(text[])']) fn
      where has_function_privilege(papel, fn, 'EXECUTE')
   loop
     v_falhas := v_falhas || format('%s executa %s', v_r.papel, v_r.fn);
@@ -58,7 +61,9 @@ begin
      or not has_table_privilege('service_role', 'private.pca_plano_fila', 'UPDATE')
      or not has_function_privilege('service_role', 'private.pca_fila_enfileirar(jsonb)', 'EXECUTE')
      or not has_function_privilege('service_role', 'private.pca_fila_reservar(integer,integer,integer)', 'EXECUTE')
-     or not has_function_privilege('service_role', 'private.pca_marcar_descoberta(integer,text[],text[])', 'EXECUTE') then
+     or not has_function_privilege('service_role', 'private.pca_marcar_descoberta(integer,text[],text[])', 'EXECUTE')
+     or not has_function_privilege('service_role', 'private.pca_zerar_ausencia(uuid,text[])', 'EXECUTE')
+     or not has_function_privilege('service_role', 'private.pca_escopo_ausencia(text[])', 'EXECUTE') then
     v_falhas := v_falhas || 'service_role sem acesso à fila ou às funções'::text;
   end if;
 
@@ -133,40 +138,54 @@ begin
     v_falhas := v_falhas || 'reenfileirar linha em erro não zerou tentativas e erro'::text;
   end if;
 
-  -- DESC
-  insert into public.pca_planos (id_pca_pncp, ano_exercicio, orgao_cnpj, titulo, payload_hash, ativo,
-                                 descoberta_ausente_seguidas, descoberta_ausente_escopo)
-    values ('CHK-FILA-P-VISTO', 2099, '99000001000101', 'chk', 'chk', true, 3, array['7830']),
-           ('CHK-FILA-P-AUSENTE', 2099, '99000001000101', 'chk', 'chk', true, 1, array['7830']),
-           ('CHK-FILA-P-OUTRA-CLASSE', 2099, '99000001000101', 'chk', 'chk', true, 0, null),
-           ('CHK-FILA-P-OUTRO-ESCOPO', 2099, '99000001000101', 'chk', 'chk', true, 1, array['7220']);
+  -- DESC: um contador por escopo de classes, em descoberta_ausente (chave "7220,7830")
+  insert into public.pca_planos (id_pca_pncp, ano_exercicio, orgao_cnpj, titulo, payload_hash, ativo, descoberta_ausente)
+    values ('CHK-FILA-P-VISTO', 2099, '99000001000101', 'chk', 'chk', true, '{"7830": 3, "7220": 1}'),
+           ('CHK-FILA-P-AUSENTE', 2099, '99000001000101', 'chk', 'chk', true, '{"7830": 1}'),
+           ('CHK-FILA-P-OUTRA-CLASSE', 2099, '99000001000101', 'chk', 'chk', true, '{}'),
+           ('CHK-FILA-P-MISTO', 2099, '99000001000101', 'chk', 'chk', true, '{"7220": 1}');
   select id into v_p1 from public.pca_planos where id_pca_pncp = 'CHK-FILA-P-AUSENTE';
   insert into public.pca_itens (pca_plano_id, numero_item, classe_material_servico, payload_hash, ativo)
     values (v_p1, 1, '7830', 'chk', true),
            ((select id from public.pca_planos where id_pca_pncp = 'CHK-FILA-P-OUTRA-CLASSE'), 1, '7220', 'chk', true),
-           ((select id from public.pca_planos where id_pca_pncp = 'CHK-FILA-P-OUTRO-ESCOPO'), 1, '7830', 'chk', true);
+           ((select id from public.pca_planos where id_pca_pncp = 'CHK-FILA-P-MISTO'), 1, '7830', 'chk', true),
+           ((select id from public.pca_planos where id_pca_pncp = 'CHK-FILA-P-MISTO'), 2, '7220', 'chk', true);
+  -- descoberta da 7830: só P-VISTO apareceu
   v_n := private.pca_marcar_descoberta(2099, array['CHK-FILA-P-VISTO'], array['7830']);
-  if (select descoberta_ausente_seguidas from public.pca_planos where id_pca_pncp = 'CHK-FILA-P-VISTO') <> 0 then
-    v_falhas := v_falhas || 'plano visto não zerou o contador'::text;
+  if (select descoberta_ausente from public.pca_planos where id_pca_pncp = 'CHK-FILA-P-VISTO') <> '{"7220": 1}' then
+    v_falhas := v_falhas || 'plano visto na 7830 não zerou a chave 7830 ou perdeu a ausência da 7220'::text;
   end if;
-  if (select descoberta_ausente_seguidas from public.pca_planos where id_pca_pncp = 'CHK-FILA-P-AUSENTE') <> 2 then
-    v_falhas := v_falhas || 'plano ausente com item 7830 não somou 1'::text;
+  if (select descoberta_ausente from public.pca_planos where id_pca_pncp = 'CHK-FILA-P-AUSENTE') <> '{"7830": 2}' then
+    v_falhas := v_falhas || 'plano ausente com item 7830 não somou 1 na chave 7830'::text;
   end if;
-  if (select descoberta_ausente_seguidas from public.pca_planos where id_pca_pncp = 'CHK-FILA-P-OUTRA-CLASSE') <> 0 then
+  if (select descoberta_ausente from public.pca_planos where id_pca_pncp = 'CHK-FILA-P-OUTRA-CLASSE') <> '{}' then
     v_falhas := v_falhas || 'plano só com item de outra classe somou ausência'::text;
   end if;
-  -- contador medido só na 7220 não vale para a descoberta da 7830: recomeça em 1, com o escopo novo
-  if (select descoberta_ausente_seguidas || '|' || array_to_string(descoberta_ausente_escopo, ',')
-        from public.pca_planos where id_pca_pncp = 'CHK-FILA-P-OUTRO-ESCOPO') <> '1|7830' then
-    v_falhas := v_falhas || 'plano com contador de outro escopo somou em vez de recomeçar'::text;
+  if (select descoberta_ausente from public.pca_planos where id_pca_pncp = 'CHK-FILA-P-MISTO')
+     <> '{"7220": 1, "7830": 1}' then
+    v_falhas := v_falhas || 'descoberta da 7830 mexeu na ausência medida na 7220'::text;
   end if;
-  if (select array_to_string(descoberta_ausente_escopo, ',') from public.pca_planos
-       where id_pca_pncp = 'CHK-FILA-P-VISTO') is distinct from '7830' then
-    v_falhas := v_falhas || 'plano visto não ficou com o escopo da descoberta'::text;
+  if v_n <> 1 then -- só P-AUSENTE chega a 2 na 7830 (planos reais de 2099 não existem no banco descartável)
+    v_falhas := v_falhas || format('marcar_descoberta 7830 devolveu %s ausentes com 2 ou mais (esperado 1)', v_n);
   end if;
-  -- só P-AUSENTE chega a 2 no escopo 7830 (planos reais de 2099 não existem no banco descartável)
-  if v_n <> 1 then
-    v_falhas := v_falhas || format('marcar_descoberta devolveu %s ausentes com 2 ou mais no escopo (esperado 1)', v_n);
+  -- descoberta da 7220 sem nenhum plano visto: soma só na chave 7220
+  v_n := private.pca_marcar_descoberta(2099, array[]::text[], array['7220']);
+  if (select descoberta_ausente from public.pca_planos where id_pca_pncp = 'CHK-FILA-P-MISTO')
+     <> '{"7220": 2, "7830": 1}' then
+    v_falhas := v_falhas || 'descoberta da 7220 não somou na chave 7220 ou mexeu na 7830'::text;
+  end if;
+  if v_n <> 1 then -- P-MISTO (7220: 2); P-OUTRA-CLASSE fica em 1
+    v_falhas := v_falhas || format('marcar_descoberta 7220 devolveu %s ausentes com 2 ou mais (esperado 1)', v_n);
+  end if;
+  -- escopo com mais de uma classe: chave ordenada, sem repetição
+  if private.pca_escopo_ausencia(array['7830', '7220', '7830']) <> '7220,7830' then
+    v_falhas := v_falhas || 'pca_escopo_ausencia não ordenou ou não tirou repetição'::text;
+  end if;
+  -- zerar a ausência de um escopo não mexe nos outros
+  perform private.pca_zerar_ausencia((select id from public.pca_planos where id_pca_pncp = 'CHK-FILA-P-MISTO'),
+                                     array['7830']);
+  if (select descoberta_ausente from public.pca_planos where id_pca_pncp = 'CHK-FILA-P-MISTO') <> '{"7220": 2}' then
+    v_falhas := v_falhas || 'pca_zerar_ausencia não tirou só a chave 7830'::text;
   end if;
 
   -- LOCK: worker morto (sem heartbeat há 10 min) no meio da descoberta, com a continuation no formato da fila

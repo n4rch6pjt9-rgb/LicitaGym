@@ -35,8 +35,17 @@ export type ConsultaPage<T> = {
   raw: unknown;
 };
 
+/**
+ * Timeout por tentativa da consulta /pca/. A primeira página sem cache levou de 46 a 57 s em 09/10/2026
+ * (docs/pncp/avaliacao-apis-pca-2026-10.md); com o padrão de 20 s do cliente unificado, as duas tentativas
+ * estouravam e o cron de 10/10 parou em BUDGET_EXHAUSTED (cerca de 44 s) antes de ler a primeira página.
+ */
+export const PCA_CONSULTA_ATTEMPT_TIMEOUT_MS = 75_000;
+
 export type ConsultaGetOptions = {
   budget?: RequestBudget;
+  /** Timeout de cada tentativa; sem ele, o padrão do cliente (20 s no unificado, 45 s no legado). */
+  attemptTimeoutMs?: number;
   syncRunId?: string;
   pagina?: number;
   parametros?: Record<string, unknown>;
@@ -133,6 +142,7 @@ export class PncpConsultaClient {
         pagina: options.pagina,
         parametros: params,
         onHeartbeat: options.onHeartbeat,
+        attemptTimeoutMs: options.attemptTimeoutMs,
         ...this.retryOverrides,
         validateBody: (text: string, status: number) => {
           if (status === 200 && !text.trim()) {
@@ -146,9 +156,8 @@ export class PncpConsultaClient {
 
     const { status, body } = await withRetry(
       async () => {
-        const timeoutMs = budget
-          ? budget.attemptTimeoutMs(DEFAULT_FETCH_TIMEOUT_MS)
-          : DEFAULT_FETCH_TIMEOUT_MS;
+        const cap = options.attemptTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
+        const timeoutMs = budget ? budget.attemptTimeoutMs(cap) : cap;
         if (timeoutMs <= 0) throw new BudgetExhaustedError();
         try {
           const res = await fetchWithTimeout(url, {
@@ -242,6 +251,7 @@ export class PncpConsultaClient {
       codigoClassificacaoSuperior,
       tamanhoPagina: clampConsultaPageSize("pca", tamanhoPagina),
     }, {
+      attemptTimeoutMs: PCA_CONSULTA_ATTEMPT_TIMEOUT_MS,
       ...options,
       pagina,
     });
@@ -258,7 +268,7 @@ export class PncpConsultaClient {
       pagina: 1,
       codigoClassificacaoSuperior,
       tamanhoPagina,
-    });
+    }, { attemptTimeoutMs: PCA_CONSULTA_ATTEMPT_TIMEOUT_MS });
     const pagination = this.extractPagination(result.body, 1);
     return {
       ...result,

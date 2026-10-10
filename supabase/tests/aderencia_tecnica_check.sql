@@ -72,6 +72,7 @@ declare
   v_lic_a bigint;
   v_lic_b bigint;
   v_item bigint;
+  v_item2 bigint;
   v_doc_a bigint;
   v_doc_b bigint;
   v_req bigint;
@@ -85,6 +86,8 @@ begin
     insert into public.licitacoes_externas (fonte) values ('pncp') returning id into v_lic_b;
     insert into public.licitacao_itens (licitacao_id, numero_item, descricao, valor_unitario_estimado)
       values (v_lic_a, 1, 'ESTEIRA CHK', 1000) returning id into v_item;
+    insert into public.licitacao_itens (licitacao_id, numero_item, descricao, valor_unitario_estimado)
+      values (v_lic_a, 2, 'ESTEIRA CHK 2', 5000) returning id into v_item2;
     insert into public.licitacao_documentos (licitacao_id, secao, arquivo_origem)
       values (v_lic_a, 'processo', 'edital_a.pdf') returning id into v_doc_a;
     insert into public.licitacao_documentos (licitacao_id, secao, arquivo_origem)
@@ -127,7 +130,7 @@ begin
     -- viabilidade: nao_comprovado não entra em n_itens
     insert into public.catalogo_de_para (tenant_id, produto_id, fonte, licitacao_item_id, no_taxonomia, nivel, score, aderencia, metodo_versao)
       values (v_t, v_prod, 'licitacao', v_item, 'esteira_eletrica', 'texto', 80, 'atende', 'chk'),
-             (v_t, v_prod, 'licitacao', v_item, 'esteira_eletrica', 'texto', 50, 'nao_comprovado', 'chk');
+             (v_t, v_prod, 'licitacao', v_item2, 'esteira_eletrica', 'texto', 50, 'nao_comprovado', 'chk');
     if (select n_itens from public.v_catalogo_viabilidade where produto_id = v_prod) <> 1 then
       raise exception 'CHECK FALHOU: de-para nao_comprovado entrou na referência de viabilidade';
     end if;

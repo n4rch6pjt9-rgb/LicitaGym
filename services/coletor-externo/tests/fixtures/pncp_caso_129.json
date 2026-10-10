@@ -1,0 +1,38 @@
+{
+  "_fonte": "PNCP 08182313000110-1-000050/2024 (Lagoa Nova/RN), dados públicos conferidos em produção (só leitura) em 09/10/2026. Só os campos usados pela fase. dataEncerramentoProposta 2604 é erro de digitação do órgão, mantido como veio. Horário da publicação não conferido (só o dia).",
+  "busca": {
+    "numero_controle_pncp": "08182313000110-1-000050/2024",
+    "orgao_cnpj": "08182313000110",
+    "ano": "2024",
+    "numero_sequencial": "50",
+    "situacao_nome": "Divulgada no PNCP",
+    "tem_resultado": false,
+    "data_inicio_vigencia": "2024-04-26T08:30:00",
+    "data_fim_vigencia": "2604-04-16T08:30:00",
+    "data_publicacao_pncp": "2024-05-13"
+  },
+  "detalhe": {
+    "srp": true,
+    "situacaoCompraNome": "Divulgada no PNCP",
+    "existeResultado": false,
+    "dataAberturaProposta": "2024-04-26T08:30:00",
+    "dataEncerramentoProposta": "2604-04-16T08:30:00",
+    "dataPublicacaoPncp": "2024-05-13"
+  },
+  "atas": {
+    "data": [
+      {
+        "numeroAtaRegistroPreco": "39",
+        "anoAta": 2024,
+        "dataAssinatura": "2024-05-10",
+        "dataVigenciaFim": "2025-05-09",
+        "cancelado": false
+      }
+    ],
+    "totalRegistros": 1,
+    "totalPaginas": 1,
+    "numeroPagina": 1,
+    "paginasRestantes": 0,
+    "empty": false
+  }
+}

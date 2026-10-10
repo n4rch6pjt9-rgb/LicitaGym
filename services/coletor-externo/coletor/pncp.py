@@ -150,6 +150,9 @@ def validar_prioridades(prioridades: list[str] | set[str] | str | None) -> set[s
 # Detalhe da compra e atalho (o edital e a fonte principal): nao gastar 10 min nele.
 DETALHE_TIMEOUT = int(os.environ.get("PNCP_DETALHE_TIMEOUT", "20"))
 DETALHE_TENTATIVAS = int(os.environ.get("PNCP_DETALHE_TENTATIVAS", "2"))
+# /atas da compra (pncp-integracao-v3): tamanhoPagina >= 10; família atas aceita até 500.
+TAMANHO_PAGINA_ATAS = 100
+ATAS_PAGINAS_MAX = 20
 
 # Termos padrão: prioriza o interesse comercial (grama/borracha) e o núcleo fitness
 TERMOS_PADRAO = [
@@ -273,6 +276,32 @@ class PNCP:
 
     def arquivos(self, c: dict) -> list[dict]:
         return self._lista(self.base_compra(c) + "/arquivos")
+
+    def atas(self, c: dict) -> list[dict]:
+        """Atas de registro de preço da compra: GET /api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/atas
+        (pncp-integracao-v3, PaginaRetornoAtaRegistroPrecoDTO: {data, totalPaginas, numeroPagina,
+        paginasRestantes, empty}; tamanhoPagina mínimo 10, família atas até 500). HTTP 204 = sem atas.
+        Envelope inesperado, página repetida ou erro HTTP levantam: quem chama trata como "sem informação",
+        nunca como "sem ata"."""
+        out, pagina, vistas = [], 1, set()
+        while True:
+            r = self._get(self.base_compra(c) + "/atas", pagina=pagina, tamanhoPagina=TAMANHO_PAGINA_ATAS)
+            if r == []:   # 204
+                return out
+            if not isinstance(r, dict) or not isinstance(r.get("data"), list):
+                raise RespostaInvalida(f"PNCP atas: envelope inesperado ({type(r).__name__})")
+            lote = r["data"]
+            impressao = sha256(json.dumps(lote, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+            if lote and impressao in vistas:
+                raise RespostaInvalida(f"PNCP atas: página repetida (página {pagina})")
+            vistas.add(impressao)
+            out += lote
+            restantes = r.get("paginasRestantes")
+            if not lote or not isinstance(restantes, int) or restantes <= 0:
+                return out
+            if pagina >= ATAS_PAGINAS_MAX:
+                raise RespostaInvalida(f"PNCP atas: mais de {ATAS_PAGINAS_MAX} páginas")
+            pagina += 1
 
     def _abrir(self, url: str):
         """GET em streaming sem redirecionamento automático: cada salto passa pela allowlist."""
@@ -651,7 +680,8 @@ _ITEM_FINAL = re.compile(r"homologad|adjudicad|desert|fracassad|anulad|revogad|c
 # Datas do PNCP sem fuso (ex.: data_fim_vigencia "2026-10-13T09:30") estão no horário de Brasília.
 FUSO_PNCP = timezone(timedelta(hours=-3))
 # Prazo de proposta além disto é data inválida, não lead (02/10/2026): id 129 com 2604-04-16, credenciamento
-# "contínuo" com 9999-12-31, id 126 com 2029. Fica monitorar ("Prazo inválido") até alguém conferir.
+# "contínuo" com 9999-12-31, id 126 com 2029. Fica monitorar ("Prazo inválido") até alguém conferir, salvo quando
+# normalizacao_prazo (09/10/2026) corrige o ano ou um fato (ata, resultado) limita o prazo.
 PRAZO_PROPOSTA_MAXIMO = timedelta(days=730)
 
 
@@ -684,7 +714,8 @@ def _verdadeiro(v) -> bool:
 
 
 def motivo_prioridade(compra: dict, tem_resultado: bool | None = None, *, agora: datetime | None = None,
-                      status_busca: str | None = None, itens: list[dict] | None = None) -> tuple[str | None, str]:
+                      status_busca: str | None = None, itens: list[dict] | None = None,
+                      prazo_normalizado: str | None = None) -> tuple[str | None, str]:
     """(prioridade, motivo). Função pura: não consulta nada, só lê os campos recebidos.
 
     `compra` aceita o item da busca (situacao_nome, tem_resultado, cancelado, data_fim_vigencia), o detalhe
@@ -701,7 +732,9 @@ def motivo_prioridade(compra: dict, tem_resultado: bool | None = None, *, agora:
 
     Precedência de chaves (_campo): as do detalhe vêm antes das da busca (existeResultado > tem_resultado,
     situacaoCompraNome > situacao_nome, dataEncerramentoProposta > data_fim_vigencia), então na visão
-    compra_com_detalhe() o detalhe vence a busca, que pode estar defasada."""
+    compra_com_detalhe() o detalhe vence a busca, que pode estar defasada.
+    `prazo_normalizado`: prazo de proposta normalizado (normalizacao_prazo) que substitui o bruto implausível na
+    decisão; o bruto continua no raw."""
     agora = agora or datetime.now(timezone.utc)
     if tem_resultado is True:
         return "historico", "resultado consultado"
@@ -730,7 +763,8 @@ def motivo_prioridade(compra: dict, tem_resultado: bool | None = None, *, agora:
         return "monitorar", f"situação {situacao}"
     # prazo do PNCP (detalhe, depois raw.data_fim_vigencia) antes do data_fim gravado: o coletor grava o
     # horário sem fuso do PNCP como UTC (_data), 3 h antes do prazo real em Brasília
-    fim = _instante(_campo(compra, "dataEncerramentoProposta", "data_fim_vigencia") or _campo(compra, "data_fim"))
+    fim = _instante(prazo_normalizado) or \
+        _instante(_campo(compra, "dataEncerramentoProposta", "data_fim_vigencia") or _campo(compra, "data_fim"))
     if fim:
         if fim > agora + PRAZO_PROPOSTA_MAXIMO:
             return "monitorar", f"prazo de proposta implausível ({fim.date().isoformat()})"
@@ -800,6 +834,67 @@ FASE_ITENS_FINALIZADOS = "Encerrada (itens finalizados)"
 FASE_RECEBENDO = "Recebendo propostas"
 FASE_JULGAMENTO = "Em julgamento"
 FASE_PRAZO_INVALIDO = "Prazo inválido"
+FASE_REGISTRO_PRECO = "Registro de Preço"
+
+# Republicação do edital (09/10/2026, caso 135): documento ATIVO do tipo Edital com "republica" no título.
+_DOC_REPUBLICACAO = re.compile(r"\brepublica")
+_TIPO_EDITAL = re.compile(r"^\s*edital\s*$")
+
+
+def _texto_doc(d: dict) -> str:
+    # nome de arquivo usa "_" como espaço ("AVISO_SUSPENSAO_P_E_35_2026.pdf"), e "_" é letra para o \b
+    return normalizar(" ".join(str(d.get(k) or "") for k in _CHAVES_TEXTO_DOC)).replace("_", " ").strip()
+
+
+def _data_doc(d: dict) -> datetime | None:
+    return _instante(next((d[k] for k in _CHAVES_DATA_DOC if d.get(k)), None))
+
+
+def _republicacao(d: dict) -> datetime | None:
+    """Data do documento se ele é a republicação do edital (tipo Edital + "republica" no título), senão None."""
+    tipo = normalizar(str(d.get("tipoDocumentoNome") or d.get("tipo_documento") or "")).replace("_", " ")
+    titulo = normalizar(" ".join(str(d.get(k) or "") for k in ("titulo", "nome_original"))).replace("_", " ")
+    if not _TIPO_EDITAL.search(tipo) or not _DOC_REPUBLICACAO.search(titulo) or documento_de_etapa(titulo):
+        return None
+    return _data_doc(d)
+
+
+def analise_documental(documentos: list[dict] | None, retificada_em=None) -> tuple[str | None, bool]:
+    """(sinal, republicada): o sinal de sinal_documental e se uma suspensão foi neutralizada pela republicação do
+    edital. Republicação = documento ativo do tipo Edital com "republica" no título (normalizado, sem acento, "_"
+    vira espaço) publicado em data >= (última suspensão - TOLERANCIA_RETIFICACAO). Caso 135 (Baraúna/RN): edital de
+    republicação 14:18:51, ata de suspensão 14:18:52 e retificação 14:18:52 do mesmo upload; dataPublicacaoPncp é a
+    data do upload, então a ordem dentro do mesmo minuto não diz o que veio antes no processo."""
+    resultado = revogacao = False
+    ultima_suspensao = ultima_republicacao = None
+    for d in documentos or []:
+        if d.get("statusAtivo") is False:
+            continue
+        rep = _republicacao(d)
+        if rep and (ultima_republicacao is None or rep > ultima_republicacao):
+            ultima_republicacao = rep
+        t = _texto_doc(d)
+        if not t or _DOC_DE_CONTRATO.search(t) or documento_de_etapa(t):
+            continue
+        fim_suspensao = bool(_DOC_FIM_SUSPENSAO.search(t))
+        if _DOC_HOMOLOGACAO.search(t) or (_DOC_RESULTADO_FINAL.search(t) and not _DOC_RESULTADO_NAO_FINAL.search(t)):
+            resultado = True
+        if _DOC_REVOGACAO.search(t) and "parcial" not in t and not fim_suspensao:
+            revogacao = True
+        if _DOC_SUSPENSAO.search(t) and "parcial" not in t and not fim_suspensao:
+            dt = _data_doc(d)
+            if dt and (ultima_suspensao is None or dt > ultima_suspensao):
+                ultima_suspensao = dt
+    if resultado:
+        return "resultado", False
+    if revogacao:
+        return "revogacao", False
+    retificacao = _instante(retificada_em)
+    if ultima_suspensao and (retificacao is None or ultima_suspensao >= retificacao - TOLERANCIA_RETIFICACAO):
+        if ultima_republicacao and ultima_republicacao >= ultima_suspensao - TOLERANCIA_RETIFICACAO:
+            return None, True
+        return "suspensao", False
+    return None, False
 
 
 def sinal_documental(documentos: list[dict] | None, retificada_em=None) -> str | None:
@@ -812,33 +907,9 @@ def sinal_documental(documentos: list[dict] | None, retificada_em=None) -> str |
     revogação/suspensão parcial e fim de suspensão (revogação da suspensão, reabertura) também não;
     contrato/ata/aditivo/empenho não contam (contratação sim);
     suspensão só vale se não houve retificação da compra depois dela (retificada_em: dataAtualizacao do detalhe
-    ou data_atualizacao_pncp da busca, horário de Brasília)."""
-    resultado = revogacao = False
-    ultima_suspensao = None
-    for d in documentos or []:
-        if d.get("statusAtivo") is False:
-            continue
-        # nome de arquivo usa "_" como espaço ("AVISO_SUSPENSAO_P_E_35_2026.pdf"), e "_" é letra para o \b
-        t = normalizar(" ".join(str(d.get(k) or "") for k in _CHAVES_TEXTO_DOC)).replace("_", " ").strip()
-        if not t or _DOC_DE_CONTRATO.search(t) or documento_de_etapa(t):
-            continue
-        fim_suspensao = bool(_DOC_FIM_SUSPENSAO.search(t))
-        if _DOC_HOMOLOGACAO.search(t) or (_DOC_RESULTADO_FINAL.search(t) and not _DOC_RESULTADO_NAO_FINAL.search(t)):
-            resultado = True
-        if _DOC_REVOGACAO.search(t) and "parcial" not in t and not fim_suspensao:
-            revogacao = True
-        if _DOC_SUSPENSAO.search(t) and "parcial" not in t and not fim_suspensao:
-            dt = _instante(next((d[k] for k in _CHAVES_DATA_DOC if d.get(k)), None))
-            if dt and (ultima_suspensao is None or dt > ultima_suspensao):
-                ultima_suspensao = dt
-    if resultado:
-        return "resultado"
-    if revogacao:
-        return "revogacao"
-    retificacao = _instante(retificada_em)
-    if ultima_suspensao and (retificacao is None or ultima_suspensao >= retificacao - TOLERANCIA_RETIFICACAO):
-        return "suspensao"
-    return None
+    ou data_atualizacao_pncp da busca, horário de Brasília) nem republicação do edital depois dela
+    (analise_documental)."""
+    return analise_documental(documentos, retificada_em)[0]
 
 
 def _fase_do_motivo(prioridade: str | None, motivo: str) -> str | None:
@@ -859,41 +930,163 @@ def _fase_do_motivo(prioridade: str | None, motivo: str) -> str | None:
     return None   # sem prazo (status da busca) ou indeterminado: fica a situação oficial
 
 
+def atas_nao_canceladas(atas: list[dict] | None) -> list[dict]:
+    """Atas de registro de preço (formato AtaRegistroPrecoDTO do PNCP) que não estão canceladas: cancelado != true e
+    sem dataCancelamento."""
+    return [a for a in atas or [] if isinstance(a, dict) and not _verdadeiro(a.get("cancelado"))
+            and not a.get("dataCancelamento")]
+
+
+def _fim_do_dia_se_data(v, d: datetime) -> datetime:
+    """Data sem hora ("2024-05-10") vale até o fim do dia (Brasília)."""
+    return d + timedelta(days=1, seconds=-1) if len(str(v)) == 10 else d
+
+
+def _limite_dos_fatos(compra: dict, atas: list[dict] | None) -> tuple[datetime | None, str | None]:
+    """(data, regra): o fato mais antigo que prova que as propostas já tinham fechado: assinatura de ata de registro
+    de preço não cancelada (limitado_por_ata) ou homologação/resultado gravado (limitado_por_resultado)."""
+    fatos = []
+    for a in atas_nao_canceladas(atas):
+        v = a.get("dataAssinatura") or a.get("dataVigenciaInicio")
+        d = _instante(v)
+        if d:
+            fatos.append((_fim_do_dia_se_data(v, d), "limitado_por_ata"))
+    v = _campo(compra, "data_homologacao")
+    d = _instante(v)
+    if d:
+        fatos.append((_fim_do_dia_se_data(v, d), "limitado_por_resultado"))
+    return min(fatos, key=lambda f: f[0]) if fatos else (None, None)
+
+
+def normalizar_prazo_proposta(original, *, abertura=None, publicacao=None, limite: datetime | None = None,
+                              regra_limite: str | None = None) -> dict | None:
+    """Normaliza o prazo de proposta IMPLAUSÍVEL (quem chama decide que é implausível). Função pura.
+    Prazo = FIM DO RECEBIMENTO DE PROPOSTAS (dataEncerramentoProposta; licitacoes_externas.data_fim), não a abertura
+    da sessão (decisão do dono, 09/10/2026).
+
+    a) troca o ano pelo da abertura e depois pelo da publicação; aceita só se piso <= corrigido <= teto, com piso = a
+       abertura (sem ela, a publicação) e teto = `limite` (fato: ata/resultado/homologação) ou, sem fato,
+       publicação + PRAZO_PROPOSTA_MAXIMO (730 dias). Regra "ano_da_abertura" / "ano_da_publicacao".
+    b) se não fechar e houver fato (`limite` + `regra_limite`), o prazo fica limitado por ele: normalizado None e
+       regra = regra_limite ("limitado_por_ata": a ata assinada prova que as propostas fecharam antes dela).
+    c) senão None: nada normalizado (fica "Prazo inválido").
+    Ano 9999 é sentinela (credenciamento "contínuo"), não erro de digitação: não normaliza.
+    Saída: {campo: "data_fim", original (texto bruto do PNCP), normalizado (ISO com fuso ou None), regra,
+    origem: "inferido"}. O bruto nunca é alterado: continua em raw."""
+    fim = _instante(original)
+    if fim is None or fim.year >= 9999:
+        return None
+    ini, pub, teto = _instante(abertura), _instante(publicacao), limite
+    piso = ini or pub
+    if teto is None and pub is not None:
+        teto = pub + PRAZO_PROPOSTA_MAXIMO
+
+    def _saida(normalizado: datetime | None, regra: str) -> dict:
+        return {"campo": "data_fim", "original": str(original),
+                "normalizado": normalizado.isoformat() if normalizado else None,
+                "regra": regra, "origem": "inferido"}
+
+    if piso is not None and teto is not None:
+        for base, regra in ((ini, "ano_da_abertura"), (pub, "ano_da_publicacao")):
+            if base is None or base.year == fim.year:
+                continue
+            try:
+                corrigido = fim.replace(year=base.year)
+            except ValueError:   # 29/02 em ano não bissexto
+                continue
+            if piso <= corrigido <= teto:
+                return _saida(corrigido, regra)
+    if limite is not None and regra_limite:
+        return _saida(None, regra_limite)
+    return None
+
+
+def normalizacao_prazo(compra: dict, *, agora: datetime | None = None, atas: list[dict] | None = None) -> dict | None:
+    """Normalização do prazo de proposta da compra (normalizar_prazo_proposta) quando ele é implausível (além de
+    agora + PRAZO_PROPOSTA_MAXIMO), senão None. Lê o prazo como motivo_prioridade (detalhe, busca, gravado), a
+    abertura (dataAberturaProposta / data_inicio_vigencia / data_inicio), a publicação (dataPublicacaoPncp /
+    data_publicacao_pncp / data_publicacao) e o limite dos fatos (_limite_dos_fatos). Caso 129: 2604-04-16 com
+    abertura 2024-04-26 não fecha com troca de ano; a ata 39/2024 assinada em 2024-05-10 limita -> limitado_por_ata."""
+    agora = agora or datetime.now(timezone.utc)
+    original = _campo(compra, "dataEncerramentoProposta", "data_fim_vigencia") or _campo(compra, "data_fim")
+    fim = _instante(original)
+    if fim is None or fim <= agora + PRAZO_PROPOSTA_MAXIMO:
+        return None
+    limite, regra = _limite_dos_fatos(compra, atas)
+    return normalizar_prazo_proposta(
+        original, abertura=_campo(compra, "dataAberturaProposta", "data_inicio_vigencia", "data_inicio"),
+        publicacao=_campo(compra, "dataPublicacaoPncp", "data_publicacao_pncp", "data_publicacao"),
+        limite=limite, regra_limite=regra)
+
+
+def visao_para_prazo(visao: dict, data_homologacao: datetime | None) -> dict:
+    """A visão da compra para normalizacao_prazo com a homologação recém-lida dos resultados (a mesma que a coleta
+    grava em data_homologacao). Sem ela, limitado_por_resultado não é alcançável na coleta: a visão vem do detalhe e da
+    busca, que não trazem essa data, e a linha gravada não é relida. Data já presente na visão prevalece."""
+    if data_homologacao is None or _campo(visao, "data_homologacao"):
+        return visao
+    return {**visao, "data_homologacao": data_homologacao.isoformat()}
+
+
+def decisao_oficial(prioridade: str | None, motivo: str) -> bool:
+    """A decisão de motivo_prioridade é por sinal OFICIAL (P1-P4: resultado, encerramento, itens finalizados,
+    Suspensa oficial), que vence ata, documentos e prazo?"""
+    if motivo.startswith("sem prazo de proposta; busca"):
+        return False
+    return prioridade == "historico" or (prioridade == "monitorar" and motivo.startswith("situação "))
+
+
 def fase_da_compra(compra: dict, tem_resultado: bool | None = None, *, agora: datetime | None = None,
                    status_busca: str | None = None, itens: list[dict] | None = None,
                    documentos: list[dict] | None = None, retificada_em=None,
-                   excluida: bool = False) -> tuple[str | None, str | None, str]:
+                   excluida: bool = False, atas: list[dict] | None = None) -> tuple[str | None, str | None, str]:
     """(fase, prioridade, motivo): a fase real da compra, gravada em licitacoes_externas.fase (coluna que a
     view e a API já expõem; `situacao` continua sendo a oficial do PNCP). Função pura. Precedência (o primeiro
     que casar vence):
       P0 excluída do PNCP (detalhe HTTP 410)                        -> Excluída do PNCP          / historico
       P1-P4 motivo_prioridade: resultado/homologação, encerramento oficial, itens finalizados, Suspensa oficial
+      P4a ata de registro de preço não cancelada (/atas da compra)    -> Registro de Preço         / historico
       P5 documento da compra de homologação/adjudicação/resultado     -> Homologada (documento)    / historico
       P6 documento da compra de revogação/anulação (não parcial)      -> Revogada/Anulada (doc.)   / historico
-      P7 documento de suspensão sem retificação posterior             -> Suspensa (documento)      / monitorar
-      P8-P10 prazo: aberto -> leads; vencido -> Em julgamento; implausível -> Prazo inválido (monitorar)
+      P7 documento de suspensão sem retificação nem republicação do edital posterior
+                                                                      -> Suspensa (documento)      / monitorar
+      P8-P10 prazo (o normalizado quando o bruto é implausível e normalizacao_prazo corrige o ano): aberto -> leads;
+             vencido -> Em julgamento; implausível sem normalização -> Prazo inválido (monitorar)
+    `atas` None = não consultadas ou falha na consulta (sem informação): P4a não se aplica, e quem chama decide se
+    pode gravar (o coletor não grava fase/prioridade de compra SRP com /atas indisponível). Suspensão neutralizada
+    pela republicação do edital acrescenta "(suspensão anterior; republicado)" ao motivo.
     `fase` None = sem rótulo melhor que a situação oficial (quem chama não grava)."""
     if excluida:
         return FASE_EXCLUIDA, "historico", "compra excluída do PNCP (HTTP 410)"
+    norm = normalizacao_prazo(compra, agora=agora, atas=atas)
     prioridade, motivo = motivo_prioridade(compra, tem_resultado, agora=agora, status_busca=status_busca,
-                                           itens=itens)
-    # Só sinal oficial retorna antes dos documentos: o último recurso "sem prazo; status da busca" (P10) fica depois da
-    # análise documental (Copilot, PR #134, 2ª rodada: busca "encerradas" + aviso de suspensão vigente = monitorar).
-    pela_busca = motivo.startswith("sem prazo de proposta; busca")
-    if not pela_busca and (prioridade == "historico" or (prioridade == "monitorar" and motivo.startswith("situação "))):
+                                           itens=itens, prazo_normalizado=(norm or {}).get("normalizado"))
+    # Só sinal oficial retorna antes da ata e dos documentos: o último recurso "sem prazo; status da busca" (P10) fica
+    # depois da análise documental (Copilot, PR #134, 2ª rodada: busca "encerradas" + aviso de suspensão = monitorar).
+    if decisao_oficial(prioridade, motivo):
         return _fase_do_motivo(prioridade, motivo), prioridade, motivo
-    sinal = sinal_documental(documentos, retificada_em)
+    validas = atas_nao_canceladas(atas)
+    if validas:
+        a = min(validas, key=lambda x: str(x.get("dataAssinatura") or "9999"))
+        return FASE_REGISTRO_PRECO, "historico", (
+            f"ata de registro de preço {a.get('numeroAtaRegistroPreco') or '?'} assinada em "
+            f"{a.get('dataAssinatura') or '?'} (não cancelada)")
+    sinal, republicada = analise_documental(documentos, retificada_em)
     if sinal == "resultado":
         return FASE_RESULTADO_DOC, "historico", "documento de homologação/adjudicação/resultado da compra"
     if sinal == "revogacao":
         return FASE_REVOGADA_DOC, "historico", "documento de revogação/anulação da compra"
     if sinal == "suspensao":
         return FASE_SUSPENSA_DOC, "monitorar", "documento de suspensão da compra sem retificação posterior"
-    return _fase_do_motivo(prioridade, motivo), prioridade, motivo
+    fase = _fase_do_motivo(prioridade, motivo)
+    if republicada:
+        motivo = f"{motivo} (suspensão anterior; republicado)"
+    return fase, prioridade, motivo
 
 
 # Campos de estado do detalhe da compra (/api/consulta/v1/...) que motivo_prioridade lê.
-ESTADO_DETALHE = ("existeResultado", "valorTotalHomologado", "situacaoCompraNome", "dataEncerramentoProposta")
+ESTADO_DETALHE = ("existeResultado", "valorTotalHomologado", "situacaoCompraNome", "dataEncerramentoProposta",
+                  "dataAberturaProposta", "dataPublicacaoPncp")
 
 
 def compra_com_detalhe(compra: dict, det: dict | None) -> dict:
@@ -1158,10 +1351,31 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
         _inc(resumo, "falha_arquivos")
         raise ConsultaFalhou(f"documentos da compra {c.get('numero_controle_pncp')} indisponíveis, nada decidido "
                              f"nem gravado: {erro_arquivos}") from erro_arquivos
+    # Atas de registro de preço só em compra SRP (detalhe.srp). Falha na consulta = sem informação (atas None), nunca
+    # "sem ata": a fase/prioridade que a ata poderia mudar não é gravada (fica a do banco).
+    atas, atas_indisponiveis = None, False
+    if det is not None and det.get("srp") is True and not excluida:
+        try:
+            atas = pncp.atas(c)
+            if not isinstance(atas, list):
+                raise RespostaInvalida(f"PNCP atas: esperava lista, veio {type(atas).__name__}")
+        except Exception as e:
+            atas, atas_indisponiveis = None, True
+            _inc(resumo, "falha_atas")
+            log.warning("            atas da compra %s indisponíveis (sem informação): %s",
+                        c.get("numero_controle_pncp"), str(e)[:120])
+    visao = compra_com_detalhe(c, det)
     fase, prioridade, motivo = fase_da_compra(
-        compra_com_detalhe(c, det), tem_resultado, agora=agora, status_busca=status_busca, itens=itens,
+        visao, tem_resultado, agora=agora, status_busca=status_busca, itens=itens,
         documentos=arquivos if isinstance(arquivos, list) else None,
-        retificada_em=atualizacao_da_compra(det, c), excluida=excluida)
+        retificada_em=atualizacao_da_compra(det, c), excluida=excluida, atas=atas)
+    normalizacao = normalizacao_prazo(visao_para_prazo(visao, data_homologacao), agora=agora, atas=atas)
+    # SRP com /atas indisponível: só a decisão oficial (P0-P4) é gravada; ata, documentos e prazo ficam para a
+    # próxima coleta (a ata venceria todos eles).
+    sem_atas = atas_indisponiveis and not excluida and not decisao_oficial(
+        *motivo_prioridade(visao, tem_resultado, agora=agora, status_busca=status_busca, itens=itens))
+    if sem_atas:
+        _inc(resumo, "prioridade_nao_gravada_sem_atas")
     # Fail-closed: sem o detalhe, "leads" vindo só da busca+itens pode ser compra já homologada.
     # Não grava (fica o valor do banco); historico/monitorar pela busca+itens continuam valendo.
     leads_sem_detalhe = det is None and prioridade == "leads"
@@ -1214,10 +1428,18 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
     # O estado derivado vence: encerrada/homologada vira historico mesmo que a linha fosse lead.
     # Só não grava quando não dá para saber (não apaga uma prioridade já gravada com NULL) ou quando
     # seria leads sem o detalhe confirmar (fail-closed: homologada nunca vira lead).
-    if prioridade is None or leads_sem_detalhe:
+    # Prazo de proposta implausível normalizado (normalizacao_prazo): data_fim recebe o normalizado (None quando o
+    # prazo é só limitado por um fato, ex. limitado_por_ata) e normalizacoes.data_fim guarda {campo, original,
+    # normalizado, regra, origem: "inferido"}. O bruto continua em raw.data_fim_vigencia. Sem normalização,
+    # normalizacoes = null (o PNCP pode ter corrigido a data).
+    if not sem_atas:
+        linha["normalizacoes"] = {"data_fim": normalizacao} if normalizacao else None
+        if normalizacao:
+            linha["data_fim"] = normalizacao["normalizado"]
+    if prioridade is None or leads_sem_detalhe or sem_atas:
         linha.pop("prioridade")
     # fase None = sem rótulo melhor que a situação oficial; fase de leads sem detalhe também não grava
-    if fase is None or leads_sem_detalhe:
+    if fase is None or leads_sem_detalhe or sem_atas:
         linha.pop("fase")
     if not data_homologacao:
         linha.pop("data_homologacao")

@@ -1,19 +1,10 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { corsHeaders, jsonResponse, requireCronAuth } from "../_shared/http.ts";
-import { hashPayload } from "../_shared/pncp/hash.ts";
 import { acquireSyncLock } from "../_shared/pncp/lock.ts";
 import { createServiceClient } from "../_shared/pncp/supabase-admin.ts";
-import {
-  codigoRespostaPortal,
-  consultarPortal,
-  escolherLotePortal,
-  parsePortalProcessoUrl,
-  situacaoPortal,
-  type CandidatoPortal,
-} from "../_shared/portal-compras.ts";
+import { executarSyncPortal } from "./sync.ts";
 
 const LIMITE_PADRAO = 40;
-const LIMITE_LEITURA = 200;
 
 function limiteDe(body: unknown): number {
   if (!body || typeof body !== "object" || Array.isArray(body)) return LIMITE_PADRAO;
@@ -43,139 +34,10 @@ Deno.serve(async (req) => {
   const { runId, alreadyRunning } = await acquireSyncLock(client, "portal-compras", "portal-compras", {});
   if (alreadyRunning) return jsonResponse({ status: "already_running", sync_id: runId });
 
-  const agora = new Date();
-  const limite = limiteDe(body);
-  const stats = { lidos: 0, atualizados: 0, erros: 0, interrompido: false };
-
-  try {
-    // pipeline_oportunidades é por empresa: só contam os pipelines de empresas ativas (empresa desativada não
-    // dispara consulta ao Portal). Falha na leitura é falha do sync, não "pipeline vazio".
-    const ativas = await client.from("tenants").select("id").eq("ativo", true);
-    if (ativas.error || !Array.isArray(ativas.data)) {
-      return jsonResponse({ error: "Falha ao ler as empresas ativas", sync_id: runId }, 500);
-    }
-    const tenantsAtivos = (ativas.data as Array<{ id: number }>).map((r) => Number(r.id));
-    const noPipeline = new Set<number>();
-    if (tenantsAtivos.length > 0) {
-      const pipeline = await client
-        .from("pipeline_oportunidades")
-        .select("licitacao_id")
-        .in("tenant_id", tenantsAtivos)
-        .limit(LIMITE_LEITURA);
-      if (pipeline.error || !Array.isArray(pipeline.data)) {
-        return jsonResponse({ error: "Falha ao ler o pipeline", sync_id: runId }, 500);
-      }
-      for (const row of pipeline.data as Array<{ licitacao_id: number }>) {
-        noPipeline.add(Number(row.licitacao_id));
-      }
-    }
-
-    const abertas = await client
-      .from("licitacoes_externas")
-      .select("id,link_sistema_origem,data_fim")
-      .ilike("link_sistema_origem", "%portaldecompraspublicas.com.br/processos/%")
-      .gt("data_fim", agora.toISOString())
-      .limit(LIMITE_LEITURA);
-
-    const porId = new Map<number, { link: string; dataFim: string | null }>();
-    if (abertas.error) {
-      return jsonResponse({ error: "Falha ao listar o portal", sync_id: runId }, 500);
-    }
-    for (const row of (abertas.data ?? []) as Array<Record<string, unknown>>) {
-      const id = Number(row.id);
-      if (!Number.isInteger(id) || typeof row.link_sistema_origem !== "string") continue;
-      porId.set(id, {
-        link: row.link_sistema_origem,
-        dataFim: typeof row.data_fim === "string" ? row.data_fim : null,
-      });
-    }
-
-    const faltam = [...noPipeline].filter((id) => !porId.has(id));
-    if (faltam.length > 0) {
-      const extras = await client
-        .from("licitacoes_externas")
-        .select("id,link_sistema_origem,data_fim")
-        .in("id", faltam);
-      if (!extras.error && Array.isArray(extras.data)) {
-        for (const row of extras.data as Array<Record<string, unknown>>) {
-          const id = Number(row.id);
-          if (!Number.isInteger(id) || typeof row.link_sistema_origem !== "string") continue;
-          if (!parsePortalProcessoUrl(row.link_sistema_origem)) continue;
-          porId.set(id, {
-            link: row.link_sistema_origem,
-            dataFim: typeof row.data_fim === "string" ? row.data_fim : null,
-          });
-        }
-      }
-    }
-
-    const consultas = porId.size === 0
-      ? { data: [], error: null }
-      : await client
-        .from("portal_consulta")
-        .select("licitacao_id,consultado_em")
-        .in("licitacao_id", [...porId.keys()]);
-    const consultado = new Map<number, string | null>();
-    if (!consultas.error && Array.isArray(consultas.data)) {
-      for (const row of consultas.data as Array<Record<string, unknown>>) {
-        consultado.set(
-          Number(row.licitacao_id),
-          typeof row.consultado_em === "string" ? row.consultado_em : null,
-        );
-      }
-    }
-
-    const candidatos: CandidatoPortal[] = [...porId.entries()].map(([id, linha]) => ({
-      id,
-      link: linha.link,
-      dataFim: linha.dataFim,
-      emPipeline: noPipeline.has(id),
-      consultadoEm: consultado.get(id) ?? null,
-    }));
-    const lote = escolherLotePortal(candidatos, agora, limite);
-    const idPorPagina = new Map<string, number>();
-    for (const [id, linha] of porId) {
-      const processo = parsePortalProcessoUrl(linha.link);
-      if (processo) idPorPagina.set(processo.pagina, id);
-    }
-
-    for (const processo of lote) {
-      const licitacaoId = idPorPagina.get(processo.pagina);
-      if (!licitacaoId) continue;
-      stats.lidos += 1;
-      const resposta = await consultarPortal(processo.api);
-      if (resposta.httpStatus === 429) {
-        stats.interrompido = true;
-        stats.erros += 1;
-        break;
-      }
-      if (resposta.erro || !resposta.body) {
-        stats.erros += 1;
-        await client.from("portal_consulta").upsert({
-          licitacao_id: licitacaoId,
-          url_pagina: processo.pagina,
-          codigo_licitacao: processo.codigoLicitacao,
-          http_status: resposta.httpStatus,
-          erro: resposta.erro,
-        }, { onConflict: "licitacao_id" });
-        continue;
-      }
-      await client.from("portal_consulta").upsert({
-        licitacao_id: licitacaoId,
-        url_pagina: processo.pagina,
-        codigo_licitacao: codigoRespostaPortal(resposta.body, processo.codigoLicitacao),
-        situacao: situacaoPortal(resposta.body),
-        consultado_em: new Date().toISOString(),
-        http_status: resposta.httpStatus,
-        erro: null,
-        payload_hash: await hashPayload(resposta.body),
-      }, { onConflict: "licitacao_id" });
-      stats.atualizados += 1;
-    }
-
-    return jsonResponse({ status: stats.interrompido ? "parcial" : "ok", sync_id: runId, ...stats });
-  } catch (err: unknown) {
-    console.error("[sync-portal-compras]", err instanceof Error ? err.message : "falha");
+  // executarSyncPortal fecha a execução (private.pncp_sync_run) em todos os caminhos.
+  const { status, stats } = await executarSyncPortal(client, runId, limiteDe(body));
+  if (status === "erro") {
     return jsonResponse({ error: "Falha na leitura do portal", sync_id: runId, ...stats }, 500);
   }
+  return jsonResponse({ status, sync_id: runId, ...stats });
 });

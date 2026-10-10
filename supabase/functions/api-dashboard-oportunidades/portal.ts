@@ -45,10 +45,19 @@ async function lerConsulta(client: SupabaseClient, licitacaoId: number): Promise
   return consultaDe(data);
 }
 
-async function estaNoPipeline(client: SupabaseClient, licitacaoId: number): Promise<boolean> {
+/**
+ * Empresa (tenant) de quem chama, resolvida só quando a seção do Portal precisa dela. null = sem empresa resolvida:
+ * nada conta como "no pipeline". pipeline_oportunidades é por tenant e é lido com service_role; sem este filtro a tela
+ * mostraria o pipeline de outra empresa.
+ */
+export type TenantDoUsuario = () => Promise<number | null>;
+
+async function estaNoPipeline(client: SupabaseClient, licitacaoId: number, tenant: number | null): Promise<boolean> {
+  if (tenant === null) return false;
   const { data, error } = await client
     .from("pipeline_oportunidades")
     .select("licitacao_id")
+    .eq("tenant_id", tenant)
     .eq("licitacao_id", licitacaoId)
     .limit(1);
   if (error || !Array.isArray(data)) return false;
@@ -88,6 +97,7 @@ export async function secaoPortal(
   licitacaoId: number,
   link: unknown,
   atualizar: boolean,
+  tenantDoUsuario: TenantDoUsuario,
   agora = new Date(),
   fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<PortalSecao | null> {
@@ -95,15 +105,15 @@ export async function secaoPortal(
   if (!processo) return null;
 
   const gravada = await lerConsulta(client, licitacaoId);
-  const noPipeline = !(await estaNoPipeline(client, licitacaoId));
-  const decisao = decidirAtualizacaoPortal(atualizar, noPipeline, gravada?.consultado_em ?? null, agora);
+  const foraDoPipeline = !(await estaNoPipeline(client, licitacaoId, await tenantDoUsuario()));
+  const decisao = decidirAtualizacaoPortal(atualizar, foraDoPipeline, gravada?.consultado_em ?? null, agora);
 
   if (decisao !== "consultado") {
     const alerta = alertaPortal(
       processo,
       gravada?.consultado_em ?? null,
       gravada?.situacao ?? null,
-      noPipeline,
+      foraDoPipeline,
       agora,
     );
     return {
@@ -164,6 +174,7 @@ export async function secaoPortal(
 export async function anexarAlertaPortal(
   client: SupabaseClient,
   items: Array<Record<string, unknown>>,
+  tenantDoUsuario: TenantDoUsuario,
   agora = new Date(),
 ): Promise<Array<Record<string, unknown>>> {
   const ids = items
@@ -186,12 +197,15 @@ export async function anexarAlertaPortal(
   if (processos.size === 0) return items;
 
   const portalIds = [...processos.keys()];
+  const tenant = await tenantDoUsuario();
   const [consultas, pipeline] = await Promise.all([
     client
       .from("portal_consulta")
       .select("licitacao_id,consultado_em,situacao,codigo_licitacao")
       .in("licitacao_id", portalIds),
-    client.from("pipeline_oportunidades").select("licitacao_id").in("licitacao_id", portalIds),
+    tenant === null
+      ? Promise.resolve({ data: [] as Array<Record<string, unknown>>, error: null })
+      : client.from("pipeline_oportunidades").select("licitacao_id").eq("tenant_id", tenant).in("licitacao_id", portalIds),
   ]);
 
   const porConsulta = new Map<number, ConsultaGravada>();

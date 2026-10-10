@@ -48,9 +48,23 @@ Deno.serve(async (req) => {
   const stats = { lidos: 0, atualizados: 0, erros: 0, interrompido: false };
 
   try {
-    const pipeline = await client.from("pipeline_oportunidades").select("licitacao_id").limit(LIMITE_LEITURA);
+    // pipeline_oportunidades é por empresa: só contam os pipelines de empresas ativas (empresa desativada não
+    // dispara consulta ao Portal). Falha na leitura é falha do sync, não "pipeline vazio".
+    const ativas = await client.from("tenants").select("id").eq("ativo", true);
+    if (ativas.error || !Array.isArray(ativas.data)) {
+      return jsonResponse({ error: "Falha ao ler as empresas ativas", sync_id: runId }, 500);
+    }
+    const tenantsAtivos = (ativas.data as Array<{ id: number }>).map((r) => Number(r.id));
     const noPipeline = new Set<number>();
-    if (!pipeline.error && Array.isArray(pipeline.data)) {
+    if (tenantsAtivos.length > 0) {
+      const pipeline = await client
+        .from("pipeline_oportunidades")
+        .select("licitacao_id")
+        .in("tenant_id", tenantsAtivos)
+        .limit(LIMITE_LEITURA);
+      if (pipeline.error || !Array.isArray(pipeline.data)) {
+        return jsonResponse({ error: "Falha ao ler o pipeline", sync_id: runId }, 500);
+      }
       for (const row of pipeline.data as Array<{ licitacao_id: number }>) {
         noPipeline.add(Number(row.licitacao_id));
       }

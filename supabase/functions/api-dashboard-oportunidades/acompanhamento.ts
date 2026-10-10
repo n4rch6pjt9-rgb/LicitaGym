@@ -1,7 +1,7 @@
 import { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { errorDetail, jsonResponse } from "../_shared/http.ts";
 import { buildAcompanhamentoUrl, buildEditalUrl, buildPncpEditalUrl } from "../_shared/edital-url.ts";
-import { secaoPortal } from "./portal.ts";
+import { secaoPortal, type TenantDoUsuario } from "./portal.ts";
 import { UnifiedHttpClient } from "../_shared/http-client/index.ts";
 import type {
   AcompanhamentoActionParams,
@@ -12,13 +12,14 @@ import type {
   CompraMetadata,
   HistoricoEvento,
   ItemAcompanhamento,
-  ItemResultado,
 } from "./types.ts";
 
 export interface DashboardOportunidadesClientContext {
   getClient?: () => SupabaseClient;
   requireAuth?: (req: Request) => Promise<Response | null> | Response | null;
   httpClient?: UnifiedHttpClient;
+  /** Empresa de quem chama (index.ts resolve pelo JWT). Ausente = nenhuma: nada conta como "no pipeline". */
+  tenantDoUsuario?: TenantDoUsuario;
 }
 
 export interface PncpKey {
@@ -579,6 +580,8 @@ export function linkSistemaOrigemFromRaw(raw: unknown): string | null {
   return typeof value === "string" && value.trim() !== "" ? value : null;
 }
 
+const semTenant: TenantDoUsuario = () => Promise.resolve(null);
+
 export async function handleAcompanhamento(
   params: AcompanhamentoActionParams,
   ctx?: DashboardOportunidadesClientContext,
@@ -705,7 +708,7 @@ export async function handleAcompanhamento(
       (payload.disponivel ? payload.compra.dados?.linkSistemaOrigem : null) ??
       linkSistemaOrigemFromRaw(row.raw);
     const portal = payload.disponivel
-      ? await secaoPortal(client, Number(row.id), linkPortal, params.atualizar === true)
+      ? await secaoPortal(client, Number(row.id), linkPortal, params.atualizar === true, ctx?.tenantDoUsuario ?? semTenant)
       : null;
 
     return jsonResponse(payload.disponivel ? { ...payload, portal } : payload, 200, {

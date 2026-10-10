@@ -17,12 +17,13 @@ Dashboard #29 (mãe) e #68 (tela).
 | `empresa_criar` | desenvolvedor | `cnpj`, `admin_email`, `nome?`, `slug?`, `tipo?` | 201 `empresa` **inativa** + `consulta`; situação ≠ ATIVA → 400; CNPJ repetido → 409; e-mail sem conta → 404; se o vínculo do admin falhar, a empresa é apagada |
 | `empresa_atualizar` | admin (`ativo`: só desenvolvedor) | `tenant_id`, `nome?`, `cnpj?`, `ativo?` | `empresa`; ativar com outra empresa ativa sem membro → 409 |
 | `membros_listar` | membro | `tenant_id` | `membros[]` (`user_id`, `email`, `papel`, `ativo`) |
-| `membro_adicionar` | admin | `tenant_id`, `email`, `papel` | 201 `membro`; só conta existente (sem convite); e-mail sem conta → 404 |
-| `membro_atualizar` | admin | `tenant_id`, `user_id`, `papel?`, `ativo?` | `membro`; tirar o último admin ativo → 400 |
+| `membro_adicionar` | admin | `tenant_id`, `email`, `papel` | 201 `membro`; só conta existente (sem convite). Já membro → 409 (use `membro_atualizar`). Admin de cliente: conta inexistente, ligada a outra empresa ou do desenvolvedor → o mesmo 404 (não revela qual); o desenvolvedor recebe 404 ou 409 com o motivo |
+| `membro_atualizar` | admin | `tenant_id`, `user_id`, `papel?`, `ativo?` | `membro`; tirar o último admin ativo → 400; desativar o último membro de empresa ativa com outra empresa ativa → 409 |
 | `dados_restritos_obter` | admin | `tenant_id` | `dados` (`banco`, `agencia`, `conta`, `updated_at`) ou `null` |
-| `dados_restritos_salvar` | admin | `tenant_id`, `banco?`, `agencia?`, `conta?` | `dados` |
+| `dados_restritos_salvar` | admin | `tenant_id`, ao menos um de `banco`, `agencia`, `conta` | `dados`; grava só os campos enviados |
 
-Membro de outra empresa → 403. Empresa inexistente → 404. Logs sem dado bancário nem token.
+Membro de outra empresa → 403. Empresa inexistente → 404. CNPJ de outra empresa → 409 (o nome dela só para o
+desenvolvedor). Logs sem dado bancário nem token.
 
 **Por que a empresa nasce inativa:** a `api-pipeline` resolve o usuário sem vínculo pelo "único tenant ativo". Uma
 segunda empresa ativa antes de os usuários da Konnen estarem ligados faria todo o pipeline responder 409.

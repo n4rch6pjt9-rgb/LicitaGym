@@ -1,6 +1,6 @@
 # 0018: Criar as tarefas padrão quando a oportunidade entra numa etapa do pipeline
 
-- **Status:** rascunho (10/10/2026; decisões 1 e 2 do Marcelo em "Decisões")
+- **Status:** rascunho (10/10/2026; decisões 1 a 3 do Marcelo em "Decisões")
 - **Issue:** Dashboard #29 (mãe). Depende da LicitaGym #252 (instância de tarefas por certame, `tarefas_equipe`).
   Tela: Dashboard #72 (tarefas da equipe) e a futura `/configuracoes/pipeline`.
 - **Área:** migrations (tabela nova + mudança em `pipeline_mover`), edge-functions (`api-pipeline`), dashboard-contrato
@@ -93,7 +93,9 @@ Na mesma transação de `pipeline_mover` (inclusive `pipeline_adicionar`, que en
 licitação que **entrou** numa etapa:
 
 1. lê o modelo ativo da etapa (`pipeline_etapa_tarefas`);
-2. cria a instância em `tarefas_equipe` (#252) com `origem_etapa_id` e `origem_modelo_id`;
+2. cria a instância em `tarefas_equipe` (#252) com `origem_etapa_id` e `origem_modelo_id`, **atribuída ao papel admin
+   da empresa** (`responsavel_papel = 'admin'`, `responsavel_user_id` nulo): aparece na fila de todos os admins ativos
+   até um admin definir o operador (decisão 3);
 3. **idempotente:** uma instância por `(tenant_id, licitacao_id, tarefa_codigo)` para tarefa do catálogo e por
    `(tenant_id, licitacao_id, origem_modelo_id)` para tarefa da empresa. Voltar para a etapa, ou a mesma tarefa já
    criada pelo evento do certame (#252), não duplica;
@@ -107,7 +109,7 @@ Regras que valem já no #252 e continuam aqui:
   úteis sem calendário de feriados → **"prazo não calculado"**. Nenhuma data inventada.
 - **Regulamento:** o catálogo é da Lei 14.133. Licitação de regulamento próprio (Sistema S) recebe só as tarefas
   `origem = empresa` da etapa; as do catálogo não são criadas (a coluna `regulamento` hoje está nula em todas as
-  linhas: Pergunta 2).
+  linhas: Pergunta 1).
 
 ### 4. Certame × etapa
 
@@ -149,6 +151,8 @@ registradas. A etapa nunca altera prazo legal nem fecha tarefa do certame.
 | CA-11 | **Dado** `anon` e `authenticated`, **quando** leem `pipeline_etapa_tarefas` por REST, **então** sem acesso. | SQL `pipeline_etapa_tarefas_check.sql` (ACL) |
 | CA-12 | **Dado** a empresa A, **quando** move card, **então** nenhuma tarefa é criada para a empresa B nem lê o modelo de B. | SQL `pipeline_etapa_tarefas_check.sql` |
 | CA-13 | **Dado** o modelo padrão, **quando** é semeado ou salvo pela `api-pipeline`, **então** nenhuma tarefa do catálogo com `ator` fora de `licitante`, `contratado` e `licitante_ou_contratado` é aceita (o check recusa). | SQL `pipeline_etapa_tarefas_check.sql` |
+| CA-14 | **Dado** uma licitação que entra numa etapa com modelo, **quando** as tarefas são criadas, **então** todas ficam com `responsavel_papel = 'admin'` e `responsavel_user_id` nulo. | SQL `pipeline_etapa_tarefas_check.sql` |
+| CA-15 | **Dado** uma tarefa na fila do admin, **quando** um admin a atribui a um membro de operação da mesma empresa, **então** ela passa a esse usuário; operação tentando atribuir recebe 403; atribuir a usuário de outra empresa recebe 400. | Deno `tests/supabase/functions/api_pipeline_test.ts` (ou a função da #252 que atribui) |
 
 ## Fora de escopo
 
@@ -182,10 +186,12 @@ Do Marcelo, 10/10/2026:
    (a empresa acrescenta as suas pela configuração).
 2. **Tarefas continuam abertas** ao sair da etapa, inclusive em Perdida e Descartada. Fechar ou cancelar é ação da
    equipe.
+3. **Responsável: sempre o admin.** A tarefa nasce para o papel admin da empresa (fila de todos os admins, sem pessoa
+   escolhida, porque a empresa pode ter mais de um admin), e o admin define depois o operador. Só admin (ou o
+   desenvolvedor) atribui ou reatribui; operação vê as tarefas atribuídas a ela e as conclui.
 
 ## Perguntas em aberto
 
-1. **Responsável:** a tarefa nasce sem responsável, com quem moveu o card, ou com um responsável padrão por etapa?
-2. **Regulamento:** a coluna `licitacoes_externas.regulamento` está nula em todas as linhas. Sem ela, como distinguir
+1. **Regulamento:** a coluna `licitacoes_externas.regulamento` está nula em todas as linhas. Sem ela, como distinguir
    14.133 de Sistema S na hora de criar tarefa do catálogo? (proposta: pela `fonte`, até o regulamento ser preenchido)
-3. **Ordem:** fazer o #252 antes (proposta) ou juntar `tarefas_equipe` e esta spec num PR só?
+2. **Ordem:** fazer o #252 antes (proposta) ou juntar `tarefas_equipe` e esta spec num PR só?

@@ -15,7 +15,7 @@ from pathlib import Path
 
 from . import ia as ia_mod
 from .destino import Supabase, env
-from .ocr import EXTRAIDO, OCR_DEGENERADO, Limiar, avaliar_pagina
+from .ocr import EXTRAIDO, OCR_DEGENERADO, OCR_REQUIRED, Limiar, avaliar_pagina
 from .textos import Pagina, dividir, extrair, limpar_texto
 
 log = logging.getLogger("indexador")
@@ -73,6 +73,8 @@ def ocr_escaneados(ia, pdfs_escaneados: list[tuple[str, bytes]], ignorados: list
             rotulo = f"pág. {numero}" if numero else "documento inteiro"
             if len(parte) > 19 * 1024 * 1024:
                 ignorados.append(f"{origem} ({rotulo} escaneada > 19 MB)")
+                relatorio.append({"origem": origem, "pagina": numero, "finish_reason": None, "estado": OCR_REQUIRED,
+                                  "chars_ocr": 0, "chars_parcial": 0, "motivo": "pagina escaneada > 19 MB, sem OCR"})
                 continue
             log.info("    OCR com Gemini: %s (%s)", origem, rotulo)
             texto, fim = ia.ocr_pagina(parte)

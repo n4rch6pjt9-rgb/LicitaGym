@@ -222,3 +222,17 @@ def test_ocr_pagina_sem_thinking_budget_fora_do_flash(monkeypatch):
     assert g.ocr_pagina(b"%PDF-1.4") == ("t", None)
     cfg = g.client.models.generate_content.call_args.kwargs["config"]
     assert cfg.thinking_config is None and cfg.max_output_tokens == IA.OCR_MAX_TOKENS
+
+
+def test_pagina_grande_demais_entra_no_relatorio_e_marca_incompleto(tmp_path, monkeypatch):
+    # págs. 1 e 3 normais; pág. 2 "maior que 19 MB" (simulada) não vai ao OCR, mas fica no relatório
+    monkeypatch.setattr(IX, "paginas_pdf", lambda pdf: [(1, b"p1"), (2, b"x" * (19 * 1024 * 1024 + 1)), (3, b"p3")])
+    ia, _ = _ia_falsa([])
+    ia.ocr_pagina.side_effect = lambda pdf: (UTIL, "STOP")
+    sb = MagicMock()
+    r = IX.indexar_grupo(sb, ia, _docs(tmp_path, _pdf_escaneado(3)), {"numero_processo": "999/2026"}, True)
+    assert r["status"] == "indexado" and ia.ocr_pagina.call_count == 2
+    extracao = sb.atualizar.call_args.args[2]["extracao"]
+    assert extracao["ocr_incompleto"] is True
+    assert [(p["pagina"], p["estado"]) for p in extracao["ocr_paginas"]] == [
+        (1, EXTRAIDO), (2, OCR_REQUIRED), (3, EXTRAIDO)]

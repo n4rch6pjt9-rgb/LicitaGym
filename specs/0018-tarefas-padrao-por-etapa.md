@@ -1,6 +1,6 @@
 # 0018: Criar as tarefas padrão quando a oportunidade entra numa etapa do pipeline
 
-- **Status:** rascunho (10/10/2026; decisões 1 a 5 do Marcelo em "Decisões")
+- **Status:** rascunho (10/10/2026; decisões 1 a 6 do Marcelo em "Decisões")
 - **Issue:** Dashboard #29 (mãe). Depende da LicitaGym #252 (instância de tarefas por certame, `tarefas_equipe`).
   Tela: Dashboard #72 (tarefas da equipe) e a futura `/configuracoes/pipeline`.
 - **Área:** migrations (tabela nova + mudança em `pipeline_mover`), edge-functions (`api-pipeline`), dashboard-contrato
@@ -73,7 +73,7 @@ Marcelo: aprovado em 10/10 sem tarefa da empresa no padrão (decisão 1).
 
 | Etapa padrão | Tarefas do catálogo | Por quê |
 |---|---|---|
-| Nova, Triagem, Em análise, Interessante | nenhuma | ainda não se decidiu participar |
+| Nova, Triagem, Em análise, Interessante | nenhuma do catálogo (as da empresa estão na seção 2b) | ainda não se decidiu participar |
 | Qualificação | F01-T01 e T03 a T06 (registrar edital, pedir esclarecimento, impugnar, acompanhar resposta, reabertura de prazo). F01-T02 sai: virou o gate da seção 2a | esclarecimento e impugnação vencem 3 dias úteis antes da abertura |
 | Preparando proposta | F01-T07 a T10 (vistoria, garantia de proposta, declarações, montar e cadastrar a proposta) | |
 | Documentação | F01-T11 (habilitação antecipada) e F04-T01 a T05 (documentos de habilitação, diligência) | |
@@ -82,6 +82,32 @@ Marcelo: aprovado em 10/10 sem tarefa da empresa no padrão (decisão 1).
 | Vencida | F06-T01, T04 e F07-T01 a T07 (homologação, assinatura, garantia contratual, publicação no PNCP) | |
 | Perdida | F05-T01 a T05 (recorrer do resultado) e F06-T03 (recorrer de anulação/revogação) | |
 | Descartada | nenhuma | |
+
+### 2b. Fase 1, Prospecção e Triagem: tarefas da empresa no modelo padrão (decisão 6)
+
+As etapas da fase 1 (Nova, Triagem, Em análise, Interessante) não recebem tarefa do catálogo 14.133: ainda não se decidiu
+participar. Recebem tarefas `origem = empresa` semeadas no modelo padrão (o admin edita), sempre do fornecedor e
+atribuídas ao papel admin (decisão 3):
+
+| Etapa | Tarefa da empresa (padrão) | Apoio automático que a tarefa usa (sinal, não tarefa) |
+|---|---|---|
+| Nova | nenhuma | — |
+| Triagem | **Confirmar a aderência item a item** (o selo CATMAT/PDM sozinho não garante: conferir descrição, especificação e quantidade de cada item contra o catálogo da empresa) | `catmat_match` e catálogo da empresa (`catalogo_empresa_catmat`) |
+| Em análise | **Ler o edital** (exigências técnicas, amostra, atestados, prazo de entrega) | documentos da licitação (PNCP), gate de prazo mínimo (seção 2a) |
+| Em análise | **Conferir o preço de referência contra o piso da empresa** | preço estimado do item; piso em `catalogo_precos` (#254); histórico homologado do órgão (BI) |
+| Em análise | **Confirmar o frete até o local de entrega** | distância (`calculate-distance-webrouter`), só como indicador aproximado: "frete não verificado" até a cotação |
+| Interessante | **Decidir GO, GO condicionado ou NO-GO** (decisão humana, com motivo) | recomendação da #250 (sem score) e os sinais acima |
+
+Sinais automáticos da triagem (aderência, comprador, PCA ligado, histórico do órgão, distância, regulamento, prazo
+mínimo, documento de habilitação vencendo antes da sessão) são **cálculo do sistema**, não tarefa: ficam numa spec
+própria de sinais de triagem, que reaproveita o que já existe (catálogo da empresa, `orgao_tipos`, `link-pca-edital`,
+BI de preços, `calculate-distance-webrouter`, #253).
+
+**Score (decisão 6):** vale a regra canônica de `docs/revenue-intel/instrucoes-canonicas.md` (seções 21 a 24). Pesos PCA
+40, Histórico 25, Preço 15, Prazo 10, Distância 10; **sem score numérico** até as fórmulas internas serem aprovadas;
+componente ausente nunca vale zero nem tem o peso redistribuído. Até lá, a triagem mostra fatores, evidências e
+prioridade **Alta, Média ou Baixa**. O modelo de 9 componentes do documento "Revenue Intelligence v1.0" (que soma 110,
+não 100) não é adotado.
 
 ### 2a. Gate de prazo mínimo de propostas (monitoramento, não tarefa)
 
@@ -179,6 +205,7 @@ registradas. A etapa nunca altera prazo legal nem fecha tarefa do certame.
 | CA-13 | **Dado** o modelo padrão, **quando** é semeado ou salvo pela `api-pipeline`, **então** nenhuma tarefa do catálogo com `ator` fora de `licitante`, `contratado` e `licitante_ou_contratado` é aceita (o check recusa). | SQL `pipeline_etapa_tarefas_check.sql` |
 | CA-14 | **Dado** uma licitação que entra numa etapa com modelo, **quando** as tarefas são criadas, **então** todas ficam com `responsavel_papel = 'admin'` e `responsavel_user_id` nulo. | SQL `pipeline_etapa_tarefas_check.sql` |
 | CA-15 | **Dado** uma tarefa na fila do admin, **quando** um admin a atribui a um membro de operação da mesma empresa, **então** ela passa a esse usuário; operação tentando atribuir recebe 403; atribuir a usuário de outra empresa recebe 400. | Deno `tests/supabase/functions/api_pipeline_test.ts` (ou a função da #252 que atribui) |
+| CA-16 | **Dado** uma empresa nova, **quando** recebe o modelo padrão, **então** Triagem, Em análise e Interessante têm as tarefas `origem = empresa` da seção 2b e nenhuma tarefa do catálogo; Nova não tem tarefa. | SQL `pipeline_etapa_tarefas_check.sql` |
 
 ## Fora de escopo
 
@@ -208,7 +235,8 @@ registradas. A etapa nunca altera prazo legal nem fecha tarefa do certame.
 ## Decisões
 
 Do Marcelo, 10/10/2026:
-1. **Modelo padrão da seção 2 aprovado** como está: tarefas do catálogo por etapa, sem tarefa da empresa no padrão
+1. **Modelo padrão da seção 2 aprovado** como está: tarefas do catálogo por etapa; tarefa da empresa no padrão só na
+   fase 1 (decisão 6),
    (a empresa acrescenta as suas pela configuração).
 2. **Tarefas continuam abertas** ao sair da etapa, inclusive em Perdida e Descartada. Fechar ou cancelar é ação da
    equipe.
@@ -225,6 +253,11 @@ Do Marcelo, 10/10/2026:
 
 5. **Prazo mínimo de propostas é gate, não tarefa.** O sistema confere o art. 55 a partir da publicação do edital
    (seção 2a); a `F01-T02` sai do modelo. Abaixo do mínimo, alerta e sugestão de impugnar (`F01-T04`).
+
+6. **Fase 1 (Prospecção e Triagem):** as etapas Triagem, Em análise e Interessante recebem tarefas da empresa no
+   modelo padrão (seção 2b): confirmar aderência item a item; ler o edital; conferir preço de referência contra o piso;
+   confirmar frete; decidir GO, GO condicionado ou NO-GO. Os sinais automáticos da triagem são outra spec. **Score:
+   segue a regra canônica** (sem score numérico até aprovar as fórmulas; prioridade Alta/Média/Baixa com evidências).
 
 ## Perguntas em aberto
 

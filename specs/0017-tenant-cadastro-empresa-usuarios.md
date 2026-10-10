@@ -1,9 +1,9 @@
 # 0017: Cadastrar a empresa (tenant) e seus usuários de ponta a ponta
 
-- **Status:** rascunho (10/10/2026; decisões 1–3 do Marcelo registradas em "Decisões")
+- **Status:** aprovada (10/10/2026; decisões do Marcelo em "Decisões")
 - **Issue:** Dashboard #29 (mãe), LicitaGym #248 (backend da fase A, fechada), Dashboard #68 (tela da fase A, aberta).
   Desbloqueia #249, #250, #251 (portão), #252 (tarefas), #253/#69 (documentos), #254/#70 (produtos), #255 (pipelines).
-- **Área:** edge-functions (nova `api-tenant`), migrations (pequena, ver Impacto em dados), dashboard-contrato
+- **Área:** edge-functions (nova `api-tenant`), dashboard-contrato
 - **Depende do ok do Marcelo:** sim. Cria a primeira escrita de cadastro de empresa e usuário em produção, usa fonte externa
   (CNPJ) e define quem é admin da Konnen.
 
@@ -73,12 +73,20 @@ Quem é quem:
 |---|---|---|
 | `minha_empresa` | autenticado | empresa(s) do usuário e o papel; sem vínculo, `{ empresas: [] }` (o front mostra "sem empresa") |
 | `cnpj_consultar` | desenvolvedor ou admin | consulta o CNPJ na BrasilAPI (`GET https://brasilapi.com.br/api/cnpj/v1/{cnpj}`) e devolve razão social, nome fantasia, situação cadastral, data da situação, CNAE principal e secundários, endereço, com `fonte` e `consultado_em`. Não grava. DV inválido (mod-11) → 400 sem chamar a fonte |
-| `empresa_criar` | desenvolvedor | cria `tenants` com `slug`, `nome`, `cnpj`, `tipo`. Situação cadastral diferente de ATIVA → 400. CNPJ já cadastrado → 409. Grava o primeiro admin (`user_id` existente em `auth.users`) na mesma transação |
-| `empresa_atualizar` | admin ou desenvolvedor | `nome` e `cnpj` (CNPJ novo passa pela mesma consulta); `ativo` só desenvolvedor |
+| `empresa_criar` | desenvolvedor | cria `tenants` com `slug`, `nome`, `cnpj`, `tipo`, **inativa** (`ativo = false`). Situação cadastral diferente de ATIVA → 400. CNPJ já cadastrado → 409. Grava o primeiro admin (e-mail de conta existente) junto; se o vínculo falhar, a empresa criada é apagada |
+| `empresa_atualizar` | admin ou desenvolvedor | `nome` e `cnpj` (CNPJ novo passa pela mesma consulta); `ativo` só desenvolvedor. Ativar uma empresa enquanto outra empresa ativa não tem membro ativo → 409 (ver Salvaguarda) |
 | `membros_listar` | membro | `user_id`, e-mail, papel, ativo |
 | `membro_adicionar` | admin ou desenvolvedor | liga um usuário existente em `auth.users` (por e-mail) com papel; e-mail sem conta → 404 nomeando a ausência. Não cria conta nem convida (decisão de 10/10) |
 | `membro_atualizar` | admin ou desenvolvedor | muda papel ou desativa. Recusa (400) tirar o último admin ativo da empresa |
 | `dados_restritos_obter` / `dados_restritos_salvar` | admin ou desenvolvedor | banco, agência, conta. OPERAÇÃO → 403 |
+
+### Salvaguarda: segunda empresa ativa
+
+`api-pipeline` resolve o usuário sem vínculo pelo "único tenant ativo". Hoje a Konnen tem 0 membros: se uma segunda
+empresa ficasse ativa antes de os usuários da Konnen serem ligados, todo o pipeline responderia 409. Por isso:
+- `empresa_criar` grava a empresa **inativa**;
+- `empresa_atualizar` com `ativo = true` recusa (409, nomeando a empresa) enquanto houver **outra** empresa ativa sem
+  nenhum membro ativo.
 
 ### Hidratar a Konnen
 
@@ -93,8 +101,7 @@ Usuários: admin vê e edita; operação vê a lista e não vê banco. A tela é
 
 ### Ordem dos PRs
 
-1. **LicitaGym:** `api-tenant` + testes Deno + check SQL (este desenho). Migration só se as Perguntas pedirem (unicidade
-   de CNPJ, auditoria).
+1. **LicitaGym:** `api-tenant` + testes Deno + check SQL (este desenho). Sem migration (decisões 4 e 5).
 2. **Dashboard #68:** aba Empresa e usuários.
 3. **Operação, com o Marcelo:** hidratar a Konnen (CNPJ e membros) pela tela.
 4. **Dashboard #29:** PR do front do pipeline (Kanban lendo `api-pipeline`, "Enviar para pipeline", "Mover para…",
@@ -122,6 +129,7 @@ Usuários: admin vê e edita; operação vê a lista e não vê banco. A tela é
 | CA-14 | **Dado** a consulta de CNPJ, **quando** o log é escrito, **então** não contém banco/agência/conta nem o JWT. | Deno `api_tenant_test.ts` (captura de log) |
 | CA-15 | **Dado** o desenvolvedor sem linha em `tenant_membros`, **quando** chama `membro_adicionar` e `dados_restritos_obter` na Konnen, **então** 200 nos dois (decisão 3). | Deno `api_tenant_test.ts` |
 | CA-16 | **Dado** a BrasilAPI respondendo 429 e depois 200, **quando** `cnpj_consultar`, **então** 200 após nova tentativa; 404 da fonte devolve 404 "CNPJ não encontrado na fonte" sem nova tentativa. | Deno `api_tenant_test.ts` (fetch falso) |
+| CA-17 | **Dado** a Konnen ativa sem membro, **quando** o desenvolvedor cria outra empresa, **então** ela nasce `ativo = false`; **quando** tenta ativá-la, **então** 409 nomeando a Konnen; depois de ligar um membro à Konnen, a ativação passa. | Deno `api_tenant_test.ts` |
 
 ## Fora de escopo
 
@@ -135,8 +143,7 @@ Usuários: admin vê e edita; operação vê a lista e não vê banco. A tela é
 
 ## Impacto em dados
 
-- **Migration:** a decidir nas Perguntas. Candidata, aditiva e idempotente: índice único parcial em
-  `tenants (cnpj) where cnpj is not null` (conferir antes que não há duplicado; hoje há 1 linha com `cnpj` nulo).
+- **Migration:** não (decisões 4 e 5).
 - **Tabelas tocadas:** `tenants`, `tenant_membros`, `tenant_dados_restritos` (escrita pela `api-tenant` com
   `service_role`); leitura de `auth.users` por e-mail (Admin API do Auth, só na função).
 - **ACL/RLS:** nenhum grant novo. As policies existentes continuam; a função é o único caminho do Dashboard.
@@ -159,12 +166,10 @@ Do Marcelo, 10/10/2026:
    criação de conta pela função (CA-11).
 3. **Desenvolvedor em qualquer empresa.** `licitagym_role = admin` cria empresa e age como admin em qualquer tenant
    (ler, editar empresa, membros e dados restritos). Continua sem usar `user_metadata` (CA-5).
+4. **Sem índice único de CNPJ** por enquanto: a unicidade fica na `api-tenant` (CA-6), sem migration.
+5. **Sem auditoria** de quem criou ou alterou empresa e membro por enquanto.
 
 ## Perguntas em aberto
 
-1. **CNPJ da Konnen** e **papel de cada um dos 3 usuários** de `auth.users`. Não bloqueia o código: é a hidratação feita
-   pela tela, com o Marcelo (passo 3 da ordem dos PRs).
-2. **Índice único de CNPJ** em `tenants` (migration pequena, aditiva) agora ou depois? Sem ele, a unicidade fica só na
-   `api-tenant` (CA-6), sujeita a corrida entre duas criações simultâneas.
-3. **Auditoria:** registrar quem criou/alterou empresa e membro (`updated_by` já existe em `tenant_dados_restritos`;
-   `tenants` e `tenant_membros` não têm). Precisa de coluna nova?
+- **CNPJ da Konnen** e **papel de cada um dos 3 usuários** de `auth.users`. Não bloqueia o código: é a hidratação feita
+  pela tela, com o Marcelo (passo 3 da ordem dos PRs).

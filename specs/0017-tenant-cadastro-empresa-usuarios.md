@@ -1,6 +1,6 @@
 # 0017: Cadastrar a empresa (tenant) e seus usuários de ponta a ponta
 
-- **Status:** rascunho (10/10/2026)
+- **Status:** rascunho (10/10/2026; decisões 1–3 do Marcelo registradas em "Decisões")
 - **Issue:** Dashboard #29 (mãe), LicitaGym #248 (backend da fase A, fechada), Dashboard #68 (tela da fase A, aberta).
   Desbloqueia #249, #250, #251 (portão), #252 (tarefas), #253/#69 (documentos), #254/#70 (produtos), #255 (pipelines).
 - **Área:** edge-functions (nova `api-tenant`), migrations (pequena, ver Impacto em dados), dashboard-contrato
@@ -64,18 +64,19 @@ cadastro do tenant (esta spec) é o que tira o pipeline do fallback e destrava a
 `service_role`; a função confere o papel antes de cada escrita. `user_metadata` nunca decide papel.
 
 Quem é quem:
-- **desenvolvedor**: `app_metadata.licitagym_role = 'admin'` (`licitagym_desenvolvedor()`). Cria empresa e o primeiro admin.
+- **desenvolvedor**: `app_metadata.licitagym_role = 'admin'` (`licitagym_desenvolvedor()`). Cria empresa e o primeiro admin
+  e age como admin em **qualquer** empresa (decisão de 10/10), como já fazem as policies de `20261008140000`.
 - **admin da empresa**: `tenant_membros.papel = 'admin'`, ativo. Edita a empresa, usuários e dados bancários.
 - **operação**: `tenant_membros.papel = 'operacao'`. Lê a empresa e a lista de usuários; não lê dados bancários.
 
 | action | quem | efeito |
 |---|---|---|
 | `minha_empresa` | autenticado | empresa(s) do usuário e o papel; sem vínculo, `{ empresas: [] }` (o front mostra "sem empresa") |
-| `cnpj_consultar` | desenvolvedor ou admin | consulta o CNPJ na fonte oficial (ver Perguntas) e devolve razão social, nome fantasia, situação cadastral, data da situação, CNAE principal e secundários, endereço, com `fonte` e `consultado_em`. Não grava. DV inválido (mod-11) → 400 sem chamar a fonte |
+| `cnpj_consultar` | desenvolvedor ou admin | consulta o CNPJ na BrasilAPI (`GET https://brasilapi.com.br/api/cnpj/v1/{cnpj}`) e devolve razão social, nome fantasia, situação cadastral, data da situação, CNAE principal e secundários, endereço, com `fonte` e `consultado_em`. Não grava. DV inválido (mod-11) → 400 sem chamar a fonte |
 | `empresa_criar` | desenvolvedor | cria `tenants` com `slug`, `nome`, `cnpj`, `tipo`. Situação cadastral diferente de ATIVA → 400. CNPJ já cadastrado → 409. Grava o primeiro admin (`user_id` existente em `auth.users`) na mesma transação |
 | `empresa_atualizar` | admin ou desenvolvedor | `nome` e `cnpj` (CNPJ novo passa pela mesma consulta); `ativo` só desenvolvedor |
 | `membros_listar` | membro | `user_id`, e-mail, papel, ativo |
-| `membro_adicionar` | admin ou desenvolvedor | liga um usuário existente em `auth.users` (por e-mail) com papel; e-mail sem conta → 404 nomeando a ausência (convite por e-mail é pergunta em aberto) |
+| `membro_adicionar` | admin ou desenvolvedor | liga um usuário existente em `auth.users` (por e-mail) com papel; e-mail sem conta → 404 nomeando a ausência. Não cria conta nem convida (decisão de 10/10) |
 | `membro_atualizar` | admin ou desenvolvedor | muda papel ou desativa. Recusa (400) tirar o último admin ativo da empresa |
 | `dados_restritos_obter` / `dados_restritos_salvar` | admin ou desenvolvedor | banco, agência, conta. OPERAÇÃO → 403 |
 
@@ -119,6 +120,8 @@ Usuários: admin vê e edita; operação vê a lista e não vê banco. A tela é
 | CA-12 | **Dado** dois tenants ativos e um usuário ligado à Konnen, **quando** chama `api-pipeline` `etapas_listar`, **então** recebe as etapas da Konnen (regressão do 409 da #248). | Deno `tests/supabase/functions/api_pipeline_test.ts` |
 | CA-13 | **Dado** `anon` e `authenticated` sem vínculo, **quando** leem `tenants`, `tenant_membros` e `tenant_dados_restritos` por REST, **então** 0 linhas / permissão negada. | SQL `supabase/tests/tenant_membros_check.sql` (estender) |
 | CA-14 | **Dado** a consulta de CNPJ, **quando** o log é escrito, **então** não contém banco/agência/conta nem o JWT. | Deno `api_tenant_test.ts` (captura de log) |
+| CA-15 | **Dado** o desenvolvedor sem linha em `tenant_membros`, **quando** chama `membro_adicionar` e `dados_restritos_obter` na Konnen, **então** 200 nos dois (decisão 3). | Deno `api_tenant_test.ts` |
+| CA-16 | **Dado** a BrasilAPI respondendo 429 e depois 200, **quando** `cnpj_consultar`, **então** 200 após nova tentativa; 404 da fonte devolve 404 "CNPJ não encontrado na fonte" sem nova tentativa. | Deno `api_tenant_test.ts` (fetch falso) |
 
 ## Fora de escopo
 
@@ -126,7 +129,7 @@ Usuários: admin vê e edita; operação vê a lista e não vê banco. A tela é
 - Portão, decisão humana e recomendação (#249/#250, PR #308), simulação (#251).
 - Documentos (#253/#69), produtos e preços (#254/#70), escopo CNAE (#256), pipelines por esfera (#255), tarefas (#252).
 - Cadastro self-service de empresa por qualquer usuário (hoje só o desenvolvedor cria empresa).
-- Convite por e-mail com criação de conta (ver Perguntas).
+- Convite por e-mail e criação de conta (decisão 2).
 - Botão "indexar e analisar" por oportunidade (pedido de 10/10): spec própria depois desta, porque precisa da fila e dos
   agentes (PR #307) e da decisão sobre score × recomendação.
 
@@ -144,15 +147,24 @@ Usuários: admin vê e edita; operação vê a lista e não vê banco. A tela é
 - **Dado oficial x derivado:** razão social, situação, CNAE e endereço vêm da fonte de CNPJ com `fonte` e `consultado_em`;
   nada é preenchido sem a fonte. `nome` do tenant pode ser o nome fantasia escolhido pelo admin.
 
+## Decisões
+
+Do Marcelo, 10/10/2026:
+1. **Fonte do CNPJ: BrasilAPI** (`/api/cnpj/v1/{cnpj}`). Mesma fonte prevista na entrega 2 da spec 0008; o cliente HTTP
+   pode ser compartilhado quando aquela entrega existir.
+   - Proposta de configuração, a confirmar no PR: timeout de 10 s; até 2 novas tentativas com backoff exponencial e jitter
+     em 429/5xx/timeout, respeitando `Retry-After`; 404 é "CNPJ não encontrado na fonte", sem nova tentativa.
+   - Sem cache gravado: a consulta é feita na hora do cadastro, e o que for gravado leva `fonte` e `consultado_em`.
+2. **Só quem já tem conta.** `membro_adicionar` liga usuário existente em `auth.users`. Sem convite por e-mail e sem
+   criação de conta pela função (CA-11).
+3. **Desenvolvedor em qualquer empresa.** `licitagym_role = admin` cria empresa e age como admin em qualquer tenant
+   (ler, editar empresa, membros e dados restritos). Continua sem usar `user_metadata` (CA-5).
+
 ## Perguntas em aberto
 
-1. **Fonte do CNPJ:** BrasilAPI (`/api/cnpj/v1/{cnpj}`, já citada na spec 0008, entrega 2 ainda não implementada) ou
-   outra? Precisa de timeout, retry e cache (quantos dias vale a consulta?).
-2. **CNPJ da Konnen** e **quem são os admins/operação** entre os 3 usuários de `auth.users`.
-3. **Convite por e-mail:** `membro_adicionar` só liga quem já tem conta (proposta) ou cria/convida pelo Auth
-   (`inviteUserByEmail`)? Convite muda o fluxo de login e é escrita no Auth.
-4. **Índice único de CNPJ** em `tenants` (migration pequena) agora ou depois?
-5. **Desenvolvedor como admin implícito:** o desenvolvedor (`licitagym_role = admin`) age em qualquer empresa (proposta,
-   igual às policies de `20261008140000`) ou só na parametrização inicial?
-6. **Auditoria:** registrar quem criou/alterou empresa e membro (`updated_by` já existe em `tenant_dados_restritos`;
+1. **CNPJ da Konnen** e **papel de cada um dos 3 usuários** de `auth.users`. Não bloqueia o código: é a hidratação feita
+   pela tela, com o Marcelo (passo 3 da ordem dos PRs).
+2. **Índice único de CNPJ** em `tenants` (migration pequena, aditiva) agora ou depois? Sem ele, a unicidade fica só na
+   `api-tenant` (CA-6), sujeita a corrida entre duas criações simultâneas.
+3. **Auditoria:** registrar quem criou/alterou empresa e membro (`updated_by` já existe em `tenant_dados_restritos`;
    `tenants` e `tenant_membros` não têm). Precisa de coluna nova?

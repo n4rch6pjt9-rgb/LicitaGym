@@ -96,6 +96,26 @@ begin
     f := f + 1;
     raise notice 'FALHA policy usa user_metadata';
   end if;
+  -- 20261010140000 (#263): vínculo só vale com a empresa ativa; a função continua security definer com search_path fixo.
+  n := n + 2;
+  -- Lê public.tenants e exige t.ativo e m.ativo verdadeiros (sem "= false"). Teste por comportamento não dá: o stub de
+  -- supabase/tests/pre.sql faz auth.uid() devolver sempre null.
+  if coalesce((
+    select p.prosrc ~* '\mpublic\.tenants\M'
+       and p.prosrc ~* '\mt\.ativo\M(?!\s*(=|is)\s*(false|not))'
+       and p.prosrc ~* '\mm\.ativo\M(?!\s*(=|is)\s*(false|not))'
+      from pg_proc p where p.oid = to_regprocedure('public.tenant_papel(bigint)')
+  ), false) is not true then
+    f := f + 1;
+    raise notice 'FALHA tenant_papel não exige tenants.ativo';
+  end if;
+  if coalesce((
+    select p.prosecdef and coalesce(array_to_string(p.proconfig, ',') like '%search_path=public, pg_temp%', false)
+      from pg_proc p where p.oid = to_regprocedure('public.tenant_papel(bigint)')
+  ), false) is not true then
+    f := f + 1;
+    raise notice 'FALHA tenant_papel sem security definer ou search_path fixo';
+  end if;
   if f > 0 then
     raise exception 'ACL CHECK FALHOU: tenant_membros % checagens, % falhas', n, f;
   end if;

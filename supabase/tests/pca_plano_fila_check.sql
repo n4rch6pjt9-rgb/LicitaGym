@@ -2,8 +2,9 @@
 -- Falha com EXCEPTION se:
 --   ACL  private.pca_plano_fila ou as funções ficarem acessíveis a anon/authenticated, RLS desligada, ou service_role
 --        sem acesso;
---   ENF  reenfileirar o mesmo plano duplicar a linha aberta, uma linha 'processando' voltar para 'pendente', ou uma
---        linha em erro reenfileirada não recomeçar as tentativas;
+--   ENF  reenfileirar o mesmo plano duplicar a linha aberta, uma linha 'processando' recente voltar para 'pendente',
+--        uma linha em erro ou 'processando' abandonada (>= 15 min) reenfileirada não recomeçar as tentativas, ou o
+--        motivo 'ausente' trocar o motivo de linha aberta com cabeçalho;
 --   RES  pca_fila_reservar devolver mais que o limite, pegar plano 'feito', erro com tentativas esgotadas ou erro
 --        de menos de 10 minutos (recuo entre tentativas); ou se processando abandonado não contar tentativa;
 --   DESC pca_marcar_descoberta não zerar a chave do escopo no plano visto, não somar no ausente com item da classe,
@@ -136,6 +137,32 @@ begin
   if (select status || '|' || tentativas || '|' || coalesce(erro, '-') from private.pca_plano_fila
        where id_pca_pncp = 'CHK-FILA-ESGOTADO') <> 'pendente|0|-' then
     v_falhas := v_falhas || 'reenfileirar linha em erro não zerou tentativas e erro'::text;
+  end if;
+  -- processando abandonado com tentativas esgotadas (a reserva não pega mais) que recebe trabalho novo recomeça
+  update private.pca_plano_fila set erro = 'worker morreu' where id_pca_pncp = 'CHK-FILA-ABANDONADO-ESGOTADO';
+  perform private.pca_fila_enfileirar(jsonb_build_array(
+    jsonb_build_object('id_pca_pncp', 'CHK-FILA-ABANDONADO-ESGOTADO', 'orgao_cnpj', '99000001000101', 'ano', 2099,
+                       'sequencial', 7, 'motivo', 'alterado')));
+  if (select status || '|' || tentativas || '|' || coalesce(erro, '-') from private.pca_plano_fila
+       where id_pca_pncp = 'CHK-FILA-ABANDONADO-ESGOTADO') <> 'pendente|0|-' then
+    v_falhas := v_falhas || 'reenfileirar processando abandonado com tentativas esgotadas não voltou a pendente|0'::text;
+  end if;
+  -- motivo 'ausente' (sem cabeçalho) não troca o motivo de linha aberta com cabeçalho; sem cabeçalho, troca
+  perform private.pca_fila_enfileirar(jsonb_build_array(
+    jsonb_build_object('id_pca_pncp', 'CHK-FILA-M', 'orgao_cnpj', '99000001000101', 'ano', 2099, 'sequencial', 8,
+                       'motivo', 'alterado', 'plano', '{"x":1}'::jsonb)));
+  perform private.pca_fila_enfileirar(jsonb_build_array(
+    jsonb_build_object('id_pca_pncp', 'CHK-FILA-M', 'orgao_cnpj', '99000001000101', 'ano', 2099, 'sequencial', 8,
+                       'motivo', 'ausente'),
+    jsonb_build_object('id_pca_pncp', 'CHK-FILA-B', 'orgao_cnpj', '99000001000101', 'ano', 2099, 'sequencial', 2,
+                       'motivo', 'ausente')));
+  if (select motivo || '|' || (plano is not null)::text from private.pca_plano_fila
+       where id_pca_pncp = 'CHK-FILA-M' and status in ('pendente', 'processando', 'erro')) <> 'alterado|true' then
+    v_falhas := v_falhas || 'motivo ausente sobrescreveu o motivo de linha aberta com cabeçalho'::text;
+  end if;
+  if (select motivo from private.pca_plano_fila
+       where id_pca_pncp = 'CHK-FILA-B' and status in ('pendente', 'processando', 'erro')) <> 'ausente' then
+    v_falhas := v_falhas || 'motivo ausente não entrou na linha aberta sem cabeçalho'::text;
   end if;
 
   -- DESC: um contador por escopo de classes, em descoberta_ausente (chave "7220,7830")

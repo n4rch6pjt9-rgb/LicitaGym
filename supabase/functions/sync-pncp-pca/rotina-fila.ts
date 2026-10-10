@@ -27,6 +27,8 @@ const ORCAMENTO_MAX_MS = 120_000;
 /** Folga do orçamento das requisições além do prazo de começar trabalho novo (a última requisição termina). */
 const FOLGA_REQUISICAO_MS = 15_000;
 const LIMITE_PLANOS_PADRAO = 60;
+/** Erros de página seguidos na mesma posição da descoberta até a cadeia ser encerrada (sem contar ausência). */
+const MAX_FALHAS_POSICAO = 3;
 
 /** Valor numérico do body/env dentro de [min, max]; ausente ou inválido usa o padrão. */
 function limitar(v: unknown, padrao: number, min: number, max: number): number {
@@ -62,7 +64,15 @@ type ContinuacaoFila = {
    * de 30 caracteres no pior caso medido (935 planos 7830/2026).
    */
   vistos?: string[] | null;
+  /**
+   * Erros de página seguidos na posição `descoberta` (prazo e pausa de cota não contam). Em MAX_FALHAS_POSICAO a
+   * cadeia é encerrada: senão uma página que falha sempre prende toda rotina nessa posição.
+   */
+  tentativas_posicao?: number;
 };
+
+const mesmaPosicao = (a?: PosicaoDescoberta | null, b?: PosicaoDescoberta | null) =>
+  a != null && b != null && a.classe_idx === b.classe_idx && a.pagina === b.pagina;
 
 function marcarPendencia(c: ContinuacaoFila, filaAberta: boolean): ContinuacaoFila {
   c.pending = [...(c.descoberta ? ["descoberta"] : []), ...(filaAberta ? ["fila"] : [])];
@@ -160,6 +170,7 @@ export async function handleRotinaFila(params: {
       classes,
       descoberta: posicao,
       vistos: posicao ? (vistosCadeia ? [...vistosCadeia] : null) : undefined,
+      tentativas_posicao: retomar && posicao ? herdada?.tentativas_posicao : undefined,
     };
     let erroPrincipal: string | undefined;
     // Durante a execução a fila conta como aberta: se o worker morrer, a execução vira 'incompleta' e a continuação
@@ -192,13 +203,30 @@ export async function handleRotinaFila(params: {
         // Erro de página: a cadeia não prova mais ausência (nem depois que a continuação reler a página).
         if (desc.erro_pagina) vistosCadeia = null;
         for (const id of desc.planos.keys()) vistosCadeia?.add(id);
-        const terminou = desc.retomar_de == null;
+        // Falhas seguidas na mesma posição: soma no erro de página, mantém na pausa/prazo, zera quando a posição anda.
+        const anteriores = retomar && mesmaPosicao(herdada?.descoberta, desc.retomar_de)
+          ? Number(herdada?.tentativas_posicao ?? 0)
+          : 0;
+        const falhasPosicao = desc.erro_pagina ? anteriores + 1 : anteriores;
+        let abandonada = false;
+        if (desc.retomar_de && falhasPosicao >= MAX_FALHAS_POSICAO) {
+          // Encerra a cadeia: a próxima rotina começa da página 1 e esta não conta ausência (vistos já é null).
+          abandonada = true;
+          erroPrincipal = (`descoberta encerrada: ${falhasPosicao} erros seguidos na classe ${
+            classes[desc.retomar_de.classe_idx]
+          } página ${desc.retomar_de.pagina}; a próxima rotina começa da página 1 (${desc.erro})`).slice(0, 500);
+          continuacao.descoberta = null;
+          vistosCadeia = null;
+        }
+        continuacao.tentativas_posicao = continuacao.descoberta ? falhasPosicao : undefined;
+        const terminou = continuacao.descoberta == null;
         continuacao.vistos = terminou ? undefined : (vistosCadeia ? [...vistosCadeia] : null);
         resumo.descoberta = {
           completo: desc.completo,
           cadeia_completa: terminou && vistosCadeia != null,
           retomada: posicao.classe_idx !== 0 || posicao.pagina !== 1,
-          retomar_de: desc.retomar_de,
+          retomar_de: continuacao.descoberta,
+          ...(abandonada ? { encerrada_por_erro: { posicao: desc.retomar_de, falhas: falhasPosicao } } : {}),
           paginas: desc.paginas,
           planos: desc.planos.size,
           linhas: desc.linhas,
@@ -210,6 +238,10 @@ export async function handleRotinaFila(params: {
         // Contador de ausência uma vez por cadeia, quando a última página da descoberta termina, com os planos vistos
         // por todas as execuções da cadeia. Página que falhou em qualquer elo não prova que o plano sumiu: não conta.
         if (terminou && vistosCadeia) {
+          // Antes de contar, grava a continuation já sem descoberta e sem vistos: se o worker morrer depois de
+          // pca_marcar_descoberta, a continuação não refaz a descoberta nem conta de novo (perde a contagem, não
+          // duplica).
+          await heartbeat();
           resumo.ausentes = await tratarAusentes(client, vistosCadeia, { ano, classes, rotina, chainId: runId });
         }
         await heartbeat();

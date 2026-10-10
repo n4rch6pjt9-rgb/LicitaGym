@@ -1,7 +1,7 @@
 // Spec 0012, PR 2: fila de planos (descoberta pela consulta, itens pela integração por plano).
 // CA-3 (mesmo hash consulta × integração, com item real), CA-5/CA-6 (descoberta e enfileiramento), CA-7 (orçamento e
 // status da execução), CA-8 (inativação por plano; erro não inativa), CA-10 (ausente).
-import { assert, assertEquals } from "jsr:@std/assert@1";
+import { assert, assertEquals, assertRejects } from "jsr:@std/assert@1";
 import { FakePostgrest } from "./_shared/pncp/_fake_postgrest.ts";
 import {
   ausenciaNoEscopo,
@@ -18,7 +18,8 @@ import {
 import { gravarPaginaPcaEmLote } from "../../../supabase/functions/_shared/pncp/pca-lote.ts";
 import { normalizePcaItem } from "../../../supabase/functions/_shared/pncp/normalize.ts";
 import { hashPayload } from "../../../supabase/functions/_shared/pncp/hash.ts";
-import { BudgetExhaustedError } from "../../../supabase/functions/_shared/pncp/retry.ts";
+import { BudgetExhaustedError, createRequestBudget } from "../../../supabase/functions/_shared/pncp/retry.ts";
+import { updateSyncHeartbeat } from "../../../supabase/functions/_shared/pncp/supabase-admin.ts";
 import { handleRotinaFila } from "../../../supabase/functions/sync-pncp-pca/rotina-fila.ts";
 
 type Row = Record<string, unknown>;
@@ -77,10 +78,16 @@ function banco(): FakePostgrest {
         f.id_pca_pncp === it.id_pca_pncp && ["pendente", "processando", "erro"].includes(String(f.status))
       );
       if (aberto) {
-        Object.assign(aberto, { ...it, plano: it.plano ?? aberto.plano });
-        if (aberto.status !== "processando") Object.assign(aberto, { status: "pendente", tentativas: 0, erro: null });
+        // processando recente (< 15 min) segue; abandonado recomeça como pendente e erro
+        const emProcessamento = aberto.status === "processando" &&
+          Date.parse(String(aberto.atualizado_em ?? 0)) >= Date.now() - 15 * 60_000;
+        // 'ausente' (sem cabeçalho) não troca o motivo de linha que já tem cabeçalho
+        const motivo = it.motivo === "ausente" && aberto.plano != null ? aberto.motivo : it.motivo;
+        Object.assign(aberto, { ...it, motivo, plano: it.plano ?? aberto.plano });
+        if (!emProcessamento) Object.assign(aberto, { status: "pendente", tentativas: 0, erro: null });
+        aberto.atualizado_em = new Date().toISOString();
       } else {
-        fila.push({ id: ++seq, status: "pendente", tentativas: 0, ...it });
+        fila.push({ id: ++seq, status: "pendente", tentativas: 0, atualizado_em: new Date().toISOString(), ...it });
       }
       n++;
     }
@@ -97,7 +104,7 @@ function banco(): FakePostgrest {
       )
       .sort((a, b) => Number(a.id) - Number(b.id))
       .slice(0, Number(args.p_limite));
-    for (const f of fila) f.status = "processando";
+    for (const f of fila) Object.assign(f, { status: "processando", atualizado_em: new Date().toISOString() });
     return fila.map((f) => ({ ...f }));
   };
   // private.pca_marcar_descoberta / pca_zerar_ausencia: um contador por escopo em descoberta_ausente (jsonb).
@@ -833,4 +840,208 @@ Deno.test("handler: rotina inválida devolve 400 sem abrir execução", async ()
   assertEquals(res.status, 400);
   await res.body?.cancel();
   assertEquals(db.rows("pncp_sync_run").length, 0);
+});
+
+// --- correções da revisão do #294 ---
+
+/** Integração em que o plano `seq` lança `erro` na página de itens; os outros seguem o fake. */
+function integracaoQueLanca(porPlano: Record<string, Row[]>, seq: number, erro: () => Error) {
+  const base = integracaoFake(porPlano);
+  return {
+    ...base,
+    getPcaItensPagina(cnpj: string, ano: number, s: number, pagina: number, tamanho: number) {
+      if (s === seq) {
+        base.chamadas.push(`${cnpj}/${ano}/${s}/${pagina}`);
+        return Promise.reject(erro());
+      }
+      return base.getPcaItensPagina(cnpj, ano, s, pagina, tamanho);
+    },
+  };
+}
+
+Deno.test("carga: timeout repetido com orçamento sobrando é falha do plano (gasta tentativa) e a fila segue", async () => {
+  const db = banco();
+  enfileirarPlano(db, `${CNPJ}-0-000001/2026`, 1);
+  enfileirarPlano(db, `${CNPJ}-0-000002/2026`, 2);
+  // o cliente unificado lança BudgetExhaustedError quando o mesmo GET estoura o timeout duas vezes
+  const integ = integracaoQueLanca({ [`${CNPJ}/2026/2`]: [itemIntegracao(1)] }, 1, () => new BudgetExhaustedError());
+  const s = await processarFila(db as never, integ, {
+    ano: ANO,
+    limite: 10,
+    prazoEsgotado: nunca,
+    runId: RUN,
+    http: { budget: createRequestBudget(100_000) },
+  });
+  assertEquals([s.planos_erro, s.planos_feitos, s.erros], [1, 1, 1]);
+  const f1 = db.rows("pca_plano_fila").find((f) => f.sequencial === 1)!;
+  assertEquals([f1.status, f1.tentativas], ["erro", 1]);
+  assert(String(f1.erro).includes("timeout"));
+});
+
+Deno.test("carga: BudgetExhaustedError com o orçamento no fim é pausa (devolve sem gastar tentativa)", async () => {
+  const db = banco();
+  enfileirarPlano(db, `${CNPJ}-0-000001/2026`, 1);
+  enfileirarPlano(db, `${CNPJ}-0-000002/2026`, 2);
+  const integ = integracaoQueLanca({}, 1, () => new BudgetExhaustedError());
+  await assertRejects(
+    () =>
+      processarFila(db as never, integ, {
+        ano: ANO,
+        limite: 10,
+        prazoEsgotado: nunca,
+        runId: RUN,
+        http: { budget: createRequestBudget(5_000) },
+      }),
+    BudgetExhaustedError,
+  );
+  assertEquals(db.rows("pca_plano_fila").map((f) => `${f.status}|${f.tentativas}`), ["pendente|0", "pendente|0"]);
+});
+
+Deno.test("carga: erro na gravação com o reset do cabeçalho falhando conta o erro uma vez", async () => {
+  const db = banco();
+  enfileirarPlano(db);
+  // a gravação em lote devolve 1 erro (item rejeitado) e o update de reprocessar em pca_planos falha
+  db.falhaLinha = (t, row) => t === "pca_itens" && row.numero_item === 1;
+  db.falhas = [{ table: "pca_planos", op: "update" }];
+  const integ = integracaoFake({ [`${CNPJ}/2026/4`]: [itemIntegracao(1)] });
+  const s = await processarFila(db as never, integ, { ano: ANO, limite: 10, prazoEsgotado: nunca, runId: RUN });
+  assertEquals([s.erros, s.planos_erro, s.planos_feitos], [1, 1, 0]);
+  const f = db.rows("pca_plano_fila")[0];
+  assertEquals([f.status, f.tentativas], ["erro", 1]);
+});
+
+Deno.test("carga: falha ao marcar o erro do plano não derruba a execução e devolve os reservados restantes", async () => {
+  const db = banco();
+  enfileirarPlano(db, `${CNPJ}-0-000001/2026`, 1);
+  enfileirarPlano(db, `${CNPJ}-0-000002/2026`, 2);
+  const integ = integracaoFake({
+    [`${CNPJ}/2026/1`]: { status: 404, body: { message: "Not Found" } },
+    [`${CNPJ}/2026/2`]: [itemIntegracao(1)],
+  });
+  db.falhas = [{ table: "pca_plano_fila", op: "update" }];
+  const s = await processarFila(db as never, integ, { ano: ANO, limite: 10, prazoEsgotado: nunca, runId: RUN });
+  assertEquals([s.planos_erro, s.planos_feitos], [1, 0]);
+  assertEquals(integ.chamadas, [`${CNPJ}/2026/1/1`]); // não segue com o banco falhando
+});
+
+Deno.test("carga: resposta 4xx é arquivada com o status; o endpoint fica o da requisição", async () => {
+  const db = banco();
+  enfileirarPlano(db);
+  const integ = integracaoFake({ [`${CNPJ}/2026/4`]: { status: 404, body: { message: "Not Found" } } });
+  await processarFila(db as never, integ, { ano: ANO, limite: 10, prazoEsgotado: nunca, runId: RUN });
+  const [arq] = db.rows("source_record");
+  assertEquals(arq.payload, { status: 404, body: { message: "Not Found" } });
+  assertEquals(arq.endpoint, `/orgaos/${CNPJ}/pca/2026/4/itens?pagina=1&tamanhoPagina=${TAMANHO_PAGINA_INTEGRACAO}`);
+});
+
+Deno.test("updateSyncHeartbeat: leitura dos parâmetros que falha ainda grava o heartbeat e devolve o erro", async () => {
+  const db = banco();
+  const antigo = new Date(Date.now() - 10 * 60_000).toISOString();
+  db.rows("pncp_sync_run").push({ id: "run-hb", last_heartbeat_at: antigo, parametros: { a: 1 } });
+  db.falhas = [{ table: "pncp_sync_run", op: "select" }];
+  const erro = await updateSyncHeartbeat(db as never, "run-hb", { continuation: { pending: ["x"] } });
+  assert(erro != null);
+  const run = db.rows("pncp_sync_run")[0];
+  assert(Date.parse(String(run.last_heartbeat_at)) > Date.parse(antigo));
+  assertEquals(run.parametros, { a: 1 }); // sem os parâmetros lidos, não regrava parametros
+});
+
+/** Planos 1, 2 e 3 já gravados (ausência 1 na 7830); a página p da consulta mostra o plano p, em 2 páginas. */
+async function bancoComTresPlanos() {
+  const db = banco();
+  for (const s of [1, 2, 3]) {
+    const id = `${CNPJ}-0-00000${s}/2026`;
+    await gravarPaginaPcaEmLote(db as never, [{ ...cabecalho(id), itens: [itemConsulta(1)] }], { ano: ANO, runId: "r" });
+  }
+  for (const p of db.rows("pca_planos")) Object.assign(p, { ano_exercicio: ANO, descoberta_ausente: { "7830": 1 } });
+  return db;
+}
+
+function consultaDuasPaginas(pagina2: () => { status: number; body: unknown } | "pausa" | null) {
+  const chamadas: number[] = [];
+  return {
+    chamadas,
+    fetchPcaPage(_a: number, p: number) {
+      chamadas.push(p);
+      const falha = p === 2 ? pagina2() : null;
+      if (falha === "pausa") return Promise.reject(new BudgetExhaustedError());
+      if (falha) return Promise.resolve(falha);
+      const id = `${CNPJ}-0-00000${p}/2026`;
+      return Promise.resolve({
+        status: 200,
+        body: { data: [{ ...cabecalho(id), itens: [itemConsulta(1)] }], paginasRestantes: 2 - p },
+      });
+    },
+  };
+}
+
+const contadorAusencia = (db: FakePostgrest) =>
+  Object.fromEntries(
+    db.rows("pca_planos").map((p) => [String(p.id_pca_pncp).slice(-6, -5), ausenciaNoEscopo(p.descoberta_ausente, "7830")]),
+  );
+
+Deno.test("handler: página da descoberta que falha 3 vezes na mesma posição encerra a cadeia", async () => {
+  const db = await bancoComTresPlanos();
+  const consulta = consultaDuasPaginas(() => ({ status: 502, body: null }));
+  const integ = integracaoFake({});
+  const retomada = { rotina: "incremental", somente_retomada: true };
+  const r1 = await rodar(db, { rotina: "incremental" }, consulta, integ);
+  const r2 = await rodar(db, retomada, consulta, integ);
+  assertEquals([r1.status, r2.status], ["incompleta", "incompleta"]);
+  assertEquals(((db.rows("pncp_sync_run")[1].parametros as Row).continuation as Row).tentativas_posicao, 2);
+  const r3 = await rodar(db, retomada, consulta, integ);
+  assertEquals([r3.status, r3.descoberta.retomar_de, r3.descoberta.cadeia_completa], [
+    "concluida_com_erros",
+    null,
+    false,
+  ]);
+  const run3 = db.rows("pncp_sync_run")[2];
+  assert(String(run3.erro_principal).includes("descoberta encerrada"));
+  assertEquals((run3.parametros as Row).continuation, undefined);
+  assertEquals(contadorAusencia(db), { 1: 1, 2: 1, 3: 1 }); // não conta ausência
+  const r4 = await rodar(db, retomada, consulta, integ);
+  assertEquals(r4.status, "ignorado"); // nada a retomar
+  const antes = consulta.chamadas.length;
+  await rodar(db, { rotina: "incremental" }, consulta, integ);
+  assertEquals(consulta.chamadas[antes], 1); // a próxima rotina começa da página 1
+});
+
+Deno.test("handler: pausa de cota na mesma posição não conta como falha da página", async () => {
+  const db = await bancoComTresPlanos();
+  let pausas = 3;
+  const consulta = consultaDuasPaginas(() => (pausas-- > 0 ? "pausa" : null));
+  const integ = integracaoFake({});
+  const retomada = { rotina: "incremental", somente_retomada: true };
+  const r1 = await rodar(db, { rotina: "incremental" }, consulta, integ);
+  const r2 = await rodar(db, retomada, consulta, integ);
+  const r3 = await rodar(db, retomada, consulta, integ);
+  assertEquals([r1.status, r2.status, r3.status], ["incompleta", "incompleta", "incompleta"]);
+  const r4 = await rodar(db, retomada, consulta, integ);
+  assertEquals([r4.status, r4.descoberta.cadeia_completa], ["concluida", true]);
+  assertEquals(contadorAusencia(db), { 1: 0, 2: 0, 3: 2 });
+});
+
+Deno.test("handler: worker morto logo depois de contar a ausência não faz a continuação contar de novo", async () => {
+  const db = await bancoComTresPlanos();
+  const consulta = consultaDuasPaginas(() => null);
+  const integ = integracaoFake({});
+  const rpcOriginal = db.rpc.bind(db);
+  let morrer = true;
+  // pca_marcar_descoberta grava e o worker morre antes de voltar (nem heartbeat nem finishSyncRun)
+  db.rpc = ((nome: string, args: Row) => {
+    const r = rpcOriginal(nome, args);
+    return nome === "pca_marcar_descoberta" && morrer ? r.then(() => new Promise<never>(() => {})) : r;
+  }) as typeof db.rpc;
+  void rodar(db, { rotina: "incremental" }, consulta, integ); // nunca termina
+  await new Promise((r) => setTimeout(r, 20));
+  assertEquals(contadorAusencia(db)["3"], 2);
+  const [run1] = db.rows("pncp_sync_run");
+  assertEquals(run1.status, "executando");
+  run1.last_heartbeat_at = new Date(Date.now() - 10 * 60_000).toISOString();
+
+  morrer = false;
+  const r2 = await rodar(db, { rotina: "incremental", somente_retomada: true }, consulta, integ);
+  assertEquals(r2.status, "concluida");
+  assertEquals(consulta.chamadas, [1, 2]); // a continuação não refaz a descoberta
+  assertEquals(contadorAusencia(db)["3"], 2); // e não conta a ausência de novo
 });

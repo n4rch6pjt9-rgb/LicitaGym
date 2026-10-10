@@ -41,3 +41,21 @@ Deno.test("sem devolver4xx, o cliente unificado continua lançando PermanentHttp
     mock.restore();
   }
 });
+
+Deno.test("sem cliente unificado, getJsonComStatus e getJson chamam o fetch com timeout (signal)", async () => {
+  const sinais: (AbortSignal | null | undefined)[] = [];
+  const mock = installFetch((_url, init) => {
+    sinais.push(init?.signal);
+    return jsonResponse(200, 3);
+  });
+  try {
+    const integ = new PncpIntegracaoClient(BASE);
+    const r = await integ.getPcaItensQuantidade("00394429000100", 2026, 4);
+    assertEquals(r, { status: 200, body: 3 });
+    assertEquals(await integ.getOrgao("00394429000100"), 3);
+    assertEquals(sinais.length, 2);
+    assertEquals(sinais.every((s) => s instanceof AbortSignal), true);
+  } finally {
+    mock.restore();
+  }
+});

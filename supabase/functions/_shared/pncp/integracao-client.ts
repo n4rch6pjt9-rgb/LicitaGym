@@ -1,7 +1,9 @@
-import { withRetry } from "./retry.ts";
+import { fetchWithTimeout, withRetry } from "./retry.ts";
 import { type UnifiedFetchOptions, UnifiedHttpClient } from "../http-client/index.ts";
 
 const DEFAULT_BASE = "https://pncp.gov.br/api/pncp/v1";
+/** Timeout por tentativa do caminho sem UnifiedHttpClient (o fetch puro não tem timeout). */
+const TIMEOUT_TENTATIVA_MS = 30_000;
 
 /** Cliente API integração — NÃO inclui /usuarios (CLA-40). */
 export class PncpIntegracaoClient {
@@ -26,16 +28,21 @@ export class PncpIntegracaoClient {
     return headers;
   }
 
-  async getJson<T = unknown>(path: string): Promise<T> {
+  async getJson<T = unknown>(path: string, options: UnifiedFetchOptions = {}): Promise<T> {
     const url = `${this.baseUrl.replace(/\/+$/, "")}${path}`;
     if (this.httpClient) {
       const res = await this.httpClient.getJson<T>(url, { headers: this.headers() }, {
         endpoint: path,
+        ...options,
       });
       return res.body;
     }
     const response = await withRetry(async () => {
-      const res = await fetch(url, { headers: this.headers() });
+      const res = await fetchWithTimeout(
+        url,
+        { headers: this.headers() },
+        options.attemptTimeoutMs ?? TIMEOUT_TENTATIVA_MS,
+      );
       if (res.status === 429 || res.status >= 500) {
         throw new Error(`PNCP integração HTTP ${res.status}`);
       }
@@ -62,7 +69,11 @@ export class PncpIntegracaoClient {
       return { status: res.status, body: res.status === 204 ? null : res.body };
     }
     const response = await withRetry(async () => {
-      const res = await fetch(url, { headers: this.headers() });
+      const res = await fetchWithTimeout(
+        url,
+        { headers: this.headers() },
+        options.attemptTimeoutMs ?? TIMEOUT_TENTATIVA_MS,
+      );
       if (res.status === 429 || res.status >= 500) {
         throw new Error(`PNCP integração HTTP ${res.status}`);
       }

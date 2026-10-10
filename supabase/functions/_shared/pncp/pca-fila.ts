@@ -1,7 +1,7 @@
 import { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { gravarItensDePlanoExistente, gravarPaginaPcaEmLote, type LoteStats, selectIn } from "./pca-lote.ts";
 import { BudgetExhaustedError, type RequestBudget } from "./retry.ts";
-import { RateLimitPauseError } from "../http-client/index.ts";
+import { RateLimitPauseError, SAFE_EDGE_MARGIN_MS } from "../http-client/index.ts";
 import { storeSourceRecord } from "./supabase-admin.ts";
 import { hashPayload, sha256Hex } from "./hash.ts";
 
@@ -356,6 +356,19 @@ export const TAMANHO_PAGINA_INTEGRACAO = 2000;
 const MAX_PAGINAS_PLANO = 20;
 /** Timeout por tentativa na integração (respostas medidas de 0,2 a 0,4 s; o orçamento corta antes, se precisar). */
 const TIMEOUT_TENTATIVA_INTEGRACAO_MS = 30_000;
+/**
+ * O cliente unificado lança BudgetExhaustedError também quando o mesmo GET estoura o timeout duas vezes, com orçamento
+ * sobrando. Por falta de orçamento, ele só lança com menos que espera + tentativa + margem (até ~4 s + 30 s + 10 s).
+ * Acima deste limite o erro é timeout repetido (falha do plano); abaixo, conta como fim do orçamento (pausa).
+ */
+const MARGEM_FIM_ORCAMENTO_MS = TIMEOUT_TENTATIVA_INTEGRACAO_MS + SAFE_EDGE_MARGIN_MS + 5_000;
+
+/** Pausa na carga: cota (429 com espera) ou orçamento que acabou de fato. Sem orçamento, BudgetExhausted é pausa. */
+function ePausaDaCarga(e: unknown, budget?: RequestBudget): boolean {
+  if (e instanceof RateLimitPauseError) return true;
+  if (!(e instanceof BudgetExhaustedError)) return false;
+  return !budget || budget.remainingMs() <= MARGEM_FIM_ORCAMENTO_MS;
+}
 
 /** Resposta bruta da integração com a requisição que a produziu (AGENTS.md: arquivar antes de normalizar). */
 export type RespostaBruta = { endpoint: string; requisicao: Row; status: number; body: unknown };
@@ -365,16 +378,21 @@ export type Arquivar = (r: RespostaBruta) => Promise<void>;
  * Arquiva a resposta bruta em private.source_record, como o fluxo antigo (sync-pncp-pca/index.ts) faz com a página da
  * consulta. Falha ao arquivar propaga, como lá: o plano fica 'erro' e nada é inativado. Página de 2.000 itens dá
  * cerca de 1 MB de payload (o maior plano medido, 1.800 itens, cabe numa página).
+ *
+ * 2xx: payload é o corpo bruto. HTTP ≥ 400: payload = { status, body }. O status entra no payload, não no endpoint:
+ * o endpoint continua o mesmo da requisição, e o content_hash (do payload) separa um 4xx de um 2xx com o mesmo corpo
+ * na deduplicação (endpoint, request_hash, content_hash).
  */
 export function arquivarNoSourceRecord(client: SupabaseClient, syncRunId: string): Arquivar {
   return async (r) => {
+    const payload = r.status >= 400 ? { status: r.status, body: r.body } : r.body;
     await storeSourceRecord(client, {
       syncRunId,
       resourceType: "pca",
       endpoint: r.endpoint,
       requestHash: await hashPayload(r.requisicao),
-      contentHash: await sha256Hex(JSON.stringify(r.body)),
-      payload: r.body,
+      contentHash: await sha256Hex(JSON.stringify(payload)),
+      payload,
     });
   };
 }
@@ -594,6 +612,8 @@ export async function processarFila(
       const idPca = String(linha.id_pca_pncp);
       const classes = (Array.isArray(linha.classes) && linha.classes.length ? linha.classes : ["7830"]).map(String);
       const doEscopo = new Set(classes);
+      // a falha do plano já entrou nas contagens (ramo de erro na gravação em lote): o catch não soma de novo
+      let falhaContada = false;
       try {
         const todos = await lerItensPlano(
           integracao,
@@ -645,28 +665,47 @@ export async function processarFila(
         stats.inalterados += r.inalterados;
         stats.erros += r.erros;
         if (r.erros > 0 || !planoId) {
-          const eReset = await marcarCabecalhoParaReprocessar(client, idPca);
-          if (eReset) throw eReset;
-          await marcarFila(client, linha, false, `${r.erros} erro(s) na gravação em lote`);
           stats.planos_erro++;
+          falhaContada = true;
+          const eReset = await marcarCabecalhoParaReprocessar(client, idPca);
+          if (eReset) throw new Error(`${r.erros} erro(s) na gravação em lote; reprocessar não gravou: ${eReset.message}`);
+          await marcarFila(client, linha, false, `${r.erros} erro(s) na gravação em lote`);
           continue;
         }
         stats.itens_inativados += await inativarItensAusentes(client, planoId, numeros, classes);
         await marcarFila(client, linha, true, null);
         stats.planos_feitos++;
       } catch (error) {
-        if (ePausa(error)) {
+        if (ePausaDaCarga(error, opts.http?.budget)) {
           // pausa de cota ou fim do orçamento: não é falha do plano; volta para a fila sem gastar tentativa
           await devolverReservados(client, reservados.slice(i));
           throw error;
         }
-        stats.erros++;
-        stats.planos_erro++;
+        // Timeout repetido com orçamento sobrando cai aqui: falha do plano (soma tentativa), segue para o próximo.
+        if (!falhaContada) {
+          stats.erros++;
+          stats.planos_erro++;
+        }
         // A falha pode ter vindo depois de gravar o cabeçalho (inativação, contador de ausência): sem o reset, um plano
         // que esgota as tentativas ficaria com a data nova e o incremental não o reenfileiraria.
         const eReset = await marcarCabecalhoParaReprocessar(client, idPca);
         if (eReset) console.warn(`[pca-fila] reset do cabeçalho ${idPca} falhou: ${eReset.message}`);
-        await marcarFila(client, linha, false, error instanceof Error ? error.message : String(error));
+        const mensagem = error instanceof BudgetExhaustedError
+          ? "timeout repetido na integração (orçamento ainda sobrava)"
+          : (error instanceof Error ? error.message : String(error));
+        try {
+          await marcarFila(client, linha, false, mensagem);
+        } catch (eMarca) {
+          // Sem gravar o erro, a linha fica 'processando' e a reserva a recupera depois de 15 min (contando
+          // tentativa). O banco está falhando: devolve o resto e encerra a carga desta execução.
+          console.warn(JSON.stringify({
+            evento: "pca_fila_marcar_erro_falhou",
+            id_pca_pncp: idPca,
+            erro: eMarca instanceof Error ? eMarca.message : String((eMarca as { message?: string })?.message ?? eMarca),
+          }));
+          await devolverReservados(client, reservados.slice(i + 1));
+          return stats;
+        }
       } finally {
         await opts.aoTerminarPlano?.();
       }

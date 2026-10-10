@@ -94,9 +94,12 @@ comment on column public.pca_planos.reprocessar is
   'Spec 0012: carga do plano falhou depois de gravar o cabeçalho; o incremental reenfileira. Desligada quando a fila termina o plano.';
 
 -- Enfileira (ou atualiza a linha aberta de) cada plano. p_itens: array de objetos com id_pca_pncp, orgao_cnpj, ano,
--- sequencial, motivo, plano, classes, data_atualizacao_fonte, chain_id. Linha em processamento não volta para pendente: se ela
--- terminar 'feito' com a versão anterior, a próxima descoberta vê a data maior e reenfileira. Linha pendente ou em erro
--- que recebe trabalho novo recomeça as tentativas: a versão nova da fonte não herda as falhas da anterior.
+-- sequencial, motivo, plano, classes, data_atualizacao_fonte, chain_id. Linha em processamento recente (< 15 min) não
+-- volta para pendente: se ela terminar 'feito' com a versão anterior, a próxima descoberta vê a data maior e
+-- reenfileira. Linha pendente, em erro ou processando abandonada (>= 15 min, worker que morreu; com as tentativas
+-- esgotadas a reserva não a pega mais) que recebe trabalho novo recomeça as tentativas: a versão nova da fonte não
+-- herda as falhas da anterior. Motivo 'ausente' (sem cabeçalho) não troca o motivo de uma linha que já tem cabeçalho:
+-- a carga dela grava cabeçalho e itens, que é mais que a do ausente.
 create or replace function private.pca_fila_enfileirar(p_itens jsonb)
 returns integer
 language plpgsql
@@ -118,11 +121,14 @@ begin
     plano = coalesce(excluded.plano, f.plano),
     classes = (select array_agg(distinct c order by c) from unnest(f.classes || excluded.classes) c),
     data_atualizacao_fonte = coalesce(excluded.data_atualizacao_fonte, f.data_atualizacao_fonte),
-    motivo = excluded.motivo,
+    motivo = case when excluded.motivo = 'ausente' and f.plano is not null then f.motivo else excluded.motivo end,
     chain_id = excluded.chain_id,
-    status = case when f.status = 'processando' then f.status else 'pendente' end,
-    tentativas = case when f.status = 'processando' then f.tentativas else 0 end,
-    erro = case when f.status = 'processando' then f.erro else null end,
+    status = case when f.status = 'processando' and f.atualizado_em >= now() - interval '15 minutes'
+                  then f.status else 'pendente' end,
+    tentativas = case when f.status = 'processando' and f.atualizado_em >= now() - interval '15 minutes'
+                      then f.tentativas else 0 end,
+    erro = case when f.status = 'processando' and f.atualizado_em >= now() - interval '15 minutes'
+                then f.erro else null end,
     atualizado_em = now();
   get diagnostics v_total = row_count;
   return v_total;

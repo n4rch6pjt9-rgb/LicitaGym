@@ -98,7 +98,12 @@ export async function updateSyncHeartbeat(
         .select("parametros")
         .eq("id", runId)
         .maybeSingle();
-      if (eLer) return eLer;
+      if (eLer) {
+        // Sem os parâmetros atuais não dá para gravar a continuation sem apagar o resto; o heartbeat grava mesmo
+        // assim (os outros syncs ignoram o retorno e contam com ele) e o erro da leitura volta para quem confere.
+        await client.schema("private").from("pncp_sync_run").update(patch).eq("id", runId);
+        return eLer;
+      }
       const currentParams = (current?.parametros as Record<string, unknown>) ?? {};
       patch.parametros = {
         ...currentParams,

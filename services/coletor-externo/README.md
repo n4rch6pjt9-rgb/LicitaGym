@@ -370,3 +370,50 @@ separada, issue #299). `--reprocessar-ocr` refaz esses documentos. Medição que
 **Importante para o app:** a pergunta do usuário precisa ser convertida em vetor com o
 **mesmo modelo** (`text-multilingual-embedding-002`, 768d, `RETRIEVAL_QUERY`) antes de chamar
 `match_licitacao_chunks`. Veja `coletor/buscar.py` como referência.
+
+## 5. Fila de preparação da Triagem (spec 0018, decisão 12)
+
+Quando uma licitação entra na etapa "Triagem" do pipeline de uma empresa, o banco grava um pedido em
+`private.job_queue` (migration `20261011160000`). O `coletor.preparar_triagem` consome esses pedidos:
+detalhe PNCP com `amparo_legal` (o banco deriva o regulamento), download, indexação e
+`pipeline_tarefas_reaplicar`. Os agentes **não** rodam aqui: rodam quando alguém abre a análise.
+
+```bash
+python3 -m coletor.preparar_triagem --limite 5
+```
+
+- Desfechos: `ok`, `sem_documento`, `regulamento_nao_informado_pela_fonte` (aparecem no card do pipeline).
+- Falha técnica volta para a fila com espera crescente (5, 10, 20, 40 min) até 5 tentativas; depois, `failed`.
+  O erro gravado é curto (`download: HTTP 504`); o detalhe fica só no log do job.
+- Fonte que não é PNCP (ou fonte nula): usa os documentos que já existem, sem chamar o PNCP.
+- Pedido em `processing` há mais de 1 h volta para a fila: o timeout do job precisa ficar abaixo disso.
+
+Cloud Run Job a cada 15 min (o deploy é do Marcelo). Contas de serviço dedicadas, com o mínimo:
+
+```bash
+SA_JOB=preparar-triagem@$PROJECT.iam.gserviceaccount.com
+SA_SCHED=preparar-triagem-sched@$PROJECT.iam.gserviceaccount.com
+gcloud iam service-accounts create preparar-triagem
+gcloud iam service-accounts create preparar-triagem-sched
+gcloud secrets add-iam-policy-binding supabase-service-key --member=serviceAccount:$SA_JOB \
+  --role=roles/secretmanager.secretAccessor
+gcloud projects add-iam-policy-binding $PROJECT --member=serviceAccount:$SA_JOB --role=roles/aiplatform.user
+
+gcloud run jobs deploy preparar-triagem --source . --region $REGION --service-account $SA_JOB \
+  --set-env-vars SUPABASE_URL=$SUPABASE_URL,SUPABASE_STORAGE_BUCKET=<bucket>,DELAY_SEGUNDOS=1.5,GOOGLE_CLOUD_PROJECT=$PROJECT \
+  --set-secrets SUPABASE_SERVICE_ROLE_KEY=supabase-service-key:latest \
+  --command python --args="-m,coletor.preparar_triagem,--limite,5" --task-timeout=50m --max-retries=0
+
+# o scheduler só invoca este job
+gcloud run jobs add-iam-policy-binding preparar-triagem --region $REGION \
+  --member=serviceAccount:$SA_SCHED --role=roles/run.invoker
+gcloud scheduler jobs create http preparar-triagem-15min --location $REGION --schedule "*/15 * * * *" \
+  --uri "https://run.googleapis.com/v2/projects/$PROJECT/locations/$REGION/jobs/preparar-triagem:run" \
+  --http-method POST --oauth-service-account-email $SA_SCHED
+```
+
+- `--source .` gera uma build nova (não reaproveita a imagem do `coletor-sestsenat`).
+- Sem `SUPABASE_STORAGE_BUCKET` (ou `GCS_BUCKET`) o job para: no Cloud Run o disco local se perde.
+- `--max-retries=0`: quem tenta de novo é a fila (com espera), não o Cloud Run. Duas execuções ao mesmo tempo não
+  pegam o mesmo pedido (`FOR UPDATE SKIP LOCKED`); duas empresas com a mesma licitação podem baixar e indexar em
+  paralelo (resultado idempotente, só custo).

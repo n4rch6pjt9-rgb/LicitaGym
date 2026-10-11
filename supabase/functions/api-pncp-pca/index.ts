@@ -4,7 +4,6 @@ import {
   corsHeaders,
   errorDetail,
   jsonResponse,
-  parseQueryInt,
   requireCronAuth,
   requireUserAuth,
 } from "../_shared/http.ts";
@@ -23,9 +22,9 @@ import {
   estadoDoPlano,
   notaMaterialidade,
 } from "../_shared/motor-oportunidade.ts";
-import { COLUNAS_LISTA_PLANOS } from "./planos.ts";
 import { responderRadar } from "./radar.ts";
 import { responderHistorico } from "./historico-rota.ts";
+import { responderLista } from "./lista.ts";
 
 function getUserClient(req: Request) {
   const url = Deno.env.get("SUPABASE_URL");
@@ -170,6 +169,12 @@ function anoUtc(): number {
   return Number(hojeUtc().slice(0, 4));
 }
 
+/** Detalhe do banco fica só no log; o chamador recebe mensagem genérica (502, falha do servidor). */
+function falhaConversao(error: unknown): Response {
+  console.error("[api-pncp-pca] conversao", errorDetail(error));
+  return jsonResponse({ error: "Falha ao ler a conversão do PCA." }, 502);
+}
+
 async function responderConversao(req: Request, url: URL): Promise<Response> {
   const denied = await requireUserAuth(req);
   if (denied) return denied;
@@ -183,7 +188,7 @@ async function responderConversao(req: Request, url: URL): Promise<Response> {
   const classe = url.searchParams.get("classe");
   if (classe) taxa = taxa.eq("classe_material_servico", classe);
   const { data: taxas, error: taxaError } = await taxa;
-  if (taxaError) return jsonResponse({ error: taxaError.message }, 400);
+  if (taxaError) return falhaConversao(taxaError);
 
   let itens = client
     .from("pca_conversao_edital_item")
@@ -195,7 +200,7 @@ async function responderConversao(req: Request, url: URL): Promise<Response> {
   if (cnpj) itens = itens.eq("orgao_cnpj", cnpj);
   if (classe) itens = itens.eq("classe_material_servico", classe);
   const { data: amostra, error: itemError } = await itens;
-  if (itemError) return jsonResponse({ error: itemError.message }, 400);
+  if (itemError) return falhaConversao(itemError);
 
   return jsonResponse({
     ano_aberto_excluido: anoAberto,
@@ -263,22 +268,7 @@ Deno.serve(async (req) => {
     if (visao === "motor") return await responderMotor(req, url);
     if (visao === "radar") return await responderRadar(req, url);
     if (visao === "historico") return await responderHistorico(req, url);
-    const client = getUserClient(req);
-    const ano = parseQueryInt(url, "ano", new Date().getUTCFullYear());
-    const page = parseQueryInt(url, "page", 1);
-    const limit = Math.min(parseQueryInt(url, "limit", 20), 100);
-    const offset = (page - 1) * limit;
-
-    const { data, error, count } = await client
-      .from("pca_planos")
-      .select(COLUNAS_LISTA_PLANOS, { count: "exact" })
-      .eq("ativo", true)
-      .eq("ano_exercicio", ano)
-      .order("updated_at", { ascending: false })
-      .range(offset, offset + limit - 1);
-
-    if (error) return jsonResponse({ error: error.message }, 400);
-    return jsonResponse({ data, page, limit, total: count ?? 0 });
+    return await responderLista(req, url, { criarCliente: getUserClient });
   }
 
   if (req.method === "POST") {

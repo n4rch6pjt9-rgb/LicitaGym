@@ -68,7 +68,8 @@ create unique index if not exists pipeline_etapa_tarefas_empresa_uq
   on public.pipeline_etapa_tarefas (tenant_id, chave) where origem = 'empresa';
 create index if not exists pipeline_etapa_tarefas_etapa_idx on public.pipeline_etapa_tarefas (tenant_id, etapa_id);
 
--- Tarefa do catálogo no modelo precisa existir, estar ativa e ser do fornecedor (CA-13).
+-- Tarefa do catálogo no modelo precisa existir, estar ativa e ser do fornecedor (CA-13). Só ao inserir, trocar o
+-- código ou ligar o modelo: desligar (ativo = false) sempre pode, mesmo com a tarefa já inativa no catálogo.
 create or replace function public.pipeline_etapa_tarefas_validar()
 returns trigger
 language plpgsql
@@ -76,7 +77,9 @@ security invoker
 set search_path = public, pg_temp
 as $$
 begin
-  if new.origem = 'catalogo' and not exists (
+  if new.origem = 'catalogo' and new.ativo
+     and (tg_op = 'INSERT' or new.tarefa_codigo is distinct from old.tarefa_codigo or not old.ativo)
+     and not exists (
        select 1 from public.tarefas_catalogo c
         where c.codigo = new.tarefa_codigo and c.ativo
           and c.ator in ('licitante', 'contratado', 'licitante_ou_contratado')) then
@@ -266,6 +269,7 @@ declare
   v_total       integer := 0;
   v_cat         integer := 0;
   v_emp         integer := 0;
+  v_entrada     timestamptz;
 begin
   select e.nome into v_etapa_nome from public.pipeline_etapas e where e.id = p_etapa and e.tenant_id = p_tenant;
   if v_etapa_nome is null then
@@ -311,12 +315,16 @@ begin
         from avaliado v
        where v.aplicavel is distinct from false
       on conflict (tenant_id, licitacao_id, tarefa_codigo) where origem = 'catalogo' do update
-         set origem_etapa_id   = coalesce(te.origem_etapa_id, excluded.origem_etapa_id),
-             origem_modelo_id  = coalesce(te.origem_modelo_id, excluded.origem_modelo_id),
-             origem_etapa_nome = coalesce(te.origem_etapa_nome, excluded.origem_etapa_nome),
-             atualizada_por    = coalesce(excluded.atualizada_por, te.atualizada_por),
-             atualizada_em     = now()
+         set origem_etapa_id     = coalesce(te.origem_etapa_id, excluded.origem_etapa_id),
+             origem_modelo_id    = coalesce(te.origem_modelo_id, excluded.origem_modelo_id),
+             origem_etapa_nome   = coalesce(te.origem_etapa_nome, excluded.origem_etapa_nome),
+             condicao_verificada = coalesce(te.condicao_verificada, excluded.condicao_verificada),
+             contexto            = case when te.condicao_verificada is null and excluded.condicao_verificada
+                                        then excluded.contexto else te.contexto end,
+             atualizada_por      = coalesce(excluded.atualizada_por, te.atualizada_por),
+             atualizada_em       = now()
        where te.origem_etapa_nome is null
+          or (te.condicao_verificada is null and excluded.condicao_verificada)
       returning (xmax = 0) as nova
     )
     select count(*) filter (where nova) into v_cat from gravadas;
@@ -329,7 +337,11 @@ begin
                       and m.tarefa_codigo in (c.codigo, c.parent_codigo));
   end if;
 
-  -- Tarefas da empresa: sempre (qualquer regulamento), uma por chave.
+  -- Tarefas da empresa: sempre (qualquer regulamento), uma por chave. O prazo (prazo_horas) conta da entrada na
+  -- etapa (última entrada registrada em pipeline_historico), não do momento em que a tarefa é criada (reaplicar).
+  select max(h.em) into v_entrada
+    from public.pipeline_historico h
+   where h.tenant_id = p_tenant and h.licitacao_id = p_licitacao and h.etapa_para = p_etapa;
   with gravadas as (
     insert into public.tarefas_equipe (
       tenant_id, licitacao_id, origem, titulo, descricao, condicao_verificada, prazo_situacao, prazo_em,
@@ -338,7 +350,8 @@ begin
     )
     select p_tenant, p_licitacao, 'empresa', m.titulo, m.descricao, true,
            case when m.prazo_horas is null then 'sem_prazo' else 'calculado' end,
-           case when m.prazo_horas is null then null else now() + make_interval(hours => m.prazo_horas) end,
+           case when m.prazo_horas is null then null
+                else coalesce(v_entrada, now()) + make_interval(hours => m.prazo_horas) end,
            'admin', p_user, p_user, p_etapa, m.id, v_etapa_nome, m.chave
       from public.pipeline_etapa_tarefas m
      where m.tenant_id = p_tenant and m.etapa_id = p_etapa and m.origem = 'empresa' and m.ativo
@@ -375,6 +388,13 @@ declare
   r          record;
   x          record;
 begin
+  -- Só licitação que está no pipeline da empresa recebe tarefa (decisão 2 da spec 0019): fora dele, nada.
+  if not exists (select 1 from public.pipeline_oportunidades po
+                  where po.tenant_id = p_tenant and po.licitacao_id = p_licitacao) then
+    return query select 0, 0, 'fora_do_pipeline'::text;
+    return;
+  end if;
+
   select max(h.em) into v_entrada
     from public.pipeline_historico h
    where h.tenant_id = p_tenant and h.licitacao_id = p_licitacao and h.etapa_de is null and h.etapa_para is not null;

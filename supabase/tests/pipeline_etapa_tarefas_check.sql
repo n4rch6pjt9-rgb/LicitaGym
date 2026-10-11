@@ -110,6 +110,12 @@ begin
       raise exception 'CHECK FALHOU: semente desfez edição do admin';
     end if;
 
+    -- desligar um modelo cuja tarefa ficou inativa no catálogo sempre pode (Codex #327)
+    update public.tarefas_catalogo set ativo = false where codigo = '14133-F01-T06';
+    update public.pipeline_etapa_tarefas set ativo = false where tenant_id = v_t and tarefa_codigo = '14133-F01-T06';
+    update public.tarefas_catalogo set ativo = true where codigo = '14133-F01-T06';
+    update public.pipeline_etapa_tarefas set ativo = true where tenant_id = v_t and tarefa_codigo = '14133-F01-T06';
+
     -- CA-13: tarefa inexistente ou inativa no catálogo é recusada no modelo
     select md5(string_agg(t::text, '|' order by t.codigo)) into v_hash from public.tarefas_catalogo t;
     v_ok := false;
@@ -251,6 +257,12 @@ begin
     select * into v_res from public.pipeline_tarefas_reaplicar(v_t, v_l2, null);
     if v_res.criadas <> 0 then
       raise exception 'CHECK FALHOU: CA-22 reaplicar de novo duplicou (%)', v_res;
+    end if;
+    -- fora do pipeline, reaplicar não cria nada (Codex #327)
+    select * into v_res from public.pipeline_tarefas_reaplicar(v_t2, v_l1, null);
+    if v_res.bloqueio is distinct from 'fora_do_pipeline' or exists (select 1 from public.tarefas_equipe
+                                                                     where tenant_id = v_t2 and licitacao_id = v_l1) then
+      raise exception 'CHECK FALHOU: reaplicar fora do pipeline criou tarefa (%)', v_res;
     end if;
 
     -- CA-20: excluir etapa com tarefas (do catálogo só pela etapa, e da empresa) funciona e preserva o retrato;

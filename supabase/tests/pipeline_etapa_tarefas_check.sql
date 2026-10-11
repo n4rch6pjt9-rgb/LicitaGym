@@ -224,7 +224,7 @@ begin
     -- CA-22: o regulamento chega (update) -> o gatilho cria as tarefas da lei das etapas visitadas, sem duplicar
     update public.licitacoes_externas set regulamento = 'LEI_14133' where id = v_l2;
     if (select count(*) from public.tarefas_equipe
-         where licitacao_id = v_l2 and origem = 'catalogo' and origem_etapa_nome = 'Documentação') <> 6 then
+         where tenant_id = v_t and licitacao_id = v_l2 and origem = 'catalogo' and origem_etapa_nome = 'Documentação') <> 6 then
       raise exception 'CHECK FALHOU: CA-22 regulamento que chegou não criou as tarefas da lei';
     end if;
     -- CA-12 + CA-22: cada empresa recebeu só as tarefas dos próprios modelos e etapas
@@ -258,10 +258,10 @@ begin
     perform public.pipeline_etapa_excluir(v_t, v_doc, v_ana, v_u);
     if exists (select 1 from public.pipeline_etapas where id = v_doc)
        or not exists (select 1 from public.tarefas_equipe
-                       where licitacao_id = v_l2 and origem = 'catalogo' and origem_etapa_id is null
+                       where tenant_id = v_t and licitacao_id = v_l2 and origem = 'catalogo' and origem_etapa_id is null
                          and origem_etapa_nome = 'Documentação' and status = 'aberta')
        or (select count(*) from public.tarefas_equipe
-            where licitacao_id = v_l2 and origem = 'empresa' and origem_etapa_nome = 'Em análise') <> 3 then
+            where tenant_id = v_t and licitacao_id = v_l2 and origem = 'empresa' and origem_etapa_nome = 'Em análise') <> 3 then
       raise exception 'CHECK FALHOU: CA-20 excluir etapa perdeu tarefa/retrato ou não criou as do destino';
     end if;
 

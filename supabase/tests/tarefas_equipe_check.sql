@@ -1,4 +1,4 @@
--- Checagem da migration 20261010160000_tarefas_equipe (#252, spec 0019).
+-- Checagem da migration 20261011110000_tarefas_equipe (#252, spec 0019).
 --   (a) ACL e RLS (CA-6): tabela com RLS e sem privilégio para anon/authenticated/PUBLIC; funções só service_role,
 --       com search_path fixo.
 --   (b) Regras (CA-1 a CA-5, CA-7, CA-12), num sub-bloco que termina com uma exceção proposital: tudo o que (b) grava

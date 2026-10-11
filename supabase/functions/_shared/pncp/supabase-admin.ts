@@ -79,7 +79,7 @@ export async function updateSyncHeartbeat(
     paginaAtual?: number;
     baseParametros?: Record<string, unknown>;
   },
-): Promise<void> {
+): Promise<{ message: string } | null> {
   const patch: Record<string, unknown> = {
     last_heartbeat_at: new Date().toISOString(),
   };
@@ -93,11 +93,17 @@ export async function updateSyncHeartbeat(
         continuation: extra.continuation,
       };
     } else {
-      const { data: current } = await client.schema("private")
+      const { data: current, error: eLer } = await client.schema("private")
         .from("pncp_sync_run")
         .select("parametros")
         .eq("id", runId)
         .maybeSingle();
+      if (eLer) {
+        // Sem os parâmetros atuais não dá para gravar a continuation sem apagar o resto; o heartbeat grava mesmo
+        // assim (os outros syncs ignoram o retorno e contam com ele) e o erro da leitura volta para quem confere.
+        await client.schema("private").from("pncp_sync_run").update(patch).eq("id", runId);
+        return eLer;
+      }
       const currentParams = (current?.parametros as Record<string, unknown>) ?? {};
       patch.parametros = {
         ...currentParams,
@@ -105,7 +111,9 @@ export async function updateSyncHeartbeat(
       };
     }
   }
-  await client.schema("private").from("pncp_sync_run").update(patch).eq("id", runId);
+  // Quem precisa da continuation gravada (ex.: a fila do PCA) confere o retorno; os outros podem ignorá-lo.
+  const { error } = await client.schema("private").from("pncp_sync_run").update(patch).eq("id", runId);
+  return error;
 }
 
 export async function logSyncRequest(

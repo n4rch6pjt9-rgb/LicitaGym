@@ -284,6 +284,8 @@ Deno.test("acompanhamento: fluxo completo com paginação, resultados, atas, his
           titulo: "Edital Pregão 90010/2026",
           tipoDocumentoNome: "Edital",
           url: "https://pncp.gov.br/pncp-api/v1/orgaos/45138070000149/compras/2026/559/arquivos/1",
+          dataPublicacaoPncp: "2026-09-29T14:18:51",
+          statusAtivo: true,
           sequencialDocumento: 1,
         },
       ]), { status: 200, headers: { "Content-Type": "application/json" } }));
@@ -363,6 +365,10 @@ Deno.test("acompanhamento: fluxo completo com paginação, resultados, atas, his
     assertEquals(body.arquivos.erro, null);
     assertEquals(body.arquivos.total, 1);
     assertEquals(body.arquivos.dados[0].url, "https://pncp.gov.br/pncp-api/v1/orgaos/45138070000149/compras/2026/559/arquivos/1");
+    assertEquals(body.arquivos.dados[0].dataPublicacaoPncp, "2026-09-29T14:18:51");
+    assertEquals(body.arquivos.dados[0].statusAtivo, true);
+    assertEquals(body.atas.dados[0].vigente === undefined, false);
+    assertEquals("fase" in body, true);
 
     // Testa cache em memória no segundo acesso
     const resCached = await handleAcompanhamento(

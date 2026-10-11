@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { lerTenantDoUsuario, type TenantResolvido } from "../_shared/tenant.ts";
-import type { Desfecho, Etapa, EtapaComTotal, EventoHistorico, Fase, ItemModelo, ItemPipeline, ModeloTarefa, ResultadoPreparacao, StatusPreparacao } from "./types.ts";
+import type { Desfecho, Etapa, EtapaComTotal, EventoHistorico, Fase, ItemModelo, ItemPipeline, ModeloTarefa, ResultadoPreparacao, StatusPreparacao, TarefaCatalogo } from "./types.ts";
 
 /** Campos da licitação que o Kanban e os selos mostram (subconjunto das colunas públicas da api-dashboard-oportunidades). */
 export const LICITACAO_CARD_COLUMNS = [
@@ -10,6 +10,8 @@ export const LICITACAO_CARD_COLUMNS = [
 
 const ETAPA_COLUMNS = "id,nome,fase,ordem,desfecho,exige_motivo,padrao";
 export const LIMITE_LISTA = 1000;
+/** Norma do catálogo de tarefas (tarefas_catalogo.norma; seed 20260927100100). Outro regulamento terá o seu. */
+export const NORMA_CATALOGO = "LEI_14133_2021";
 
 /** Erro de regra vindo do banco (pipeline_mover / pipeline_etapa_excluir), já com status HTTP. */
 export class ErroPipeline extends Error {
@@ -32,6 +34,8 @@ export interface PipelineRepo {
   criarEtapa(tenant: number, e: { nome: string; fase: Fase; ordem: number | null; desfecho: Desfecho | null; exige_motivo: boolean }, userId: string): Promise<Etapa>;
   atualizarEtapa(tenant: number, id: number, campos: Partial<Omit<Etapa, "id" | "padrao">>, userId: string): Promise<Etapa | null>;
   excluirEtapa(tenant: number, id: number, moverPara: number | null, userId: string): Promise<number>;
+  /** Tarefas ativas do catálogo 14.133 (para o modelo da etapa), com fase e base legal. */
+  listarCatalogo(): Promise<TarefaCatalogo[]>;
   /** Modelo de tarefas da etapa (ativas e desligadas), com o resumo do catálogo. null se a etapa não é da empresa. */
   listarModelo(tenant: number, etapaId: number): Promise<ModeloTarefa[] | null>;
   /** Lista completa da etapa, numa transação (pipeline_etapa_tarefas_salvar). */
@@ -104,8 +108,22 @@ export function createSupabaseRepo(client: SupabaseClient): PipelineRepo {
           });
         }
       }
+      // Tarefas abertas por card (contadas no banco: pipeline_tarefas_abertas).
+      const abertas = new Map<number, number>();
+      let abertasOk = true;
+      if (ids.length) {
+        const { data: ab, error: e4 } = await client.rpc("pipeline_tarefas_abertas", { p_tenant: tenant, p_licitacoes: ids });
+        // mesmo contrato da preparação: falha não vira 0, o campo some e avisos explica
+        if (e4) {
+          console.error("[api-pipeline] pipeline_tarefas_abertas falhou", { code: e4.code, message: e4.message });
+          abertasOk = false;
+          avisos.push("tarefas_abertas_indisponivel");
+        }
+        for (const a of (abertasOk ? ab ?? [] : []) as Array<{ licitacao_id: number; abertas: number }>) abertas.set(Number(a.licitacao_id), Number(a.abertas));
+      }
       const itens = linhas.slice(0, LIMITE_LISTA).map((i) => ({
         ...i,
+        ...(abertasOk ? { tarefas_abertas: abertas.get(Number(i.licitacao_id)) ?? 0 } : {}),
         tarefas_pendencia: porLicitacao.get(Number(i.licitacao_id)) ?? null,
         ...(prepOk ? { preparacao: prep.get(Number(i.licitacao_id)) ?? null } : {}),
       }));
@@ -159,6 +177,30 @@ export function createSupabaseRepo(client: SupabaseClient): PipelineRepo {
         .select(ETAPA_COLUMNS).maybeSingle();
       if (error) traduzir(error);
       return (data as unknown as Etapa) ?? null;
+    },
+
+    async listarCatalogo() {
+      // Base legal embutida (FK tarefa_codigo): uma consulta só, sem o corte silencioso do max_rows numa segunda.
+      const { data, error } = await client.from("tarefas_catalogo")
+        .select("codigo,fase_codigo,parent_codigo,ordem,titulo,natureza,ator,prazo_unidade,fase:processo_fases(nome,ordem),base:tarefas_catalogo_base_legal(artigo,dispositivo)")
+        .eq("ativo", true).eq("norma", NORMA_CATALOGO).order("fase_codigo").order("ordem");
+      if (error) throw new Error(error.message);
+      const linhas = (data ?? []) as Array<Record<string, unknown>>;
+      // max_rows do PostgREST é 1000: lista cheia pode estar cortada; erro em vez de catálogo incompleto.
+      if (linhas.length >= LIMITE_LISTA) throw new Error("Catálogo maior que o limite de leitura; paginar antes de usar.");
+      return linhas.map((c): TarefaCatalogo => {
+        const fase = (c.fase ?? null) as { nome?: string; ordem?: number | null } | null;
+        // mesma ordem e formato do string_agg de catalogo_tarefas_da_fase: "art. N (dispositivo)" unidos por "; "
+        const bases = ((c.base ?? []) as Array<{ artigo: number; dispositivo: string }>)
+          .slice().sort((a, b) => a.artigo - b.artigo || a.dispositivo.localeCompare(b.dispositivo, "pt-BR"));
+        return {
+          codigo: String(c.codigo), fase_codigo: String(c.fase_codigo), fase_nome: fase?.nome ?? null,
+          fase_ordem: fase?.ordem ?? null, parent_codigo: c.parent_codigo == null ? null : String(c.parent_codigo),
+          ordem: Number(c.ordem), titulo: String(c.titulo), natureza: String(c.natureza), ator: String(c.ator),
+          prazo_unidade: String(c.prazo_unidade),
+          base_legal: bases.length ? bases.map((b) => `art. ${b.artigo} (${b.dispositivo})`).join("; ") : null,
+        };
+      });
     },
 
     async listarModelo(tenant, etapaId) {

@@ -122,6 +122,12 @@ function repoMemoria() {
     salvarModelo: (_t, etapaId, itens) => Promise.resolve().then(() => salvarModelo(etapaId, itens)),
     reaplicarTarefas: (_t, licitacaoId) =>
       Promise.resolve(ops.has(licitacaoId) ? { criadas: 2, existentes: 1, bloqueio: null } : { criadas: 0, existentes: 0, bloqueio: "fora_do_pipeline" }),
+    listarCatalogo: () =>
+      Promise.resolve([{
+        codigo: "14133-F01-T01", fase_codigo: "F01", fase_nome: "Edital publicado", fase_ordem: 1, parent_codigo: null, ordem: 10,
+        titulo: "Registrar edital e anexos", natureza: "acompanhamento", ator: "licitante", prazo_unidade: "sem_prazo_legal",
+        base_legal: "art. 54 (caput)",
+      }]),
   };
   return { repo, ops, hist, etapas, modelo };
 }
@@ -406,7 +412,8 @@ Deno.test("repo real: erro do banco em salvar/reaplicar vira 400 (22023) e 404 (
 });
 
 // Cliente falso mínimo do supabase-js para listarPipeline: consulta encadeável que resolve com `resultado`.
-function clienteListar(rpcEstado: () => Promise<{ data: unknown; error: unknown }>) {
+type RespostaRpc = () => Promise<{ data: unknown; error: unknown }>;
+function clienteListar(rpcEstado: RespostaRpc, rpcAbertas?: RespostaRpc) {
   const consulta = (resultado: { data: unknown; error: unknown }) => {
     const q: Record<string, unknown> = {};
     for (const m of ["select", "eq", "order", "limit", "in"]) q[m] = () => q;
@@ -417,7 +424,12 @@ function clienteListar(rpcEstado: () => Promise<{ data: unknown; error: unknown 
   return {
     from: () => consulta({ data: linhas, error: null }),
     schema: () => ({ from: () => consulta({ data: [], error: null }) }),
-    rpc: (nome: string) => nome === "pipeline_preparacao_estado" ? rpcEstado() : Promise.resolve({ data: [], error: null }),
+    rpc: (nome: string) =>
+      nome === "pipeline_preparacao_estado"
+        ? rpcEstado()
+        : nome === "pipeline_tarefas_abertas" && rpcAbertas
+        ? rpcAbertas()
+        : Promise.resolve({ data: [], error: null }),
   } as unknown as Parameters<typeof createSupabaseRepo>[0];
 }
 
@@ -436,4 +448,74 @@ Deno.test("CA-17: erro ao ler a preparação não derruba o Kanban nem vira 'sem
   const r = await repo.listarPipeline(1, null);
   assertEquals(r.avisos, ["preparacao_indisponivel"]);
   assertEquals(r.itens.map((i) => "preparacao" in i), [false, false]);
+});
+
+Deno.test("spec 0018 seção 5: pipeline_listar traz tarefas_abertas por card (0 quando não há)", async () => {
+  const repo = createSupabaseRepo(clienteListar(
+    () => Promise.resolve({ data: [], error: null }),
+    () => Promise.resolve({ data: [{ licitacao_id: 102, abertas: 3 }], error: null }),
+  ));
+  const { itens } = await repo.listarPipeline(1, null);
+  assertEquals(itens.map((i) => [i.licitacao_id, i.tarefas_abertas]), [[101, 0], [102, 3]]);
+});
+
+Deno.test("spec 0018 seção 5: erro ao contar tarefas não vira 0 nem derruba o Kanban: campo ausente + aviso", async () => {
+  const repo = createSupabaseRepo(clienteListar(
+    () => Promise.resolve({ data: [], error: null }),
+    () => Promise.resolve({ data: null, error: { code: "PGRST202", message: "sem contagem" } }),
+  ));
+  const r = await repo.listarPipeline(1, null);
+  assertEquals(r.avisos, ["tarefas_abertas_indisponivel"]);
+  assertEquals(r.itens.map((i) => "tarefas_abertas" in i), [false, false]);
+});
+
+Deno.test("catalogo_listar: qualquer usuário da empresa lê o catálogo para o modelo da etapa", async () => {
+  const { repo } = repoMemoria();
+  repo.tenantDoUsuario = () => Promise.resolve({ tenant: 1, papel: "operacao" });
+  const r = await chamar(ctx(repo), { action: "catalogo_listar" });
+  assertEquals([r.status, r.json.tarefas[0].codigo, r.json.tarefas[0].base_legal], [200, "14133-F01-T01", "art. 54 (caput)"]);
+});
+
+// Cliente falso de uma consulta só (tarefas_catalogo com fase e base embutidas), registrando os filtros.
+function clienteCatalogo(resultado: { data: unknown; error: unknown }, filtros: string[] = []) {
+  const q: Record<string, unknown> = {};
+  q.select = () => q;
+  q.order = () => q;
+  q.eq = (c: string, v: unknown) => (filtros.push(`${c}=${v}`), q);
+  q.then = (ok: (v: unknown) => unknown, falha?: (e: unknown) => unknown) => Promise.resolve(resultado).then(ok, falha);
+  return { from: () => q } as unknown as Parameters<typeof createSupabaseRepo>[0];
+}
+
+Deno.test("catalogo_listar (repo real): base legal ordenada e unida como no banco; sem base = null; fase do embed", async () => {
+  const filtros: string[] = [];
+  const repo = createSupabaseRepo(clienteCatalogo({
+    data: [
+      {
+        codigo: "14133-F01-T01", fase_codigo: "F01", parent_codigo: null, ordem: 10, titulo: "Registrar edital", natureza: "acompanhamento",
+        ator: "licitante", prazo_unidade: "sem_prazo_legal", fase: { nome: "Edital publicado", ordem: 1 },
+        base: [{ artigo: 54, dispositivo: "§ 1º" }, { artigo: 54, dispositivo: "caput" }],
+      },
+      {
+        codigo: "14133-FX-T01", fase_codigo: "FX", parent_codigo: "14133-F01-T01", ordem: 5, titulo: "Transversal", natureza: "obrigacao",
+        ator: "licitante", prazo_unidade: "imediato", fase: { nome: "Trilha", ordem: null }, base: [],
+      },
+    ],
+    error: null,
+  }, filtros));
+  const cat = await repo.listarCatalogo();
+  assertEquals(cat.map((c) => [c.codigo, c.base_legal, c.fase_nome, c.fase_ordem, c.parent_codigo]), [
+    // produção (en_US.UTF-8, 11/10): string_agg dá "art. 54 (§ 1º); art. 54 (caput)" para 14133-F01-T01
+    ["14133-F01-T01", "art. 54 (§ 1º); art. 54 (caput)", "Edital publicado", 1, null],
+    ["14133-FX-T01", null, "Trilha", null, "14133-F01-T01"],
+  ]);
+  assertEquals(filtros, ["ativo=true", "norma=LEI_14133_2021"]);
+});
+
+Deno.test("catalogo_listar (repo real): erro do banco rejeita (não vira catálogo vazio); lista cheia acusa corte", async () => {
+  const e = await createSupabaseRepo(clienteCatalogo({ data: null, error: { message: "sem catálogo" } })).listarCatalogo()
+    .then(() => null, (x) => x);
+  assertEquals(e instanceof Error ? e.message : e, "sem catálogo");
+  const cheia = Array.from({ length: 1000 }, (_, i) => ({ codigo: `c${i}`, fase_codigo: "F01", ordem: i, base: [] }));
+  const e2 = await createSupabaseRepo(clienteCatalogo({ data: cheia, error: null })).listarCatalogo().then(() => null, (x) => x);
+  assertEquals(e2 instanceof Error, true);
 });

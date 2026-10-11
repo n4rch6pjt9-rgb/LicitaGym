@@ -34,6 +34,8 @@ export interface ItemPipeline {
   licitacao: Record<string, unknown> | null;
   /** Tarefas da lei que não puderam ser criadas quando o regulamento chegou (private.pipeline_tarefas_pendencias). */
   tarefas_pendencia?: { motivo: string; erro: string | null; em: string } | null;
+  /** Tarefas da empresa nesta licitação em aberta/em_andamento (tarefas_equipe); a lista fica na api-tarefas. */
+  tarefas_abertas?: number;
   /** Preparação da Triagem (fila): pending/processing = "análise em preparação"; completed com resultado; failed. */
   preparacao?: {
     status: StatusPreparacao;
@@ -73,6 +75,22 @@ export interface ModeloTarefa {
   catalogo: { titulo: string; fase_codigo: string; natureza: string; prazo_unidade: string; ativo: boolean } | null;
 }
 
+/** Tarefa ativa do catálogo 14.133, para escolher no modelo da etapa (agrupada por fase, com base legal). */
+export interface TarefaCatalogo {
+  codigo: string;
+  fase_codigo: string;
+  fase_nome: string | null;
+  fase_ordem: number | null;
+  parent_codigo: string | null;
+  ordem: number;
+  titulo: string;
+  natureza: string;
+  ator: string;
+  prazo_unidade: string;
+  /** "art. 165 (§ 1º, I); ..." a partir de tarefas_catalogo_base_legal; null se não houver. */
+  base_legal: string | null;
+}
+
 /** Item da lista completa de etapa_tarefas_salvar. */
 export type ItemModelo =
   | { origem: "catalogo"; tarefa_codigo: string }
@@ -98,5 +116,6 @@ export type Acao =
   }
   | { action: "etapa_excluir"; id: number; mover_para: number | null }
   | { action: "etapa_tarefas_listar"; etapa_id: number }
+  | { action: "catalogo_listar" }
   | { action: "etapa_tarefas_salvar"; etapa_id: number; tarefas: ItemModelo[] }
   | { action: "tarefas_reaplicar"; licitacao_id: number };

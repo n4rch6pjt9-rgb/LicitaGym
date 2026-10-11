@@ -8,7 +8,7 @@ import { parseActionFromBody } from "./validation.ts";
 
 /**
  * api-pipeline: pipeline comercial da equipe (Dashboard #29).
- *   Tarefas por etapa (spec 0018): etapa_tarefas_listar e tarefas_reaplicar (qualquer usuário da empresa);
+ *   Tarefas por etapa (spec 0018): etapa_tarefas_listar, catalogo_listar e tarefas_reaplicar (qualquer usuário da empresa);
  *   etapa_tarefas_salvar (admin da empresa ou desenvolvedor: lista completa, nunca apaga; o que sai é desligado).
  *   Leitura e movimentação (etapas_listar, pipeline_listar/estado/historico, pipeline_adicionar/mover/remover):
  *   qualquer usuário da empresa (admin ou operação). Configuração das etapas (etapa_criar/atualizar/excluir): admin
@@ -104,6 +104,9 @@ export async function handleRequest(req: Request, ctx: ApiPipelineContext = {}):
         if (!etapa) return jsonResponse({ error: "Etapa não encontrada." }, 404);
         return jsonResponse({ action: params.action, etapa });
       }
+
+      case "catalogo_listar":
+        return jsonResponse({ action: params.action, tarefas: await repo.listarCatalogo() });
 
       case "etapa_tarefas_listar": {
         const tarefas = await repo.listarModelo(tenant, params.etapa_id);

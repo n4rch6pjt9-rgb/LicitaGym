@@ -351,6 +351,10 @@ registradas. A etapa nunca altera prazo legal nem fecha tarefa do certame.
      Cloud Run Job do coletor, por licitação. A cadência fica definida neste PR; a proposta é a cada 15 min enquanto
      houver pedido, e o custo é conferido com o Marcelo. Sem este PR, o CA-17 não fecha.
 5. Dashboard: `/configuracoes/pipeline` (etapas e tarefas por etapa) e contagem no card; lista na #72.
+   - 5a (LicitaGym): `catalogo_listar` (catálogo ativo com fase e base legal, para o seletor) e `tarefas_abertas` por
+     card no `pipeline_listar` (`pipeline_tarefas_abertas`, contagem no banco). Mergeado antes do 5b, porque o merge do
+     Dashboard publica na hora;
+   - 5b (Dashboard): a tela e o card (tarefas abertas, regulamento pendente, pendência de tarefas, preparação).
 
 ## Critérios de aceite
 

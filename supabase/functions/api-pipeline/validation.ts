@@ -83,6 +83,7 @@ export function parseActionFromBody(body: Corpo): Resultado {
   const action = body.action;
   switch (action) {
     case "etapas_listar":
+    case "catalogo_listar":
       return { action };
     case "pipeline_listar": {
       if (body.etapa_id === undefined || body.etapa_id === null) return { action, etapa_id: null };

@@ -1,6 +1,6 @@
 # 0018: Criar as tarefas padrão quando a oportunidade entra numa etapa do pipeline
 
-- **Status:** aprovada (Marcelo, 10/10/2026; decisões 1 a 10 em "Decisões"; sem pergunta em aberto)
+- **Status:** aprovada (Marcelo, 10/10/2026; decisões 1 a 11 em "Decisões"; sem pergunta em aberto)
 - **Issue:** Dashboard #29 (mãe). Depende da LicitaGym #252 (instância de tarefas por certame, `tarefas_equipe`) e do PR #308
   (aderência e portão comercial: schema de `pipeline_etapas` e `pipeline_oportunidades`).
   Tela: Dashboard #72 (tarefas da equipe) e a futura `/configuracoes/pipeline`.
@@ -55,14 +55,21 @@ Tabela nova `public.pipeline_etapa_tarefas` (uma linha = uma tarefa padrão de u
 | `tenant_id`, `etapa_id` | FK `(tenant_id, etapa_id) → pipeline_etapas(tenant_id, id)`, `on delete cascade` |
 | `origem` | `catalogo` ou `empresa` |
 | `tarefa_codigo` | FK `tarefas_catalogo(codigo)`, obrigatório quando `origem = catalogo`, nulo quando `empresa` |
+| `chave` | só `empresa`: identificador estável da tarefa no modelo (ex.: `triagem-restricoes-lote`), obrigatório; a semente usa a chave para não duplicar |
 | `titulo`, `descricao` | obrigatório quando `origem = empresa`; quando `catalogo`, vem do catálogo (não copiado) |
 | `prazo_horas` | só `empresa`: prazo contado da entrada na etapa (nulo = sem prazo). Tarefa do catálogo usa o prazo legal |
 | `ordem`, `ativo` | ordenação e desligar sem apagar |
 | `created_at`, `updated_by` | rastro mínimo |
 
-- Única por `(etapa_id, tarefa_codigo)` quando `origem = catalogo` (índice único parcial).
+- Única por `(etapa_id, tarefa_codigo)` quando `origem = catalogo` e por `(etapa_id, chave)` quando `origem = empresa`
+  (dois índices únicos parciais). A semente faz `on conflict` nesses alvos: reaplicar não duplica modelo e, por
+  consequência, não duplica a tarefa gerada (CA-8, CA-19).
 - RLS ligada, sem policy para o cliente; só `service_role` (a `api-pipeline` confere o papel), como as outras tabelas
   do pipeline.
+- **Excluir etapa** (`pipeline_etapa_excluir`, que já move os cards antes): o modelo da etapa cai junto (`on delete
+  cascade`), mas a tarefa já criada **fica**. Em `tarefas_equipe`, `origem_etapa_id` e `origem_modelo_id` são FK com
+  `on delete set null`, e a instância guarda um retrato da origem na criação (`origem_etapa_nome`, e `titulo`/`descricao`
+  quando `origem = empresa`). A tarefa continua aberta e explicável sem a etapa (CA-20).
 - Tenant novo: o gatilho que semeia as 13 etapas passa a semear também o modelo padrão (seção 2). `on conflict do
   nothing`: não desfaz edição do admin.
 
@@ -252,8 +259,15 @@ Regras que valem já no #252 e continuam aqui:
   14.133 com ajustes, art. 23), o gate de prazo mínimo (seção 2a) usa a **metade** dos mínimos do art. 55 da 14.133
   (Lei 14.981, art. 2º, II); o envio da proposta (`F01-T10`) não muda (vai até o evento `DATA_ABERTURA`). Demais regimes (13.303, RLC, RCA, SEST SENAT, sem regulamento) recebem só as tarefas
   `origem = empresa`, com o aviso "regulamento sem catálogo". 10.847 (dispensa para contratar a EPE) não tem disputa:
-  nenhuma tarefa do catálogo. Pré-requisito: `licitacoes_externas.regulamento` preenchido pelo `amparoLegal` do detalhe
-  do PNCP (hoje nulo em todas as linhas), com os valores `LEI_14981` e `LEI_13303` acrescentados ao check.
+  nenhuma tarefa do catálogo. **Regulamento nulo** (spec 0020, PR #318 já em produção: compra nova ou atualizada chega
+  com `amparo_legal`; as linhas antigas ficam nulas, sem backfill):
+  - ao entrar em **Triagem**, a fila de preparação (CA-17) consulta o detalhe da compra no PNCP e grava `amparo_legal`
+    antes dos agentes (decisão 3 da spec 0020);
+  - enquanto o regulamento estiver nulo, a etapa cria só as tarefas `origem = empresa` e a oportunidade mostra
+    "tarefas da lei pendentes: regulamento não informado" (nunca some em silêncio);
+  - quando o regulamento chega, `pipeline_tarefas_reaplicar(tenant, licitacao)` cria as tarefas do catálogo da etapa
+    atual e das etapas por onde a licitação já passou (`pipeline_historico`). É idempotente pela mesma chave. A fila
+    chama essa função ao terminar; a `api-pipeline` também a expõe (CA-21).
 
 ### 4. Certame × etapa
 
@@ -277,9 +291,22 @@ registradas. A etapa nunca altera prazo legal nem fecha tarefa do certame.
    `pipeline_oportunidades_portao`). Mergeado antes desta spec (decisão 10).
 1. LicitaGym #252: `tarefas_equipe` (pré-requisito, em PR próprio e antes desta spec: decisão 9). Pode correr em
    paralelo ao #308: não toca `pipeline_*` nem `api-pipeline`.
-2. LicitaGym: `pipeline_etapa_tarefas` + semente padrão + criação em `pipeline_mover` + checks SQL (este desenho).
-3. LicitaGym: ações `etapa_tarefas_*` na `api-pipeline`.
-4. Dashboard: `/configuracoes/pipeline` (etapas e tarefas por etapa) e contagem no card; lista na #72.
+2. LicitaGym: `pipeline_etapa_tarefas` + semente padrão + criação em `pipeline_mover` + `pipeline_tarefas_reaplicar`
+   + checks SQL (este desenho). Também ajusta `tarefas_equipe` (#252): `tarefas_equipe_origem_chk` passa a aceitar a
+   origem por etapa, mais as colunas `origem_etapa_id`, `origem_modelo_id` e `origem_etapa_nome`.
+3. LicitaGym: ações `etapa_tarefas_*` e `tarefas_reaplicar` na `api-pipeline`.
+4. LicitaGym: **consumidor da fila de preparação** (CA-17). `pipeline_mover` grava o pedido em `private.job_queue` ao
+   entrar em Triagem, e o job consome a fila em ordem:
+   1. detalhe PNCP (`amparo_legal`);
+   2. download dos documentos;
+   3. indexação;
+   4. agentes;
+   5. `pipeline_tarefas_reaplicar`.
+
+   O job reaproveita `pncp.py --baixar-pendentes`, o `indexador.py` e a `api-agentes` (#307), no Cloud Run Job do
+   coletor, por licitação. Grava sucesso, falha ou `sem_documento` e tira a tarefa de "análise em preparação". Sem
+   este PR, o CA-17 não fecha.
+5. Dashboard: `/configuracoes/pipeline` (etapas e tarefas por etapa) e contagem no card; lista na #72.
 
 ## Critérios de aceite
 
@@ -303,6 +330,9 @@ registradas. A etapa nunca altera prazo legal nem fecha tarefa do certame.
 | CA-16 | **Dado** uma empresa nova, **quando** recebe o modelo padrão, **então** Triagem, Em análise e Interessante têm as tarefas `origem = empresa` da seção 2b e nenhuma tarefa do catálogo; Nova não tem tarefa. | SQL `pipeline_etapa_tarefas_check.sql` |
 | CA-17 | **Dado** uma licitação sem chunks, **quando** entra em Triagem, **então** vai para a fila de download, indexação e agentes, e as tarefas mostram "análise em preparação" até a execução terminar; sem documento, a execução fica `sem_documento` e nenhum achado é inventado. | SQL `pipeline_etapa_tarefas_check.sql` + Deno `tests/supabase/functions/api_agentes_test.ts` |
 | CA-18 | **Dado** uma empresa nova, **quando** recebe o modelo padrão, **então** Triagem tem "Conferir as restrições de participação por lote" e Em análise tem "Montar o dossiê por item antes da sessão", ambas `origem = empresa` e do papel admin. | SQL `pipeline_etapa_tarefas_check.sql` |
+| CA-19 | **Dado** o modelo padrão já semeado, **quando** a semente roda de novo, **então** nenhum modelo `origem = empresa` é duplicado (mesma `chave`) e a licitação que entra na etapa recebe uma tarefa por modelo. | SQL `pipeline_etapa_tarefas_check.sql` |
+| CA-20 | **Dado** uma etapa com tarefas já criadas, **quando** `pipeline_etapa_excluir` exclui a etapa, **então** a exclusão funciona, as tarefas continuam abertas, com `origem_etapa_id` nulo e `origem_etapa_nome` preservado. | SQL `pipeline_etapa_tarefas_check.sql` |
+| CA-21 | **Dado** licitação com regulamento nulo numa etapa com tarefas do catálogo, **quando** entra, **então** só as tarefas da empresa nascem e a oportunidade mostra "tarefas da lei pendentes"; **quando** o regulamento passa a `LEI_14133` e `pipeline_tarefas_reaplicar` roda, **então** as tarefas do catálogo da etapa atual e das já visitadas nascem, sem duplicar. | SQL `pipeline_etapa_tarefas_check.sql` |
 
 ## Fora de escopo
 
@@ -322,8 +352,12 @@ registradas. A etapa nunca altera prazo legal nem fecha tarefa do certame.
 - **Migration:** sim. Tabela nova `pipeline_etapa_tarefas` (aditiva, idempotente), semente do modelo padrão para os
   tenants existentes (`on conflict do nothing`), extensão de `pipeline_semear_etapas` e de `pipeline_mover` (criação
   das tarefas na mesma transação). Depende da tabela `tarefas_equipe` do #252.
-- **Tabelas/funções tocadas:** `pipeline_etapa_tarefas` (nova), `pipeline_mover`, `pipeline_semear_etapas`,
-  `tarefas_equipe` (escrita), `tarefas_catalogo` e `processo_eventos` (leitura).
+- **Tabelas/funções tocadas:**
+  - `pipeline_etapa_tarefas` (nova);
+  - `pipeline_mover`, `pipeline_semear_etapas` e `pipeline_tarefas_reaplicar` (nova);
+  - `tarefas_equipe`: escrita, constraint de origem refeita (drop/add) e colunas novas de origem;
+  - `private.job_queue`: escrita na entrada em Triagem;
+  - leitura: `tarefas_catalogo`, `processo_eventos`, `pipeline_historico` e `licitacoes_externas.regulamento`.
 - **ACL/RLS:** tabela nova só `service_role`, RLS ligada sem policy; funções `security definer` com `search_path` fixo,
   como as do pipeline. Check `supabase/tests/pipeline_etapa_tarefas_check.sql`.
 - **Backfill:** só a semente do modelo padrão (hoje 1 empresa, 13 etapas). Nenhuma tarefa retroativa: hoje há 0
@@ -374,6 +408,12 @@ Do Marcelo, 10/10/2026:
 10. **#308 antes desta spec.** O #308 muda `pipeline_etapas` e `pipeline_oportunidades` e cria o trigger
     `pipeline_oportunidades_portao`; a mudança em `pipeline_mover` desta spec nasce sobre esse schema. Ordem: #308 e #252
     (em paralelo), depois esta spec. Spec aprovada.
+
+11. **Revisão do Codex no PR #315 (11/10), incorporada ao desenho:**
+    - chave estável para tarefa da empresa (CA-19);
+    - excluir etapa preserva a tarefa e o retrato da origem (CA-20);
+    - regulamento nulo vira "tarefas da lei pendentes", com reaplicação quando ele chega (CA-21);
+    - consumidor da fila de preparação como PR próprio (passo 4 da ordem).
 
 ## Perguntas em aberto
 

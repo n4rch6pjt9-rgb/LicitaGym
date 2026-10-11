@@ -69,7 +69,8 @@ begin
       'private.pca_fila_reservar(integer,integer,integer)',
       'private.pca_marcar_descoberta(integer,text[],text[])',
       'private.pca_zerar_ausencia(uuid,text[])',
-      'private.pca_escopo_ausencia(text[])']) as f
+      'private.pca_escopo_ausencia(text[])',
+      'private.catalogo_classes_efetivas()']) as f
      where to_regprocedure(f) is null
         or not has_function_privilege('service_role', to_regprocedure(f), 'EXECUTE')
   loop

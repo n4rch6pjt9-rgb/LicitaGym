@@ -395,9 +395,11 @@ def regulamento_do_amparo(nome) -> str | None:
     return "OUTRO"
 
 
-def amparo_legal_detalhe(det: dict) -> dict | None:
+def amparo_legal_detalhe(det: dict | None) -> dict | None:
     """amparoLegal do detalhe da compra ({codigo, nome, descricao}), como veio. None sem nome: ausente não é gravado."""
-    a = (det or {}).get("amparoLegal")
+    if not isinstance(det, dict):
+        return None
+    a = det.get("amparoLegal")
     if not isinstance(a, dict) or not isinstance(a.get("nome"), str) or not a["nome"].strip():
         return None
     return {"codigo": a.get("codigo"), "nome": a["nome"].strip(), "descricao": a.get("descricao")}

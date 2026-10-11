@@ -50,6 +50,11 @@ def test_identificacao_sem_amparo_omite_a_chave(det):
     assert "amparo_legal" not in P.identificacao(p, COMPRA)
 
 
+@pytest.mark.parametrize("det", [None, [], "texto", 0])
+def test_amparo_legal_detalhe_tolera_detalhe_que_nao_e_objeto(det):
+    assert P.amparo_legal_detalhe(det) is None
+
+
 # --- CA-5: backfill -------------------------------------------------------------------------
 
 def _sb(linhas):

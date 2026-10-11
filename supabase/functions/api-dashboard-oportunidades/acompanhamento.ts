@@ -2,6 +2,7 @@ import { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { errorDetail, jsonResponse } from "../_shared/http.ts";
 import { buildAcompanhamentoUrl, buildEditalUrl, buildPncpEditalUrl } from "../_shared/edital-url.ts";
 import { secaoPortal, type TenantDoUsuario } from "./portal.ts";
+import { diaBrasilia } from "../_shared/portal-compras.ts";
 import { UnifiedHttpClient } from "../_shared/http-client/index.ts";
 import type {
   AcompanhamentoActionParams,
@@ -409,17 +410,7 @@ async function fetchAtas(
 
       if (pageAtas.length === 0) break;
 
-      for (const a of pageAtas) {
-        atasList.push({
-          numero: (a.numeroAtaRegistroPreco as string) ?? (a.numero as string) ?? null,
-          ano: typeof a.anoAta === "number" ? a.anoAta : (a.anoAta ? Number(a.anoAta) : null),
-          vigenciaInicio: (a.dataVigenciaInicio as string) ?? null,
-          vigenciaFim: (a.dataVigenciaFim as string) ?? null,
-          dataAssinatura: (a.dataAssinatura as string) ?? null,
-          cancelado: Boolean(a.cancelado),
-          objeto: (a.objetoCompra as string) ?? (a.objeto as string) ?? null,
-        });
-      }
+      for (const a of pageAtas) atasList.push(ataDoPncp(a));
 
       if (paginasRestantes === 0 && pageAtas.length < tamanhoPagina) break;
       pagina++;
@@ -530,12 +521,16 @@ async function fetchArquivos(
       const downloadUrl = (arq.url as string) ?? (arq.uri as string) ??
         (seqDoc ? `https://pncp.gov.br/pncp-api/v1/orgaos/${cnpj}/compras/${ano}/${seq}/arquivos/${seqDoc}` : null);
 
-      arquivosList.push({
+      const arquivo: ArquivoAcompanhamento = {
         titulo: (arq.titulo as string) ?? null,
         tipo: (arq.tipoDocumentoNome as string) ?? (arq.tipoDocumentoDescricao as string) ?? null,
         url: downloadUrl,
         sequencialDocumento: seqDoc,
-      });
+      };
+      // Repassados só quando vêm do PNCP (ausente != false/null inventado).
+      if (typeof arq.dataPublicacaoPncp === "string") arquivo.dataPublicacaoPncp = arq.dataPublicacaoPncp;
+      if (typeof arq.statusAtivo === "boolean") arquivo.statusAtivo = arq.statusAtivo;
+      arquivosList.push(arquivo);
     }
 
     return { dados: arquivosList, total: arquivosList.length, erro: null };
@@ -570,8 +565,89 @@ export const ACOMPANHAMENTO_LICITACAO_COLUMNS: readonly string[] = [
   "numero_edital",
   "orgao_cnpj",
   "link_sistema_origem",
+  "fase",
   "raw",
 ];
+
+// -----------------------------------------------------------------------------
+// Campos derivados (calculados a cada resposta, fora do cache: dependem da linha e do dia)
+// -----------------------------------------------------------------------------
+
+/**
+ * Ata da consulta do PNCP (AtaRegistroPrecoPeriodoDTO). Cancelada = `cancelado` verdadeiro OU `dataCancelamento`
+ * preenchida: o PNCP pode mandar a data com `cancelado: false`, e a ata não pode aparecer como vigente.
+ */
+export function ataDoPncp(a: Record<string, unknown>): AtaAcompanhamento {
+  const dataCancelamento = typeof a.dataCancelamento === "string" && a.dataCancelamento.trim() !== ""
+    ? a.dataCancelamento
+    : null;
+  return {
+    numero: (a.numeroAtaRegistroPreco as string) ?? (a.numero as string) ?? null,
+    ano: typeof a.anoAta === "number" ? a.anoAta : (a.anoAta ? Number(a.anoAta) : null),
+    vigenciaInicio: (a.dataVigenciaInicio as string) ?? null,
+    vigenciaFim: (a.dataVigenciaFim as string) ?? null,
+    dataAssinatura: (a.dataAssinatura as string) ?? null,
+    cancelado: Boolean(a.cancelado) || dataCancelamento != null,
+    dataCancelamento,
+    objeto: (a.objetoCompra as string) ?? (a.objeto as string) ?? null,
+  };
+}
+
+/**
+ * Ata vigente no dia `hoje` (YYYY-MM-DD, America/Sao_Paulo): cancelada => false; sem vigenciaFim => null (não dá
+ * para afirmar); vigenciaInicio no futuro => false; senão hoje <= vigenciaFim. Datas do PNCP comparadas pelo dia.
+ */
+export function ataVigente(ata: AtaAcompanhamento, hoje: string): boolean | null {
+  if (ata.cancelado) return false;
+  const fim = typeof ata.vigenciaFim === "string" ? ata.vigenciaFim.slice(0, 10) : "";
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fim)) return null;
+  const inicio = typeof ata.vigenciaInicio === "string" ? ata.vigenciaInicio.slice(0, 10) : "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(inicio) && inicio > hoje) return false;
+  return hoje <= fim;
+}
+
+function semAcento(v: string): string {
+  return v.normalize("NFKD").replace(/[̀-ͯ]/g, "").trim().toLowerCase();
+}
+
+/**
+ * Situação do item para exibir. Situação específica do PNCP diferente de "Em andamento" é mantida. Com
+ * "Em andamento": "Registro de Preço" se há ata não cancelada; "Homologado" se o item tem resultado ou a fase é
+ * homologada; "Suspensa" se a fase é suspensa; "Recebendo Propostas" se a fase é recebendo propostas; senão mantém.
+ */
+export function situacaoExibidaItem(
+  item: ItemAcompanhamento,
+  ctx: { fase: string | null; atas: AtaAcompanhamento[] },
+): string | null {
+  const bruto = item.situacaoCompraItemNome;
+  if (typeof bruto !== "string" || semAcento(bruto) !== "em andamento") return bruto ?? null;
+  const fase = typeof ctx.fase === "string" ? semAcento(ctx.fase) : "";
+  if (ctx.atas.some((a) => !a.cancelado)) return "Registro de Preço";
+  if (item.temResultado || item.resultados.length > 0 || fase.startsWith("homologad")) return "Homologado";
+  if (fase.includes("suspens")) return "Suspensa";
+  if (fase.includes("recebendo propostas")) return "Recebendo Propostas";
+  return bruto;
+}
+
+/** Acrescenta fase, atas[].vigente e itens[].situacaoExibida sem remover campos (não altera a entrada). */
+export function enriquecerAcompanhamento<
+  T extends {
+    itens: AcompanhamentoSection<ItemAcompanhamento[]>;
+    atas: AcompanhamentoSection<AtaAcompanhamento[]>;
+  },
+>(payload: T, fase: string | null, agora: Date): T & { fase: string | null } {
+  const hoje = diaBrasilia(agora);
+  const atas = (payload.atas.dados ?? []).map((a) => ({ ...a, vigente: ataVigente(a, hoje) }));
+  const itens = payload.itens.dados
+    ? payload.itens.dados.map((it) => ({ ...it, situacaoExibida: situacaoExibidaItem(it, { fase, atas }) }))
+    : payload.itens.dados;
+  return {
+    ...payload,
+    fase,
+    atas: { ...payload.atas, dados: payload.atas.dados ? atas : payload.atas.dados },
+    itens: { ...payload.itens, dados: itens },
+  };
+}
 
 /** Extrai `linkSistemaOrigem` do payload bruto (`raw`) da linha, se for string. */
 export function linkSistemaOrigemFromRaw(raw: unknown): string | null {
@@ -711,7 +787,8 @@ export async function handleAcompanhamento(
       ? await secaoPortal(client, Number(row.id), linkPortal, params.atualizar === true, ctx?.tenantDoUsuario ?? semTenant)
       : null;
 
-    return jsonResponse(payload.disponivel ? { ...payload, portal } : payload, 200, {
+    const fase = typeof row.fase === "string" && row.fase.trim() !== "" ? row.fase : null;
+    return jsonResponse(payload.disponivel ? { ...enriquecerAcompanhamento(payload, fase, new Date()), portal } : payload, 200, {
       "Cache-Control": "private, max-age=300",
     });
   } catch (err: unknown) {

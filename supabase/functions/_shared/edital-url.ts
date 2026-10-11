@@ -18,8 +18,8 @@ import { parsePortalProcessoUrl } from "./portal-compras.ts";
  *    - Fallback: se houver `linkSistemaOrigem` ou `url`: valida protocolo https.
  * 3. Paradigma / Sistema S (slug de `FONTES` em `coletor/paradigma.py`):
  *    - Se houver `linkSistemaOrigem` https e host autorizado, usa esse link.
- *    - Senão, monta o mural público do portal (`{base}/Mural.aspx`), inclusive os tenants
- *      em `paradigmabs.com.br`. Não há página estável por `id_externo`.
+ *    - Senão, null: não há página estável do edital por `id_externo`, e o mural do portal não é o edital
+ *      (AGENTS.md: dado ausente aparece como ausente). O mural vai em `buildPortalUrl` (campo `url_portal`).
  * 4. Genérica / outras fontes:
  *    - Se houver `linkSistemaOrigem` (ou `url_edital`, `url` em colunas/raw): aceita se for https e host em `ALLOWED_ORIGEM_HOSTS`.
  *
@@ -77,8 +77,7 @@ export const ALLOWED_ORIGEM_HOSTS = new Set([
 ]);
 
 /**
- * Mural público de cada fonte Paradigma. O link específico da origem, quando autorizado, vence.
- * Sem ele, a rota do portal entra assim mesmo — inclusive os tenants SaaS.
+ * Mural público (página de busca) de cada fonte Paradigma. Não é o edital: vai em `url_portal`, com rótulo próprio.
  */
 export const PARADIGMA_MURAL: Readonly<Record<string, string>> = {
   sestsenat: "https://compras.sestsenat.org.br/portal/Mural.aspx",
@@ -327,6 +326,15 @@ function extractComprasGovIdCompra(row: LicitacaoRowForEdital, raw: Record<strin
  * Constrói a URL do edital para uma linha de licitação.
  * Retorna null se nenhuma URL segura/válida puder ser derivada.
  */
+/**
+ * Página pública do portal de compras da fonte (mural do Paradigma), para um link "Abrir portal" com rótulo próprio.
+ * Não é o edital. null quando a fonte não tem mural conhecido.
+ */
+export function buildPortalUrl(row: LicitacaoRowForEdital | null | undefined): string | null {
+  const fonte = String(row?.fonte ?? "").trim().toLowerCase();
+  return Object.hasOwn(PARADIGMA_MURAL, fonte) ? PARADIGMA_MURAL[fonte] : null;
+}
+
 export function buildEditalUrl(row: LicitacaoRowForEdital | null | undefined): string | null {
   if (!row || typeof row !== "object") return null;
 
@@ -392,12 +400,9 @@ export function buildEditalUrl(row: LicitacaoRowForEdital | null | undefined): s
     return null;
   }
 
-  const mural = PARADIGMA_MURAL[fonte];
-  if (mural) {
-    if (validOrigemUrl) return validOrigemUrl;
-    const linkInformado = rawLinkSistemaOrigem != null && String(rawLinkSistemaOrigem).trim() !== "";
-    if (linkInformado) return null;
-    return mural;
+  if (Object.hasOwn(PARADIGMA_MURAL, fonte)) {
+    // link da origem validado, ou null: o mural não é o edital (ver buildPortalUrl)
+    return validOrigemUrl ?? null;
   }
 
   // Outras fontes ou fonte não informada

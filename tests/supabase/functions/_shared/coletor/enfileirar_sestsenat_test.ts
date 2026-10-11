@@ -116,4 +116,5 @@ Deno.test("args do cron diário levam a faixa de IDs explícita (o override do C
   // acima do padrão 1..120 do coletor/main.py, que perderia os processos novos
   assertEquals(Number(args[ate + 1]) > 120, true);
   assertEquals(args.includes("--todos") && args.includes("fitness"), true);
+  assertEquals(args[args.indexOf("--coleta") + 1], "sestsenat");
 });

@@ -22,7 +22,8 @@ Métodos usados (todos públicos no mural):
 Acesso (decisão de 05/10/2026): os portais Paradigma hospedados em paradigmabs.com.br (Sesc SP, Sesc/Senac RS,
 Sesc DN, Sesc RJ, Sesc BA) declaram no robots.txt que não aceitam acesso automatizado; o dono decidiu que isso não
 impede a coleta do webservice público do mural, com o mesmo intervalo do adaptador (FONTES_MURAL_AUTORIZADO; o CLI
-passa autorizado=True só nelas). Bloqueio de WAF continua respeitado: a FIEMG (403 do Cloudflare para cliente
+passa autorizado=True só nelas). Nessas fontes, só anexos públicos: o cadastro de visitante não é usado (11/10/2026).
+401/403 de qualquer host para a coleta na hora, sem nova tentativa; 429 respeita Retry-After. Bloqueio de WAF continua respeitado: a FIEMG (403 do Cloudflare para cliente
 automatizado) fica de fora e não se contorna.
 
 Paginação (regra de 03/10/2026): cada faixa pede no máximo 100 itens (`nPaginaDe`/`nPaginaAte`).
@@ -374,7 +375,8 @@ def _recusar_bloqueio(fonte: Fonte, status: int) -> None:
 class PortalParadigma:
     def __init__(self, fonte: Fonte, delay: float = 1.5, timeout: int = 60, autorizado: bool = False,
                  sessao: requests.Session | None = None):
-        if not fonte.coleta_automatica and not autorizado:
+        # autorizado=True só vale para as fontes da decisão de 05/10; bloqueio de WAF (FIEMG) nunca se libera
+        if not fonte.coleta_automatica and not (autorizado and fonte.slug in FONTES_MURAL_AUTORIZADO):
             raise PermissionError(
                 f"{fonte.slug}: o host bloqueia coleta automatizada (robots.txt ou WAF) e a fonte não está em "
                 "FONTES_MURAL_AUTORIZADO. Bloqueio de WAF não se contorna; use aviso de fornecedor ou coleta manual.")
@@ -924,8 +926,14 @@ def main(argv: list[str] | None = None) -> int:
         arm = None if args.dry_run else Armazenamento.do_ambiente()
         if arm is not None and not arm.dentro_do_saas:
             raise SystemExit("Defina SUPABASE_STORAGE_BUCKET: os documentos precisam ficar dentro do LicitaGym.")
-        visitante = VisitanteInstitucional.do_ambiente()
-        if visitante is None:
+        # Decisão de 11/10/2026: nas fontes autorizadas pelo mural (paradigmabs), só anexos públicos; o cadastro de
+        # visitante (dados da empresa) não é usado. Documento que exige cadastro fica pendente.
+        if fonte.slug in FONTES_MURAL_AUTORIZADO:
+            visitante = None
+            log.info("%s: só anexos públicos (sem cadastro de visitante; decisão de 11/10/2026)", fonte.slug)
+        else:
+            visitante = VisitanteInstitucional.do_ambiente()
+        if visitante is None and fonte.slug not in FONTES_MURAL_AUTORIZADO:
             log.warning("VISITANTE_* não configurado: documentos que exigem cadastro ficam registrados como pendentes")
         docs = DocumentosParadigma(portal, sb, arm, visitante, int(float(env("MAX_MB", "50")) * 1048576), args.dry_run)
     r = coletar(portal, sb, termos, args.paginas, args.dry_run, not args.sem_resultados, produtos, forn, processos, anos,

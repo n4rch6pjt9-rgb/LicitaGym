@@ -82,7 +82,7 @@ python3 -m coletor.paradigma --fonte fiesc --dry-run --paginas 1        # só li
 python3 -m coletor.paradigma --fonte fiesc                                # grava licitação + itens + ranking
 python3 -m coletor.paradigma --fonte sestsenat --termos "academia;esporte e lazer"
 ```
-Decisão de 05/10/2026: quando o `robots.txt` bloqueia o portal, a coleta segue. Sesc SP (`sescsp`), Sesc/Senac RS (`sesc_senac_rs`), Sesc DN (`sescdn`), Sesc RJ (`sescrj`) e Sesc BA (`sescba`), em paradigmabs.com.br, entram pelo webservice público do mural, com o mesmo intervalo do adaptador. A decisão antiga (recusar e esperar aviso de fornecedor) não vale mais para esses hosts. Bloqueio de WAF continua fora: FIEMG responde 403 de desafio Cloudflare e não entra por esse caminho. O CLI passa `autorizado=True` só nessas cinco. `fiemg` continua em `PermissionError`.
+Decisão de 05/10/2026: quando o `robots.txt` bloqueia o portal, a coleta segue. Sesc SP (`sescsp`), Sesc/Senac RS (`sesc_senac_rs`), Sesc DN (`sescdn`), Sesc RJ (`sescrj`) e Sesc BA (`sescba`), em paradigmabs.com.br, entram pelo webservice público do mural, com o mesmo intervalo do adaptador. A decisão antiga (recusar e esperar aviso de fornecedor) não vale mais para esses hosts. Bloqueio de WAF continua fora: FIEMG responde 403 de desafio Cloudflare e não entra por esse caminho. O CLI passa `autorizado=True` só nessas cinco, e o próprio `PortalParadigma` recusa `autorizado=True` em qualquer outra fonte: `fiemg` continua em `PermissionError`. Decisão de 11/10/2026: nessas cinco, só anexos públicos; o cadastro de visitante (dados da empresa) não é usado, e documento que exige cadastro fica pendente. Resposta 401/403 de qualquer host para a coleta na hora, sem nova tentativa; 429 respeita `Retry-After`.
 
 ---
 

@@ -22,12 +22,12 @@ import csv
 import json
 import logging
 import sys
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
 
 from .fornecedores import CadastroFornecedores
 from .marcas import enriquecer
-from .paradigma import (FONTES, TAMANHO_PAGINA, PortalParadigma, ResultadoInvalido, avaliar_processo,
+from .paradigma import (FONTES, TAMANHO_PAGINA, PortalParadigma, ResultadoInvalido, autorizado_para_coleta, avaliar_processo,
                         empresa_cnpj, limpar, linhas_itens, linhas_resultados, modulo_de, paginar_intervalo,
                         parse_data, valor)
 from .perfil_item import texto_do_item
@@ -269,7 +269,7 @@ def main(argv: list[str] | None = None) -> int:
     if not (args.fonte and args.ano):
         ap.error("--fonte e --ano são obrigatórios (ou use --consolidar)")
 
-    portal = PortalParadigma(FONTES[args.fonte], delay=args.delay)
+    portal = PortalParadigma(FONTES[args.fonte], delay=args.delay, autorizado=autorizado_para_coleta(FONTES[args.fonte]))
     produtos = portal.produtos_escopo()
     termos = [t.strip() for t in args.termos.split(";")] if args.termos else TERMOS_PADRAO
     brutos = coletar_ano(portal, args.ano, termos, produtos, Path(args.cache) / args.fonte / str(args.ano))

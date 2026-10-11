@@ -277,7 +277,7 @@ def test_modulo_de_sentinela_e_ausente():
     assert P.modulo_de({}) == 59 and P.modulo_de(None) == 59
 
 
-def test_novos_tenants_paradigmabs_bloqueados():
+def test_tenants_paradigmabs_autorizados_pelo_mural_e_fiemg_bloqueada():
     for slug in ("sescdn", "sescrj", "sescba", "sescsp", "sesc_senac_rs"):
         assert P.FONTES[slug].coleta_automatica is False
         assert P.autorizado_para_coleta(P.FONTES[slug]) is True
@@ -934,3 +934,9 @@ def test_mural_403_no_construtor_recusa(monkeypatch):
     monkeypatch.setattr(P.requests, "Session", lambda: sessao)
     with pytest.raises(PermissionError):
         P.PortalParadigma(P.FONTES["sescsp"], autorizado=True)
+
+
+def test_fiemg_nao_libera_nem_com_autorizado():
+    """Revisão #304: WAF (FIEMG) não se libera pelo construtor, só as fontes da decisão de 05/10."""
+    with pytest.raises(PermissionError):
+        P.PortalParadigma(P.FONTES["fiemg"], autorizado=True, sessao=MagicMock())

@@ -3,6 +3,7 @@ import {
   ALLOWED_ORIGEM_HOSTS,
   buildEditalUrl,
   buildPncpEditalUrl,
+  buildPortalUrl,
   isValidHttpsUrl,
   PARADIGMA_HOSTS,
   PARADIGMA_SAAS_TENANTS,
@@ -263,7 +264,7 @@ Deno.test("buildEditalUrl: Fonte SEST SENAT", () => {
     "https://compras.sestsenat.org.br/portal/Download.aspx?q=edital123",
   );
 
-  // 2. Sem link da origem: entra o mural do portal (não há página estável por id_externo)
+  // 2. Sem link da origem: null (o mural não é o edital; vai em buildPortalUrl)
   const row2 = {
     fonte: "sestsenat",
     modulo: 59,
@@ -272,14 +273,19 @@ Deno.test("buildEditalUrl: Fonte SEST SENAT", () => {
   };
   assertEquals(
     buildEditalUrl(row2),
-    "https://compras.sestsenat.org.br/portal/Mural.aspx",
+    null,
   );
 
-  // 3. Alias e tenants SaaS do Paradigma também ganham o mural
-  assertEquals(buildEditalUrl({ fonte: "sest_senat" }), "https://compras.sestsenat.org.br/portal/Mural.aspx");
-  assertEquals(buildEditalUrl({ fonte: "sescsp" }), "https://scr360.paradigmabs.com.br/sescsp/portal/Mural.aspx");
-  assertEquals(buildEditalUrl({ fonte: "sescrj" }), "https://egov.paradigmabs.com.br/SESCRJ/portal/Mural.aspx");
-  assertEquals(buildEditalUrl({ fonte: "fiesc" }), "https://portaldecompras.fiesc.com.br/portal/Mural.aspx");
+  // 3. Alias e tenants SaaS do Paradigma: url_edital null; o mural sai em buildPortalUrl
+  assertEquals(buildEditalUrl({ fonte: "sescsp" }), null);
+  assertEquals(buildPortalUrl({ fonte: "sest_senat" }), "https://compras.sestsenat.org.br/portal/Mural.aspx");
+  assertEquals(buildPortalUrl({ fonte: "sescsp" }), "https://scr360.paradigmabs.com.br/sescsp/portal/Mural.aspx");
+  assertEquals(buildPortalUrl({ fonte: "sescrj" }), "https://egov.paradigmabs.com.br/SESCRJ/portal/Mural.aspx");
+  assertEquals(buildPortalUrl({ fonte: "fiesc" }), "https://portaldecompras.fiesc.com.br/portal/Mural.aspx");
+  assertEquals(buildPortalUrl({ fonte: "pncp" }), null);
+  // propriedades herdadas não viram fonte
+  assertEquals(buildPortalUrl({ fonte: "constructor" }), null);
+  assertEquals(buildEditalUrl({ fonte: "__proto__" }), null);
 });
 
 Deno.test("buildEditalUrl: Outras fontes e casos genéricos", () => {
@@ -406,7 +412,7 @@ Deno.test("host SaaS compartilhado do Paradigma: só tenant do Sistema S e da pr
   );
 });
 
-Deno.test("enfileiramento diário: cada fonte Paradigma coletável aponta para o próprio mural", async () => {
+Deno.test("portal: cada fonte Paradigma do coletor aponta para o próprio mural (url_portal)", async () => {
   const fontes = await fontesParadigma();
   const fila = fontes.filter((fonte) => fonte.slug !== "fiemg").map((fonte) => fonte.slug).sort();
   assertEquals(fontes.some((fonte) => fonte.slug === "fiemg"), true);
@@ -416,13 +422,14 @@ Deno.test("enfileiramento diário: cada fonte Paradigma coletável aponta para o
   for (const slug of fila) {
     const fonte = fontes.find((item) => item.slug === slug)!;
     assertEquals(
-      buildEditalUrl({ fonte: slug }),
+      buildPortalUrl({ fonte: slug }),
       `${fonte.base.href}/Mural.aspx`,
       slug,
     );
+    assertEquals(buildEditalUrl({ fonte: slug }), null, slug);
   }
   assertEquals(
-    buildEditalUrl({ fonte: "fiemg" }),
+    buildPortalUrl({ fonte: "fiemg" }),
     "https://compras.fiemg.com.br/portal/Mural.aspx",
   );
 });

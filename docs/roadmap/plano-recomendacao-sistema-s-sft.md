@@ -77,7 +77,7 @@ Pendências:
   As Edge Functions só usam a lista de hosts Paradigma para validar links de edital (`_shared/edital-url.ts`).
 - **Regulamento próprio:** o Sistema S não segue a Lei 14.133, então `tarefas_catalogo`/`processo_fases` precisam de
   uma variante por regulamento. Preencher `entidade` e `regulamento`, hoje nulos.
-- Fontes em paradigmabs.com.br com `robots.txt` recusando o coletor entram pela coleta do webservice do mural.
+- Fontes em paradigmabs.com.br com `robots.txt` recusando o coletor entram pela coleta do webservice do mural. Nelas, só anexos públicos, sem cadastro de visitante (decisão de 11/10/2026).
   O modo `aviso_fornecedor` deixa de ser a trava dessas fontes.
 
 ## Passo 3: classificador de escopo via SFT (Tunix)

@@ -6,8 +6,9 @@
 --                                         saía com bloqueio nulo: alerta falso permanente no card.
 --   licitacoes_externas_regulamento_...   o insert da pendência fica protegido: se falhar, só WARNING (não derruba a
 --                                         coleta, como na 20261011120000).
---   tenants_reativada_semear              empresa reativada recebe só o modelo de tarefas nas etapas que existem.
---                                         Antes semeava também as 13 etapas padrão, recriando etapa que o admin
+--   tenants_reativada_semear              empresa reativada recebe o modelo de tarefas nas etapas que existem; as 13
+--                                         etapas padrão só se ela não tiver nenhuma (inativa quando a 20261006020000
+--                                         semeou as outras). Antes semeava sempre, recriando etapa que o admin
 --                                         excluiu ou renomeou. Empresa nova continua semeada no insert.
 --   índice private.pipeline_tarefas_pendencias (licitacao_id) para a FK on delete cascade.
 -- Verificar: supabase/tests/pipeline_tarefas_pendencia_reativacao_check.sql. Idempotente.
@@ -113,13 +114,18 @@ security invoker
 set search_path = public, pg_temp
 as $$
 begin
-  -- só o modelo de tarefas, nas etapas que existem (on conflict do nothing); etapas são do admin
+  -- empresa sem nenhuma etapa (inativa quando a 20261006020000 semeou as existentes): recebe as 13 padrão.
+  -- Com etapas, elas são do admin: não recria excluída nem renomeada.
+  if not exists (select 1 from public.pipeline_etapas e where e.tenant_id = new.id) then
+    perform public.pipeline_semear_etapas(new.id);
+  end if;
+  -- modelo de tarefas nas etapas que existem (on conflict do nothing)
   perform public.pipeline_semear_tarefas(new.id);
   return null;
 end;
 $$;
 comment on function public.tenants_reativada_semear() is
-  'Empresa reativada: semeia o modelo de tarefas nas etapas existentes (spec 0018). Não recria etapa excluída.';
+  'Empresa reativada: etapas padrão só se não tiver nenhuma; modelo de tarefas nas existentes (spec 0018). Não recria etapa excluída.';
 comment on function public.licitacoes_externas_regulamento_reaplicar() is
   'Regulamento chegou (null → valor): reaplica as tarefas em cada empresa ativa; falha vira pendência e WARNING.';
 

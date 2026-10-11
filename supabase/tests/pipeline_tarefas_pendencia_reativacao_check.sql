@@ -5,6 +5,7 @@
 do $$
 declare
   v_t    bigint;
+  v_t2   bigint;
   v_u    uuid := '00000000-0000-0000-0000-0000000000f4';
   v_tri  bigint;
   v_ana  bigint;
@@ -54,6 +55,18 @@ begin
     end if;
     if not exists (select 1 from public.pipeline_etapa_tarefas where tenant_id = v_t and etapa_id = v_ana) then
       raise exception 'CHECK FALHOU: reativar não semeou o modelo de Em análise';
+    end if;
+
+    -- empresa sem nenhuma etapa (inativa quando as etapas foram semeadas): reativar dá as 13 padrão e o modelo
+    insert into public.tenants (slug, nome, ativo) values ('check-pend-2', 'Check pendência 2', false) returning id into v_t2;
+    delete from public.pipeline_etapa_tarefas where tenant_id = v_t2;
+    delete from public.pipeline_etapas where tenant_id = v_t2;
+    update public.tenants set ativo = true where id = v_t2;
+    if (select count(*) from public.pipeline_etapas where tenant_id = v_t2) <> 13 then
+      raise exception 'CHECK FALHOU: empresa sem etapas reativada não recebeu as 13 padrão';
+    end if;
+    if not exists (select 1 from public.pipeline_etapa_tarefas where tenant_id = v_t2) then
+      raise exception 'CHECK FALHOU: empresa sem etapas reativada não recebeu o modelo de tarefas';
     end if;
 
     raise exception 'ROLLBACK_PROPOSITAL';

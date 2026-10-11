@@ -6,7 +6,8 @@ cada entrada, mudança e saída. Etapas configuráveis por admin; as 13 do Kanba
 
 - `POST`, JWT do Supabase Auth no `Authorization` (validado no código; `verify_jwt = false` no `config.toml`).
 - Banco com `service_role`; tabelas e funções fechadas para `anon`/`authenticated`.
-- Tenant: `tenant_membros` (papel `admin` ou `operacao`). Sem vínculo, só resolve se houver uma empresa ativa. Com duas empresas ativas e sem vínculo, responde 409.
+- Tenant (`_shared/tenant.ts`): vínculo ativo em `tenant_membros` com empresa ativa. Vínculo só com empresa desativada, vínculo desligado ou conta sem vínculo → 403 (#263), sem cair em outra empresa. Só o desenvolvedor sem vínculo cai na única empresa ativa (papel nulo); com duas empresas ativas, 409.
+- Papel: `etapa_*` exige admin da empresa (`tenant_membros.papel = 'admin'`) ou o desenvolvedor (`app_metadata.licitagym_role = 'admin'`). Operação lê e movimenta o pipeline, mas não configuram etapas (403).
 
 | action | quem | corpo | resposta |
 |---|---|---|---|
@@ -17,9 +18,9 @@ cada entrada, mudança e saída. Etapas configuráveis por admin; as 13 do Kanba
 | `pipeline_mover` | autenticado | `licitacao_ids[]`, `etapa_id`, `motivo?` | `movidas`; etapa com `exige_motivo` sem motivo → 400 |
 | `pipeline_remover` | autenticado | `licitacao_ids[]` | `removidas` |
 | `pipeline_historico` | autenticado | `licitacao_id` | `eventos[]`, mais recente primeiro |
-| `etapa_criar` | admin | `nome`, `fase`, `ordem?`, `desfecho?`, `exige_motivo?` | 201 `etapa`; nome repetido → 409 |
-| `etapa_atualizar` | admin | `id` + campos | `etapa` |
-| `etapa_excluir` | admin | `id`, `mover_para?` | `movidas`; com oportunidades e sem `mover_para` → 400; última etapa → 400 |
+| `etapa_criar` | admin da empresa ou desenvolvedor | `nome`, `fase`, `ordem?`, `desfecho?`, `exige_motivo?` | 201 `etapa`; nome repetido → 409 |
+| `etapa_atualizar` | admin da empresa ou desenvolvedor | `id` + campos | `etapa` |
+| `etapa_excluir` | admin da empresa ou desenvolvedor | `id`, `mover_para?` | `movidas`; com oportunidades e sem `mover_para` → 400; última etapa → 400 |
 
 Fases: `prospeccao`, `proposta`, `disputa`, `conclusao`. Desfechos: `vencida`, `perdida`, `descartada`.
 

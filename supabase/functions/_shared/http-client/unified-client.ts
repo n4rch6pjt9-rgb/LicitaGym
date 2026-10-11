@@ -50,6 +50,8 @@ export type UnifiedFetchOptions = {
   maxAttempts?: number;
   maxTimeoutRetries?: number;
   attemptTimeoutMs?: number;
+  /** Devolve 4xx (exceto 429) a quem chama, com o corpo, em vez de lançar PermanentHttpError (para arquivar a resposta). */
+  devolver4xx?: boolean;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
   validateResponse?: (res: Response) => Promise<void> | void;
@@ -230,7 +232,7 @@ export class UnifiedHttpClient {
           throw new RetryableHttpError(`HTTP ${response.status} on ${host}`, null);
         }
 
-        if (response.status >= 400) {
+        if (response.status >= 400 && !options.devolver4xx) {
           await response.body?.cancel().catch(() => {});
           throw new PermanentHttpError(`HTTP ${response.status} on ${host}`);
         }
@@ -358,7 +360,14 @@ export class UnifiedHttpClient {
       return { status: res.status, body: {} as T, elapsedMs: (options.now ?? Date.now)() - started };
     }
 
-    const body = JSON.parse(text) as T;
+    let body: T;
+    try {
+      body = JSON.parse(text) as T;
+    } catch (error) {
+      // 4xx devolvido (devolver4xx) pode vir em HTML ou texto: o corpo segue como texto para ser arquivado.
+      if (res.status < 400) throw error;
+      body = text as T;
+    }
     const elapsedMs = (options.now ?? Date.now)() - started;
     return { status: res.status, body, elapsedMs };
   }

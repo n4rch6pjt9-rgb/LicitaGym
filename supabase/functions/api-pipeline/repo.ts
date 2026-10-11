@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
+import { lerTenantDoUsuario, type TenantResolvido } from "../_shared/tenant.ts";
 import type { Desfecho, Etapa, EtapaComTotal, EventoHistorico, Fase, ItemPipeline } from "./types.ts";
 
 /** Campos da licitação que o Kanban e os selos mostram (subconjunto das colunas públicas da api-dashboard-oportunidades). */
@@ -17,22 +18,9 @@ export class ErroPipeline extends Error {
   }
 }
 
-/**
- * Vínculo só conta se a empresa está ativa. Sem vínculo válido, só resta o único tenant ativo
- * (a Konnen, até ligarem os usuários). Dois vínculos válidos, ou duas empresas ativas sem vínculo, recusam.
- */
-export function resolverTenant(ligadosAtivos: number[], ativos: number[]): number {
-  const unicos = [...new Set(ligadosAtivos)];
-  if (unicos.length > 1) throw new ErroPipeline("Usuário ligado a mais de uma empresa.", 409);
-  if (unicos.length === 1) return unicos[0];
-  if (ativos.length === 1) return ativos[0];
-  if (ativos.length === 0) throw new ErroPipeline("Nenhuma empresa ativa cadastrada.", 409);
-  throw new ErroPipeline("Há mais de uma empresa cadastrada e o usuário ainda não está ligado a uma.", 409);
-}
-
 export interface PipelineRepo {
-  /** Tenant do usuário. Vínculo em tenant_membros; sem vínculo, só se houver uma empresa ativa. */
-  tenantDoUsuario(userId: string): Promise<number>;
+  /** Empresa e papel do usuário (_shared/tenant.ts: vínculo com empresa ativa; sem vínculo, só o desenvolvedor, na única empresa ativa). */
+  tenantDoUsuario(userId: string, desenvolvedor: boolean): Promise<TenantResolvido>;
   listarEtapas(tenant: number): Promise<EtapaComTotal[]>;
   /** Até LIMITE_LISTA itens, mais recentes primeiro; `truncado` avisa quando havia mais. */
   listarPipeline(tenant: number, etapaId: number | null): Promise<{ itens: ItemPipeline[]; truncado: boolean }>;
@@ -57,32 +45,8 @@ function traduzir(error: { code?: string; message?: string } | null): never {
 
 export function createSupabaseRepo(client: SupabaseClient): PipelineRepo {
   return {
-    async tenantDoUsuario(userId) {
-      const { data: membros, error } = await client
-        .from("tenant_membros")
-        .select("tenant_id")
-        .eq("user_id", userId)
-        .eq("ativo", true);
-      if (error) throw new Error(error.message);
-      const ligados = (membros ?? []).map((r) => Number(r.tenant_id));
-      let ligadosAtivos: number[] = [];
-      if (ligados.length > 0) {
-        const { data: vivos, error: erroVivos } = await client
-          .from("tenants")
-          .select("id")
-          .in("id", ligados)
-          .eq("ativo", true);
-        if (erroVivos) throw new Error(erroVivos.message);
-        ligadosAtivos = (vivos ?? []).map((r) => Number(r.id));
-      }
-      const { data: ativos, error: erroAtivos } = await client
-        .from("tenants")
-        .select("id")
-        .eq("ativo", true)
-        .order("id")
-        .limit(2);
-      if (erroAtivos) throw new Error(erroAtivos.message);
-      return resolverTenant(ligadosAtivos, (ativos ?? []).map((r) => Number(r.id)));
+    tenantDoUsuario(userId, desenvolvedor) {
+      return lerTenantDoUsuario(client, userId, desenvolvedor);
     },
 
     async listarEtapas(tenant) {

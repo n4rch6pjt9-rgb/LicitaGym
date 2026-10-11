@@ -1,6 +1,11 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import { type ApiPipelineContext, handleRequest } from "../../../supabase/functions/api-pipeline/index.ts";
-import { ErroPipeline, resolverTenant, type PipelineRepo } from "../../../supabase/functions/api-pipeline/repo.ts";
+import { ErroPipeline, type PipelineRepo } from "../../../supabase/functions/api-pipeline/repo.ts";
+import {
+  ErroTenantAcesso,
+  lerTenantDoUsuario,
+  resolverTenantDoUsuario,
+} from "../../../supabase/functions/_shared/tenant.ts";
 import type { Etapa, EventoHistorico } from "../../../supabase/functions/api-pipeline/types.ts";
 import { MAX_LOTE, parseActionFromBody } from "../../../supabase/functions/api-pipeline/validation.ts";
 
@@ -41,7 +46,7 @@ function repoMemoria() {
   };
 
   const repo: PipelineRepo = {
-    tenantDoUsuario: () => Promise.resolve(1),
+    tenantDoUsuario: () => Promise.resolve({ tenant: 1, papel: null }),
     listarEtapas: () =>
       Promise.resolve([...etapas].sort((a, b) => a.ordem - b.ordem).map((e) => ({ ...e, total: [...ops.values()].filter((o) => o.etapa_id === e.id).length }))),
     listarPipeline: (_t, etapaId) =>
@@ -171,34 +176,101 @@ Deno.test("api-pipeline: configurar etapas só admin; criar, renomear, excluir m
   assertEquals(etapas.json.etapas.map((e: { nome: string }) => e.nome), ["Triagem", "Visita", "Descartada"]);
 });
 
-Deno.test("resolverTenant: vínculo único manda; sem vínculo só cabe uma empresa", () => {
-  assertEquals(resolverTenant([7], [1, 2]), 7);
-  assertEquals(resolverTenant([], [1]), 1);
-  assertEquals(resolverTenant([7, 7], [1]), 7);
-  let status = 0;
-  try {
-    resolverTenant([7, 8], [1]);
-  } catch (e) {
-    status = e instanceof ErroPipeline ? e.status : 0;
-  }
-  assertEquals(status, 409);
+Deno.test("api-pipeline: admin da empresa configura etapas sem ser desenvolvedor; operação não", async () => {
+  const { repo } = repoMemoria();
+  repo.tenantDoUsuario = () => Promise.resolve({ tenant: 1, papel: "admin" });
+  assertEquals((await chamar(ctx(repo), { action: "etapa_criar", nome: "Visita", fase: "proposta" })).status, 201);
+
+  repo.tenantDoUsuario = () => Promise.resolve({ tenant: 1, papel: "operacao" });
+  const negado = await chamar(ctx(repo), { action: "etapa_excluir", id: 1, mover_para: 2 });
+  assertEquals(negado.status, 403);
+  // operação movimenta o pipeline normalmente
+  assertEquals((await chamar(ctx(repo), { action: "pipeline_adicionar", licitacao_ids: [101] })).status, 200);
 });
 
-Deno.test("resolverTenant: duas empresas sem vínculo recusam", () => {
-  let status = 0;
+Deno.test("api-pipeline: vínculo só com empresa desativada responde 403 (#263), sem cair em outra empresa", async () => {
+  const { repo } = repoMemoria();
+  repo.tenantDoUsuario = () => Promise.reject(new ErroTenantAcesso("A empresa do usuário está desativada.", 403));
+  const r = await chamar(ctx(repo), { action: "etapas_listar" });
+  assertEquals(r.status, 403);
+  assertEquals(r.json.error, "A empresa do usuário está desativada.");
+});
+
+function status(fn: () => unknown): number {
   try {
-    resolverTenant([], [1, 2]);
+    fn();
   } catch (e) {
-    status = e instanceof ErroPipeline ? e.status : 0;
+    return e instanceof ErroTenantAcesso ? e.status : -1;
   }
-  assertEquals(status, 409);
-  status = 0;
-  try {
-    resolverTenant([], []);
-  } catch (e) {
-    status = e instanceof ErroPipeline ? e.status : 0;
+  return 0;
+}
+
+const v = (tenant_id: number, papel: "admin" | "operacao", ativo: boolean, empresa_ativa: boolean) =>
+  ({ tenant_id, papel, ativo, empresa_ativa });
+
+Deno.test("resolverTenantDoUsuario: vínculo ativo com empresa ativa manda, com o papel", () => {
+  assertEquals(resolverTenantDoUsuario([v(7, "operacao", true, true)], [1, 7], false), { tenant: 7, papel: "operacao" });
+  assertEquals(resolverTenantDoUsuario([v(7, "admin", true, true), v(8, "admin", true, false)], [1, 7], false), { tenant: 7, papel: "admin" });
+  assertEquals(status(() => resolverTenantDoUsuario([v(7, "admin", true, true), v(8, "operacao", true, true)], [7, 8], false)), 409);
+});
+
+Deno.test("resolverTenantDoUsuario: empresa desativada não cai na única empresa ativa (#263)", () => {
+  assertEquals(status(() => resolverTenantDoUsuario([v(8, "admin", true, false)], [1], false)), 403);
+  assertEquals(status(() => resolverTenantDoUsuario([v(8, "admin", true, false)], [1], true)), 403);
+});
+
+Deno.test("resolverTenantDoUsuario: vínculo desligado revoga o acesso, mesmo com uma só empresa", () => {
+  assertEquals(status(() => resolverTenantDoUsuario([v(1, "operacao", false, true)], [1], false)), 403);
+});
+
+Deno.test("resolverTenantDoUsuario: sem vínculo, só o desenvolvedor cai na única empresa ativa", () => {
+  assertEquals(status(() => resolverTenantDoUsuario([], [1], false)), 403);
+  assertEquals(resolverTenantDoUsuario([], [1], true), { tenant: 1, papel: null });
+  assertEquals(status(() => resolverTenantDoUsuario([], [1, 2], true)), 409);
+  assertEquals(status(() => resolverTenantDoUsuario([], [], true)), 409);
+});
+
+/** Cliente falso só com o que lerTenantDoUsuario usa (from/select/eq/in/order/limit). */
+function clienteFalso(tabelas: Record<string, Array<Record<string, unknown>>>) {
+  return {
+    from(tabela: string) {
+      let linhas = [...(tabelas[tabela] ?? [])];
+      const q = {
+        select: () => q,
+        eq: (c: string, v: unknown) => ((linhas = linhas.filter((l) => l[c] === v)), q),
+        in: (c: string, vs: unknown[]) => ((linhas = linhas.filter((l) => vs.includes(l[c]))), q),
+        order: () => q,
+        limit: (n: number) => ((linhas = linhas.slice(0, n)), q),
+        then: (ok: (r: { data: unknown[]; error: null }) => unknown) => Promise.resolve({ data: linhas, error: null }).then(ok),
+      };
+      return q;
+    },
+  };
+}
+
+Deno.test("lerTenantDoUsuario: duas empresas ativas e dois usuários, cada um na sua", async () => {
+  const tabelas = {
+    tenants: [{ id: 1, ativo: true }, { id: 2, ativo: true }, { id: 3, ativo: false }],
+    tenant_membros: [
+      { tenant_id: 1, user_id: "u-konnen", papel: "admin", ativo: true },
+      { tenant_id: 2, user_id: "u-teste", papel: "operacao", ativo: true },
+      { tenant_id: 3, user_id: "u-inativa", papel: "admin", ativo: true },
+      { tenant_id: 1, user_id: "u-desligado", papel: "operacao", ativo: false },
+    ],
+  };
+  // deno-lint-ignore no-explicit-any
+  const c = clienteFalso(tabelas) as any;
+  assertEquals(await lerTenantDoUsuario(c, "u-konnen", false), { tenant: 1, papel: "admin" });
+  assertEquals(await lerTenantDoUsuario(c, "u-teste", false), { tenant: 2, papel: "operacao" });
+  for (const [u, esperado] of [["u-inativa", 403], ["u-desligado", 403], ["u-sem-vinculo", 403]] as const) {
+    let st = 0;
+    try {
+      await lerTenantDoUsuario(c, u, false);
+    } catch (e) {
+      st = e instanceof ErroTenantAcesso ? e.status : -1;
+    }
+    assertEquals(st, esperado, u);
   }
-  assertEquals(status, 409);
 });
 
 Deno.test("validação: limites e tipos", () => {

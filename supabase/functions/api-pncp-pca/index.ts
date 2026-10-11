@@ -23,6 +23,7 @@ import {
   estadoDoPlano,
   notaMaterialidade,
 } from "../_shared/motor-oportunidade.ts";
+import { COLUNAS_LISTA_PLANOS } from "./planos.ts";
 import { responderRadar } from "./radar.ts";
 import { responderHistorico } from "./historico-rota.ts";
 
@@ -270,7 +271,7 @@ Deno.serve(async (req) => {
 
     const { data, error, count } = await client
       .from("pca_planos")
-      .select("*", { count: "exact" })
+      .select(COLUNAS_LISTA_PLANOS, { count: "exact" })
       .eq("ativo", true)
       .eq("ano_exercicio", ano)
       .order("updated_at", { ascending: false })

@@ -15,7 +15,7 @@
 --      private.pca_marcar_descoberta(int, text[], text[]) e private.pca_zerar_ausencia(uuid, text[]).
 --
 -- Quem lê/escreve: só a Edge Function sync-pncp-pca (service_role, por client.schema('private')).
--- Aditiva e idempotente. Nenhum cron muda aqui (ver 20261009210100_cron_pca_fila.sql).
+-- Aditiva e idempotente. Nenhum cron muda aqui (ver 20261011100100_cron_pca_fila.sql).
 -- Verificar: supabase/tests/pca_plano_fila_check.sql.
 
 begin;

@@ -303,7 +303,10 @@ Deno.test("CA-7: index.ts mantém GET padrão e as visões existentes, e despach
   for (const v of ["leading", "conversao", "priorizacao", "motor", "radar"]) {
     assert(src.includes(`visao === "${v}"`), v);
   }
-  assert(src.includes('.from("pca_planos")'));
+  // GET padrão (lista de planos) mora em lista.ts desde que passou a exigir login
+  assert(src.includes("responderLista(req, url"));
+  const lista = await Deno.readTextFile(new URL("../../../supabase/functions/api-pncp-pca/lista.ts", import.meta.url));
+  assert(lista.includes('.from("pca_planos")'));
   assert(src.includes("responderRadar(req, url)"));
 });
 

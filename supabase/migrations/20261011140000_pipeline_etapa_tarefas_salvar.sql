@@ -56,18 +56,27 @@ begin
     v_origem := v_item ->> 'origem';
     if v_origem = 'catalogo' then
       v_codigo := nullif(btrim(v_item ->> 'tarefa_codigo'), '');
-      if v_codigo is null or not exists (select 1 from public.tarefas_catalogo c where c.codigo = v_codigo and c.ativo) then
-        raise exception 'Tarefa % não existe ou não está ativa no catálogo.', coalesce(v_codigo, '(vazia)')
-          using errcode = '22023';
-      end if;
       if v_codigo = any (v_codigos) then
         raise exception 'Tarefa % repetida na lista.', v_codigo using errcode = '22023';
       end if;
-      v_codigos := v_codigos || v_codigo;
-      insert into public.pipeline_etapa_tarefas as m (tenant_id, etapa_id, origem, tarefa_codigo, ordem, ativo, updated_by)
-      values (p_tenant, p_etapa, 'catalogo', v_codigo, v_ordem, true, p_user)
-      on conflict (etapa_id, tarefa_codigo) where origem = 'catalogo' do update
-         set ordem = excluded.ordem, ativo = true, updated_by = excluded.updated_by, updated_at = now();
+      if v_codigo is not null and exists (select 1 from public.tarefas_catalogo c where c.codigo = v_codigo and c.ativo) then
+        v_codigos := v_codigos || v_codigo;
+        insert into public.pipeline_etapa_tarefas as m (tenant_id, etapa_id, origem, tarefa_codigo, ordem, ativo, updated_by)
+        values (p_tenant, p_etapa, 'catalogo', v_codigo, v_ordem, true, p_user)
+        on conflict (etapa_id, tarefa_codigo) where origem = 'catalogo' do update
+           set ordem = excluded.ordem, ativo = true, updated_by = excluded.updated_by, updated_at = now();
+      elsif v_codigo is not null and exists (select 1 from public.pipeline_etapa_tarefas m
+                                              where m.tenant_id = p_tenant and m.etapa_id = p_etapa
+                                                and m.origem = 'catalogo' and m.tarefa_codigo = v_codigo) then
+        -- já estava no modelo e o catálogo a desativou: fica, desligada (reenviar a lista não trava a edição)
+        v_codigos := v_codigos || v_codigo;
+        update public.pipeline_etapa_tarefas m
+           set ordem = v_ordem, ativo = false, updated_by = p_user, updated_at = now()
+         where m.tenant_id = p_tenant and m.etapa_id = p_etapa and m.origem = 'catalogo' and m.tarefa_codigo = v_codigo;
+      else
+        raise exception 'Tarefa % não existe ou não está ativa no catálogo.', coalesce(v_codigo, '(vazia)')
+          using errcode = '22023';
+      end if;
     elsif v_origem = 'empresa' then
       v_titulo := nullif(btrim(v_item ->> 'titulo'), '');
       if v_titulo is null then

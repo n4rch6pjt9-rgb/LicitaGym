@@ -77,7 +77,13 @@ export function createSupabaseRepo(client: SupabaseClient): PipelineRepo {
       const { data, error } = await q;
       if (error) throw new Error(error.message);
       const linhas = (data ?? []) as unknown as ItemPipeline[];
-      return { itens: linhas.slice(0, LIMITE_LISTA), truncado: linhas.length > LIMITE_LISTA };
+      // Pendência de tarefas da lei (falha ao reaplicar quando o regulamento chegou): nunca some em silêncio.
+      const { data: pend, error: e2 } = await client.schema("private").from("pipeline_tarefas_pendencias")
+        .select("licitacao_id,motivo,erro,em").eq("tenant_id", tenant);
+      if (e2) throw new Error(e2.message);
+      const porLicitacao = new Map((pend ?? []).map((p) => [Number(p.licitacao_id), { motivo: String(p.motivo), erro: (p.erro as string | null) ?? null, em: String(p.em) }]));
+      const itens = linhas.slice(0, LIMITE_LISTA).map((i) => ({ ...i, tarefas_pendencia: porLicitacao.get(Number(i.licitacao_id)) ?? null }));
+      return { itens, truncado: linhas.length > LIMITE_LISTA };
     },
 
     async estado(tenant, ids) {
@@ -135,7 +141,7 @@ export function createSupabaseRepo(client: SupabaseClient): PipelineRepo {
       if (!etapa) return null;
       const { data, error } = await client
         .from("pipeline_etapa_tarefas")
-        .select("id,etapa_id,origem,tarefa_codigo,chave,titulo,descricao,prazo_horas,ordem,ativo,catalogo:tarefas_catalogo(titulo,fase_codigo,natureza,prazo_unidade)")
+        .select("id,etapa_id,origem,tarefa_codigo,chave,titulo,descricao,prazo_horas,ordem,ativo,catalogo:tarefas_catalogo(titulo,fase_codigo,natureza,prazo_unidade,ativo)")
         .eq("tenant_id", tenant).eq("etapa_id", etapaId)
         .order("ativo", { ascending: false }).order("ordem").order("id");
       if (error) throw new Error(error.message);
@@ -150,7 +156,7 @@ export function createSupabaseRepo(client: SupabaseClient): PipelineRepo {
 
     async reaplicarTarefas(tenant, licitacaoId, userId) {
       const { data, error } = await client.rpc("pipeline_tarefas_reaplicar", { p_tenant: tenant, p_licitacao: licitacaoId, p_user: userId });
-      if (error) throw new Error(error.message);
+      if (error) traduzir(error);
       const linha = (Array.isArray(data) ? data[0] : data) as { criadas: number; existentes: number; bloqueio: string | null } | null;
       return { criadas: Number(linha?.criadas ?? 0), existentes: Number(linha?.existentes ?? 0), bloqueio: linha?.bloqueio ?? null };
     },

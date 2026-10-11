@@ -28,6 +28,8 @@ export interface ItemPipeline {
   atualizada_em: string;
   atualizada_por: string;
   licitacao: Record<string, unknown> | null;
+  /** Tarefas da lei que não puderam ser criadas quando o regulamento chegou (private.pipeline_tarefas_pendencias). */
+  tarefas_pendencia?: { motivo: string; erro: string | null; em: string } | null;
 }
 
 export interface EventoHistorico {
@@ -57,7 +59,7 @@ export interface ModeloTarefa {
   ordem: number;
   ativo: boolean;
   /** Resumo do catálogo (só origem = catalogo). */
-  catalogo: { titulo: string; fase_codigo: string; natureza: string; prazo_unidade: string } | null;
+  catalogo: { titulo: string; fase_codigo: string; natureza: string; prazo_unidade: string; ativo: boolean } | null;
 }
 
 /** Item da lista completa de etapa_tarefas_salvar. */

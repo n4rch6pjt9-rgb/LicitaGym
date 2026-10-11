@@ -1,6 +1,6 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import { type ApiPipelineContext, handleRequest } from "../../../supabase/functions/api-pipeline/index.ts";
-import { ErroPipeline, type PipelineRepo } from "../../../supabase/functions/api-pipeline/repo.ts";
+import { createSupabaseRepo, ErroPipeline, type PipelineRepo } from "../../../supabase/functions/api-pipeline/repo.ts";
 import {
   ErroTenantAcesso,
   lerTenantDoUsuario,
@@ -381,4 +381,25 @@ Deno.test("tarefas_reaplicar: no pipeline devolve criadas/existentes; fora do pi
   assertEquals([r.status, r.json.criadas, r.json.existentes, r.json.bloqueio], [200, 2, 1, null]);
   const fora = await chamar(c, { action: "tarefas_reaplicar", licitacao_id: 102 });
   assertEquals([fora.status, fora.json.bloqueio], [404, "fora_do_pipeline"]);
+});
+
+Deno.test("repo real: erro do banco em salvar/reaplicar vira 400 (22023) e 404 (P0002), não 500", async () => {
+  const rpcCom = (code: string) => ({
+    rpc: () => Promise.resolve({ data: null, error: { code, message: `motivo ${code}` } }),
+  }) as unknown as Parameters<typeof createSupabaseRepo>[0];
+  for (const [code, status] of [["22023", 400], ["P0002", 404], ["23514", 400]] as const) {
+    const repo = createSupabaseRepo(rpcCom(code));
+    for (const chamada of [
+      () => repo.salvarModelo(1, 2, [{ origem: "catalogo", tarefa_codigo: "14133-F01-T01" }], "u"),
+      () => repo.reaplicarTarefas(1, 101, "u"),
+    ]) {
+      const e = await chamada().then(() => null, (x) => x);
+      assertEquals(e instanceof ErroPipeline ? e.status : e, status, `${code}`);
+    }
+  }
+  // pela handleRequest, o status chega ao cliente
+  const repo = createSupabaseRepo(rpcCom("22023"));
+  repo.tenantDoUsuario = () => Promise.resolve({ tenant: 1, papel: "admin" });
+  const r = await chamar(ctx(repo), { action: "etapa_tarefas_salvar", etapa_id: 2, tarefas: [] });
+  assertEquals([r.status, r.json.error], [400, "motivo 22023"]);
 });

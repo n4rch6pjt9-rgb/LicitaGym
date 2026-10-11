@@ -70,6 +70,22 @@ begin
       raise exception 'CHECK FALHOU: religar criou outro modelo';
     end if;
 
+    -- tarefa do modelo desativada no catálogo: reenviar a lista não trava, ela fica desligada
+    perform public.pipeline_etapa_tarefas_salvar(v_t, v_tri, jsonb_build_array(
+      jsonb_build_object('origem', 'catalogo', 'tarefa_codigo', '14133-F01-T01'),
+      jsonb_build_object('origem', 'empresa', 'chave', 'triagem-restricoes-lote', 'titulo', 'Restrições por lote')
+    ), v_u);
+    update public.tarefas_catalogo set ativo = false where codigo = '14133-F01-T01';
+    perform public.pipeline_etapa_tarefas_salvar(v_t, v_tri, jsonb_build_array(
+      jsonb_build_object('origem', 'catalogo', 'tarefa_codigo', '14133-F01-T01'),
+      jsonb_build_object('origem', 'empresa', 'chave', 'triagem-restricoes-lote', 'titulo', 'Restrições (editada)')
+    ), v_u);
+    update public.tarefas_catalogo set ativo = true where codigo = '14133-F01-T01';
+    if (select ativo from public.pipeline_etapa_tarefas where etapa_id = v_tri and tarefa_codigo = '14133-F01-T01')
+       or (select titulo from public.pipeline_etapa_tarefas where tenant_id = v_t and chave = 'triagem-restricoes-lote') <> 'Restrições (editada)' then
+      raise exception 'CHECK FALHOU: tarefa desativada no catálogo travou a edição ou continuou ligada';
+    end if;
+
     -- CA-10: recusas, nada gravado
     foreach r in array array[
       '[{"origem": "catalogo", "tarefa_codigo": "14133-F99-T99"}]',

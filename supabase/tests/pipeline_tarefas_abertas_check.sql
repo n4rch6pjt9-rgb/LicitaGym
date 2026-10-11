@@ -37,26 +37,34 @@ begin
     end if;
 
     select abertas into v_n from public.pipeline_tarefas_abertas(v_t, array[v_l1, v_l2]) where licitacao_id = v_l1;
-    if v_n <> v_tot then
+    if v_n is distinct from v_tot then
       raise exception 'CHECK FALHOU: abertas % <> total %', v_n, v_tot;
     end if;
 
-    -- concluída e cancelada não contam; em_andamento conta
+    -- concluída não conta; em_andamento conta
     update public.tarefas_equipe set status = 'concluida', concluida_em = now()
      where id = (select min(id) from public.tarefas_equipe where tenant_id = v_t and licitacao_id = v_l1);
     update public.tarefas_equipe set status = 'em_andamento'
      where id = (select max(id) from public.tarefas_equipe where tenant_id = v_t and licitacao_id = v_l1);
     select abertas into v_n from public.pipeline_tarefas_abertas(v_t, array[v_l1]);
-    if v_n <> v_tot - 1 then
+    if v_n is distinct from v_tot - 1 then
       raise exception 'CHECK FALHOU: concluída contou (abertas %, esperado %)', v_n, v_tot - 1;
     end if;
 
-    -- licitação sem tarefa não aparece; outra empresa não vê nada
+    -- licitação sem tarefa não aparece
     if exists (select 1 from public.pipeline_tarefas_abertas(v_t, array[v_l2])) then
       raise exception 'CHECK FALHOU: licitação sem tarefa apareceu';
     end if;
-    if exists (select 1 from public.pipeline_tarefas_abertas(v_t2, array[v_l1])) then
-      raise exception 'CHECK FALHOU: empresa 2 viu tarefas da empresa 1';
+    -- empresa 2 com a mesma licitação: cada uma conta só as suas (sem soma entre empresas)
+    select id into v_tri from public.pipeline_etapas where tenant_id = v_t2 and nome = 'Triagem';
+    perform public.pipeline_mover(v_t2, array[v_l1], v_tri, null, v_u);
+    select abertas into v_n from public.pipeline_tarefas_abertas(v_t2, array[v_l1]);
+    if v_n is distinct from (select count(*)::integer from public.tarefas_equipe where tenant_id = v_t2 and licitacao_id = v_l1) then
+      raise exception 'CHECK FALHOU: contagem da empresa 2 (%) errada', v_n;
+    end if;
+    select abertas into v_n from public.pipeline_tarefas_abertas(v_t, array[v_l1]);
+    if v_n is distinct from v_tot - 1 then
+      raise exception 'CHECK FALHOU: contagem da empresa 1 mudou com as tarefas da empresa 2 (%)', v_n;
     end if;
 
     raise exception 'ROLLBACK_PROPOSITAL';

@@ -64,9 +64,14 @@ Hoje não existe sonda das APIs do PNCP gravada no banco. O `sync-pncp-pca` tem 
    - `OK`: HTTP 2xx abaixo do limiar. **Um `204 No Content` também é `OK`:** a API respondeu "sem resultado" e não
      está fora;
    - `LIMITADO`: 429;
-   - `ERRO_SONDA`: HTTP 400 ou 422. É um erro permanente de parâmetro (data fora do formato `yyyyMMdd`, `pagina`
-     ausente, `tamanhoPagina` acima do limite). Indica defeito da sonda, não queda do PNCP, e **não conta como DOWN**.
-     Só entra na saúde como atenção ("sonda mal configurada");
+   - `ERRO_SONDA`: qualquer HTTP 4xx que não seja 429, inclusive 400, 404 e 422.
+     - 400 e 422 indicam erro permanente de parâmetro: data fora do formato `yyyyMMdd`, `pagina` ausente,
+       `tamanhoPagina` acima do limite;
+     - 404 indica referência ausente, por exemplo o plano usado pela sonda de itens que saiu da fonte (pergunta 5).
+       Grava `erro = 'referencia_ausente'`.
+
+     Esse status indica defeito ou referência vencida da sonda, não queda do PNCP: **não conta como DOWN**, não tenta de
+     novo e não chama o cooldown. Entra na saúde só como atenção ("sonda mal configurada");
    - `nao_sondado`: o lease negou a vaga.
 
    **Referência de classificação:** o monitor statuslicitacoes.com.br/api-pncp, consultado em 11/10/2026:
@@ -81,11 +86,17 @@ Hoje não existe sonda das APIs do PNCP gravada no banco. O `sync-pncp-pca` tem 
    `componente`, `status`, `http_status`, `latencia_ms`, `erro` (texto curto, sem corpo da resposta) e `sondado_em`.
    Retenção: ver pergunta 4.
 4. **Leitura:** função `private.fonte_disponibilidade(p_componente text)`, que devolve:
-   - o status atual (o da última sonda);
+   - o status atual: o da última sonda **observada**;
    - desde quando está nesse status;
-   - quantas sondas seguidas estão em `DOWN`.
+   - quantas sondas observadas seguidas estão em `DOWN`.
 
-   Uma sonda com mais de 45 min conta como "sem dado", não como OK.
+   **`nao_sondado` é transparente.** Uma sonda pulada porque o lease negou a vaga não é evidência de que a fonte voltou.
+   Por isso, ela não muda o status atual, não zera a sequência de `DOWN` e não renova o "sem dado". Em vez disso:
+   - status e sequência vêm das linhas com status diferente de `nao_sondado`;
+   - a regra de "sem dado" usa o `sondado_em` da última sonda observada: mais de 45 min sem sonda observada conta como
+     "sem dado", não como OK;
+   - o portão dos syncs (item 6) continua fechado enquanto houver só `nao_sondado` depois de uma sequência de
+     `DOWN`.
 5. **Saúde:** duas verificações novas em `private.saude_limiares` e no `saude_operacional_resumo`:
    - `pncp_integracao_indisponivel_min`: minutos seguidos em DOWN da integração. Proposta: atenção 30, crítico 120,
      `sem_dado = atencao`;
@@ -101,19 +112,22 @@ Hoje não existe sonda das APIs do PNCP gravada no banco. O `sync-pncp-pca` tem 
      - consulta fora: não roda a descoberta;
      - integração fora: não reserva planos na fase B, e eles ficam `pendente` sem gastar tentativa;
      - o resto do trabalho segue.
-   - Durante a run, 3 timeouts ou 5xx seguidos no mesmo host interrompem o laço (disjuntor da #328) e encerram a run
-     da mesma forma.
+   - **Disjuntor da #328:** durante a run, 3 timeouts ou 5xx seguidos no mesmo host interrompem o laço e encerram a
+     run da mesma forma. O disjuntor conta **tentativas físicas** (cada `fetch` que sai), não chamadas lógicas. O
+     `UnifiedHttpClient` hoje tenta de novo por dentro: cerca de 2 tentativas em timeout e 3 em 5xx. As chamadas que o
+     disjuntor vigia expõem cada tentativa física ao contador. Alternativa: desligam a nova tentativa interna e deixam o
+     disjuntor decidir.
 
 ## Critérios de aceite
 
 | ID | Dado / Quando / Então | Teste que prova |
 |---|---|---|
-| CA-1 | **Dado** um `fetch` falso que devolve 200 em 1 s, 200 em 8 s, 204 em 1 s, 503, timeout, 429 e 422, **quando** a `sonda-pncp` classifica cada resposta, **então** grava, respectivamente, `OK`, `SLOW`, `OK`, `DOWN`, `DOWN`, `LIMITADO` e `ERRO_SONDA`, com `http_status` e `latencia_ms`. O 429 também chama `report_http_rate_limit`. O 422 não chama, não tenta de novo e não conta para `pncp_*_indisponivel_min`. | Deno `tests/supabase/functions/sonda_pncp_test.ts` |
-| CA-2 | **Dado** um lease que nega a vaga (`allowed: false, reason: 'cooldown'`), **quando** a sonda roda, **então** nenhuma requisição sai e o componente fica gravado como `nao_sondado`, não como `DOWN`. | idem |
+| CA-1 | **Dado** o componente `pncp_integracao` (limiar SLOW de 5 s) e um `fetch` falso que devolve 200 em 1 s, 200 em 8 s, 204 em 1 s, 503, timeout, 429, 422 e 404, **quando** a `sonda-pncp` classifica cada resposta, **então** grava, respectivamente, `OK`, `SLOW`, `OK`, `DOWN`, `DOWN`, `LIMITADO`, `ERRO_SONDA` e `ERRO_SONDA` (este com `erro = 'referencia_ausente'`), com `http_status` e `latencia_ms`. **Dado** o componente `pncp_consulta_pca` (limiar de 10 s), **então** o 200 em 8 s vira `OK`. Só o 429 chama `report_http_rate_limit`. O 422 e o 404 não tentam de novo e não contam para `pncp_*_indisponivel_min`. | Deno `tests/supabase/functions/sonda_pncp_test.ts` |
+| CA-2 | **Dado** um lease que nega a vaga (`allowed: false, reason: 'cooldown'`), **quando** a sonda roda, **então** nenhuma requisição sai e o componente fica gravado como `nao_sondado`, não como `DOWN`. **Dado** 3 sondas `DOWN` seguidas por 4 `nao_sondado`, **então** `fonte_disponibilidade()` continua `DOWN` com sequência 3, o "sem dado" conta a partir da última `DOWN` e o portão dos syncs continua fechado. | Deno `tests/supabase/functions/sonda_pncp_test.ts` + SQL `supabase/tests/fonte_disponibilidade_check.sql` |
 | CA-3 | **Dado** uma chamada à `sonda-pncp` sem o cron secret, ou com JWT de `authenticated`, **então** responde 401 e não grava nada. | idem |
 | CA-4 | **Dado** sondas de `pncp_integracao` em `DOWN` há 130 min seguidos, **quando** se lê `saude_operacional_resumo()`, **então** `pncp_integracao_indisponivel_min` sai `critico` com valor ≥ 120. **Dado** a última sonda `OK`, **então** sai `ok`. **Dado** nenhuma sonda há mais de 45 min, **então** sai `atencao` (sem dado). | SQL `supabase/tests/fonte_disponibilidade_check.sql` |
 | CA-5 | **Regressão #328.** **Dado** a integração em `DOWN` em 2 sondas seguidas, **quando** o `sync-pncp-orgaos` é chamado, **então** não faz nenhuma requisição ao PNCP, e a run termina com `finalizada_em` não nulo, `erro_principal` começando com `fonte_indisponivel:` e o lock `orgaos-sync` liberado. Nunca termina em `executando`. | Deno `tests/supabase/functions/sync_pncp_orgaos_fonte_test.ts` |
-| CA-6 | **Regressão #328 (disjuntor).** **Dado** uma sonda `OK`, mas um cliente falso que dá timeout em toda chamada, **quando** o `sync-pncp-orgaos` roda, **então** para depois de 3 falhas seguidas, com no máximo 3 requisições, e encerra a run como no CA-5. | idem |
+| CA-6 | **Regressão #328 (disjuntor).** **Dado** uma sonda `OK`, mas um cliente falso que dá timeout em toda chamada, **quando** o `sync-pncp-orgaos` roda, **então** para depois de 3 falhas seguidas, com no máximo 3 `fetch` físicos contados no transporte (o retry interno do `UnifiedHttpClient` conta), e encerra a run como no CA-5. | idem |
 | CA-7 | **Dado** a consulta `OK` e a integração `DOWN`, **quando** o `sync-pncp-pca` roda com `rotina: incremental`, **então** a descoberta roda, nenhum plano é reservado, os planos da fila continuam `pendente` com `tentativas` igual e nenhum item é inativado. | Deno `tests/supabase/functions/sync_pncp_pca_fonte_test.ts` |
 | CA-8 | **Dado** os papéis `anon` e `authenticated`, **então** não leem nem escrevem `private.fonte_disponibilidade_sonda`, nem executam `private.fonte_disponibilidade`. Só `service_role` tem acesso. | SQL `supabase/tests/fonte_disponibilidade_check.sql` |
 
@@ -172,6 +186,7 @@ Hoje não existe sonda das APIs do PNCP gravada no banco. O `sync-pncp-pca` tem 
    PNCP por mês?
 5. **Quem identifica o plano de referência** da sonda de itens: um plano fixo (por exemplo o do Galeão,
    `00394429000100`, sequencial 4 de 2026) ou o plano mais recente da `pca_plano_fila`? Um plano fixo pode sair da
-   fonte no ano seguinte.
+   fonte no ano seguinte. Nesse caso a sonda grava `ERRO_SONDA` / `referencia_ausente` (404), e a política de troca
+   (manual na tabela de configuração ou automática pelo plano mais recente) é parte desta resposta.
 6. **A `pncp_sync_dias_sem_sucesso` deve ficar em silêncio** enquanto a fonte estiver DOWN, para não abrir dois
    alertas pela mesma causa?

@@ -1,4 +1,5 @@
-"""Backfill de licitacoes_externas.data_fim e data_publicacao das compras PNCP gravadas com o fuso errado (#332).
+"""Backfill de licitacoes_externas.data_fim e data_publicacao (fuso errado, #332) e data_inicio (nunca gravada, #333)
+das compras PNCP.
 
 Até esta correção, o coletor gravava data_fim e data_publicacao com pncp._data, que lê o texto sem fuso do PNCP
 ("2026-10-08T10:00", horário de Brasília) como UTC, e o prazo ficava 3 h adiantado. Agora usa pncp._data_pncp. Este script recalcula as duas colunas a partir do bruto já gravado em raw
@@ -30,7 +31,8 @@ from .pncp import _data_pncp
 log = logging.getLogger("coletor.backfill_fuso_prazos_pncp")
 
 # coluna gravada -> campo bruto do raw (item da busca do PNCP)
-CAMPOS = (("data_fim", "data_fim_vigencia"), ("data_publicacao", "data_publicacao_pncp"))
+CAMPOS = (("data_fim", "data_fim_vigencia"), ("data_publicacao", "data_publicacao_pncp"),
+          ("data_inicio", "data_inicio_vigencia"))   # #333: abertura das propostas, nunca gravada antes
 
 
 def _mesmo_instante(a: str | None, b: str | None) -> bool:
@@ -63,7 +65,7 @@ def correcoes(ln: dict) -> dict | None:
 
 def backfill(sb, *, aplicar: bool = False, limite: int | None = None, amostra: int = 10) -> dict:
     """Retorna o resumo; em dry-run (aplicar=False) nunca chama sb.atualizar."""
-    filtros = {"select": "id,codigo_externo,data_fim,data_publicacao,normalizacoes,raw", "fonte": "eq.pncp",
+    filtros = {"select": "id,codigo_externo,data_fim,data_publicacao,data_inicio,normalizacoes,raw", "fonte": "eq.pncp",
                "order": "id"}
     if limite:
         filtros["limit"] = str(limite)

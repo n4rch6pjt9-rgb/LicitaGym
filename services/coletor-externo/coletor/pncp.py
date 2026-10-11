@@ -489,6 +489,13 @@ def _data(v):
         return None
 
 
+def abertura_das_propostas(c: dict, det: dict | None) -> str | None:
+    """Início do recebimento de propostas (licitacoes_externas.data_inicio, #333): dataAberturaProposta do detalhe,
+    senão data_inicio_vigencia da busca (é o campo preenchido; data_inicio_recebimento_propostas vem vazio), no fuso
+    do PNCP."""
+    return _data_pncp((det or {}).get("dataAberturaProposta")) or _data_pncp(c.get("data_inicio_vigencia"))
+
+
 def _data_pncp(v):
     """ISO com fuso, com texto sem fuso no horário de Brasília (FUSO_PNCP), como _instante. Usado em data_fim e
     data_publicacao de licitacoes_externas (#332)."""
@@ -1467,6 +1474,10 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
     # valor_total: detalhe (valorTotalEstimado, via identificacao_do_detalhe) > valor_global da busca
     # (vazio em editais). Sem nenhum dos dois a chave fica fora: o upsert (merge-duplicates) atualiza
     # toda coluna enviada, e mandar null apagaria um valor já gravado.
+    # data_inicio (abertura das propostas, #333): só vai quando há valor, para não apagar um já gravado.
+    abertura = abertura_das_propostas(c, det)
+    if abertura:
+        linha["data_inicio"] = abertura
     valor_total = ident.get("valor_total") or _valor_positivo(c.get("valor_global"))
     if valor_total is not None:
         linha["valor_total"] = valor_total

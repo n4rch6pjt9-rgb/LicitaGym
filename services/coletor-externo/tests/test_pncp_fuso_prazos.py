@@ -103,3 +103,29 @@ def test_backfill_le_so_pncp_paginado():
     kw = sb.selecionar.call_args.kwargs
     assert tabela == "licitacoes_externas" and kw["fonte"] == "eq.pncp" and kw["limit"] == "5"
     assert "raw" in kw["select"] and "normalizacoes" in kw["select"]
+
+
+# --- #333: data_inicio (abertura das propostas) ---
+
+def test_abertura_vem_do_detalhe_e_senao_da_busca():
+    from coletor import pncp as P
+    c = {"data_inicio_vigencia": "2026-09-23T12:30"}
+    assert P.abertura_das_propostas(c, None) == "2026-09-23T12:30:00-03:00"
+    assert P.abertura_das_propostas(c, {"dataAberturaProposta": "2026-09-24T08:00:00"}) == "2026-09-24T08:00:00-03:00"
+    assert P.abertura_das_propostas({}, {}) is None
+
+
+def test_linha_da_compra_grava_data_inicio_sem_apagar_quando_falta():
+    import inspect
+    from coletor import pncp as P
+    fonte = inspect.getsource(P._processar)
+    assert "abertura_das_propostas(" in fonte and 'linha["data_inicio"]' in fonte
+
+
+def test_backfill_preenche_data_inicio_vazia():
+    ln = {**GRAVADA_COMO_UTC, "data_fim": "2026-10-08T10:00:00-03:00", "data_publicacao": "2026-09-14T10:54:48-03:00",
+          "data_inicio": None, "raw": {**GRAVADA_COMO_UTC["raw"], "data_inicio_vigencia": "2026-09-23T12:30"}}
+    sb = _sb([ln])
+    B.backfill(sb, aplicar=True)
+    sb.atualizar.assert_called_once_with("licitacoes_externas", 185, {"data_inicio": "2026-09-23T12:30:00-03:00"})
+    assert "data_inicio" in sb.selecionar.call_args.kwargs["select"]

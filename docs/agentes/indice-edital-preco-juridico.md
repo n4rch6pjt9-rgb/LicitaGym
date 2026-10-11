@@ -32,7 +32,7 @@ Data interna só entra se o documento a trouxer. Data desconhecida não vira 31/
 
 | Arquivo | Responsabilidade |
 |---|---|
-| `supabase/migrations/20261010100100_agente_execucoes.sql` | Tabela `public.agente_execucoes` |
+| `supabase/migrations/20261011100400_agente_execucoes.sql` | Tabela `public.agente_execucoes` |
 | `supabase/tests/agente_execucoes_check.sql` | Checagem de RLS e ACL |
 | `supabase/functions/_shared/agentes/tipos.ts` | Tipos e `REGRA_VERSAO` |
 | `supabase/functions/_shared/agentes/achados.ts` | `validarAchado`, `hashContexto`, `normalizarTexto` |

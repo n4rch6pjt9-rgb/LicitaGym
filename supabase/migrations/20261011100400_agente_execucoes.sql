@@ -5,7 +5,7 @@
 -- Quem lê e escreve: só service_role (Edge Function api-agentes). O JWT identifica o usuário; o banco não é aberto
 -- ao authenticated. Sem policy: com RLS ligada, anon e authenticated não leem.
 --
--- Timestamp 20261010100100 (resgate; era 20261006220000): 20261010100000 é o histórico de PCA por órgão e ano.
+-- Timestamp 20261011100400 (resgate; era 20261006220000): 20261010100000 é o histórico de PCA por órgão e ano.
 -- Aditiva. O merge na main aplica em produção (integração Supabase).
 -- Verificação: supabase/tests/agente_execucoes_check.sql.
 

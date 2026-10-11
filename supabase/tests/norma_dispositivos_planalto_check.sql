@@ -1,4 +1,4 @@
--- Checagem da migration 20261010100200_norma_dispositivos_planalto.
+-- Checagem da migration 20261011100500_norma_dispositivos_planalto.
 -- Arts. 11, 41 e 42 existem e estão conferidos. Art. 164 (trecho literal) está conferido.
 -- Art. 54 permanece não conferido: o recorte gravado não é substring do Planalto.
 

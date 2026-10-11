@@ -1,4 +1,4 @@
--- Checagem da migration 20261010100100_agente_execucoes.
+-- Checagem da migration 20261011100400_agente_execucoes.
 -- RLS ligada, nenhuma policy, anon e authenticated sem privilégio. Falha com EXCEPTION.
 
 do $$

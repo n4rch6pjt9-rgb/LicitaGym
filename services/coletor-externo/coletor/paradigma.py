@@ -53,6 +53,7 @@ from .paginacao import TAMANHO_PAGINA_MAX, avaliar_pagina, clamp_tamanho, pagina
 from .perfil_item import normalizar_marca, perfil_item, texto_do_item
 from .escopo import ITEM_FORA, classificar, contexto_academia, e_peca, classificar_texto_item, interesse_borracha, normalizar
 from .portal import cnpj_ou_none, limpar, parse_data
+from .retry import retry_after_s
 
 log = logging.getLogger("coletor.paradigma")
 
@@ -364,6 +365,12 @@ def classificar_item(it: dict, produtos: dict[int, dict] | None = None, contexto
     return classificar_item_detalhe(it, produtos, contexto)[:3]
 
 
+def _recusar_bloqueio(fonte: Fonte, status: int) -> None:
+    """401/403 = o host recusou o cliente (WAF, desafio, login): não se contorna nem se repete."""
+    if status in (401, 403):
+        raise PermissionError(f"{fonte.slug}: o host recusou o acesso (HTTP {status}); bloqueio não se contorna.")
+
+
 class PortalParadigma:
     def __init__(self, fonte: Fonte, delay: float = 1.5, timeout: int = 60, autorizado: bool = False,
                  sessao: requests.Session | None = None):
@@ -381,7 +388,8 @@ class PortalParadigma:
         self.s = sessao or requests.Session()
         self.s.headers.update({"User-Agent": UA, "Accept": "application/json, text/plain, */*"})
         if sessao is None:
-            self.s.get(f"{fonte.base}/Mural.aspx", timeout=timeout)  # cookies de sessão ASP.NET
+            r = self.s.get(f"{fonte.base}/Mural.aspx", timeout=timeout)  # cookies de sessão ASP.NET
+            _recusar_bloqueio(self.fonte, r.status_code)
 
     def _ws(self, metodo: str, body: dict) -> Any:
         payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -392,10 +400,17 @@ class PortalParadigma:
                 time.sleep(self.delay)
                 if r.status_code == 200:
                     return limpar(r.json().get("d"))
+                _recusar_bloqueio(self.fonte, r.status_code)   # 401/403: bloqueio do host, sem nova tentativa
+                if r.status_code == 429 and tentativa < 3:
+                    espera = retry_after_s(r)
+                    time.sleep(espera if espera is not None else 2 ** tentativa * 2)
+                    continue
                 if r.status_code >= 500 and tentativa < 3:
                     time.sleep(2 ** tentativa * 2)
                     continue
                 r.raise_for_status()
+            except requests.HTTPError:
+                raise   # 4xx definitivo (o 429 e o 5xx esgotados também chegam aqui só na última tentativa)
             except requests.RequestException:
                 if tentativa == 3:
                     raise

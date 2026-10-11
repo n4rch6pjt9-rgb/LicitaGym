@@ -1,4 +1,4 @@
--- Checagem da migration 20261011100000_regulamento_amparo_legal (spec 0020).
+-- Checagem da migration 20261011110100_regulamento_amparo_legal (spec 0020).
 --   CA-1 regra de regulamento_do_amparo (mesmos casos de services/coletor-externo/tests/test_pncp_regulamento.py);
 --   CA-2 gatilho: deriva com amparo_legal, não mexe sem ele (RCA do Sistema S fica);
 --   CA-3 constraint ampliada; ACL da função nova.

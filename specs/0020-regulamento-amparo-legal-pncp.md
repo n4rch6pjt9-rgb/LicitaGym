@@ -62,7 +62,7 @@ conferência futura, não como dependência.
 
 ## Impacto em dados
 
-- **Migration:** sim, `supabase/migrations/20261011100000_regulamento_amparo_legal.sql`:
+- **Migration:** sim, `supabase/migrations/20261011110100_regulamento_amparo_legal.sql`:
   - coluna nova (aditiva);
   - função `immutable` e gatilho;
   - `licext_regulamento_chk` refeita (drop/add que só amplia a lista; valores atuais: todos nulos).

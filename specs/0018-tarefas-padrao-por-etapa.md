@@ -469,6 +469,18 @@ Do Marcelo, 11/10/2026 (aprovou o merge do #315 com a revisão incluída):
       - gatilho de regulamento chama a reaplicação (CA-22);
       - fila com deduplicação e resultado no `payload`, e só PNCP consulta o detalhe.
 
+Do Marcelo, 11/10/2026 (PR 4):
+
+12. **Fila de Triagem:**
+    - **Prepara, não analisa:** a fila só faz detalhe PNCP (`amparo_legal`), download, indexação e
+      `pipeline_tarefas_reaplicar`. Os **agentes rodam sob demanda**, quando alguém abre a análise: são regra, rápidos e
+      idempotentes. A `api-agentes` continua só com usuário (sem rota de sistema).
+    - **Cadência:** o consumidor roda no Cloud Run Job do coletor **a cada 15 min**.
+    - **Divisão do PR 4:**
+      - 4a: banco e API. Enfileirar ao entrar na etapa "Triagem" (pelo nome), um pedido aberto por (empresa, licitação),
+        `fila_preparacao_reivindicar`/`concluir` e `pipeline_preparacao_estado` no card;
+      - 4b: consumidor Python e agendamento.
+
 ## Perguntas em aberto
 
 Nenhuma.

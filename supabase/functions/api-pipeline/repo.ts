@@ -82,7 +82,24 @@ export function createSupabaseRepo(client: SupabaseClient): PipelineRepo {
         .select("licitacao_id,motivo,erro,em").eq("tenant_id", tenant);
       if (e2) throw new Error(e2.message);
       const porLicitacao = new Map((pend ?? []).map((p) => [Number(p.licitacao_id), { motivo: String(p.motivo), erro: (p.erro as string | null) ?? null, em: String(p.em) }]));
-      const itens = linhas.slice(0, LIMITE_LISTA).map((i) => ({ ...i, tarefas_pendencia: porLicitacao.get(Number(i.licitacao_id)) ?? null }));
+      // Preparação da Triagem (fila de download/indexação): "análise em preparação" enquanto pendente.
+      const ids = linhas.slice(0, LIMITE_LISTA).map((i) => Number(i.licitacao_id));
+      const prep = new Map<number, ItemPipeline["preparacao"]>();
+      if (ids.length) {
+        const { data: est, error: e3 } = await client.rpc("pipeline_preparacao_estado", { p_tenant: tenant, p_licitacoes: ids });
+        if (e3) throw new Error(e3.message);
+        for (const e of (est ?? []) as Array<Record<string, unknown>>) {
+          prep.set(Number(e.licitacao_id), {
+            status: String(e.status), resultado: (e.resultado as string | null) ?? null,
+            erro: (e.erro as string | null) ?? null, atualizado_em: String(e.atualizado_em),
+          });
+        }
+      }
+      const itens = linhas.slice(0, LIMITE_LISTA).map((i) => ({
+        ...i,
+        tarefas_pendencia: porLicitacao.get(Number(i.licitacao_id)) ?? null,
+        preparacao: prep.get(Number(i.licitacao_id)) ?? null,
+      }));
       return { itens, truncado: linhas.length > LIMITE_LISTA };
     },
 

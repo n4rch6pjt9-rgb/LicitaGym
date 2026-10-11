@@ -12,7 +12,7 @@ cada entrada, mudança e saída. Etapas configuráveis por admin; as 13 do Kanba
 | action | quem | corpo | resposta |
 |---|---|---|---|
 | `etapas_listar` | autenticado | — | `etapas[]` (`id`, `nome`, `fase`, `ordem`, `desfecho`, `exige_motivo`, `padrao`, `total`) |
-| `pipeline_listar` | autenticado | `etapa_id?` | `itens[]` com `licitacao` (campos do card, inclusive `regulamento`) e `tarefas_pendencia` (`{motivo, erro, em}` quando as tarefas da lei não puderam ser criadas, senão null), até 1000, mais recentes primeiro; `truncado` avisa se havia mais |
+| `pipeline_listar` | autenticado | `etapa_id?` | `itens[]` com `licitacao` (campos do card, inclusive `regulamento`) `tarefas_pendencia` (`{motivo, erro, em}` quando as tarefas da lei não puderam ser criadas, senão null) e `preparacao` (último pedido da fila de Triagem: `status` pending/processing = "análise em preparação", completed com `resultado` ok/sem_documento/regulamento_nao_informado_pela_fonte, failed com `erro`; null se nunca entrou em Triagem), até 1000, mais recentes primeiro; `truncado` avisa se havia mais |
 | `pipeline_estado` | autenticado | `licitacao_ids[]` (até 200) | `estado[]` (`licitacao_id`, `etapa_id`) só das que estão no pipeline |
 | `pipeline_adicionar` | autenticado | `licitacao_ids[]` | entra na primeira etapa sem desfecho; quem já está não muda, de forma atômica (`adicionadas`, `ja_no_pipeline`, `etapa`) |
 | `pipeline_mover` | autenticado | `licitacao_ids[]`, `etapa_id`, `motivo?` | `movidas`; etapa com `exige_motivo` sem motivo → 400 |

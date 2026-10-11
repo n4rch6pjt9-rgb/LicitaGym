@@ -30,6 +30,8 @@ export interface ItemPipeline {
   licitacao: Record<string, unknown> | null;
   /** Tarefas da lei que não puderam ser criadas quando o regulamento chegou (private.pipeline_tarefas_pendencias). */
   tarefas_pendencia?: { motivo: string; erro: string | null; em: string } | null;
+  /** Preparação da Triagem (fila): pending/processing = "análise em preparação"; completed com resultado; failed. */
+  preparacao?: { status: string; resultado: string | null; erro: string | null; atualizado_em: string } | null;
 }
 
 export interface EventoHistorico {

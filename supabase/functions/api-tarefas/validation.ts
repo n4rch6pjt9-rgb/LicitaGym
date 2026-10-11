@@ -6,7 +6,20 @@ type Resultado = Acao | { error: string };
 const FASE_RE = /^F\d{2}$/;
 const EVENTO_RE = /^[A-Z][A-Z0-9_]{2,60}$/;
 /** Data e hora com fuso explícito (Z ou ±hh:mm): data pura viraria meia-noite UTC, um dia antes em Brasília. */
-const DATA_HORA_FUSO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
+const DATA_HORA_FUSO_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
+
+/** Data e hora com fuso, e o calendário existe (2026-02-29 e 2026-04-31 não viram 1º de março ou de maio). */
+function prazoValido(v: unknown): Date | null {
+  if (typeof v !== "string") return null;
+  const m = DATA_HORA_FUSO_RE.exec(v);
+  if (!m) return null;
+  const [ano, mes, dia, hora, minuto, segundo] = [m[1], m[2], m[3], m[4], m[5], m[6] ?? "0"].map(Number);
+  const cal = new Date(Date.UTC(ano, mes - 1, dia));
+  if (cal.getUTCFullYear() !== ano || cal.getUTCMonth() !== mes - 1 || cal.getUTCDate() !== dia) return null;
+  if (hora > 23 || minuto > 59 || segundo > 59) return null;
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const idPositivo = (v: unknown): number | null =>
@@ -55,9 +68,8 @@ export function parseActionFromBody(body: Corpo): Resultado {
         out.status = s;
       }
       if (body.prazo_em !== undefined) {
-        const ok = typeof body.prazo_em === "string" && DATA_HORA_FUSO_RE.test(body.prazo_em);
-        const d = ok ? new Date(body.prazo_em as string) : null;
-        if (!d || Number.isNaN(d.getTime())) {
+        const d = prazoValido(body.prazo_em);
+        if (!d) {
           return { error: "'prazo_em' deve ser data e hora ISO 8601 com fuso (ex.: 2026-10-20T18:00:00-03:00)." };
         }
         out.prazo_em = d.toISOString();

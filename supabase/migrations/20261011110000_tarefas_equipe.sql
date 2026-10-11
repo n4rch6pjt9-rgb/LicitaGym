@@ -234,7 +234,9 @@ begin
            liberada_por_evento = coalesce(te.liberada_por_evento, excluded.liberada_por_evento),
            condicao_verificada = coalesce(te.condicao_verificada, excluded.condicao_verificada),
            contexto            = case when te.condicao_verificada is null and excluded.condicao_verificada
-                                      then excluded.contexto else te.contexto end
+                                      then excluded.contexto else te.contexto end,
+           atualizada_por      = excluded.atualizada_por,
+           atualizada_em       = now()
      where (te.liberada_por_fase is null and excluded.liberada_por_fase is not null)
         or (te.liberada_por_evento is null and excluded.liberada_por_evento is not null)
         or (te.condicao_verificada is null and excluded.condicao_verificada)

@@ -235,6 +235,11 @@ Deno.test("CA-9: tarefa de outra empresa não aparece, não é alterada nem atri
 Deno.test("prazo: data sem hora ou sem fuso → 400 (evita meia-noite UTC, um dia antes em Brasília)", () => {
   assertEquals("error" in parseActionFromBody({ action: "tarefa_atualizar", id: 1, prazo_em: "2026-10-20" }), true);
   assertEquals("error" in parseActionFromBody({ action: "tarefa_atualizar", id: 1, prazo_em: "2026-10-20T12:00" }), true);
+  // data impossível não é normalizada para outro dia
+  for (const impossivel of ["2026-02-29T12:00:00Z", "2026-04-31T12:00:00-03:00", "2026-10-20T24:00:00Z", "2026-13-01T12:00:00Z"]) {
+    assertEquals("error" in parseActionFromBody({ action: "tarefa_atualizar", id: 1, prazo_em: impossivel }), true, impossivel);
+  }
+  assertEquals("error" in parseActionFromBody({ action: "tarefa_atualizar", id: 1, prazo_em: "2028-02-29T12:00:00Z" }), false);
   assertEquals(parseActionFromBody({ action: "tarefa_atualizar", id: 1, prazo_em: "2026-10-20T18:00:00-03:00" }), {
     action: "tarefa_atualizar", id: 1, prazo_em: "2026-10-20T21:00:00.000Z",
   });

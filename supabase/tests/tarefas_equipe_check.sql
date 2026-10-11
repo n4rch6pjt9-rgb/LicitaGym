@@ -189,7 +189,12 @@ begin
                 group by tarefa_codigo having count(*) > 1) then
       raise exception 'CHECK FALHOU: fase e evento duplicaram a mesma tarefa';
     end if;
-    -- a segunda origem fica registrada
+    -- a segunda origem fica registrada, com quem e quando atualizou
+    if not exists (select 1 from public.tarefas_equipe
+                    where tenant_id = v_t and licitacao_id = v_srp and tarefa_codigo = '14133-F05-T01'
+                      and atualizada_por = v_u and atualizada_em >= criada_em) then
+      raise exception 'CHECK FALHOU: segunda origem não atualizou atualizada_por/atualizada_em';
+    end if;
     if not exists (select 1 from public.tarefas_equipe
                     where tenant_id = v_t and licitacao_id = v_srp and tarefa_codigo = '14133-F05-T01'
                       and liberada_por_evento = 'ATA_HABILITACAO' and liberada_por_fase = 'F05') then

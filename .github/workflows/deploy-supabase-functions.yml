@@ -78,6 +78,7 @@ jobs:
             api-catmat
             api-pipeline
             api-tenant
+            api-tarefas
             api-fornecedores-homologados
             api-saude
             calculate-distance-webrouter

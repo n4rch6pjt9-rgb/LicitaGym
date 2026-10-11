@@ -16,9 +16,10 @@ import { parsePortalProcessoUrl } from "./portal-compras.ts";
  *      (`https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/acompanhamento-compra?compra={idCompra}`, rota a confirmar).
  *    - `id_externo` não é usado: é `int` e guarda o `nCdProcesso` do SEST SENAT.
  *    - Fallback: se houver `linkSistemaOrigem` ou `url`: valida protocolo https.
- * 3. SEST SENAT (`sestsenat` / `sest_senat`):
- *    - Portal Paradigma em `https://compras.sestsenat.org.br/portal/`.
- *    - Se houver `linkSistemaOrigem` https válido, usa-o; sem ele retorna null (não há rota pública por `id_externo`).
+ * 3. Paradigma / Sistema S (slug de `FONTES` em `coletor/paradigma.py`):
+ *    - Se houver `linkSistemaOrigem` https e host autorizado, usa esse link.
+ *    - Senão, null: não há página estável do edital por `id_externo`, e o mural do portal não é o edital
+ *      (AGENTS.md: dado ausente aparece como ausente). O mural vai em `buildPortalUrl` (campo `url_portal`).
  * 4. Genérica / outras fontes:
  *    - Se houver `linkSistemaOrigem` (ou `url_edital`, `url` em colunas/raw): aceita se for https e host em `ALLOWED_ORIGEM_HOSTS`.
  *
@@ -74,6 +75,28 @@ export const ALLOWED_ORIGEM_HOSTS = new Set([
   ...PARADIGMA_HOSTS,
   ...Object.keys(PARADIGMA_SAAS_TENANTS),
 ]);
+
+/**
+ * Mural público (página de busca) de cada fonte Paradigma. Não é o edital: vai em `url_portal`, com rótulo próprio.
+ */
+export const PARADIGMA_MURAL: Readonly<Record<string, string>> = {
+  sestsenat: "https://compras.sestsenat.org.br/portal/Mural.aspx",
+  sest_senat: "https://compras.sestsenat.org.br/portal/Mural.aspx",
+  fiesc: "https://portaldecompras.fiesc.com.br/portal/Mural.aspx",
+  firjan: "https://portaldecompras.firjan.com.br/portal/Mural.aspx",
+  fiergs: "https://compras.sistemafiergs.org.br/portal/Mural.aspx",
+  findes: "https://portaldecompras.findes.org.br/portal/Mural.aspx",
+  fieb: "https://compras.fieb.org.br/portal/Mural.aspx",
+  fiems: "https://compras.fiems.com.br/portal/Mural.aspx",
+  fiemt: "https://compras.sfiemt.ind.br/portal/Mural.aspx",
+  sfiec: "https://portaldecompras.sfiec.org.br/portal/Mural.aspx",
+  fiemg: "https://compras.fiemg.com.br/portal/Mural.aspx",
+  sescsp: "https://scr360.paradigmabs.com.br/sescsp/portal/Mural.aspx",
+  sesc_senac_rs: "https://egov.paradigmabs.com.br/sesc_senac_rs/portal/Mural.aspx",
+  sescdn: "https://egov-br.paradigmabs.com.br/sescdn/portal/Mural.aspx",
+  // sescrj fora: em 11/10/2026 /SESCRJ/portal/Mural.aspx redireciona para Default.aspx (sem mural nesse caminho)
+  sescba: "https://egov.paradigmabs.com.br/sescba/portal/Mural.aspx",
+};
 
 /** Domínio dos hosts SaaS compartilhados do Paradigma. */
 const PARADIGMA_SAAS_DOMINIO = "paradigmabs.com.br";
@@ -303,6 +326,15 @@ function extractComprasGovIdCompra(row: LicitacaoRowForEdital, raw: Record<strin
  * Constrói a URL do edital para uma linha de licitação.
  * Retorna null se nenhuma URL segura/válida puder ser derivada.
  */
+/**
+ * Página pública do portal de compras da fonte (mural do Paradigma), para um link "Abrir portal" com rótulo próprio.
+ * Não é o edital. null quando a fonte não tem mural conhecido.
+ */
+export function buildPortalUrl(row: LicitacaoRowForEdital | null | undefined): string | null {
+  const fonte = String(row?.fonte ?? "").trim().toLowerCase();
+  return Object.hasOwn(PARADIGMA_MURAL, fonte) ? PARADIGMA_MURAL[fonte] : null;
+}
+
 export function buildEditalUrl(row: LicitacaoRowForEdital | null | undefined): string | null {
   if (!row || typeof row !== "object") return null;
 
@@ -368,14 +400,9 @@ export function buildEditalUrl(row: LicitacaoRowForEdital | null | undefined): s
     return null;
   }
 
-  if (fonte === "sestsenat" || fonte === "sest_senat") {
-    // SEST SENAT (Portal Paradigma)
-    // Se houver linkSistemaOrigem https
-    if (validOrigemUrl) {
-      return validOrigemUrl;
-    }
-
-    return null;
+  if (Object.hasOwn(PARADIGMA_MURAL, fonte)) {
+    // link da origem validado, ou null: o mural não é o edital (ver buildPortalUrl)
+    return validOrigemUrl ?? null;
   }
 
   // Outras fontes ou fonte não informada

@@ -19,8 +19,12 @@ Métodos usados (todos públicos no mural):
   PesquisarCatalogoProdutoClasses / PesquisarCatalogoProdutos  catálogo do portal (filtro Categoria + Tipo)
   PesquisarAnexos / PesquisarAnexosProcessoContratacao  anexos (reaproveita portal.py)
 
-Portais Paradigma hospedados em paradigmabs.com.br (Sesc SP, Sesc/Senac RS) declaram no robots.txt
-que não aceitam acesso automatizado: o adaptador recusa essas fontes (ver FONTES).
+Acesso (decisão de 05/10/2026): os portais Paradigma hospedados em paradigmabs.com.br (Sesc SP, Sesc/Senac RS,
+Sesc DN, Sesc RJ, Sesc BA) declaram no robots.txt que não aceitam acesso automatizado; o dono decidiu que isso não
+impede a coleta do webservice público do mural, com o mesmo intervalo do adaptador (FONTES_MURAL_AUTORIZADO; o CLI
+passa autorizado=True só nelas). Nessas fontes, só anexos públicos: o cadastro de visitante não é usado (11/10/2026).
+401/403 de qualquer host para a coleta na hora, sem nova tentativa; 429 respeita Retry-After. Bloqueio de WAF continua respeitado: a FIEMG (403 do Cloudflare para cliente
+automatizado) fica de fora e não se contorna.
 
 Paginação (regra de 03/10/2026): cada faixa pede no máximo 100 itens (`nPaginaDe`/`nPaginaAte`).
 A resposta observada do webservice é uma lista, sem total de registros. Página curta não encerra.
@@ -50,6 +54,7 @@ from .paginacao import TAMANHO_PAGINA_MAX, avaliar_pagina, clamp_tamanho, pagina
 from .perfil_item import normalizar_marca, perfil_item, texto_do_item
 from .escopo import ITEM_FORA, classificar, contexto_academia, e_peca, classificar_texto_item, interesse_borracha, normalizar
 from .portal import cnpj_ou_none, limpar, parse_data
+from .retry import retry_after_s
 
 log = logging.getLogger("coletor.paradigma")
 
@@ -62,7 +67,9 @@ class Fonte:
     entidade: str
     uf: str | None
     base: str
-    coleta_automatica: bool  # False = robots.txt proíbe; usar aviso de fornecedor/manual
+    # False = o host bloqueia acesso automatizado (robots.txt ou WAF). Só coleta se a fonte estiver em
+    # FONTES_MURAL_AUTORIZADO (decisão de 05/10/2026, robots.txt do paradigmabs); WAF (FIEMG) nunca.
+    coleta_automatica: bool
 
 
 FONTES: dict[str, Fonte] = {
@@ -80,11 +87,21 @@ FONTES: dict[str, Fonte] = {
     "sfiec": Fonte("sfiec", "SFIEC (SESI/CE, SENAI/CE, IEL/CE)", "CE", "https://portaldecompras.sfiec.org.br/portal", True),
     # FIEMG: Cloudflare recusa cliente automatizado (403 no webservice para Python; navegador passa). Não contornar.
     "fiemg": Fonte("fiemg", "FIEMG (SESI/MG, SENAI/MG, IEL/MG)", "MG", "https://compras.fiemg.com.br/portal", False),
-    # SaaS paradigmabs.com.br: robots.txt proíbe acesso automatizado
+    # SaaS paradigmabs.com.br: robots.txt proíbe acesso automatizado; coletados pelo mural por decisão de 05/10/2026
+    # (FONTES_MURAL_AUTORIZADO)
     "sescdn": Fonte("sescdn", "Sesc Departamento Nacional", None, "https://egov-br.paradigmabs.com.br/sescdn/portal", False),
     "sescrj": Fonte("sescrj", "Sesc RJ", "RJ", "https://egov.paradigmabs.com.br/SESCRJ/portal", False),
     "sescba": Fonte("sescba", "Sesc BA", "BA", "https://egov.paradigmabs.com.br/sescba/portal", False),
 }
+
+# Decisão de 05/10/2026: robots.txt desses hosts não impede a coleta. O webservice
+# público do mural entra com o mesmo intervalo do adaptador. FIEMG fica de fora (WAF).
+FONTES_MURAL_AUTORIZADO = frozenset({"sescsp", "sesc_senac_rs", "sescdn", "sescrj", "sescba"})
+
+
+def autorizado_para_coleta(fonte: Fonte) -> bool:
+    """Override explícito do bloqueio de robots.txt. Não cobre bloqueio de WAF."""
+    return fonte.slug in FONTES_MURAL_AUTORIZADO
 
 MODULO_PADRAO = 59
 
@@ -349,13 +366,20 @@ def classificar_item(it: dict, produtos: dict[int, dict] | None = None, contexto
     return classificar_item_detalhe(it, produtos, contexto)[:3]
 
 
+def _recusar_bloqueio(fonte: Fonte, status: int) -> None:
+    """401/403 = o host recusou o cliente (WAF, desafio, login): não se contorna nem se repete."""
+    if status in (401, 403):
+        raise PermissionError(f"{fonte.slug}: o host recusou o acesso (HTTP {status}); bloqueio não se contorna.")
+
+
 class PortalParadigma:
     def __init__(self, fonte: Fonte, delay: float = 1.5, timeout: int = 60, autorizado: bool = False,
                  sessao: requests.Session | None = None):
-        if not fonte.coleta_automatica and not autorizado:
+        # autorizado=True só vale para as fontes da decisão de 05/10; bloqueio de WAF (FIEMG) nunca se libera
+        if not fonte.coleta_automatica and not (autorizado and fonte.slug in FONTES_MURAL_AUTORIZADO):
             raise PermissionError(
-                f"{fonte.slug}: o host proíbe coleta automatizada (robots.txt ou WAF). "
-                "Use aviso de fornecedor/coleta manual, ou passe autorizado=True com autorização formal da entidade.")
+                f"{fonte.slug}: o host bloqueia coleta automatizada (robots.txt ou WAF) e a fonte não está em "
+                "FONTES_MURAL_AUTORIZADO. Bloqueio de WAF não se contorna; use aviso de fornecedor ou coleta manual.")
         self.fonte = fonte
         if delay < DELAY_MINIMO:
             log.warning("delay %s s abaixo do mínimo de %s s; usando %s s", delay, DELAY_MINIMO, DELAY_MINIMO)
@@ -366,7 +390,8 @@ class PortalParadigma:
         self.s = sessao or requests.Session()
         self.s.headers.update({"User-Agent": UA, "Accept": "application/json, text/plain, */*"})
         if sessao is None:
-            self.s.get(f"{fonte.base}/Mural.aspx", timeout=timeout)  # cookies de sessão ASP.NET
+            r = self.s.get(f"{fonte.base}/Mural.aspx", timeout=timeout)  # cookies de sessão ASP.NET
+            _recusar_bloqueio(self.fonte, r.status_code)
 
     def _ws(self, metodo: str, body: dict) -> Any:
         payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -377,10 +402,17 @@ class PortalParadigma:
                 time.sleep(self.delay)
                 if r.status_code == 200:
                     return limpar(r.json().get("d"))
+                _recusar_bloqueio(self.fonte, r.status_code)   # 401/403: bloqueio do host, sem nova tentativa
+                if r.status_code == 429 and tentativa < 3:
+                    espera = retry_after_s(r)
+                    time.sleep(espera if espera is not None else 2 ** tentativa * 2)
+                    continue
                 if r.status_code >= 500 and tentativa < 3:
                     time.sleep(2 ** tentativa * 2)
                     continue
                 r.raise_for_status()
+            except requests.HTTPError:
+                raise   # 4xx definitivo (o 429 e o 5xx esgotados também chegam aqui só na última tentativa)
             except requests.RequestException:
                 if tentativa == 3:
                     raise
@@ -541,6 +573,17 @@ def linha_licitacao(fonte: Fonte, d: dict, categoria: str | None, borracha: bool
     return row
 
 
+# perfil_item devolve campos de BI que licitacao_itens não tem. PostgREST recusa a linha inteira.
+_PERFIL_FORA_DA_TABELA = ("cinematica", "produto_padronizado")
+
+
+def _perfil_gravavel(descricao: str | None) -> dict:
+    perfil = perfil_item(descricao)
+    for chave in _PERFIL_FORA_DA_TABELA:
+        perfil.pop(chave, None)
+    return perfil
+
+
 def linhas_itens(lic_id: int | None, itens: list[dict], produtos: dict[int, dict] | None = None,
                  contexto: bool = False) -> list[dict]:
     out = []
@@ -564,7 +607,7 @@ def linhas_itens(lic_id: int | None, itens: list[dict], produtos: dict[int, dict
             "valor_unitario_estimado": vref,
             "valor_total_estimado": round(vref * qtd, 2) if vref and qtd else None,
             "catalogo_codigo_item": prod.get("codigo") or (m_cod.group(1) if m_cod else None),
-            **perfil_item(p["descricao"]),
+            **_perfil_gravavel(p["descricao"]),
             "situacao": it.get("sStItem"),
             "categoria_escopo": cat,
             "interesse_borracha": borr,
@@ -856,7 +899,9 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("--paginas deve ser >= 1")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    portal = PortalParadigma(FONTES[args.fonte], delay=float(env("DELAY_SEGUNDOS", "1.5")))
+    fonte = FONTES[args.fonte]
+    portal = PortalParadigma(
+        fonte, delay=float(env("DELAY_SEGUNDOS", "1.5")), autorizado=autorizado_para_coleta(fonte))
     sb = None if args.dry_run else Supabase(env("SUPABASE_URL", obrigatorio=True),
                                             env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True))
     termos = [t.strip() for t in args.termos.split(";")] if args.termos else TERMOS_SISTEMA_S
@@ -881,8 +926,14 @@ def main(argv: list[str] | None = None) -> int:
         arm = None if args.dry_run else Armazenamento.do_ambiente()
         if arm is not None and not arm.dentro_do_saas:
             raise SystemExit("Defina SUPABASE_STORAGE_BUCKET: os documentos precisam ficar dentro do LicitaGym.")
-        visitante = VisitanteInstitucional.do_ambiente()
-        if visitante is None:
+        # Decisão de 11/10/2026: nas fontes autorizadas pelo mural (paradigmabs), só anexos públicos; o cadastro de
+        # visitante (dados da empresa) não é usado. Documento que exige cadastro fica pendente.
+        if fonte.slug in FONTES_MURAL_AUTORIZADO:
+            visitante = None
+            log.info("%s: só anexos públicos (sem cadastro de visitante; decisão de 11/10/2026)", fonte.slug)
+        else:
+            visitante = VisitanteInstitucional.do_ambiente()
+        if visitante is None and fonte.slug not in FONTES_MURAL_AUTORIZADO:
             log.warning("VISITANTE_* não configurado: documentos que exigem cadastro ficam registrados como pendentes")
         docs = DocumentosParadigma(portal, sb, arm, visitante, int(float(env("MAX_MB", "50")) * 1048576), args.dry_run)
     r = coletar(portal, sb, termos, args.paginas, args.dry_run, not args.sem_resultados, produtos, forn, processos, anos,

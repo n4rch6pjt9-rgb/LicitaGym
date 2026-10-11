@@ -3,6 +3,7 @@ import {
   ALLOWED_ORIGEM_HOSTS,
   buildEditalUrl,
   buildPncpEditalUrl,
+  buildPortalUrl,
   isValidHttpsUrl,
   PARADIGMA_HOSTS,
   PARADIGMA_SAAS_TENANTS,
@@ -263,7 +264,7 @@ Deno.test("buildEditalUrl: Fonte SEST SENAT", () => {
     "https://compras.sestsenat.org.br/portal/Download.aspx?q=edital123",
   );
 
-  // 2. Linha sem linkSistemaOrigem nem idCompras -> retorna null (regra a confirmar / sem link público direto por id)
+  // 2. Sem link da origem: null (o mural não é o edital; vai em buildPortalUrl)
   const row2 = {
     fonte: "sestsenat",
     modulo: 59,
@@ -275,11 +276,16 @@ Deno.test("buildEditalUrl: Fonte SEST SENAT", () => {
     null,
   );
 
-  // 3. SEST SENAT sem id_externo e sem link
-  const row3 = {
-    fonte: "sestsenat",
-  };
-  assertEquals(buildEditalUrl(row3), null);
+  // 3. Alias e tenants SaaS do Paradigma: url_edital null; o mural sai em buildPortalUrl
+  assertEquals(buildEditalUrl({ fonte: "sescsp" }), null);
+  assertEquals(buildPortalUrl({ fonte: "sest_senat" }), "https://compras.sestsenat.org.br/portal/Mural.aspx");
+  assertEquals(buildPortalUrl({ fonte: "sescsp" }), "https://scr360.paradigmabs.com.br/sescsp/portal/Mural.aspx");
+  assertEquals(buildPortalUrl({ fonte: "sescrj" }), null); // mural não confirmado (redireciona para Default.aspx)
+  assertEquals(buildPortalUrl({ fonte: "fiesc" }), "https://portaldecompras.fiesc.com.br/portal/Mural.aspx");
+  assertEquals(buildPortalUrl({ fonte: "pncp" }), null);
+  // propriedades herdadas não viram fonte
+  assertEquals(buildPortalUrl({ fonte: "constructor" }), null);
+  assertEquals(buildEditalUrl({ fonte: "__proto__" }), null);
 });
 
 Deno.test("buildEditalUrl: Outras fontes e casos genéricos", () => {
@@ -403,5 +409,27 @@ Deno.test("host SaaS compartilhado do Paradigma: só tenant do Sistema S e da pr
   assertEquals(
     isValidHttpsUrl("https://egov.paradigmabs.com.br/sescba/x", true, ALLOWED_ORIGEM_HOSTS),
     "https://egov.paradigmabs.com.br/sescba/x",
+  );
+});
+
+Deno.test("portal: cada fonte Paradigma do coletor aponta para o próprio mural (url_portal)", async () => {
+  const fontes = await fontesParadigma();
+  const fila = fontes.filter((fonte) => fonte.slug !== "fiemg" && fonte.slug !== "sescrj").map((fonte) => fonte.slug).sort();
+  assertEquals(fontes.some((fonte) => fonte.slug === "fiemg"), true);
+  assertEquals(fila.includes("fiemg"), false);
+  assertEquals(fila.includes("sestsenat"), true);
+  assertEquals(fila.includes("sfiec"), true);
+  for (const slug of fila) {
+    const fonte = fontes.find((item) => item.slug === slug)!;
+    assertEquals(
+      buildPortalUrl({ fonte: slug }),
+      `${fonte.base.href}/Mural.aspx`,
+      slug,
+    );
+    assertEquals(buildEditalUrl({ fonte: slug }), null, slug);
+  }
+  assertEquals(
+    buildPortalUrl({ fonte: "fiemg" }),
+    "https://compras.fiemg.com.br/portal/Mural.aspx",
   );
 });

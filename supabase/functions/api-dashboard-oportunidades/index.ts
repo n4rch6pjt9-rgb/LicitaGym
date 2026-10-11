@@ -11,7 +11,7 @@ export const corsHeaders = {
 import type { ActionParams, GetActionParams, LicitacaoFiltros, ListActionParams, SortField } from "./types.ts";
 import { parseActionFromBody, parseActionFromUrl } from "./validation.ts";
 import { applyLicitacaoFilters, applyOportunidadesScope, calculateRange } from "./query.ts";
-import { buildEditalUrl } from "../_shared/edital-url.ts";
+import { buildEditalUrl, buildPortalUrl } from "../_shared/edital-url.ts";
 import { handleAcompanhamento } from "./acompanhamento.ts";
 import { anexarAlertaPortal, type TenantDoUsuario } from "./portal.ts";
 import { ErroTenantAcesso, lerTenantDoUsuario } from "../_shared/tenant.ts";
@@ -423,6 +423,7 @@ async function handleGet(
       const itemWithUrl = comAderencia({
         ...itemRecord,
         url_edital: buildEditalUrl(itemRecord),
+        url_portal: buildPortalUrl(itemRecord),
       }, await escopoCatmatPorLicitacao(client, [Number(itemRecord.id)]));
       const [itemComPortal] = await anexarAlertaPortal(client, [itemWithUrl], ctx?.tenantDoUsuario ?? semTenant);
 
@@ -463,6 +464,7 @@ async function handleGet(
       const itemWithUrl = comAderencia({
         ...itemRecord,
         url_edital: buildEditalUrl(itemRecord),
+        url_portal: buildPortalUrl(itemRecord),
       }, await escopoCatmatPorLicitacao(client, [Number(itemRecord.id)]));
       const [itemComPortal] = await anexarAlertaPortal(client, [itemWithUrl], ctx?.tenantDoUsuario ?? semTenant);
 
@@ -501,6 +503,7 @@ async function handleGet(
       const items = await anexarAlertaPortal(client, rawItems.map((row) => comAderencia({
         ...row,
         url_edital: buildEditalUrl(row),
+        url_portal: buildPortalUrl(row),
       }, ader)), ctx?.tenantDoUsuario ?? semTenant);
       const total = count;
       if (total === 0 && items.length === 0) {
@@ -703,6 +706,7 @@ async function montarItens(
   return await anexarAlertaPortal(client, rows.map((row) => ({
     ...row,
     url_edital: buildEditalUrl(row),
+        url_portal: buildPortalUrl(row),
     ...(matches ? { catmat_match: matches.get(Number(row.id)) ?? [] } : {}),
   })), tenantDoUsuario);
 }

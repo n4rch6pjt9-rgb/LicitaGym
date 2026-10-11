@@ -252,7 +252,7 @@ Obtém o painel de acompanhamento em tempo real para uma oportunidade, consultan
 - Atas de registro de preço associadas (`numero`, `ano`, `vigenciaInicio`, `vigenciaFim`, `cancelado`).
 - Histórico completo de eventos e retificações paginado (`data`, `categoria`, `tipo`, `item`, `documentoTitulo`, `justificativa`).
 - Arquivos e editais oficiais para download direto (`titulo`, `tipo`, `url`).
-- URLs seguras derivadas na leitura: `url_edital` e `url_acompanhamento` (redirecionamento Comprasnet `https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/landing?destino=acompanhamento-compra&compra={idCompra}` quando `idCompra` tem 17 dígitos válidos).
+- URLs seguras derivadas na leitura: `url_edital` (só link do edital; Sistema S/Paradigma sem link da origem = null), `url_portal` (mural público do portal Paradigma da fonte, não é o edital; null nas outras fontes) e `url_acompanhamento` (redirecionamento Comprasnet `https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/landing?destino=acompanhamento-compra&compra={idCompra}` quando `idCompra` tem 17 dígitos válidos).
 - Cache em memória de ~5 minutos (`Cache-Control: private, max-age=300`).
 - Isolamento de falhas parciais: falha em uma seção não inviabiliza as demais; cada seção possui seu campo `erro`.
 

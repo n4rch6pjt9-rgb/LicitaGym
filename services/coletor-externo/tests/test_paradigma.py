@@ -215,6 +215,13 @@ def test_linha_licitacao_omite_prioridade_quando_desconhecida():
     assert li_homolog["prioridade"] == "historico"
 
 
+def test_linhas_itens_nao_grava_cinematica():
+    li = P.linhas_itens(1, [{"nCdItemSequencial": 1, "sDsItem": "SUPINO RETO CONVERGENTE"}])
+    assert li[0]["no_taxonomia"] == "supino_maquina"
+    assert "cinematica" not in li[0]
+    assert "produto_padronizado" not in li[0]
+
+
 def test_linhas_itens_e_resultados():
     li = P.linhas_itens(10, ITENS_7752)
     assert [i["numero_item"] for i in li] == [1, 4]
@@ -270,11 +277,14 @@ def test_modulo_de_sentinela_e_ausente():
     assert P.modulo_de({}) == 59 and P.modulo_de(None) == 59
 
 
-def test_novos_tenants_paradigmabs_bloqueados():
+def test_tenants_paradigmabs_autorizados_pelo_mural_e_fiemg_bloqueada():
     for slug in ("sescdn", "sescrj", "sescba", "sescsp", "sesc_senac_rs"):
         assert P.FONTES[slug].coleta_automatica is False
+        assert P.autorizado_para_coleta(P.FONTES[slug]) is True
         assert "paradigmabs.com.br" in P.FONTES[slug].base
+        P.PortalParadigma(P.FONTES[slug], autorizado=True, sessao=MagicMock())
     assert P.FONTES["fiemg"].coleta_automatica is False  # Cloudflare bloqueia cliente automatizado
+    assert P.autorizado_para_coleta(P.FONTES["fiemg"]) is False
     for slug in ("firjan", "fiergs", "findes", "fieb", "fiems", "fiemt", "sfiec"):
         assert P.FONTES[slug].coleta_automatica is True
 
@@ -893,3 +903,40 @@ def test_cli_paginas_padrao_nao_corta(monkeypatch):
     assert P.main(["--fonte", "fiesc", "--dry-run", "--sem-catalogo", "--sem-documentos",
                    "--sem-resultados", "--sem-fornecedores"]) == 0
     assert visto["paginas"] is None
+
+
+def test_ws_403_para_na_primeira_chamada(monkeypatch):
+    """Revisão de segurança do #304: WAF/desafio (403) não é repetido nem contornado."""
+    monkeypatch.setattr(P.time, "sleep", lambda _s: None)
+    s = MagicMock()
+    s.post.return_value.status_code = 403
+    p = P.PortalParadigma(P.FONTES["sescsp"], delay=0, autorizado=True, sessao=s)
+    with pytest.raises(PermissionError):
+        p.listar("academia")
+    assert s.post.call_count == 1
+
+
+def test_ws_429_respeita_retry_after(monkeypatch):
+    esperas = []
+    monkeypatch.setattr(P.time, "sleep", lambda x: esperas.append(x))
+    s = MagicMock()
+    lento, ok = MagicMock(status_code=429, headers={"Retry-After": "7"}), MagicMock(status_code=200)
+    ok.json.return_value = {"d": []}
+    s.post.side_effect = [lento, ok]
+    p = P.PortalParadigma(P.FONTES["fiesc"], delay=0, sessao=s)
+    assert p._ws("PesquisarProcessos", {}) == []
+    assert 7 in esperas and s.post.call_count == 2
+
+
+def test_mural_403_no_construtor_recusa(monkeypatch):
+    sessao = MagicMock()
+    sessao.get.return_value.status_code = 403
+    monkeypatch.setattr(P.requests, "Session", lambda: sessao)
+    with pytest.raises(PermissionError):
+        P.PortalParadigma(P.FONTES["sescsp"], autorizado=True)
+
+
+def test_fiemg_nao_libera_nem_com_autorizado():
+    """Revisão #304: WAF (FIEMG) não se libera pelo construtor, só as fontes da decisão de 05/10."""
+    with pytest.raises(PermissionError):
+        P.PortalParadigma(P.FONTES["fiemg"], autorizado=True, sessao=MagicMock())

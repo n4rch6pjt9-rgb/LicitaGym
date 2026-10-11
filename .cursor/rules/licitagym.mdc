@@ -1,0 +1,40 @@
+---
+description: Onboarding e limites do agente no LicitaGym (backend Supabase, Edge Functions, coletores)
+alwaysApply: true
+---
+
+# LicitaGym no Cursor
+
+Antes de mudar qualquer coisa, leia (nesta ordem) e use como fonte de verdade:
+
+1. `AGENTS.md`: regras de produto e dados (zero alucinação, identificadores oficiais, schema antes de requisição).
+2. `CLAUDE.md`: como o projeto roda, testa, entrega e é observado, e o que o agente não faz.
+3. `.github/instructions/*.instructions.md`: regras da área que você vai mexer.
+4. `.claude/skills/*/SKILL.md` e `.claude/agents/*.md`: procedimentos (`nova-migration`, `validar-migrations`,
+   `verificar-producao`, `merge-pilha`, `ciclo-janelas`) e checklists de revisão (`revisor-codigo`,
+   `revisor-migration`, `revisor-seguranca`). Aqui não rodam como comando: siga-os como roteiro.
+5. Memória do Claude Code, fora do repo: `C:\Users\marce\.claude\projects\C--Users-marce-licitagym\memory\`
+   (comece pelo `MEMORY.md`). Decisões e lições recentes que não estão no código.
+6. Estado atual: `git log --oneline -15 origin/main`, `gh pr list --state open` e as issues abertas de
+   `n4rch6pjt9-rgb/LicitaGym` e `n4rch6pjt9-rgb/Dashboard---LicitaGym`.
+
+Os `CLAUDE.md` de subpastas são logs do plugin claude-mem, não instruções.
+
+## Limites
+
+O hook `.claude/hooks/bloquear-destrutivo.mjs` só existe no Claude Code. No Cursor, quem cumpre estas regras é você.
+
+- Um ambiente só: produção (Supabase `ifaiagegyicjzlpskafh`). Merge na `main` aplica migrations e republica as
+  Edge Functions. Nada de merge nem deploy sem o "ok" explícito do usuário.
+- Proibido rodar: `supabase db reset`, `supabase db push`, `supabase migration repair`, `git push --force`, push direto
+  na `main`, `wrangler deploy`, `wrangler delete`, `terraform apply`, `terraform destroy`. Se for mesmo necessário, o
+  usuário roda.
+- O MCP do Supabase (`.cursor/mcp.json`) é somente leitura. Escrita em produção só por migration + PR, ou pelo SQL
+  Editor com o usuário.
+- Não leia, copie nem versione `.env*` (exceto `.env.example`), chaves, HAR, CSV, zip nem dados de coleta.
+- Papel de admin é `app_metadata.licitagym_role = 'admin'`, nunca `user_metadata`.
+- Antes do PR: os testes da CI (`deno check`, `deno test tests/supabase ...`, `pytest`; `validar-migrations` se houver
+  migration) e a revisão pelos checklists de `.claude/agents/`.
+- Outras sessões (Claude Code e Cursor) trabalham em paralelo: comece de um worktree novo a partir de `origin/main` e
+  não mexa em alteração sem commit que não é sua.
+- Responda em português do Brasil.

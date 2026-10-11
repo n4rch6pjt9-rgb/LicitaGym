@@ -15,7 +15,10 @@ Deno.test("listagem de planos devolve as colunas de pca_planos anteriores à spe
 });
 
 Deno.test("api-pncp-pca não usa select('*') em pca_planos", async () => {
-  const src = await Deno.readTextFile(new URL("supabase/functions/api-pncp-pca/index.ts", raiz));
-  assert(!/\.select\(\s*["']\*["']/.test(src));
-  assert(src.includes("select(COLUNAS_LISTA_PLANOS"));
+  for (const arquivo of ["index.ts", "lista.ts"]) {
+    const src = await Deno.readTextFile(new URL(`supabase/functions/api-pncp-pca/${arquivo}`, raiz));
+    assert(!/\.select\(\s*["']\*["']/.test(src), arquivo);
+  }
+  const lista = await Deno.readTextFile(new URL("supabase/functions/api-pncp-pca/lista.ts", raiz));
+  assert(lista.includes("select(COLUNAS_LISTA_PLANOS"));
 });

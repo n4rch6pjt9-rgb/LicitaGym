@@ -21,6 +21,13 @@ cada entrada, mudança e saída. Etapas configuráveis por admin; as 13 do Kanba
 | `etapa_criar` | admin da empresa ou desenvolvedor | `nome`, `fase`, `ordem?`, `desfecho?`, `exige_motivo?` | 201 `etapa`; nome repetido → 409 |
 | `etapa_atualizar` | admin da empresa ou desenvolvedor | `id` + campos | `etapa` |
 | `etapa_excluir` | admin da empresa ou desenvolvedor | `id`, `mover_para?` | `movidas`; com oportunidades e sem `mover_para` → 400; última etapa → 400 |
+| `etapa_tarefas_listar` | autenticado | `etapa_id` | `tarefas[]` do modelo da etapa, ativas e desligadas (`origem`, `tarefa_codigo` ou `chave`/`titulo`/`descricao`/`prazo_horas`, `ordem`, `ativo`, `catalogo`); etapa de outra empresa → 404 |
+| `etapa_tarefas_salvar` | admin da empresa ou desenvolvedor | `etapa_id`, `tarefas[]` (lista completa: `{origem:"catalogo", tarefa_codigo}` ou `{origem:"empresa", chave?, titulo, descricao?, prazo_horas?}`) | `salvas` e o modelo atualizado. Upsert por código ou chave; o que sai da lista é desligado (nunca apagado); tarefa da empresa sem `chave` ganha `emp-` + 8 hex. Código inexistente ou inativo, chave de outra etapa ou item inválido → 400, nada gravado |
+| `tarefas_reaplicar` | autenticado | `licitacao_id` | `criadas`, `existentes`, `bloqueio` (`regulamento_nao_informado` / `regulamento_sem_catalogo`); fora do pipeline → 404 |
+
+Tarefas por etapa (spec 0018): entrar numa etapa cria as tarefas do modelo dela em `tarefas_equipe` (gatilho no banco),
+na fila do admin; a lista e a atribuição ficam na `api-tarefas`. O card traz `licitacao.regulamento`: nulo mostra "tarefas da
+lei pendentes" quando a etapa tem tarefa do catálogo.
 
 Fases: `prospeccao`, `proposta`, `disputa`, `conclusao`. Desfechos: `vencida`, `perdida`, `descartada`.
 

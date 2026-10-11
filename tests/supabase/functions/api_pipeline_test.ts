@@ -6,7 +6,7 @@ import {
   lerTenantDoUsuario,
   resolverTenantDoUsuario,
 } from "../../../supabase/functions/_shared/tenant.ts";
-import type { Etapa, EventoHistorico } from "../../../supabase/functions/api-pipeline/types.ts";
+import type { Etapa, EventoHistorico, ItemModelo, ModeloTarefa } from "../../../supabase/functions/api-pipeline/types.ts";
 import { MAX_LOTE, parseActionFromBody } from "../../../supabase/functions/api-pipeline/validation.ts";
 
 // Repositório em memória com as mesmas regras de pipeline_mover / pipeline_etapa_excluir
@@ -22,6 +22,38 @@ function repoMemoria() {
   nova("Triagem", 20);
   nova("Descartada", 130, { fase: "conclusao", desfecho: "descartada", exige_motivo: true });
   const licitacoes = new Set([101, 102, 103]);
+  // modelo de tarefas por etapa (spec 0018): mesmas regras de pipeline_etapa_tarefas_salvar
+  let seqModelo = 0;
+  const modelo: ModeloTarefa[] = [];
+  const catalogoAtivo = new Set(["14133-F01-T01", "14133-F04-T01"]);
+  const salvarModelo = (etapaId: number, itens: ItemModelo[]) => {
+    if (!etapas.some((e) => e.id === etapaId)) throw new ErroPipeline("Etapa não encontrada.", 404);
+    for (const it of itens) {
+      if (it.origem === "catalogo" && !catalogoAtivo.has(it.tarefa_codigo)) {
+        throw new ErroPipeline(`Tarefa ${it.tarefa_codigo} não existe ou não está ativa no catálogo.`, 400);
+      }
+    }
+    const vistos = new Set<number>();
+    itens.forEach((it, i) => {
+      const atual = modelo.find((m) => m.etapa_id === etapaId &&
+        (it.origem === "catalogo" ? m.tarefa_codigo === it.tarefa_codigo : m.chave !== null && m.chave === it.chave));
+      if (atual) {
+        Object.assign(atual, { ativo: true, ordem: (i + 1) * 10 }, it.origem === "empresa" ? { titulo: it.titulo } : {});
+        vistos.add(atual.id);
+      } else {
+        const novo: ModeloTarefa = {
+          id: ++seqModelo, etapa_id: etapaId, origem: it.origem, tarefa_codigo: it.origem === "catalogo" ? it.tarefa_codigo : null,
+          chave: it.origem === "empresa" ? (it.chave ?? `emp-${seqModelo.toString(16).padStart(8, "0")}`) : null,
+          titulo: it.origem === "empresa" ? it.titulo : null, descricao: null, prazo_horas: it.origem === "empresa" ? it.prazo_horas : null,
+          ordem: (i + 1) * 10, ativo: true, catalogo: null,
+        };
+        modelo.push(novo);
+        vistos.add(novo.id);
+      }
+    });
+    for (const m of modelo) if (m.etapa_id === etapaId && !vistos.has(m.id)) m.ativo = false;
+    return itens.length;
+  };
 
   const mover = (ids: number[], etapaId: number | null, motivo: string | null, user: string, soNovos = false) => {
     const destino = etapaId === null ? null : etapas.find((e) => e.id === etapaId);
@@ -84,8 +116,13 @@ function repoMemoria() {
         etapas.splice(etapas.findIndex((e) => e.id === id), 1);
         return n;
       }),
+    listarModelo: (_t, etapaId) =>
+      Promise.resolve(etapas.some((e) => e.id === etapaId) ? modelo.filter((m) => m.etapa_id === etapaId) : null),
+    salvarModelo: (_t, etapaId, itens) => Promise.resolve().then(() => salvarModelo(etapaId, itens)),
+    reaplicarTarefas: (_t, licitacaoId) =>
+      Promise.resolve(ops.has(licitacaoId) ? { criadas: 2, existentes: 1, bloqueio: null } : { criadas: 0, existentes: 0, bloqueio: "fora_do_pipeline" }),
   };
-  return { repo, ops, hist, etapas };
+  return { repo, ops, hist, etapas, modelo };
 }
 
 const USUARIO = { id: "u-1", app_metadata: {} };
@@ -283,4 +320,65 @@ Deno.test("validação: limites e tipos", () => {
   assertEquals("error" in parseActionFromBody({ action: "etapa_criar", nome: "X", fase: "outra" }), true);
   assertEquals("error" in parseActionFromBody({ action: "etapa_atualizar", id: 1 }), true);
   assertEquals(parseActionFromBody({ action: "etapa_atualizar", id: 1, desfecho: null }), { action: "etapa_atualizar", id: 1, desfecho: null });
+});
+
+// --- Tarefas por etapa (spec 0018, PR 3) -------------------------------------------------------------------------
+
+Deno.test("CA-9: operação lê o modelo mas não salva (403); admin da empresa salva", async () => {
+  const { repo, modelo } = repoMemoria();
+  repo.tenantDoUsuario = () => Promise.resolve({ tenant: 1, papel: "operacao" });
+  const lista = await chamar(ctx(repo), { action: "etapa_tarefas_listar", etapa_id: 2 });
+  assertEquals(lista.status, 200);
+  const negado = await chamar(ctx(repo), { action: "etapa_tarefas_salvar", etapa_id: 2, tarefas: [{ origem: "catalogo", tarefa_codigo: "14133-F01-T01" }] });
+  assertEquals(negado.status, 403);
+  assertEquals(modelo.length, 0);
+  repo.tenantDoUsuario = () => Promise.resolve({ tenant: 1, papel: "admin" });
+  const ok = await chamar(ctx(repo), {
+    action: "etapa_tarefas_salvar", etapa_id: 2,
+    tarefas: [{ origem: "catalogo", tarefa_codigo: "14133-F01-T01" }, { origem: "empresa", titulo: "Pedir cotação", prazo_horas: 48 }],
+  });
+  assertEquals(ok.status, 200);
+  assertEquals(ok.json.salvas, 2);
+  assertEquals(ok.json.tarefas.length, 2);
+});
+
+Deno.test("CA-10: tarefa_codigo inexistente/inativo, origem ou prazo inválidos → 400 e nada gravado", async () => {
+  const { repo, modelo } = repoMemoria();
+  const c = ctx(repo, ADMIN);
+  const inativo = await chamar(c, { action: "etapa_tarefas_salvar", etapa_id: 2, tarefas: [{ origem: "catalogo", tarefa_codigo: "14133-F99-T99" }] });
+  assertEquals(inativo.status, 400);
+  assertEquals(modelo.length, 0);
+  for (const tarefas of [
+    [{ origem: "catalogo", tarefa_codigo: "F04-T01" }],
+    [{ origem: "outro" }],
+    [{ origem: "empresa", titulo: "" }],
+    [{ origem: "empresa", titulo: "x", prazo_horas: "48" }],
+    [{ origem: "empresa", titulo: "x", chave: "Com Espaço" }],
+    "nao-e-lista",
+  ]) {
+    assertEquals((await chamar(c, { action: "etapa_tarefas_salvar", etapa_id: 2, tarefas })).status, 400, JSON.stringify(tarefas));
+  }
+  assertEquals(modelo.length, 0);
+});
+
+Deno.test("etapa_tarefas_salvar: lista completa — renomear mantém o modelo, o que sai é desligado (nunca apagado)", async () => {
+  const { repo, modelo } = repoMemoria();
+  const c = ctx(repo, ADMIN);
+  await chamar(c, { action: "etapa_tarefas_salvar", etapa_id: 2, tarefas: [{ origem: "empresa", titulo: "A" }, { origem: "empresa", titulo: "B" }] });
+  const [a, b] = modelo;
+  await chamar(c, { action: "etapa_tarefas_salvar", etapa_id: 2, tarefas: [{ origem: "empresa", chave: a.chave, titulo: "A renomeada" }] });
+  assertEquals(modelo.length, 2);
+  assertEquals([a.titulo, a.ativo, b.ativo], ["A renomeada", true, false]);
+  const etapaInexistente = await chamar(c, { action: "etapa_tarefas_listar", etapa_id: 999 });
+  assertEquals(etapaInexistente.status, 404);
+});
+
+Deno.test("tarefas_reaplicar: no pipeline devolve criadas/existentes; fora do pipeline 404", async () => {
+  const { repo } = repoMemoria();
+  const c = ctx(repo);
+  await chamar(c, { action: "pipeline_adicionar", licitacao_ids: [101] });
+  const r = await chamar(c, { action: "tarefas_reaplicar", licitacao_id: 101 });
+  assertEquals([r.status, r.json.criadas, r.json.existentes, r.json.bloqueio], [200, 2, 1, null]);
+  const fora = await chamar(c, { action: "tarefas_reaplicar", licitacao_id: 102 });
+  assertEquals([fora.status, fora.json.bloqueio], [404, "fora_do_pipeline"]);
 });

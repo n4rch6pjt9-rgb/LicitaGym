@@ -1,11 +1,11 @@
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { lerTenantDoUsuario, type TenantResolvido } from "../_shared/tenant.ts";
-import type { Desfecho, Etapa, EtapaComTotal, EventoHistorico, Fase, ItemPipeline } from "./types.ts";
+import type { Desfecho, Etapa, EtapaComTotal, EventoHistorico, Fase, ItemModelo, ItemPipeline, ModeloTarefa } from "./types.ts";
 
 /** Campos da licitação que o Kanban e os selos mostram (subconjunto das colunas públicas da api-dashboard-oportunidades). */
 export const LICITACAO_CARD_COLUMNS = [
   "id", "fonte", "codigo_externo", "numero_processo", "processo_norm", "numero_edital", "objeto", "modalidade",
-  "data_inicio", "data_fim", "valor_total", "orgao_cnpj", "orgao_nome", "municipio", "uf", "prioridade",
+  "data_inicio", "data_fim", "valor_total", "orgao_cnpj", "orgao_nome", "municipio", "uf", "prioridade", "regulamento",
 ].join(",");
 
 const ETAPA_COLUMNS = "id,nome,fase,ordem,desfecho,exige_motivo,padrao";
@@ -31,6 +31,12 @@ export interface PipelineRepo {
   criarEtapa(tenant: number, e: { nome: string; fase: Fase; ordem: number | null; desfecho: Desfecho | null; exige_motivo: boolean }, userId: string): Promise<Etapa>;
   atualizarEtapa(tenant: number, id: number, campos: Partial<Omit<Etapa, "id" | "padrao">>, userId: string): Promise<Etapa | null>;
   excluirEtapa(tenant: number, id: number, moverPara: number | null, userId: string): Promise<number>;
+  /** Modelo de tarefas da etapa (ativas e desligadas), com o resumo do catálogo. null se a etapa não é da empresa. */
+  listarModelo(tenant: number, etapaId: number): Promise<ModeloTarefa[] | null>;
+  /** Lista completa da etapa, numa transação (pipeline_etapa_tarefas_salvar). */
+  salvarModelo(tenant: number, etapaId: number, itens: ItemModelo[], userId: string): Promise<number>;
+  /** Cria as tarefas que faltam da etapa atual e das visitadas (pipeline_tarefas_reaplicar). */
+  reaplicarTarefas(tenant: number, licitacaoId: number, userId: string): Promise<{ criadas: number; existentes: number; bloqueio: string | null }>;
 }
 
 /** Traduz o erro do Postgres das funções do pipeline para HTTP (22023 = regra, P0002 = não existe, 23505 = nome repetido). */
@@ -120,6 +126,32 @@ export function createSupabaseRepo(client: SupabaseClient): PipelineRepo {
         .select(ETAPA_COLUMNS).maybeSingle();
       if (error) traduzir(error);
       return (data as unknown as Etapa) ?? null;
+    },
+
+    async listarModelo(tenant, etapaId) {
+      const { data: etapa, error: e1 } = await client.from("pipeline_etapas").select("id").eq("tenant_id", tenant).eq("id", etapaId).maybeSingle();
+      if (e1) throw new Error(e1.message);
+      if (!etapa) return null;
+      const { data, error } = await client
+        .from("pipeline_etapa_tarefas")
+        .select("id,etapa_id,origem,tarefa_codigo,chave,titulo,descricao,prazo_horas,ordem,ativo,catalogo:tarefas_catalogo(titulo,fase_codigo,natureza,prazo_unidade)")
+        .eq("tenant_id", tenant).eq("etapa_id", etapaId)
+        .order("ativo", { ascending: false }).order("ordem").order("id");
+      if (error) throw new Error(error.message);
+      return (data ?? []) as unknown as ModeloTarefa[];
+    },
+
+    async salvarModelo(tenant, etapaId, itens, userId) {
+      const { data, error } = await client.rpc("pipeline_etapa_tarefas_salvar", { p_tenant: tenant, p_etapa: etapaId, p_itens: itens, p_user: userId });
+      if (error) traduzir(error);
+      return (data as number) ?? 0;
+    },
+
+    async reaplicarTarefas(tenant, licitacaoId, userId) {
+      const { data, error } = await client.rpc("pipeline_tarefas_reaplicar", { p_tenant: tenant, p_licitacao: licitacaoId, p_user: userId });
+      if (error) throw new Error(error.message);
+      const linha = (Array.isArray(data) ? data[0] : data) as { criadas: number; existentes: number; bloqueio: string | null } | null;
+      return { criadas: Number(linha?.criadas ?? 0), existentes: Number(linha?.existentes ?? 0), bloqueio: linha?.bloqueio ?? null };
     },
 
     async excluirEtapa(tenant, id, moverPara, userId) {

@@ -42,7 +42,28 @@ export interface EventoHistorico {
   em: string;
 }
 
-export const ACOES_ADMIN = new Set(["etapa_criar", "etapa_atualizar", "etapa_excluir"]);
+export const ACOES_ADMIN = new Set(["etapa_criar", "etapa_atualizar", "etapa_excluir", "etapa_tarefas_salvar"]);
+
+/** Tarefa do modelo de uma etapa (spec 0018): do catálogo 14.133 ou escrita pela empresa. */
+export interface ModeloTarefa {
+  id: number;
+  etapa_id: number;
+  origem: "catalogo" | "empresa";
+  tarefa_codigo: string | null;
+  chave: string | null;
+  titulo: string | null;
+  descricao: string | null;
+  prazo_horas: number | null;
+  ordem: number;
+  ativo: boolean;
+  /** Resumo do catálogo (só origem = catalogo). */
+  catalogo: { titulo: string; fase_codigo: string; natureza: string; prazo_unidade: string } | null;
+}
+
+/** Item da lista completa de etapa_tarefas_salvar. */
+export type ItemModelo =
+  | { origem: "catalogo"; tarefa_codigo: string }
+  | { origem: "empresa"; chave: string | null; titulo: string; descricao: string | null; prazo_horas: number | null };
 
 export type Acao =
   | { action: "etapas_listar" }
@@ -62,4 +83,7 @@ export type Acao =
     desfecho?: Desfecho | null;
     exige_motivo?: boolean;
   }
-  | { action: "etapa_excluir"; id: number; mover_para: number | null };
+  | { action: "etapa_excluir"; id: number; mover_para: number | null }
+  | { action: "etapa_tarefas_listar"; etapa_id: number }
+  | { action: "etapa_tarefas_salvar"; etapa_id: number; tarefas: ItemModelo[] }
+  | { action: "tarefas_reaplicar"; licitacao_id: number };

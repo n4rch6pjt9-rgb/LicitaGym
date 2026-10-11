@@ -26,7 +26,7 @@ comportamento com `_harness.ts`.
 | 5 | **Handlers `sync-pncp-pca`, `-editais`, `-atas`, `-contratos`, `-orgaos`** | Um teste de comportamento por handler: lock ocupado → 409/sem nova execução; página com erro → execução parcial; heartbeat atualizado | Deno, reaproveitando `tests/supabase/functions/_shared/pncp/_harness.ts` | `orgaos` precisou de três correções (#238, #247); hoje só há busca de texto |
 | 6 | **`classificar_aparelho.py`** | Casos do dicionário v0.3: cada nó IN com 1 exemplo positivo; nós OUT nunca IN; determinismo (mesma entrada → mesma saída) | pytest `services/coletor-externo/tests/test_classificar_aparelho.py` | 155 linhas sem teste; decide Musculação/Cárdio/Acessórios |
 | 7 | **`scripts/saude-alerta.sh`** | `DRY_RUN=1` + `SAUDE_JSON` de fixture: crítico → título com o nome da verificação; tudo ok → fecha a issue | Deno ou bats, sem rede | Abre e fecha a `alerta-operacional`; nunca foi testado |
-| 8 | **`_shared_prod/`** | Em vez de testar: trocar os imports de `analyze-public-material`, `link-pca-edital` e `sync-pncp-contratacoes-itens` para `_shared/` e apagar a cópia | Deno check + testes existentes | Cópia desatualizada; o `http.ts` copiado compara o segredo do cron com `===` |
+| 8 | **`_shared_prod/`** | Em vez de testar: trocar os imports de `link-pca-edital` e `sync-pncp-contratacoes-itens` para `_shared/` e apagar a cópia | Deno check + testes existentes | Cópia desatualizada; o `http.ts` copiado compara o segredo do cron com `===` |
 | 9 | **Typecheck pendente** | Corrigir os 4 entrypoints de `.github/ci/deno-check-pendentes.txt` | `scripts/ci/deno-check-funcoes.sh` | A CI já checa os demais; a lista só pode diminuir |
 
 ## Regras para os testes novos

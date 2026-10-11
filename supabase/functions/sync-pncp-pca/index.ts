@@ -33,6 +33,8 @@ import {
   updateSyncHeartbeat,
 } from "../_shared/pncp/supabase-admin.ts";
 import { gravarPaginaPcaEmLote } from "../_shared/pncp/pca-lote.ts";
+import { PncpIntegracaoClient } from "../_shared/pncp/integracao-client.ts";
+import { handleRotinaFila, type RotinaBody } from "./rotina-fila.ts";
 import { inactivateNotSeen } from "../_shared/pncp/upsert.ts";
 
 type SyncBody = {
@@ -215,6 +217,21 @@ Deno.serve(async (req) => {
   const requestBudget = createRequestBudget();
   const consulta = new PncpConsultaClient(undefined, {}, httpClient).withBudget(requestBudget);
   const search = new PncpSearchClient(undefined, httpClient).withBudget(requestBudget);
+
+  // Spec 0012, PR 2: sync por fila de planos (descoberta pela consulta, itens pela integração por plano).
+  // Sem `rotina`, segue o fluxo antigo abaixo; os crons novos nascem desligados.
+  if ((body as RotinaBody).rotina !== undefined) {
+    return await handleRotinaFila({
+      client,
+      consulta,
+      integracao: new PncpIntegracaoClient(undefined, httpClient),
+      body: body as RotinaBody,
+      ano,
+      classes: codigosClassificacao,
+      tamanhoPagina,
+      isAsync,
+    });
+  }
 
   // Smoke / period check: probes sequenciais para consumo previsível do budget compartilhado.
   if (body.somente_verificacao) {

@@ -6,20 +6,30 @@ cada entrada, mudança e saída. Etapas configuráveis por admin; as 13 do Kanba
 
 - `POST`, JWT do Supabase Auth no `Authorization` (validado no código; `verify_jwt = false` no `config.toml`).
 - Banco com `service_role`; tabelas e funções fechadas para `anon`/`authenticated`.
-- Tenant: `tenant_membros` (papel `admin` ou `operacao`). Sem vínculo, só resolve se houver uma empresa ativa. Com duas empresas ativas e sem vínculo, responde 409.
+- Tenant (`_shared/tenant.ts`): vínculo ativo em `tenant_membros` com empresa ativa. Vínculo só com empresa desativada, vínculo desligado ou conta sem vínculo → 403 (#263), sem cair em outra empresa. Só o desenvolvedor sem vínculo cai na única empresa ativa (papel nulo); com duas empresas ativas, 409.
+- Papel: `etapa_*` exige admin da empresa (`tenant_membros.papel = 'admin'`) ou o desenvolvedor (`app_metadata.licitagym_role = 'admin'`). Operação lê e movimenta o pipeline, mas não configuram etapas (403).
 
 | action | quem | corpo | resposta |
 |---|---|---|---|
 | `etapas_listar` | autenticado | — | `etapas[]` (`id`, `nome`, `fase`, `ordem`, `desfecho`, `exige_motivo`, `padrao`, `total`) |
-| `pipeline_listar` | autenticado | `etapa_id?` | `itens[]` com `licitacao` (campos do card), até 1000, mais recentes primeiro; `truncado` avisa se havia mais |
+| `pipeline_listar` | autenticado | `etapa_id?` | `itens[]` com `licitacao` (campos do card, inclusive `regulamento`) `tarefas_pendencia` (`{motivo, erro, em}` quando as tarefas da lei não puderam ser criadas, senão null) `tarefas_abertas` (número de tarefas da empresa em aberta/em_andamento; a lista fica na `api-tarefas`) e `preparacao` (último pedido da fila de Triagem: `status` pending/processing = "análise em preparação", completed com `resultado` ok/sem_documento/regulamento_nao_informado_pela_fonte, failed com `erro` curto (categoria, sem URL nem corpo HTTP); `erro` só vem fora de completed; null = sem pedido de preparação, por exemplo etapa "Triagem" renomeada), até 1000, mais recentes primeiro; `truncado` avisa se havia mais; `avisos[]` (`preparacao_indisponivel`, `tarefas_abertas_indisponivel`) lista o complemento que não pôde ser lido: o campo some dos itens, não vira null |
 | `pipeline_estado` | autenticado | `licitacao_ids[]` (até 200) | `estado[]` (`licitacao_id`, `etapa_id`) só das que estão no pipeline |
 | `pipeline_adicionar` | autenticado | `licitacao_ids[]` | entra na primeira etapa sem desfecho; quem já está não muda, de forma atômica (`adicionadas`, `ja_no_pipeline`, `etapa`) |
 | `pipeline_mover` | autenticado | `licitacao_ids[]`, `etapa_id`, `motivo?` | `movidas`; etapa com `exige_motivo` sem motivo → 400 |
 | `pipeline_remover` | autenticado | `licitacao_ids[]` | `removidas` |
 | `pipeline_historico` | autenticado | `licitacao_id` | `eventos[]`, mais recente primeiro |
-| `etapa_criar` | admin | `nome`, `fase`, `ordem?`, `desfecho?`, `exige_motivo?` | 201 `etapa`; nome repetido → 409 |
-| `etapa_atualizar` | admin | `id` + campos | `etapa` |
-| `etapa_excluir` | admin | `id`, `mover_para?` | `movidas`; com oportunidades e sem `mover_para` → 400; última etapa → 400 |
+| `etapa_criar` | admin da empresa ou desenvolvedor | `nome`, `fase`, `ordem?`, `desfecho?`, `exige_motivo?` | 201 `etapa`; nome repetido → 409 |
+| `etapa_atualizar` | admin da empresa ou desenvolvedor | `id` + campos | `etapa` |
+| `etapa_excluir` | admin da empresa ou desenvolvedor | `id`, `mover_para?` | `movidas`; com oportunidades e sem `mover_para` → 400; última etapa → 400 |
+| `catalogo_listar` | autenticado | — | `tarefas[]` ativas do catálogo (`norma = LEI_14133_2021`; `codigo`, `fase_codigo`, `fase_nome`, `fase_ordem`, `parent_codigo`, `ordem`, `titulo`, `natureza`, `ator`, `prazo_unidade`, `base_legal` "art. N (dispositivo)" ou null), para escolher no modelo da etapa |
+| `etapa_tarefas_listar` | autenticado | `etapa_id` | `tarefas[]` do modelo da etapa, ativas e desligadas (`origem`, `tarefa_codigo` ou `chave`/`titulo`/`descricao`/`prazo_horas`, `ordem`, `ativo`, `catalogo` com `ativo` do catálogo); etapa de outra empresa → 404 |
+| `etapa_tarefas_salvar` | admin da empresa ou desenvolvedor | `etapa_id`, `tarefas[]` (lista completa: `{origem:"catalogo", tarefa_codigo}` ou `{origem:"empresa", chave?, titulo, descricao?, prazo_horas?}`) | `salvas` e o modelo atualizado. Upsert por código ou chave; o que sai da lista é desligado (nunca apagado); tarefa da empresa sem `chave` ganha `emp-` + 8 hex. Código inexistente ou inativo (que não estava no modelo), chave de outra etapa ou item inválido → 400, nada gravado; código que já estava no modelo e o catálogo desativou fica, desligado |
+| `tarefas_reaplicar` | autenticado | `licitacao_id` | `criadas`, `existentes`, `bloqueio` (`regulamento_nao_informado` / `regulamento_sem_catalogo`); fora do pipeline → 404 |
+
+Tarefas por etapa (spec 0018): entrar numa etapa cria as tarefas do modelo dela em `tarefas_equipe` (gatilho no banco),
+na fila do admin; a lista e a atribuição ficam na `api-tarefas`. O card traz `licitacao.regulamento` (nulo: "tarefas da lei
+pendentes" se o modelo da etapa, via `etapa_tarefas_listar`, tem tarefa do catálogo) e `tarefas_pendencia` (falha registrada
+ao reaplicar).
 
 Fases: `prospeccao`, `proposta`, `disputa`, `conclusao`. Desfechos: `vencida`, `perdida`, `descartada`.
 

@@ -58,8 +58,8 @@ from .catmat_codigo import MapaCatmat, MapaCatmatIndisponivel, carregar_mapa_cat
 from .destino import Supabase, env
 from .entrada_arquivos import ClienteArquivos
 from .escopo import classificar, excluir_compra, objeto_passagem, servico_sem_material
-from .pncp import (FASE_EXCLUIDA, PNCP, CompraExcluida, _instante, atualizacao_da_compra, avaliar, compra_com_detalhe,
-                   compra_de_codigo, consultar_detalhe, fase_da_compra)
+from .pncp import (FASE_EXCLUIDA, FASE_REGISTRO_PRECO, PNCP, CompraExcluida, _instante, atualizacao_da_compra,
+                   avaliar, compra_com_detalhe, compra_de_codigo, consultar_detalhe, fase_da_compra)
 
 log = logging.getLogger("coletor.reclassificar_escopo_pncp")
 
@@ -164,6 +164,10 @@ def _nova_prioridade(ln: dict, itens: list[dict] | None, agora: datetime, det: d
         retificada_em=atualizacao_da_compra(det, raw), excluida=excluida)
     if nova is None:
         return None, motivo, "indeterminada", None
+    # O reclassificador não consulta /atas: "Registro de Preço" gravado pelo coletor (ata não cancelada) só sai por
+    # decisão oficial (historico) ou exclusão do PNCP, nunca por documento/prazo (09/10/2026, caso 129).
+    if ln.get("fase") == FASE_REGISTRO_PRECO and nova != "historico" and not excluida:
+        return None, motivo, "registro_preco_mantido_sem_atas", None
     if det is None and not excluida:
         if atual == "historico" and nova != "historico":
             return None, motivo, "historico_mantido_sem_detalhe", None
@@ -334,7 +338,7 @@ def _buscar_detalhe(pncp, ln: dict) -> tuple[dict | None, bool, str | None]:
         return None, False, f"codigo_externo inválido: {ln.get('codigo_externo')!r}"
     try:
         return consultar_detalhe(pncp, c), False, None
-    except CompraExcluida as e:
+    except CompraExcluida:
         return None, True, None
     except Exception as e:  # ConsultaFalhou: segue com as travas de "sem detalhe"
         return None, False, str(e)[:160]

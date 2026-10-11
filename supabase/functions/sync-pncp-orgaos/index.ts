@@ -16,6 +16,7 @@ import {
   POSTGREST_IN_CHUNK,
 } from "../_shared/pncp/postgrest-paginate.ts";
 import { upsertByHash } from "../_shared/pncp/upsert.ts";
+import { linhaEntidade } from "./entidade.ts";
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -105,12 +106,7 @@ Deno.serve(async (req) => {
           client,
           "entidades",
           { codigo_pncp: cnpj },
-          {
-            codigo_pncp: cnpj,
-            cnpj: cnpj,
-            cnpj_normalizado: cnpj.replace(/\D/g, ""),
-            tipo: "orgao",
-          },
+          linhaEntidade(cnpj),
           { syncRunId: runId },
         );
 

@@ -133,6 +133,18 @@ verify_jwt = false
 [functions.api-pipeline]
 verify_jwt = false
 
+# api-agentes valida o JWT no código (auth.getUser). service_role só no servidor.
+[functions.api-agentes]
+verify_jwt = false
+
+# api-tenant valida o JWT do usuário no código (auth.getUser); papel pelo vínculo em tenant_membros ou app_metadata (spec 0017)
+[functions.api-tenant]
+verify_jwt = false
+
+# api-tarefas valida o JWT do usuário no código (auth.getUser); papel pelo vínculo em tenant_membros (#252, spec 0019)
+[functions.api-tarefas]
+verify_jwt = false
+
 # api-saude: cron secret (workflow saude.yml) ou usuário admin, validados no código
 [functions.api-saude]
 verify_jwt = false
@@ -154,10 +166,6 @@ verify_jwt = false
 # link-pca-edital (prod v5): Bearer SYNC_CRON_SECRET validado no código
 [functions.link-pca-edital]
 verify_jwt = false
-
-# analyze-public-material (prod v5): verify_jwt = true em prod (gateway) + auth.getUser no código
-[functions.analyze-public-material]
-verify_jwt = true
 
 # sync-portal-compras (issue #266): Bearer SYNC_CRON_SECRET validado no código. Uma vez por dia.
 [functions.sync-portal-compras]

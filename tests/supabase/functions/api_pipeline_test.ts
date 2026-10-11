@@ -1,7 +1,12 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import { type ApiPipelineContext, handleRequest } from "../../../supabase/functions/api-pipeline/index.ts";
-import { ErroPipeline, resolverTenant, type PipelineRepo } from "../../../supabase/functions/api-pipeline/repo.ts";
-import type { Etapa, EventoHistorico } from "../../../supabase/functions/api-pipeline/types.ts";
+import { createSupabaseRepo, ErroPipeline, type PipelineRepo } from "../../../supabase/functions/api-pipeline/repo.ts";
+import {
+  ErroTenantAcesso,
+  lerTenantDoUsuario,
+  resolverTenantDoUsuario,
+} from "../../../supabase/functions/_shared/tenant.ts";
+import type { Etapa, EventoHistorico, ItemModelo, ModeloTarefa } from "../../../supabase/functions/api-pipeline/types.ts";
 import { MAX_LOTE, parseActionFromBody } from "../../../supabase/functions/api-pipeline/validation.ts";
 
 // Repositório em memória com as mesmas regras de pipeline_mover / pipeline_etapa_excluir
@@ -17,6 +22,38 @@ function repoMemoria() {
   nova("Triagem", 20);
   nova("Descartada", 130, { fase: "conclusao", desfecho: "descartada", exige_motivo: true });
   const licitacoes = new Set([101, 102, 103]);
+  // modelo de tarefas por etapa (spec 0018): mesmas regras de pipeline_etapa_tarefas_salvar
+  let seqModelo = 0;
+  const modelo: ModeloTarefa[] = [];
+  const catalogoAtivo = new Set(["14133-F01-T01", "14133-F04-T01"]);
+  const salvarModelo = (etapaId: number, itens: ItemModelo[]) => {
+    if (!etapas.some((e) => e.id === etapaId)) throw new ErroPipeline("Etapa não encontrada.", 404);
+    for (const it of itens) {
+      if (it.origem === "catalogo" && !catalogoAtivo.has(it.tarefa_codigo)) {
+        throw new ErroPipeline(`Tarefa ${it.tarefa_codigo} não existe ou não está ativa no catálogo.`, 400);
+      }
+    }
+    const vistos = new Set<number>();
+    itens.forEach((it, i) => {
+      const atual = modelo.find((m) => m.etapa_id === etapaId &&
+        (it.origem === "catalogo" ? m.tarefa_codigo === it.tarefa_codigo : m.chave !== null && m.chave === it.chave));
+      if (atual) {
+        Object.assign(atual, { ativo: true, ordem: (i + 1) * 10 }, it.origem === "empresa" ? { titulo: it.titulo } : {});
+        vistos.add(atual.id);
+      } else {
+        const novo: ModeloTarefa = {
+          id: ++seqModelo, etapa_id: etapaId, origem: it.origem, tarefa_codigo: it.origem === "catalogo" ? it.tarefa_codigo : null,
+          chave: it.origem === "empresa" ? (it.chave ?? `emp-${seqModelo.toString(16).padStart(8, "0")}`) : null,
+          titulo: it.origem === "empresa" ? it.titulo : null, descricao: null, prazo_horas: it.origem === "empresa" ? it.prazo_horas : null,
+          ordem: (i + 1) * 10, ativo: true, catalogo: null,
+        };
+        modelo.push(novo);
+        vistos.add(novo.id);
+      }
+    });
+    for (const m of modelo) if (m.etapa_id === etapaId && !vistos.has(m.id)) m.ativo = false;
+    return itens.length;
+  };
 
   const mover = (ids: number[], etapaId: number | null, motivo: string | null, user: string, soNovos = false) => {
     const destino = etapaId === null ? null : etapas.find((e) => e.id === etapaId);
@@ -41,12 +78,13 @@ function repoMemoria() {
   };
 
   const repo: PipelineRepo = {
-    tenantDoUsuario: () => Promise.resolve(1),
+    tenantDoUsuario: () => Promise.resolve({ tenant: 1, papel: null }),
     listarEtapas: () =>
       Promise.resolve([...etapas].sort((a, b) => a.ordem - b.ordem).map((e) => ({ ...e, total: [...ops.values()].filter((o) => o.etapa_id === e.id).length }))),
     listarPipeline: (_t, etapaId) =>
       Promise.resolve({
         truncado: false,
+        avisos: [],
         itens: [...ops.entries()].filter(([, o]) => !etapaId || o.etapa_id === etapaId).map(([id, o]) => ({
           licitacao_id: id, etapa_id: o.etapa_id, motivo: o.motivo, atualizada_em: "t", atualizada_por: "u", licitacao: { id },
         })),
@@ -79,8 +117,19 @@ function repoMemoria() {
         etapas.splice(etapas.findIndex((e) => e.id === id), 1);
         return n;
       }),
+    listarModelo: (_t, etapaId) =>
+      Promise.resolve(etapas.some((e) => e.id === etapaId) ? modelo.filter((m) => m.etapa_id === etapaId) : null),
+    salvarModelo: (_t, etapaId, itens) => Promise.resolve().then(() => salvarModelo(etapaId, itens)),
+    reaplicarTarefas: (_t, licitacaoId) =>
+      Promise.resolve(ops.has(licitacaoId) ? { criadas: 2, existentes: 1, bloqueio: null } : { criadas: 0, existentes: 0, bloqueio: "fora_do_pipeline" }),
+    listarCatalogo: () =>
+      Promise.resolve([{
+        codigo: "14133-F01-T01", fase_codigo: "F01", fase_nome: "Edital publicado", fase_ordem: 1, parent_codigo: null, ordem: 10,
+        titulo: "Registrar edital e anexos", natureza: "acompanhamento", ator: "licitante", prazo_unidade: "sem_prazo_legal",
+        base_legal: "art. 54 (caput)",
+      }]),
   };
-  return { repo, ops, hist, etapas };
+  return { repo, ops, hist, etapas, modelo };
 }
 
 const USUARIO = { id: "u-1", app_metadata: {} };
@@ -171,34 +220,101 @@ Deno.test("api-pipeline: configurar etapas só admin; criar, renomear, excluir m
   assertEquals(etapas.json.etapas.map((e: { nome: string }) => e.nome), ["Triagem", "Visita", "Descartada"]);
 });
 
-Deno.test("resolverTenant: vínculo único manda; sem vínculo só cabe uma empresa", () => {
-  assertEquals(resolverTenant([7], [1, 2]), 7);
-  assertEquals(resolverTenant([], [1]), 1);
-  assertEquals(resolverTenant([7, 7], [1]), 7);
-  let status = 0;
-  try {
-    resolverTenant([7, 8], [1]);
-  } catch (e) {
-    status = e instanceof ErroPipeline ? e.status : 0;
-  }
-  assertEquals(status, 409);
+Deno.test("api-pipeline: admin da empresa configura etapas sem ser desenvolvedor; operação não", async () => {
+  const { repo } = repoMemoria();
+  repo.tenantDoUsuario = () => Promise.resolve({ tenant: 1, papel: "admin" });
+  assertEquals((await chamar(ctx(repo), { action: "etapa_criar", nome: "Visita", fase: "proposta" })).status, 201);
+
+  repo.tenantDoUsuario = () => Promise.resolve({ tenant: 1, papel: "operacao" });
+  const negado = await chamar(ctx(repo), { action: "etapa_excluir", id: 1, mover_para: 2 });
+  assertEquals(negado.status, 403);
+  // operação movimenta o pipeline normalmente
+  assertEquals((await chamar(ctx(repo), { action: "pipeline_adicionar", licitacao_ids: [101] })).status, 200);
 });
 
-Deno.test("resolverTenant: duas empresas sem vínculo recusam", () => {
-  let status = 0;
+Deno.test("api-pipeline: vínculo só com empresa desativada responde 403 (#263), sem cair em outra empresa", async () => {
+  const { repo } = repoMemoria();
+  repo.tenantDoUsuario = () => Promise.reject(new ErroTenantAcesso("A empresa do usuário está desativada.", 403));
+  const r = await chamar(ctx(repo), { action: "etapas_listar" });
+  assertEquals(r.status, 403);
+  assertEquals(r.json.error, "A empresa do usuário está desativada.");
+});
+
+function status(fn: () => unknown): number {
   try {
-    resolverTenant([], [1, 2]);
+    fn();
   } catch (e) {
-    status = e instanceof ErroPipeline ? e.status : 0;
+    return e instanceof ErroTenantAcesso ? e.status : -1;
   }
-  assertEquals(status, 409);
-  status = 0;
-  try {
-    resolverTenant([], []);
-  } catch (e) {
-    status = e instanceof ErroPipeline ? e.status : 0;
+  return 0;
+}
+
+const v = (tenant_id: number, papel: "admin" | "operacao", ativo: boolean, empresa_ativa: boolean) =>
+  ({ tenant_id, papel, ativo, empresa_ativa });
+
+Deno.test("resolverTenantDoUsuario: vínculo ativo com empresa ativa manda, com o papel", () => {
+  assertEquals(resolverTenantDoUsuario([v(7, "operacao", true, true)], [1, 7], false), { tenant: 7, papel: "operacao" });
+  assertEquals(resolverTenantDoUsuario([v(7, "admin", true, true), v(8, "admin", true, false)], [1, 7], false), { tenant: 7, papel: "admin" });
+  assertEquals(status(() => resolverTenantDoUsuario([v(7, "admin", true, true), v(8, "operacao", true, true)], [7, 8], false)), 409);
+});
+
+Deno.test("resolverTenantDoUsuario: empresa desativada não cai na única empresa ativa (#263)", () => {
+  assertEquals(status(() => resolverTenantDoUsuario([v(8, "admin", true, false)], [1], false)), 403);
+  assertEquals(status(() => resolverTenantDoUsuario([v(8, "admin", true, false)], [1], true)), 403);
+});
+
+Deno.test("resolverTenantDoUsuario: vínculo desligado revoga o acesso, mesmo com uma só empresa", () => {
+  assertEquals(status(() => resolverTenantDoUsuario([v(1, "operacao", false, true)], [1], false)), 403);
+});
+
+Deno.test("resolverTenantDoUsuario: sem vínculo, só o desenvolvedor cai na única empresa ativa", () => {
+  assertEquals(status(() => resolverTenantDoUsuario([], [1], false)), 403);
+  assertEquals(resolverTenantDoUsuario([], [1], true), { tenant: 1, papel: null });
+  assertEquals(status(() => resolverTenantDoUsuario([], [1, 2], true)), 409);
+  assertEquals(status(() => resolverTenantDoUsuario([], [], true)), 409);
+});
+
+/** Cliente falso só com o que lerTenantDoUsuario usa (from/select/eq/in/order/limit). */
+function clienteFalso(tabelas: Record<string, Array<Record<string, unknown>>>) {
+  return {
+    from(tabela: string) {
+      let linhas = [...(tabelas[tabela] ?? [])];
+      const q = {
+        select: () => q,
+        eq: (c: string, v: unknown) => ((linhas = linhas.filter((l) => l[c] === v)), q),
+        in: (c: string, vs: unknown[]) => ((linhas = linhas.filter((l) => vs.includes(l[c]))), q),
+        order: () => q,
+        limit: (n: number) => ((linhas = linhas.slice(0, n)), q),
+        then: (ok: (r: { data: unknown[]; error: null }) => unknown) => Promise.resolve({ data: linhas, error: null }).then(ok),
+      };
+      return q;
+    },
+  };
+}
+
+Deno.test("lerTenantDoUsuario: duas empresas ativas e dois usuários, cada um na sua", async () => {
+  const tabelas = {
+    tenants: [{ id: 1, ativo: true }, { id: 2, ativo: true }, { id: 3, ativo: false }],
+    tenant_membros: [
+      { tenant_id: 1, user_id: "u-konnen", papel: "admin", ativo: true },
+      { tenant_id: 2, user_id: "u-teste", papel: "operacao", ativo: true },
+      { tenant_id: 3, user_id: "u-inativa", papel: "admin", ativo: true },
+      { tenant_id: 1, user_id: "u-desligado", papel: "operacao", ativo: false },
+    ],
+  };
+  // deno-lint-ignore no-explicit-any
+  const c = clienteFalso(tabelas) as any;
+  assertEquals(await lerTenantDoUsuario(c, "u-konnen", false), { tenant: 1, papel: "admin" });
+  assertEquals(await lerTenantDoUsuario(c, "u-teste", false), { tenant: 2, papel: "operacao" });
+  for (const [u, esperado] of [["u-inativa", 403], ["u-desligado", 403], ["u-sem-vinculo", 403]] as const) {
+    let st = 0;
+    try {
+      await lerTenantDoUsuario(c, u, false);
+    } catch (e) {
+      st = e instanceof ErroTenantAcesso ? e.status : -1;
+    }
+    assertEquals(st, esperado, u);
   }
-  assertEquals(status, 409);
 });
 
 Deno.test("validação: limites e tipos", () => {
@@ -211,4 +327,195 @@ Deno.test("validação: limites e tipos", () => {
   assertEquals("error" in parseActionFromBody({ action: "etapa_criar", nome: "X", fase: "outra" }), true);
   assertEquals("error" in parseActionFromBody({ action: "etapa_atualizar", id: 1 }), true);
   assertEquals(parseActionFromBody({ action: "etapa_atualizar", id: 1, desfecho: null }), { action: "etapa_atualizar", id: 1, desfecho: null });
+});
+
+// --- Tarefas por etapa (spec 0018, PR 3) -------------------------------------------------------------------------
+
+Deno.test("CA-9: operação lê o modelo mas não salva (403); admin da empresa salva", async () => {
+  const { repo, modelo } = repoMemoria();
+  repo.tenantDoUsuario = () => Promise.resolve({ tenant: 1, papel: "operacao" });
+  const lista = await chamar(ctx(repo), { action: "etapa_tarefas_listar", etapa_id: 2 });
+  assertEquals(lista.status, 200);
+  const negado = await chamar(ctx(repo), { action: "etapa_tarefas_salvar", etapa_id: 2, tarefas: [{ origem: "catalogo", tarefa_codigo: "14133-F01-T01" }] });
+  assertEquals(negado.status, 403);
+  assertEquals(modelo.length, 0);
+  repo.tenantDoUsuario = () => Promise.resolve({ tenant: 1, papel: "admin" });
+  const ok = await chamar(ctx(repo), {
+    action: "etapa_tarefas_salvar", etapa_id: 2,
+    tarefas: [{ origem: "catalogo", tarefa_codigo: "14133-F01-T01" }, { origem: "empresa", titulo: "Pedir cotação", prazo_horas: 48 }],
+  });
+  assertEquals(ok.status, 200);
+  assertEquals(ok.json.salvas, 2);
+  assertEquals(ok.json.tarefas.length, 2);
+});
+
+Deno.test("CA-10: tarefa_codigo inexistente/inativo, origem ou prazo inválidos → 400 e nada gravado", async () => {
+  const { repo, modelo } = repoMemoria();
+  const c = ctx(repo, ADMIN);
+  const inativo = await chamar(c, { action: "etapa_tarefas_salvar", etapa_id: 2, tarefas: [{ origem: "catalogo", tarefa_codigo: "14133-F99-T99" }] });
+  assertEquals(inativo.status, 400);
+  assertEquals(modelo.length, 0);
+  for (const tarefas of [
+    [{ origem: "catalogo", tarefa_codigo: "F04-T01" }],
+    [{ origem: "outro" }],
+    [{ origem: "empresa", titulo: "" }],
+    [{ origem: "empresa", titulo: "x", prazo_horas: "48" }],
+    [{ origem: "empresa", titulo: "x", chave: "Com Espaço" }],
+    "nao-e-lista",
+  ]) {
+    assertEquals((await chamar(c, { action: "etapa_tarefas_salvar", etapa_id: 2, tarefas })).status, 400, JSON.stringify(tarefas));
+  }
+  assertEquals(modelo.length, 0);
+});
+
+Deno.test("etapa_tarefas_salvar: lista completa — renomear mantém o modelo, o que sai é desligado (nunca apagado)", async () => {
+  const { repo, modelo } = repoMemoria();
+  const c = ctx(repo, ADMIN);
+  await chamar(c, { action: "etapa_tarefas_salvar", etapa_id: 2, tarefas: [{ origem: "empresa", titulo: "A" }, { origem: "empresa", titulo: "B" }] });
+  const [a, b] = modelo;
+  await chamar(c, { action: "etapa_tarefas_salvar", etapa_id: 2, tarefas: [{ origem: "empresa", chave: a.chave, titulo: "A renomeada" }] });
+  assertEquals(modelo.length, 2);
+  assertEquals([a.titulo, a.ativo, b.ativo], ["A renomeada", true, false]);
+  const etapaInexistente = await chamar(c, { action: "etapa_tarefas_listar", etapa_id: 999 });
+  assertEquals(etapaInexistente.status, 404);
+});
+
+Deno.test("tarefas_reaplicar: no pipeline devolve criadas/existentes; fora do pipeline 404", async () => {
+  const { repo } = repoMemoria();
+  const c = ctx(repo);
+  await chamar(c, { action: "pipeline_adicionar", licitacao_ids: [101] });
+  const r = await chamar(c, { action: "tarefas_reaplicar", licitacao_id: 101 });
+  assertEquals([r.status, r.json.criadas, r.json.existentes, r.json.bloqueio], [200, 2, 1, null]);
+  const fora = await chamar(c, { action: "tarefas_reaplicar", licitacao_id: 102 });
+  assertEquals([fora.status, fora.json.bloqueio], [404, "fora_do_pipeline"]);
+});
+
+Deno.test("repo real: erro do banco em salvar/reaplicar vira 400 (22023) e 404 (P0002), não 500", async () => {
+  const rpcCom = (code: string) => ({
+    rpc: () => Promise.resolve({ data: null, error: { code, message: `motivo ${code}` } }),
+  }) as unknown as Parameters<typeof createSupabaseRepo>[0];
+  for (const [code, status] of [["22023", 400], ["P0002", 404], ["23514", 400]] as const) {
+    const repo = createSupabaseRepo(rpcCom(code));
+    for (const chamada of [
+      () => repo.salvarModelo(1, 2, [{ origem: "catalogo", tarefa_codigo: "14133-F01-T01" }], "u"),
+      () => repo.reaplicarTarefas(1, 101, "u"),
+    ]) {
+      const e = await chamada().then(() => null, (x) => x);
+      assertEquals(e instanceof ErroPipeline ? e.status : e, status, `${code}`);
+    }
+  }
+  // pela handleRequest, o status chega ao cliente
+  const repo = createSupabaseRepo(rpcCom("22023"));
+  repo.tenantDoUsuario = () => Promise.resolve({ tenant: 1, papel: "admin" });
+  const r = await chamar(ctx(repo), { action: "etapa_tarefas_salvar", etapa_id: 2, tarefas: [] });
+  assertEquals([r.status, r.json.error], [400, "motivo 22023"]);
+});
+
+// Cliente falso mínimo do supabase-js para listarPipeline: consulta encadeável que resolve com `resultado`.
+type RespostaRpc = () => Promise<{ data: unknown; error: unknown }>;
+function clienteListar(rpcEstado: RespostaRpc, rpcAbertas?: RespostaRpc) {
+  const consulta = (resultado: { data: unknown; error: unknown }) => {
+    const q: Record<string, unknown> = {};
+    for (const m of ["select", "eq", "order", "limit", "in"]) q[m] = () => q;
+    q.then = (ok: (v: unknown) => unknown, falha?: (e: unknown) => unknown) => Promise.resolve(resultado).then(ok, falha);
+    return q;
+  };
+  const linhas = [101, 102].map((id) => ({ licitacao_id: id, etapa_id: 2, motivo: null, atualizada_em: "2026-10-11T12:00:00Z", atualizada_por: null, licitacao: { id } }));
+  return {
+    from: () => consulta({ data: linhas, error: null }),
+    schema: () => ({ from: () => consulta({ data: [], error: null }) }),
+    rpc: (nome: string) =>
+      nome === "pipeline_preparacao_estado"
+        ? rpcEstado()
+        : nome === "pipeline_tarefas_abertas" && rpcAbertas
+        ? rpcAbertas()
+        : Promise.resolve({ data: [], error: null }),
+  } as unknown as Parameters<typeof createSupabaseRepo>[0];
+}
+
+Deno.test("CA-17: pipeline_listar traz preparacao do último pedido; sem pedido fica null", async () => {
+  const repo = createSupabaseRepo(clienteListar(() => Promise.resolve({
+    data: [{ licitacao_id: 101, status: "processing", resultado: null, erro: null, atualizado_em: "2026-10-11T12:05:00Z" }],
+    error: null,
+  })));
+  const { itens, avisos } = await repo.listarPipeline(1, null);
+  assertEquals(itens.map((i) => [i.licitacao_id, i.preparacao?.status ?? null]), [[101, "processing"], [102, null]]);
+  assertEquals(avisos, []);
+});
+
+Deno.test("CA-17: erro ao ler a preparação não derruba o Kanban nem vira 'sem pedido': campo ausente + aviso", async () => {
+  const repo = createSupabaseRepo(clienteListar(() => Promise.resolve({ data: null, error: { code: "PGRST202", message: "função não existe" } })));
+  const r = await repo.listarPipeline(1, null);
+  assertEquals(r.avisos, ["preparacao_indisponivel"]);
+  assertEquals(r.itens.map((i) => "preparacao" in i), [false, false]);
+});
+
+Deno.test("spec 0018 seção 5: pipeline_listar traz tarefas_abertas por card (0 quando não há)", async () => {
+  const repo = createSupabaseRepo(clienteListar(
+    () => Promise.resolve({ data: [], error: null }),
+    () => Promise.resolve({ data: [{ licitacao_id: 102, abertas: 3 }], error: null }),
+  ));
+  const { itens } = await repo.listarPipeline(1, null);
+  assertEquals(itens.map((i) => [i.licitacao_id, i.tarefas_abertas]), [[101, 0], [102, 3]]);
+});
+
+Deno.test("spec 0018 seção 5: erro ao contar tarefas não vira 0 nem derruba o Kanban: campo ausente + aviso", async () => {
+  const repo = createSupabaseRepo(clienteListar(
+    () => Promise.resolve({ data: [], error: null }),
+    () => Promise.resolve({ data: null, error: { code: "PGRST202", message: "sem contagem" } }),
+  ));
+  const r = await repo.listarPipeline(1, null);
+  assertEquals(r.avisos, ["tarefas_abertas_indisponivel"]);
+  assertEquals(r.itens.map((i) => "tarefas_abertas" in i), [false, false]);
+});
+
+Deno.test("catalogo_listar: qualquer usuário da empresa lê o catálogo para o modelo da etapa", async () => {
+  const { repo } = repoMemoria();
+  repo.tenantDoUsuario = () => Promise.resolve({ tenant: 1, papel: "operacao" });
+  const r = await chamar(ctx(repo), { action: "catalogo_listar" });
+  assertEquals([r.status, r.json.tarefas[0].codigo, r.json.tarefas[0].base_legal], [200, "14133-F01-T01", "art. 54 (caput)"]);
+});
+
+// Cliente falso de uma consulta só (tarefas_catalogo com fase e base embutidas), registrando os filtros.
+function clienteCatalogo(resultado: { data: unknown; error: unknown }, filtros: string[] = []) {
+  const q: Record<string, unknown> = {};
+  q.select = () => q;
+  q.order = () => q;
+  q.eq = (c: string, v: unknown) => (filtros.push(`${c}=${v}`), q);
+  q.then = (ok: (v: unknown) => unknown, falha?: (e: unknown) => unknown) => Promise.resolve(resultado).then(ok, falha);
+  return { from: () => q } as unknown as Parameters<typeof createSupabaseRepo>[0];
+}
+
+Deno.test("catalogo_listar (repo real): base legal ordenada e unida como no banco; sem base = null; fase do embed", async () => {
+  const filtros: string[] = [];
+  const repo = createSupabaseRepo(clienteCatalogo({
+    data: [
+      {
+        codigo: "14133-F01-T01", fase_codigo: "F01", parent_codigo: null, ordem: 10, titulo: "Registrar edital", natureza: "acompanhamento",
+        ator: "licitante", prazo_unidade: "sem_prazo_legal", fase: { nome: "Edital publicado", ordem: 1 },
+        base: [{ artigo: 54, dispositivo: "§ 1º" }, { artigo: 54, dispositivo: "caput" }],
+      },
+      {
+        codigo: "14133-FX-T01", fase_codigo: "FX", parent_codigo: "14133-F01-T01", ordem: 5, titulo: "Transversal", natureza: "obrigacao",
+        ator: "licitante", prazo_unidade: "imediato", fase: { nome: "Trilha", ordem: null }, base: [],
+      },
+    ],
+    error: null,
+  }, filtros));
+  const cat = await repo.listarCatalogo();
+  assertEquals(cat.map((c) => [c.codigo, c.base_legal, c.fase_nome, c.fase_ordem, c.parent_codigo]), [
+    // produção (en_US.UTF-8, 11/10): string_agg dá "art. 54 (§ 1º); art. 54 (caput)" para 14133-F01-T01
+    ["14133-F01-T01", "art. 54 (§ 1º); art. 54 (caput)", "Edital publicado", 1, null],
+    ["14133-FX-T01", null, "Trilha", null, "14133-F01-T01"],
+  ]);
+  assertEquals(filtros, ["ativo=true", "norma=LEI_14133_2021"]);
+});
+
+Deno.test("catalogo_listar (repo real): erro do banco rejeita (não vira catálogo vazio); lista cheia acusa corte", async () => {
+  const e = await createSupabaseRepo(clienteCatalogo({ data: null, error: { message: "sem catálogo" } })).listarCatalogo()
+    .then(() => null, (x) => x);
+  assertEquals(e instanceof Error ? e.message : e, "sem catálogo");
+  const cheia = Array.from({ length: 1000 }, (_, i) => ({ codigo: `c${i}`, fase_codigo: "F01", ordem: i, base: [] }));
+  const e2 = await createSupabaseRepo(clienteCatalogo({ data: cheia, error: null })).listarCatalogo().then(() => null, (x) => x);
+  assertEquals(e2 instanceof Error, true);
 });

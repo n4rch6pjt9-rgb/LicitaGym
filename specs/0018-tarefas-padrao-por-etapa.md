@@ -345,8 +345,8 @@ registradas. A etapa nunca altera prazo legal nem fecha tarefa do certame.
      5. `pipeline_tarefas_reaplicar`.
    - **Resultado:** o status da fila continua `completed` ou `failed` (o check atual). O desfecho fica no `payload` do
      job (`resultado`): `ok`, `sem_documento` ou `regulamento_nao_informado_pela_fonte`. Nos dois últimos, a tarefa
-     mostra o motivo, nunca uma análise vazia. Não há nova tentativa automática: tenta de novo quando a licitação volta
-     a Triagem ou pela ação manual.
+     mostra o motivo, nunca uma análise vazia. Desfecho não se repete: tenta de novo quando a licitação volta
+     a Triagem (falha técnica reagenda; decisão 12).
    - **Implementação:** o job reaproveita `pncp.py --baixar-pendentes`, o `indexador.py` e a `api-agentes` (#307), no
      Cloud Run Job do coletor, por licitação. A cadência fica definida neste PR; a proposta é a cada 15 min enquanto
      houver pedido, e o custo é conferido com o Marcelo. Sem este PR, o CA-17 não fecha.
@@ -468,6 +468,25 @@ Do Marcelo, 11/10/2026 (aprovou o merge do #315 com a revisão incluída):
       - chave imutável da tarefa da empresa, com índice único na instância (CA-19);
       - gatilho de regulamento chama a reaplicação (CA-22);
       - fila com deduplicação e resultado no `payload`, e só PNCP consulta o detalhe.
+
+Do Marcelo, 11/10/2026 (PR 4):
+
+12. **Fila de Triagem:**
+    - **Prepara, não analisa:** a fila só faz detalhe PNCP (`amparo_legal`), download, indexação e
+      `pipeline_tarefas_reaplicar`. Os **agentes rodam sob demanda**, quando alguém abre a análise: são regra, rápidos e
+      idempotentes. A `api-agentes` continua só com usuário (sem rota de sistema).
+    - **Cadência:** o consumidor roda no Cloud Run Job do coletor **a cada 15 min**.
+    - **Divisão do PR 4:**
+      - 4a: banco e API. Enfileirar ao entrar na etapa "Triagem" (pelo nome), um pedido aberto por (empresa, licitação),
+        `fila_preparacao_reivindicar`/`concluir` e `pipeline_preparacao_estado` no card;
+      - 4b: consumidor Python e agendamento.
+    - **Falha técnica × desfecho (revisão do PR 4a):** `sem_documento` e `regulamento_nao_informado_pela_fonte` são
+      desfechos e não se repetem. Falha técnica (PNCP 5xx, timeout, storage, Gemini) volta para a fila com espera
+      crescente (5, 10, 20, 40 min) até 5 tentativas e então fica `failed`. Isso substitui o "não há nova tentativa
+      automática" do item 4 só para falha técnica. Job que morre no meio (sem concluir) conta como tentativa: esgotadas,
+      `failed`. O card nunca fica "em preparação" para sempre.
+    - **Erro no card:** o consumidor grava só categoria e mensagem curta (ex.: `PNCP 504`, `timeout no download`), nunca
+      URL, corpo HTTP ou caminho do storage; o `erro` só aparece fora de `completed`.
 
 ## Perguntas em aberto
 

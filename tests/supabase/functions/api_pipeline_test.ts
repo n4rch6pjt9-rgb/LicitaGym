@@ -84,6 +84,7 @@ function repoMemoria() {
     listarPipeline: (_t, etapaId) =>
       Promise.resolve({
         truncado: false,
+        avisos: [],
         itens: [...ops.entries()].filter(([, o]) => !etapaId || o.etapa_id === etapaId).map(([id, o]) => ({
           licitacao_id: id, etapa_id: o.etapa_id, motivo: o.motivo, atualizada_em: "t", atualizada_por: "u", licitacao: { id },
         })),
@@ -402,4 +403,37 @@ Deno.test("repo real: erro do banco em salvar/reaplicar vira 400 (22023) e 404 (
   repo.tenantDoUsuario = () => Promise.resolve({ tenant: 1, papel: "admin" });
   const r = await chamar(ctx(repo), { action: "etapa_tarefas_salvar", etapa_id: 2, tarefas: [] });
   assertEquals([r.status, r.json.error], [400, "motivo 22023"]);
+});
+
+// Cliente falso mínimo do supabase-js para listarPipeline: consulta encadeável que resolve com `resultado`.
+function clienteListar(rpcEstado: () => Promise<{ data: unknown; error: unknown }>) {
+  const consulta = (resultado: { data: unknown; error: unknown }) => {
+    const q: Record<string, unknown> = {};
+    for (const m of ["select", "eq", "order", "limit", "in"]) q[m] = () => q;
+    q.then = (ok: (v: unknown) => unknown, falha?: (e: unknown) => unknown) => Promise.resolve(resultado).then(ok, falha);
+    return q;
+  };
+  const linhas = [101, 102].map((id) => ({ licitacao_id: id, etapa_id: 2, motivo: null, atualizada_em: "2026-10-11T12:00:00Z", atualizada_por: null, licitacao: { id } }));
+  return {
+    from: () => consulta({ data: linhas, error: null }),
+    schema: () => ({ from: () => consulta({ data: [], error: null }) }),
+    rpc: (nome: string) => nome === "pipeline_preparacao_estado" ? rpcEstado() : Promise.resolve({ data: [], error: null }),
+  } as unknown as Parameters<typeof createSupabaseRepo>[0];
+}
+
+Deno.test("CA-17: pipeline_listar traz preparacao do último pedido; sem pedido fica null", async () => {
+  const repo = createSupabaseRepo(clienteListar(() => Promise.resolve({
+    data: [{ licitacao_id: 101, status: "processing", resultado: null, erro: null, atualizado_em: "2026-10-11T12:05:00Z" }],
+    error: null,
+  })));
+  const { itens, avisos } = await repo.listarPipeline(1, null);
+  assertEquals(itens.map((i) => [i.licitacao_id, i.preparacao?.status ?? null]), [[101, "processing"], [102, null]]);
+  assertEquals(avisos, []);
+});
+
+Deno.test("CA-17: erro ao ler a preparação não derruba o Kanban nem vira 'sem pedido': campo ausente + aviso", async () => {
+  const repo = createSupabaseRepo(clienteListar(() => Promise.resolve({ data: null, error: { code: "PGRST202", message: "função não existe" } })));
+  const r = await repo.listarPipeline(1, null);
+  assertEquals(r.avisos, ["preparacao_indisponivel"]);
+  assertEquals(r.itens.map((i) => "preparacao" in i), [false, false]);
 });

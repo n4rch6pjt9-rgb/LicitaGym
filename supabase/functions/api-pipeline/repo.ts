@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { lerTenantDoUsuario, type TenantResolvido } from "../_shared/tenant.ts";
-import type { Desfecho, Etapa, EtapaComTotal, EventoHistorico, Fase, ItemModelo, ItemPipeline, ModeloTarefa } from "./types.ts";
+import type { Desfecho, Etapa, EtapaComTotal, EventoHistorico, Fase, ItemModelo, ItemPipeline, ModeloTarefa, ResultadoPreparacao, StatusPreparacao } from "./types.ts";
 
 /** Campos da licitação que o Kanban e os selos mostram (subconjunto das colunas públicas da api-dashboard-oportunidades). */
 export const LICITACAO_CARD_COLUMNS = [
@@ -22,8 +22,9 @@ export interface PipelineRepo {
   /** Empresa e papel do usuário (_shared/tenant.ts: vínculo com empresa ativa; sem vínculo, só o desenvolvedor, na única empresa ativa). */
   tenantDoUsuario(userId: string, desenvolvedor: boolean): Promise<TenantResolvido>;
   listarEtapas(tenant: number): Promise<EtapaComTotal[]>;
-  /** Até LIMITE_LISTA itens, mais recentes primeiro; `truncado` avisa quando havia mais. */
-  listarPipeline(tenant: number, etapaId: number | null): Promise<{ itens: ItemPipeline[]; truncado: boolean }>;
+  /** Até LIMITE_LISTA itens, mais recentes primeiro; `truncado` avisa quando havia mais. `avisos` lista o complemento
+   * que não pôde ser lido (o card vem sem ele, nunca com valor inventado). */
+  listarPipeline(tenant: number, etapaId: number | null): Promise<{ itens: ItemPipeline[]; truncado: boolean; avisos: string[] }>;
   estado(tenant: number, licitacaoIds: number[]): Promise<Array<{ licitacao_id: number; etapa_id: number }>>;
   /** soNovos: só adiciona quem ainda não está no pipeline (atômico no banco; não move quem já está). */
   mover(tenant: number, licitacaoIds: number[], etapaId: number | null, motivo: string | null, userId: string, soNovos?: boolean): Promise<number>;
@@ -82,8 +83,33 @@ export function createSupabaseRepo(client: SupabaseClient): PipelineRepo {
         .select("licitacao_id,motivo,erro,em").eq("tenant_id", tenant);
       if (e2) throw new Error(e2.message);
       const porLicitacao = new Map((pend ?? []).map((p) => [Number(p.licitacao_id), { motivo: String(p.motivo), erro: (p.erro as string | null) ?? null, em: String(p.em) }]));
-      const itens = linhas.slice(0, LIMITE_LISTA).map((i) => ({ ...i, tarefas_pendencia: porLicitacao.get(Number(i.licitacao_id)) ?? null }));
-      return { itens, truncado: linhas.length > LIMITE_LISTA };
+      // Preparação da Triagem (fila de download/indexação): "análise em preparação" enquanto pendente.
+      const ids = linhas.slice(0, LIMITE_LISTA).map((i) => Number(i.licitacao_id));
+      const prep = new Map<number, ItemPipeline["preparacao"]>();
+      const avisos: string[] = [];
+      let prepOk = true;
+      if (ids.length) {
+        const { data: est, error: e3 } = await client.rpc("pipeline_preparacao_estado", { p_tenant: tenant, p_licitacoes: ids });
+        // Complemento do card: a falha (ex.: função publicada antes da migration) não derruba o Kanban, mas também não
+        // vira "sem pedido" (null): o campo some do item e `avisos` diz por quê.
+        if (e3) {
+          console.error("[api-pipeline] pipeline_preparacao_estado falhou", { code: e3.code, message: e3.message });
+          prepOk = false;
+          avisos.push("preparacao_indisponivel");
+        }
+        for (const e of (prepOk ? est ?? [] : []) as Array<Record<string, unknown>>) {
+          prep.set(Number(e.licitacao_id), {
+            status: e.status as StatusPreparacao, resultado: (e.resultado as ResultadoPreparacao | null) ?? null,
+            erro: (e.erro as string | null) ?? null, atualizado_em: String(e.atualizado_em),
+          });
+        }
+      }
+      const itens = linhas.slice(0, LIMITE_LISTA).map((i) => ({
+        ...i,
+        tarefas_pendencia: porLicitacao.get(Number(i.licitacao_id)) ?? null,
+        ...(prepOk ? { preparacao: prep.get(Number(i.licitacao_id)) ?? null } : {}),
+      }));
+      return { itens, truncado: linhas.length > LIMITE_LISTA, avisos };
     },
 
     async estado(tenant, ids) {

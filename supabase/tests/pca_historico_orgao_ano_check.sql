@@ -1,4 +1,4 @@
--- Checagem do histórico do PCA (migration 20261010100000).
+-- Checagem do histórico do PCA (migration 20261011100300).
 -- Falha com EXCEPTION se:
 --   ACL   public.pca_historico_orgao_ano(text[],int,int) ou private.catalogo_classes_efetivas() ficarem executáveis por
 --         anon/authenticated/PUBLIC, ou service_role perder o EXECUTE; ou se a view antiga ainda existir;

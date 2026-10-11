@@ -1,6 +1,6 @@
 /**
  * Classes CATMAT do catálogo da empresa (catalogo_empresa_catmat), depois da herança e das exclusões. É o padrão de
- * classes das rotas que leem o PCA por classe: nada fica fixo no código (migration 20261010100000).
+ * classes das rotas que leem o PCA por classe: nada fica fixo no código (migration 20261011100300).
  */
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 

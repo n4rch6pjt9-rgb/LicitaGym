@@ -476,6 +476,10 @@ def material_ou_servico(it: dict) -> str | None:
 
 
 def _data(v):
+    """ISO com fuso; texto sem fuso é rotulado como UTC. ATENÇÃO (#332): o PNCP manda horário de Brasília, então isto
+    deixa o valor 3 h adiantado. Continua assim só para data_documento, data_resultado e data_homologacao, que o
+    reclassificador (reclassificar_escopo_pncp.carregar_documentos) e o preparar_triagem leem nesse formato; a
+    correção dessas colunas tem issue própria. Prazo e publicação da compra usam _data_pncp."""
     if not v:
         return None
     try:
@@ -483,6 +487,13 @@ def _data(v):
         return (d if d.tzinfo else d.replace(tzinfo=timezone.utc)).isoformat()
     except ValueError:
         return None
+
+
+def _data_pncp(v):
+    """ISO com fuso, com texto sem fuso no horário de Brasília (FUSO_PNCP), como _instante. Usado em data_fim e
+    data_publicacao de licitacoes_externas (#332)."""
+    d = _instante(v)
+    return d.isoformat() if d else None
 
 
 # Categorias de equipamento/material de academia: item marcado como serviço ('S') no PNCP não conta nelas
@@ -1448,7 +1459,7 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
         "unidade_compradora": c.get("unidade_nome"), "orgao_nome": c.get("orgao_nome"),
         "orgao_cnpj": c.get("orgao_cnpj"), "municipio": c.get("municipio_nome"), "uf": c.get("uf"),
         "modalidade": c.get("modalidade_licitacao_nome"), "situacao": c.get("situacao_nome"), "fase": fase,
-        "data_publicacao": _data(c.get("data_publicacao_pncp")), "data_fim": _data(raw.get("data_fim_vigencia")),
+        "data_publicacao": _data_pncp(c.get("data_publicacao_pncp")), "data_fim": _data_pncp(raw.get("data_fim_vigencia")),
         "data_homologacao": data_homologacao.isoformat() if data_homologacao else None,
         "prioridade": prioridade, "categoria_escopo": categoria,
         "interesse_borracha": interesse, "termos_busca": [termo], "raw": raw,

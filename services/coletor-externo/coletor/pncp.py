@@ -375,6 +375,34 @@ def valor_total_detalhe(det: dict) -> float | None:
     return _valor_positivo((det or {}).get("valorTotalEstimado"))
 
 
+# Regulamento a partir do nome oficial do amparo legal (spec 0020). A regra que vale é a do banco
+# (public.regulamento_do_amparo, gatilho em licitacoes_externas); este espelho só alimenta o resumo do dry-run.
+# 14.981 e 13.303 antes de 14.133: o nome pode citar mais de uma lei.
+_LEIS_AMPARO = (
+    ("LEI_14981", re.compile(r"(^|[^0-9])14\.?981([^0-9]|$)")),
+    ("LEI_13303", re.compile(r"(^|[^0-9])13\.?303([^0-9]|$)")),
+    ("LEI_14133", re.compile(r"(^|[^0-9])14\.?133([^0-9]|$)")),
+)
+
+
+def regulamento_do_amparo(nome) -> str | None:
+    """Espelho de public.regulamento_do_amparo: LEI_14981, LEI_13303, LEI_14133, OUTRO; None se vazio."""
+    if not isinstance(nome, str) or not nome.strip():
+        return None
+    for regulamento, padrao in _LEIS_AMPARO:
+        if padrao.search(nome):
+            return regulamento
+    return "OUTRO"
+
+
+def amparo_legal_detalhe(det: dict) -> dict | None:
+    """amparoLegal do detalhe da compra ({codigo, nome, descricao}), como veio. None sem nome: ausente não é gravado."""
+    a = (det or {}).get("amparoLegal")
+    if not isinstance(a, dict) or not isinstance(a.get("nome"), str) or not a["nome"].strip():
+        return None
+    return {"codigo": a.get("codigo"), "nome": a["nome"].strip(), "descricao": a.get("descricao")}
+
+
 def _link_http(v) -> str | None:
     """URL http(s) ou None (o link vai para a interface: nada de javascript:, data: etc.)."""
     if not isinstance(v, str):
@@ -1248,7 +1276,8 @@ def identificacao_do_detalhe(c: dict, det: dict) -> dict:
     numero_processo None = detalhe respondeu sem processo.
 
     valor_total (valorTotalEstimado do detalhe; a busca deixa valor_global vazio em editais) só
-    entra no dict quando existe: ausente nunca vira NULL gravado por cima de valor bom."""
+    entra no dict quando existe: ausente nunca vira NULL gravado por cima de valor bom. O mesmo vale para
+    amparo_legal (amparoLegal do detalhe), de onde o banco deriva o regulamento (spec 0020)."""
     proc = (det.get("processo") or "").strip() or None
     num, ano = det.get("numeroCompra"), det.get("anoCompra") or c.get("ano")
     mod = det.get("modalidadeNome") or c.get("modalidade_licitacao_nome")
@@ -1257,6 +1286,9 @@ def identificacao_do_detalhe(c: dict, det: dict) -> dict:
     valor = valor_total_detalhe(det)
     if valor is not None:
         out["valor_total"] = valor
+    amparo = amparo_legal_detalhe(det)
+    if amparo is not None:
+        out["amparo_legal"] = amparo
     return out
 
 

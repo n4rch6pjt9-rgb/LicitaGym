@@ -17,8 +17,10 @@ Medido em produção (só leitura, 10/10):
 - **Chaves de condição usadas pelo catálogo:** `diferenca_5pct_segundo`, `empate`, `estrangeira`, `garantia_contratual`,
   `garantia_proposta`, `intervalo_minimo_lances`, `inversao_fases`, `mao_de_obra_exclusiva`, `me_epp`, `objeto`,
   `posicao`, `proposta_abaixo_85pct`, `servico_continuo`, `srp` e `vistoria_prevista`.
-- **Dado oficial que já temos para essas chaves:** só `srp`, em `licitacoes_externas.objeto_registro_preco`. As demais
-  não têm coluna.
+- **Dado oficial que já temos para essas chaves:** só `srp`, no campo `srp` da consulta do PNCP
+  (`licitacoes_externas.raw->>'srp'`). As demais não têm coluna. `objeto_registro_preco` **não** serve: é regex sobre
+  o texto do objeto, `not null default false` (migration `20261004140000`), e faria a ausência virar "não se aplica"
+  (achado da revisão, 10/10).
 - **Unidade de prazo das tarefas ativas:**
   - `definido_no_edital`: 38;
   - `sem_prazo_legal`: 23;
@@ -44,7 +46,8 @@ Medido em produção (só leitura, 10/10):
 | `condicao_verificada` | resultado de `catalogo_condicao_avaliar` na liberação: `true` ou **nulo** ("condição não verificada"). `false` nunca é gravado: a tarefa não nasce |
 | `contexto` | o contexto do certame usado na avaliação (jsonb), para explicar o selo |
 | `prazo_situacao` | ver a seção 3 |
-| `prazo_em` | data do prazo; só quando `prazo_situacao = manual` |
+| `prazo_em` | data do prazo; só com `prazo_situacao` `manual` ou `calculado` |
+| `prazo_informado_por`, `prazo_informado_em` | quem informou o prazo manual, e quando (obrigatórios em `manual`) |
 | `status` | `aberta` (padrão), `em_andamento`, `concluida`, `cancelada` |
 | `responsavel_papel` | `admin` na criação (decisão 3 da 0018: fila de todos os admins) |
 | `responsavel_user_id` | nulo até um admin atribuir; FK `auth.users(id)` |
@@ -55,7 +58,8 @@ Medido em produção (só leitura, 10/10):
 - **Checks:**
   - `origem = catalogo` exige `tarefa_codigo` e pelo menos um dos dois `liberada_por_*`;
   - `origem = empresa` exige `titulo`;
-  - `prazo_em` só existe com `prazo_situacao = manual`.
+  - `prazo_em` só existe com `prazo_situacao` `manual` ou `calculado` (`calculado` fica reservado à spec 0018);
+  - `status = concluida` ⇔ `concluida_em` preenchido.
 - **ACL:** RLS ligada e sem policy; `revoke all` de `anon` e `authenticated`; só `service_role` acessa, como as outras
   tabelas do pipeline. O cliente chega pela `api-tarefas`.
 - **O catálogo não muda.** Responsável, prazo e status ficam só na instância.
@@ -63,9 +67,14 @@ Medido em produção (só leitura, 10/10):
 ### 2. Contexto do certame e liberação (SQL, `security definer`, `search_path` fixo, só `service_role`)
 
 - **`tarefas_contexto_certame(p_licitacao_id bigint) → jsonb`:** monta o contexto **só com dado oficial**. No v1 a
-  única chave é `srp`, de `objeto_registro_preco`, e só quando esse campo não é nulo. As outras chaves ficam ausentes, e
+  única chave é `srp`, do `raw->>'srp'` do PNCP, e só quando o valor é reconhecido (true ou false). As outras chaves ficam ausentes, e
   chave ausente vira "condição não verificada", nunca "não se aplica".
-- **`tarefas_equipe_liberar(p_tenant_id, p_licitacao_id, p_fase, p_evento, p_user_id) → (criadas int, existentes int, bloqueio text)`:**
+- **`tarefas_equipe_liberar(p_tenant_id, p_licitacao_id, p_fase, p_evento, p_user_id) → (criadas int, existentes int, bloqueio text)`**
+  (`security invoker`, como `pipeline_mover`; fase ou evento inexistente e usuário nulo → erro `22023`):
+  - **liberar de novo não duplica:** grava a segunda origem (fase e evento) e, se a condição antes não verificada
+    agora se confirma com o dado oficial, passa a `true`;
+  - **sair do pipeline não apaga a tarefa** (decisão 2 da spec 0018: tarefas continuam abertas);
+  - `LEI_14981` ainda não passa no `licext_regulamento_chk`: o ramo vale quando o PR do backfill ampliar o check;
   - **gate de regulamento (decisão 1):** só libera quando `licitacoes_externas.regulamento` é `LEI_14133` ou
     `LEI_14981`. Regulamento nulo → nada é gravado, `bloqueio = 'regulamento_nao_informado'`; outro regulamento →
     `bloqueio = 'regulamento_sem_catalogo'`. Em 10/10 o regulamento é nulo em todas as linhas: até o backfill (pelo
@@ -99,9 +108,9 @@ acessado com `service_role` só depois de conferir o usuário.
 |---|---|---|
 | `catalogo_liberadas` | admin ou operação | prévia sem gravar: tarefas que a fase ou o evento liberam para a licitação, com `aplicavel` (true ou nulo), prazo e base legal |
 | `tarefas_liberar` | só admin (ou o desenvolvedor) (decisão 3) | grava as tarefas da fase ou do evento (`tarefas_equipe_liberar`); devolve `criadas` e `existentes`; com bloqueio de regulamento, 409 com a mensagem do bloqueio e nada gravado |
-| `tarefas_listar` | admin: todas da empresa; operação: só as atribuídas a ela | filtros `licitacao_id`, `status`, `minhas` |
-| `tarefa_atualizar` | admin: qualquer uma; operação: só as dela | `status`, `prazo_em` (admin) |
-| `tarefa_atribuir` | só admin (ou o desenvolvedor) | `user_id` precisa ser membro ativo da mesma empresa; `null` devolve à fila dos admins |
+| `tarefas_listar` | admin: todas da empresa; operação: só as atribuídas a ela | filtros `licitacao_id`, `status`, `minhas`; até 500 com `truncado` |
+| `tarefa_atualizar` | admin: qualquer uma; operação: só as dela | `status`, `prazo_em` (admin; data e hora com fuso) |
+| `tarefa_atribuir` | só admin (ou o desenvolvedor) | `user_id` precisa ser membro ativo da mesma empresa; `responsavel_papel` passa ao papel dele; `null` devolve à fila dos admins |
 
 A prévia `catalogo_liberadas` também devolve o `bloqueio` de regulamento, quando houver. Uma licitação só recebe
 tarefa se estiver no pipeline da empresa (decisão 2). Fora dele, a resposta é 404 "Licitação
@@ -111,7 +120,7 @@ fora do pipeline da empresa".
 
 | ID | Dado / Quando / Então | Teste que prova |
 |---|---|---|
-| CA-1 | **Dado** uma licitação com `objeto_registro_preco = true`, **quando** `tarefas_equipe_liberar` roda para um evento cuja tarefa exige `srp = true`, **então** a tarefa é criada com `condicao_verificada = true`; com `srp = false` exigido, não é criada. | SQL `supabase/tests/tarefas_equipe_check.sql` |
+| CA-1 | **Dado** uma licitação com `srp = true` no PNCP, **quando** `tarefas_equipe_liberar` roda para um evento cuja tarefa exige `srp = true`, **então** a tarefa é criada com `condicao_verificada = true`; com `srp = false` no PNCP, não é criada; sem `srp` no PNCP (mesmo com "registro de preço" no objeto), é criada com `condicao_verificada` nulo. | SQL `supabase/tests/tarefas_equipe_check.sql` |
 | CA-2 | **Dado** contexto sem a chave da condição (ex.: `inversao_fases`), **quando** libera, **então** a tarefa existe com `condicao_verificada` nulo. | SQL `tarefas_equipe_check.sql` |
 | CA-3 | **Dado** tarefas já liberadas, **quando** libera de novo a mesma fase ou um evento com o mesmo código, **então** nada duplica (`criadas = 0`). | SQL `tarefas_equipe_check.sql` |
 | CA-4 | **Dado** tarefa em `dias_uteis`, **quando** criada, **então** `prazo_situacao = 'nao_calculado'` e `prazo_em` nulo. | SQL `tarefas_equipe_check.sql` |
@@ -151,7 +160,7 @@ fora do pipeline da empresa".
 - **Contrato com o Dashboard:** novo (ações da seção 4); a #72 consome.
 - **Dado oficial × derivado:**
   - vêm do catálogo: tarefa, artigo e prazo legal;
-  - vem da fonte oficial (PNCP): `srp`;
+  - vem da fonte oficial (PNCP): `srp` (`raw->>'srp'`; nunca a regex de `objeto_registro_preco`);
   - são da empresa: responsável, status e prazo manual;
   - nenhuma condição é presumida.
 

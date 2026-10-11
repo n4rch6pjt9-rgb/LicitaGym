@@ -5,6 +5,8 @@ type Resultado = Acao | { error: string };
 
 const FASE_RE = /^F\d{2}$/;
 const EVENTO_RE = /^[A-Z][A-Z0-9_]{2,60}$/;
+/** Data e hora com fuso explícito (Z ou ±hh:mm): data pura viraria meia-noite UTC, um dia antes em Brasília. */
+const DATA_HORA_FUSO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const idPositivo = (v: unknown): number | null =>
@@ -53,8 +55,11 @@ export function parseActionFromBody(body: Corpo): Resultado {
         out.status = s;
       }
       if (body.prazo_em !== undefined) {
-        const d = typeof body.prazo_em === "string" ? new Date(body.prazo_em) : null;
-        if (!d || Number.isNaN(d.getTime())) return { error: "'prazo_em' deve ser data ISO 8601." };
+        const ok = typeof body.prazo_em === "string" && DATA_HORA_FUSO_RE.test(body.prazo_em);
+        const d = ok ? new Date(body.prazo_em as string) : null;
+        if (!d || Number.isNaN(d.getTime())) {
+          return { error: "'prazo_em' deve ser data e hora ISO 8601 com fuso (ex.: 2026-10-20T18:00:00-03:00)." };
+        }
         out.prazo_em = d.toISOString();
       }
       if (out.status === undefined && out.prazo_em === undefined) return { error: "Nada para atualizar: informe 'status' ou 'prazo_em'." };

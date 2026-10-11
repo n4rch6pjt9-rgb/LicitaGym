@@ -6,17 +6,23 @@
 --
 -- O que muda:
 --   public.tarefas_equipe            tabela nova (uma linha = uma tarefa de uma empresa numa licitação)
---   public.tarefas_contexto_certame  contexto do certame só com dado oficial (v1: srp de objeto_registro_preco)
+--   public.tarefas_contexto_certame  contexto do certame só com dado oficial (v1: srp do PNCP, raw->>'srp')
 --   public.tarefas_equipe_liberar    cria as tarefas que uma fase ou um evento liberam (idempotente)
 --
 -- Regras (spec 0019, decisões do Marcelo em 10/10/2026):
 --   * Só licitação no pipeline da empresa recebe tarefa (bloqueio 'fora_do_pipeline').
 --   * Gate de regulamento: só LEI_14133 e LEI_14981. Nulo -> 'regulamento_nao_informado' (em 10/10, todas as linhas:
---     nada nasce até o backfill pelo amparoLegal do PNCP); outro -> 'regulamento_sem_catalogo'.
+--     nada nasce até o backfill pelo amparoLegal do PNCP); outro -> 'regulamento_sem_catalogo'. LEI_14981 ainda não
+--     passa no licext_regulamento_chk (20260925120000): o ramo vale quando o PR do backfill ampliar o check.
+--   * srp vem só do PNCP (raw->>'srp'). licitacoes_externas.objeto_registro_preco NÃO serve: é regex sobre o texto
+--     do objeto, not null default false (20261004140000), e transformaria ausência em "não se aplica".
 --   * Condição do catálogo: chave ausente no contexto -> tarefa criada com condicao_verificada nulo ("condição não
 --     verificada"); condição falsa -> tarefa não nasce. false nunca é gravado.
 --   * Prazo: nenhuma data inventada. dias_uteis/meses/anos -> 'nao_calculado'; demais unidades viram a situação do
---     catálogo. prazo_em só existe quando a equipe informa à mão ('manual').
+--     catálogo. prazo_em só existe com 'manual' (a equipe informou; prazo_informado_por/em) ou 'calculado'
+--     (reservado para a spec 0018: prazo da tarefa da empresa contado da entrada na etapa).
+--   * Liberar de novo (ou por fase depois do evento) não duplica: guarda a segunda origem e, se a condição antes não
+--     verificada agora se confirma, grava true. Sair do pipeline não apaga a tarefa (decisão 2 da spec 0018).
 --   * Responsável: nasce para o papel admin, sem pessoa (decisão 3 da spec 0018).
 --   * O catálogo não muda: responsável, prazo e status ficam na instância.
 --
@@ -41,6 +47,8 @@ create table if not exists public.tarefas_equipe (
   contexto             jsonb  not null default '{}'::jsonb,
   prazo_situacao       text   not null,
   prazo_em             timestamptz,
+  prazo_informado_por  uuid,
+  prazo_informado_em   timestamptz,
   status               text   not null default 'aberta',
   responsavel_papel    text   not null default 'admin',
   responsavel_user_id  uuid   references auth.users (id) on delete set null,
@@ -59,7 +67,11 @@ comment on column public.tarefas_equipe.condicao_verificada is
   'contexto). false nunca é gravado: a tarefa não nasce.';
 comment on column public.tarefas_equipe.prazo_situacao is
   'nao_calculado (dias úteis sem calendário, ou sem data do evento), definido_no_edital, sem_prazo_legal, imediato, '
-  'manual (prazo_em informado pela equipe).';
+  'manual (prazo_em informado pela equipe), calculado (reservado à spec 0018).';
+comment on column public.tarefas_equipe.responsavel_papel is
+  'Papel do responsável: admin na criação (fila dos admins); ao atribuir, o papel do membro em tenant_membros.';
+comment on column public.tarefas_equipe.tarefa_codigo is
+  'Código do catálogo. O catálogo desativa por ativo=false e nunca apaga: a FK sem on delete preserva a instância.';
 
 do $$ begin
   if not exists (select 1 from pg_constraint where conname = 'tarefas_equipe_origem_chk') then
@@ -75,8 +87,9 @@ do $$ begin
   end if;
   if not exists (select 1 from pg_constraint where conname = 'tarefas_equipe_prazo_chk') then
     alter table public.tarefas_equipe add constraint tarefas_equipe_prazo_chk check (
-      prazo_situacao in ('nao_calculado', 'definido_no_edital', 'sem_prazo_legal', 'imediato', 'manual')
-      and ((prazo_situacao = 'manual') = (prazo_em is not null))
+      prazo_situacao in ('nao_calculado', 'definido_no_edital', 'sem_prazo_legal', 'imediato', 'manual', 'calculado')
+      and ((prazo_situacao in ('manual', 'calculado')) = (prazo_em is not null))
+      and (prazo_situacao <> 'manual' or (prazo_informado_por is not null and prazo_informado_em is not null))
     );
   end if;
   if not exists (select 1 from pg_constraint where conname = 'tarefas_equipe_status_chk') then
@@ -86,6 +99,10 @@ do $$ begin
   if not exists (select 1 from pg_constraint where conname = 'tarefas_equipe_papel_chk') then
     alter table public.tarefas_equipe add constraint tarefas_equipe_papel_chk
       check (responsavel_papel in ('admin', 'operacao'));
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'tarefas_equipe_concluida_chk') then
+    alter table public.tarefas_equipe add constraint tarefas_equipe_concluida_chk
+      check ((status = 'concluida') = (concluida_em is not null));
   end if;
   if not exists (select 1 from pg_constraint where conname = 'tarefas_equipe_contexto_chk') then
     alter table public.tarefas_equipe add constraint tarefas_equipe_contexto_chk
@@ -115,15 +132,18 @@ security invoker
 set search_path = public, pg_temp
 as $$
   select coalesce(
-           (select case when l.objeto_registro_preco is not null
-                        then jsonb_build_object('srp', l.objeto_registro_preco)
-                        else '{}'::jsonb end
+           (select case
+                     when lower(l.raw ->> 'srp') in ('true', 't', '1', 'sim')         then jsonb_build_object('srp', true)
+                     when lower(l.raw ->> 'srp') in ('false', 'f', '0', 'nao', 'não') then jsonb_build_object('srp', false)
+                     else '{}'::jsonb
+                   end
               from public.licitacoes_externas l
              where l.id = p_licitacao_id),
            '{}'::jsonb);
 $$;
 comment on function public.tarefas_contexto_certame(bigint) is
-  'Contexto do certame para avaliar a condição do catálogo, só com dado oficial. v1: srp (objeto_registro_preco).';
+  'Contexto do certame para avaliar a condição do catálogo, só com dado oficial. v1: srp do PNCP (raw->>''srp''); '
+  'sem o campo, a chave fica ausente (condição não verificada). Nunca objeto_registro_preco (regex no texto).';
 
 -- Situação do prazo na criação (nenhuma data calculada no v1).
 create or replace function public.tarefas_prazo_situacao(p_unidade public.prazo_unidade)
@@ -142,7 +162,7 @@ as $$
 $$;
 
 -- ---------------------------------------------------------------- liberar
--- security definer: chamada só pela service_role (api-tarefas); lê o catálogo e grava a instância.
+-- security invoker, como pipeline_mover: só a service_role executa, e ela já lê o catálogo e grava a instância.
 create or replace function public.tarefas_equipe_liberar(
   p_tenant_id    bigint,
   p_licitacao_id bigint,
@@ -152,7 +172,7 @@ create or replace function public.tarefas_equipe_liberar(
 )
 returns table (criadas integer, existentes integer, bloqueio text)
 language plpgsql
-security definer
+security invoker
 set search_path = public, pg_temp
 as $$
 declare
@@ -163,6 +183,15 @@ declare
 begin
   if (p_fase is null) = (p_evento is null) then
     raise exception 'Informe exatamente um entre fase e evento.' using errcode = '22023';
+  end if;
+  if p_user_id is null then
+    raise exception 'Usuário obrigatório.' using errcode = '22023';
+  end if;
+  if p_fase is not null and not exists (select 1 from public.processo_fases f where f.codigo = p_fase) then
+    raise exception 'Fase % não existe no catálogo.', p_fase using errcode = '22023';
+  end if;
+  if p_evento is not null and not exists (select 1 from public.processo_eventos e where e.codigo = p_evento) then
+    raise exception 'Evento % não existe no catálogo.', p_evento using errcode = '22023';
   end if;
 
   if not exists (select 1 from public.pipeline_oportunidades o
@@ -188,19 +217,30 @@ begin
           union all
           select e.codigo from public.catalogo_tarefas_do_evento(p_evento, v_contexto) e where p_evento is not null) x;
 
-  insert into public.tarefas_equipe (
-    tenant_id, licitacao_id, origem, tarefa_codigo, liberada_por_fase, liberada_por_evento,
-    condicao_verificada, contexto, prazo_situacao, responsavel_papel, criada_por, atualizada_por
+  with gravadas as (
+    insert into public.tarefas_equipe as te (
+      tenant_id, licitacao_id, origem, tarefa_codigo, liberada_por_fase, liberada_por_evento,
+      condicao_verificada, contexto, prazo_situacao, responsavel_papel, criada_por, atualizada_por
+    )
+    select p_tenant_id, p_licitacao_id, 'catalogo', t.codigo, p_fase, p_evento,
+           t.aplicavel, v_contexto, public.tarefas_prazo_situacao(t.prazo_unidade), 'admin', p_user_id, p_user_id
+      from (select f.codigo, f.aplicavel, f.prazo_unidade
+              from public.catalogo_tarefas_da_fase(p_fase, v_contexto) f where p_fase is not null
+            union all
+            select e.codigo, e.aplicavel, e.prazo_unidade
+              from public.catalogo_tarefas_do_evento(p_evento, v_contexto) e where p_evento is not null) t
+    on conflict (tenant_id, licitacao_id, tarefa_codigo) where origem = 'catalogo' do update
+       set liberada_por_fase   = coalesce(te.liberada_por_fase, excluded.liberada_por_fase),
+           liberada_por_evento = coalesce(te.liberada_por_evento, excluded.liberada_por_evento),
+           condicao_verificada = coalesce(te.condicao_verificada, excluded.condicao_verificada),
+           contexto            = case when te.condicao_verificada is null and excluded.condicao_verificada
+                                      then excluded.contexto else te.contexto end
+     where (te.liberada_por_fase is null and excluded.liberada_por_fase is not null)
+        or (te.liberada_por_evento is null and excluded.liberada_por_evento is not null)
+        or (te.condicao_verificada is null and excluded.condicao_verificada)
+    returning (xmax = 0) as nova
   )
-  select p_tenant_id, p_licitacao_id, 'catalogo', t.codigo, p_fase, p_evento,
-         t.aplicavel, v_contexto, public.tarefas_prazo_situacao(t.prazo_unidade), 'admin', p_user_id, p_user_id
-    from (select f.codigo, f.aplicavel, f.prazo_unidade
-            from public.catalogo_tarefas_da_fase(p_fase, v_contexto) f where p_fase is not null
-          union all
-          select e.codigo, e.aplicavel, e.prazo_unidade
-            from public.catalogo_tarefas_do_evento(p_evento, v_contexto) e where p_evento is not null) t
-  on conflict (tenant_id, licitacao_id, tarefa_codigo) where origem = 'catalogo' do nothing;
-  get diagnostics v_criadas = row_count;
+  select count(*) filter (where nova) into v_criadas from gravadas;
 
   return query select v_criadas, v_total - v_criadas, null::text;
 end;

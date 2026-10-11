@@ -4,7 +4,7 @@ import type { Bloqueio, Status, Tarefa, TarefaPrevia } from "./types.ts";
 
 const TAREFA_COLUMNS = [
   "id", "tenant_id", "licitacao_id", "origem", "tarefa_codigo", "titulo", "descricao", "liberada_por_fase",
-  "liberada_por_evento", "condicao_verificada", "contexto", "prazo_situacao", "prazo_em", "status", "responsavel_papel",
+  "liberada_por_evento", "condicao_verificada", "contexto", "prazo_situacao", "prazo_em", "prazo_informado_por", "prazo_informado_em", "status", "responsavel_papel",
   "responsavel_user_id", "criada_em", "atualizada_em", "concluida_em",
 ].join(",") +
   ",catalogo:tarefas_catalogo(titulo,descricao,fase_codigo,natureza,prazo_quantidade,prazo_unidade,prazo_sentido,prazo_evento)";
@@ -30,11 +30,13 @@ export interface TarefasRepo {
     existentes: number;
     bloqueio: Bloqueio | null;
   }>;
-  listar(tenant: number, filtro: FiltroTarefas): Promise<Tarefa[]>;
+  /** Até LIMITE_LISTA, mais recentes primeiro; `truncado` avisa quando havia mais. */
+  listar(tenant: number, filtro: FiltroTarefas): Promise<{ tarefas: Tarefa[]; truncado: boolean }>;
   obter(tenant: number, id: number): Promise<Tarefa | null>;
-  atualizar(tenant: number, id: number, campos: Partial<Tarefa>, userId: string): Promise<Tarefa>;
-  /** Membro ativo (tenant_membros.ativo) da empresa. */
-  membroAtivo(tenant: number, userId: string): Promise<boolean>;
+  /** soDoResponsavel: só grava se a tarefa ainda está com esse usuário (sem corrida com a reatribuição); null se não. */
+  atualizar(tenant: number, id: number, campos: Partial<Tarefa>, userId: string, soDoResponsavel?: string): Promise<Tarefa | null>;
+  /** Papel do membro ativo (tenant_membros.ativo) na empresa; null se não for membro ativo. */
+  papelDoMembro(tenant: number, userId: string): Promise<"admin" | "operacao" | null>;
 }
 
 export function createSupabaseRepo(client: SupabaseClient): TarefasRepo {
@@ -63,7 +65,39 @@ export function createSupabaseRepo(client: SupabaseClient): TarefasRepo {
         ? await client.rpc("catalogo_tarefas_da_fase", { p_fase: fase, p_contexto: contexto ?? {} })
         : await client.rpc("catalogo_tarefas_do_evento", { p_evento: evento, p_contexto: contexto ?? {} });
       if (error) throw new Error(error.message);
-      return (data ?? []) as TarefaPrevia[];
+      const linhas = (data ?? []) as Array<Record<string, unknown>>;
+      const codigos = linhas.map((l) => String(l.codigo));
+      if (codigos.length === 0) return [];
+      // As duas funções do catálogo devolvem colunas diferentes: completa pelo catálogo para um formato só.
+      const { data: cat, error: e2 } = await client.from("tarefas_catalogo")
+        .select("codigo,fase_codigo,parent_codigo,titulo,natureza,prazo_quantidade,prazo_unidade,prazo_sentido,prazo_evento")
+        .in("codigo", codigos);
+      if (e2) throw new Error(e2.message);
+      const { data: bases, error: e3 } = await client.from("tarefas_catalogo_base_legal")
+        .select("tarefa_codigo,artigo,dispositivo").in("tarefa_codigo", codigos).order("artigo").order("dispositivo");
+      if (e3) throw new Error(e3.message);
+      const porCodigo = new Map((cat ?? []).map((c) => [String(c.codigo), c as Record<string, unknown>]));
+      const base = new Map<string, string[]>();
+      for (const b of bases ?? []) {
+        const k = String(b.tarefa_codigo);
+        base.set(k, [...(base.get(k) ?? []), "art. " + b.artigo + " (" + b.dispositivo + ")"]);
+      }
+      return linhas.map((l): TarefaPrevia => {
+        const c = porCodigo.get(String(l.codigo)) ?? {};
+        return {
+          codigo: String(l.codigo),
+          fase_codigo: String(c.fase_codigo ?? l.fase_codigo ?? ""),
+          parent_codigo: (c.parent_codigo as string | null) ?? null,
+          titulo: String(c.titulo ?? l.titulo ?? ""),
+          natureza: String(c.natureza ?? ""),
+          prazo_quantidade: (c.prazo_quantidade as number | null) ?? null,
+          prazo_unidade: String(c.prazo_unidade ?? l.prazo_unidade ?? ""),
+          prazo_sentido: (c.prazo_sentido as string | null) ?? null,
+          prazo_evento: (c.prazo_evento as string | null) ?? null,
+          aplicavel: (l.aplicavel as boolean | null) ?? null,
+          base_legal: base.get(String(l.codigo))?.join("; ") ?? null,
+        };
+      });
     },
 
     async liberar(tenant, licitacaoId, fase, evento, userId) {
@@ -77,13 +111,14 @@ export function createSupabaseRepo(client: SupabaseClient): TarefasRepo {
 
     async listar(tenant, f) {
       let q = client.from("tarefas_equipe").select(TAREFA_COLUMNS).eq("tenant_id", tenant)
-        .order("criada_em", { ascending: false }).limit(LIMITE_LISTA);
+        .order("criada_em", { ascending: false }).limit(LIMITE_LISTA + 1);
       if (f.licitacao_id !== null) q = q.eq("licitacao_id", f.licitacao_id);
       if (f.status !== null) q = q.eq("status", f.status);
       if (f.responsavel !== null) q = q.eq("responsavel_user_id", f.responsavel);
       const { data, error } = await q;
       if (error) throw new Error(error.message);
-      return (data ?? []) as unknown as Tarefa[];
+      const linhas = (data ?? []) as unknown as Tarefa[];
+      return { tarefas: linhas.slice(0, LIMITE_LISTA), truncado: linhas.length > LIMITE_LISTA };
     },
 
     async obter(tenant, id) {
@@ -93,20 +128,21 @@ export function createSupabaseRepo(client: SupabaseClient): TarefasRepo {
       return (data as unknown as Tarefa) ?? null;
     },
 
-    async atualizar(tenant, id, campos, userId) {
-      const { data, error } = await client.from("tarefas_equipe")
+    async atualizar(tenant, id, campos, userId, soDoResponsavel) {
+      let q = client.from("tarefas_equipe")
         .update({ ...campos, atualizada_por: userId, atualizada_em: new Date().toISOString() })
-        .eq("tenant_id", tenant).eq("id", id)
-        .select(TAREFA_COLUMNS).single();
+        .eq("tenant_id", tenant).eq("id", id);
+      if (soDoResponsavel) q = q.eq("responsavel_user_id", soDoResponsavel);
+      const { data, error } = await q.select(TAREFA_COLUMNS).maybeSingle();
       if (error) throw new Error(error.message);
-      return data as unknown as Tarefa;
+      return (data as unknown as Tarefa) ?? null;
     },
 
-    async membroAtivo(tenant, userId) {
-      const { data, error } = await client.from("tenant_membros").select("user_id")
+    async papelDoMembro(tenant, userId) {
+      const { data, error } = await client.from("tenant_membros").select("papel")
         .eq("tenant_id", tenant).eq("user_id", userId).eq("ativo", true).maybeSingle();
       if (error) throw new Error(error.message);
-      return data !== null;
+      return (data?.papel as "admin" | "operacao" | undefined) ?? null;
     },
   };
 }

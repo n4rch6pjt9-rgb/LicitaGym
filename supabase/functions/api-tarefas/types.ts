@@ -3,7 +3,7 @@
 export const STATUS = ["aberta", "em_andamento", "concluida", "cancelada"] as const;
 export type Status = (typeof STATUS)[number];
 
-export type PrazoSituacao = "nao_calculado" | "definido_no_edital" | "sem_prazo_legal" | "imediato" | "manual";
+export type PrazoSituacao = "nao_calculado" | "definido_no_edital" | "sem_prazo_legal" | "imediato" | "manual" | "calculado";
 
 /** bloqueio devolvido por tarefas_equipe_liberar (nada gravado). */
 export type Bloqueio = "fora_do_pipeline" | "regulamento_nao_informado" | "regulamento_sem_catalogo";
@@ -35,6 +35,9 @@ export interface Tarefa {
   contexto: Record<string, unknown>;
   prazo_situacao: PrazoSituacao;
   prazo_em: string | null;
+  /** Quem informou o prazo manual, e quando. */
+  prazo_informado_por: string | null;
+  prazo_informado_em: string | null;
   status: Status;
   responsavel_papel: "admin" | "operacao";
   responsavel_user_id: string | null;
@@ -44,12 +47,20 @@ export interface Tarefa {
   catalogo: CatalogoResumo | null;
 }
 
-/** Linha da prévia: tarefa que a fase ou o evento liberam, com a condição avaliada (true ou null). */
+/** Linha da prévia (mesmo formato por fase ou por evento): tarefa liberada, com a condição avaliada (true ou null). */
 export interface TarefaPrevia {
   codigo: string;
+  fase_codigo: string;
+  parent_codigo: string | null;
   titulo: string;
+  natureza: string;
+  prazo_quantidade: number | null;
+  prazo_unidade: string;
+  prazo_sentido: string | null;
+  prazo_evento: string | null;
   aplicavel: boolean | null;
-  [campo: string]: unknown;
+  /** "art. 165 (§ 1º, I); ..." ou null quando o catálogo não liga artigo. */
+  base_legal: string | null;
 }
 
 export type Acao =

@@ -13,6 +13,7 @@ import { parseActionFromBody } from "./validation.ts";
  *   tarefas_listar:     admin vê todas da empresa; operação só as atribuídas a ela.
  *   tarefa_atualizar:   status (admin: qualquer; operação: só as dela) e prazo manual (só admin).
  *   tarefa_atribuir:    só admin; o responsável precisa ser membro ativo da mesma empresa; null volta à fila.
+ *   Tarefa de outra empresa responde 404 (toda leitura e escrita filtra tenant_id).
  * Só licitação no pipeline da empresa recebe tarefa. Regulamento nulo ou sem catálogo bloqueia a liberação (409).
  * Banco com service_role depois de conferir o usuário; empresa por _shared/tenant.ts.
  */
@@ -95,8 +96,8 @@ export async function handleRequest(req: Request, ctx: ApiTarefasContext = {}): 
 
       case "tarefas_listar": {
         const responsavel = !admin || params.minhas ? user.id : null;
-        const tarefas = await repo.listar(tenant, { licitacao_id: params.licitacao_id, status: params.status, responsavel });
-        return jsonResponse({ action: params.action, tarefas });
+        const r = await repo.listar(tenant, { licitacao_id: params.licitacao_id, status: params.status, responsavel });
+        return jsonResponse({ action: params.action, ...r });
       }
 
       case "tarefa_atualizar": {
@@ -109,15 +110,20 @@ export async function handleRequest(req: Request, ctx: ApiTarefasContext = {}): 
           return jsonResponse({ error: "Sem permissão: só o admin da empresa informa o prazo." }, 403);
         }
         const campos: Partial<Tarefa> = {};
-        if (params.status !== undefined) {
+        if (params.status !== undefined && params.status !== tarefa.status) {
           campos.status = params.status;
           campos.concluida_em = params.status === "concluida" ? new Date().toISOString() : null;
         }
         if (params.prazo_em !== undefined) {
           campos.prazo_situacao = "manual";
           campos.prazo_em = params.prazo_em;
+          campos.prazo_informado_por = user.id;
+          campos.prazo_informado_em = new Date().toISOString();
         }
-        const atualizada = await repo.atualizar(tenant, params.id, campos, user.id);
+        if (Object.keys(campos).length === 0) return jsonResponse({ action: params.action, tarefa });
+        // Operação: o UPDATE só vale se a tarefa ainda está com ela (o admin pode ter reatribuído no meio).
+        const atualizada = await repo.atualizar(tenant, params.id, campos, user.id, admin ? undefined : user.id);
+        if (!atualizada) return jsonResponse({ error: "Sem permissão: a tarefa não está atribuída a você." }, 403);
         return jsonResponse({ action: params.action, tarefa: atualizada });
       }
 
@@ -125,10 +131,16 @@ export async function handleRequest(req: Request, ctx: ApiTarefasContext = {}): 
         if (!admin) return jsonResponse({ error: "Sem permissão: só o admin da empresa atribui tarefas." }, 403);
         const tarefa = await repo.obter(tenant, params.id);
         if (!tarefa) return jsonResponse({ error: "Tarefa não encontrada." }, 404);
-        if (params.user_id !== null && !(await repo.membroAtivo(tenant, params.user_id))) {
-          return jsonResponse({ error: "O usuário não é membro ativo da empresa." }, 400);
+        let papelResp: "admin" | "operacao" = "admin";
+        if (params.user_id !== null) {
+          const p = await repo.papelDoMembro(tenant, params.user_id);
+          if (!p) return jsonResponse({ error: "O usuário não é membro ativo da empresa." }, 400);
+          papelResp = p;
         }
-        const atualizada = await repo.atualizar(tenant, params.id, { responsavel_user_id: params.user_id }, user.id);
+        const atualizada = await repo.atualizar(
+          tenant, params.id, { responsavel_user_id: params.user_id, responsavel_papel: papelResp }, user.id,
+        );
+        if (!atualizada) return jsonResponse({ error: "Tarefa não encontrada." }, 404);
         console.info("[api-tarefas] atribuir", { user: user.id, tarefa: params.id, para: params.user_id });
         return jsonResponse({ action: params.action, tarefa: atualizada });
       }

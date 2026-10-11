@@ -52,8 +52,11 @@ declare
   v_t      bigint;
   v_t2     bigint;
   v_nova   bigint;
-  v_srp    bigint;   -- LEI_14133, srp = true
-  v_nsrp   bigint;   -- LEI_14133, srp = false
+  v_srp    bigint;   -- LEI_14133, srp = true no PNCP
+  v_nsrp   bigint;   -- LEI_14133, srp = false no PNCP
+  v_ssrp   bigint;   -- LEI_14133, sem srp no PNCP e objeto com "registro de preço" (a regex não pode valer)
+  v_rca    bigint;   -- regulamento RCA
+  v_outro  bigint;   -- regulamento OUTRO
   v_nulo   bigint;   -- regulamento nulo
   v_rlc    bigint;   -- regulamento RLC
   v_fora   bigint;   -- LEI_14133 fora do pipeline
@@ -67,20 +70,26 @@ begin
     insert into public.tenants (slug, nome) values ('check-tarefas-2', 'Check tarefas 2') returning id into v_t2;
     select id into v_nova from public.pipeline_etapas where tenant_id = v_t and nome = 'Nova';
 
-    insert into public.licitacoes_externas (fonte, regulamento, objeto_registro_preco) values ('pncp', 'LEI_14133', true)  returning id into v_srp;
-    insert into public.licitacoes_externas (fonte, regulamento, objeto_registro_preco) values ('pncp', 'LEI_14133', false) returning id into v_nsrp;
+    insert into public.licitacoes_externas (fonte, regulamento, raw) values ('pncp', 'LEI_14133', '{"srp": true}')  returning id into v_srp;
+    insert into public.licitacoes_externas (fonte, regulamento, raw) values ('pncp', 'LEI_14133', '{"srp": false}') returning id into v_nsrp;
+    insert into public.licitacoes_externas (fonte, regulamento, raw, objeto)
+      values ('pncp', 'LEI_14133', '{}', 'Registro de preço para aquisição de equipamentos') returning id into v_ssrp;
+    insert into public.licitacoes_externas (fonte, regulamento) values ('pncp', 'RCA')   returning id into v_rca;
+    insert into public.licitacoes_externas (fonte, regulamento) values ('pncp', 'OUTRO') returning id into v_outro;
     insert into public.licitacoes_externas (fonte, regulamento) values ('pncp', null)        returning id into v_nulo;
     insert into public.licitacoes_externas (fonte, regulamento) values ('pncp', 'RLC')       returning id into v_rlc;
     insert into public.licitacoes_externas (fonte, regulamento) values ('pncp', 'LEI_14133') returning id into v_fora;
-    perform public.pipeline_mover(v_t, array[v_srp, v_nsrp, v_nulo, v_rlc], v_nova, null, v_u);
+    perform public.pipeline_mover(v_t, array[v_srp, v_nsrp, v_ssrp, v_nulo, v_rlc, v_rca, v_outro], v_nova, null, v_u);
 
     select md5(string_agg(t::text, '|' order by t.codigo)) into v_hash from public.tarefas_catalogo t;
 
     -- Contexto só com dado oficial
     if public.tarefas_contexto_certame(v_srp) <> '{"srp": true}'::jsonb
+       or public.tarefas_contexto_certame(v_nsrp) <> '{"srp": false}'::jsonb
+       or public.tarefas_contexto_certame(v_ssrp) <> '{}'::jsonb
        or public.tarefas_contexto_certame(v_nulo) <> '{}'::jsonb then
-      raise exception 'CHECK FALHOU: tarefas_contexto_certame (%, %)',
-        public.tarefas_contexto_certame(v_srp), public.tarefas_contexto_certame(v_nulo);
+      raise exception 'CHECK FALHOU: tarefas_contexto_certame (%, %, %)', public.tarefas_contexto_certame(v_srp),
+        public.tarefas_contexto_certame(v_ssrp), public.tarefas_contexto_certame(v_nulo);
     end if;
 
     -- CA-12: gate de regulamento e de pipeline, nada gravado
@@ -92,6 +101,14 @@ begin
     if v_res.bloqueio is distinct from 'regulamento_sem_catalogo' then
       raise exception 'CHECK FALHOU: RLC liberou tarefa do catálogo (%)', v_res;
     end if;
+    select * into v_res from public.tarefas_equipe_liberar(v_t, v_rca, null, 'ATA_HABILITACAO', v_u);
+    if v_res.bloqueio is distinct from 'regulamento_sem_catalogo' then
+      raise exception 'CHECK FALHOU: RCA liberou tarefa do catálogo (%)', v_res;
+    end if;
+    select * into v_res from public.tarefas_equipe_liberar(v_t, v_outro, null, 'ATA_HABILITACAO', v_u);
+    if v_res.bloqueio is distinct from 'regulamento_sem_catalogo' then
+      raise exception 'CHECK FALHOU: OUTRO liberou tarefa do catálogo (%)', v_res;
+    end if;
     select * into v_res from public.tarefas_equipe_liberar(v_t, v_fora, null, 'ATA_HABILITACAO', v_u);
     if v_res.bloqueio is distinct from 'fora_do_pipeline' then
       raise exception 'CHECK FALHOU: licitação fora do pipeline liberou (%)', v_res;
@@ -100,7 +117,7 @@ begin
     if v_res.bloqueio is distinct from 'fora_do_pipeline' then
       raise exception 'CHECK FALHOU: outra empresa liberou tarefa em licitação que não está no pipeline dela (%)', v_res;
     end if;
-    if exists (select 1 from public.tarefas_equipe where licitacao_id in (v_nulo, v_rlc, v_fora)
+    if exists (select 1 from public.tarefas_equipe where licitacao_id in (v_nulo, v_rlc, v_rca, v_outro, v_fora)
                or tenant_id = v_t2) then
       raise exception 'CHECK FALHOU: bloqueio gravou tarefa';
     end if;
@@ -109,6 +126,17 @@ begin
     begin
       perform public.tarefas_equipe_liberar(v_t, v_srp, 'F05', 'ATA_HABILITACAO', v_u);
       raise exception 'CHECK FALHOU: aceitou fase e evento juntos';
+    exception when sqlstate '22023' then null;
+    end;
+    -- fase ou evento inexistente, e usuário nulo, são erro (não "nada a liberar")
+    begin
+      perform public.tarefas_equipe_liberar(v_t, v_srp, 'F99', null, v_u);
+      raise exception 'CHECK FALHOU: aceitou fase inexistente';
+    exception when sqlstate '22023' then null;
+    end;
+    begin
+      perform public.tarefas_equipe_liberar(v_t, v_srp, null, 'ATA_HABILITACAO', null);
+      raise exception 'CHECK FALHOU: aceitou usuário nulo';
     exception when sqlstate '22023' then null;
     end;
 
@@ -122,6 +150,20 @@ begin
     select * into v_res from public.tarefas_equipe_liberar(v_t, v_nsrp, null, 'ATA_SRP_ASSINADA', v_u);
     if v_res.criadas <> 0 or exists (select 1 from public.tarefas_equipe where licitacao_id = v_nsrp) then
       raise exception 'CHECK FALHOU: srp = false criou tarefa que exige srp (%)', v_res;
+    end if;
+
+    -- Sem srp no PNCP (objeto cita "registro de preço"): as tarefas nascem com condição não verificada, nunca somem
+    select * into v_res from public.tarefas_equipe_liberar(v_t, v_ssrp, null, 'ATA_SRP_ASSINADA', v_u);
+    if v_res.criadas < 1 or exists (select 1 from public.tarefas_equipe
+                                     where licitacao_id = v_ssrp and condicao_verificada is not null) then
+      raise exception 'CHECK FALHOU: sem srp oficial não virou "condição não verificada" (%)', v_res;
+    end if;
+    -- o dado oficial chega depois: liberar de novo confirma a condição, sem duplicar
+    update public.licitacoes_externas set raw = '{"srp": true}' where id = v_ssrp;
+    select * into v_res from public.tarefas_equipe_liberar(v_t, v_ssrp, null, 'ATA_SRP_ASSINADA', v_u);
+    if v_res.criadas <> 0 or exists (select 1 from public.tarefas_equipe
+                                      where licitacao_id = v_ssrp and condicao_verificada is not true) then
+      raise exception 'CHECK FALHOU: condição confirmada depois não foi gravada (%)', v_res;
     end if;
 
     -- CA-2: chave ausente (inversao_fases) -> criada com condição não verificada; sem condição -> true
@@ -147,6 +189,12 @@ begin
                 group by tarefa_codigo having count(*) > 1) then
       raise exception 'CHECK FALHOU: fase e evento duplicaram a mesma tarefa';
     end if;
+    -- a segunda origem fica registrada
+    if not exists (select 1 from public.tarefas_equipe
+                    where tenant_id = v_t and licitacao_id = v_srp and tarefa_codigo = '14133-F05-T01'
+                      and liberada_por_evento = 'ATA_HABILITACAO' and liberada_por_fase = 'F05') then
+      raise exception 'CHECK FALHOU: liberar pela fase depois do evento não registrou a segunda origem';
+    end if;
 
     -- CA-4: dias úteis -> prazo não calculado, sem data
     if exists (select 1 from public.tarefas_equipe e join public.tarefas_catalogo c on c.codigo = e.tarefa_codigo
@@ -154,6 +202,11 @@ begin
                   and (e.prazo_situacao <> 'nao_calculado' or e.prazo_em is not null))
        or not exists (select 1 from public.tarefas_equipe where tenant_id = v_t and tarefa_codigo = '14133-F05-T02') then
       raise exception 'CHECK FALHOU: prazo em dias úteis não ficou "não calculado"';
+    end if;
+    -- meses/anos sem data do evento: também não calculado (14133-F12-T01 é em anos)
+    if (select prazo_situacao from public.tarefas_equipe
+         where tenant_id = v_t and licitacao_id = v_srp and tarefa_codigo = '14133-F12-T01') is distinct from 'nao_calculado' then
+      raise exception 'CHECK FALHOU: prazo em anos não ficou "não calculado"';
     end if;
 
     -- CA-7: nasce na fila do admin, sem pessoa
@@ -172,7 +225,7 @@ begin
     -- CA-5: status e responsável mudam só na instância
     update public.tarefas_equipe
        set status = 'concluida', concluida_em = now(), responsavel_user_id = v_u,
-           prazo_situacao = 'manual', prazo_em = now()
+           prazo_situacao = 'manual', prazo_em = now(), prazo_informado_por = v_u, prazo_informado_em = now()
      where tenant_id = v_t and licitacao_id = v_srp;
     if (select md5(string_agg(t::text, '|' order by t.codigo)) from public.tarefas_catalogo t) <> v_hash then
       raise exception 'CHECK FALHOU: tarefas_catalogo mudou';

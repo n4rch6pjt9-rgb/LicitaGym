@@ -476,13 +476,10 @@ def material_ou_servico(it: dict) -> str | None:
 
 
 def _data(v):
-    if not v:
-        return None
-    try:
-        d = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
-        return (d if d.tzinfo else d.replace(tzinfo=timezone.utc)).isoformat()
-    except ValueError:
-        return None
+    """Data do PNCP em ISO com fuso. Texto sem fuso está no horário de Brasília (FUSO_PNCP), como em _instante;
+    até 11/10/2026 era lido como UTC e os prazos ficavam 3 h adiantados (#332)."""
+    d = _instante(v)
+    return d.isoformat() if d else None
 
 
 # Categorias de equipamento/material de academia: item marcado como serviço ('S') no PNCP não conta nelas

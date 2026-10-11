@@ -423,12 +423,8 @@ async function handleGet(
       const itemWithUrl = comAderencia({
         ...itemRecord,
         url_edital: buildEditalUrl(itemRecord),
-      claude/resgate-escopo-catmat
       }, await escopoCatmatPorLicitacao(client, [Number(itemRecord.id)]));
-      const [itemComPortal] = await anexarAlertaPortal(client, [itemWithUrl]);
-      }, await aderenciaPorLicitacao(client, [Number(itemRecord.id)]));
       const [itemComPortal] = await anexarAlertaPortal(client, [itemWithUrl], ctx?.tenantDoUsuario ?? semTenant);
-      main
 
       return jsonResponse({ item: itemComPortal });
     }
@@ -467,13 +463,8 @@ async function handleGet(
       const itemWithUrl = comAderencia({
         ...itemRecord,
         url_edital: buildEditalUrl(itemRecord),
-      claude/resgate-escopo-catmat
       }, await escopoCatmatPorLicitacao(client, [Number(itemRecord.id)]));
-      const [itemComPortal] = await anexarAlertaPortal(client, [itemWithUrl]);
-
-      }, await aderenciaPorLicitacao(client, [Number(itemRecord.id)]));
       const [itemComPortal] = await anexarAlertaPortal(client, [itemWithUrl], ctx?.tenantDoUsuario ?? semTenant);
-    main
 
       return jsonResponse({ item: itemComPortal });
     }

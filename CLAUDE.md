@@ -91,6 +91,27 @@ SQL Editor com o usuário.
 | agente `revisor-codigo` | revisão geral do diff (corretude, regras de produto, contrato com o Dashboard, testes) antes do PR |
 | agente `revisor-migration` | revisão de migration (destrutivo, ACL, RLS, idempotência) antes do PR |
 | agente `revisor-seguranca` | revisão de segredos, auth e service_role antes do PR |
+| skill `ciclo-janelas` | fim de ciclo (merge, spec, PR fechado) e início do próximo: avisar as janelas, checar sobreposição, revisitar issues |
+
+## Regras canônicas de operação (decisão do Marcelo, 11/10)
+- **R1, revisores:** a CI e o revisor externo (Codex, Cursor) não substituem os nossos. Antes de pedir merge, a janela roda
+  `revisor-codigo` e `revisor-seguranca`, e também `revisor-migration` quando há migration. Se faltar um revisor
+  externo (não rodou, não respondeu ou foi pulado), os nossos são **obrigatórios**, e o PR registra o resultado.
+  Revisão automática que chega depois do "ready for review" é lida antes do merge.
+- **R2, fechamento de spec:** quando uma janela fecha uma spec (entregue ou mergeada), revisitar as issues abertas
+  **dos dois repositórios** (LicitaGym e Dashboard):
+  - fechar, com a evidência, as que a spec resolveu, só com o PR mergeado na `main` (e conferido em produção quando
+    publica algo); PR fechado sem merge não fecha issue;
+  - nas parciais e nas abertas, comentar o que falta e cruzar com as specs que cobrem o resto.
+- **R3, fim de ciclo:** depois de cada fechamento (merge, spec ou PR fechado), consulta formal às outras janelas em
+  operação:
+  - o relato do que foi feito, com arquivos e objetos de produção tocados;
+  - a pergunta se elas mexem nos mesmos arquivos ou em algo afetado colateralmente;
+  - o pedido de um relatório de próximos passos, para avaliar impacto futuro.
+- **R4, início de ciclo:** ler as respostas, resolver a sobreposição antes de editar e avisar o que o novo ciclo vai
+  tocar.
+
+A rotina R2 a R4 é a skill `ciclo-janelas`.
 
 ## Convenções de código
 - **Edge Functions (Deno/TS):** auth sempre por `requireCronAuth` / `requireUserAuth` (com `await`) / `requireCronOrUserAuth`

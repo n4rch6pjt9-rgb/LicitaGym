@@ -53,7 +53,8 @@ create table if not exists public.pipeline_etapa_tarefas (
         and nullif(btrim(titulo), '') is not null)
   ),
   constraint pipeline_etapa_tarefas_prazo_chk check (prazo_horas is null or prazo_horas > 0),
-  constraint pipeline_etapa_tarefas_titulo_chk check (titulo is null or char_length(titulo) <= 200)
+  constraint pipeline_etapa_tarefas_titulo_chk check (titulo is null or char_length(titulo) <= 200),
+  constraint pipeline_etapa_tarefas_tenant_id_key unique (tenant_id, id)
 );
 comment on table public.pipeline_etapa_tarefas is
   'Modelo de tarefas por etapa do pipeline (spec 0018): do catálogo 14.133 (tarefa_codigo) ou da empresa (chave '
@@ -96,10 +97,24 @@ grant select, insert, update, delete on table public.pipeline_etapa_tarefas to s
 
 -- 2) tarefas_equipe: origem por etapa ---------------------------------------------------------------------------
 alter table public.tarefas_equipe
-  add column if not exists origem_etapa_id     bigint references public.pipeline_etapas (id) on delete set null,
-  add column if not exists origem_modelo_id    bigint references public.pipeline_etapa_tarefas (id) on delete set null,
+  add column if not exists origem_etapa_id     bigint,
+  add column if not exists origem_modelo_id    bigint,
   add column if not exists origem_etapa_nome   text,
   add column if not exists origem_modelo_chave text;
+-- FKs com tenant_id: a tarefa da empresa A nunca aponta para etapa ou modelo da empresa B. Excluir a etapa (ou o
+-- modelo) anula só a coluna de origem; tenant_id fica.
+do $$ begin
+  if not exists (select 1 from pg_constraint where conname = 'tarefas_equipe_origem_etapa_fkey') then
+    alter table public.tarefas_equipe add constraint tarefas_equipe_origem_etapa_fkey
+      foreign key (tenant_id, origem_etapa_id) references public.pipeline_etapas (tenant_id, id)
+      on delete set null (origem_etapa_id);
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'tarefas_equipe_origem_modelo_fkey') then
+    alter table public.tarefas_equipe add constraint tarefas_equipe_origem_modelo_fkey
+      foreign key (tenant_id, origem_modelo_id) references public.pipeline_etapa_tarefas (tenant_id, id)
+      on delete set null (origem_modelo_id);
+  end if;
+end $$;
 comment on column public.tarefas_equipe.origem_etapa_nome is
   'Retrato do nome da etapa que criou a tarefa (fica quando a etapa é excluída e origem_etapa_id vira nulo).';
 comment on column public.tarefas_equipe.origem_modelo_chave is
@@ -419,8 +434,18 @@ as $$
 declare
   r record;
 begin
-  for r in select po.tenant_id from public.pipeline_oportunidades po where po.licitacao_id = new.id loop
-    perform public.pipeline_tarefas_reaplicar(r.tenant_id, new.id, null);
+  for r in select po.tenant_id
+             from public.pipeline_oportunidades po
+             join public.tenants t on t.id = po.tenant_id and t.ativo
+            where po.licitacao_id = new.id loop
+    -- A coleta da fonte oficial não pode falhar por causa da configuração de tarefas de uma empresa: o erro vira
+    -- WARNING (log do Postgres) e as tarefas da lei ficam pendentes; a fila de Triagem (PR 4) e a ação manual
+    -- tarefas_reaplicar da api-pipeline (PR 3) refazem, de forma idempotente.
+    begin
+      perform public.pipeline_tarefas_reaplicar(r.tenant_id, new.id, null);
+    exception when others then
+      raise warning 'pipeline_tarefas_reaplicar(tenant %, licitação %) falhou: % (%)', r.tenant_id, new.id, sqlerrm, sqlstate;
+    end;
   end loop;
   return null;
 end;

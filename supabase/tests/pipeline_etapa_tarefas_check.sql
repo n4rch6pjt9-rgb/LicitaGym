@@ -170,7 +170,7 @@ begin
     -- CA-3: tarefa já liberada pelo evento do certame (#252) + etapa = uma instância, com as duas origens
     select * into v_res from public.tarefas_equipe_liberar(v_t, v_l1, null, 'ATA_HABILITACAO', v_u);
     perform public.pipeline_mover(v_t, array[v_l1], v_agu, null, v_u);
-    if exists (select 1 from public.tarefas_equipe where tenant_id = v_t and licitacao_id = v_l1
+    if exists (select 1 from public.tarefas_equipe where tenant_id = v_t and licitacao_id = v_l1 and origem = 'catalogo'
                 group by tarefa_codigo having count(*) > 1)
        or not exists (select 1 from public.tarefas_equipe
                        where tenant_id = v_t and licitacao_id = v_l1 and tarefa_codigo = '14133-F05-T03'
@@ -197,14 +197,21 @@ begin
       raise exception 'CHECK FALHOU: CA-21 RCA deveria dar regulamento_sem_catalogo (%)', v_res;
     end if;
 
-    -- CA-12: a empresa 2 não recebe nada do movimento da empresa 1
+    -- CA-12: mover na empresa 1 não cria nada na empresa 2; etapa de outra empresa é recusada
     if exists (select 1 from public.tarefas_equipe where tenant_id = v_t2) then
       raise exception 'CHECK FALHOU: CA-12 tarefa criada para outra empresa';
+    end if;
+    select * into v_res from public.pipeline_etapa_tarefas_criar(v_t2, v_l1, v_doc, v_u);
+    if v_res.bloqueio is distinct from 'etapa_inexistente' or exists (select 1 from public.tarefas_equipe where tenant_id = v_t2) then
+      raise exception 'CHECK FALHOU: CA-12 criar com etapa de outra empresa gravou (%)', v_res;
     end if;
 
     -- CA-21: regulamento nulo -> só empresa, com bloqueio informado
     perform public.pipeline_mover(v_t, array[v_l2], v_tri, null, v_u);
     perform public.pipeline_mover(v_t, array[v_l2], v_doc, null, v_u);
+    -- a empresa 2 também acompanha v_l2 (Documentação dela)
+    perform public.pipeline_mover(v_t2, array[v_l2], (select id from public.pipeline_etapas
+                                                       where tenant_id = v_t2 and nome = 'Documentação'), null, v_u);
     if exists (select 1 from public.tarefas_equipe where licitacao_id = v_l2 and origem = 'catalogo')
        or (select count(*) from public.tarefas_equipe where licitacao_id = v_l2 and origem = 'empresa') <> 2 then
       raise exception 'CHECK FALHOU: CA-21 regulamento nulo criou tarefa do catálogo';
@@ -220,6 +227,27 @@ begin
          where licitacao_id = v_l2 and origem = 'catalogo' and origem_etapa_nome = 'Documentação') <> 6 then
       raise exception 'CHECK FALHOU: CA-22 regulamento que chegou não criou as tarefas da lei';
     end if;
+    -- CA-12 + CA-22: cada empresa recebeu só as tarefas dos próprios modelos e etapas
+    if (select count(*) from public.tarefas_equipe where tenant_id = v_t2 and licitacao_id = v_l2 and origem = 'catalogo') <> 6
+       or exists (select 1 from public.tarefas_equipe te
+                    join public.pipeline_etapas e on e.id = te.origem_etapa_id
+                   where te.licitacao_id = v_l2 and e.tenant_id <> te.tenant_id)
+       or exists (select 1 from public.tarefas_equipe te
+                    join public.pipeline_etapa_tarefas m on m.id = te.origem_modelo_id
+                   where te.licitacao_id = v_l2 and m.tenant_id <> te.tenant_id) then
+      raise exception 'CHECK FALHOU: CA-12/CA-22 tarefa ligada a etapa ou modelo de outra empresa';
+    end if;
+    -- empresa desativada não recebe tarefa nova pelo gatilho de regulamento
+    update public.tenants set ativo = false where id = v_t2;
+    update public.licitacoes_externas set regulamento = null where id = v_l3;
+    perform public.pipeline_mover(v_t2, array[v_l3], (select id from public.pipeline_etapas
+                                                       where tenant_id = v_t2 and nome = 'Qualificação'), null, v_u);
+    update public.licitacoes_externas set regulamento = 'LEI_14133' where id = v_l3;
+    if exists (select 1 from public.tarefas_equipe where tenant_id = v_t2 and licitacao_id = v_l3 and origem = 'catalogo') then
+      raise exception 'CHECK FALHOU: empresa desativada recebeu tarefa pelo gatilho de regulamento';
+    end if;
+    update public.tenants set ativo = true where id = v_t2;
+
     select * into v_res from public.pipeline_tarefas_reaplicar(v_t, v_l2, null);
     if v_res.criadas <> 0 then
       raise exception 'CHECK FALHOU: CA-22 reaplicar de novo duplicou (%)', v_res;

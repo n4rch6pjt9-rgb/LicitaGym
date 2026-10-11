@@ -8,7 +8,7 @@ import { parseActionFromBody } from "./validation.ts";
 
 /**
  * api-pipeline: pipeline comercial da equipe (Dashboard #29).
- *   Tarefas por etapa (spec 0018): etapa_tarefas_listar e tarefas_reaplicar (qualquer usuário da empresa);
+ *   Tarefas por etapa (spec 0018): etapa_tarefas_listar, catalogo_listar e tarefas_reaplicar (qualquer usuário da empresa);
  *   etapa_tarefas_salvar (admin da empresa ou desenvolvedor: lista completa, nunca apaga; o que sai é desligado).
  *   Leitura e movimentação (etapas_listar, pipeline_listar/estado/historico, pipeline_adicionar/mover/remover):
  *   qualquer usuário da empresa (admin ou operação). Configuração das etapas (etapa_criar/atualizar/excluir): admin

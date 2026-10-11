@@ -10,6 +10,8 @@ export const LICITACAO_CARD_COLUMNS = [
 
 const ETAPA_COLUMNS = "id,nome,fase,ordem,desfecho,exige_motivo,padrao";
 export const LIMITE_LISTA = 1000;
+/** Norma do catálogo de tarefas (tarefas_catalogo.norma; seed 20260927100100). Outro regulamento terá o seu. */
+export const NORMA_CATALOGO = "LEI_14133_2021";
 
 /** Erro de regra vindo do banco (pipeline_mover / pipeline_etapa_excluir), já com status HTTP. */
 export class ErroPipeline extends Error {
@@ -163,26 +165,25 @@ export function createSupabaseRepo(client: SupabaseClient): PipelineRepo {
     },
 
     async listarCatalogo() {
+      // Base legal embutida (FK tarefa_codigo): uma consulta só, sem o corte silencioso do max_rows numa segunda.
       const { data, error } = await client.from("tarefas_catalogo")
-        .select("codigo,fase_codigo,parent_codigo,ordem,titulo,natureza,ator,prazo_unidade,fase:processo_fases(nome,ordem)")
-        .eq("ativo", true).order("fase_codigo").order("ordem");
+        .select("codigo,fase_codigo,parent_codigo,ordem,titulo,natureza,ator,prazo_unidade,fase:processo_fases(nome,ordem),base:tarefas_catalogo_base_legal(artigo,dispositivo)")
+        .eq("ativo", true).eq("norma", NORMA_CATALOGO).order("fase_codigo").order("ordem");
       if (error) throw new Error(error.message);
       const linhas = (data ?? []) as Array<Record<string, unknown>>;
-      const { data: bases, error: e2 } = await client.from("tarefas_catalogo_base_legal")
-        .select("tarefa_codigo,artigo,dispositivo").order("artigo").order("dispositivo");
-      if (e2) throw new Error(e2.message);
-      const base = new Map<string, string[]>();
-      for (const b of bases ?? []) {
-        const k = String(b.tarefa_codigo);
-        base.set(k, [...(base.get(k) ?? []), "art. " + b.artigo + " (" + b.dispositivo + ")"]);
-      }
+      // max_rows do PostgREST é 1000: lista cheia pode estar cortada; erro em vez de catálogo incompleto.
+      if (linhas.length >= LIMITE_LISTA) throw new Error("Catálogo maior que o limite de leitura; paginar antes de usar.");
       return linhas.map((c): TarefaCatalogo => {
         const fase = (c.fase ?? null) as { nome?: string; ordem?: number | null } | null;
+        // mesma ordem e formato do string_agg de catalogo_tarefas_da_fase: "art. N (dispositivo)" unidos por "; "
+        const bases = ((c.base ?? []) as Array<{ artigo: number; dispositivo: string }>)
+          .slice().sort((a, b) => a.artigo - b.artigo || a.dispositivo.localeCompare(b.dispositivo, "pt-BR"));
         return {
           codigo: String(c.codigo), fase_codigo: String(c.fase_codigo), fase_nome: fase?.nome ?? null,
-          fase_ordem: fase?.ordem ?? null, parent_codigo: (c.parent_codigo as string | null) ?? null,
+          fase_ordem: fase?.ordem ?? null, parent_codigo: c.parent_codigo == null ? null : String(c.parent_codigo),
           ordem: Number(c.ordem), titulo: String(c.titulo), natureza: String(c.natureza), ator: String(c.ator),
-          prazo_unidade: String(c.prazo_unidade), base_legal: base.get(String(c.codigo))?.join("; ") ?? null,
+          prazo_unidade: String(c.prazo_unidade),
+          base_legal: bases.length ? bases.map((b) => `art. ${b.artigo} (${b.dispositivo})`).join("; ") : null,
         };
       });
     },

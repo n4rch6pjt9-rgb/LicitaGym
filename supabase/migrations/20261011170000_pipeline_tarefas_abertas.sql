@@ -6,6 +6,7 @@
 --                                                         'em_andamento' (tarefas_equipe). Contar no banco evita trazer
 --                                                         as linhas e esbarrar no max_rows do PostgREST.
 -- Quem lê: api-pipeline (pipeline_listar), com o tenant de quem chama. Só service_role executa.
+-- Sem limite próprio de p_licitacoes: quem chama limita (api-pipeline manda até 1000, LIMITE_LISTA).
 -- Verificar: supabase/tests/pipeline_tarefas_abertas_check.sql. Idempotente.
 
 begin;

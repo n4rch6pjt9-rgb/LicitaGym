@@ -9,7 +9,8 @@
 --   tenants_reativada_semear              empresa reativada recebe o modelo de tarefas nas etapas que existem; as 13
 --                                         etapas padrão só se ela não tiver nenhuma (inativa quando a 20261006020000
 --                                         semeou as outras). Antes semeava sempre, recriando etapa que o admin
---                                         excluiu ou renomeou. Empresa nova continua semeada no insert.
+--                                         excluiu ou renomeou. Empresa nova continua semeada no insert. Cards que
+--                                         estão em Triagem ganham pedido de preparação (o gatilho só age ao mover).
 --   índice private.pipeline_tarefas_pendencias (licitacao_id) para a FK on delete cascade.
 -- Verificar: supabase/tests/pipeline_tarefas_pendencia_reativacao_check.sql. Idempotente.
 
@@ -121,9 +122,24 @@ begin
   end if;
   -- modelo de tarefas nas etapas que existem (on conflict do nothing)
   perform public.pipeline_semear_tarefas(new.id);
+  -- cards que ficaram em Triagem enquanto a empresa estava inativa ganham pedido de preparação (mesma regra do
+  -- backfill da 20261011160000; um pedido aberto por empresa e licitação)
+  insert into private.job_queue (job_type, payload)
+  select 'preparar_triagem', jsonb_build_object('tenant_id', po.tenant_id::text, 'licitacao_id', po.licitacao_id::text,
+                                                'fonte', l.fonte)
+    from public.pipeline_oportunidades po
+    join public.pipeline_etapas e on e.id = po.etapa_id and e.tenant_id = po.tenant_id and lower(btrim(e.nome)) = 'triagem'
+    left join public.licitacoes_externas l on l.id = po.licitacao_id
+   where po.tenant_id = new.id
+  on conflict ((payload ->> 'tenant_id'), (payload ->> 'licitacao_id'))
+    where job_type = 'preparar_triagem' and status in ('pending', 'processing')
+  do nothing;
   return null;
 end;
 $$;
+comment on function public.pipeline_tarefas_reaplicar(bigint, bigint, uuid) is
+  'Cria as tarefas que faltam da etapa atual e das visitadas desde a última entrada (spec 0018). Terminar sem exceção '
+  'limpa a pendência, inclusive com bloqueio de regulamento (estado final) e fora do pipeline.';
 comment on function public.tenants_reativada_semear() is
   'Empresa reativada: etapas padrão só se não tiver nenhuma; modelo de tarefas nas existentes (spec 0018). Não recria etapa excluída.';
 comment on function public.licitacoes_externas_regulamento_reaplicar() is

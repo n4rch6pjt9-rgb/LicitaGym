@@ -6,6 +6,10 @@ do $$
 declare
   v_t    bigint;
   v_t2   bigint;
+  v_r_txt text;
+  v_tri2 bigint;
+  v_l3   bigint;
+  v_t3   bigint;
   v_u    uuid := '00000000-0000-0000-0000-0000000000f4';
   v_tri  bigint;
   v_ana  bigint;
@@ -13,8 +17,18 @@ declare
   v_l2   bigint;
   v_r    record;
 begin
-  if has_function_privilege('authenticated', 'public.pipeline_tarefas_reaplicar(bigint,bigint,uuid)'::regprocedure, 'EXECUTE') then
-    raise exception 'CHECK FALHOU: authenticated executa pipeline_tarefas_reaplicar';
+  foreach v_r_txt in array array['anon', 'authenticated'] loop
+    if has_function_privilege(v_r_txt, 'public.pipeline_tarefas_reaplicar(bigint,bigint,uuid)'::regprocedure, 'EXECUTE')
+       or has_function_privilege(v_r_txt, 'public.licitacoes_externas_regulamento_reaplicar()'::regprocedure, 'EXECUTE')
+       or has_function_privilege(v_r_txt, 'public.tenants_reativada_semear()'::regprocedure, 'EXECUTE') then
+      raise exception 'CHECK FALHOU: % executa função da pendência/reativação', v_r_txt;
+    end if;
+  end loop;
+  if not has_function_privilege('service_role', 'public.pipeline_tarefas_reaplicar(bigint,bigint,uuid)'::regprocedure, 'EXECUTE') then
+    raise exception 'CHECK FALHOU: service_role não executa pipeline_tarefas_reaplicar';
+  end if;
+  if to_regclass('private.pipeline_tarefas_pendencias_licitacao_idx') is null then
+    raise exception 'CHECK FALHOU: índice pipeline_tarefas_pendencias_licitacao_idx ausente';
   end if;
 
   begin
@@ -55,6 +69,22 @@ begin
     end if;
     if not exists (select 1 from public.pipeline_etapa_tarefas where tenant_id = v_t and etapa_id = v_ana) then
       raise exception 'CHECK FALHOU: reativar não semeou o modelo de Em análise';
+    end if;
+
+    -- card em Triagem com a empresa inativa: reativar enfileira a preparação
+    insert into public.licitacoes_externas (fonte) values ('pncp') returning id into v_l3;
+    insert into public.tenants (slug, nome) values ('check-pend-3', 'Check pendência 3') returning id into v_t3;
+    select id into v_tri2 from public.pipeline_etapas where tenant_id = v_t3 and nome = 'Triagem';
+    update public.tenants set ativo = false where id = v_t3;
+    perform public.pipeline_mover(v_t3, array[v_l3], v_tri2, null, v_u);
+    if exists (select 1 from private.job_queue where job_type = 'preparar_triagem'
+                and payload ->> 'tenant_id' = v_t3::text and payload ->> 'licitacao_id' = v_l3::text) then
+      raise exception 'CHECK FALHOU: empresa inativa ganhou pedido ao mover';
+    end if;
+    update public.tenants set ativo = true where id = v_t3;
+    if not exists (select 1 from private.job_queue where job_type = 'preparar_triagem' and status = 'pending'
+                    and payload ->> 'tenant_id' = v_t3::text and payload ->> 'licitacao_id' = v_l3::text) then
+      raise exception 'CHECK FALHOU: card em Triagem não ganhou pedido ao reativar a empresa';
     end if;
 
     -- empresa sem nenhuma etapa (inativa quando as etapas foram semeadas): reativar dá as 13 padrão e o modelo

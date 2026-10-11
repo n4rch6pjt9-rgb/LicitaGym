@@ -224,9 +224,12 @@ Todos são institucionais. Esse conjunto serve de **allowlist inicial** para o g
 
 > Baseline limpo **não** quer dizer que o sistema está seguro. Ele serve de referência para detectar mudanças quando os 82 documentos de fornecedores forem indexados.
 
-### 4.7 [BOA PRÁTICA JÁ EXISTENTE] `analyze-public-material` como modelo a seguir
+### 4.7 [REFERÊNCIA] `analyze-public-material` como modelo a seguir
 
-A Edge Function `analyze-public-material` já aplica várias camadas da live:
+> Função aposentada em 11/10/2026: nenhum chamador no Dashboard nem no Kuib-Harness e nenhuma invocação em 5 dias de log.
+> O código fica no histórico do git (último commit com ela: `1b83e0a`). O padrão abaixo continua valendo como referência.
+
+A Edge Function `analyze-public-material` aplicava várias camadas da live:
 
 - Exige JWT válido (`requireAuthenticatedUser`) e limita o payload a 50 KB.
 - Aceita `source.url` só em HTTPS e só de hosts oficiais (allowlist por fonte).
@@ -235,7 +238,7 @@ A Edge Function `analyze-public-material` já aplica várias camadas da live:
 - Registra `input_hash` e `rule.source_hash`, o que dá rastreabilidade.
 - Decide por regra **determinística**, sem LLM. É a forma mais forte de "controle fora do modelo".
 
-**Ajuste sugerido:** a allowlist de `compras-gov` aceita o sufixo `gov.br`, ou seja, qualquer `*.gov.br` (inclusive sites municipais que podem estar comprometidos). Restrinja aos hosts específicos (`compras.gov.br`, `dadosabertos.compras.gov.br`, `compras.dados.gov.br`).
+**Ao reaproveitar o padrão:** a allowlist de `compras-gov` aceitava o sufixo `gov.br`, ou seja, qualquer `*.gov.br` (inclusive sites municipais que podem estar comprometidos). Use hosts exatos (`compras.gov.br`, `dadosabertos.compras.gov.br`, `compras.dados.gov.br`).
 
 ---
 
@@ -629,7 +632,6 @@ Também conferido: os tipos do `returns table` da `match_licitacao_chunks_v2` ba
 - `envelope.ts` e `REGRAS_CONTEXTO` (5.4) e `filtrarLinks` (5.5).
 - Guardrail de entrada (5.7), observabilidade com Langfuse e alertas (5.8).
 - Extração de autoria do PDF e `autor_confirmado` (4.4); guardrail semântico no coletor (5.2, etapa seguinte).
-- Ajuste da allowlist de `analyze-public-material` (4.7).
 - Hash de integridade da legislação (4.1, controle complementar).
 
 ### 11.1 Revisão do PR #89 (Copilot e Codex) — corrigido em 29/09/2026

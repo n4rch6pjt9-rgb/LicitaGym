@@ -138,6 +138,12 @@ export interface ItemAcompanhamento {
   catalogoNome: string | null;
   /** 'M' (material) | 'S' (serviço); null = desconhecido. */
   materialOuServico: "M" | "S" | null;
+  /**
+   * Situação para exibir, derivada (situacaoExibidaItem): a específica do PNCP quando não é "Em andamento"; com
+   * "Em andamento", "Registro de Preço" (ata não cancelada), "Homologado" (resultado), "Suspensa" ou "Recebendo
+   * Propostas" (fase da licitação); senão a do PNCP. situacaoCompraItemNome continua sendo o bruto.
+   */
+  situacaoExibida?: string | null;
 }
 
 export interface AtaAcompanhamento {
@@ -146,8 +152,16 @@ export interface AtaAcompanhamento {
   vigenciaInicio: string | null;
   vigenciaFim: string | null;
   dataAssinatura?: string | null;
+  /** cancelado do PNCP OU dataCancelamento preenchida (o PNCP pode mandar a data com cancelado=false). */
   cancelado: boolean;
+  /** dataCancelamento do PNCP (AtaRegistroPrecoPeriodoDTO), quando vier. */
+  dataCancelamento?: string | null;
   objeto?: string | null;
+  /**
+   * Ata vigente hoje (America/Sao_Paulo): não cancelada e vigenciaInicio <= hoje <= vigenciaFim. null = sem
+   * vigenciaFim (não dá para afirmar). Derivado em ataVigente.
+   */
+  vigente?: boolean | null;
 }
 
 export interface HistoricoEvento {
@@ -164,6 +178,10 @@ export interface ArquivoAcompanhamento {
   tipo: string | null;
   url: string | null;
   sequencialDocumento?: number | null;
+  /** dataPublicacaoPncp do PNCP (data do upload do arquivo), quando vem. */
+  dataPublicacaoPncp?: string | null;
+  /** statusAtivo do PNCP (false = arquivo inativado), quando vem. */
+  statusAtivo?: boolean | null;
 }
 
 export interface AcompanhamentoSection<T> {
@@ -190,6 +208,8 @@ export type AcompanhamentoResponse =
     };
     url_edital: string | null;
     url_acompanhamento: string | null;
+    /** licitacoes_externas.fase (fase real gravada pelo coletor); null = sem fase gravada. */
+    fase?: string | null;
     compra: AcompanhamentoSection<CompraMetadata>;
     itens: AcompanhamentoSection<ItemAcompanhamento[]> & { total: number };
     atas: AcompanhamentoSection<AtaAcompanhamento[]> & { total: number };

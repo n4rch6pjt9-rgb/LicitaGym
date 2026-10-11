@@ -23,7 +23,9 @@ import {
   estadoDoPlano,
   notaMaterialidade,
 } from "../_shared/motor-oportunidade.ts";
+import { COLUNAS_LISTA_PLANOS } from "./planos.ts";
 import { responderRadar } from "./radar.ts";
+import { responderHistorico } from "./historico-rota.ts";
 
 function getUserClient(req: Request) {
   const url = Deno.env.get("SUPABASE_URL");
@@ -260,6 +262,7 @@ Deno.serve(async (req) => {
     if (visao === "priorizacao") return await responderPriorizacao(req, url);
     if (visao === "motor") return await responderMotor(req, url);
     if (visao === "radar") return await responderRadar(req, url);
+    if (visao === "historico") return await responderHistorico(req, url);
     const client = getUserClient(req);
     const ano = parseQueryInt(url, "ano", new Date().getUTCFullYear());
     const page = parseQueryInt(url, "page", 1);
@@ -268,7 +271,7 @@ Deno.serve(async (req) => {
 
     const { data, error, count } = await client
       .from("pca_planos")
-      .select("*", { count: "exact" })
+      .select(COLUNAS_LISTA_PLANOS, { count: "exact" })
       .eq("ativo", true)
       .eq("ano_exercicio", ano)
       .order("updated_at", { ascending: false })

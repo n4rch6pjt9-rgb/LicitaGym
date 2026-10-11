@@ -94,7 +94,7 @@ export const PARADIGMA_MURAL: Readonly<Record<string, string>> = {
   sescsp: "https://scr360.paradigmabs.com.br/sescsp/portal/Mural.aspx",
   sesc_senac_rs: "https://egov.paradigmabs.com.br/sesc_senac_rs/portal/Mural.aspx",
   sescdn: "https://egov-br.paradigmabs.com.br/sescdn/portal/Mural.aspx",
-  sescrj: "https://egov.paradigmabs.com.br/SESCRJ/portal/Mural.aspx",
+  // sescrj fora: em 11/10/2026 /SESCRJ/portal/Mural.aspx redireciona para Default.aspx (sem mural nesse caminho)
   sescba: "https://egov.paradigmabs.com.br/sescba/portal/Mural.aspx",
 };
 

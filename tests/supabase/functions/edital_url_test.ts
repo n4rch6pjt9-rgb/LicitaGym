@@ -280,7 +280,7 @@ Deno.test("buildEditalUrl: Fonte SEST SENAT", () => {
   assertEquals(buildEditalUrl({ fonte: "sescsp" }), null);
   assertEquals(buildPortalUrl({ fonte: "sest_senat" }), "https://compras.sestsenat.org.br/portal/Mural.aspx");
   assertEquals(buildPortalUrl({ fonte: "sescsp" }), "https://scr360.paradigmabs.com.br/sescsp/portal/Mural.aspx");
-  assertEquals(buildPortalUrl({ fonte: "sescrj" }), "https://egov.paradigmabs.com.br/SESCRJ/portal/Mural.aspx");
+  assertEquals(buildPortalUrl({ fonte: "sescrj" }), null); // mural não confirmado (redireciona para Default.aspx)
   assertEquals(buildPortalUrl({ fonte: "fiesc" }), "https://portaldecompras.fiesc.com.br/portal/Mural.aspx");
   assertEquals(buildPortalUrl({ fonte: "pncp" }), null);
   // propriedades herdadas não viram fonte
@@ -414,7 +414,7 @@ Deno.test("host SaaS compartilhado do Paradigma: só tenant do Sistema S e da pr
 
 Deno.test("portal: cada fonte Paradigma do coletor aponta para o próprio mural (url_portal)", async () => {
   const fontes = await fontesParadigma();
-  const fila = fontes.filter((fonte) => fonte.slug !== "fiemg").map((fonte) => fonte.slug).sort();
+  const fila = fontes.filter((fonte) => fonte.slug !== "fiemg" && fonte.slug !== "sescrj").map((fonte) => fonte.slug).sort();
   assertEquals(fontes.some((fonte) => fonte.slug === "fiemg"), true);
   assertEquals(fila.includes("fiemg"), false);
   assertEquals(fila.includes("sestsenat"), true);

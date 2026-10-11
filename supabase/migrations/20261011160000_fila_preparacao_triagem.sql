@@ -43,6 +43,7 @@ begin
   if exists (select 1 from public.pipeline_etapas e
               where e.id = new.etapa_id and e.tenant_id = new.tenant_id and lower(btrim(e.nome)) = 'triagem')
      and exists (select 1 from public.tenants t where t.id = new.tenant_id and t.ativo) then
+    -- security invoker: quem move o card (service_role, via api-pipeline) precisa de INSERT em private.job_queue
     insert into private.job_queue (job_type, payload)
     values ('preparar_triagem', jsonb_build_object(
       'tenant_id', new.tenant_id::text,
@@ -81,6 +82,8 @@ begin
     select q.id
       from private.job_queue q
      where q.job_type = 'preparar_triagem' and q.status = 'pending' and q.scheduled_for <= now()
+       -- payload malformado não aborta o lote (o cast do returning falharia): fica parado e visível na tabela
+       and q.payload ->> 'tenant_id' ~ '^[0-9]{1,18}$' and q.payload ->> 'licitacao_id' ~ '^[0-9]{1,18}$'
      order by q.scheduled_for, q.created_at
      limit greatest(1, least(coalesce(p_limite, 5), 50))
        for update skip locked
@@ -128,7 +131,7 @@ begin
                         else q.payload end,
          last_error = case when p_resultado is null then left(p_erro, 1000) else null end,
          scheduled_for = case when p_resultado is null and q.attempts < q.max_attempts
-                              then now() + make_interval(mins => 5 * power(2, greatest(q.attempts - 1, 0))::integer)
+                              then now() + make_interval(mins => least(5 * power(2, least(greatest(q.attempts - 1, 0), 10))::integer, 1440))
                               else q.scheduled_for end,
          updated_at = now()
    where q.id = p_id and q.job_type = 'preparar_triagem' and q.status = 'processing'

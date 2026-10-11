@@ -17,6 +17,7 @@ declare
   v_st   text;
   v_ok   boolean;
   v_n    integer := 0;
+  v_id   uuid;
 begin
   foreach f in array array[
     'public.fila_preparacao_reivindicar(integer)',
@@ -164,6 +165,25 @@ begin
     if (select status from public.pipeline_preparacao_estado(v_t2, array[v_l2])) is distinct from 'pending' then
       raise exception 'CHECK FALHOU: CA-20 card movido por exclusão de etapa não entrou na fila';
     end if;
+
+    -- erro na última tentativa → failed; preso em processing com tentativas restantes → pending (sem consumir a espera)
+    insert into private.job_queue (job_type, payload, status, attempts, updated_at)
+    values ('preparar_triagem', jsonb_build_object('tenant_id', v_t::text, 'licitacao_id', '999999901'), 'processing', 5, now())
+    returning id into v_id;
+    if public.fila_preparacao_concluir(v_id, null, 'download: HTTP 504') is distinct from 'failed' then
+      raise exception 'CHECK FALHOU: erro na última tentativa não virou failed';
+    end if;
+    insert into private.job_queue (job_type, payload, status, attempts, updated_at, scheduled_for)
+    values ('preparar_triagem', jsonb_build_object('tenant_id', v_t::text, 'licitacao_id', '999999902'), 'processing', 1,
+            now() - interval '2 hours', now() + interval '1 hour')
+    returning id into v_id;
+    perform public.fila_preparacao_reivindicar(50);
+    if (select status from private.job_queue where id = v_id) is distinct from 'pending' then
+      raise exception 'CHECK FALHOU: preso com tentativas restantes não voltou para pending';
+    end if;
+    -- payload malformado não é pego nem aborta o lote
+    insert into private.job_queue (job_type, payload) values ('preparar_triagem', '{"tenant_id": "x", "licitacao_id": "y"}');
+    perform public.fila_preparacao_reivindicar(50);
 
     -- empresa inativa não ganha pedido
     insert into public.licitacoes_externas (fonte) values ('pncp') returning id into v_l3;

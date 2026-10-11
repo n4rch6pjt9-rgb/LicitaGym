@@ -1,6 +1,6 @@
 # 0020: Regulamento das compras PNCP a partir do amparo legal oficial
 
-- **Status:** rascunho (11/10/2026)
+- **Status:** aprovada (Marcelo, 11/10/2026; decisão em "Decisões")
 - **Issue:** nenhuma. Pré-requisito da #252 (PR #317, decisão 1 da spec 0019: regulamento nulo bloqueia as tarefas do
   catálogo) e da seção 3 da spec 0018 (decisão 4).
 - **Área:** migrations, coletor (`services/coletor-externo/coletor/pncp.py` + script de backfill)
@@ -81,7 +81,12 @@ conferência futura, não como dependência.
   - `regulamento` é derivado dele por regra escrita;
   - sem `amparo_legal`, nada é presumido.
 
+## Decisões
+
+Do Marcelo, 11/10/2026:
+1. **Amparo por MP fica `OUTRO`** (ex.: MP 1.221/2024, convertida na Lei 14.981). Sem catálogo, a tarefa do catálogo
+   não nasce.
+
 ## Perguntas em aberto
 
-1. **Amparo de MP** (ex.: MP 1.221/2024, convertida na Lei 14.981) fica `OUTRO`. Proposta: manter. Sem catálogo, a
-   tarefa não nasce. A alternativa é tratar a MP como `LEI_14981`.
+Nenhuma.

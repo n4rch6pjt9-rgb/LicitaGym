@@ -1,4 +1,4 @@
--- Checagem de 20261011150000_cron_pca_fila_ligar.sql (spec 0012, #289): o fluxo do PCA por fila fica ligado e o
+-- Checagem de 20261011210000_cron_pca_fila_ligar.sql (spec 0012, #289): o fluxo do PCA por fila fica ligado e o
 -- antigo desligado. Sem pg_cron, avisa e passa.
 begin;
 

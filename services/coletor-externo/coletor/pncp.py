@@ -497,8 +497,8 @@ def abertura_das_propostas(c: dict, det: dict | None) -> str | None:
 
 
 def _data_pncp(v):
-    """ISO com fuso, com texto sem fuso no horário de Brasília (FUSO_PNCP), como _instante. Usado em data_fim e
-    data_publicacao de licitacoes_externas (#332)."""
+    """ISO com fuso, com texto sem fuso no horário de Brasília (FUSO_PNCP), como _instante. Usado em data_fim,
+    data_publicacao (#332) e data_inicio (#333) de licitacoes_externas. Data sem hora vira 00:00 de Brasília."""
     d = _instante(v)
     return d.isoformat() if d else None
 
@@ -1619,6 +1619,11 @@ def raw_com_prazo_do_detalhe(c: dict, det: dict | None) -> dict:
     atualizacao = (det or {}).get("dataAtualizacao")
     if atualizacao and atualizacao != c.get("data_atualizacao_pncp"):
         extra["data_atualizacao_detalhe"] = atualizacao
+    # Abertura das propostas (#333): a do detalhe vai em raw.data_inicio_vigencia (a da busca em
+    # data_inicio_vigencia_busca), para o backfill de data_inicio comparar com a mesma fonte que o coletor gravou.
+    abertura = (det or {}).get("dataAberturaProposta")
+    if abertura and abertura != c.get("data_inicio_vigencia"):
+        extra.update(data_inicio_vigencia=abertura, data_inicio_vigencia_busca=c.get("data_inicio_vigencia"))
     return {**c, **extra} if extra else c
 
 

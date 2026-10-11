@@ -17,7 +17,7 @@ begin;
 
 alter table public.licitacoes_externas add column if not exists amparo_legal jsonb;
 comment on column public.licitacoes_externas.amparo_legal is
-  'amparoLegal do detalhe da compra no PNCP ({codigo, nome, descricao}), como veio. regulamento é derivado dele '
+  'amparoLegal do detalhe da compra no PNCP, objeto inteiro como veio (sem aparar). regulamento é derivado dele '
   '(regulamento_do_amparo). Nulo = não consultado ou o PNCP não informou.';
 
 -- Constraint ampliada: refeita só quando ainda não aceita os valores novos.

@@ -51,6 +51,14 @@ def test_identificacao_sem_amparo_omite_a_chave(det):
     assert "amparo_legal" not in P.identificacao(p, COMPRA)
 
 
+def test_amparo_legal_guardado_como_veio():
+    """Valor original sem aparar nem filtrar campos; o regulamento é derivado de uma cópia aparada."""
+    bruto = {"codigo": 1, "nome": "  Lei 14.133/2021, Art. 28, I ", "descricao": None, "extra": "x"}
+    p = _pncp([COMPRA]); p.compra.return_value = dict(DETALHE, amparoLegal=bruto)
+    assert P.identificacao(p, COMPRA)["amparo_legal"] == bruto
+    assert P.regulamento_do_amparo(bruto["nome"]) == "LEI_14133"
+
+
 @pytest.mark.parametrize("det", [None, [], "texto", 0])
 def test_amparo_legal_detalhe_tolera_detalhe_que_nao_e_objeto(det):
     assert P.amparo_legal_detalhe(det) is None

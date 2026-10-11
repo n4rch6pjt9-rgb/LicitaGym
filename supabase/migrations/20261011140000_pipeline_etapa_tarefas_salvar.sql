@@ -80,7 +80,13 @@ begin
       end if;
       v_chave := nullif(btrim(v_item ->> 'chave'), '');
       if v_chave is null then
-        v_chave := 'emp-' || substr(md5(random()::text || clock_timestamp()::text || p_tenant::text), 1, 8);
+        -- chave nova, conferida contra as da empresa (32 bits podem colidir; a colisão sobrescreveria outra tarefa)
+        loop
+          v_chave := 'emp-' || substr(md5(random()::text || clock_timestamp()::text || p_tenant::text), 1, 8);
+          exit when not exists (select 1 from public.pipeline_etapa_tarefas m
+                                 where m.tenant_id = p_tenant and m.origem = 'empresa' and m.chave = v_chave)
+                and not (v_chave = any (v_chaves));
+        end loop;
       elsif not exists (select 1 from public.pipeline_etapa_tarefas m
                          where m.tenant_id = p_tenant and m.origem = 'empresa' and m.chave = v_chave
                            and m.etapa_id = p_etapa) then

@@ -44,6 +44,7 @@ function traduzir(error: { code?: string; message?: string } | null): never {
   const msg = (error?.message ?? "Erro no pipeline").replace(/^pipeline_(mover|etapa_excluir): /, "");
   if (error?.code === "22023") throw new ErroPipeline(msg, 400);
   if (error?.code === "P0002") throw new ErroPipeline(msg, 404);
+  if (error?.code === "23514") throw new ErroPipeline(msg || "Tarefa não aceita no modelo.", 400);
   if (error?.code === "23505") throw new ErroPipeline("Já existe uma etapa com esse nome.", 409);
   if (error?.code === "23503") throw new ErroPipeline("A etapa tem oportunidades; mova-as antes de excluir.", 409);
   throw new Error(error?.message ?? "Erro no pipeline");

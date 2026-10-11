@@ -7,7 +7,7 @@
 --   2) tarefa filha (parent_codigo) desligada no modelo da etapa não nasce pela mãe.
 --   3) pipeline_etapa_tarefas_criar só cria para licitação no pipeline da empresa ('fora_do_pipeline').
 --   4) falha ao reaplicar no gatilho de regulamento fica registrada em private.pipeline_tarefas_pendencias (além do
---      WARNING), visível para a api-pipeline e para a fila (spec 0018, "nunca some em silêncio"); reaplicar com
+--      WARNING), para a fila do PR 4 e a tela lerem (spec 0018, "nunca some em silêncio"); reaplicar com
 --      sucesso limpa a pendência.
 --   5) empresa reativada recebe as etapas e o modelo padrão (a semente só rodava para tenants ativos e novos).
 -- Gatilhos com create or replace trigger (PG14+): reaplicar não pede ACCESS EXCLUSIVE na tabela.

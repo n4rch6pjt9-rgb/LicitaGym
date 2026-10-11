@@ -58,7 +58,7 @@ conferência futura, não como dependência.
 
 - Regulamento do Sistema S (`paradigma.py` já grava RCA na seleção) e de outras fontes.
 - Conferir `codigo` contra a tabela de domínio oficial (`normativoBase`): fica para quando o endpoint responder.
-- Rodar o backfill em produção (é do Marcelo, depois do merge).
+- Backfill das linhas existentes (decisão 2) e consulta sob demanda (decisão 3, PR da spec 0018).
 
 ## Impacto em dados
 
@@ -72,8 +72,7 @@ conferência futura, não como dependência.
   - quem lê `regulamento`: `tarefas_equipe_liberar` (#317) e a spec 0018.
 - **ACL/RLS:** função nova com `revoke` de PUBLIC, `anon` e `authenticated`, e `grant` só para `service_role`; o
   gatilho roda com o dono da tabela. A coluna nova herda a ACL de `licitacoes_externas`.
-- **Backfill:** sim, pelo script, em dry-run primeiro. A contagem por regulamento (antes e depois) vai no PR quando
-  rodar.
+- **Backfill:** não (decisão 2). O script existe só para uso pontual.
 - **Edge Functions republicadas no merge:** todas (sem mudança em função).
 - **Contrato com o Dashboard:** inalterado.
 - **Dado oficial × derivado:**
@@ -86,6 +85,17 @@ conferência futura, não como dependência.
 Do Marcelo, 11/10/2026:
 1. **Amparo por MP fica `OUTRO`** (ex.: MP 1.221/2024, convertida na Lei 14.981). Sem catálogo, a tarefa do catálogo
    não nasce.
+2. **Sem backfill das linhas existentes.** Antes da análise do certame o regulamento é só informativo: nenhuma regra
+   (status, prazo, prioridade) o usa, e as 658 linhas PNCP em `historico` nunca vão precisar dele. Compra nova ou
+   atualizada já chega com `amparo_legal` pela coleta (sem chamada extra). O script `backfill_regulamento_pncp.py` fica
+   no repositório para uso pontual, sem execução agendada. Linha antiga sem regulamento: o gate de prazo mínimo (spec
+   0018, seção 2a) fica `nao_verificado`, como previsto.
+3. **Consulta sob demanda só ao entrar em Triagem**, na fila de download, indexação e agentes da spec 0018 (CA-17): o
+   detalhe da compra é consultado uma vez e grava `amparo_legal`; falha deixa o regulamento nulo (tarefas do catálogo
+   bloqueadas até a próxima tentativa). Entra no PR da 0018.
+4. **O agente de edital não preenche o regulamento das compras PNCP**: o `amparoLegal` é o dado oficial e o texto do
+   edital engana (amostra de 10/10). Fica como reserva para fontes sem `amparoLegal` (Sistema S, Portal de Compras
+   Públicas), gravado como inferido, com trecho e página.
 
 ## Perguntas em aberto
 

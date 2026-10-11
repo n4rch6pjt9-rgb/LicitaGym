@@ -1,4 +1,4 @@
--- Checagem da migration 20261011130000_pipeline_etapa_tarefas_salvar (spec 0018, PR 3).
+-- Checagem da migration 20261011140000_pipeline_etapa_tarefas_salvar (spec 0018, PR 3).
 --   ACL; salvar a lista completa (upsert e desligar, nunca apagar); chave imutável; recusas (CA-10) sem gravar nada.
 -- Tudo o que grava é desfeito ao final (exceção proposital).
 

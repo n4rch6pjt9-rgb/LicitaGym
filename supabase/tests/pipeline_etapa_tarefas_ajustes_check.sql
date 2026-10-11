@@ -1,4 +1,4 @@
--- Checagem da migration 20261011130100_pipeline_etapa_tarefas_ajustes (revisão do PR #327) e das lacunas apontadas no
+-- Checagem da migration 20261011140100_pipeline_etapa_tarefas_ajustes (revisão do PR #327) e das lacunas apontadas no
 -- check de 20261011120000: prazo da tarefa da empresa ao voltar à etapa, filha desligada, criar fora do pipeline,
 -- pendência observável, empresa reativada, CA-13 pelo gatilho, CA-21 com OUTRO, CA-22 pelo caminho real (amparo_legal),
 -- etapa excluída ignorada e eventos do certame não reliberados. Tudo desfeito ao final.

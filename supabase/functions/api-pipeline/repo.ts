@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { lerTenantDoUsuario, type TenantResolvido } from "../_shared/tenant.ts";
-import type { Desfecho, Etapa, EtapaComTotal, EventoHistorico, Fase, ItemModelo, ItemPipeline, ModeloTarefa, ResultadoPreparacao, StatusPreparacao } from "./types.ts";
+import type { Desfecho, Etapa, EtapaComTotal, EventoHistorico, Fase, ItemModelo, ItemPipeline, ModeloTarefa, ResultadoPreparacao, StatusPreparacao, TarefaCatalogo } from "./types.ts";
 
 /** Campos da licitação que o Kanban e os selos mostram (subconjunto das colunas públicas da api-dashboard-oportunidades). */
 export const LICITACAO_CARD_COLUMNS = [
@@ -31,6 +31,8 @@ export interface PipelineRepo {
   criarEtapa(tenant: number, e: { nome: string; fase: Fase; ordem: number | null; desfecho: Desfecho | null; exige_motivo: boolean }, userId: string): Promise<Etapa>;
   atualizarEtapa(tenant: number, id: number, campos: Partial<Omit<Etapa, "id" | "padrao">>, userId: string): Promise<Etapa | null>;
   excluirEtapa(tenant: number, id: number, moverPara: number | null, userId: string): Promise<number>;
+  /** Tarefas ativas do catálogo 14.133 (para o modelo da etapa), com fase e base legal. */
+  listarCatalogo(): Promise<TarefaCatalogo[]>;
   /** Modelo de tarefas da etapa (ativas e desligadas), com o resumo do catálogo. null se a etapa não é da empresa. */
   listarModelo(tenant: number, etapaId: number): Promise<ModeloTarefa[] | null>;
   /** Lista completa da etapa, numa transação (pipeline_etapa_tarefas_salvar). */
@@ -95,8 +97,16 @@ export function createSupabaseRepo(client: SupabaseClient): PipelineRepo {
           });
         }
       }
+      // Tarefas abertas por card (contadas no banco: pipeline_tarefas_abertas).
+      const abertas = new Map<number, number>();
+      if (ids.length) {
+        const { data: ab, error: e4 } = await client.rpc("pipeline_tarefas_abertas", { p_tenant: tenant, p_licitacoes: ids });
+        if (e4) throw new Error(e4.message);
+        for (const a of (ab ?? []) as Array<{ licitacao_id: number; abertas: number }>) abertas.set(Number(a.licitacao_id), Number(a.abertas));
+      }
       const itens = linhas.slice(0, LIMITE_LISTA).map((i) => ({
         ...i,
+        tarefas_abertas: abertas.get(Number(i.licitacao_id)) ?? 0,
         tarefas_pendencia: porLicitacao.get(Number(i.licitacao_id)) ?? null,
         preparacao: prep.get(Number(i.licitacao_id)) ?? null,
       }));
@@ -150,6 +160,31 @@ export function createSupabaseRepo(client: SupabaseClient): PipelineRepo {
         .select(ETAPA_COLUMNS).maybeSingle();
       if (error) traduzir(error);
       return (data as unknown as Etapa) ?? null;
+    },
+
+    async listarCatalogo() {
+      const { data, error } = await client.from("tarefas_catalogo")
+        .select("codigo,fase_codigo,parent_codigo,ordem,titulo,natureza,ator,prazo_unidade,fase:processo_fases(nome,ordem)")
+        .eq("ativo", true).order("fase_codigo").order("ordem");
+      if (error) throw new Error(error.message);
+      const linhas = (data ?? []) as Array<Record<string, unknown>>;
+      const { data: bases, error: e2 } = await client.from("tarefas_catalogo_base_legal")
+        .select("tarefa_codigo,artigo,dispositivo").order("artigo").order("dispositivo");
+      if (e2) throw new Error(e2.message);
+      const base = new Map<string, string[]>();
+      for (const b of bases ?? []) {
+        const k = String(b.tarefa_codigo);
+        base.set(k, [...(base.get(k) ?? []), "art. " + b.artigo + " (" + b.dispositivo + ")"]);
+      }
+      return linhas.map((c): TarefaCatalogo => {
+        const fase = (c.fase ?? null) as { nome?: string; ordem?: number | null } | null;
+        return {
+          codigo: String(c.codigo), fase_codigo: String(c.fase_codigo), fase_nome: fase?.nome ?? null,
+          fase_ordem: fase?.ordem ?? null, parent_codigo: (c.parent_codigo as string | null) ?? null,
+          ordem: Number(c.ordem), titulo: String(c.titulo), natureza: String(c.natureza), ator: String(c.ator),
+          prazo_unidade: String(c.prazo_unidade), base_legal: base.get(String(c.codigo))?.join("; ") ?? null,
+        };
+      });
     },
 
     async listarModelo(tenant, etapaId) {

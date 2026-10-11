@@ -105,6 +105,9 @@ export async function handleRequest(req: Request, ctx: ApiPipelineContext = {}):
         return jsonResponse({ action: params.action, etapa });
       }
 
+      case "catalogo_listar":
+        return jsonResponse({ action: params.action, tarefas: await repo.listarCatalogo() });
+
       case "etapa_tarefas_listar": {
         const tarefas = await repo.listarModelo(tenant, params.etapa_id);
         if (!tarefas) return jsonResponse({ error: "Etapa não encontrada." }, 404);

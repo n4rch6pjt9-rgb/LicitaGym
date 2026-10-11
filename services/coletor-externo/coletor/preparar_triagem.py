@@ -239,10 +239,11 @@ def preparar(pedido: dict, pncp, sb, arm, ia_factory, max_bytes: int = 80 * 1048
 
 
 def _concluir(sb, pedido: dict, resultado: str | None, erro: str | None) -> bool:
-    """Grava o desfecho. Pedido que já não está em processamento (devolvido à fila após 1 h e pego por outro job:
-    P0002) não derruba o lote: fica com o outro job. Outra falha do banco sobe (o pedido volta à fila em 1 h)."""
+    """Grava o desfecho da tentativa deste job (p_tentativa). Pedido que já não está nesta tentativa (devolvido à fila
+    após 1 h e pego por outro job: P0002) não derruba o lote: fica com o outro job. Outra falha do banco sobe (o pedido volta à fila em 1 h)."""
     try:
-        sb.rpc("fila_preparacao_concluir", {"p_id": pedido["id"], "p_resultado": resultado, "p_erro": erro})
+        sb.rpc("fila_preparacao_concluir", {"p_id": pedido["id"], "p_resultado": resultado, "p_erro": erro,
+                                            "p_tentativa": pedido.get("tentativa")})
         return True
     except RuntimeError as e:
         if "P0002" in str(e):

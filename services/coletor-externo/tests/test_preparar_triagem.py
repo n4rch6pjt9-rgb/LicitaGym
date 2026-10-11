@@ -130,7 +130,7 @@ def test_pncp_grava_amparo_baixa_indexa_reaplica_e_conclui_ok(monkeypatch, index
     nomes = [n for n, _ in sb.rpcs]
     assert nomes == ["fila_preparacao_reivindicar", "pipeline_tarefas_reaplicar", "fila_preparacao_concluir"]
     assert sb.rpcs[1][1] == {"p_tenant": 1, "p_licitacao": 7, "p_user": None}
-    assert sb.rpcs[-1][1] == {"p_id": "u1", "p_resultado": "ok", "p_erro": None}
+    assert sb.rpcs[-1][1] == {"p_id": "u1", "p_resultado": "ok", "p_erro": None, "p_tentativa": 1}
 
 
 def test_sem_amparo_na_fonte_conclui_regulamento_nao_informado(monkeypatch, indexa):
@@ -277,7 +277,7 @@ def test_falha_transitoria_na_indexacao_reagenda(monkeypatch):
     sb = SbFalso([lic_pncp(fonte="sestsenat")], [_doc_baixado(1, "a")],
                  rpc_respostas={"fila_preparacao_reivindicar": [PEDIDO]})
     PT.consumir(PncpFalso(), sb, None, lambda: object())
-    assert sb.rpcs[-1][1] == {"p_id": "u1", "p_resultado": None, "p_erro": "indexação: HTTP 429"}
+    assert sb.rpcs[-1][1] == {"p_id": "u1", "p_resultado": None, "p_erro": "indexação: HTTP 429", "p_tentativa": 1}
     assert sb.t["licitacao_documentos"][0]["status_processamento"] == "baixado"
 
 

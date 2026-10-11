@@ -6,8 +6,23 @@ export const JOB = "coletor-sestsenat";
 export const SEGREDO_VAULT = "coletor_sestsenat_run_key";
 export const JOB_CRON = "licitagym-coletor-sestsenat";
 
-/** Diário, no escopo fitness, incluindo processo ainda em andamento. */
-export const ARGS_DIARIO = ["--todos", "--escopo", "fitness"] as const;
+/**
+ * Diário, no escopo fitness, incluindo processo ainda em andamento. O override do Cloud Run SUBSTITUI os argumentos
+ * do job (não soma), então a faixa de IDs vai explícita: sem --de/--ate o coletor volta a 1..120 (coletor/main.py) e
+ * perderia os processos novos. O teto é alto de propósito: a varredura para sozinha depois de 15 IDs inexistentes
+ * seguidos (--parar-apos-vazios).
+ */
+export const ID_INICIAL = 1;
+export const ID_TETO = 5000;
+export const ARGS_DIARIO = [
+  "--de",
+  String(ID_INICIAL),
+  "--ate",
+  String(ID_TETO),
+  "--todos",
+  "--escopo",
+  "fitness",
+] as const;
 
 export type PedidoHttp = {
   url: string;

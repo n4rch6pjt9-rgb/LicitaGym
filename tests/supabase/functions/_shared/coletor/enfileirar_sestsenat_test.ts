@@ -106,3 +106,14 @@ Deno.test("enfileirar: duas chamadas iguais mandam o mesmo corpo", async () => {
   await uma();
   assertEquals(corpos[0], corpos[1]);
 });
+
+Deno.test("args do cron diário levam a faixa de IDs explícita (o override do Cloud Run substitui os args do job)", () => {
+  const args = corpoEnfileirar().overrides.containerOverrides[0].args;
+  const de = args.indexOf("--de");
+  const ate = args.indexOf("--ate");
+  assertEquals(de >= 0 && ate >= 0, true);
+  assertEquals(Number(args[de + 1]), 1);
+  // acima do padrão 1..120 do coletor/main.py, que perderia os processos novos
+  assertEquals(Number(args[ate + 1]) > 120, true);
+  assertEquals(args.includes("--todos") && args.includes("fitness"), true);
+});

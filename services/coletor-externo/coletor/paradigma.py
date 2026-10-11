@@ -19,8 +19,11 @@ Métodos usados (todos públicos no mural):
   PesquisarCatalogoProdutoClasses / PesquisarCatalogoProdutos  catálogo do portal (filtro Categoria + Tipo)
   PesquisarAnexos / PesquisarAnexosProcessoContratacao  anexos (reaproveita portal.py)
 
-Portais Paradigma hospedados em paradigmabs.com.br (Sesc SP, Sesc/Senac RS) declaram no robots.txt
-que não aceitam acesso automatizado: o adaptador recusa essas fontes (ver FONTES).
+Acesso (decisão de 05/10/2026): os portais Paradigma hospedados em paradigmabs.com.br (Sesc SP, Sesc/Senac RS,
+Sesc DN, Sesc RJ, Sesc BA) declaram no robots.txt que não aceitam acesso automatizado; o dono decidiu que isso não
+impede a coleta do webservice público do mural, com o mesmo intervalo do adaptador (FONTES_MURAL_AUTORIZADO; o CLI
+passa autorizado=True só nelas). Bloqueio de WAF continua respeitado: a FIEMG (403 do Cloudflare para cliente
+automatizado) fica de fora e não se contorna.
 
 Paginação (regra de 03/10/2026): cada faixa pede no máximo 100 itens (`nPaginaDe`/`nPaginaAte`).
 A resposta observada do webservice é uma lista, sem total de registros. Página curta não encerra.
@@ -62,7 +65,9 @@ class Fonte:
     entidade: str
     uf: str | None
     base: str
-    coleta_automatica: bool  # False = robots.txt proíbe; usar aviso de fornecedor/manual
+    # False = o host bloqueia acesso automatizado (robots.txt ou WAF). Só coleta se a fonte estiver em
+    # FONTES_MURAL_AUTORIZADO (decisão de 05/10/2026, robots.txt do paradigmabs); WAF (FIEMG) nunca.
+    coleta_automatica: bool
 
 
 FONTES: dict[str, Fonte] = {
@@ -80,7 +85,8 @@ FONTES: dict[str, Fonte] = {
     "sfiec": Fonte("sfiec", "SFIEC (SESI/CE, SENAI/CE, IEL/CE)", "CE", "https://portaldecompras.sfiec.org.br/portal", True),
     # FIEMG: Cloudflare recusa cliente automatizado (403 no webservice para Python; navegador passa). Não contornar.
     "fiemg": Fonte("fiemg", "FIEMG (SESI/MG, SENAI/MG, IEL/MG)", "MG", "https://compras.fiemg.com.br/portal", False),
-    # SaaS paradigmabs.com.br: robots.txt proíbe acesso automatizado
+    # SaaS paradigmabs.com.br: robots.txt proíbe acesso automatizado; coletados pelo mural por decisão de 05/10/2026
+    # (FONTES_MURAL_AUTORIZADO)
     "sescdn": Fonte("sescdn", "Sesc Departamento Nacional", None, "https://egov-br.paradigmabs.com.br/sescdn/portal", False),
     "sescrj": Fonte("sescrj", "Sesc RJ", "RJ", "https://egov.paradigmabs.com.br/SESCRJ/portal", False),
     "sescba": Fonte("sescba", "Sesc BA", "BA", "https://egov.paradigmabs.com.br/sescba/portal", False),
@@ -363,8 +369,8 @@ class PortalParadigma:
                  sessao: requests.Session | None = None):
         if not fonte.coleta_automatica and not autorizado:
             raise PermissionError(
-                f"{fonte.slug}: o host proíbe coleta automatizada (robots.txt ou WAF). "
-                "Use aviso de fornecedor/coleta manual, ou passe autorizado=True com autorização formal da entidade.")
+                f"{fonte.slug}: o host bloqueia coleta automatizada (robots.txt ou WAF) e a fonte não está em "
+                "FONTES_MURAL_AUTORIZADO. Bloqueio de WAF não se contorna; use aviso de fornecedor ou coleta manual.")
         self.fonte = fonte
         if delay < DELAY_MINIMO:
             log.warning("delay %s s abaixo do mínimo de %s s; usando %s s", delay, DELAY_MINIMO, DELAY_MINIMO)

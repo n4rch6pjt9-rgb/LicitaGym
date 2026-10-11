@@ -22,6 +22,7 @@ CASOS = [
     ("Lei 114.133/2099", "OUTRO"),
     ("", None),
     ("   ", None),
+    ("\n\t", None),
     (None, None),
 ]
 

@@ -22,6 +22,7 @@ begin
       ('Lei 114.133/2099', 'OUTRO'),
       ('', null),
       ('   ', null),
+      (E'\n\t', null),
       (null, null)) as t(nome, esperado)
   loop
     if public.regulamento_do_amparo(r.nome) is distinct from r.esperado then

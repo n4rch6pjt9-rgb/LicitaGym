@@ -42,7 +42,7 @@ security invoker
 set search_path = public, pg_temp
 as $$
   select case
-           when nullif(btrim(p_nome), '') is null        then null
+           when nullif(btrim(p_nome, E' \t\r\n'), '') is null then null
            when p_nome ~* '(^|[^0-9])14\.?981([^0-9]|$)'           then 'LEI_14981'
            when p_nome ~* '(^|[^0-9])13\.?303([^0-9]|$)'           then 'LEI_13303'
            when p_nome ~* '(^|[^0-9])14\.?133([^0-9]|$)'           then 'LEI_14133'
@@ -60,7 +60,7 @@ security invoker
 set search_path = public, pg_temp
 as $$
 begin
-  if new.amparo_legal is not null and nullif(btrim(new.amparo_legal ->> 'nome'), '') is not null then
+  if new.amparo_legal is not null and nullif(btrim(new.amparo_legal ->> 'nome', E' \t\r\n'), '') is not null then
     new.regulamento := public.regulamento_do_amparo(new.amparo_legal ->> 'nome');
   end if;
   return new;

@@ -9,7 +9,7 @@ declare
   v_t    bigint;
   v_t2   bigint;
   v_u    uuid := '00000000-0000-0000-0000-0000000000f2';
-  v_nova bigint; v_tri bigint; v_ana bigint; v_tri2 bigint;
+  v_nova bigint; v_tri bigint; v_ana bigint; v_tri2 bigint; v_nova2 bigint;
   v_l1   bigint;
   v_l2   bigint;
   v_job  record;
@@ -34,6 +34,13 @@ begin
       raise exception 'CHECK FALHOU: service_role não executa %', f;
     end if;
   end loop;
+  -- a fila guarda tenant_id e o schema private está exposto no PostgREST: só service_role lê/escreve
+  foreach r in array array['anon', 'authenticated'] loop
+    if has_table_privilege(r, 'private.job_queue', 'SELECT') or has_table_privilege(r, 'private.job_queue', 'INSERT')
+       or has_table_privilege(r, 'private.job_queue', 'UPDATE') then
+      raise exception 'CHECK FALHOU: % acessa private.job_queue', r;
+    end if;
+  end loop;
 
   begin
     insert into public.tenants (slug, nome) values ('check-fila-1', 'Check fila 1') returning id into v_t;
@@ -42,6 +49,7 @@ begin
     select id into v_tri  from public.pipeline_etapas where tenant_id = v_t and nome = 'Triagem';
     select id into v_ana  from public.pipeline_etapas where tenant_id = v_t and nome = 'Em análise';
     select id into v_tri2 from public.pipeline_etapas where tenant_id = v_t2 and nome = 'Triagem';
+    select id into v_nova2 from public.pipeline_etapas where tenant_id = v_t2 and nome = 'Nova';
     insert into public.licitacoes_externas (fonte, regulamento) values ('pncp', 'LEI_14133') returning id into v_l1;
     insert into public.licitacoes_externas (fonte) values ('sestsenat') returning id into v_l2;
 
@@ -116,6 +124,33 @@ begin
     v_ok := false;
     begin perform public.fila_preparacao_concluir(v_job.id, 'ok'); exception when sqlstate 'P0002' then v_ok := true; end;
     if not v_ok then raise exception 'CHECK FALHOU: concluiu pedido que não está em processamento'; end if;
+
+    -- concluir com resultado limpa o erro da tentativa anterior (card preparado não mostra erro antigo)
+    update private.job_queue set scheduled_for = now() - interval '1 second' where id = v_job.id;
+    perform public.fila_preparacao_reivindicar(50);
+    perform public.fila_preparacao_concluir(v_job.id, 'sem_documento');
+    if (select last_error from private.job_queue where id = v_job.id) is not null
+       or (select erro from public.pipeline_preparacao_estado(v_t, array[v_l2])) is not null then
+      raise exception 'CHECK FALHOU: pedido concluído manteve o erro antigo';
+    end if;
+
+    -- pedido preso em processing (job que morreu) com tentativas esgotadas vira failed, não volta para sempre
+    update private.job_queue set status = 'processing', attempts = max_attempts, updated_at = now() - interval '2 hours'
+     where job_type = 'preparar_triagem' and payload ->> 'tenant_id' = v_t::text and payload ->> 'licitacao_id' = v_l1::text
+       and status in ('pending', 'processing');
+    perform public.fila_preparacao_reivindicar(50);
+    -- (consulta a tabela: na transação do check os created_at empatam)
+    if not exists (select 1 from private.job_queue where job_type = 'preparar_triagem' and payload ->> 'tenant_id' = v_t::text
+                     and payload ->> 'licitacao_id' = v_l1::text and status = 'failed' and last_error like 'interrompido%') then
+      raise exception 'CHECK FALHOU: pedido preso com tentativas esgotadas não virou failed';
+    end if;
+
+    -- CA-20: excluir etapa movendo os cards para Triagem enfileira
+    perform public.pipeline_mover(v_t2, array[v_l2], v_nova2, null, v_u);
+    perform public.pipeline_etapa_excluir(v_t2, v_nova2, v_tri2, v_u);
+    if (select status from public.pipeline_preparacao_estado(v_t2, array[v_l2])) <> 'pending' then
+      raise exception 'CHECK FALHOU: CA-20 card movido por exclusão de etapa não entrou na fila';
+    end if;
 
     raise exception 'ROLLBACK_PROPOSITAL';
   exception when others then

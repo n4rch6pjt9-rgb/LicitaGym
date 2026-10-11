@@ -20,6 +20,10 @@ export interface EtapaComTotal extends Etapa {
   total: number;
 }
 
+/** Fila de preparação da Triagem (spec 0018, decisão 12). */
+export type StatusPreparacao = "pending" | "processing" | "completed" | "failed";
+export type ResultadoPreparacao = "ok" | "sem_documento" | "regulamento_nao_informado_pela_fonte";
+
 /** Licitação no pipeline, com os campos da licitação que o Kanban mostra. */
 export interface ItemPipeline {
   licitacao_id: number;
@@ -31,7 +35,12 @@ export interface ItemPipeline {
   /** Tarefas da lei que não puderam ser criadas quando o regulamento chegou (private.pipeline_tarefas_pendencias). */
   tarefas_pendencia?: { motivo: string; erro: string | null; em: string } | null;
   /** Preparação da Triagem (fila): pending/processing = "análise em preparação"; completed com resultado; failed. */
-  preparacao?: { status: string; resultado: string | null; erro: string | null; atualizado_em: string } | null;
+  preparacao?: {
+    status: StatusPreparacao;
+    resultado: ResultadoPreparacao | null;
+    erro: string | null;
+    atualizado_em: string;
+  } | null;
 }
 
 export interface EventoHistorico {

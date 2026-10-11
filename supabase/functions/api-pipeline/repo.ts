@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { lerTenantDoUsuario, type TenantResolvido } from "../_shared/tenant.ts";
-import type { Desfecho, Etapa, EtapaComTotal, EventoHistorico, Fase, ItemModelo, ItemPipeline, ModeloTarefa } from "./types.ts";
+import type { Desfecho, Etapa, EtapaComTotal, EventoHistorico, Fase, ItemModelo, ItemPipeline, ModeloTarefa, ResultadoPreparacao, StatusPreparacao } from "./types.ts";
 
 /** Campos da licitação que o Kanban e os selos mostram (subconjunto das colunas públicas da api-dashboard-oportunidades). */
 export const LICITACAO_CARD_COLUMNS = [
@@ -90,7 +90,7 @@ export function createSupabaseRepo(client: SupabaseClient): PipelineRepo {
         if (e3) throw new Error(e3.message);
         for (const e of (est ?? []) as Array<Record<string, unknown>>) {
           prep.set(Number(e.licitacao_id), {
-            status: String(e.status), resultado: (e.resultado as string | null) ?? null,
+            status: e.status as StatusPreparacao, resultado: (e.resultado as ResultadoPreparacao | null) ?? null,
             erro: (e.erro as string | null) ?? null, atualizado_em: String(e.atualizado_em),
           });
         }

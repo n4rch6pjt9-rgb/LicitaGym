@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import logging
+import re
 import sys
 from datetime import datetime, timezone
 
@@ -41,6 +42,22 @@ log = logging.getLogger("coletor.preparar_triagem")
 
 RESULTADOS = ("ok", "sem_documento", "regulamento_nao_informado_pela_fonte")
 HTTP_TRANSITORIO = {408, 429, 500, 502, 503, 504}
+_STORAGE_STATUS = re.compile(r"^Supabase Storage [^\n]*?: (\d{3}) ")
+
+
+def _status_storage(e: BaseException) -> int | None:
+    """Status HTTP do RuntimeError de destino.SupabaseStorage.salvar ('Supabase Storage <caminho>: 413 ...')."""
+    m = _STORAGE_STATUS.match(str(e)) if isinstance(e, RuntimeError) else None
+    return int(m.group(1)) if m else None
+
+
+def definitiva(e: BaseException) -> bool:
+    """Falha de download/gravação que não melhora com nova tentativa: a do pncp._falha_definitiva e, no Storage,
+    4xx fora de 408/429 (ex.: 413, arquivo acima do file_size_limit do bucket)."""
+    st = _status_storage(e)
+    if st is not None:
+        return 400 <= st < 500 and st not in HTTP_TRANSITORIO
+    return _falha_definitiva(e)
 CAMPOS_LIC = "id,fonte,codigo_externo,regulamento,orgao_cnpj,raw,numero_processo,numero_edital,entidade,orgao_nome"
 CAMPOS_DOC = "id,licitacao_id,secao,nome_original,arquivo_origem,fornecedor_nome,sha256,storage_uri,status_processamento,raw"
 
@@ -93,7 +110,8 @@ def transitoria(e: BaseException) -> bool:
                                    "ResourceExhausted")):
             return True
         if isinstance(x, RuntimeError) and str(x).startswith("Supabase"):
-            return True
+            st = _status_storage(x)
+            return st is None or not (400 <= st < 500) or st in HTTP_TRANSITORIO
     return False
 
 
@@ -146,7 +164,7 @@ def _baixar(pncp, sb, arm, lic: dict, max_bytes: int) -> dict:
                 "baixado_em": datetime.now(timezone.utc).isoformat(), "status_processamento": "baixado", "erro": None})
             r["baixados"] += 1
         except Exception as e:
-            definitivo = _falha_definitiva(e)
+            definitivo = definitiva(e)
             r["erros"] += 1
             log.warning("  doc #%s falha %s ao baixar: %s", d["id"], "definitiva" if definitivo else "transitória",
                         str(e)[:120])
@@ -227,8 +245,9 @@ def preparar(pedido: dict, pncp, sb, arm, ia_factory, max_bytes: int = 80 * 1048
         sb.rpc("pipeline_tarefas_reaplicar", {"p_tenant": tenant, "p_licitacao": lic_id, "p_user": None})
 
     with etapa("desfecho"):
+        # documento retirado do portal não conta (o agente lê só os ativos)
         indexados = sb.selecionar("licitacao_documentos", licitacao_id=f"eq.{lic_id}",
-                                  status_processamento="eq.indexado", select="id")
+                                  status_processamento="eq.indexado", removido_do_portal_em="is.null", select="id")
         if not indexados:
             return "sem_documento"
         if lic.get("fonte") == "pncp":
@@ -253,9 +272,15 @@ def _concluir(sb, pedido: dict, resultado: str | None, erro: str | None) -> bool
 
 
 def consumir(pncp, sb, arm, ia_factory, limite: int = 5, max_bytes: int = 80 * 1048576) -> dict:
-    """Pega até `limite` pedidos e conclui cada um (desfecho ou erro). Um pedido que falha não para os outros."""
+    """Processa até `limite` pedidos, reivindicando um de cada vez (pedido só fica 'processing' enquanto é
+    trabalhado: se o job estourar o tempo, os que não começaram continuam 'pending', sem gastar tentativa).
+    Conclui cada um (desfecho ou erro); um pedido que falha não para os outros."""
     resumo = {"pedidos": 0, "concluidos": 0, "reagendados": 0, "perdidos": 0, "por_resultado": {}}
-    for pedido in sb.rpc("fila_preparacao_reivindicar", {"p_limite": limite}) or []:
+    for _ in range(limite):
+        lote = sb.rpc("fila_preparacao_reivindicar", {"p_limite": 1}) or []
+        if not lote:
+            break
+        pedido = lote[0]
         resumo["pedidos"] += 1
         try:
             resultado, erro = preparar(pedido, pncp, sb, arm, ia_factory, max_bytes), None

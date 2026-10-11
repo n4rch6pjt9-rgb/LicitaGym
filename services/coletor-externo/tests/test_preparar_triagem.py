@@ -57,6 +57,9 @@ class SbFalso:
     def rpc(self, funcao, params):
         self.rpcs.append((funcao, params))
         r = self.rpc_respostas.get(funcao)
+        if funcao == "fila_preparacao_reivindicar" and isinstance(r, list):
+            assert params == {"p_limite": 1}, params   # um pedido por vez
+            return [r.pop(0)] if r else []
         if isinstance(r, Exception):
             raise r
         if callable(r):
@@ -87,6 +90,11 @@ class ArmFalso:
 def lic_pncp(**kw):
     return {"id": 7, "fonte": "pncp", "codigo_externo": CODIGO, "regulamento": None, "orgao_cnpj": "44892693000140",
             "raw": {}, "numero_processo": "P1", "numero_edital": "PE 1", "entidade": None, "orgao_nome": "Órgão", **kw}
+
+
+def concluiu(sb):
+    """Parâmetros do último fila_preparacao_concluir."""
+    return [p for n, p in sb.rpcs if n == "fila_preparacao_concluir"][-1]
 
 
 PEDIDO = {"id": "u1", "tenant_id": 1, "licitacao_id": 7, "fonte": "pncp", "tentativa": 1}
@@ -128,9 +136,10 @@ def test_pncp_grava_amparo_baixa_indexa_reaplica_e_conclui_ok(monkeypatch, index
     doc = sb.t["licitacao_documentos"][0]
     assert doc["arquivo_origem"] == "pncp-1" and doc["status_processamento"] == "indexado" and doc["sha256"]
     nomes = [n for n, _ in sb.rpcs]
-    assert nomes == ["fila_preparacao_reivindicar", "pipeline_tarefas_reaplicar", "fila_preparacao_concluir"]
+    assert nomes == ["fila_preparacao_reivindicar", "pipeline_tarefas_reaplicar", "fila_preparacao_concluir",
+                     "fila_preparacao_reivindicar"]   # a última volta vazia: fila acabou
     assert sb.rpcs[1][1] == {"p_tenant": 1, "p_licitacao": 7, "p_user": None}
-    assert sb.rpcs[-1][1] == {"p_id": "u1", "p_resultado": "ok", "p_erro": None, "p_tentativa": 1}
+    assert concluiu(sb) == {"p_id": "u1", "p_resultado": "ok", "p_erro": None, "p_tentativa": 1}
 
 
 def test_sem_amparo_na_fonte_conclui_regulamento_nao_informado(monkeypatch, indexa):
@@ -138,14 +147,14 @@ def test_sem_amparo_na_fonte_conclui_regulamento_nao_informado(monkeypatch, inde
     sb = SbFalso([lic_pncp()], rpc_respostas={"fila_preparacao_reivindicar": [PEDIDO]})
     PT.consumir(PncpFalso([ARQ]), sb, ArmFalso(), lambda: object())
     assert "amparo_legal" not in sb.t["licitacoes_externas"][0]   # ausente não é gravado
-    assert sb.rpcs[-1][1]["p_resultado"] == "regulamento_nao_informado_pela_fonte"
+    assert concluiu(sb)["p_resultado"] == "regulamento_nao_informado_pela_fonte"
 
 
 def test_sem_documento_conclui_sem_documento(monkeypatch, indexa):
     _detalhe(monkeypatch, amparo={"codigo": 1, "nome": "Lei 14.133/2021"})
     sb = SbFalso([lic_pncp(regulamento="LEI_14133")], rpc_respostas={"fila_preparacao_reivindicar": [PEDIDO]})
     PT.consumir(PncpFalso([]), sb, ArmFalso(), lambda: object())
-    assert sb.rpcs[-1][1]["p_resultado"] == "sem_documento"
+    assert concluiu(sb)["p_resultado"] == "sem_documento"
 
 
 def test_fonte_nao_pncp_nao_chama_pncp_e_usa_documentos_existentes(monkeypatch, indexa):
@@ -156,7 +165,7 @@ def test_fonte_nao_pncp_nao_chama_pncp_e_usa_documentos_existentes(monkeypatch, 
            "status_processamento": "baixado", "raw": {}}
     sb = SbFalso([lic], [doc], rpc_respostas={"fila_preparacao_reivindicar": [PEDIDO]})
     PT.consumir(PncpFalso(), sb, None, lambda: object())
-    assert sb.rpcs[-1][1]["p_resultado"] == "ok"
+    assert concluiu(sb)["p_resultado"] == "ok"
 
 
 def test_falha_transitoria_reagenda_com_erro_curto_sem_url(monkeypatch, indexa):
@@ -167,7 +176,7 @@ def test_falha_transitoria_reagenda_com_erro_curto_sem_url(monkeypatch, indexa):
     sb = SbFalso([lic_pncp()], rpc_respostas={"fila_preparacao_reivindicar": [PEDIDO]})
     r = PT.consumir(PncpFalso([ARQ], baixar=lambda u, m: (_ for _ in ()).throw(erro)), sb, ArmFalso(), lambda: object())
     assert r["reagendados"] == 1
-    p = sb.rpcs[-1][1]
+    p = concluiu(sb)
     assert p["p_resultado"] is None and p["p_erro"] == "download: HTTP 504"
     assert sb.t["licitacao_documentos"][0]["status_processamento"] == "pendente"
 
@@ -178,7 +187,7 @@ def test_falha_definitiva_no_download_marca_erro_e_segue(monkeypatch, indexa):
     PT.consumir(PncpFalso([ARQ], baixar=lambda u, m: (b"<html>erro</html>", "text/html")), sb, ArmFalso(),
                 lambda: object())
     assert sb.t["licitacao_documentos"][0]["status_processamento"] == "erro"
-    assert sb.rpcs[-1][1]["p_resultado"] == "sem_documento"
+    assert concluiu(sb)["p_resultado"] == "sem_documento"
 
 
 def test_erro_inesperado_vai_ao_card_so_com_a_categoria(monkeypatch):
@@ -187,7 +196,7 @@ def test_erro_inesperado_vai_ao_card_so_com_a_categoria(monkeypatch):
     monkeypatch.setattr(PT, "preparar", quebra)
     sb = SbFalso([], rpc_respostas={"fila_preparacao_reivindicar": [PEDIDO]})
     PT.consumir(PncpFalso(), sb, ArmFalso(), lambda: object())
-    assert sb.rpcs[-1][1]["p_erro"] == "erro interno: KeyError"
+    assert concluiu(sb)["p_erro"] == "erro interno: KeyError"
 
 
 def test_pedido_tomado_por_outro_job_p0002_nao_derruba_o_lote(monkeypatch):
@@ -244,7 +253,7 @@ def test_documento_em_erro_do_coletor_e_tentado_de_novo_e_conclui_ok(monkeypatch
                  rpc_respostas={"fila_preparacao_reivindicar": [PEDIDO]})
     PT.consumir(PncpFalso([ARQ]), sb, ArmFalso(), lambda: object())
     assert sb.t["licitacao_documentos"][0]["status_processamento"] == "indexado"
-    assert sb.rpcs[-1][1]["p_resultado"] == "ok"
+    assert concluiu(sb)["p_resultado"] == "ok"
 
 
 def _doc_baixado(id_, sha, status="baixado"):
@@ -266,7 +275,7 @@ def test_falha_deterministica_num_grupo_marca_erro_e_os_outros_seguem(monkeypatc
     PT.consumir(PncpFalso(), sb, None, lambda: object())
     st = {d["id"]: d["status_processamento"] for d in sb.t["licitacao_documentos"]}
     assert st == {1: "indexado", 2: "erro"}
-    assert sb.rpcs[-1][1]["p_resultado"] == "ok"
+    assert concluiu(sb)["p_resultado"] == "ok"
     assert ("pipeline_tarefas_reaplicar" in [n for n, _ in sb.rpcs])
 
 
@@ -277,7 +286,7 @@ def test_falha_transitoria_na_indexacao_reagenda(monkeypatch):
     sb = SbFalso([lic_pncp(fonte="sestsenat")], [_doc_baixado(1, "a")],
                  rpc_respostas={"fila_preparacao_reivindicar": [PEDIDO]})
     PT.consumir(PncpFalso(), sb, None, lambda: object())
-    assert sb.rpcs[-1][1] == {"p_id": "u1", "p_resultado": None, "p_erro": "indexação: HTTP 429", "p_tentativa": 1}
+    assert concluiu(sb) == {"p_id": "u1", "p_resultado": None, "p_erro": "indexação: HTTP 429", "p_tentativa": 1}
     assert sb.t["licitacao_documentos"][0]["status_processamento"] == "baixado"
 
 
@@ -288,7 +297,7 @@ def test_documento_ignorado_grava_motivo_e_conclui_sem_documento(monkeypatch):
                  rpc_respostas={"fila_preparacao_reivindicar": [PEDIDO]})
     PT.consumir(PncpFalso(), sb, None, lambda: object())
     assert [d["status_processamento"] for d in sb.t["licitacao_documentos"]] == ["ignorado", "ignorado"]
-    assert sb.rpcs[-1][1]["p_resultado"] == "sem_documento"
+    assert concluiu(sb)["p_resultado"] == "sem_documento"
 
 
 def test_documento_ja_indexado_conta_sem_reindexar(monkeypatch):
@@ -296,7 +305,7 @@ def test_documento_ja_indexado_conta_sem_reindexar(monkeypatch):
     sb = SbFalso([lic_pncp(fonte="sestsenat")], [_doc_baixado(1, "a", "indexado")],
                  rpc_respostas={"fila_preparacao_reivindicar": [PEDIDO]})
     PT.consumir(PncpFalso(), sb, None, lambda: object())
-    assert sb.rpcs[-1][1]["p_resultado"] == "ok"
+    assert concluiu(sb)["p_resultado"] == "ok"
 
 
 def test_detalhe_pncp_embrulhado_mostra_o_status_http(monkeypatch):
@@ -311,7 +320,7 @@ def test_detalhe_pncp_embrulhado_mostra_o_status_http(monkeypatch):
     _detalhe(monkeypatch, erro=erro)
     sb = SbFalso([lic_pncp()], rpc_respostas={"fila_preparacao_reivindicar": [PEDIDO]})
     PT.consumir(PncpFalso(), sb, ArmFalso(), lambda: object())
-    assert sb.rpcs[-1][1]["p_erro"] == "detalhe PNCP: HTTP 504"
+    assert concluiu(sb)["p_erro"] == "detalhe PNCP: HTTP 504"
 
 
 def test_armazenamento_fora_do_saas_nao_baixa(monkeypatch, indexa):
@@ -321,7 +330,7 @@ def test_armazenamento_fora_do_saas_nao_baixa(monkeypatch, indexa):
         dentro_do_saas = False
     sb = SbFalso([lic_pncp()], rpc_respostas={"fila_preparacao_reivindicar": [PEDIDO]})
     PT.consumir(PncpFalso([ARQ]), sb, ArmLocal(), lambda: object())
-    assert sb.rpcs[-1][1]["p_erro"] == "download: RuntimeError"
+    assert concluiu(sb)["p_erro"] == "download: RuntimeError"
     assert sb.t["licitacao_documentos"][0]["status_processamento"] == "pendente"
 
 
@@ -333,3 +342,50 @@ def test_armazenamento_fora_do_saas_nao_baixa(monkeypatch, indexa):
 ])
 def test_transitoria(e, esperado):
     assert PT.transitoria(e) is esperado
+
+
+def test_reivindica_um_por_vez_e_para_quando_a_fila_esvazia(monkeypatch):
+    monkeypatch.setattr(PT, "preparar", lambda *a, **k: "ok")
+    fila = [PEDIDO, {**PEDIDO, "id": "u2"}]
+    sb = SbFalso([], rpc_respostas={"fila_preparacao_reivindicar": fila})
+    r = PT.consumir(PncpFalso(), sb, ArmFalso(), lambda: object(), limite=5)
+    assert r["pedidos"] == 2
+    assert [n for n, _ in sb.rpcs].count("fila_preparacao_reivindicar") == 3   # 2 pedidos + 1 vazio
+
+
+def test_limite_para_de_reivindicar(monkeypatch):
+    monkeypatch.setattr(PT, "preparar", lambda *a, **k: "ok")
+    fila = [{**PEDIDO, "id": f"u{i}"} for i in range(5)]
+    sb = SbFalso([], rpc_respostas={"fila_preparacao_reivindicar": fila})
+    r = PT.consumir(PncpFalso(), sb, ArmFalso(), lambda: object(), limite=2)
+    assert r["pedidos"] == 2 and len(fila) == 3   # os outros 3 nem saíram de pending
+
+
+def test_documento_retirado_do_portal_nao_conta_como_indexado(monkeypatch):
+    monkeypatch.setattr(PT, "indexar_grupo", lambda *a, **k: pytest.fail("não deveria indexar"))
+    doc = {**_doc_baixado(1, "a", "indexado"), "removido_do_portal_em": "2026-10-11T00:00:00Z"}
+    sb = SbFalso([lic_pncp(fonte="sestsenat")], [doc], rpc_respostas={"fila_preparacao_reivindicar": [PEDIDO]})
+    PT.consumir(PncpFalso(), sb, None, lambda: object())
+    assert concluiu(sb)["p_resultado"] == "sem_documento"
+
+
+def test_upload_413_do_storage_e_definitivo(monkeypatch, indexa):
+    _detalhe(monkeypatch, amparo={"codigo": 1, "nome": "Lei 14.133/2021"})
+
+    class ArmCheio(ArmFalso):
+        def salvar(self, caminho, conteudo, mime):
+            raise RuntimeError(f"Supabase Storage {caminho}: 413 Payload too large")
+    sb = SbFalso([lic_pncp(regulamento="LEI_14133")], rpc_respostas={"fila_preparacao_reivindicar": [PEDIDO]})
+    PT.consumir(PncpFalso([ARQ]), sb, ArmCheio(), lambda: object())
+    assert sb.t["licitacao_documentos"][0]["status_processamento"] == "erro"
+    assert concluiu(sb)["p_resultado"] == "sem_documento"
+
+
+@pytest.mark.parametrize("msg, esperado", [
+    ("Supabase Storage a/b.pdf: 413 Payload too large", True),
+    ("Supabase Storage a/b.pdf: 503 indisponível", False),
+    ("Supabase Storage a/b.pdf: 429 calma", False),
+])
+def test_definitiva_storage(msg, esperado):
+    assert PT.definitiva(RuntimeError(msg)) is esperado
+    assert PT.transitoria(RuntimeError(msg)) is (not esperado)

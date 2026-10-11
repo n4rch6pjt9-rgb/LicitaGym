@@ -29,8 +29,10 @@ Janela fora de pico: 02:00–06:00 BRT. Os minutos quebrados espalham a carga. O
 |---|---|---|---|---|---|---|---|
 | 1 | `licitagym-sync-compras-catmat-catalogo` | `sync-compras-catmat` | dom 02:07 | `7 5 * * 0` | `{"modo":"catalogo","incluir_inativos":false,"async":true}` | 150 s | Espelho segue os PDMs efetivos, não a classe inteira. Nasce `active = false`; `cron.alter_job(..., active := true)` só depois do deploy da função nova. `async` devolve 202. `incluir_inativos: false` é explícito: só ativos. |
 | 2 | `licitagym-sync-compras-catmat-catalogo-continuacao` | `sync-compras-catmat` | dom 02:27 | `27 5 * * 0` | `{"modo":"catalogo","incluir_inativos":false,"async":true,"somente_retomada":true}` | 150 s | Só continua um run `incompleta` do mesmo lock. Se a carga das 02:07 terminou, responde ignorado. |
-| 3 | `licitagym-sync-pncp-pca` | `sync-pncp-pca` | diário 03:13 | `13 6 * * *` | `{"verificar_periodo":true,"async":true}` | 150 s | O PCA é a fonte da demanda. O gate de período pula a carga quando nada mudou. `async` devolve 202 e a carga roda em background. |
-| 4 | `licitagym-sync-pncp-pca-continuacao` | `sync-pncp-pca` | diário 03:43 | `43 6 * * *` | igual ao 3 | 150 s | Retoma as páginas pendentes do lock `pca-sync:<ano>:7830` quando a 1ª execução esgota o orçamento de 110 s. Se estiver tudo em dia, devolve `ignorado`. |
+| 3 | `licitagym-sync-pncp-pca-fila` | `sync-pncp-pca` | diário 03:13 | `13 6 * * *` | `{"rotina":"incremental","async":true}` | 150 s | Fluxo por fila de planos (spec 0012, #294; ligado em `20261011150000_cron_pca_fila_ligar.sql`). Descobre pela consulta os planos novos ou alterados e enfileira em `private.pca_plano_fila`. Os itens de cada plano vêm da integração e são gravados em lote. Lock `pca-fila:<ano>`. |
+| 4 | `licitagym-sync-pncp-pca-fila-continuacao` | `sync-pncp-pca` | diário, a cada 10 min das 03:00 às 04:50 | `*/10 6-7 * * *` | `{"rotina":"incremental","somente_retomada":true,"async":true}` | 150 s | Retoma a descoberta e consome a fila até esvaziar. Sem trabalho, responde `ignorado` e não chama o PNCP. Pode cruzar com o 5 (04:23) e o 6 (04:43) em dia de carga longa: medir. |
+| 4b | `licitagym-sync-pncp-pca-reconciliacao` | `sync-pncp-pca` | dia 1, 02:13 | `13 5 1 * *` | `{"rotina":"reconciliacao","async":true}` | 150 s | Descoberta completa e enfileiramento de todos os planos, com a regra de ausência em 2 descobertas. |
+| — | `licitagym-sync-pncp-pca` e `-continuacao` (antigos) | `sync-pncp-pca` | desligados | `13 6` / `43 6` | `{"verificar_periodo":true,"async":true}` | — | Desligados em `20261011150000`: morriam por "CPU Time exceeded" na página 2 desde 26/09. Para voltar, use uma migration com o `active` invertido. |
 | 5 | `licitagym-link-catmat-pca` | `link-catmat-pca` | diário 04:23 | `23 7 * * *` | `{"limite":500,"offset":N}`, N = 0, 500, … até o total de `pca_itens` (7 lotes para 3.331, calculado na hora) | 120 s | Liga PCA a CATMAT depois do PCA. Não chama API externa. Lote de 500 levou no máximo 27 s. |
 | 5b | `licitagym-link-pca-edital` | `link-pca-edital` | diário 04:33 | `33 7 * * *` | `{"dry_run": true, "limite": 500}` | 150 s | Depois do vínculo CATMAT. Só reporta. Gravar é tirar `dry_run` do corpo, com ok explícito. |
 | 6 | `licitagym-sync-pncp-orgaos` | `sync-pncp-orgaos` | diário 04:43 | `43 7 * * *` | `{}` | 150 s | Entidades e órgãos dos CNPJs dos planos PCA. Depende do PCA. Leva 21–27 s. |
@@ -47,8 +49,8 @@ Sobre o job 5: o `pg_net` dispara os 7 lotes do `link-catmat-pca` quase ao mesmo
 
 ```
 dom: compras-catmat catálogo (02:07) → retomada do catálogo (02:27)
-diário: pca (03:13) → pca-continuacao (03:43) → link-catmat-pca (04:23) → link-pca-edital em dry_run (04:33) → orgaos (04:43) → classificar (05:03) → escopo (05:18)
-independentes: legislation (seg 05:27), catalogo (dia 1 05:37), respostas (:11), limpeza (dom 05:51)
+diário: pca-fila (03:13) → pca-fila-continuacao (a cada 10 min até 04:50) → link-catmat-pca (04:23) → link-pca-edital em dry_run (04:33) → orgaos (04:43) → classificar (05:03) → escopo (05:18)
+independentes: pca-reconciliacao (dia 1 02:13), legislation (seg 05:27), catalogo (dia 1 05:37), respostas (:11), limpeza (dom 05:51)
 ```
 
 - `link-catmat-pca` precisa do catálogo CATMAT (domingo) e do PCA do dia. O vínculo e o sync de órgãos continuam na lista fixa de classes (7830 e 7220); o job de domingo não amplia esse escopo.

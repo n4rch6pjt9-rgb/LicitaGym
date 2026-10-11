@@ -98,12 +98,15 @@ Medido em 09/10/2026, só leitura (25.465 linhas, 9.505 pares marca × fornecedo
    | `propria` | "PRÓPRIA" em qualquer grafia, ou nome do próprio vendedor ou do grupo |
    | `sem_marca_declarada` | Só origem, descrição do produto, `N/A`, `S/M` |
    | `codigo_ou_medida` | Código de modelo ou medida (regra atual, ampliada no item 6) |
-   | `composta_pendente` | Barra sem lado reconhecido (passo 4.6) |
+   | `composta_pendente` | Barra sem lado reconhecido (passo 4.7) |
    | `bruta` | Sem alias (fila de curadoria atual) |
 
 2. **Tabela de grupo:** `public.fornecedor_grupos` (grupo, CNPJ, nome da marca do grupo, `origem` = `manual` |
    `sugestao_confirmada`, `confirmado_por`, `confirmado_em`). É curadoria. A carga inicial são os 2 grupos confirmados.
-3. **Origem por trecho:** separar o campo por `/`, ` - `, `,` e `|`.
+3. **Origem por trecho:** antes de separar, o campo inteiro (normalizado, sem espaço) é comparado com os marcadores
+   de "sem marca" que têm barra ou hífen: `N/A`, `S/M`, `S/MARCA`, `SEM MARCA`, `NAO SE APLICA`. Se casar, vira
+   `sem_marca_declarada` e o algoritmo para (separar antes transformaria `N/A` em dois trechos desconhecidos). Depois,
+   separar o campo por `/`, ` - `, `,` e `|`.
    - Um trecho que, inteiro, é variante de `NAC`, `NACIONAL`, `IMP`, `IMPORT` ou `IMPORTADO/A`, com o complemento
      opcional "conforme edital/TR", vira origem. O complemento é aceito mesmo cortado: `CON`, `CONF…`, `ED…`.
    - Os outros trechos seguem para a marca.
@@ -112,28 +115,39 @@ Medido em 09/10/2026, só leitura (25.465 linhas, 9.505 pares marca × fornecedo
    1. **"PRÓPRIA"** em qualquer trecho → `propria`. O nome vem do alias restrito ao CNPJ ou ao grupo; sem alias,
       "Marca própria".
    2. **`X/X`** (trechos iguais depois de normalizados) → um trecho só.
-   3. **Trecho que casa com alias de marca** (exato, prefixo ou regex) → `marca` com esse nome. Resolve `VAXX/DELVA` e
-      `SIGMETAL / AR LIVRE`.
-   4. **Trecho igual à razão social ou ao nome fantasia do vencedor ou de outra empresa do grupo**, comparando sem
-      espaço, acento e pontuação (`SS ESPORTES` = `S S ESPORTES`):
+   3. **Trecho igual à razão social ou ao nome fantasia do vencedor ou de outra empresa do grupo**, comparando sem
+      espaço, acento e pontuação (`SS ESPORTES` = `S S ESPORTES`). Vem **antes** do alias de marca: o nome do próprio
+      vendedor ou do grupo é marca própria mesmo quando também existe alias global (um item da SIGMETAL vendido pela
+      SIGMETAL com `SIGMETAL` é `propria`, não `marca`):
       - se há outro trecho que não é origem nem descrição, a marca é o outro trecho (`KONNEN/IMPULSE` → IMPULSE);
       - se não há, `propria` com o nome desse trecho (`Fundidos Brasil`, `NEW FITNESS`, `Konnen Fitness` pela FOR
         FITNESS).
-   5. **Trecho "não é marca"** (descrição do produto, `N/A`, `S/M`, medida): descartado. Se não sobra nada,
-      `sem_marca_declarada`.
-   6. **Sobram 2 ou mais trechos sem decisão** → `composta_pendente`, que vai para a fila "marca composta" com os
+   4. **Trecho que casa com alias de marca** (exato, prefixo ou regex) → `marca` com esse nome. Resolve `VAXX/DELVA` e
+      `SIGMETAL / AR LIVRE` vendidos por terceiros.
+   5. **Trecho igual ao nome de outra empresa conhecida** (razão social ou nome fantasia em `fornecedores`, que não é
+      o vendedor nem do grupo dele), com a mesma comparação do passo 3 → `marca` com o nome da empresa. A lista é a
+      tabela de fornecedores, não texto livre; sem casamento, o trecho segue. A carga inicial (item 5) cria alias de
+      marca para as empresas de origem já identificadas (`Zuí Brasil`, `BRASIL FIT`, `EVA BRASIL`), porque elas não vendem direto e
+      não estão em `fornecedores`.
+   6. **Trecho "não é marca"** (descrição do produto, medida): descartado. Se não sobra nada, `sem_marca_declarada`.
+   7. **Sobram 2 ou mais trechos sem decisão** → `composta_pendente`, que vai para a fila "marca composta" com os
       trechos visíveis. Até a curadoria, não entra no ranking como marca.
-   7. **Sobra 1 trecho sem alias** → `bruta`, como hoje.
+   8. **Sobra 1 trecho sem alias** → `bruta`, como hoje.
 5. **"PRÓPRIA" deixa de ser "não é marca":** o alias global de regex `nao_marca` de "PRÓPRIA" é desativado
    (`ativo = false`, não apagado); a regra 4.1 assume o caso. Os 3 aliases restritos ao CNPJ continuam. Os 2 grupos
    ganham um alias de grupo:
    - FOR FITNESS + KONNEN → KONNEN;
    - SIGMETAL × 3 → SIGMETAL.
+
+   As empresas de origem já identificadas ganham alias global de marca: `ZUI BRASIL` → Zuí Brasil, `BRASIL FIT` →
+   Brasil Fit e `EVA BRASIL` → EVA Brasil (regra 4.5).
 6. **Código de modelo:** a regra de código passa a pegar até **8** letras seguidas de dígito, sem espaço (`ESQUI01`,
    `MULTI01`). Isso só depois de conferir, no Postgres descartável, que nenhuma marca real com alias cai na regra.
 7. **Fornecedor como fabricante no BI:** quem declara `propria` em algum item recebe a evidência "declarou marca
-   própria no certame" em `v_bi_fornecedor_historico` (regra 3 de `docs/bi-cruzamento-apis.md`), com confiança
-   `alta_declarado`.
+   própria no certame" em `v_bi_fornecedor_historico`, com confiança `alta_declarado`. Essa evidência vem **antes** da
+   regra 2 de `docs/bi-cruzamento-apis.md` (CNAE de comércio → `revenda`): um vencedor com CNAE principal de comércio
+   que declara marca própria é classificado como fabricante, com a evidência e o CNAE à mostra. A ordem nova fica
+   registrada em `docs/bi-cruzamento-apis.md` no mesmo PR.
 8. **Filas de curadoria (views de leitura, `service_role`):**
    - `v_marca_aliases_pendentes` (bruta) **reescrita a partir dos pares**: conta as linhas por par (marca, CNPJ) na
      tabela de preços, resolve cada par uma vez e agrega. `v_marca_ocorrencias` não muda nem ganha `MATERIALIZED`;
@@ -141,7 +155,7 @@ Medido em 09/10/2026, só leitura (25.465 linhas, 9.505 pares marca × fornecedo
    - `v_marca_composta_pendente`: trechos de `composta_pendente` por fornecedor.
 9. **Enriquecimento:** o enriquecimento por CNPJ (BrasilAPI, `coletor/fornecedores.py`) passa a cobrir todos os
    vencedores de `precos_praticados_itens`. Hoje cobre 435 de 2.711 (292 com nome fantasia). O nome fantasia é
-   necessário para a regra 4.4.
+   necessário para a regra 4.3.
    Sugestão de grupo (mesmo sócio, telefone ou endereço) fica fora: ver "Fora de escopo".
 
 ## Critérios de aceite
@@ -202,7 +216,7 @@ Medido em 09/10/2026, só leitura (25.465 linhas, 9.505 pares marca × fornecedo
 
 ## Perguntas em aberto
 
-1. **Enriquecimento:** rodar o enriquecimento dos 2.271 CNPJs que faltam junto desta spec (a regra 4.4 depende do nome
+1. **Enriquecimento:** rodar o enriquecimento dos 2.271 CNPJs que faltam junto desta spec (a regra 4.3 depende do nome
    fantasia) ou antes, como passo separado?
 2. **Regra de código de 8 letras (item 6):** liberar já, ou só depois de você ver a lista de valores que mudariam de
    "marca" para "código"?

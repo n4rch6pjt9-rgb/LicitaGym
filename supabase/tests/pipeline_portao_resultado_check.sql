@@ -1,4 +1,4 @@
--- Checagem da migration 20261010100400_pipeline_portao_resultado.
+-- Checagem da migration 20261011100700_pipeline_portao_resultado.
 -- Etapas padrão sem portão. Recomendação sem score. Resultado só existe no desfecho.
 
 do $$

@@ -1,4 +1,4 @@
--- Checagem da migration 20261010100300_aderencia_tecnica.
+-- Checagem da migration 20261011100600_aderencia_tecnica.
 -- Ontologia semeada, veredito com não comprovado, eliminatório bloqueia atende, requisito validado não se sobrescreve.
 
 do $$

@@ -22,7 +22,7 @@ begin
   end loop;
   foreach f in array array[
     'public.pipeline_semear_tarefas(bigint)',
-    'public.pipeline_etapa_tarefas_criar(bigint,bigint,bigint,uuid)',
+    'public.pipeline_etapa_tarefas_criar(bigint,bigint,bigint,uuid,timestamptz)',
     'public.pipeline_tarefas_reaplicar(bigint,bigint,uuid)',
     'public.pipeline_etapa_tarefas_validar()',
     'public.pipeline_oportunidades_tarefas()',
@@ -39,7 +39,7 @@ begin
   end loop;
   foreach f in array array[
     'public.pipeline_semear_tarefas(bigint)',
-    'public.pipeline_etapa_tarefas_criar(bigint,bigint,bigint,uuid)',
+    'public.pipeline_etapa_tarefas_criar(bigint,bigint,bigint,uuid,timestamptz)',
     'public.pipeline_tarefas_reaplicar(bigint,bigint,uuid)'
   ] loop
     if not has_function_privilege('service_role', f::regprocedure, 'EXECUTE') then

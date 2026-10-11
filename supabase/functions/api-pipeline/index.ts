@@ -8,6 +8,8 @@ import { parseActionFromBody } from "./validation.ts";
 
 /**
  * api-pipeline: pipeline comercial da equipe (Dashboard #29).
+ *   Tarefas por etapa (spec 0018): etapa_tarefas_listar e tarefas_reaplicar (qualquer usuário da empresa);
+ *   etapa_tarefas_salvar (admin da empresa ou desenvolvedor: lista completa, nunca apaga; o que sai é desligado).
  *   Leitura e movimentação (etapas_listar, pipeline_listar/estado/historico, pipeline_adicionar/mover/remover):
  *   qualquer usuário da empresa (admin ou operação). Configuração das etapas (etapa_criar/atualizar/excluir): admin
  *   da empresa (tenant_membros.papel = 'admin') ou o desenvolvedor (app_metadata.licitagym_role = 'admin').
@@ -101,6 +103,24 @@ export async function handleRequest(req: Request, ctx: ApiPipelineContext = {}):
         const etapa = await repo.atualizarEtapa(tenant, id, campos, user.id);
         if (!etapa) return jsonResponse({ error: "Etapa não encontrada." }, 404);
         return jsonResponse({ action: params.action, etapa });
+      }
+
+      case "etapa_tarefas_listar": {
+        const tarefas = await repo.listarModelo(tenant, params.etapa_id);
+        if (!tarefas) return jsonResponse({ error: "Etapa não encontrada." }, 404);
+        return jsonResponse({ action: params.action, etapa_id: params.etapa_id, tarefas });
+      }
+
+      case "etapa_tarefas_salvar": {
+        const salvas = await repo.salvarModelo(tenant, params.etapa_id, params.tarefas, user.id);
+        console.info("[api-pipeline] etapa_tarefas_salvar", { user: user.id, etapa: params.etapa_id, salvas });
+        return jsonResponse({ action: params.action, etapa_id: params.etapa_id, salvas, tarefas: await repo.listarModelo(tenant, params.etapa_id) });
+      }
+
+      case "tarefas_reaplicar": {
+        const r = await repo.reaplicarTarefas(tenant, params.licitacao_id, user.id);
+        if (r.bloqueio === "fora_do_pipeline") return jsonResponse({ error: "Licitação fora do pipeline da empresa.", bloqueio: r.bloqueio }, 404);
+        return jsonResponse({ action: params.action, ...r });
       }
 
       case "etapa_excluir": {

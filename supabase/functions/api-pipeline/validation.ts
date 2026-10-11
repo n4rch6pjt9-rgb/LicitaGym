@@ -1,4 +1,4 @@
-import { type Acao, DESFECHOS, type Desfecho, type Fase, FASES } from "./types.ts";
+import { type Acao, DESFECHOS, type Desfecho, type Fase, FASES, type ItemModelo } from "./types.ts";
 
 export const MAX_LOTE = 200;
 const MAX_NOME = 60;
@@ -38,6 +38,46 @@ function motivo(v: unknown): string | null | { error: string } {
 }
 
 const erro = (x: unknown): x is { error: string } => typeof x === "object" && x !== null && "error" in x;
+
+const MAX_TAREFAS_ETAPA = 100;
+const CODIGO_CATALOGO_RE = /^\d{5}-F\d{2}-T\d{2}$/;
+const CHAVE_RE = /^[a-z0-9][a-z0-9-]{2,59}$/;
+
+/** Lista completa do modelo de uma etapa (etapa_tarefas_salvar). O banco confere o catálogo e a chave. */
+function itensModelo(v: unknown): ItemModelo[] | { error: string } {
+  if (!Array.isArray(v)) return { error: "'tarefas' deve ser a lista completa da etapa (array)." };
+  if (v.length > MAX_TAREFAS_ETAPA) return { error: `'tarefas' aceita no máximo ${MAX_TAREFAS_ETAPA} itens.` };
+  const out: ItemModelo[] = [];
+  for (const [i, it] of v.entries()) {
+    if (typeof it !== "object" || it === null || Array.isArray(it)) return { error: `'tarefas[${i}]' deve ser objeto.` };
+    const o = it as Record<string, unknown>;
+    if (o.origem === "catalogo") {
+      if (typeof o.tarefa_codigo !== "string" || !CODIGO_CATALOGO_RE.test(o.tarefa_codigo)) {
+        return { error: `'tarefas[${i}].tarefa_codigo' inválido (ex.: 14133-F04-T01).` };
+      }
+      out.push({ origem: "catalogo", tarefa_codigo: o.tarefa_codigo });
+    } else if (o.origem === "empresa") {
+      const titulo = typeof o.titulo === "string" ? o.titulo.trim().replace(/\s+/g, " ") : "";
+      if (!titulo || titulo.length > 200) return { error: `'tarefas[${i}].titulo' é obrigatório (até 200 caracteres).` };
+      const chave = o.chave === undefined || o.chave === null ? null : o.chave;
+      if (chave !== null && (typeof chave !== "string" || !CHAVE_RE.test(chave))) {
+        return { error: `'tarefas[${i}].chave' inválida.` };
+      }
+      const descricao = o.descricao === undefined || o.descricao === null ? null : o.descricao;
+      if (descricao !== null && (typeof descricao !== "string" || descricao.length > 2000)) {
+        return { error: `'tarefas[${i}].descricao' deve ser texto (até 2000 caracteres).` };
+      }
+      const prazo = o.prazo_horas === undefined || o.prazo_horas === null ? null : o.prazo_horas;
+      if (prazo !== null && (typeof prazo !== "number" || !Number.isInteger(prazo) || prazo < 1 || prazo > 8760)) {
+        return { error: `'tarefas[${i}].prazo_horas' deve ser inteiro de 1 a 8760, ou null.` };
+      }
+      out.push({ origem: "empresa", chave: chave as string | null, titulo, descricao: (descricao as string | null)?.trim() || null, prazo_horas: prazo as number | null });
+    } else {
+      return { error: `'tarefas[${i}].origem' deve ser catalogo ou empresa.` };
+    }
+  }
+  return out;
+}
 
 export function parseActionFromBody(body: Corpo): Resultado {
   const action = body.action;
@@ -117,6 +157,20 @@ export function parseActionFromBody(body: Corpo): Resultado {
         return { error: "'mover_para' deve ser o id de uma etapa." };
       }
       return { action, id, mover_para };
+    }
+    case "etapa_tarefas_listar": {
+      const etapa_id = idPositivo(body.etapa_id);
+      return etapa_id ? { action, etapa_id } : { error: "'etapa_id' é obrigatório." };
+    }
+    case "etapa_tarefas_salvar": {
+      const etapa_id = idPositivo(body.etapa_id);
+      if (!etapa_id) return { error: "'etapa_id' é obrigatório." };
+      const tarefas = itensModelo(body.tarefas);
+      return erro(tarefas) ? tarefas : { action, etapa_id, tarefas };
+    }
+    case "tarefas_reaplicar": {
+      const licitacao_id = idPositivo(body.licitacao_id);
+      return licitacao_id ? { action, licitacao_id } : { error: "'licitacao_id' é obrigatório." };
     }
     default:
       return { error: "Ação inválida ou ausente." };

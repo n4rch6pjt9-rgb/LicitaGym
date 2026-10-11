@@ -26,6 +26,9 @@ as $$
    group by t.licitacao_id
 $$;
 
+comment on function public.pipeline_tarefas_abertas(bigint, bigint[]) is
+  'Tarefas da empresa em aberta/em_andamento por licitação (spec 0018, card do Kanban). Limite de p_licitacoes no chamador.';
+
 revoke all on function public.pipeline_tarefas_abertas(bigint, bigint[]) from PUBLIC, anon, authenticated;
 grant execute on function public.pipeline_tarefas_abertas(bigint, bigint[]) to service_role;
 

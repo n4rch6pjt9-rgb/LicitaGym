@@ -41,7 +41,8 @@ begin
     return null;
   end if;
   if exists (select 1 from public.pipeline_etapas e
-              where e.id = new.etapa_id and e.tenant_id = new.tenant_id and lower(btrim(e.nome)) = 'triagem') then
+              where e.id = new.etapa_id and e.tenant_id = new.tenant_id and lower(btrim(e.nome)) = 'triagem')
+     and exists (select 1 from public.tenants t where t.id = new.tenant_id and t.ativo) then
     insert into private.job_queue (job_type, payload)
     values ('preparar_triagem', jsonb_build_object(
       'tenant_id', new.tenant_id::text,
@@ -69,8 +70,10 @@ begin
   update private.job_queue q
      set status = case when q.attempts >= q.max_attempts then 'failed' else 'pending' end,
          updated_at = now(),
-         last_error = case when q.attempts >= q.max_attempts then 'interrompido sem concluir; tentativas esgotadas'
-                           else 'interrompido sem concluir; devolvido à fila' end
+         -- preserva o erro da tentativa anterior (ex.: "download: HTTP 504") antes do motivo da devolução
+         last_error = left(coalesce(q.last_error || '; ', '')
+                           || case when q.attempts >= q.max_attempts then 'interrompido sem concluir; tentativas esgotadas'
+                                   else 'interrompido sem concluir; devolvido à fila' end, 1000)
    where q.job_type = 'preparar_triagem' and q.status = 'processing' and q.updated_at < now() - interval '1 hour';
 
   return query
@@ -93,10 +96,13 @@ $$;
 
 -- Desfecho: resultado (ok | sem_documento | regulamento_nao_informado_pela_fonte) conclui; erro reagenda com espera
 -- crescente (5, 10, 20, 40 min...) até max_attempts, depois 'failed'. Nunca apaga o pedido.
+-- p_tentativa (a devolvida por reivindicar) é o dono: pedido devolvido à fila e pego por outro job tem outra tentativa,
+-- e o primeiro job não fecha a tentativa do segundo (P0002).
 create or replace function public.fila_preparacao_concluir(
   p_id        uuid,
   p_resultado text,
-  p_erro      text default null
+  p_erro      text default null,
+  p_tentativa integer default null
 )
 returns text
 language plpgsql
@@ -126,6 +132,7 @@ begin
                               else q.scheduled_for end,
          updated_at = now()
    where q.id = p_id and q.job_type = 'preparar_triagem' and q.status = 'processing'
+     and (p_tentativa is null or q.attempts = p_tentativa)
   returning q.status into v_status;
   if v_status is null then
     raise exception 'Pedido % não está em processamento.', p_id using errcode = 'P0002';
@@ -159,6 +166,7 @@ select 'preparar_triagem', jsonb_build_object('tenant_id', po.tenant_id::text, '
                                               'fonte', l.fonte)
   from public.pipeline_oportunidades po
   join public.pipeline_etapas e on e.id = po.etapa_id and e.tenant_id = po.tenant_id and lower(btrim(e.nome)) = 'triagem'
+  join public.tenants t on t.id = po.tenant_id and t.ativo
   left join public.licitacoes_externas l on l.id = po.licitacao_id
  where not exists (select 1 from private.job_queue q
                     where q.job_type = 'preparar_triagem'
@@ -170,10 +178,10 @@ do nothing;
 
 revoke all on function public.pipeline_oportunidades_enfileirar_triagem() from PUBLIC, anon, authenticated;
 revoke all on function public.fila_preparacao_reivindicar(integer) from PUBLIC, anon, authenticated;
-revoke all on function public.fila_preparacao_concluir(uuid, text, text) from PUBLIC, anon, authenticated;
+revoke all on function public.fila_preparacao_concluir(uuid, text, text, integer) from PUBLIC, anon, authenticated;
 revoke all on function public.pipeline_preparacao_estado(bigint, bigint[]) from PUBLIC, anon, authenticated;
 grant execute on function public.fila_preparacao_reivindicar(integer) to service_role;
-grant execute on function public.fila_preparacao_concluir(uuid, text, text) to service_role;
+grant execute on function public.fila_preparacao_concluir(uuid, text, text, integer) to service_role;
 grant execute on function public.pipeline_preparacao_estado(bigint, bigint[]) to service_role;
 
 commit;

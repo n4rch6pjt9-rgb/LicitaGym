@@ -24,8 +24,9 @@ export interface PipelineRepo {
   /** Empresa e papel do usuário (_shared/tenant.ts: vínculo com empresa ativa; sem vínculo, só o desenvolvedor, na única empresa ativa). */
   tenantDoUsuario(userId: string, desenvolvedor: boolean): Promise<TenantResolvido>;
   listarEtapas(tenant: number): Promise<EtapaComTotal[]>;
-  /** Até LIMITE_LISTA itens, mais recentes primeiro; `truncado` avisa quando havia mais. */
-  listarPipeline(tenant: number, etapaId: number | null): Promise<{ itens: ItemPipeline[]; truncado: boolean }>;
+  /** Até LIMITE_LISTA itens, mais recentes primeiro; `truncado` avisa quando havia mais. `avisos` lista o complemento
+   * que não pôde ser lido (o card vem sem ele, nunca com valor inventado). */
+  listarPipeline(tenant: number, etapaId: number | null): Promise<{ itens: ItemPipeline[]; truncado: boolean; avisos: string[] }>;
   estado(tenant: number, licitacaoIds: number[]): Promise<Array<{ licitacao_id: number; etapa_id: number }>>;
   /** soNovos: só adiciona quem ainda não está no pipeline (atômico no banco; não move quem já está). */
   mover(tenant: number, licitacaoIds: number[], etapaId: number | null, motivo: string | null, userId: string, soNovos?: boolean): Promise<number>;
@@ -89,10 +90,18 @@ export function createSupabaseRepo(client: SupabaseClient): PipelineRepo {
       // Preparação da Triagem (fila de download/indexação): "análise em preparação" enquanto pendente.
       const ids = linhas.slice(0, LIMITE_LISTA).map((i) => Number(i.licitacao_id));
       const prep = new Map<number, ItemPipeline["preparacao"]>();
+      const avisos: string[] = [];
+      let prepOk = true;
       if (ids.length) {
         const { data: est, error: e3 } = await client.rpc("pipeline_preparacao_estado", { p_tenant: tenant, p_licitacoes: ids });
-        if (e3) throw new Error(e3.message);
-        for (const e of (est ?? []) as Array<Record<string, unknown>>) {
+        // Complemento do card: a falha (ex.: função publicada antes da migration) não derruba o Kanban, mas também não
+        // vira "sem pedido" (null): o campo some do item e `avisos` diz por quê.
+        if (e3) {
+          console.error("[api-pipeline] pipeline_preparacao_estado falhou", { code: e3.code, message: e3.message });
+          prepOk = false;
+          avisos.push("preparacao_indisponivel");
+        }
+        for (const e of (prepOk ? est ?? [] : []) as Array<Record<string, unknown>>) {
           prep.set(Number(e.licitacao_id), {
             status: e.status as StatusPreparacao, resultado: (e.resultado as ResultadoPreparacao | null) ?? null,
             erro: (e.erro as string | null) ?? null, atualizado_em: String(e.atualizado_em),
@@ -101,18 +110,24 @@ export function createSupabaseRepo(client: SupabaseClient): PipelineRepo {
       }
       // Tarefas abertas por card (contadas no banco: pipeline_tarefas_abertas).
       const abertas = new Map<number, number>();
+      let abertasOk = true;
       if (ids.length) {
         const { data: ab, error: e4 } = await client.rpc("pipeline_tarefas_abertas", { p_tenant: tenant, p_licitacoes: ids });
-        if (e4) throw new Error(e4.message);
-        for (const a of (ab ?? []) as Array<{ licitacao_id: number; abertas: number }>) abertas.set(Number(a.licitacao_id), Number(a.abertas));
+        // mesmo contrato da preparação: falha não vira 0, o campo some e avisos explica
+        if (e4) {
+          console.error("[api-pipeline] pipeline_tarefas_abertas falhou", { code: e4.code, message: e4.message });
+          abertasOk = false;
+          avisos.push("tarefas_abertas_indisponivel");
+        }
+        for (const a of (abertasOk ? ab ?? [] : []) as Array<{ licitacao_id: number; abertas: number }>) abertas.set(Number(a.licitacao_id), Number(a.abertas));
       }
       const itens = linhas.slice(0, LIMITE_LISTA).map((i) => ({
         ...i,
-        tarefas_abertas: abertas.get(Number(i.licitacao_id)) ?? 0,
+        ...(abertasOk ? { tarefas_abertas: abertas.get(Number(i.licitacao_id)) ?? 0 } : {}),
         tarefas_pendencia: porLicitacao.get(Number(i.licitacao_id)) ?? null,
-        preparacao: prep.get(Number(i.licitacao_id)) ?? null,
+        ...(prepOk ? { preparacao: prep.get(Number(i.licitacao_id)) ?? null } : {}),
       }));
-      return { itens, truncado: linhas.length > LIMITE_LISTA };
+      return { itens, truncado: linhas.length > LIMITE_LISTA, avisos };
     },
 
     async estado(tenant, ids) {

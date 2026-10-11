@@ -84,6 +84,7 @@ function repoMemoria() {
     listarPipeline: (_t, etapaId) =>
       Promise.resolve({
         truncado: false,
+        avisos: [],
         itens: [...ops.entries()].filter(([, o]) => !etapaId || o.etapa_id === etapaId).map(([id, o]) => ({
           licitacao_id: id, etapa_id: o.etapa_id, motivo: o.motivo, atualizada_em: "t", atualizada_por: "u", licitacao: { id },
         })),
@@ -437,14 +438,16 @@ Deno.test("CA-17: pipeline_listar traz preparacao do último pedido; sem pedido 
     data: [{ licitacao_id: 101, status: "processing", resultado: null, erro: null, atualizado_em: "2026-10-11T12:05:00Z" }],
     error: null,
   })));
-  const { itens } = await repo.listarPipeline(1, null);
+  const { itens, avisos } = await repo.listarPipeline(1, null);
   assertEquals(itens.map((i) => [i.licitacao_id, i.preparacao?.status ?? null]), [[101, "processing"], [102, null]]);
+  assertEquals(avisos, []);
 });
 
-Deno.test("CA-17: erro ao ler a preparação derruba a listagem (não vira preparacao null em todos os cards)", async () => {
+Deno.test("CA-17: erro ao ler a preparação não derruba o Kanban nem vira 'sem pedido': campo ausente + aviso", async () => {
   const repo = createSupabaseRepo(clienteListar(() => Promise.resolve({ data: null, error: { code: "PGRST202", message: "função não existe" } })));
-  const e = await repo.listarPipeline(1, null).then(() => null, (x) => x);
-  assertEquals(e instanceof Error ? e.message : e, "função não existe");
+  const r = await repo.listarPipeline(1, null);
+  assertEquals(r.avisos, ["preparacao_indisponivel"]);
+  assertEquals(r.itens.map((i) => "preparacao" in i), [false, false]);
 });
 
 Deno.test("spec 0018 seção 5: pipeline_listar traz tarefas_abertas por card (0 quando não há)", async () => {
@@ -456,13 +459,14 @@ Deno.test("spec 0018 seção 5: pipeline_listar traz tarefas_abertas por card (0
   assertEquals(itens.map((i) => [i.licitacao_id, i.tarefas_abertas]), [[101, 0], [102, 3]]);
 });
 
-Deno.test("spec 0018 seção 5: erro ao contar tarefas derruba a listagem (não vira 0 em todos os cards)", async () => {
+Deno.test("spec 0018 seção 5: erro ao contar tarefas não vira 0 nem derruba o Kanban: campo ausente + aviso", async () => {
   const repo = createSupabaseRepo(clienteListar(
     () => Promise.resolve({ data: [], error: null }),
     () => Promise.resolve({ data: null, error: { code: "PGRST202", message: "sem contagem" } }),
   ));
-  const e = await repo.listarPipeline(1, null).then(() => null, (x) => x);
-  assertEquals(e instanceof Error ? e.message : e, "sem contagem");
+  const r = await repo.listarPipeline(1, null);
+  assertEquals(r.avisos, ["tarefas_abertas_indisponivel"]);
+  assertEquals(r.itens.map((i) => "tarefas_abertas" in i), [false, false]);
 });
 
 Deno.test("catalogo_listar: qualquer usuário da empresa lê o catálogo para o modelo da etapa", async () => {

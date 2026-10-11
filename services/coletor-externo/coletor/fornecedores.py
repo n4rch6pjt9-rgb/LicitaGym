@@ -255,11 +255,13 @@ def cnpjs_de_resultados(sb, pagina: int = 100) -> list[str]:
 def cnpjs_de_precos(sb) -> list[str]:
     """NIs distintos dos vencedores em precos_praticados_itens (Pesquisa de Preço do Compras.gov).
 
-    A tabela não tem `id`: a leitura é por offset na PK composta (id_compra, id_item_compra) e traz só a coluna do NI.
+    A tabela não tem `id`: a leitura é por offset na PK composta (id_compra, id_item_compra). O select traz a PK junto
+    do NI porque `selecionar` aborta em página idêntica à anterior: só com o NI, um fornecedor que vence 200 itens
+    seguidos daria duas páginas iguais e pararia a carga.
     CPF e NI estrangeiro passam adiante e `cadastrar` descarta como inválidos (só CNPJ com dígito válido é consultado).
     """
-    rows = sb.selecionar("precos_praticados_itens", select="ni_fornecedor", ni_fornecedor="not.is.null",
-                         order="id_compra.asc,id_item_compra.asc")
+    rows = sb.selecionar("precos_praticados_itens", select="id_compra,id_item_compra,ni_fornecedor",
+                         ni_fornecedor="not.is.null", order="id_compra.asc,id_item_compra.asc")
     return sorted({r["ni_fornecedor"] for r in rows})
 
 
@@ -278,12 +280,18 @@ def main(argv: list[str] | None = None) -> int:
     precisa_banco = args.de_resultados or args.de_precos or not args.dry_run
     sb = Supabase(env("SUPABASE_URL", obrigatorio=True), env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True)) \
         if precisa_banco else None
-    cnpjs = list(args.cnpj or []) + (cnpjs_de_resultados(sb) if args.de_resultados else [])         + (cnpjs_de_precos(sb) if args.de_precos else [])
+    cnpjs = (list(args.cnpj or [])
+             + (cnpjs_de_resultados(sb) if args.de_resultados else [])
+             + (cnpjs_de_precos(sb) if args.de_precos else []))
     if args.limite is not None:
-        cnpjs = cnpjs[:max(args.limite, 0)]
+        # O limite conta CNPJs válidos e distintos: CPF, NI estrangeiro e repetidos entre as fontes não ocupam vaga.
+        validos = list(dict.fromkeys(c for c in map(cnpj_valido, cnpjs) if c))
+        cnpjs = validos[:max(args.limite, 0)]
     r = CadastroFornecedores(sb, validade_dias=args.validade_dias, dry_run=args.dry_run).cadastrar(cnpjs)
     for l in r.pop("linhas"):
-        print(f"{l['cnpj']} | {l.get('razao_social')} | {l.get('porte')} | {l.get('uf')}/{l.get('municipio')} | "
+        # Em MEI a razão social traz o nome do titular (pessoa física): não vai para o log.
+        nome = "(titular pessoa física)" if l.get("titular_pessoa_fisica") else l.get("razao_social")
+        print(f"{l['cnpj']} | {nome} | {l.get('porte')} | {l.get('uf')}/{l.get('municipio')} | "
               f"CNAE {l.get('cnae_principal')} {'(fitness)' if l.get('cnae_fitness') else ''} | {l['consulta_status']}")
     print(json.dumps(r, ensure_ascii=False))
     return 1 if r["erros"] and not r["consultados"] else 0

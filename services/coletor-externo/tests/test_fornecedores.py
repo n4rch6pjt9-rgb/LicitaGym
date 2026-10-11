@@ -100,14 +100,40 @@ def test_mei_mascara_cpf_e_nao_guarda_contato():
 
 def test_cnpjs_de_precos_le_por_offset_na_pk_e_deduplica():
     sb = MagicMock()
-    sb.selecionar.return_value = [{"ni_fornecedor": "24608949000137"}, {"ni_fornecedor": "06165288000130"},
-                                  {"ni_fornecedor": "24608949000137"}]
+    sb.selecionar.return_value = [{"id_compra": "1", "id_item_compra": 1, "ni_fornecedor": "24608949000137"},
+                                  {"id_compra": "1", "id_item_compra": 2, "ni_fornecedor": "06165288000130"},
+                                  {"id_compra": "2", "id_item_compra": 1, "ni_fornecedor": "24608949000137"}]
     assert F.cnpjs_de_precos(sb) == ["06165288000130", "24608949000137"]
     tabela = sb.selecionar.call_args.args[0]
     kw = sb.selecionar.call_args.kwargs
     assert tabela == "precos_praticados_itens"
-    assert kw["select"] == "ni_fornecedor" and kw["ni_fornecedor"] == "not.is.null"
+    assert kw["select"] == "id_compra,id_item_compra,ni_fornecedor" and kw["ni_fornecedor"] == "not.is.null"
     assert kw["order"] == "id_compra.asc,id_item_compra.asc"
+
+
+def test_cnpjs_de_precos_mesmo_vencedor_em_paginas_seguidas_nao_aborta(monkeypatch):
+    # Regressão (#296): só com o NI no select, 250 itens seguidos do mesmo vencedor davam duas páginas idênticas e
+    # `selecionar` abortava com "página repetida". Com a PK no select, as páginas diferem e a leitura termina.
+    from coletor import destino as D
+    linhas = [{"id_compra": "C1", "id_item_compra": i, "ni_fornecedor": "24608949000137"} for i in range(1, 251)]
+
+    class Resp:
+        def __init__(self, lote, total):
+            self._lote, self.status_code, self.headers = lote, 200, {"Content-Range": f"0-0/{total}"}
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self._lote
+
+    def falso_get(_url, params=None, headers=None, timeout=None):
+        ini, n = int(params.get("offset", "0")), int(params["limit"])
+        colunas = params["select"].split(",")          # o PostgREST devolve só as colunas do select
+        return Resp([{c: r[c] for c in colunas} for r in linhas[ini:ini + n]], len(linhas))
+
+    monkeypatch.setattr(D.requests, "get", falso_get)
+    assert F.cnpjs_de_precos(D.Supabase("https://x.supabase.co", "chave")) == ["24608949000137"]
 
 
 def test_main_de_precos_junta_os_vencedores(monkeypatch):
@@ -141,3 +167,27 @@ def test_cliente_supabase_fixa_schema_public():
     from coletor.destino import Supabase
     h = Supabase("https://x.supabase.co", "chave").h
     assert h["Accept-Profile"] == "public" and h["Content-Profile"] == "public"
+
+
+def test_main_limite_conta_so_cnpj_valido_e_distinto(monkeypatch):
+    monkeypatch.setattr(F, "cnpjs_de_resultados", lambda _sb: ["24608949000137"])
+    monkeypatch.setattr(F, "cnpjs_de_precos",
+                        lambda _sb: ["24608949000137", "12345678909", "ESTRANGEIRO", "06165288000130"])
+    import coletor.destino as D
+    monkeypatch.setattr(D, "Supabase", lambda *_a, **_k: MagicMock())
+    monkeypatch.setattr(D, "env", lambda *_a, **_k: "x")
+    recebidos = []
+    monkeypatch.setattr(F.CadastroFornecedores, "cadastrar",
+                        lambda self, cnpjs: recebidos.extend(cnpjs) or {"erros": 0, "consultados": 0, "linhas": []})
+    assert F.main(["--de-resultados", "--de-precos", "--limite", "2", "--dry-run"]) == 0
+    assert recebidos == ["24608949000137", "06165288000130"]
+
+
+def test_main_nao_imprime_nome_do_titular_de_mei(monkeypatch, capsys):
+    monkeypatch.setattr(F.CadastroFornecedores, "cadastrar", lambda self, cnpjs: {
+        "erros": 0, "consultados": 1,
+        "linhas": [{"cnpj": "32068708000170", "razao_social": "FULANO DE TAL 12345678909",
+                    "titular_pessoa_fisica": True, "consulta_status": "ok"}]})
+    assert F.main(["--cnpj", "32068708000170", "--dry-run"]) == 0
+    saida = capsys.readouterr().out
+    assert "FULANO" not in saida and "(titular pessoa física)" in saida

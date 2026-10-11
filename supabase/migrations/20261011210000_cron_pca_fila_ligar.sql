@@ -11,7 +11,8 @@
 --   desliga  licitagym-sync-pncp-pca, licitagym-sync-pncp-pca-continuacao
 -- Os dois fluxos usam locks diferentes (pca-sync* e pca-fila:<ano>); deixar os dois ligados faria duas cargas no mesmo
 -- horário disputando o 1 req/s do pncp.gov.br.
--- Idempotente: reaplicar só reafirma o estado. Job ausente é ignorado (aviso), nada é criado nem apagado.
+-- Idempotente: reaplicar só reafirma o estado. Nada é criado nem apagado. Se faltar algum dos 3 jobs da fila, a
+-- migration falha antes de mexer em qualquer job; job antigo ausente só gera aviso.
 --
 -- ROLLBACK: nova migration com o mesmo bloco e o active invertido (liga os dois antigos, desliga os três novos).
 -- Execução antiga órfã: com os jobs antigos desligados, ninguém mais pede o lock pca-sync:<ano>:7830, e uma execução
@@ -39,6 +40,17 @@ begin
     return;
   end if;
 
+  -- Antes de mexer em qualquer job: os três da fila precisam existir. Sem eles, desligar os antigos deixaria o PCA
+  -- sem nenhuma agenda (revisão do Codex no #338). Falha a transação, nada muda.
+  select string_agg(t.nome, ', ') into v_ausentes
+    from (values ('licitagym-sync-pncp-pca-fila'), ('licitagym-sync-pncp-pca-fila-continuacao'),
+                 ('licitagym-sync-pncp-pca-reconciliacao')) as t(nome)
+   where not exists (select 1 from cron.job c where c.jobname = t.nome);
+  if v_ausentes is not null then
+    raise exception 'troca do fluxo do PCA abortada: job(s) da fila ausente(s): %. Os antigos continuam ligados.',
+      v_ausentes;
+  end if;
+
   for j in
     select c.jobid, c.jobname
       from cron.job c
@@ -52,12 +64,7 @@ begin
   end loop;
 
   if v_achados <> 5 then
-    select string_agg(t.nome, ', ') into v_ausentes
-      from (values ('licitagym-sync-pncp-pca-fila'), ('licitagym-sync-pncp-pca-fila-continuacao'),
-                   ('licitagym-sync-pncp-pca-reconciliacao'),
-                   ('licitagym-sync-pncp-pca'), ('licitagym-sync-pncp-pca-continuacao')) as t(nome)
-     where not exists (select 1 from cron.job c where c.jobname = t.nome);
-    raise notice 'troca do fluxo do PCA: % de 5 jobs encontrados; ausentes: %.', v_achados, v_ausentes;
+    raise notice 'troca do fluxo do PCA: % de 5 jobs encontrados (job antigo ausente: nada a desligar).', v_achados;
   end if;
 end
 $troca$;

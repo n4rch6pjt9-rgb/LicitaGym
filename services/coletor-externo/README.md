@@ -388,18 +388,32 @@ python3 -m coletor.preparar_triagem --limite 5
 - Fonte que não é PNCP (ou fonte nula): usa os documentos que já existem, sem chamar o PNCP.
 - Pedido em `processing` há mais de 1 h volta para a fila: o timeout do job precisa ficar abaixo disso.
 
-Cloud Run Job a cada 15 min (mesma imagem e segredos da seção 3; o deploy é do Marcelo):
+Cloud Run Job a cada 15 min (o deploy é do Marcelo). Contas de serviço dedicadas, com o mínimo:
 
 ```bash
-gcloud run jobs deploy preparar-triagem --source . --region $REGION \
-  --set-env-vars SUPABASE_URL=$SUPABASE_URL,SUPABASE_STORAGE_BUCKET=<bucket>,DELAY_SEGUNDOS=1.5 \
+SA_JOB=preparar-triagem@$PROJECT.iam.gserviceaccount.com
+SA_SCHED=preparar-triagem-sched@$PROJECT.iam.gserviceaccount.com
+gcloud iam service-accounts create preparar-triagem
+gcloud iam service-accounts create preparar-triagem-sched
+gcloud secrets add-iam-policy-binding supabase-service-key --member=serviceAccount:$SA_JOB \
+  --role=roles/secretmanager.secretAccessor
+gcloud projects add-iam-policy-binding $PROJECT --member=serviceAccount:$SA_JOB --role=roles/aiplatform.user
+
+gcloud run jobs deploy preparar-triagem --source . --region $REGION --service-account $SA_JOB \
+  --set-env-vars SUPABASE_URL=$SUPABASE_URL,SUPABASE_STORAGE_BUCKET=<bucket>,DELAY_SEGUNDOS=1.5,GOOGLE_CLOUD_PROJECT=$PROJECT \
   --set-secrets SUPABASE_SERVICE_ROLE_KEY=supabase-service-key:latest \
   --command python --args="-m,coletor.preparar_triagem,--limite,5" --task-timeout=50m --max-retries=0
 
+# o scheduler só invoca este job
+gcloud run jobs add-iam-policy-binding preparar-triagem --region $REGION \
+  --member=serviceAccount:$SA_SCHED --role=roles/run.invoker
 gcloud scheduler jobs create http preparar-triagem-15min --location $REGION --schedule "*/15 * * * *" \
   --uri "https://run.googleapis.com/v2/projects/$PROJECT/locations/$REGION/jobs/preparar-triagem:run" \
-  --http-method POST --oauth-service-account-email <conta-do-scheduler>@$PROJECT.iam.gserviceaccount.com
+  --http-method POST --oauth-service-account-email $SA_SCHED
 ```
 
-`--max-retries=0`: quem tenta de novo é a fila (com espera), não o Cloud Run. Duas execuções ao mesmo tempo não
-pegam o mesmo pedido (`FOR UPDATE SKIP LOCKED`).
+- `--source .` gera uma build nova (não reaproveita a imagem do `coletor-sestsenat`).
+- Sem `SUPABASE_STORAGE_BUCKET` (ou `GCS_BUCKET`) o job para: no Cloud Run o disco local se perde.
+- `--max-retries=0`: quem tenta de novo é a fila (com espera), não o Cloud Run. Duas execuções ao mesmo tempo não
+  pegam o mesmo pedido (`FOR UPDATE SKIP LOCKED`); duas empresas com a mesma licitação podem baixar e indexar em
+  paralelo (resultado idempotente, só custo).

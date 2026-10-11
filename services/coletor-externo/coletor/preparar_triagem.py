@@ -7,7 +7,8 @@ para cada um:
      lista os documentos da compra (/arquivos), grava em licitacao_documentos e baixa os pendentes;
      outras fontes (ou fonte nula): pula o PNCP e usa os documentos que já existem;
   2. indexa os documentos baixados da licitação (licitacao_chunks; mesmo caminho do indexador). Documento já indexado
-     (por outra empresa com a mesma licitação, por exemplo) não é refeito;
+     (por outra empresa com a mesma licitação, por exemplo) não é refeito. Documento em 'erro' (do coletor diário ou de
+     rodada anterior) é tentado de novo, como no pncp._processar: erro não vira "sem documento";
   3. chama public.pipeline_tarefas_reaplicar (tarefas da lei que dependiam do regulamento);
   4. conclui o pedido com o desfecho: ok | sem_documento | regulamento_nao_informado_pela_fonte.
 Falha técnica (PNCP fora do ar, storage, Gemini) não vira desfecho: o pedido volta para a fila com espera crescente
@@ -39,6 +40,7 @@ from .pncp import (
 log = logging.getLogger("coletor.preparar_triagem")
 
 RESULTADOS = ("ok", "sem_documento", "regulamento_nao_informado_pela_fonte")
+HTTP_TRANSITORIO = {408, 429, 500, 502, 503, 504}
 CAMPOS_LIC = "id,fonte,codigo_externo,regulamento,orgao_cnpj,raw,numero_processo,numero_edital,entidade,orgao_nome"
 CAMPOS_DOC = "id,licitacao_id,secao,nome_original,arquivo_origem,fornecedor_nome,sha256,storage_uri,status_processamento,raw"
 
@@ -51,18 +53,48 @@ class FalhaPreparacao(RuntimeError):
         self.etapa, self.causa = etapa, causa
 
 
+def _cadeia(e: BaseException, limite: int = 4):
+    """A exceção e as causas dela (ConsultaFalhou embrulha o HTTPError do PNCP)."""
+    while e is not None and limite > 0:
+        yield e
+        e, limite = e.__cause__ or e.__context__, limite - 1
+
+
+def _status_http(e: BaseException) -> int | None:
+    for x in _cadeia(e):
+        resp = getattr(x, "response", None)
+        status = getattr(resp, "status_code", None) or getattr(x, "status_code", None) or getattr(x, "code", None)
+        if isinstance(status, int) and 100 <= status <= 599:
+            return status
+    return None
+
+
 def categoria(e: BaseException) -> str:
-    """Categoria curta e sem dado sensível: status HTTP, timeout, conexão ou o nome da exceção."""
-    resp = getattr(e, "response", None)
-    status = getattr(resp, "status_code", None) or getattr(e, "status_code", None)
-    if isinstance(status, int):
+    """Categoria curta e sem dado sensível: status HTTP, timeout, conexão ou o nome da exceção (nunca a mensagem)."""
+    status = _status_http(e)
+    if status is not None:
         return f"HTTP {status}"
-    nome = type(e).__name__
-    if "Timeout" in nome:
-        return "timeout"
-    if "Connection" in nome:
-        return "falha de conexão"
-    return nome
+    for x in _cadeia(e):
+        nome = type(x).__name__
+        if "Timeout" in nome or "DeadlineExceeded" in nome:
+            return "timeout"
+        if "Connection" in nome:
+            return "falha de conexão"
+    return type(e).__name__
+
+
+def transitoria(e: BaseException) -> bool:
+    """Falha que melhora com nova tentativa: 408/429/5xx, timeout, conexão, Supabase (banco/storage)."""
+    if _status_http(e) in HTTP_TRANSITORIO:
+        return True
+    for x in _cadeia(e):
+        nome = type(x).__name__
+        if any(k in nome for k in ("Timeout", "Connection", "DeadlineExceeded", "ServiceUnavailable", "ServerError",
+                                   "ResourceExhausted")):
+            return True
+        if isinstance(x, RuntimeError) and str(x).startswith("Supabase"):
+            return True
+    return False
 
 
 @contextlib.contextmanager
@@ -93,10 +125,12 @@ def _documentos_pncp(pncp, sb, c: dict, lic_id: int) -> None:
 
 
 def _baixar(pncp, sb, arm, lic: dict, max_bytes: int) -> dict:
-    """Baixa os documentos pendentes da licitação. Mesmo tratamento de pncp.baixar_pendentes: falha definitiva
-    (HTML, acima do limite, 4xx) marca o documento como erro e segue; falha transitória levanta (o pedido volta)."""
+    """Baixa os documentos pendentes ou com erro de download (sem sha256) da licitação, como o pncp._processar.
+    Falha definitiva (HTML, acima do limite, 4xx) marca o documento como erro e segue; falha transitória levanta
+    (o pedido volta). Erro de indexação (com sha256) fica para o _indexar."""
     r = {"baixados": 0, "erros": 0}
-    pendentes = sb.selecionar("licitacao_documentos", licitacao_id=f"eq.{lic['id']}", status_processamento="eq.pendente",
+    pendentes = sb.selecionar("licitacao_documentos", licitacao_id=f"eq.{lic['id']}",
+                              status_processamento="in.(pendente,erro)", sha256="is.null",
                               removido_do_portal_em="is.null", order="id", select=CAMPOS_DOC)
     for d in pendentes:
         url = (d.get("raw") or {}).get("url")
@@ -116,17 +150,22 @@ def _baixar(pncp, sb, arm, lic: dict, max_bytes: int) -> dict:
             r["erros"] += 1
             log.warning("  doc #%s falha %s ao baixar: %s", d["id"], "definitiva" if definitivo else "transitória",
                         str(e)[:120])
+            # transitório: só a categoria (a mensagem pode ter caminho do storage ou corpo HTTP; detalhe no log)
             sb.atualizar("licitacao_documentos", d["id"], {
-                "status_processamento": "erro" if definitivo else "pendente", "erro": str(e)[:300]})
+                "status_processamento": "erro" if definitivo else "pendente",
+                "erro": str(e)[:300] if definitivo else categoria(e)})
             if not definitivo:
                 raise   # transitório: o pedido volta para a fila em vez de concluir sem o documento
     return r
 
 
 def _indexar(sb, ia_factory, lic: dict) -> int:
-    """Indexa os documentos baixados da licitação (um grupo por sha256). Devolve quantos grupos foram indexados."""
-    docs = sb.selecionar("licitacao_documentos", licitacao_id=f"eq.{lic['id']}", status_processamento="eq.baixado",
-                         sha256="not.is.null", storage_uri="not.is.null", order="id", select=CAMPOS_DOC)
+    """Indexa os documentos baixados (ou com erro de indexação anterior) da licitação, um grupo por sha256, como o
+    indexador.main: grupo com falha determinística (arquivo corrompido, saída inválida) fica 'erro' e os outros
+    seguem; falha transitória (Gemini 429/5xx, storage) levanta e o pedido volta. Devolve quantos foram indexados."""
+    docs = sb.selecionar("licitacao_documentos", licitacao_id=f"eq.{lic['id']}",
+                         status_processamento="in.(baixado,erro)", sha256="not.is.null", storage_uri="not.is.null",
+                         removido_do_portal_em="is.null", order="id", select=CAMPOS_DOC)
     if not docs:
         return 0
     ia = ia_factory()
@@ -136,7 +175,15 @@ def _indexar(sb, ia_factory, lic: dict) -> int:
     n = 0
     for grupo in grupos.values():
         d0 = escolher_canonico(grupo)
-        r = indexar_grupo(sb, ia, grupo, lic, True)
+        try:
+            r = indexar_grupo(sb, ia, grupo, lic, True)
+        except Exception as e:
+            if transitoria(e):
+                raise
+            log.warning("  ERRO na indexação | %s | %s", (d0.get("nome_original") or "")[:60], str(e)[:200])
+            for d in grupo:
+                sb.atualizar("licitacao_documentos", d["id"], {"status_processamento": "erro", "erro": str(e)[:500]})
+            continue
         if r["status"] == "ignorado":
             for d in grupo:
                 campos = {"status_processamento": "ignorado", "erro": r["erro"]}
@@ -170,8 +217,8 @@ def preparar(pedido: dict, pncp, sb, arm, ia_factory, max_bytes: int = 80 * 1048
         with etapa("documentos PNCP"):
             _documentos_pncp(pncp, sb, c, lic_id)
         with etapa("download"):
-            if arm is None:
-                raise RuntimeError("armazenamento não configurado")
+            if not getattr(arm, "dentro_do_saas", False):
+                raise RuntimeError("armazenamento fora do SaaS (disco do container se perde)")
             _baixar(pncp, sb, arm, lic, max_bytes)
 
     with etapa("indexação"):
@@ -241,12 +288,15 @@ def main(argv: list[str] | None = None) -> int:
     if delay < 1:
         raise SystemExit("DELAY_SEGUNDOS precisa ser >= 1 (respeito ao PNCP).")
     sb = Supabase(env("SUPABASE_URL", obrigatorio=True), env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True))
+    arm = Armazenamento.do_ambiente()
+    if not arm.dentro_do_saas:
+        raise SystemExit("Defina SUPABASE_STORAGE_BUCKET (ou GCS_BUCKET): no Cloud Run o disco local se perde.")
 
     def ia_factory():
         from .ia import Gemini
         return Gemini()
 
-    resumo = consumir(PNCP(delay=delay), sb, Armazenamento.do_ambiente(), ia_factory, args.limite, args.max_mb * 1048576)
+    resumo = consumir(PNCP(delay=delay), sb, arm, ia_factory, args.limite, args.max_mb * 1048576)
     log.info("RESUMO: %s", resumo)
     return 0
 

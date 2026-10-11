@@ -30,6 +30,8 @@ class SbFalso:
                 return False
             if f.startswith("eq.") and str(v) != f[3:]:
                 return False
+            if f.startswith("in.(") and str(v) not in f[4:-1].split(","):
+                return False
         return True
 
     def selecionar(self, tabela, **filtros):
@@ -75,6 +77,7 @@ class PncpFalso:
 
 
 class ArmFalso:
+    dentro_do_saas = True
     caminho = staticmethod(lambda fonte, mod, slug, secao, arq: f"{fonte}/{slug}/{secao}/{arq}")
 
     def salvar(self, caminho, conteudo, mime):
@@ -220,3 +223,113 @@ def test_categoria_nunca_leva_a_mensagem(e, esperado):
 def test_limite_fora_da_faixa_recusa():
     with pytest.raises(SystemExit):
         PT.main(["--limite", "0"])
+
+
+def _resp(status):
+    r = requests.Response()
+    r.status_code = status
+    return r
+
+
+DOC_ERRO_DOWNLOAD = {"id": 9, "licitacao_id": 7, "secao": "processo", "nome_original": "Edital.pdf",
+                     "arquivo_origem": "pncp-1", "fornecedor_nome": None, "sha256": None, "storage_uri": None,
+                     "status_processamento": "erro", "raw": {"url": "https://pncp.gov.br/x/1"},
+                     "removido_do_portal_em": None}
+
+
+def test_documento_em_erro_do_coletor_e_tentado_de_novo_e_conclui_ok(monkeypatch, indexa):
+    """Regressão (revisão #331): 504 no coletor diário deixou o Edital em 'erro'; a Triagem baixa de novo."""
+    _detalhe(monkeypatch, amparo={"codigo": 1, "nome": "Lei 14.133/2021"})
+    sb = SbFalso([lic_pncp(regulamento="LEI_14133")], [DOC_ERRO_DOWNLOAD],
+                 rpc_respostas={"fila_preparacao_reivindicar": [PEDIDO]})
+    PT.consumir(PncpFalso([ARQ]), sb, ArmFalso(), lambda: object())
+    assert sb.t["licitacao_documentos"][0]["status_processamento"] == "indexado"
+    assert sb.rpcs[-1][1]["p_resultado"] == "ok"
+
+
+def _doc_baixado(id_, sha, status="baixado"):
+    return {"id": id_, "licitacao_id": 7, "secao": "edital", "nome_original": f"d{id_}.pdf", "arquivo_origem": f"x{id_}",
+            "fornecedor_nome": None, "sha256": sha, "storage_uri": f"supabase://d/{id_}", "status_processamento": status,
+            "raw": {}, "removido_do_portal_em": None}
+
+
+def test_falha_deterministica_num_grupo_marca_erro_e_os_outros_seguem(monkeypatch):
+    def indexar(sb, ia, grupo, lic, com_extracao):
+        if grupo[0]["sha256"] == "ruim":
+            raise ValueError("zip corrompido")
+        for d in grupo:
+            sb.atualizar("licitacao_documentos", d["id"], {"status_processamento": "indexado"})
+        return {"status": "indexado"}
+    monkeypatch.setattr(PT, "indexar_grupo", indexar)
+    sb = SbFalso([lic_pncp(fonte="sestsenat")], [_doc_baixado(1, "bom"), _doc_baixado(2, "ruim")],
+                 rpc_respostas={"fila_preparacao_reivindicar": [PEDIDO]})
+    PT.consumir(PncpFalso(), sb, None, lambda: object())
+    st = {d["id"]: d["status_processamento"] for d in sb.t["licitacao_documentos"]}
+    assert st == {1: "indexado", 2: "erro"}
+    assert sb.rpcs[-1][1]["p_resultado"] == "ok"
+    assert ("pipeline_tarefas_reaplicar" in [n for n, _ in sb.rpcs])
+
+
+def test_falha_transitoria_na_indexacao_reagenda(monkeypatch):
+    def indexar(sb, ia, grupo, lic, com_extracao):
+        raise requests.HTTPError("429 cota", response=_resp(429))
+    monkeypatch.setattr(PT, "indexar_grupo", indexar)
+    sb = SbFalso([lic_pncp(fonte="sestsenat")], [_doc_baixado(1, "a")],
+                 rpc_respostas={"fila_preparacao_reivindicar": [PEDIDO]})
+    PT.consumir(PncpFalso(), sb, None, lambda: object())
+    assert sb.rpcs[-1][1] == {"p_id": "u1", "p_resultado": None, "p_erro": "indexação: HTTP 429"}
+    assert sb.t["licitacao_documentos"][0]["status_processamento"] == "baixado"
+
+
+def test_documento_ignorado_grava_motivo_e_conclui_sem_documento(monkeypatch):
+    monkeypatch.setattr(PT, "indexar_grupo",
+                        lambda sb, ia, g, lic, c: {"status": "ignorado", "erro": "sem texto aproveitável", "extracao": None})
+    sb = SbFalso([lic_pncp(fonte="sestsenat")], [_doc_baixado(1, "a"), _doc_baixado(2, "a")],
+                 rpc_respostas={"fila_preparacao_reivindicar": [PEDIDO]})
+    PT.consumir(PncpFalso(), sb, None, lambda: object())
+    assert [d["status_processamento"] for d in sb.t["licitacao_documentos"]] == ["ignorado", "ignorado"]
+    assert sb.rpcs[-1][1]["p_resultado"] == "sem_documento"
+
+
+def test_documento_ja_indexado_conta_sem_reindexar(monkeypatch):
+    monkeypatch.setattr(PT, "indexar_grupo", lambda *a, **k: pytest.fail("não deveria reindexar"))
+    sb = SbFalso([lic_pncp(fonte="sestsenat")], [_doc_baixado(1, "a", "indexado")],
+                 rpc_respostas={"fila_preparacao_reivindicar": [PEDIDO]})
+    PT.consumir(PncpFalso(), sb, None, lambda: object())
+    assert sb.rpcs[-1][1]["p_resultado"] == "ok"
+
+
+def test_detalhe_pncp_embrulhado_mostra_o_status_http(monkeypatch):
+    from coletor.pncp import ConsultaFalhou
+    try:
+        try:
+            raise requests.HTTPError("504 em https://pncp.gov.br/api?x=1", response=_resp(504))
+        except requests.HTTPError as interno:
+            raise ConsultaFalhou("detalhe falhou https://pncp.gov.br/api?x=1") from interno
+    except ConsultaFalhou as e:
+        erro = e
+    _detalhe(monkeypatch, erro=erro)
+    sb = SbFalso([lic_pncp()], rpc_respostas={"fila_preparacao_reivindicar": [PEDIDO]})
+    PT.consumir(PncpFalso(), sb, ArmFalso(), lambda: object())
+    assert sb.rpcs[-1][1]["p_erro"] == "detalhe PNCP: HTTP 504"
+
+
+def test_armazenamento_fora_do_saas_nao_baixa(monkeypatch, indexa):
+    _detalhe(monkeypatch, amparo={"codigo": 1, "nome": "Lei 14.133/2021"})
+
+    class ArmLocal(ArmFalso):
+        dentro_do_saas = False
+    sb = SbFalso([lic_pncp()], rpc_respostas={"fila_preparacao_reivindicar": [PEDIDO]})
+    PT.consumir(PncpFalso([ARQ]), sb, ArmLocal(), lambda: object())
+    assert sb.rpcs[-1][1]["p_erro"] == "download: RuntimeError"
+    assert sb.t["licitacao_documentos"][0]["status_processamento"] == "pendente"
+
+
+@pytest.mark.parametrize("e, esperado", [
+    (requests.HTTPError("x", response=_resp(503)), True),
+    (requests.HTTPError("x", response=_resp(404)), False),
+    (RuntimeError("Supabase storage 500"), True),
+    (ValueError("pdf corrompido"), False),
+])
+def test_transitoria(e, esperado):
+    assert PT.transitoria(e) is esperado

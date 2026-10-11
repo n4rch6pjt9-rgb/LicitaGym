@@ -1,7 +1,7 @@
 """Backfill de licitacoes_externas.data_fim e data_publicacao das compras PNCP gravadas com o fuso errado (#332).
 
-Até esta correção, pncp._data lia o texto sem fuso do PNCP ("2026-10-08T10:00", horário de Brasília) como UTC, e o
-prazo ficava 3 h adiantado. Este script recalcula as duas colunas a partir do bruto já gravado em raw
+Até esta correção, o coletor gravava data_fim e data_publicacao com pncp._data, que lê o texto sem fuso do PNCP
+("2026-10-08T10:00", horário de Brasília) como UTC, e o prazo ficava 3 h adiantado. Agora usa pncp._data_pncp. Este script recalcula as duas colunas a partir do bruto já gravado em raw
 (data_fim_vigencia e data_publicacao_pncp), sem consultar o PNCP, e grava só o que mudou de instante.
 
 - data_fim normalizado (normalizacoes.data_fim, de normalizacao_prazo, que já usa o fuso do PNCP) não é tocado.
@@ -12,6 +12,10 @@ Padrão: DRY-RUN (mostra contagem e amostra, não grava nada). Para gravar: --ap
   export SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=...     # nunca no código
   python -m coletor.backfill_fuso_prazos_pncp --limit 20     # dry-run
   python -m coletor.backfill_fuso_prazos_pncp --apply        # grava
+Roteiro: dry-run completo; --apply --limit 20 e conferir a amostra (ex.: #185 com data_fim 10:00-03:00); só então o
+--apply completo, fora da janela do Cloud Run Job do coletor. A amostra mostra o valor antigo e o novo; o antigo também
+dá para reconstruir do raw (é o mesmo texto lido como UTC).
+data_documento, data_resultado e data_homologacao ficam de fora (issue própria): não há o texto original no raw.
 """
 from __future__ import annotations
 
@@ -21,7 +25,7 @@ import sys
 from datetime import datetime
 
 from .destino import Supabase, env
-from .pncp import _data
+from .pncp import _data_pncp
 
 log = logging.getLogger("coletor.backfill_fuso_prazos_pncp")
 
@@ -48,7 +52,7 @@ def correcoes(ln: dict) -> dict | None:
     for coluna, campo in CAMPOS:
         if coluna == "data_fim" and normalizado:
             continue
-        novo = _data(raw.get(campo))
+        novo = _data_pncp(raw.get(campo))
         if novo is None:
             continue
         algum_campo = True
@@ -75,7 +79,8 @@ def backfill(sb, *, aplicar: bool = False, limite: int | None = None, amostra: i
             continue
         r["corrigir"] += 1
         if len(r["amostra"]) < amostra:
-            r["amostra"].append((ln["id"], ln.get("codigo_externo"), mudancas))
+            r["amostra"].append((ln["id"], ln.get("codigo_externo"),
+                                 {c: (ln.get(c), novo) for c, novo in mudancas.items()}))
         if aplicar:
             try:
                 sb.atualizar("licitacoes_externas", ln["id"], mudancas)

@@ -1,27 +1,41 @@
-"""#332: datas do PNCP sem fuso estão no horário de Brasília; _data não pode tratá-las como UTC."""
+"""#332: prazo e publicação do PNCP sem fuso estão no horário de Brasília (_data_pncp)."""
 from datetime import datetime
 from unittest.mock import MagicMock
 
 from coletor import backfill_fuso_prazos_pncp as B
-from coletor.pncp import _data, _instante
+from coletor.pncp import _data, _data_pncp, _instante
 
 
-def test_data_sem_fuso_fica_em_brasilia():
+def test_data_pncp_sem_fuso_fica_em_brasilia():
     # Caso real (licitação 185, SSP/SP): o PNCP manda "2026-10-08T10:00" e o prazo é 10:00 de Brasília (13:00 UTC).
-    assert _data("2026-10-08T10:00") == "2026-10-08T10:00:00-03:00"
-    assert datetime.fromisoformat(_data("2026-10-08T10:00")) == _instante("2026-10-08T10:00")
+    assert _data_pncp("2026-10-08T10:00") == "2026-10-08T10:00:00-03:00"
+    assert datetime.fromisoformat(_data_pncp("2026-10-08T10:00")) == _instante("2026-10-08T10:00")
 
 
-def test_data_com_fuso_explicito_nao_muda():
-    assert _data("2026-10-08T13:00:00Z") == "2026-10-08T13:00:00+00:00"
-    assert _data("2026-10-08T13:00:00+00:00") == "2026-10-08T13:00:00+00:00"
-    assert _data("2026-10-08T10:00:00-03:00") == "2026-10-08T10:00:00-03:00"
+def test_data_pncp_com_fuso_explicito_nao_muda():
+    assert _data_pncp("2026-10-08T13:00:00Z") == "2026-10-08T13:00:00+00:00"
+    assert _data_pncp("2026-10-08T13:00:00+00:00") == "2026-10-08T13:00:00+00:00"
+    assert _data_pncp("2026-10-08T10:00:00-03:00") == "2026-10-08T10:00:00-03:00"
 
 
-def test_data_vazia_ou_invalida():
-    assert _data(None) is None
-    assert _data("") is None
-    assert _data("não é data") is None
+def test_data_pncp_vazia_ou_invalida():
+    assert _data_pncp(None) is None
+    assert _data_pncp("") is None
+    assert _data_pncp("não é data") is None
+
+
+def test_data_legado_continua_rotulando_utc():
+    # data_documento/data_resultado/data_homologacao seguem no formato antigo, que o reclassificador lê cortando o
+    # fuso (reclassificar_escopo_pncp.carregar_documentos). Mudar isto exige migrar as linhas antigas (issue própria).
+    assert _data("2026-09-14T10:00") == "2026-09-14T10:00:00+00:00"
+
+
+def test_linha_da_compra_usa_o_fuso_do_pncp_no_prazo_e_na_publicacao():
+    # _processar monta a linha de licitacoes_externas; prazo e publicação não podem voltar a usar o _data legado.
+    import inspect
+    from coletor import pncp as P
+    fonte = inspect.getsource(P._processar)
+    assert '"data_fim": _data_pncp(' in fonte and '"data_publicacao": _data_pncp(' in fonte
 
 
 def _sb(linhas):
@@ -42,8 +56,9 @@ def test_backfill_dry_run_conta_e_nao_grava():
     r = B.backfill(sb)
     assert r["lidas"] == 1 and r["corrigir"] == 1 and r["gravadas"] == 0
     sb.atualizar.assert_not_called()
-    assert r["amostra"][0][2] == {"data_fim": "2026-10-08T10:00:00-03:00",
-                                  "data_publicacao": "2026-09-14T10:54:48-03:00"}
+    assert r["amostra"][0][2] == {
+        "data_fim": ("2026-10-08T10:00:00+00:00", "2026-10-08T10:00:00-03:00"),
+        "data_publicacao": ("2026-09-14T10:54:48+00:00", "2026-09-14T10:54:48-03:00")}
 
 
 def test_backfill_apply_grava_so_as_colunas_de_prazo():

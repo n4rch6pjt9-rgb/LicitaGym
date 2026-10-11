@@ -387,7 +387,8 @@ _LEIS_AMPARO = (
 
 def regulamento_do_amparo(nome) -> str | None:
     """Espelho de public.regulamento_do_amparo: LEI_14981, LEI_13303, LEI_14133, OUTRO; None se vazio."""
-    if not isinstance(nome, str) or not nome.strip():
+    # Mesmos caracteres do btrim(p_nome, E' \t\r\n') do SQL (str.strip() tiraria também \xa0, \v, \f).
+    if not isinstance(nome, str) or not nome.strip(" \t\r\n"):
         return None
     for regulamento, padrao in _LEIS_AMPARO:
         if padrao.search(nome):

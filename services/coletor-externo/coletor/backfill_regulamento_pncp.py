@@ -29,7 +29,9 @@ log = logging.getLogger("coletor.backfill_regulamento_pncp")
 def backfill(pncp, sb, *, aplicar: bool = False, limite: int | None = None, amostra: int = 10) -> dict:
     """Retorna o resumo; em dry-run (aplicar=False) nunca chama sb.atualizar."""
     filtros = {"select": "id,codigo_externo", "fonte": "eq.pncp", "amparo_legal": "is.null", "order": "id"}
-    if limite:
+    if limite is not None:
+        if limite < 1:
+            raise ValueError("limite precisa ser >= 1")
         filtros["limit"] = str(limite)
     linhas = sb.selecionar("licitacoes_externas", **filtros)
     r = {"lidas": len(linhas), "com_amparo": 0, "gravadas": 0, "sem_amparo": 0,
@@ -72,6 +74,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--limit", type=int, help="máximo de linhas a processar")
     ap.add_argument("--amostra", type=int, default=10, help="quantas linhas mostrar na amostra (padrão 10)")
     args = ap.parse_args(argv)
+    if args.limit is not None and args.limit < 1:
+        ap.error("--limit precisa ser >= 1 (0 processaria a tabela inteira)")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     delay = float(env("DELAY_SEGUNDOS", "1.0"))
     if delay < 1:

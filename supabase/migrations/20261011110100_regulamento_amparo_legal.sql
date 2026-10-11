@@ -15,15 +15,23 @@
 
 begin;
 
+-- O ADD CHECK pega ACCESS EXCLUSIVE: com transação longa segurando a tabela, falhar e reaplicar é melhor que travar
+-- as leituras do Dashboard na fila do lock.
+set local lock_timeout = '5s';
+
 alter table public.licitacoes_externas add column if not exists amparo_legal jsonb;
 comment on column public.licitacoes_externas.amparo_legal is
   'amparoLegal do detalhe da compra no PNCP, objeto inteiro como veio (sem aparar). regulamento é derivado dele '
   '(regulamento_do_amparo). Nulo = não consultado ou o PNCP não informou.';
+comment on column public.licitacoes_externas.regulamento is
+  'Regulamento do certame. Linhas PNCP: derivado de amparo_legal pelo gatilho licext_regulamento_amparo_trg e '
+  're-derivado a cada coleta que traz o amparo (edição manual é sobrescrita). Sistema S: gravado pelo coletor (RCA).';
 
 -- Constraint ampliada: refeita só quando ainda não aceita os valores novos.
 do $$ begin
   if not exists (select 1 from pg_constraint
-                  where conname = 'licext_regulamento_chk'
+                  where conrelid = 'public.licitacoes_externas'::regclass
+                    and conname = 'licext_regulamento_chk'
                     and pg_get_constraintdef(oid) like '%LEI_14981%'
                     and pg_get_constraintdef(oid) like '%LEI_13303%') then
     alter table public.licitacoes_externas drop constraint if exists licext_regulamento_chk;
@@ -67,6 +75,8 @@ begin
 end;
 $$;
 
+-- O gatilho é security invoker: quem grava amparo_legal precisa de EXECUTE em regulamento_do_amparo (hoje só a
+-- service_role escreve em licitacoes_externas). Um papel novo de escrita sem o grant falha alto (permission denied).
 drop trigger if exists licext_regulamento_amparo_trg on public.licitacoes_externas;
 create trigger licext_regulamento_amparo_trg
   before insert or update of amparo_legal on public.licitacoes_externas

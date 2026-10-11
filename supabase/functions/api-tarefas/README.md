@@ -15,7 +15,7 @@ Tela: Dashboard #72.
 
 Regras, todas no banco (`tarefas_equipe_liberar`):
 - Só licitação no pipeline da empresa recebe tarefa.
-- Só os regulamentos `LEI_14133` e `LEI_14981` têm catálogo. Regulamento nulo bloqueia até o backfill.
+- Só os regulamentos `LEI_14133` e `LEI_14981` têm catálogo. Regulamento nulo bloqueia até ele chegar pela coleta do PNCP (`amparo_legal`, spec 0020) ou pela consulta sob demanda ao entrar em Triagem (spec 0018).
 - O contexto do certame usa só dado oficial: `srp` do PNCP (`raw->>'srp'`).
 - Quando falta uma chave no contexto, a tarefa nasce com `condicao_verificada = null`. Quando a condição é falsa, ela não nasce.
 - Liberar de novo não duplica: guarda a segunda origem e confirma a condição quando o dado chega.

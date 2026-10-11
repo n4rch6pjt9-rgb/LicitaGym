@@ -5,7 +5,7 @@ import pytest
 
 from coletor import backfill_regulamento_pncp as B
 from coletor import pncp as P
-from test_pncp import COMPRA, _pncp
+from test_pncp import COMPRA, _pncp, _sb as _sb_coleta
 
 AMPARO = {"codigo": 1, "nome": "Lei 14.133/2021, Art. 28, I",
           "descricao": "pregão: modalidade de licitação obrigatória para aquisição de bens e serviços comuns"}
@@ -23,6 +23,7 @@ CASOS = [
     ("", None),
     ("   ", None),
     ("\n\t", None),
+    ("\xa0", "OUTRO"),
     (None, None),
 ]
 
@@ -62,6 +63,35 @@ def test_amparo_legal_guardado_como_veio():
 @pytest.mark.parametrize("det", [None, [], "texto", 0])
 def test_amparo_legal_detalhe_tolera_detalhe_que_nao_e_objeto(det):
     assert P.amparo_legal_detalhe(det) is None
+
+
+# --- caminho de gravação: o que vai para o upsert de licitacoes_externas ----------------------
+
+def _linha_gravada(sb):
+    return next(c.args[1] for c in sb.upsert.call_args_list if c.args[0] == "licitacoes_externas")
+
+
+def _coletar(p, sb):
+    return P.coletar(p, sb, None, ["x"], "todos", 1, 50, True, False, 10**8, False)
+
+
+def test_coleta_grava_amparo_legal_no_upsert():
+    sb, p = _sb_coleta(), _pncp([COMPRA]); p.compra.return_value = DETALHE
+    _coletar(p, sb)
+    assert _linha_gravada(sb)["amparo_legal"] == AMPARO
+
+
+def test_coleta_sem_amparo_nao_manda_a_chave_no_upsert():
+    """Sem amparoLegal a chave fica fora: o upsert (merge-duplicates) não apaga o valor já gravado."""
+    sb, p = _sb_coleta(), _pncp([COMPRA]); p.compra.return_value = {k: v for k, v in DETALHE.items() if k != "amparoLegal"}
+    _coletar(p, sb)
+    assert "amparo_legal" not in _linha_gravada(sb)
+
+
+def test_coleta_com_detalhe_falho_nao_manda_a_chave():
+    sb, p = _sb_coleta(), _pncp([COMPRA]); p.compra.side_effect = RuntimeError("timeout")
+    _coletar(p, sb)
+    assert "amparo_legal" not in _linha_gravada(sb)
 
 
 # --- CA-5: backfill -------------------------------------------------------------------------
@@ -109,6 +139,13 @@ def test_backfill_apply_grava_so_amparo_legal():
     r = B.backfill(_pncp_backfill(), sb, aplicar=True)
     assert r["gravadas"] == 1
     sb.atualizar.assert_called_once_with("licitacoes_externas", 1, {"amparo_legal": AMPARO})
+
+
+def test_backfill_limit_zero_e_recusado():
+    with pytest.raises(ValueError):
+        B.backfill(_pncp_backfill(), _sb(LINHAS), limite=0)
+    with pytest.raises(SystemExit):
+        B.main(["--limit", "0"])
 
 
 def test_backfill_exige_delay_de_ao_menos_1s(monkeypatch):

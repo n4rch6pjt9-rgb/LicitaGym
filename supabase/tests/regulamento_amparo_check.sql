@@ -23,6 +23,7 @@ begin
       ('', null),
       ('   ', null),
       (E'\n\t', null),
+      (E'\u00a0', 'OUTRO'),
       (null, null)) as t(nome, esperado)
   loop
     if public.regulamento_do_amparo(r.nome) is distinct from r.esperado then
@@ -33,10 +34,15 @@ begin
 
   -- ACL: só service_role executa a função nova
   foreach v_papel in array array['anon', 'authenticated'] loop
-    if has_function_privilege(v_papel, 'public.regulamento_do_amparo(text)'::regprocedure, 'EXECUTE') then
-      raise exception 'CHECK FALHOU: % executa regulamento_do_amparo', v_papel;
+    if has_function_privilege(v_papel, 'public.regulamento_do_amparo(text)'::regprocedure, 'EXECUTE')
+       or has_function_privilege(v_papel, 'public.licext_regulamento_do_amparo()'::regprocedure, 'EXECUTE') then
+      raise exception 'CHECK FALHOU: % executa regulamento_do_amparo ou a função do gatilho', v_papel;
     end if;
   end loop;
+  -- quem grava amparo_legal (service_role) precisa executar a regra: o gatilho é security invoker
+  if not has_function_privilege('service_role', 'public.regulamento_do_amparo(text)'::regprocedure, 'EXECUTE') then
+    raise exception 'CHECK FALHOU: service_role não executa regulamento_do_amparo (o upsert do coletor quebraria)';
+  end if;
 
   begin
     -- CA-2: sem amparo_legal, o regulamento gravado fica (Sistema S)
@@ -61,6 +67,26 @@ begin
     update public.licitacoes_externas set amparo_legal = '{"codigo": 1}' where id = v_id;
     if (select regulamento from public.licitacoes_externas where id = v_id) is distinct from 'LEI_14981' then
       raise exception 'CHECK FALHOU: amparo sem nome apagou o regulamento';
+    end if;
+
+    -- amparo_legal nulo, nome só com espaço ou jsonb que não é objeto: não apagam o regulamento nem dão erro
+    update public.licitacoes_externas set amparo_legal = null where id = v_id;
+    update public.licitacoes_externas set amparo_legal = '{"nome": "   "}' where id = v_id;
+    update public.licitacoes_externas set amparo_legal = '"x"' where id = v_id;
+    update public.licitacoes_externas set amparo_legal = '[]' where id = v_id;
+    if (select regulamento from public.licitacoes_externas where id = v_id) is distinct from 'LEI_14981' then
+      raise exception 'CHECK FALHOU: amparo nulo/vazio/não objeto mexeu no regulamento';
+    end if;
+
+    -- CA-2: caminho real do coletor (upsert do PostgREST, on_conflict=fonte,codigo_externo)
+    insert into public.licitacoes_externas (fonte, codigo_externo)
+      values ('pncp', 'check-regulamento-upsert') on conflict (fonte, codigo_externo) do nothing;
+    insert into public.licitacoes_externas (fonte, codigo_externo, amparo_legal)
+      values ('pncp', 'check-regulamento-upsert', '{"codigo": 1, "nome": "Lei 14.133/2021, Art. 28, I"}')
+      on conflict (fonte, codigo_externo) do update set amparo_legal = excluded.amparo_legal;
+    if (select regulamento from public.licitacoes_externas
+         where fonte = 'pncp' and codigo_externo = 'check-regulamento-upsert') is distinct from 'LEI_14133' then
+      raise exception 'CHECK FALHOU: upsert com amparo_legal não derivou o regulamento';
     end if;
 
     -- CA-3: constraint aceita os valores novos e recusa valor fora da lista

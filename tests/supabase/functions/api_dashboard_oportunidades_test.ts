@@ -798,6 +798,8 @@ Deno.test("handleRequest list com filtro uf asserte eq('uf', 'AC') e PUBLIC_LICI
     // só na view (20261003170000_licitacoes_pncp_canonica)
     "canonica_id",
     "eh_canonica",
+    // motivo da prioridade efetiva (#319)
+    "prioridade_motivo",
   ].join(",");
   assertEquals(selectCall?.args[0], EXPECTED_PROJECTION);
 
@@ -1627,7 +1629,7 @@ Deno.test("CATMAT até o limite da URL (1000 ids) usa uma consulta só, sem a li
 
 Deno.test("OPORTUNIDADES_COLUMNS = colunas públicas da tabela + canonica_id, eh_canonica (fora de PUBLIC_LICITACAO_COLUMNS)", () => {
   assertEquals(CANONICA_COLUMNS, "canonica_id,eh_canonica");
-  assertEquals(OPORTUNIDADES_COLUMNS, `${PUBLIC_LICITACAO_COLUMNS},canonica_id,eh_canonica`);
+  assertEquals(OPORTUNIDADES_COLUMNS, `${PUBLIC_LICITACAO_COLUMNS},canonica_id,eh_canonica,prioridade_motivo`);
   assertEquals(PUBLIC_LICITACAO_COLUMNS.split(",").some((c) => c === "canonica_id" || c === "eh_canonica"), false);
 });
 

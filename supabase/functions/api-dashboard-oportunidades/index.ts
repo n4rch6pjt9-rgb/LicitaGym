@@ -21,7 +21,7 @@ import type { UnifiedHttpClient } from "../_shared/http-client/index.ts";
  * Fonte de leitura de list/get: a view com a prioridade EFETIVA (migration
  * 20260930200000_licitacoes_prioridade_efetiva). Mesmas colunas públicas da tabela, mas `prioridade`
  * recalculada só para baixo (historico com qualquer sinal de encerramento; leads -> monitorar com o
- * prazo vencido), mais `canonica_id`/`eh_canonica` (20261003170000_licitacoes_pncp_canonica: o list
+ * prazo vencido em Brasília, #319), mais `canonica_id`/`eh_canonica` (20261003170000_licitacoes_pncp_canonica: o list
  * mostra só a publicação canônica de uma compra PNCP republicada; o get devolve qualquer linha).
  * security_invoker + SELECT só para service_role (o client desta função).
  * readiness e acompanhamento continuam lendo a tabela (saúde da base e `raw` server-side).
@@ -85,8 +85,11 @@ export const PUBLIC_LICITACAO_COLUMNS = [
  */
 export const CANONICA_COLUMNS = "canonica_id,eh_canonica";
 
-/** Projeção de list/get (sempre na view): colunas públicas da tabela + as da canônica. */
-export const OPORTUNIDADES_COLUMNS = `${PUBLIC_LICITACAO_COLUMNS},${CANONICA_COLUMNS}`;
+/** Motivo da prioridade efetiva (view): historico cita o sinal; prazo vencido cita prazo_encerrado (#319). */
+export const PRIORIDADE_MOTIVO_COLUMN = "prioridade_motivo";
+
+/** Projeção de list/get (sempre na view): colunas públicas da tabela + as da canônica + o motivo. */
+export const OPORTUNIDADES_COLUMNS = `${PUBLIC_LICITACAO_COLUMNS},${CANONICA_COLUMNS},${PRIORIDADE_MOTIVO_COLUMN}`;
 
 /** Colunas do objeto canônico (migration 20261004140000_objeto_canonico). */
 const COLUNAS_OBJETO = ["objeto_categoria", "objeto_registro_preco"];

@@ -14,6 +14,8 @@ import { parseActionFromBody, slugDe } from "./validation.ts";
  * O banco é acessado com service_role; o JWT só identifica e autoriza. user_metadata nunca decide papel.
  * Empresa nova nasce inativa: com a Konnen ainda sem membros, uma segunda empresa ativa faria a api-pipeline
  * responder 409 a todos (salvaguarda da spec 0017, CA-17).
+ * Empresa com tenants.ativo = false só abre para o desenvolvedor (#325, mesma regra da tenant_papel). Não há
+ * estado "em configuração" separado de desativada: o membro não lê nem grava, e não cai em outra empresa.
  */
 
 export interface ApiTenantContext {
@@ -87,7 +89,12 @@ export async function handleRequest(req: Request, ctx: ApiTenantContext = {}): P
       if (ACOES_ADMIN.has(params.action) && papel !== "admin") {
         return jsonResponse({ error: "Sem permissão: só o admin da empresa pode fazer isso." }, 403);
       }
-      if (!(await repo.empresaPorId(params.tenant_id))) return jsonResponse({ error: "Empresa não encontrada." }, 404);
+      const empresa = await repo.empresaPorId(params.tenant_id);
+      if (!empresa) return jsonResponse({ error: "Empresa não encontrada." }, 404);
+      // #325: tenants.ativo. Membro de empresa desativada não lê nem grava; o desenvolvedor continua.
+      if (!empresa.ativo && !dev) {
+        return jsonResponse({ error: "A empresa está desativada." }, 403);
+      }
     }
 
     switch (params.action) {
@@ -97,7 +104,8 @@ export async function handleRequest(req: Request, ctx: ApiTenantContext = {}): P
           return jsonResponse({ action: params.action, desenvolvedor: true, empresas: empresas.map((e) => ({ ...e, papel: "admin" })) });
         }
         const ativos = (await repo.vinculosDoUsuario(user.id)).filter((v) => v.ativo);
-        const empresas = await repo.empresas(ativos.map((v) => v.tenant_id));
+        // Empresa desativada não aparece para o membro (#325). Vínculo só com ela não cai na outra.
+        const empresas = (await repo.empresas(ativos.map((v) => v.tenant_id))).filter((e) => e.ativo);
         const papelDe = new Map(ativos.map((v) => [v.tenant_id, v.papel]));
         return jsonResponse({
           action: params.action, desenvolvedor: false, empresas: empresas.map((e) => ({ ...e, papel: papelDe.get(e.id) })),
@@ -105,8 +113,11 @@ export async function handleRequest(req: Request, ctx: ApiTenantContext = {}): P
       }
 
       case "cnpj_consultar": {
-        // Desenvolvedor ou admin de alguma empresa: a consulta serve ao cadastro, não é busca aberta.
-        const admin = dev || (await repo.vinculosDoUsuario(user.id)).some((v) => v.ativo && v.papel === "admin");
+        // Desenvolvedor ou admin de empresa ativa: a consulta serve ao cadastro, não é busca aberta.
+        // Admin só de empresa desativada não consulta (#325).
+        const vinculosAdmin = (await repo.vinculosDoUsuario(user.id)).filter((v) => v.ativo && v.papel === "admin");
+        const empresasAdmin = vinculosAdmin.length === 0 ? [] : await repo.empresas(vinculosAdmin.map((v) => v.tenant_id));
+        const admin = dev || empresasAdmin.some((e) => e.ativo);
         if (!admin) return jsonResponse({ error: "Sem permissão: só admin consulta CNPJ para cadastro." }, 403);
         const cnpj = cnpjValido(params.cnpj);
         if (!cnpj) return jsonResponse({ error: "CNPJ inválido (dígito verificador)." }, 400);

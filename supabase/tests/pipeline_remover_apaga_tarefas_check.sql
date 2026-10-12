@@ -11,6 +11,7 @@ declare
   v_doc bigint;
   v_l1  bigint;
   v_n   integer;
+  v_ids bigint[];
 begin
   begin
     insert into public.tenants (slug, nome) values ('check-remover-tarefas-1', 'Check remover 1') returning id into v_t1;
@@ -25,9 +26,11 @@ begin
       raise exception 'CHECK FALHOU: Triagem não criou tarefa';
     end if;
 
-    -- mudar de etapa conserva as tarefas
+    -- mudar de etapa conserva as tarefas já criadas. A etapa de destino cria as dela, então a contagem pode subir.
+    select coalesce(array_agg(id), '{}') into v_ids
+      from public.tarefas_equipe where tenant_id = v_t1 and licitacao_id = v_l1;
     perform public.pipeline_mover(v_t1, array[v_l1], v_doc, null, v_u);
-    if (select count(*) from public.tarefas_equipe where tenant_id = v_t1 and licitacao_id = v_l1) <> v_n then
+    if (select count(*) from public.tarefas_equipe t where t.id = any (v_ids)) <> cardinality(v_ids) then
       raise exception 'CHECK FALHOU: mudar de etapa apagou tarefa';
     end if;
 

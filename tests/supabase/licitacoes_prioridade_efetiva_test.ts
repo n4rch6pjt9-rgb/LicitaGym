@@ -158,7 +158,9 @@ Deno.test("#319: prazo vencido em Brasília rebaixa lead e a fase aberta não fi
   const view = corpoDaView(await sqlSemComentarios(await ultimaMigracaoDaView()));
   assert(view.length > 0, "view não encontrada");
   assert(view.includes("when e.encerramento is not null then 'historico'"));
-  assert(view.includes("when j.prazo_encerrado then 'monitorar'"));
+  assert(view.includes("when j.prazo_encerrado or j.prazo_invalido then 'monitorar'"));
+  assert(view.includes("when j.prazo_encerrado then 'prazo_encerrado'"));
+  assert(view.includes("when j.prazo_invalido then 'prazo_invalido'"));
   assert(view.includes("else l.prioridade"));
   assertEquals(/then 'leads'/.test(view), false, "nenhum ramo promove a leads");
   assert(view.includes("l.data_fim <= now()"));
@@ -166,6 +168,9 @@ Deno.test("#319: prazo vencido em Brasília rebaixa lead e a fase aberta não fi
   assert(view.includes("Propostas encerradas, aguardando resultado"));
   assert(view.includes("l.fase = 'Recebendo propostas'"));
   assert(view.includes("private.pncp_instante_brt(l.raw ->> 'data_fim_vigencia')"));
+  const fase = view.match(/case[\s\S]*?end as fase/)?.[0] ?? "";
+  assert(fase.includes("j.prazo_encerrado"));
+  assertEquals(fase.includes("prazo_invalido"), false, "prazo inválido não vira fase de encerrado");
 });
 
 Deno.test("check SQL: só lê e cobre grants, security_invoker e a regra", async () => {

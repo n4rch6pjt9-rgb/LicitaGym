@@ -7,7 +7,7 @@
 --   B  texto em Brasília ainda aberto, data_fim 2 h no passado (relógio gravado 3 h adiantado, #332)
 --      -> continua leads; a fase não muda
 --   C  sem texto, data_fim no passado -> monitorar
---   D  texto 2604 sem normalização -> monitorar (não é lead)
+--   D  texto 2604 sem normalização -> monitorar, motivo prazo_invalido, fase gravada intacta
 --   E  homologada com prazo vencido -> historico, fase gravada intacta
 --   F  prioridade NULL com prazo vencido -> continua NULL (não vira lead)
 --   G  prazo aberto -> leads
@@ -120,11 +120,12 @@ begin
     falhas := falhas || format('C sem texto: prioridade=%s fase=%s', v_prio, v_fase);
   end if;
 
-  select p.prioridade into v_prio
+  select p.prioridade, p.fase, p.prioridade_motivo into v_prio, v_fase, v_motivo
     from public.licitacoes_externas_prioridade_efetiva p
     join _p319 x on x.id = p.id and x.rotulo = 'D';
-  if v_prio is distinct from 'monitorar' then
-    falhas := falhas || format('D 2604: prioridade=%s', v_prio);
+  if v_prio is distinct from 'monitorar' or v_motivo is distinct from 'prazo_invalido'
+     or v_fase is distinct from 'Recebendo propostas' then
+    falhas := falhas || format('D 2604: prioridade=%s fase=%s motivo=%s', v_prio, v_fase, v_motivo);
   end if;
 
   select p.prioridade, p.fase, p.prioridade_motivo into v_prio, v_fase, v_motivo

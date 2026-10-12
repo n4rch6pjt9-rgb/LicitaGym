@@ -8,14 +8,16 @@
 --   no selo ("Recebendo propostas"). data_fim de coleta antiga está 3 h adiantado (#332: horário de
 --   Brasília gravado como UTC); o texto raw.data_fim_vigencia, lido em Brasília, é o prazo que vale.
 --   Texto ainda aberto não perde para esse data_fim. Texto implausível (2604, 9999, além de 730 dias) sem
---   normalização não fica lead.
+--   normalização não fica lead e não é tratado como prazo vencido: o instante não foi verificado como
+--   encerrado. Motivo prazo_invalido; a fase gravada permanece.
 --
 -- O que muda: só o corpo de licitacoes_externas_prioridade_efetiva (create or replace; mesmas colunas e
---   ordem). A prioridade continua só rebaixando: sinal de encerramento -> historico; prazo vencido em
---   Brasília, ou data_fim vencido quando não há texto, ou texto implausível -> monitorar; senão a gravada.
---   Status desconhecido (prioridade NULL) não vira lead. A view não chama API: falha de API não vira
---   historico. Se a fase gravada é "Recebendo propostas" e o prazo encerrou sem sinal de encerramento, a
---   fase lida passa a "Propostas encerradas, aguardando resultado". situacao oficial não muda.
+--   ordem). A prioridade continua só rebaixando: sinal de encerramento -> historico; prazo com instante
+--   <= now() em Brasília (texto normalizado, senão o bruto, senão data_fim) -> monitorar com motivo
+--   prazo_encerrado; texto além de 730 dias sem normalização -> monitorar com motivo prazo_invalido;
+--   senão a gravada. Status desconhecido (prioridade NULL) não vira lead. A view não chama API: falha de
+--   API não vira historico. Só prazo_encerrado troca a fase "Recebendo propostas" para "Propostas
+--   encerradas, aguardando resultado". situacao oficial não muda. Nenhuma linha é regravada.
 --
 -- Quem lê: service_role, pela api-dashboard-oportunidades. Nenhuma linha é regravada.
 -- Verificar: supabase/tests/licitacoes_prioridade_prazo_encerrado_check.sql
@@ -60,7 +62,7 @@ select
   l.interesse_borracha,
   case
     when e.encerramento is not null then 'historico'
-    when j.prazo_encerrado then 'monitorar'
+    when j.prazo_encerrado or j.prazo_invalido then 'monitorar'
     else l.prioridade
   end as prioridade,
   l.termos_busca,
@@ -71,6 +73,7 @@ select
   case
     when e.encerramento is not null then e.encerramento
     when j.prazo_encerrado then 'prazo_encerrado'
+    when j.prazo_invalido then 'prazo_invalido'
   end as prioridade_motivo,
   c.canonica_id,
   c.eh_canonica,
@@ -95,21 +98,26 @@ cross join lateral (
     private.pncp_instante_brt(l.raw ->> 'data_fim_vigencia') as bruto
 ) p
 cross join lateral (
-  select (
-    l.prioridade = 'leads'
-    and (
-      -- texto do PNCP em Brasília (normalizado, senão o bruto) já venceu
-      (coalesce(p.normalizado, p.bruto) is not null and coalesce(p.normalizado, p.bruto) <= now())
-      -- sem texto: vale o data_fim gravado
-      or (coalesce(p.normalizado, p.bruto) is null and l.data_fim <= now())
-      -- 2604, 9999 e qualquer texto além de 730 dias, sem normalização crível: não é lead
-      or (p.normalizado is null and p.bruto > now() + interval '730 days')
-    )
-  ) is true as prazo_encerrado
+  select
+    (
+      l.prioridade = 'leads'
+      and (
+        -- texto do PNCP em Brasília (normalizado, senão o bruto) já venceu
+        (coalesce(p.normalizado, p.bruto) is not null and coalesce(p.normalizado, p.bruto) <= now())
+        -- sem texto: vale o data_fim gravado
+        or (coalesce(p.normalizado, p.bruto) is null and l.data_fim <= now())
+      )
+    ) is true as prazo_encerrado,
+    -- 2604, 9999 e qualquer texto além de 730 dias, sem normalização: não é lead e não é encerrado
+    (
+      l.prioridade = 'leads'
+      and p.normalizado is null
+      and p.bruto > now() + interval '730 days'
+    ) is true as prazo_invalido
 ) j;
 
 comment on view public.licitacoes_externas_prioridade_efetiva is
-  'Colunas públicas de licitacoes_externas com prioridade EFETIVA (só rebaixa, #319): historico com qualquer sinal de encerramento; leads -> monitorar com prazo vencido em Brasília (normalizacoes.data_fim.normalizado, senão raw.data_fim_vigencia, senão data_fim) ou com texto de prazo além de 730 dias sem normalização. Fase "Recebendo propostas" com prazo encerrado e sem encerramento lê como "Propostas encerradas, aguardando resultado"; situacao oficial não muda. prioridade NULL não vira lead. prioridade_gravada = coluna da tabela. canonica_id/eh_canonica = licitacoes_pncp_canonica. security_invoker; SELECT só para service_role.';
+  'Colunas públicas de licitacoes_externas com prioridade EFETIVA (só rebaixa, #319): historico com qualquer sinal de encerramento; leads -> monitorar com prazo vencido em Brasília (instante <= now(): normalizacoes.data_fim.normalizado, senão raw.data_fim_vigencia, senão data_fim; motivo prazo_encerrado) ou com texto além de 730 dias sem normalização (motivo prazo_invalido, fase gravada intacta). Só prazo_encerrado troca "Recebendo propostas" para "Propostas encerradas, aguardando resultado". situacao oficial não muda. prioridade NULL não vira lead. prioridade_gravada = coluna da tabela. canonica_id/eh_canonica = licitacoes_pncp_canonica. security_invoker; SELECT só para service_role.';
 
 revoke all on table public.licitacoes_externas_prioridade_efetiva from PUBLIC, anon, authenticated, service_role;
 grant select on table public.licitacoes_externas_prioridade_efetiva to service_role;

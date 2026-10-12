@@ -1,8 +1,9 @@
-"""Backfill de licitacoes_externas.data_fim e data_publicacao das compras PNCP gravadas com o fuso errado (#332).
+"""Backfill de licitacoes_externas.data_fim e data_publicacao (fuso errado, #332) e data_inicio (nunca gravada, #333)
+das compras PNCP.
 
 Até esta correção, o coletor gravava data_fim e data_publicacao com pncp._data, que lê o texto sem fuso do PNCP
-("2026-10-08T10:00", horário de Brasília) como UTC, e o prazo ficava 3 h adiantado. Agora usa pncp._data_pncp. Este script recalcula as duas colunas a partir do bruto já gravado em raw
-(data_fim_vigencia e data_publicacao_pncp), sem consultar o PNCP, e grava só o que mudou de instante.
+("2026-10-08T10:00", horário de Brasília) como UTC, e o prazo ficava 3 h adiantado. Agora usa pncp._data_pncp. data_inicio (abertura das propostas, #333) nunca era gravada. Este script recalcula as três colunas a partir do bruto já gravado em raw
+(data_fim_vigencia, data_publicacao_pncp e data_inicio_vigencia), sem consultar o PNCP, e grava só o que mudou de instante.
 
 - data_fim normalizado (normalizacoes.data_fim, de normalizacao_prazo, que já usa o fuso do PNCP) não é tocado.
 - Sem o campo no raw, a coluna fica como está (nada é inventado).
@@ -30,7 +31,8 @@ from .pncp import _data_pncp
 log = logging.getLogger("coletor.backfill_fuso_prazos_pncp")
 
 # coluna gravada -> campo bruto do raw (item da busca do PNCP)
-CAMPOS = (("data_fim", "data_fim_vigencia"), ("data_publicacao", "data_publicacao_pncp"))
+CAMPOS = (("data_fim", "data_fim_vigencia"), ("data_publicacao", "data_publicacao_pncp"),
+          ("data_inicio", "data_inicio_vigencia"))   # #333: abertura das propostas, nunca gravada antes
 
 
 def _mesmo_instante(a: str | None, b: str | None) -> bool:
@@ -63,7 +65,7 @@ def correcoes(ln: dict) -> dict | None:
 
 def backfill(sb, *, aplicar: bool = False, limite: int | None = None, amostra: int = 10) -> dict:
     """Retorna o resumo; em dry-run (aplicar=False) nunca chama sb.atualizar."""
-    filtros = {"select": "id,codigo_externo,data_fim,data_publicacao,normalizacoes,raw", "fonte": "eq.pncp",
+    filtros = {"select": "id,codigo_externo,data_fim,data_publicacao,data_inicio,normalizacoes,raw", "fonte": "eq.pncp",
                "order": "id"}
     if limite:
         filtros["limit"] = str(limite)
@@ -93,7 +95,7 @@ def backfill(sb, *, aplicar: bool = False, limite: int | None = None, amostra: i
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Backfill do fuso de data_fim/data_publicacao das compras PNCP (#332)")
+    ap = argparse.ArgumentParser(description="Backfill de data_fim/data_publicacao (fuso, #332) e data_inicio (#333) das compras PNCP")
     ap.add_argument("--apply", action="store_true", help="grava no Supabase (sem isto: dry-run, não grava nada)")
     ap.add_argument("--limit", type=int, help="máximo de linhas a processar")
     ap.add_argument("--amostra", type=int, default=10, help="quantas linhas mostrar na amostra (padrão 10)")

@@ -103,3 +103,62 @@ def test_backfill_le_so_pncp_paginado():
     kw = sb.selecionar.call_args.kwargs
     assert tabela == "licitacoes_externas" and kw["fonte"] == "eq.pncp" and kw["limit"] == "5"
     assert "raw" in kw["select"] and "normalizacoes" in kw["select"]
+
+
+# --- #333: data_inicio (abertura das propostas) ---
+
+def test_abertura_vem_do_detalhe_e_senao_da_busca():
+    from coletor import pncp as P
+    c = {"data_inicio_vigencia": "2026-09-23T12:30"}
+    assert P.abertura_das_propostas(c, None) == "2026-09-23T12:30:00-03:00"
+    assert P.abertura_das_propostas(c, {"dataAberturaProposta": "2026-09-24T08:00:00"}) == "2026-09-24T08:00:00-03:00"
+    assert P.abertura_das_propostas({}, {}) is None
+
+
+def _coletar_uma(compra, detalhe_extra=None):
+    from coletor import pncp as P
+    from tests.test_pncp import AGORA, _lic, _pncp_aberto, _sb
+    pncp, sb = _pncp_aberto([compra]), _sb()
+    if detalhe_extra:
+        pncp.compra.return_value = {**pncp.compra.return_value, **detalhe_extra}
+    P.coletar(pncp, sb, None, ["x"], P.MODOS["leads"]["status"], 1, 50, True, False, 10**8, False,
+              modo="leads", agora=AGORA)
+    return _lic(sb)
+
+
+def test_coleta_grava_data_inicio_da_busca_e_do_detalhe():
+    from tests.test_pncp import ABERTA
+    assert _coletar_uma(ABERTA)["data_inicio"] == "2026-09-25T08:00:00-03:00"
+    lic = _coletar_uma(ABERTA, {"dataAberturaProposta": "2026-09-26T09:00:00"})
+    assert lic["data_inicio"] == "2026-09-26T09:00:00-03:00"
+    # o raw guarda a abertura do detalhe, para o backfill comparar com a mesma fonte
+    assert lic["raw"]["data_inicio_vigencia"] == "2026-09-26T09:00:00"
+    assert lic["raw"]["data_inicio_vigencia_busca"] == "2026-09-25T08:00"
+
+
+def test_coleta_sem_abertura_nao_envia_data_inicio():
+    # sem valor a chave fica fora: o upsert (merge-duplicates) com null apagaria um valor já gravado
+    from tests.test_pncp import ABERTA
+    sem = {k: v for k, v in ABERTA.items() if k != "data_inicio_vigencia"}
+    assert "data_inicio" not in _coletar_uma(sem)
+
+
+def test_backfill_nao_volta_abertura_do_detalhe_para_a_da_busca():
+    # regressão (revisor-codigo #333): coluna gravada com a abertura do detalhe e raw com a mesma -> nada a fazer
+    ln = {**GRAVADA_COMO_UTC, "data_fim": "2026-10-08T10:00:00-03:00", "data_publicacao": "2026-09-14T10:54:48-03:00",
+          "data_inicio": "2026-09-26T09:00:00-03:00",
+          "raw": {**GRAVADA_COMO_UTC["raw"], "data_inicio_vigencia": "2026-09-26T09:00:00",
+                  "data_inicio_vigencia_busca": "2026-09-25T08:00"}}
+    sb = _sb([ln])
+    r = B.backfill(sb, aplicar=True)
+    assert r["ja_corretas"] == 1
+    sb.atualizar.assert_not_called()
+
+
+def test_backfill_preenche_data_inicio_vazia():
+    ln = {**GRAVADA_COMO_UTC, "data_fim": "2026-10-08T10:00:00-03:00", "data_publicacao": "2026-09-14T10:54:48-03:00",
+          "data_inicio": None, "raw": {**GRAVADA_COMO_UTC["raw"], "data_inicio_vigencia": "2026-09-23T12:30"}}
+    sb = _sb([ln])
+    B.backfill(sb, aplicar=True)
+    sb.atualizar.assert_called_once_with("licitacoes_externas", 185, {"data_inicio": "2026-09-23T12:30:00-03:00"})
+    assert "data_inicio" in sb.selecionar.call_args.kwargs["select"]

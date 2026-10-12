@@ -1,19 +1,31 @@
--- LicitaGym: fuso de data_documento, data_resultado e data_homologacao do PNCP (#339, continuação da #332).
+-- LicitaGym: fuso de data_documento, data_resultado e data_homologacao (#339, continuação da #332).
 --
--- Por quê: o coletor gravava o horário de Brasília dessas três colunas rotulado como UTC (pncp._data), 3 h antes
---   do instante real. Em 11/10/2026 eram 4.997 documentos, 10.222 resultados e 622 homologações. O raw do
---   documento não guarda dataPublicacaoPncp e o resultado não tem raw: não dá para reconstruir a data. A
---   correção das linhas já gravadas é somar 3 h, uma vez.
+-- Por quê: o coletor do PNCP gravava o horário de Brasília dessas três colunas rotulado como UTC
+--   (pncp._data, antes de _instante passar a aplicar FUSO_PNCP). Em 11/10/2026 eram 4.997 documentos,
+--   10.222 resultados e 622 homologações. O raw do documento não guarda dataPublicacaoPncp e o resultado
+--   não tem raw: não dá para reconstruir a data. A correção das linhas já gravadas do PNCP é somar 3 h, uma vez.
+-- SEST e Paradigma não têm esse bug. Os dois gravam pelo mesmo parse_data (portal.py): o portal manda
+--   /Date(milissegundos)/ e o coletor faz datetime.fromtimestamp(ms/1000, tz=timezone.utc). O instante já é UTC.
+--   data_resultado do Paradigma é o próprio parse_data(tDtHomologacao), o mesmo instante de data_homologacao.
+--   Somar 3 h nessas linhas deslocaria data válida. fonte da coluna:
+--     PNCP = 'pncp';
+--     SEST SENAT = 'sestsenat' (fontes_externas.plataforma = 'paradigma');
+--     os outros portais Paradigma (fiesc, firjan, ...) também têm plataforma = 'paradigma'.
+--   Não há slug 'sest' nem 'paradigma' em licitacoes_externas.fonte.
 -- O que muda:
---   private.pncp_fuso_linha_339 marca a linha já corrigida (a migration pode rodar de novo sem somar 6 h);
---   private.corrigir_fuso_pncp_339() soma 3 h só nas linhas ainda não marcadas e devolve a contagem;
+--   private.pncp_fuso_linha_339 marca (relacao, id, fonte). A marca do PNCP não vale para outra fonte;
+--   private.corrigir_fuso_pncp_339() soma 3 h só em fonte = 'pncp' ainda não marcada com essa fonte
+--     (regra pncp_mais_3h) e, nas fontes com plataforma paradigma, só registra regra manter_utc, sem UPDATE
+--     da data. A segunda chamada não soma de novo e não regrava a marca;
 --   esta migration chama a função uma vez.
 -- Quem escreve: o dono da migration (postgres). anon, authenticated e service_role não leem a marca nem executam
---   a função. Não inventa data: só desloca o timestamptz que já está na linha.
--- A imagem antiga do coletor, se gravar depois desta migration, volta a gravar no formato velho. O merge na main
--- aplica isto em produção; a imagem do Cloud Run precisa publicar junto (a issue #339).
+--   a função. Não inventa data: no PNCP só desloca o timestamptz que já está na linha; no Paradigma não mexe.
+-- Outra plataforma (portal_rlc_rca, wordpress, manual) não entra no +3 h e não ganha marca: o coletor delas
+--   não foi lido como o mesmo bug, e marcar sem regra seria tratar dado oficial no escuro.
+-- A imagem antiga do coletor PNCP, se gravar depois desta migration, volta a gravar no formato velho. O merge
+--   na main aplica isto em produção; a imagem do Cloud Run precisa publicar junto (a issue #339).
 -- Verificar: supabase/tests/pncp_fuso_documento_resultado_homologacao_check.sql
--- Idempotente. Rollback: somar -3 h nas linhas da marca e apagar a marca; não está neste arquivo.
+-- Idempotente. Rollback: somar -3 h só nas linhas com regra pncp_mais_3h e apagar a marca; não está neste arquivo.
 
 begin;
 
@@ -25,70 +37,149 @@ create schema if not exists private;
 create table if not exists private.pncp_fuso_linha_339 (
   relacao text not null check (relacao in ('licitacao_documentos', 'licitacao_resultados', 'licitacoes_externas')),
   id bigint not null,
+  fonte text not null,
+  regra text not null check (regra in ('pncp_mais_3h', 'manter_utc')),
   corrigida_em timestamptz not null default now(),
-  primary key (relacao, id)
+  primary key (relacao, id, fonte)
 );
 
 alter table private.pncp_fuso_linha_339 enable row level security;
 
 revoke all on table private.pncp_fuso_linha_339 from PUBLIC, anon, authenticated, service_role;
 
+comment on table private.pncp_fuso_linha_339 is
+  'Marca por fonte da #339. pncp_mais_3h = data do PNCP somada 3 h. manter_utc = Paradigma/SEST já em UTC, data intacta.';
+
 create or replace function private.corrigir_fuso_pncp_339()
-returns table (relacao text, corrigidas bigint)
+returns table (fonte text, relacao text, corrigidas bigint)
 language plpgsql
 volatile
 security invoker
 set search_path = public, private, pg_temp
 as $fn$
+#variable_conflict use_column
 declare
-  n bigint;
+  n_doc bigint;
+  n_res bigint;
+  n_hom bigint;
+  n_manter bigint := 0;
+  n_passo bigint;
 begin
   with alvo as (
     update public.licitacao_documentos d
        set data_documento = d.data_documento + interval '3 hours'
-     where d.data_documento is not null
+      from public.licitacoes_externas l
+     where d.licitacao_id = l.id
+       and l.fonte = 'pncp'
+       and d.data_documento is not null
        and not exists (
          select 1 from private.pncp_fuso_linha_339 m
-          where m.relacao = 'licitacao_documentos' and m.id = d.id)
+          where m.relacao = 'licitacao_documentos'
+            and m.id = d.id
+            and m.fonte = 'pncp')
     returning d.id
   )
-  insert into private.pncp_fuso_linha_339 (relacao, id)
-  select 'licitacao_documentos', alvo.id from alvo;
-  get diagnostics n = row_count;
-  relacao := 'licitacao_documentos';
-  corrigidas := n;
-  return next;
+  insert into private.pncp_fuso_linha_339 (relacao, id, fonte, regra)
+  select 'licitacao_documentos', alvo.id, 'pncp', 'pncp_mais_3h' from alvo;
+  get diagnostics n_doc = row_count;
 
   with alvo as (
     update public.licitacao_resultados r
        set data_resultado = r.data_resultado + interval '3 hours'
-     where r.data_resultado is not null
+      from public.licitacoes_externas l
+     where r.licitacao_id = l.id
+       and l.fonte = 'pncp'
+       and r.data_resultado is not null
        and not exists (
          select 1 from private.pncp_fuso_linha_339 m
-          where m.relacao = 'licitacao_resultados' and m.id = r.id)
+          where m.relacao = 'licitacao_resultados'
+            and m.id = r.id
+            and m.fonte = 'pncp')
     returning r.id
   )
-  insert into private.pncp_fuso_linha_339 (relacao, id)
-  select 'licitacao_resultados', alvo.id from alvo;
-  get diagnostics n = row_count;
-  relacao := 'licitacao_resultados';
-  corrigidas := n;
-  return next;
+  insert into private.pncp_fuso_linha_339 (relacao, id, fonte, regra)
+  select 'licitacao_resultados', alvo.id, 'pncp', 'pncp_mais_3h' from alvo;
+  get diagnostics n_res = row_count;
 
   with alvo as (
     update public.licitacoes_externas l
        set data_homologacao = l.data_homologacao + interval '3 hours'
-     where l.data_homologacao is not null
+     where l.fonte = 'pncp'
+       and l.data_homologacao is not null
        and not exists (
          select 1 from private.pncp_fuso_linha_339 m
-          where m.relacao = 'licitacoes_externas' and m.id = l.id)
+          where m.relacao = 'licitacoes_externas'
+            and m.id = l.id
+            and m.fonte = 'pncp')
     returning l.id
   )
-  insert into private.pncp_fuso_linha_339 (relacao, id)
-  select 'licitacoes_externas', alvo.id from alvo;
-  get diagnostics n = row_count;
+  insert into private.pncp_fuso_linha_339 (relacao, id, fonte, regra)
+  select 'licitacoes_externas', alvo.id, 'pncp', 'pncp_mais_3h' from alvo;
+  get diagnostics n_hom = row_count;
+
+  -- SEST (sestsenat) e os outros slugs com plataforma paradigma: o instante já é UTC. Não há UPDATE.
+  -- A marca usa a fonte da linha (sestsenat, fiesc, ...), não 'pncp', para esta passagem não ficar
+  -- bloqueada por uma marca do PNCP no mesmo id.
+  insert into private.pncp_fuso_linha_339 (relacao, id, fonte, regra)
+  select 'licitacao_documentos', d.id, l.fonte, 'manter_utc'
+    from public.licitacao_documentos d
+    join public.licitacoes_externas l on l.id = d.licitacao_id
+    join public.fontes_externas f on f.slug = l.fonte
+   where f.plataforma = 'paradigma'
+     and d.data_documento is not null
+     and not exists (
+       select 1 from private.pncp_fuso_linha_339 m
+        where m.relacao = 'licitacao_documentos'
+          and m.id = d.id
+          and m.fonte = l.fonte);
+  get diagnostics n_passo = row_count;
+  n_manter := n_manter + n_passo;
+
+  insert into private.pncp_fuso_linha_339 (relacao, id, fonte, regra)
+  select 'licitacao_resultados', r.id, l.fonte, 'manter_utc'
+    from public.licitacao_resultados r
+    join public.licitacoes_externas l on l.id = r.licitacao_id
+    join public.fontes_externas f on f.slug = l.fonte
+   where f.plataforma = 'paradigma'
+     and r.data_resultado is not null
+     and not exists (
+       select 1 from private.pncp_fuso_linha_339 m
+        where m.relacao = 'licitacao_resultados'
+          and m.id = r.id
+          and m.fonte = l.fonte);
+  get diagnostics n_passo = row_count;
+  n_manter := n_manter + n_passo;
+
+  insert into private.pncp_fuso_linha_339 (relacao, id, fonte, regra)
+  select 'licitacoes_externas', l.id, l.fonte, 'manter_utc'
+    from public.licitacoes_externas l
+    join public.fontes_externas f on f.slug = l.fonte
+   where f.plataforma = 'paradigma'
+     and l.data_homologacao is not null
+     and not exists (
+       select 1 from private.pncp_fuso_linha_339 m
+        where m.relacao = 'licitacoes_externas'
+          and m.id = l.id
+          and m.fonte = l.fonte);
+  get diagnostics n_passo = row_count;
+  n_manter := n_manter + n_passo;
+
+  raise notice 'fuso 339: pncp documentos % resultados % homologacoes %; paradigma marcado sem deslocar %',
+    n_doc, n_res, n_hom, n_manter;
+
+  fonte := 'pncp';
+  relacao := 'licitacao_documentos';
+  corrigidas := n_doc;
+  return next;
+
+  fonte := 'pncp';
+  relacao := 'licitacao_resultados';
+  corrigidas := n_res;
+  return next;
+
+  fonte := 'pncp';
   relacao := 'licitacoes_externas';
-  corrigidas := n;
+  corrigidas := n_hom;
   return next;
 end
 $fn$;
@@ -96,8 +187,9 @@ $fn$;
 revoke all on function private.corrigir_fuso_pncp_339() from PUBLIC, anon, authenticated, service_role;
 
 comment on function private.corrigir_fuso_pncp_339() is
-  'Soma 3 h em data_documento, data_resultado e data_homologacao ainda não marcadas (#339). '
-  'A segunda chamada não mexe na linha já marcada.';
+  'PNCP (fonte pncp): soma 3 h em data_documento, data_resultado e data_homologacao ainda não marcadas com essa fonte. '
+  'Paradigma, inclusive sestsenat: não altera a data (parse_data já gravou UTC) e marca a fonte da linha com manter_utc. '
+  'A segunda chamada devolve zero.';
 
 select * from private.corrigir_fuso_pncp_339();
 

@@ -16,7 +16,7 @@ cada entrada, mudança e saída. Etapas configuráveis por admin; as 13 do Kanba
 | `pipeline_estado` | autenticado | `licitacao_ids[]` (até 200) | `estado[]` (`licitacao_id`, `etapa_id`) só das que estão no pipeline |
 | `pipeline_adicionar` | autenticado | `licitacao_ids[]` | entra na primeira etapa sem desfecho; quem já está não muda, de forma atômica (`adicionadas`, `ja_no_pipeline`, `etapa`) |
 | `pipeline_mover` | autenticado | `licitacao_ids[]`, `etapa_id`, `motivo?` | `movidas`; etapa com `exige_motivo` sem motivo → 400 |
-| `pipeline_remover` | autenticado | `licitacao_ids[]` | `removidas` |
+| `pipeline_remover` | autenticado | `licitacao_ids[]` | `removidas`. Apaga as tarefas da empresa naquela licitação. O histórico de etapas fica. Mudar de etapa não apaga tarefa. |
 | `pipeline_historico` | autenticado | `licitacao_id` | `eventos[]`, mais recente primeiro |
 | `etapa_criar` | admin da empresa ou desenvolvedor | `nome`, `fase`, `ordem?`, `desfecho?`, `exige_motivo?` | 201 `etapa`; nome repetido → 409 |
 | `etapa_atualizar` | admin da empresa ou desenvolvedor | `id` + campos | `etapa` |

@@ -110,9 +110,17 @@ export function createSupabaseRepo(client: SupabaseClient): TarefasRepo {
     },
 
     async listar(tenant, f) {
+      const { data: noPipeline, error: ePipe } = await client
+        .from("pipeline_oportunidades")
+        .select("licitacao_id")
+        .eq("tenant_id", tenant);
+      if (ePipe) throw new Error(ePipe.message);
+      let ids = ((noPipeline ?? []) as { licitacao_id: number }[]).map((r) => Number(r.licitacao_id));
+      if (f.licitacao_id !== null) ids = ids.filter((id) => id === f.licitacao_id);
+      if (ids.length === 0) return { tarefas: [], truncado: false };
       let q = client.from("tarefas_equipe").select(TAREFA_COLUMNS).eq("tenant_id", tenant)
+        .in("licitacao_id", ids)
         .order("criada_em", { ascending: false }).limit(LIMITE_LISTA + 1);
-      if (f.licitacao_id !== null) q = q.eq("licitacao_id", f.licitacao_id);
       if (f.status !== null) q = q.eq("status", f.status);
       if (f.responsavel !== null) q = q.eq("responsavel_user_id", f.responsavel);
       const { data, error } = await q;

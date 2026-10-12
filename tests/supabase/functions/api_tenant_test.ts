@@ -399,7 +399,7 @@ Deno.test("membro_adicionar não regrava vínculo existente (burlaria a regra do
 
 Deno.test("admin de cliente não liga conta de outra empresa nem a do desenvolvedor, e não distingue o motivo", async () => {
   const base = konnenComMembros();
-  base.empresas.push({ id: 2, slug: "x", nome: "X", cnpj: CNPJ_NOVO, tipo: "cliente", ativo: false });
+  base.empresas.push({ id: 2, slug: "x", nome: "X", cnpj: CNPJ_NOVO, tipo: "cliente", ativo: true });
   base.vinculos.push({ tenant_id: 2, user_id: U.adminX, papel: "admin", ativo: true });
   const { ctx } = ctxCom(U.adminX, base);
   const outra = await chamar(ctx, { action: "membro_adicionar", tenant_id: 2, email: "opk@exemplo.com", papel: "operacao" });
@@ -472,4 +472,47 @@ Deno.test("repo.usuarios: conta apagada vem sem e-mail; erro do Auth é falha", 
   assertEquals(apagado, [{ id: U.opK, email: null, desenvolvedor: false }]);
   // deno-lint-ignore no-explicit-any
   await assertRejects(() => createSupabaseRepo(cliente(500) as any).usuarios([U.opK]), Error, "getUserById");
+});
+
+Deno.test("#325: admin de empresa desativada não lê nem grava; desenvolvedor continua; não cai em outra", async () => {
+  const base = konnenComMembros();
+  base.empresas.push({ id: 2, slug: "x", nome: "X", cnpj: CNPJ_NOVO, tipo: "cliente", ativo: false });
+  base.vinculos.push({ tenant_id: 2, user_id: U.adminX, papel: "admin", ativo: true });
+  base.vinculos.push({ tenant_id: 2, user_id: U.adminK, papel: "admin", ativo: true });
+
+  const soX = ctxCom(U.adminX, base).ctx;
+  const lista = await chamar(soX, { action: "minha_empresa" });
+  assertEquals(lista.status, 200);
+  assertEquals(lista.json.empresas, []);
+
+  const obter = await chamar(soX, { action: "dados_restritos_obter", tenant_id: 2 });
+  const salvar = await chamar(soX, { action: "dados_restritos_salvar", tenant_id: 2, banco: "001", agencia: "1", conta: "2" });
+  const membros = await chamar(soX, { action: "membros_listar", tenant_id: 2 });
+  assertEquals([obter.status, salvar.status, membros.status], [403, 403, 403]);
+  assert(String(obter.json.error).includes("desativada"));
+  assertEquals(base.dados.has(2), false);
+
+  const nome = await chamar(soX, { action: "empresa_atualizar", tenant_id: 2, nome: "Nao Pode" });
+  const add = await chamar(soX, { action: "membro_adicionar", tenant_id: 2, email: "semvinculo@exemplo.com", papel: "operacao" });
+  assertEquals([nome.status, add.status], [403, 403]);
+  assertEquals(base.empresas.find((e) => e.id === 2)?.nome, "X");
+  assertEquals(base.vinculos.filter((v) => v.tenant_id === 2).map((v) => v.user_id).sort(), [U.adminK, U.adminX].sort());
+
+  assertEquals((await chamar(soX, { action: "cnpj_consultar", cnpj: CNPJ_BB })).status, 403);
+
+  const ambas = await chamar(ctxCom(U.adminK, base).ctx, { action: "minha_empresa" });
+  assertEquals(ambas.json.empresas.map((e: { slug: string }) => e.slug), ["konnen"]);
+  assertEquals((await chamar(ctxCom(U.adminK, base).ctx, { action: "membros_listar", tenant_id: 2 })).status, 403);
+  assertEquals((await chamar(ctxCom(U.adminK, base).ctx, { action: "membros_listar", tenant_id: 1 })).status, 200);
+
+  const dev = ctxCom(U.dev, base).ctx;
+  assertEquals((await chamar(dev, { action: "dados_restritos_obter", tenant_id: 2 })).status, 200);
+  assertEquals((await chamar(dev, { action: "dados_restritos_salvar", tenant_id: 2, banco: "104" })).status, 200);
+  assertEquals(base.dados.get(2)?.banco, "104");
+  assertEquals((await chamar(dev, { action: "membros_listar", tenant_id: 2 })).status, 200);
+  const devLista = await chamar(dev, { action: "minha_empresa" });
+  assertEquals(
+    devLista.json.empresas.map((e: { slug: string; ativo: boolean }) => [e.slug, e.ativo]),
+    [["konnen", true], ["x", false]],
+  );
 });

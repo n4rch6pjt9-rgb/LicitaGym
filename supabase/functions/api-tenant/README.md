@@ -12,8 +12,8 @@ Dashboard #29 (mãe) e #68 (tela).
 
 | action | quem | corpo | resposta |
 |---|---|---|---|
-| `minha_empresa` | autenticado | — | `desenvolvedor`, `empresas[]` (`id`, `slug`, `nome`, `cnpj`, `tipo`, `ativo`, `papel`); sem vínculo, `[]` |
-| `cnpj_consultar` | desenvolvedor ou admin | `cnpj` | `consulta` (razão social, nome fantasia, situação, CNAEs, endereço, `fonte`, `url`, `consultado_em`); não grava |
+| `minha_empresa` | autenticado | — | `desenvolvedor`, `empresas[]` (`id`, `slug`, `nome`, `cnpj`, `tipo`, `ativo`, `papel`); sem vínculo, `[]`. Quem não é desenvolvedor não vê empresa desativada (#325) |
+| `cnpj_consultar` | desenvolvedor ou admin de empresa ativa | `cnpj` | `consulta` (razão social, nome fantasia, situação, CNAEs, endereço, `fonte`, `url`, `consultado_em`); não grava |
 | `empresa_criar` | desenvolvedor | `cnpj`, `admin_email`, `nome?`, `slug?`, `tipo?` | 201 `empresa` **inativa** + `consulta`; situação ≠ ATIVA → 400; CNPJ repetido → 409; e-mail sem conta → 404; se o vínculo do admin falhar, a empresa é apagada |
 | `empresa_atualizar` | admin (`ativo`: só desenvolvedor) | `tenant_id`, `nome?`, `cnpj?`, `ativo?` | `empresa`; ativar com outra empresa ativa sem membro → 409 |
 | `membros_listar` | membro | `tenant_id` | `membros[]` (`user_id`, `email`, `papel`, `ativo`) |
@@ -22,7 +22,10 @@ Dashboard #29 (mãe) e #68 (tela).
 | `dados_restritos_obter` | admin | `tenant_id` | `dados` (`banco`, `agencia`, `conta`, `updated_at`) ou `null` |
 | `dados_restritos_salvar` | admin | `tenant_id`, ao menos um de `banco`, `agencia`, `conta` | `dados`; grava só os campos enviados |
 
-Membro de outra empresa → 403. Empresa inexistente → 404. CNPJ de outra empresa → 409 (o nome dela só para o
+Membro de outra empresa → 403. Empresa inexistente → 404. Empresa desativada (`tenants.ativo = false`) → 403 em
+toda ação com `tenant_id` para quem não é o desenvolvedor; o desenvolvedor continua lendo e gravando (#325). Não há
+estado separado de "em configuração": a empresa nova nasce inativa e, até o desenvolvedor ativar, só ele mexe nela.
+Vínculo só com empresa desativada não lista outra empresa. CNPJ de outra empresa → 409 (o nome dela só para o
 desenvolvedor). Logs sem dado bancário nem token.
 
 **Por que a empresa nasce inativa:** a `api-pipeline` resolve o usuário sem vínculo pelo "único tenant ativo". Uma

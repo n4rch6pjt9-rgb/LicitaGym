@@ -209,6 +209,29 @@ Deno.test("esteira curva é esteira_nao_eletrica e não ganha atributo da ontolo
   assertEquals(tecnica.atributos, []);
 });
 
+Deno.test("regras do dicionário: sem motor, esteira ambígua e esteira de yoga", () => {
+  const nome = (n: string, esp: { rotulo: string; valor: string }[] = []) =>
+    fichaTecnica(validarFicha({ ...K_RUN, nome: n, destaques: [], especificacoes: esp }));
+  assertEquals(nome("Esteira sem motor K-FLOW").no_taxonomia, "esteira_nao_eletrica");
+  assertEquals(nome("Esteira Profissional Curva").no_taxonomia, "esteira_nao_eletrica");
+  // "esteira" sozinha é ambígua no dicionário: sem evidência de motor/velocidade, não classifica.
+  assertEquals(nome("Esteira K-RUN").no_taxonomia, null);
+  assertEquals(nome("Esteira de yoga 10 mm").no_taxonomia, null);
+  // Evidência nas especificações basta.
+  const comMotor = nome("Esteira K-RUN", [{ rotulo: "Motor", valor: "2.5 HP (5.0 HP pico)" }]);
+  assertEquals(comMotor.no_taxonomia, "esteira_eletrica");
+  assertEquals(comMotor.atributos.find((a) => a.atributo === "motor_hp_min")!.valor_num, 2.5);
+});
+
+Deno.test("produto corrigido à mão para não elétrica não ganha atributos da elétrica", () => {
+  const existente: ProdutoExistente = {
+    id: 3, tenant_id: 7, codigo: "K-RUN", url: K_RUN.url, atributos: {}, descricao: null, no_taxonomia: "esteira_nao_eletrica",
+  };
+  const plano = planejar(7, validarFicha(K_RUN), existente, null, "2026-10-13T03:07:35.000Z");
+  assertEquals(plano.atributosFicha, []);
+  assertEquals(plano.linha.carga_maxima_kg, 180);
+});
+
 Deno.test("produto que não é esteira não ganha taxonomia nem colunas", () => {
   const plano = planejar(7, validarFicha(AIR), null, null, "2026-10-13T03:07:35.000Z");
   assertEquals(plano.linha.no_taxonomia, undefined);

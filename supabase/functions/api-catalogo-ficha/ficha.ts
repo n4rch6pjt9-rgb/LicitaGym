@@ -205,35 +205,44 @@ function listaEspecificacoes(valor: unknown): Especificacao[] {
 /**
  * Taxonomia da esteira pelo dicionário v0.3 (services/coletor-externo/coletor/data/dicionario-aparelhos-v0.3.json):
  * o slug é o mesmo que o coletor grava em catalogo_produtos.no_taxonomia e que licitacao_itens, taxonomia_no_pdm,
- * ontologia_atributos e catalogo_de_para usam. "esteira ergométrica" é sinônimo de esteira_eletrica, não um nó.
+ * ontologia_atributos e catalogo_de_para usam. As regras são as do dicionário: "esteira" sozinha é ambígua
+ * (ambiguos.esteira); refino "curva|nao eletric|sem motor|manual" leva a esteira_nao_eletrica; só vira
+ * esteira_eletrica com evidência de "motor|velocidade|inclinacao|programas de treino|km/h|hp". Sem evidência, null:
+ * "esteira de yoga" é colchonete, não esteira.
  */
-const ESTEIRA_NAO_ELETRICA = /\b(esteira (curva|nao eletrica|mecanica|magnetica|manual)|curved treadmill)\b/;
+const ESTEIRA_NAO_ELETRICA = /\b(curva|nao eletric\w*|sem motor|mecanic[ao]|magnetic[ao]|manual)\b|curved treadmill/;
+const ESTEIRA_ELETRICA_EVIDENCIA = /motor|velocidade|inclinacao|programas? de treino|km\s*\/\s*h|\bp?hp\b/;
 
-export function noTaxonomiaDe(nome: string): "esteira_eletrica" | "esteira_nao_eletrica" | null {
+export function noTaxonomiaDe(nome: string, evidencia = ""): "esteira_eletrica" | "esteira_nao_eletrica" | null {
   const n = semAcento(nome);
   if (!n.includes("esteira") && !n.includes("treadmill")) return null;
-  return ESTEIRA_NAO_ELETRICA.test(n) ? "esteira_nao_eletrica" : "esteira_eletrica";
+  if (ESTEIRA_NAO_ELETRICA.test(n)) return "esteira_nao_eletrica";
+  return ESTEIRA_ELETRICA_EVIDENCIA.test(`${n} ${semAcento(evidencia)}`) ? "esteira_eletrica" : null;
 }
 
 /**
  * Atributos da ficha nos mesmos nomes de public.ontologia_atributos (migration 20261011100600): a aderência técnica
  * compara requisito do edital e ficha do produto pelo nome. Só os nós que têm ontologia ganham atributos; os demais
- * ficam só com as colunas da linha. valor_num segue o sentido 'minimo' da ontologia: o que o produto oferece.
+ * ficam só com as colunas da linha. valor_num segue o sentido 'minimo' da ontologia: o que o produto garante
+ * (motor: o primeiro número, nominal, não o pico; velocidade: a máxima da faixa).
  */
 const ONTOLOGIA: Record<string, true> = { esteira_eletrica: true };
 
-export function fichaTecnica(entrada: Pick<
-  FichaEntrada,
-  "nome" | "medidas" | "destaques" | "especificacoes"
->): { no_taxonomia: string | null; carga_maxima_kg: number | null; peso_equipamento_kg: number | null; atributos: AtributoFicha[] } {
-  const noTaxonomia = noTaxonomiaDe(entrada.nome);
-  if (!noTaxonomia) {
+export function fichaTecnica(
+  entrada: Pick<FichaEntrada, "nome" | "medidas" | "destaques" | "especificacoes">,
+  noTaxonomiaGravado: string | null = null,
+): { no_taxonomia: string | null; carga_maxima_kg: number | null; peso_equipamento_kg: number | null; atributos: AtributoFicha[] } {
+  // Os destaques são texto de marketing: só entram quando trazem número com unidade (regex estrita).
+  const marketing = entrada.destaques.map((d) => `${d.titulo}. ${d.texto}`).join("\n");
+  const evidencia = `${marketing} ${entrada.especificacoes.map((e) => `${e.rotulo} ${e.valor}`).join(" ")}`;
+  const noTaxonomia = noTaxonomiaDe(entrada.nome, evidencia);
+  // O nó que vale para os atributos é o gravado (pode ter sido corrigido à mão), senão o da ficha.
+  const noEfetivo = noTaxonomiaGravado ?? noTaxonomia;
+  if (!noEfetivo) {
     return { no_taxonomia: null, carga_maxima_kg: null, peso_equipamento_kg: null, atributos: [] };
   }
   const porRotulo = new Map<string, string>();
   for (const spec of entrada.especificacoes) porRotulo.set(chaveRotulo(spec.rotulo), spec.valor);
-  // Os destaques são texto de marketing: só entram quando trazem número com unidade (regex estrita).
-  const marketing = entrada.destaques.map((d) => `${d.titulo}. ${d.texto}`).join("\n");
   const pegar = (chaves: string[], fallback: string | null): string | null => {
     for (const chave of chaves) {
       const achou = porRotulo.get(chave);
@@ -249,7 +258,7 @@ export function fichaTecnica(entrada: Pick<
   const kgUsuario = quilos(pesoUsuario);
   const kgEquipamento = quilos(pesoEquipamento);
   const atributos: AtributoFicha[] = [];
-  if (ONTOLOGIA[noTaxonomia]) {
+  if (ONTOLOGIA[noEfetivo]) {
     const velocidade = pegar(
       ["velocidade", "velocidade maxima"],
       textoGrupo(marketing, /velocidades? de at[eé]\s+(\d+(?:[.,]\d+)?\s*km\s*\/\s*h)/i),
@@ -267,7 +276,7 @@ export function fichaTecnica(entrada: Pick<
     };
     por("capacidade_usuario_kg_min", pesoUsuario, kgUsuario);
     por("velocidade_kmh_min", velocidade, maiorNumero(velocidade, /km\s*\/?\s*h/i));
-    por("motor_hp_min", motor, maiorNumero(motor, /P?HP|CV/i));
+    por("motor_hp_min", motor, primeiroNumero(motor, /P?HP|CV/i));
     por("area_corrida", area);
     por("inclinacao", inclinacao);
     por("certificacoes", certificacoes);
@@ -293,6 +302,14 @@ function maiorNumero(valor: string | null, unidade: RegExp): number | null {
   const numeros = [...valor.matchAll(/\d+(?:[.,]\d+)?/g)].map((m) => Number(m[0].replace(",", ".")))
     .filter((n) => Number.isFinite(n));
   return numeros.length ? Math.max(...numeros) : null;
+}
+
+/** Primeiro número do texto, desde que a unidade apareça (ex.: "2.5 HP (5.0 HP pico)" → 2.5: o nominal, não o pico). */
+function primeiroNumero(valor: string | null, unidade: RegExp): number | null {
+  if (!valor || !unidade.test(valor)) return null;
+  const m = valor.match(/\d+(?:[.,]\d+)?/);
+  const n = m ? Number(m[0].replace(",", ".")) : NaN;
+  return Number.isFinite(n) ? n : null;
 }
 
 function numeroKg(texto: string, re: RegExp): string | null {
@@ -351,8 +368,9 @@ export function planejar(
     destaques: entrada.destaques,
   };
   if (entrada.medidas) atributos.medida = entrada.medidas;
-  const tecnica = fichaTecnica(entrada);
-  // Classificação é editável à mão (CLAUDE.md): a ficha só preenche no_taxonomia quando a linha ainda não tem.
+  // Classificação é editável à mão (CLAUDE.md): a ficha só preenche no_taxonomia quando a linha ainda não tem, e os
+  // atributos seguem o nó gravado.
+  const tecnica = fichaTecnica(entrada, existente?.no_taxonomia ?? null);
   const noTaxonomia = existente?.no_taxonomia ? null : tecnica.no_taxonomia;
   return {
     id: existente?.id ?? null,

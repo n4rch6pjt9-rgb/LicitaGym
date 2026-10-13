@@ -174,3 +174,7 @@ verify_jwt = false
 # sync-cnpj-verificacao (spec 0008): Bearer SYNC_CRON_SECRET validado no código. Uma vez por semana.
 [functions.sync-cnpj-verificacao]
 verify_jwt = false
+
+# api-catalogo-ficha valida o JWT no código (authenticateUser) e a empresa em _shared/tenant.ts
+[functions.api-catalogo-ficha]
+verify_jwt = false

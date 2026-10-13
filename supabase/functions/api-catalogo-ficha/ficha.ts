@@ -13,6 +13,7 @@ const MARCA_POR_HOST: Record<string, string> = {
 };
 
 const CODIGO = /^[A-Za-z][A-Za-z0-9._-]{1,39}$/;
+const MAX_IMAGENS_FICHA = 12;
 
 export interface Destaque {
   titulo: string;
@@ -120,7 +121,7 @@ export function validarFicha(body: Record<string, unknown>): FichaEntrada {
     throw new ErroFicha("O site desta página ainda não está liberado para gravar no catálogo.", 400);
   }
   const codigo = texto(body.codigo, 40, "Código");
-  if (!CODIGO.test(codigo) || !/\d/.test(codigo)) throw new ErroFicha("Código inválido.", 400);
+  if (!codigoDeFabricante(codigo)) throw new ErroFicha("Código inválido.", 400);
   const nome = texto(body.nome, 200, "Nome");
   const categorias = listaTexto(body.categorias, 6, 60, "Categoria");
   const destaques = listaDestaques(body.destaques);
@@ -167,9 +168,16 @@ function listaDestaques(valor: unknown): Destaque[] {
   });
 }
 
+function codigoDeFabricante(codigo: string): boolean {
+  // E12 e HB007 têm dígito. K-RUN não tem, mas o hífen separa o modelo. "Cardio" continua fora.
+  return CODIGO.test(codigo) && (/\d/.test(codigo) || codigo.includes("-"));
+}
+
 function listaImagens(valor: unknown, hostPagina: string): string[] {
   if (valor === undefined || valor === null) return [];
-  if (!Array.isArray(valor) || valor.length > 2) throw new ErroFicha("Imagens inválidas.", 400);
+  if (!Array.isArray(valor) || valor.length > MAX_IMAGENS_FICHA) {
+    throw new ErroFicha("Imagens inválidas.", 400);
+  }
   const hosts = new Set([hostPagina, hostPagina.replace(/^www\./, ""), `www.${hostPagina.replace(/^www\./, "")}`]);
   return valor.map((item) => {
     const url = urlHttps(item, "Imagem");

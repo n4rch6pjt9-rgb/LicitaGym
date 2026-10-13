@@ -1,7 +1,7 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import type { AuthenticatedUser } from "../../../supabase/functions/_shared/http.ts";
-import { handleRequest } from "../../../supabase/functions/api-catalogo-ficha/index.ts";
-import { familiaDe, fichaTecnica, planejar, validarFicha, type ProdutoExistente } from "../../../supabase/functions/api-catalogo-ficha/ficha.ts";
+import { handleRequest, LIMITE_CATALOGO } from "../../../supabase/functions/api-catalogo-ficha/index.ts";
+import { type AtributoFicha, familiaDe, fichaTecnica, planejar, validarFicha, type ProdutoExistente } from "../../../supabase/functions/api-catalogo-ficha/ficha.ts";
 import type { FichaRepo } from "../../../supabase/functions/api-catalogo-ficha/repo.ts";
 import type { LinhaProduto } from "../../../supabase/functions/api-catalogo-ficha/ficha.ts";
 
@@ -22,6 +22,7 @@ const AIR = {
 function repoMemoria() {
   const linhas = new Map<number, LinhaProduto & { id: number }>();
   const medidas = new Map<number, string>();
+  const atributos = new Map<number, AtributoFicha[]>();
   let seq = 0;
   const achar = (pred: (l: LinhaProduto & { id: number }) => boolean): ProdutoExistente | null => {
     for (const l of linhas.values()) {
@@ -46,7 +47,23 @@ function repoMemoria() {
       medidas.set(id, texto);
       return Promise.resolve();
     },
-    gravarAtributos: () => Promise.resolve(),
+    gravarAtributos: (id, itens) => {
+      atributos.set(id, itens);
+      return Promise.resolve();
+    },
+    listar: (tenant, limite) => {
+      const minhas = [...linhas.values()].filter((l) => l.tenant_id === tenant)
+        .sort((a, b) => b.last_seen_at.localeCompare(a.last_seen_at));
+      const itens = minhas.slice(0, limite).map((l) => ({
+        id: l.id, marca: l.marca, codigo: l.codigo, nome: l.nome, url: l.url, categorias: l.categorias,
+        familia_equipamento: l.familia_equipamento, no_taxonomia: l.no_taxonomia ?? null,
+        carga_maxima_kg: l.carga_maxima_kg ?? null, peso_equipamento_kg: l.peso_equipamento_kg ?? null,
+        ativo: l.ativo, last_seen_at: l.last_seen_at,
+        imagens: (l.atributos.imagens as string[] | undefined) ?? [],
+        atributos: atributos.get(l.id) ?? [],
+      }));
+      return Promise.resolve({ itens, truncado: minhas.length > limite });
+    },
   };
   return { repo, linhas, medidas };
 }
@@ -300,4 +317,67 @@ Deno.test("mais de 12 imagens é recusado", () => {
     status = (err as { status: number }).status;
   }
   assertEquals(status, 400);
+});
+
+function ctxDe(mem: ReturnType<typeof repoMemoria>, tenant = 7) {
+  return {
+    getUser: () => Promise.resolve(USER),
+    getRepo: () => mem.repo,
+    tenantDe: () => Promise.resolve({ tenant, papel: "admin" as const }),
+    agora: () => "2026-10-13T20:00:00.000Z",
+  };
+}
+
+function pedido(body: unknown) {
+  return new Request("https://local/api-catalogo-ficha", { method: "POST", body: JSON.stringify(body) });
+}
+
+Deno.test("listar devolve só os produtos da empresa de quem chama, com os atributos da ficha", async () => {
+  const mem = repoMemoria();
+  await handleRequest(pedido(K_RUN), ctxDe(mem, 7));
+  await handleRequest(pedido(AIR), ctxDe(mem, 7));
+  await handleRequest(pedido({ ...AIR, codigo: "HR009", url: "https://www.konnenfitness.com.br/produto/outra/" }), ctxDe(mem, 9));
+  const res = await handleRequest(pedido({ action: "listar" }), ctxDe(mem, 7));
+  assertEquals(res.status, 200);
+  const corpo = await res.json();
+  assertEquals(corpo.truncado, false);
+  assertEquals(corpo.itens.length, 2);
+  const krun = corpo.itens.find((i: { codigo: string }) => i.codigo === "K-RUN");
+  assertEquals(krun.nome, "ESTEIRA K-RUN");
+  assertEquals(krun.no_taxonomia, "esteira_eletrica");
+  assertEquals(krun.carga_maxima_kg, 180);
+  assertEquals(krun.familia_equipamento, "cardio");
+  assertEquals(krun.imagens.length, 1);
+  assertEquals(krun.atributos.find((a: { atributo: string }) => a.atributo === "capacidade_usuario_kg_min").valor_num, 180);
+  const air = corpo.itens.find((i: { codigo: string }) => i.codigo === "HR007");
+  assertEquals(air.no_taxonomia, null);
+  assertEquals(air.atributos, []);
+});
+
+Deno.test("listar com catálogo vazio devolve lista vazia, não erro", async () => {
+  const res = await handleRequest(pedido({ action: "listar" }), ctxDe(repoMemoria(), 7));
+  assertEquals(res.status, 200);
+  assertEquals(await res.json(), { itens: [], truncado: false });
+});
+
+Deno.test("listar avisa truncado quando a empresa tem mais produtos que o limite", async () => {
+  const mem = repoMemoria();
+  for (let i = 0; i < LIMITE_CATALOGO + 1; i++) {
+    mem.repo.inserir({
+      marca: "Konnen", codigo: `P${i}`, nome: `Produto ${i}`, url: `https://www.konnenfitness.com.br/produto/p${i}/`,
+      tenant_id: 7, categorias: [], familia_equipamento: null, descricao: null, atributos: {}, ativo: true,
+      last_seen_at: `2026-10-13T20:${String(i % 60).padStart(2, "0")}:00.000Z`,
+    });
+  }
+  const corpo = await (await handleRequest(pedido({ action: "listar" }), ctxDe(mem, 7))).json();
+  assertEquals(corpo.itens.length, LIMITE_CATALOGO);
+  assertEquals(corpo.truncado, true);
+});
+
+Deno.test("ação desconhecida responde 400 e sem sessão 401 também no listar", async () => {
+  const mem = repoMemoria();
+  assertEquals((await handleRequest(pedido({ action: "apagar" }), ctxDe(mem))).status, 400);
+  assertEquals((await handleRequest(pedido({}), ctxDe(mem))).status, 400);
+  const semSessao = await handleRequest(pedido({ action: "listar" }), { ...ctxDe(mem), getUser: () => Promise.resolve(null) });
+  assertEquals(semSessao.status, 401);
 });

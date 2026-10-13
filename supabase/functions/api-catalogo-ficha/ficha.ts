@@ -73,6 +73,24 @@ export interface LinhaProduto {
   peso_equipamento_kg?: number;
 }
 
+/** Produto do catálogo da empresa como a tela o lê (api-catalogo-ficha, action listar). Sem preço. */
+export interface ProdutoCatalogo {
+  id: number;
+  marca: string | null;
+  codigo: string | null;
+  nome: string | null;
+  url: string | null;
+  categorias: string[];
+  familia_equipamento: string | null;
+  no_taxonomia: string | null;
+  carga_maxima_kg: number | null;
+  peso_equipamento_kg: number | null;
+  ativo: boolean;
+  last_seen_at: string | null;
+  imagens: string[];
+  atributos: AtributoFicha[];
+}
+
 export interface PlanoGravacao {
   id: number | null;
   linha: LinhaProduto;

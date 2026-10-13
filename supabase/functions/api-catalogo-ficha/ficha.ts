@@ -20,6 +20,17 @@ export interface Destaque {
   texto: string;
 }
 
+export interface Especificacao {
+  rotulo: string;
+  valor: string;
+}
+
+export interface AtributoFicha {
+  atributo: string;
+  valor_texto: string;
+  valor_num: number | null;
+}
+
 export interface FichaEntrada {
   nome: string;
   codigo: string;
@@ -29,6 +40,7 @@ export interface FichaEntrada {
   familia: string | null;
   medidas: string | null;
   destaques: Destaque[];
+  especificacoes: Especificacao[];
   imagens: string[];
   postId: string | null;
   descricao: string | null;
@@ -55,11 +67,15 @@ export interface LinhaProduto {
   atributos: Record<string, unknown>;
   ativo: true;
   last_seen_at: string;
+  no_taxonomia?: string;
+  carga_maxima_kg?: number;
+  peso_equipamento_kg?: number;
 }
 
 export interface PlanoGravacao {
   id: number | null;
   linha: LinhaProduto;
+  atributosFicha: AtributoFicha[];
 }
 
 function texto(valor: unknown, max: number, campo: string): string {
@@ -127,6 +143,7 @@ export function validarFicha(body: Record<string, unknown>): FichaEntrada {
   const destaques = listaDestaques(body.destaques);
   const imagens = listaImagens(body.imagens, pagina.hostname.toLowerCase());
   const medidas = opcional(body.medidas, 80, "Medidas");
+  const especificacoes = listaEspecificacoes(body.especificacoes);
   const postId = opcional(body.post_id, 12, "Post");
   if (postId !== null && !/^\d+$/.test(postId)) throw new ErroFicha("Post inválido.", 400);
   const descricao = destaques.length
@@ -141,6 +158,7 @@ export function validarFicha(body: Record<string, unknown>): FichaEntrada {
     familia: familiaDe(categorias),
     medidas,
     destaques,
+    especificacoes,
     imagens,
     postId,
     descricao,
@@ -166,6 +184,112 @@ function listaDestaques(valor: unknown): Destaque[] {
       texto: texto(bruto.texto, 600, "Texto do destaque"),
     };
   });
+}
+
+function listaEspecificacoes(valor: unknown): Especificacao[] {
+  if (valor === undefined || valor === null) return [];
+  if (!Array.isArray(valor) || valor.length > 20) throw new ErroFicha("Especificações inválidas.", 400);
+  return valor.map((item) => {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) {
+      throw new ErroFicha("Especificação inválida.", 400);
+    }
+    const bruto = item as Record<string, unknown>;
+    return {
+      rotulo: texto(bruto.rotulo, 80, "Rótulo da especificação"),
+      valor: texto(bruto.valor, 120, "Valor da especificação"),
+    };
+  });
+}
+
+const TAXONOMIA_ESTEIRA = "ESTEIRA ERGOMETRICA";
+
+export function fichaTecnica(entrada: Pick<
+  FichaEntrada,
+  "nome" | "codigo" | "medidas" | "destaques" | "especificacoes"
+>): { no_taxonomia: string | null; carga_maxima_kg: number | null; peso_equipamento_kg: number | null; atributos: AtributoFicha[] } {
+  if (!semAcento(entrada.nome).includes("esteira")) {
+    return { no_taxonomia: null, carga_maxima_kg: null, peso_equipamento_kg: null, atributos: [] };
+  }
+  const porRotulo = new Map<string, string>();
+  for (const spec of entrada.especificacoes) porRotulo.set(chaveRotulo(spec.rotulo), spec.valor);
+  const marketing = entrada.destaques.map((d) => `${d.titulo}. ${d.texto}`).join("\n");
+  const pegar = (chaves: string[], fallback: string | null): string | null => {
+    for (const chave of chaves) {
+      const achou = porRotulo.get(chave);
+      if (achou) return achou;
+    }
+    return fallback;
+  };
+  const pesoUsuario = pegar(
+    ["peso max usuario", "peso maximo usuario", "peso usuario", "carga maxima do usuario"],
+    numeroKg(marketing, /usu[aá]rios de at[eé]\s+(\d+(?:[.,]\d+)?)\s*kg/i),
+  );
+  const pesoEquipamento = pegar(["peso equipamento", "peso do equipamento"], null);
+  const velocidade = pegar(
+    ["velocidade"],
+    textoAte(marketing, /velocidades de at[eé]\s+(\d+(?:[.,]\d+)?)\s*km\s*\/\s*h/i, "até "),
+  );
+  const motor = pegar(["motor"], textoGrupo(marketing, /motor de\s+(\d+(?:[.,]\d+)?\s*PHP)/i));
+  const area = pegar(
+    ["area de corrida"],
+    textoGrupo(marketing, /[aá]rea de corrida de\s+(\d[\d.,]*\s*[x×]\s*\d[\d.,]*\s*mm)/i),
+  );
+  const painel = pegar(["painel"], frasePainel(marketing));
+  const atributos: AtributoFicha[] = [];
+  const por = (atributo: string, valor: string | null, valorNum: number | null = null) => {
+    if (!valor) return;
+    atributos.push({ atributo, valor_texto: valor, valor_num: valorNum });
+  };
+  por("Modelo", entrada.codigo);
+  por("Medidas", entrada.medidas);
+  const kgUsuario = quilos(pesoUsuario);
+  por("Peso Usuário", pesoUsuario, kgUsuario);
+  const kgEquipamento = quilos(pesoEquipamento);
+  if (pesoEquipamento && kgEquipamento !== null) por("Peso Equipamento", pesoEquipamento, kgEquipamento);
+  por("Velocidade", velocidade);
+  por("Motor", motor);
+  por("Área de Corrida", area);
+  por("Painel", painel);
+  return {
+    no_taxonomia: TAXONOMIA_ESTEIRA,
+    carga_maxima_kg: kgUsuario,
+    peso_equipamento_kg: kgEquipamento,
+    atributos,
+  };
+}
+
+function chaveRotulo(rotulo: string): string {
+  return semAcento(rotulo).replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function quilos(valor: string | null): number | null {
+  if (!valor) return null;
+  const m = valor.match(/(\d+(?:[.,]\d+)?)\s*kg/i);
+  if (!m) return null;
+  const n = Number(m[1].replace(",", "."));
+  return Number.isFinite(n) ? n : null;
+}
+
+function numeroKg(texto: string, re: RegExp): string | null {
+  const m = texto.match(re);
+  return m ? `${m[1].replace(".", ",")} kg`.replace(", kg", " kg") : null;
+}
+
+function textoGrupo(texto: string, re: RegExp): string | null {
+  const m = texto.match(re);
+  return m ? m[1].replace(/\s+/g, " ").trim() : null;
+}
+
+function textoAte(texto: string, re: RegExp, prefixo: string): string | null {
+  const m = texto.match(re);
+  return m ? `${prefixo}${m[1]} km/h` : null;
+}
+
+function frasePainel(texto: string): string | null {
+  const m = texto.match(/painel[^.]{0,180}/i);
+  if (!m) return null;
+  const frase = m[0].replace(/\s+/g, " ").trim();
+  return frase.length > 3 ? frase : null;
 }
 
 function codigoDeFabricante(codigo: string): boolean {
@@ -214,8 +338,11 @@ export function planejar(
     destaques: entrada.destaques,
   };
   if (entrada.medidas) atributos.medida = entrada.medidas;
+  const tecnica = fichaTecnica(entrada);
+  if (tecnica.atributos.length) atributos.taxonomia = tecnica.atributos;
   return {
     id: existente?.id ?? null,
+    atributosFicha: tecnica.atributos,
     linha: {
       marca: entrada.marca,
       codigo: entrada.codigo,
@@ -228,6 +355,9 @@ export function planejar(
       atributos,
       ativo: true,
       last_seen_at: agora,
+      ...(tecnica.no_taxonomia ? { no_taxonomia: tecnica.no_taxonomia } : {}),
+      ...(tecnica.carga_maxima_kg !== null ? { carga_maxima_kg: tecnica.carga_maxima_kg } : {}),
+      ...(tecnica.peso_equipamento_kg !== null ? { peso_equipamento_kg: tecnica.peso_equipamento_kg } : {}),
     },
   };
 }

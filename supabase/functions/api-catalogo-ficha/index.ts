@@ -63,6 +63,7 @@ export async function handleRequest(req: Request, ctx: ApiFichaContext = {}): Pr
       id = plano.id;
     }
     if (entrada.medidas) await repo.gravarMedida(id, entrada.medidas);
+    await repo.gravarAtributos(id, plano.atributosFicha);
     return jsonResponse({
       id,
       codigo: entrada.codigo,

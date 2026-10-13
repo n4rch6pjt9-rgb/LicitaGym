@@ -7,6 +7,10 @@ export interface FichaRepo {
   inserir(linha: LinhaProduto): Promise<number>;
   atualizar(id: number, linha: LinhaProduto): Promise<void>;
   gravarMedida(produtoId: number, texto: string): Promise<void>;
+  gravarAtributos(
+    produtoId: number,
+    itens: { atributo: string; valor_texto: string; valor_num: number | null }[],
+  ): Promise<void>;
 }
 
 function linhaDe(row: Record<string, unknown>): ProdutoExistente {
@@ -49,6 +53,19 @@ export function createSupabaseRepo(client: SupabaseClient): FichaRepo {
     async gravarMedida(produtoId, texto) {
       const { error } = await client.from("catalogo_produto_atributos").upsert(
         { produto_id: produtoId, atributo: "medida", valor_texto: texto, valor_num: null },
+        { onConflict: "produto_id,atributo" },
+      );
+      if (error) throw new Error(error.message);
+    },
+    async gravarAtributos(produtoId, itens) {
+      if (!itens.length) return;
+      const { error } = await client.from("catalogo_produto_atributos").upsert(
+        itens.map((item) => ({
+          produto_id: produtoId,
+          atributo: item.atributo,
+          valor_texto: item.valor_texto,
+          valor_num: item.valor_num,
+        })),
         { onConflict: "produto_id,atributo" },
       );
       if (error) throw new Error(error.message);

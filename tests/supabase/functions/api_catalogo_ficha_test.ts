@@ -1,7 +1,7 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import type { AuthenticatedUser } from "../../../supabase/functions/_shared/http.ts";
 import { handleRequest } from "../../../supabase/functions/api-catalogo-ficha/index.ts";
-import { familiaDe, planejar, validarFicha, type ProdutoExistente } from "../../../supabase/functions/api-catalogo-ficha/ficha.ts";
+import { familiaDe, fichaTecnica, planejar, validarFicha, type ProdutoExistente } from "../../../supabase/functions/api-catalogo-ficha/ficha.ts";
 import type { FichaRepo } from "../../../supabase/functions/api-catalogo-ficha/repo.ts";
 import type { LinhaProduto } from "../../../supabase/functions/api-catalogo-ficha/ficha.ts";
 
@@ -46,6 +46,7 @@ function repoMemoria() {
       medidas.set(id, texto);
       return Promise.resolve();
     },
+    gravarAtributos: () => Promise.resolve(),
   };
   return { repo, linhas, medidas };
 }
@@ -143,6 +144,43 @@ const FOTOS_K_RUN = [
   "https://www.konnenfitness.com.br/wp-content/uploads/2025/05/piso.jpg",
   "https://www.konnenfitness.com.br/wp-content/uploads/2025/05/impacto.jpg",
 ];
+
+Deno.test("ESTEIRA K-RUN grava taxonomia, modelo e o peso do usuário que a página declara", () => {
+  const entrada = validarFicha({
+    ...AIR,
+    nome: "ESTEIRA K-RUN",
+    codigo: "K-RUN",
+    url: "https://www.konnenfitness.com.br/produto/cardio-esteira-k/",
+    medidas: "2048 x 955 x 1545 mm",
+    especificacoes: [
+      { rotulo: "Velocidade", valor: "0.8 – 20 Km/h" },
+      { rotulo: "Motor", valor: "3.0 PHP" },
+      { rotulo: "Área de corrida", valor: "1550 X 580 mm" },
+      { rotulo: "Peso Máx. usuário", valor: "180 kg" },
+    ],
+    destaques: [{
+      titulo: "Sensor de Batimentos Cardíacos e Níveis de Inclinação",
+      texto: "A K-RUN conta com um painel de fácil visualização que exibe velocidade, tempo, distância, calorias e frequência cardíaca.",
+    }],
+  });
+  const tecnica = fichaTecnica(entrada);
+  assertEquals(tecnica.no_taxonomia, "ESTEIRA ERGOMETRICA");
+  assertEquals(tecnica.carga_maxima_kg, 180);
+  assertEquals(tecnica.peso_equipamento_kg, null);
+  const porNome = new Map(tecnica.atributos.map((a) => [a.atributo, a.valor_texto]));
+  assertEquals(porNome.get("Modelo"), "K-RUN");
+  assertEquals(porNome.get("Medidas"), "2048 x 955 x 1545 mm");
+  assertEquals(porNome.get("Peso Usuário"), "180 kg");
+  assertEquals(porNome.get("Velocidade"), "0.8 – 20 Km/h");
+  assertEquals(porNome.get("Motor"), "3.0 PHP");
+  assertEquals(porNome.get("Área de Corrida"), "1550 X 580 mm");
+  assertEquals(porNome.has("Peso Equipamento"), false);
+  assertEquals(porNome.has("Níveis de Intensidade"), false);
+  const plano = planejar(7, entrada, null, null, "2026-10-13T03:07:35.000Z");
+  assertEquals(plano.linha.no_taxonomia, "ESTEIRA ERGOMETRICA");
+  assertEquals(plano.linha.carga_maxima_kg, 180);
+  assertEquals("linha" in plano.linha, false);
+});
 
 Deno.test("K-RUN e as 9 fotos da esteira passam", () => {
   const entrada = validarFicha({

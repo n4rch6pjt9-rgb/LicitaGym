@@ -131,3 +131,51 @@ Deno.test("sem sessão responde 401", async () => {
   const { res } = post(AIR, null);
   assertEquals((await res).status, 401);
 });
+
+const FOTOS_K_RUN = [
+  "https://www.konnenfitness.com.br/wp-content/uploads/2025/03/Image_20240319142857.jpg",
+  "https://www.konnenfitness.com.br/wp-content/uploads/2025/03/ESTEIRA-K.2.jpg",
+  "https://www.konnenfitness.com.br/wp-content/uploads/2025/03/ESTEIRA-K.3.jpg",
+  "https://www.konnenfitness.com.br/wp-content/uploads/2025/03/ESTEIRA-K.4.jpg",
+  "https://www.konnenfitness.com.br/wp-content/uploads/2025/03/ESTEIRA-K.6.jpg",
+  "https://www.konnenfitness.com.br/wp-content/uploads/2025/03/ESTEIRA-K.7.jpg",
+  "https://www.konnenfitness.com.br/wp-content/uploads/2025/05/tela-5.jpg",
+  "https://www.konnenfitness.com.br/wp-content/uploads/2025/05/piso.jpg",
+  "https://www.konnenfitness.com.br/wp-content/uploads/2025/05/impacto.jpg",
+];
+
+Deno.test("K-RUN e as 9 fotos da esteira passam", () => {
+  const entrada = validarFicha({
+    ...AIR,
+    nome: "ESTEIRA K-RUN",
+    codigo: "K-RUN",
+    url: "https://www.konnenfitness.com.br/produto/cardio-esteira-k/",
+    imagens: FOTOS_K_RUN,
+  });
+  assertEquals(entrada.codigo, "K-RUN");
+  assertEquals(entrada.imagens.length, 9);
+});
+
+Deno.test("palavra sem dígito nem hífen não vira código", () => {
+  let status = 0;
+  try {
+    validarFicha({ ...AIR, codigo: "Cardio" });
+  } catch (err) {
+    status = (err as { status: number }).status;
+  }
+  assertEquals(status, 400);
+});
+
+Deno.test("mais de 12 imagens é recusado", () => {
+  const imagens = Array.from(
+    { length: 13 },
+    (_, i) => `https://www.konnenfitness.com.br/wp-content/uploads/2025/03/foto-${i}.jpg`,
+  );
+  let status = 0;
+  try {
+    validarFicha({ ...AIR, imagens });
+  } catch (err) {
+    status = (err as { status: number }).status;
+  }
+  assertEquals(status, 400);
+});

@@ -231,12 +231,22 @@ function listaEspecificacoes(valor: unknown): Especificacao[] {
 const ESTEIRA_NAO_ELETRICA = /\b(curva|nao eletric\w*|sem motor|mecanic[ao]|magnetic[ao]|manual)\b|curved treadmill/;
 const ESTEIRA_ELETRICA_EVIDENCIA = /motor|velocidade|inclinacao|programas? de treino|km\s*\/\s*h|\bp?hp\b/;
 
-export function noTaxonomiaDe(nome: string, evidencia = ""): "esteira_eletrica" | "esteira_nao_eletrica" | null {
+/**
+ * `declarado`: nome + especificações (rótulo e valor), onde "sem motor"/"manual" é fato da ficha e tem precedência.
+ * `evidencia`: também os destaques (marketing), que só servem para confirmar a elétrica, nunca para negá-la
+ * ("manual do usuário" num destaque não faz a esteira ser manual).
+ */
+export function noTaxonomiaDe(nome: string, declarado = "", evidencia = ""): "esteira_eletrica" | "esteira_nao_eletrica" | null {
   const n = semAcento(nome);
   if (!n.includes("esteira") && !n.includes("treadmill")) return null;
-  if (ESTEIRA_NAO_ELETRICA.test(n)) return "esteira_nao_eletrica";
-  return ESTEIRA_ELETRICA_EVIDENCIA.test(`${n} ${semAcento(evidencia)}`) ? "esteira_eletrica" : null;
+  if (ESTEIRA_NAO_ELETRICA.test(`${n} ${semAcento(declarado)}`)) return "esteira_nao_eletrica";
+  return ESTEIRA_ELETRICA_EVIDENCIA.test(`${n} ${semAcento(declarado)} ${semAcento(evidencia)}`) ? "esteira_eletrica" : null;
 }
+
+/** Nomes de atributo que a ficha gera (ontologia_atributos). O sincronismo apaga os que a ficha deixou de declarar. */
+export const ATRIBUTOS_ONTOLOGIA_FICHA = [
+  "capacidade_usuario_kg_min", "velocidade_kmh_min", "motor_hp_min", "area_corrida", "inclinacao", "certificacoes",
+] as const;
 
 /**
  * Atributos da ficha nos mesmos nomes de public.ontologia_atributos (migration 20261011100600): a aderência técnica
@@ -252,8 +262,8 @@ export function fichaTecnica(
 ): { no_taxonomia: string | null; carga_maxima_kg: number | null; peso_equipamento_kg: number | null; atributos: AtributoFicha[] } {
   // Os destaques são texto de marketing: só entram quando trazem número com unidade (regex estrita).
   const marketing = entrada.destaques.map((d) => `${d.titulo}. ${d.texto}`).join("\n");
-  const evidencia = `${marketing} ${entrada.especificacoes.map((e) => `${e.rotulo} ${e.valor}`).join(" ")}`;
-  const noTaxonomia = noTaxonomiaDe(entrada.nome, evidencia);
+  const declarado = entrada.especificacoes.map((e) => `${e.rotulo} ${e.valor}`).join(" ");
+  const noTaxonomia = noTaxonomiaDe(entrada.nome, declarado, marketing);
   // O nó que vale para os atributos é o gravado (pode ter sido corrigido à mão), senão o da ficha.
   const noEfetivo = noTaxonomiaGravado ?? noTaxonomia;
   if (!noEfetivo) {
@@ -293,8 +303,8 @@ export function fichaTecnica(
       atributos.push({ atributo, valor_texto: valor, valor_num: valorNum });
     };
     por("capacidade_usuario_kg_min", pesoUsuario, kgUsuario);
-    por("velocidade_kmh_min", velocidade, maiorNumero(velocidade, /km\s*\/?\s*h/i));
-    por("motor_hp_min", motor, primeiroNumero(motor, /P?HP|CV/i));
+    por("velocidade_kmh_min", velocidade, numeroAntesDa(velocidade, "km" + "\\s*/?\\s*h", "ultimo"));
+    por("motor_hp_min", motor, numeroAntesDa(motor, "P?HP|CV", "primeiro"));
     por("area_corrida", area);
     por("inclinacao", inclinacao);
     por("certificacoes", certificacoes);
@@ -314,20 +324,17 @@ function quilos(valor: string | null): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-/** Maior número do texto, desde que a unidade esperada apareça (ex.: "0.8 – 20 Km/h" → 20; "3.0 PHP" → 3). */
-function maiorNumero(valor: string | null, unidade: RegExp): number | null {
-  if (!valor || !unidade.test(valor)) return null;
-  const numeros = [...valor.matchAll(/\d+(?:[.,]\d+)?/g)].map((m) => Number(m[0].replace(",", ".")))
+/**
+ * Número imediatamente antes da unidade (ex.: "0.8 – 20 Km/h, 220 V" → 20; "2.5 HP (5.0 HP pico)" → 2.5).
+ * Velocidade usa o último par número+unidade (a máxima da faixa); motor usa o primeiro (o nominal, não o pico).
+ */
+function numeroAntesDa(valor: string | null, unidade: string, qual: "primeiro" | "ultimo"): number | null {
+  if (!valor) return null;
+  const re = new RegExp("(\\d+(?:[.,]\\d+)?)\\s*(?:" + unidade + ")(?![a-z])", "gi");
+  const achados = [...valor.matchAll(re)].map((m) => Number(m[1].replace(",", ".")))
     .filter((n) => Number.isFinite(n));
-  return numeros.length ? Math.max(...numeros) : null;
-}
-
-/** Primeiro número do texto, desde que a unidade apareça (ex.: "2.5 HP (5.0 HP pico)" → 2.5: o nominal, não o pico). */
-function primeiroNumero(valor: string | null, unidade: RegExp): number | null {
-  if (!valor || !unidade.test(valor)) return null;
-  const m = valor.match(/\d+(?:[.,]\d+)?/);
-  const n = m ? Number(m[0].replace(",", ".")) : NaN;
-  return Number.isFinite(n) ? n : null;
+  if (!achados.length) return null;
+  return qual === "primeiro" ? achados[0] : achados[achados.length - 1];
 }
 
 function numeroKg(texto: string, re: RegExp): string | null {

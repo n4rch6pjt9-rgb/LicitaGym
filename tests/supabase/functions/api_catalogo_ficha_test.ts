@@ -1,7 +1,7 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import type { AuthenticatedUser } from "../../../supabase/functions/_shared/http.ts";
 import { handleRequest, LIMITE_CATALOGO } from "../../../supabase/functions/api-catalogo-ficha/index.ts";
-import { type AtributoFicha, familiaDe, fichaTecnica, planejar, validarFicha, type ProdutoExistente } from "../../../supabase/functions/api-catalogo-ficha/ficha.ts";
+import { type AtributoFicha, ATRIBUTOS_ONTOLOGIA_FICHA, familiaDe, fichaTecnica, planejar, validarFicha, type ProdutoExistente } from "../../../supabase/functions/api-catalogo-ficha/ficha.ts";
 import { createSupabaseRepo, type FichaRepo } from "../../../supabase/functions/api-catalogo-ficha/repo.ts";
 import type { LinhaProduto } from "../../../supabase/functions/api-catalogo-ficha/ficha.ts";
 
@@ -40,7 +40,8 @@ function repoMemoria() {
       return Promise.resolve(id);
     },
     atualizar: (id, linha) => {
-      linhas.set(id, { ...linha, id });
+      // UPDATE só mexe nas colunas enviadas: no_taxonomia corrigido à mão não some quando a ficha não o manda.
+      linhas.set(id, { ...linhas.get(id), ...linha, id });
       return Promise.resolve();
     },
     gravarMedida: (id, texto) => {
@@ -48,7 +49,11 @@ function repoMemoria() {
       return Promise.resolve();
     },
     gravarAtributos: (id, itens) => {
-      atributos.set(id, itens);
+      const vieram = new Set(itens.map((i) => i.atributo));
+      const mantidos = (atributos.get(id) ?? []).filter((a) =>
+        !(ATRIBUTOS_ONTOLOGIA_FICHA as readonly string[]).includes(a.atributo) || vieram.has(a.atributo)
+      );
+      atributos.set(id, [...mantidos.filter((a) => !vieram.has(a.atributo)), ...itens]);
       return Promise.resolve();
     },
     listar: (tenant, limite) => {
@@ -60,7 +65,10 @@ function repoMemoria() {
         carga_maxima_kg: l.carga_maxima_kg ?? null, peso_equipamento_kg: l.peso_equipamento_kg ?? null,
         ativo: l.ativo, last_seen_at: l.last_seen_at,
         imagens: (l.atributos.imagens as string[] | undefined) ?? [],
-        atributos: atributos.get(l.id) ?? [],
+        atributos: [
+          ...(medidas.has(l.id) ? [{ atributo: "medida", valor_texto: medidas.get(l.id)!, valor_num: null }] : []),
+          ...(atributos.get(l.id) ?? []),
+        ],
       }));
       return Promise.resolve({ itens, truncado: minhas.length > limite });
     },
@@ -238,6 +246,43 @@ Deno.test("regras do dicionário: sem motor, esteira ambígua e esteira de yoga"
   const comMotor = nome("Esteira K-RUN", [{ rotulo: "Motor", valor: "2.5 HP (5.0 HP pico)" }]);
   assertEquals(comMotor.no_taxonomia, "esteira_eletrica");
   assertEquals(comMotor.atributos.find((a) => a.atributo === "motor_hp_min")!.valor_num, 2.5);
+});
+
+Deno.test("Codex #359: 'sem motor' nas especificações vence a evidência de motor; 'manual' no destaque não nega", () => {
+  const semMotor = fichaTecnica(validarFicha({ ...K_RUN, nome: "Esteira X", destaques: [],
+    especificacoes: [{ rotulo: "Motor", valor: "sem motor" }, { rotulo: "Velocidade", valor: "até 20 km/h" }] }));
+  assertEquals(semMotor.no_taxonomia, "esteira_nao_eletrica");
+  assertEquals(semMotor.atributos, []);
+  const tipoManual = fichaTecnica(validarFicha({ ...K_RUN, nome: "Esteira X", destaques: [],
+    especificacoes: [{ rotulo: "Tipo", valor: "manual" }] }));
+  assertEquals(tipoManual.no_taxonomia, "esteira_nao_eletrica");
+  const manualNoDestaque = fichaTecnica(validarFicha({ ...K_RUN, nome: "Esteira X", especificacoes: [],
+    destaques: [{ titulo: "Documentação", texto: "Acompanha manual do usuário. Motor de 3.0 PHP." }] }));
+  assertEquals(manualNoDestaque.no_taxonomia, "esteira_eletrica");
+});
+
+Deno.test("Codex #359: o número da velocidade e do motor é o que está junto da unidade", () => {
+  const t = fichaTecnica(validarFicha({ ...K_RUN, destaques: [], especificacoes: [
+    { rotulo: "Velocidade", valor: "1–20 km/h, 220 V" },
+    { rotulo: "Motor", valor: "2.5 HP (5.0 HP pico), 220 V" },
+  ] }));
+  const por = new Map(t.atributos.map((a) => [a.atributo, a.valor_num]));
+  assertEquals(por.get("velocidade_kmh_min"), 20);
+  assertEquals(por.get("motor_hp_min"), 2.5);
+});
+
+Deno.test("Codex #359: corrigir à mão para não elétrica apaga os atributos da elétrica na regravação", async () => {
+  const mem = repoMemoria();
+  const ctx = ctxDe(mem, 7);
+  const primeira = await (await handleRequest(pedido(K_RUN), ctx)).json();
+  let lista = (await (await handleRequest(pedido({ action: "listar" }), ctx)).json()).itens[0];
+  assertEquals(lista.atributos.some((a: { atributo: string }) => a.atributo === "motor_hp_min"), true);
+  // admin corrige a taxonomia à mão
+  mem.linhas.get(primeira.id)!.no_taxonomia = "esteira_nao_eletrica";
+  await handleRequest(pedido(K_RUN), ctx);
+  lista = (await (await handleRequest(pedido({ action: "listar" }), ctx)).json()).itens[0];
+  assertEquals(lista.no_taxonomia, "esteira_nao_eletrica");
+  assertEquals(lista.atributos.map((a: { atributo: string }) => a.atributo), ["medida"]);
 });
 
 Deno.test("produto corrigido à mão para não elétrica não ganha atributos da elétrica", () => {

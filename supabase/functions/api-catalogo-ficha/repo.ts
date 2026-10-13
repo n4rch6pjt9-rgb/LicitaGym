@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
-import type { AtributoFicha, LinhaProduto, ProdutoCatalogo, ProdutoExistente } from "./ficha.ts";
+import { ATRIBUTOS_ONTOLOGIA_FICHA, type AtributoFicha, type LinhaProduto, type ProdutoCatalogo, type ProdutoExistente } from "./ficha.ts";
 
 export interface FichaRepo {
   porUrl(url: string): Promise<ProdutoExistente | null>;
@@ -7,6 +7,8 @@ export interface FichaRepo {
   inserir(linha: LinhaProduto): Promise<number>;
   atualizar(id: number, linha: LinhaProduto): Promise<void>;
   gravarMedida(produtoId: number, texto: string): Promise<void>;
+  /** Sincroniza os atributos da ontologia: grava os de `itens` e apaga os da ontologia que a ficha deixou de
+   * declarar (ex.: produto corrigido à mão para não elétrica). `medida` e outros fora da ontologia ficam. */
   gravarAtributos(
     produtoId: number,
     itens: { atributo: string; valor_texto: string; valor_num: number | null }[],
@@ -93,6 +95,13 @@ export function createSupabaseRepo(client: SupabaseClient): FichaRepo {
       if (error) throw new Error(error.message);
     },
     async gravarAtributos(produtoId, itens) {
+      const vieram = new Set(itens.map((i) => i.atributo));
+      const apagar = ATRIBUTOS_ONTOLOGIA_FICHA.filter((a) => !vieram.has(a));
+      if (apagar.length) {
+        const { error: e0 } = await client.from("catalogo_produto_atributos").delete()
+          .eq("produto_id", produtoId).in("atributo", apagar);
+        if (e0) throw new Error(e0.message);
+      }
       if (!itens.length) return;
       const { error } = await client.from("catalogo_produto_atributos").upsert(
         itens.map((item) => ({

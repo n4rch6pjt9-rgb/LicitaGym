@@ -948,7 +948,7 @@ git commit -m "feat(portal): lê detalhe, documentos, chat e itens com erro isol
 
 - [ ] **Step 1: Write the failing check**
 
-Copiar a estrutura de `supabase/tests/portal_consulta_check.sql` para as duas tabelas: RLS ligado; `anon`, `authenticated` e `public` sem SELECT/INSERT/UPDATE/DELETE/TRUNCATE; `service_role` com SELECT/INSERT/UPDATE/DELETE. Para `portal_eventos`, também `service_role` sem necessidade de sequence grant se a coluna for `GENERATED ALWAYS AS IDENTITY` (o insert do service_role omite `id`).
+Copiar a estrutura de `supabase/tests/portal_consulta_check.sql` para as duas tabelas: RLS ligado; `anon`, `authenticated` e `public` sem SELECT/INSERT/UPDATE/DELETE/TRUNCATE; `service_role` com SELECT/INSERT/UPDATE/DELETE. A coluna `id` de `portal_eventos` é `GENERATED ALWAYS AS IDENTITY` e o insert do `service_role` omite `id`, mas o INSERT ainda chama a sequence e a coluna identity não concede privilégio nela (`supabase/migrations/20260929145232_l3_permissoes_fornecedores_pdm.sql`, linhas 99-100). A checagem exige `revoke all` em `public.portal_eventos_id_seq` para `anon`, `authenticated` e `PUBLIC`, e `grant usage, select` nessa sequence para `service_role`, no padrão de `20261006020000_pipeline_oportunidades.sql` (linhas 275-276). Sem esse grant o insert do evento falha com erro de permissão na sequence.
 
 - [ ] **Step 2: Run check to verify it fails**
 
@@ -979,7 +979,13 @@ create table if not exists public.portal_acompanhamento (
   datas jsonb not null default '{}'::jsonb,
   informacoes jsonb not null default '{}'::jsonb,
   documentos jsonb not null default '[]'::jsonb,
+  chat jsonb not null default '[]'::jsonb,
+  itens jsonb not null default '[]'::jsonb,
+  chat_truncado boolean not null default false,
   ultima_frase bigint not null default 0,
+  existe_resultado_pncp boolean,
+  existe_resultado_pncp_em timestamptz,
+  consulta_reclamada_em timestamptz,
   consultado_em timestamptz,
   atualizado_em timestamptz,
   proxima_consulta_em timestamptz not null default now(),
@@ -1017,6 +1023,9 @@ revoke all on table public.portal_eventos from PUBLIC, anon, authenticated;
 grant select, insert, update, delete on table public.portal_acompanhamento to service_role;
 grant select, insert, update, delete on table public.portal_eventos to service_role;
 
+revoke all on sequence public.portal_eventos_id_seq from PUBLIC, anon, authenticated;
+grant usage, select on sequence public.portal_eventos_id_seq to service_role;
+
 insert into public.portal_acompanhamento (licitacao_id, caminho, codigo_licitacao, proxima_consulta_em)
 select le.id,
        substring(le.link_sistema_origem from 'portaldecompraspublicas\.com\.br/processos/([A-Za-z]{2}/[^/?#]+/[^/?#]+)'),
@@ -1035,6 +1044,8 @@ commit;
 ```
 
 `falha_desde` não está na tabela da spec. Entra porque a regra de 24 horas precisa do instante da primeira falha. Comentário na migration diz isso.
+
+`chat` e `itens` guardam os arrays já normalizados (`dados` de cada parte), não o log de eventos. `chat_truncado` e `ultima_frase` completam o objeto `chat` da resposta. `existe_resultado_pncp` só é preenchido depois de um detalhe oficial do PNCP que devolveu boolean; nulo significa desconhecido e não encerra a fase. `consulta_reclamada_em` é a reivindicação atômica da próxima leitura ao vivo.
 
 O bloco do cron copia o `do $cron$` de `20261008180000_portal_consulta.sql`, trocando o nome do job, a expressão e o timeout. Não remover o job diário `licitagym-sync-portal-compras`.
 
@@ -1096,9 +1107,9 @@ Forma quando o link é do portal e a leitura (ou o retrato) existe:
 
 - [ ] **Step 1: Write the failing test**
 
-Em `portal_compras_test.ts`, um teste com cliente Supabase falso (o arquivo `portal_tenant_test.ts` já tem `clienteFalso`): link da Piraúba, `atualizar=false`, linha de `portal_acompanhamento` com `consultado_em` há 1 minuto. A seção volta `leitura: "cache"` e o `fetch` não é chamado.
+Em `portal_compras_test.ts`, um teste com cliente Supabase falso (o arquivo `portal_tenant_test.ts` já tem `clienteFalso`): link da Piraúba, `atualizar=false`, linha de `portal_acompanhamento` com `consultado_em` há 1 minuto e com `chat` e `itens` preenchidos (uma mensagem e um item). A seção volta `leitura: "cache"`, `chat.dados` e `itens.dados` iguais aos arrays da linha, e o `fetch` não é chamado.
 
-Segundo caso: `consultado_em` há 10 minutos e `atualizar=true` chama `lerPortal` uma vez. Terceiro: `consultado_em` há 10 segundos e `atualizar=true` volta `leitura: "debounce"` sem `fetch`.
+Segundo caso: `consultado_em` há 10 minutos e `atualizar=true` chama `lerPortal` uma vez, e o upsert grava `chat` e `itens` normalizados. Duas chamadas simultâneas com o mesmo `consultado_em` velho: o UPDATE de `consulta_reclamada_em` devolve linha só na primeira; `lerPortal` roda uma vez e a segunda volta `leitura: "debounce"`. Terceiro: `consultado_em` há 10 segundos e `atualizar=true` volta `leitura: "debounce"` sem `fetch` e sem o UPDATE de reivindicação.
 
 Quarto: link do Comprasnet (`https://cnetmobile.estaleiro.serpro.gov.br/...`) devolve `{ disponivel: false }` e não chama `fetch`.
 
@@ -1114,14 +1125,24 @@ Expected: FAIL no teste novo. Os testes atuais de `decidirAtualizacaoPortal` con
 
 1. `parsePortalProcessoUrl(link)` nulo → `{ disponivel: false }`.
 2. Ler `portal_acompanhamento` por `licitacao_id`.
-3. Idade = `agora - consultado_em`.
-   - idade `< 30s` e `atualizar` → devolver retrato com `leitura: "debounce"`.
-   - idade `< 5 min` e `atualizar` falso → retrato com `leitura: "cache"`.
-   - senão → `lerPortal`.
-4. Gravar o retrato (upsert) e os eventos (`insert` com `onConflict: "licitacao_id,chave"` e `ignoreDuplicates: true`). `atualizado_em = agora` só se o insert de eventos afetou linha. `consultado_em = agora` em leitura ao vivo. `proxima_consulta_em` = agora + `intervaloMs(fase)`, ou agora + `esperaFalhaMs` se o detalhe veio com erro.
-5. Fase: `calcularFase` com as datas do detalhe novo (ou do retrato, se a rede falhou) e `existeResultadoPncp` recebido da compra do PNCP já carregada na rota.
+3. Idade = `agora - consultado_em` (nulo conta como velho). A disputa de quem chama o portal é um único `UPDATE`, não um advisory lock: o PostgREST pode usar outra conexão em cada query e não segura `pg_advisory_lock` entre elas.
+
+   ```sql
+   update public.portal_acompanhamento
+      set consulta_reclamada_em = now()
+    where licitacao_id = $1
+      and (consultado_em is null or consultado_em <= now() - interval '30 seconds')
+      and (consulta_reclamada_em is null or consulta_reclamada_em <= now() - interval '30 seconds')
+   returning licitacao_id;
+   ```
+
+   - idade `< 30s` e `atualizar` → não roda o UPDATE; devolver o retrato com `leitura: "debounce"`.
+   - idade `< 5 min` e `atualizar` falso → retrato com `leitura: "cache"`, sem UPDATE e sem `lerPortal`. `chat` e `itens` da resposta saem das colunas `chat`, `itens`, `chat_truncado` e `ultima_frase`. Cache não chama o portal e não devolve essas coleções vazias quando as colunas têm dados.
+   - senão → o UPDATE. Zero linhas: outro pedido ou o cron já reivindicou; reler e devolver `leitura: "debounce"` sem `lerPortal`. Uma linha: este pedido chama `lerPortal`. `consultado_em` só muda depois da leitura, no passo 4. `consulta_reclamada_em` continua valendo 30 segundos mesmo se o portal falhar.
+4. Gravar o retrato (upsert) e os eventos (`insert` com `onConflict: "licitacao_id,chave"` e `ignoreDuplicates: true`). O upsert da leitura ao vivo grava também `chat`, `itens`, `chat_truncado` e `ultima_frase` a partir do retorno normalizado de `lerPortal`. `atualizado_em = agora` só se o insert de eventos afetou linha. `consultado_em = agora` em leitura ao vivo. `proxima_consulta_em` = agora + `intervaloMs(fase)`, ou agora + `esperaFalhaMs` se o detalhe veio com erro.
+5. Fase: `calcularFase` com as datas do detalhe novo (ou do retrato, se a rede falhou) e `existeResultadoPncp` recebido da compra do PNCP já carregada na rota (`compra.dados.existeResultado === true`). Na rota esse boolean já veio de `fetchCompraMetadata`; não ler `raw` como substituto.
 6. Se `falha_desde` tem 24 horas ou mais, `indisponivel: true`.
-7. Falha do detalhe: manter datas, situação e documentos do retrato anterior; `erro` nas partes que falharam; HTTP da rota continua 200.
+7. Falha do detalhe: manter datas, situação, documentos, `chat`, `itens`, `chat_truncado` e `ultima_frase` do retrato anterior; `erro` nas partes que falharam; HTTP da rota continua 200.
 8. `portal.eventos`: ler `portal_eventos` da oportunidade, ordem `ocorrido_em` nulo por último e o instante desc, limite 100. Forma `{ dados, total, erro }`. Erro nessa leitura preenche `erro` e devolve `dados: []`; não derruba o PNCP.
 
 Em `acompanhamento.ts`, quando `params.atualizar === true`, não usar `getCachedAcompanhamento`. Depois de montar o payload do PNCP, chamar `montarSecaoPortal` com `existeResultado` de `compra.dados?.existeResultado === true`. Na resposta, irmão das seções:
@@ -1170,12 +1191,14 @@ Cliente falso com uma linha `portal_acompanhamento` vencida (`proxima_consulta_e
 
 Asserts:
 
-- upsert do retrato com `fase` calculada para o `agora` injetado;
+- upsert do retrato com `fase` calculada para o `agora` injetado e com `chat` e `itens` iguais aos arrays normalizados do `lerPortal`;
 - um insert em `portal_eventos` com `chave` `documento:…`;
 - segunda execução com o mesmo documento não insere de novo (`ignoreDuplicates`);
 - lote pede no máximo 10 e processa 2 em paralelo (o double conta chamadas sobrepostas);
-- `httpStatus` 429 na primeira interrompe o lote, grava `ultimo_erro`, aumenta `tentativas`, e `proxima_consulta_em` soma `esperaFalhaMs`;
-- linha `encerrado` não entra na seleção.
+- `httpStatus` 429 na primeira interrompe o lote, grava `ultimo_erro`, aumenta `tentativas`, e `proxima_consulta_em` soma `esperaFalhaMs`, sem substituir `chat` nem `itens`;
+- linha `encerrado` não entra na seleção;
+- descrição com "homologado" e detalhe PNCP `existeResultado: true` grava fase `encerrado` e `existe_resultado_pncp = true`;
+- a mesma descrição com falha no detalhe PNCP mantém a fase anterior e deixa `existe_resultado_pncp` nulo. O teste não aceita fase `encerrado` lida de `raw`.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -1192,10 +1215,11 @@ Expected: FAIL, função ausente.
 1. Inscrever: select de `licitacoes_externas` com `ilike` do host e `data_fim > agora`, mais ids do pipeline de `tenants.ativo = true`, cujo id ainda não está em `portal_acompanhamento`. Insert com `proxima_consulta_em = agora`, `fase = 'propostas'`, `caminho` e `codigo_licitacao` vindos de `parsePortalProcessoUrl`. Falha nessa leitura conta em `erros` e segue para o lote já inscrito.
 2. Seleção: `portal_acompanhamento` onde `proxima_consulta_em <= agora` e `fase <> 'encerrado'`, ordem por `proxima_consulta_em`, limite 10.
 3. Para cada uma, em `mapConcurrent` de 2 (a função já existe em `acompanhamento.ts`; mover a função genérica para `_shared` se o import cruzado de função for circular — preferir copiar as 15 linhas para o sync em vez de importar a rota). Orçamento: se `Date.now() - inicio > 45_000`, parar e devolver `parcial`.
-4. `lerPortal`. Detalhe com erro: não substituir `datas`/`documentos`/`situacao_*`; `tentativas += 1`; `falha_desde` fica com o valor anterior ou `agora` se era nulo; `ultimo_erro` com o texto; `proxima_consulta_em = agora + esperaFalhaMs(tentativas)`.
-5. Detalhe ok: `diffEventos` contra o retrato; insert dos eventos; recalcular fase; `tentativas = 0`; `falha_desde = null`; `ultimo_erro = null`; `consultado_em = agora`; `atualizado_em = agora` se houve evento; `proxima_consulta_em` = agora + intervalo, ou nulo-distante se `encerrado` (gravar `proxima_consulta_em` com `now() + interval '100 years'` para a coluna `not null`, e a fase `encerrado` já sai do índice parcial).
-6. Atualizar `portal_consulta` no sucesso: `situacao`, `consultado_em`, `codigo_licitacao`, `url_pagina`, `erro` nulo. Falha desse upsert conta em `erros` e não desfaz o retrato novo.
-7. Fechar `private.pncp_sync_run` por `finishSyncRun`, com a mesma régua de status de `executarSyncPortal`.
+4. Reivindicar a linha com o mesmo `UPDATE` de `consulta_reclamada_em` da Task 5. Zero linhas: outro worker ou a rota já está lendo; pular esta linha neste lote, sem contar erro e sem `lerPortal`.
+5. `lerPortal`. Detalhe com erro: não substituir `datas`/`documentos`/`situacao_*`/`chat`/`itens`/`chat_truncado`/`ultima_frase`; `tentativas += 1`; `falha_desde` fica com o valor anterior ou `agora` se era nulo; `ultimo_erro` com o texto; `proxima_consulta_em = agora + esperaFalhaMs(tentativas)`.
+6. Detalhe ok: `diffEventos` contra o retrato; insert dos eventos; gravar `chat`, `itens`, `chat_truncado` e `ultima_frase`. Antes de `calcularFase`, se a descrição do portal casa `/homolog|fracass|revog/`, obter o flag oficial: `resolvePncpKey` na linha de `licitacoes_externas` e `fetchCompraMetadata` (`existeResultado` do corpo de `/api/consulta/v1/orgaos/{cnpj}/compras/{ano}/{seq}`). `raw_com_prazo_do_detalhe` (`services/coletor-externo/coletor/pncp.py`, por volta das linhas 1602-1627) não copia `existeResultado` para `raw`, e a coluna do retrato não substitui esta consulta. Falha ou boolean ausente: não marcar `encerrado`; manter a fase anterior; deixar `existe_resultado_pncp` nulo. Sucesso: `existeResultadoPncp` é esse boolean, e o upsert grava `existe_resultado_pncp` e `existe_resultado_pncp_em = agora`. Descrição que não casa: não chama o PNCP e não encerra. Em seguida `tentativas = 0`; `falha_desde = null`; `ultimo_erro = null`; `consultado_em = agora`; `atualizado_em = agora` se houve evento; `proxima_consulta_em` = agora + intervalo, ou nulo-distante se `encerrado` (gravar `proxima_consulta_em` com `now() + interval '100 years'` para a coluna `not null`, e a fase `encerrado` já sai do índice parcial).
+7. Atualizar `portal_consulta` no sucesso: `situacao`, `consultado_em`, `codigo_licitacao`, `url_pagina`, `erro` nulo. Falha desse upsert conta em `erros` e não desfaz o retrato novo.
+8. Fechar `private.pncp_sync_run` por `finishSyncRun`, com a mesma régua de status de `executarSyncPortal`.
 
 - [ ] **Step 4: Run tests**
 

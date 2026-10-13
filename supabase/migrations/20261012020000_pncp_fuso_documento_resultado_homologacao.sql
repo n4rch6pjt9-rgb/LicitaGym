@@ -31,9 +31,11 @@
 --   toda linha marcada) foi aplicada à mão em produção enquanto a integração Supabase <-> GitHub estava parada, e
 --   rodou: 15.842 marcas, das quais 125 documentos do sestsenat e 1 homologação da sfiec (plataforma paradigma) foram
 --   deslocados indevidamente. Esta versão nunca aplicou: "cannot change return type of existing function". O bloco
---   de compatibilidade abaixo só age quando encontra a tabela no formato antigo: acrescenta fonte/regra, preenche
---   com a fonte real da linha, devolve as 3 h das linhas que não são pncp e as marca manter_utc, refaz a chave e
---   derruba a função antiga antes de criar a nova. Em banco limpo (CI) não faz nada. Exceção à regra "não editar
+--   de compatibilidade (função private.pncp_fuso_339_compatibilidade(), chamada abaixo) só age quando encontra a
+--   tabela no formato antigo: acrescenta fonte/regra, preenche com a fonte real da linha, devolve as 3 h das linhas
+--   que não são pncp e as marca manter_utc, refaz a chave e, fora dela, a função antiga é derrubada antes da nova.
+--   Em banco limpo (CI) não faz nada; a checagem recria o formato antigo com dados fictícios e exercita a função.
+--   Marca órfã (linha apagada depois da v1): fonte fica 'desconhecida', sem inventar proveniência; em 13/10 há 0. Exceção à regra "não editar
 --   migration mergeada", autorizada pelo Marcelo em 13/10/2026, porque o arquivo ainda não tinha sido aplicado pela
 --   integração e qualquer migration nova ficaria atrás dele na fila.
 --   Conferido em produção antes do merge (13/10, só leitura): nenhuma das 126 linhas foi regravada depois da marca da
@@ -51,12 +53,20 @@ set local statement_timeout = '2min';
 
 create schema if not exists private;
 
--- Compatibilidade com a primeira versão aplicada à mão (ver cabeçalho). Só roda se a tabela existe sem `fonte`.
-do $$
+-- Compatibilidade com a primeira versão aplicada à mão (ver cabeçalho). Só age se a tabela existe sem `fonte`.
+-- Função (e não bloco anônimo) para a checagem poder recriar o formato antigo e exercitá-la. Devolve quantas linhas
+-- fora do PNCP tiveram as 3 h devolvidas; zeros quando não há nada a fazer.
+create or replace function private.pncp_fuso_339_compatibilidade()
+returns table (documentos bigint, resultados bigint, homologacoes bigint)
+language plpgsql
+volatile
+security invoker
+set search_path = public, private, pg_temp
+as $fn$
 declare
-  n_doc bigint;
-  n_res bigint;
-  n_hom bigint;
+  n_doc bigint := 0;
+  n_res bigint := 0;
+  n_hom bigint := 0;
 begin
   if not exists (
     select 1 from information_schema.tables
@@ -65,6 +75,8 @@ begin
     select 1 from information_schema.columns
      where table_schema = 'private' and table_name = 'pncp_fuso_linha_339' and column_name = 'fonte'
   ) then
+    documentos := 0; resultados := 0; homologacoes := 0;
+    return next;
     return;
   end if;
 
@@ -109,10 +121,10 @@ begin
   update private.pncp_fuso_linha_339
      set regra = case when fonte = 'pncp' then 'pncp_mais_3h' else 'manter_utc' end
    where fonte is not null;
-  -- Marca órfã (linha apagada depois da primeira versão): não há como saber a fonte; fica registrada como pncp,
-  -- que foi a regra aplicada. A função nova não a encontra (o join com a licitação falha), então não soma de novo.
+  -- Marca órfã (linha apagada depois da primeira versão): não há como saber a fonte. Fica 'desconhecida', com a
+  -- regra que a v1 de fato aplicou (+3 h). A função nova não a encontra (o join com a licitação falha).
   update private.pncp_fuso_linha_339
-     set fonte = 'pncp', regra = 'pncp_mais_3h'
+     set fonte = 'desconhecida', regra = 'pncp_mais_3h'
    where fonte is null;
 
   alter table private.pncp_fuso_linha_339
@@ -124,7 +136,14 @@ begin
 
   raise notice 'fuso 339 compatibilidade: devolvidas 3 h em % documentos, % resultados e % homologacoes fora do PNCP',
     n_doc, n_res, n_hom;
-end $$;
+  documentos := n_doc; resultados := n_res; homologacoes := n_hom;
+  return next;
+end
+$fn$;
+
+revoke all on function private.pncp_fuso_339_compatibilidade() from PUBLIC, anon, authenticated, service_role;
+
+select * from private.pncp_fuso_339_compatibilidade();
 
 -- A primeira versão tinha outro retorno; create or replace não troca o tipo de retorno.
 drop function if exists private.corrigir_fuso_pncp_339();

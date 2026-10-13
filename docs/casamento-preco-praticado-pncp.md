@@ -1,6 +1,8 @@
 # Casamento preço praticado × licitação PNCP
 
-Medido em produção em 12/10/2026 10:54 UTC, só leitura. Universo: `licitacoes_externas` com `fonte = 'pncp'` e `data_fim < now()`. Preço: `precos_praticados_itens` (25.465 linhas; 1 fora do padrão de 17 dígitos em `id_compra`).
+Medido em produção em 12/10/2026 10:54 UTC, só leitura. Universo: `licitacoes_externas` com `fonte = 'pncp'` e `data_fim < now()`, usando a coluna `data_fim` gravada. Preço: `precos_praticados_itens` (25.465 linhas; 1 fora do padrão de 17 dígitos em `id_compra`).
+
+Esse corte não é o prazo efetivo. A migration `20261012010000_prioridade_prazo_encerrado.sql` define o instante em Brasília nesta ordem: `normalizacoes.data_fim.normalizado`, senão `raw.data_fim_vigencia`, e só sem os dois o `data_fim` gravado. Valores antigos dessa coluna ficam três horas à frente do texto do PNCP. Edital que vence nessa janela fica de fora desta medição. Os números abaixo valem para o corte da coluna gravada, não para todo edital PNCP com prazo de proposta vencido.
 
 | | |
 |---|---|
@@ -46,6 +48,6 @@ Dezenove editais casam com mais de uma compra. Essa chave não identifica a comp
 
 ## Regra
 
-Preço praticado não rebaixa `leads` nem `monitorar`. No conjunto vencido de hoje, a chave estrita só encontra edital que já está em `historico`, e a chave frouxa mistura compras.
+Preço praticado não rebaixa `leads` nem `monitorar`. Neste corte da coluna `data_fim`, a chave estrita só encontra edital que já está em `historico`, e a chave frouxa mistura compras. A conclusão não se estende, por si, ao universo do prazo efetivo em Brasília.
 
 O rebaixamento para `historico` com prova de preço praticado fica bloqueado até existir chave única que cubra edital ainda aberto. Sem essa prova, o edital vencido continua visível como desfecho não confirmado. O resultado do PNCP é a prova que a issue #319 pede antes desta.

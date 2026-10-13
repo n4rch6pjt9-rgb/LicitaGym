@@ -53,6 +53,7 @@ export interface ProdutoExistente {
   url: string | null;
   atributos: Record<string, unknown>;
   descricao: string | null;
+  no_taxonomia?: string | null;
 }
 
 export interface LinhaProduto {
@@ -201,17 +202,37 @@ function listaEspecificacoes(valor: unknown): Especificacao[] {
   });
 }
 
-const TAXONOMIA_ESTEIRA = "ESTEIRA ERGOMETRICA";
+/**
+ * Taxonomia da esteira pelo dicionário v0.3 (services/coletor-externo/coletor/data/dicionario-aparelhos-v0.3.json):
+ * o slug é o mesmo que o coletor grava em catalogo_produtos.no_taxonomia e que licitacao_itens, taxonomia_no_pdm,
+ * ontologia_atributos e catalogo_de_para usam. "esteira ergométrica" é sinônimo de esteira_eletrica, não um nó.
+ */
+const ESTEIRA_NAO_ELETRICA = /\b(esteira (curva|nao eletrica|mecanica|magnetica|manual)|curved treadmill)\b/;
+
+export function noTaxonomiaDe(nome: string): "esteira_eletrica" | "esteira_nao_eletrica" | null {
+  const n = semAcento(nome);
+  if (!n.includes("esteira") && !n.includes("treadmill")) return null;
+  return ESTEIRA_NAO_ELETRICA.test(n) ? "esteira_nao_eletrica" : "esteira_eletrica";
+}
+
+/**
+ * Atributos da ficha nos mesmos nomes de public.ontologia_atributos (migration 20261011100600): a aderência técnica
+ * compara requisito do edital e ficha do produto pelo nome. Só os nós que têm ontologia ganham atributos; os demais
+ * ficam só com as colunas da linha. valor_num segue o sentido 'minimo' da ontologia: o que o produto oferece.
+ */
+const ONTOLOGIA: Record<string, true> = { esteira_eletrica: true };
 
 export function fichaTecnica(entrada: Pick<
   FichaEntrada,
-  "nome" | "codigo" | "medidas" | "destaques" | "especificacoes"
+  "nome" | "medidas" | "destaques" | "especificacoes"
 >): { no_taxonomia: string | null; carga_maxima_kg: number | null; peso_equipamento_kg: number | null; atributos: AtributoFicha[] } {
-  if (!semAcento(entrada.nome).includes("esteira")) {
+  const noTaxonomia = noTaxonomiaDe(entrada.nome);
+  if (!noTaxonomia) {
     return { no_taxonomia: null, carga_maxima_kg: null, peso_equipamento_kg: null, atributos: [] };
   }
   const porRotulo = new Map<string, string>();
   for (const spec of entrada.especificacoes) porRotulo.set(chaveRotulo(spec.rotulo), spec.valor);
+  // Os destaques são texto de marketing: só entram quando trazem número com unidade (regex estrita).
   const marketing = entrada.destaques.map((d) => `${d.titulo}. ${d.texto}`).join("\n");
   const pegar = (chaves: string[], fallback: string | null): string | null => {
     for (const chave of chaves) {
@@ -221,45 +242,41 @@ export function fichaTecnica(entrada: Pick<
     return fallback;
   };
   const pesoUsuario = pegar(
-    ["peso max usuario", "peso maximo usuario", "peso usuario", "carga maxima do usuario"],
-    numeroKg(marketing, /usu[aá]rios de at[eé]\s+(\d+(?:[.,]\d+)?)\s*kg/i),
+    ["peso max usuario", "peso maximo usuario", "peso usuario", "carga maxima do usuario", "carga maxima", "capacidade"],
+    numeroKg(marketing, /usu[aá]rios? de at[eé]\s+(\d+(?:[.,]\d+)?)\s*kg/i),
   );
-  const pesoEquipamento = pegar(["peso equipamento", "peso do equipamento"], null);
-  const velocidade = pegar(
-    ["velocidade"],
-    textoAte(marketing, /velocidades de at[eé]\s+(\d+(?:[.,]\d+)?)\s*km\s*\/\s*h/i, "até "),
-  );
-  const motor = pegar(["motor"], textoGrupo(marketing, /motor de\s+(\d+(?:[.,]\d+)?\s*PHP)/i));
-  const area = pegar(
-    ["area de corrida"],
-    textoGrupo(marketing, /[aá]rea de corrida de\s+(\d[\d.,]*\s*[x×]\s*\d[\d.,]*\s*mm)/i),
-  );
-  const painel = pegar(["painel"], frasePainel(marketing));
-  const atributos: AtributoFicha[] = [];
-  const por = (atributo: string, valor: string | null, valorNum: number | null = null) => {
-    if (!valor) return;
-    atributos.push({ atributo, valor_texto: valor, valor_num: valorNum });
-  };
-  por("Modelo", entrada.codigo);
-  por("Medidas", entrada.medidas);
+  const pesoEquipamento = pegar(["peso equipamento", "peso do equipamento", "peso liquido"], null);
   const kgUsuario = quilos(pesoUsuario);
-  por("Peso Usuário", pesoUsuario, kgUsuario);
   const kgEquipamento = quilos(pesoEquipamento);
-  if (pesoEquipamento && kgEquipamento !== null) por("Peso Equipamento", pesoEquipamento, kgEquipamento);
-  por("Velocidade", velocidade);
-  por("Motor", motor);
-  por("Área de Corrida", area);
-  por("Painel", painel);
-  return {
-    no_taxonomia: TAXONOMIA_ESTEIRA,
-    carga_maxima_kg: kgUsuario,
-    peso_equipamento_kg: kgEquipamento,
-    atributos,
-  };
+  const atributos: AtributoFicha[] = [];
+  if (ONTOLOGIA[noTaxonomia]) {
+    const velocidade = pegar(
+      ["velocidade", "velocidade maxima"],
+      textoGrupo(marketing, /velocidades? de at[eé]\s+(\d+(?:[.,]\d+)?\s*km\s*\/\s*h)/i),
+    );
+    const motor = pegar(["motor", "potencia", "potencia do motor"], textoGrupo(marketing, /motor de\s+(\d+(?:[.,]\d+)?\s*(?:P?HP|CV))/i));
+    const area = pegar(
+      ["area de corrida", "area util", "superficie de corrida"],
+      textoGrupo(marketing, /[aá]rea de corrida de\s+(\d[\d.,]*\s*[x×]\s*\d[\d.,]*\s*(?:mm|cm))/i),
+    );
+    const inclinacao = pegar(["inclinacao", "elevacao"], null);
+    const certificacoes = pegar(["certificacoes", "certificacao", "certificado", "normas", "norma"], null);
+    const por = (atributo: string, valor: string | null, valorNum: number | null = null) => {
+      if (!valor) return;
+      atributos.push({ atributo, valor_texto: valor, valor_num: valorNum });
+    };
+    por("capacidade_usuario_kg_min", pesoUsuario, kgUsuario);
+    por("velocidade_kmh_min", velocidade, maiorNumero(velocidade, /km\s*\/?\s*h/i));
+    por("motor_hp_min", motor, maiorNumero(motor, /P?HP|CV/i));
+    por("area_corrida", area);
+    por("inclinacao", inclinacao);
+    por("certificacoes", certificacoes);
+  }
+  return { no_taxonomia: noTaxonomia, carga_maxima_kg: kgUsuario, peso_equipamento_kg: kgEquipamento, atributos };
 }
 
 function chaveRotulo(rotulo: string): string {
-  return semAcento(rotulo).replace(/[^a-z0-9]+/g, " ").trim();
+  return semAcento(rotulo).replace(/[^a-z0-9]+/g, " ").replace(/\b(max|maximo|maxima)\b\.?/g, "max").trim();
 }
 
 function quilos(valor: string | null): number | null {
@@ -270,26 +287,22 @@ function quilos(valor: string | null): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/** Maior número do texto, desde que a unidade esperada apareça (ex.: "0.8 – 20 Km/h" → 20; "3.0 PHP" → 3). */
+function maiorNumero(valor: string | null, unidade: RegExp): number | null {
+  if (!valor || !unidade.test(valor)) return null;
+  const numeros = [...valor.matchAll(/\d+(?:[.,]\d+)?/g)].map((m) => Number(m[0].replace(",", ".")))
+    .filter((n) => Number.isFinite(n));
+  return numeros.length ? Math.max(...numeros) : null;
+}
+
 function numeroKg(texto: string, re: RegExp): string | null {
   const m = texto.match(re);
-  return m ? `${m[1].replace(".", ",")} kg`.replace(", kg", " kg") : null;
+  return m ? `${m[1].replace(".", ",")} kg` : null;
 }
 
 function textoGrupo(texto: string, re: RegExp): string | null {
   const m = texto.match(re);
   return m ? m[1].replace(/\s+/g, " ").trim() : null;
-}
-
-function textoAte(texto: string, re: RegExp, prefixo: string): string | null {
-  const m = texto.match(re);
-  return m ? `${prefixo}${m[1]} km/h` : null;
-}
-
-function frasePainel(texto: string): string | null {
-  const m = texto.match(/painel[^.]{0,180}/i);
-  if (!m) return null;
-  const frase = m[0].replace(/\s+/g, " ").trim();
-  return frase.length > 3 ? frase : null;
 }
 
 function codigoDeFabricante(codigo: string): boolean {
@@ -339,7 +352,8 @@ export function planejar(
   };
   if (entrada.medidas) atributos.medida = entrada.medidas;
   const tecnica = fichaTecnica(entrada);
-  if (tecnica.atributos.length) atributos.taxonomia = tecnica.atributos;
+  // Classificação é editável à mão (CLAUDE.md): a ficha só preenche no_taxonomia quando a linha ainda não tem.
+  const noTaxonomia = existente?.no_taxonomia ? null : tecnica.no_taxonomia;
   return {
     id: existente?.id ?? null,
     atributosFicha: tecnica.atributos,
@@ -355,7 +369,7 @@ export function planejar(
       atributos,
       ativo: true,
       last_seen_at: agora,
-      ...(tecnica.no_taxonomia ? { no_taxonomia: tecnica.no_taxonomia } : {}),
+      ...(noTaxonomia ? { no_taxonomia: noTaxonomia } : {}),
       ...(tecnica.carga_maxima_kg !== null ? { carga_maxima_kg: tecnica.carga_maxima_kg } : {}),
       ...(tecnica.peso_equipamento_kg !== null ? { peso_equipamento_kg: tecnica.peso_equipamento_kg } : {}),
     },

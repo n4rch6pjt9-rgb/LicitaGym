@@ -24,11 +24,12 @@ function linhaDe(row: Record<string, unknown>): ProdutoExistente {
       ? atributos as Record<string, unknown>
       : {},
     descricao: typeof row.descricao === "string" ? row.descricao : null,
+    no_taxonomia: typeof row.no_taxonomia === "string" ? row.no_taxonomia : null,
   };
 }
 
 export function createSupabaseRepo(client: SupabaseClient): FichaRepo {
-  const select = "id,tenant_id,codigo,url,atributos,descricao";
+  const select = "id,tenant_id,codigo,url,atributos,descricao,no_taxonomia";
   return {
     async porUrl(url) {
       const { data, error } = await client.from("catalogo_produtos").select(select).eq("url", url).maybeSingle();

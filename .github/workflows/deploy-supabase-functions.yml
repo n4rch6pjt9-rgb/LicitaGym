@@ -79,6 +79,7 @@ jobs:
             api-pipeline
             api-tenant
             api-tarefas
+            api-catalogo-ficha
             api-fornecedores-homologados
             api-saude
             calculate-distance-webrouter
@@ -104,6 +105,9 @@ jobs:
               if [ "${fn}" = "api-saude" ]; then
                 SAUDE_DEPLOYED=true
               fi
+              if [ "${fn}" = "api-catalogo-ficha" ]; then
+                FICHA_DEPLOYED=true
+              fi
             else
               echo "✗ ${fn} FALHOU no deploy"
               FAILED+=("${fn}")
@@ -116,6 +120,7 @@ jobs:
 
           echo "CATMAT_DEPLOYED=${CATMAT_DEPLOYED:-false}" >> "$GITHUB_ENV"
           echo "SAUDE_DEPLOYED=${SAUDE_DEPLOYED:-false}" >> "$GITHUB_ENV"
+          echo "FICHA_DEPLOYED=${FICHA_DEPLOYED:-false}" >> "$GITHUB_ENV"
 
           if [ "${DASHBOARD_DEPLOYED}" = "true" ]; then
             echo "DASHBOARD_DEPLOYED=true" >> "$GITHUB_ENV"
@@ -171,6 +176,21 @@ jobs:
             exit 1
           fi
           echo "Smoke test api-catmat passou."
+
+      - name: Smoke test api-catalogo-ficha
+        if: env.FICHA_DEPLOYED == 'true'
+        run: |
+          BASE_URL="https://${PROJECT_ID}.supabase.co/functions/v1/api-catalogo-ficha"
+          echo "Validando gravar sem JWT de usuário (esperado HTTP 401)..."
+          CODE=$(curl -s -o /tmp/ficha_unauth.json -w "%{http_code}" -X POST -H "Content-Type: application/json" -d '{"action":"gravar"}' "${BASE_URL}")
+          echo "HTTP code recebido: ${CODE}"
+          cat /tmp/ficha_unauth.json
+          echo ""
+          if [ "${CODE}" -ne 401 ]; then
+            echo "Falha no smoke test: api-catalogo-ficha sem autenticacao retornou ${CODE}, esperado 401"
+            exit 1
+          fi
+          echo "Smoke test api-catalogo-ficha passou."
 
       - name: Smoke test api-saude
         if: env.SAUDE_DEPLOYED == 'true'

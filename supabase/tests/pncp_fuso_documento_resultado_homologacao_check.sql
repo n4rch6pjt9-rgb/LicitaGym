@@ -5,6 +5,28 @@
 -- portal_rlc_rca (sesi_pe): não é o bug do PNCP e o coletor não grava /Date(ms)/; a data não muda e não ganha marca.
 -- Segunda chamada corrige 0. Dados fictícios. begin/rollback. Aborta se licitacoes_externas tiver mais de 100 linhas.
 
+-- Invariantes da compatibilidade com a primeira versão (13/10/2026): toda marca tem fonte e regra coerentes.
+do $$
+declare
+  v_sem_fonte bigint;
+  v_errada bigint;
+  v_retorno text;
+begin
+  select count(*) into v_sem_fonte from private.pncp_fuso_linha_339 where fonte is null or regra is null;
+  select count(*) into v_errada from private.pncp_fuso_linha_339
+   where (fonte = 'pncp' and regra <> 'pncp_mais_3h') or (fonte <> 'pncp' and regra <> 'manter_utc');
+  select pg_get_function_result(p.oid) into v_retorno
+    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+   where n.nspname = 'private' and p.proname = 'corrigir_fuso_pncp_339';
+  if v_sem_fonte > 0 or v_errada > 0 then
+    raise exception 'ACL CHECK FALHOU: pncp_fuso_linha_339 com % marcas sem fonte/regra e % com regra incoerente', v_sem_fonte, v_errada;
+  end if;
+  if v_retorno is distinct from 'TABLE(fonte text, relacao text, corrigidas bigint)' then
+    raise exception 'ACL CHECK FALHOU: corrigir_fuso_pncp_339 com retorno %, esperado TABLE(fonte, relacao, corrigidas)', v_retorno;
+  end if;
+  raise notice 'SUCESSO: marcas da #339 com fonte e regra coerentes; função no retorno novo.';
+end $$;
+
 begin;
 
 do $$

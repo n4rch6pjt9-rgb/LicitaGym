@@ -26,6 +26,23 @@
 --   na main aplica isto em produção; a imagem do Cloud Run precisa publicar junto (a issue #339).
 -- Verificar: supabase/tests/pncp_fuso_documento_resultado_homologacao_check.sql
 -- Idempotente. Rollback: somar -3 h só nas linhas com regra pncp_mais_3h e apagar a marca; não está neste arquivo.
+--
+-- Compatibilidade (13/10/2026): a primeira versão deste arquivo (commit d96b968, sem fonte/regra e somando 3 h em
+--   toda linha marcada) foi aplicada à mão em produção enquanto a integração Supabase <-> GitHub estava parada, e
+--   rodou: 15.842 marcas, das quais 125 documentos do sestsenat e 1 homologação da sfiec (plataforma paradigma) foram
+--   deslocados indevidamente. Esta versão nunca aplicou: "cannot change return type of existing function". O bloco
+--   de compatibilidade abaixo só age quando encontra a tabela no formato antigo: acrescenta fonte/regra, preenche
+--   com a fonte real da linha, devolve as 3 h das linhas que não são pncp e as marca manter_utc, refaz a chave e
+--   derruba a função antiga antes de criar a nova. Em banco limpo (CI) não faz nada. Exceção à regra "não editar
+--   migration mergeada", autorizada pelo Marcelo em 13/10/2026, porque o arquivo ainda não tinha sido aplicado pela
+--   integração e qualquer migration nova ficaria atrás dele na fila.
+--   Conferido em produção antes do merge (13/10, só leitura): nenhuma das 126 linhas foi regravada depois da marca da
+--   v1 (12/10 04:31 UTC; o coletor do Sistema S não rodou) e não há linha PNCP com data e sem marca, então o `select`
+--   final não soma 3 h em linha nova. Números esperados no `raise notice` da compatibilidade, no log da integração:
+--   125 documentos, 0 resultados, 1 homologação. Marcas manter_utc com corrigida_em anterior a 13/10/2026 vieram
+--   deste bloco (a função nova só marca plataforma paradigma; a v1 tinha deslocado toda fonte).
+--   Volta do bloco: somar +3 h nas linhas das marcas com regra manter_utc e corrigida_em < '2026-10-13'; não está
+--   neste arquivo.
 
 begin;
 
@@ -33,6 +50,84 @@ set local lock_timeout = '10s';
 set local statement_timeout = '2min';
 
 create schema if not exists private;
+
+-- Compatibilidade com a primeira versão aplicada à mão (ver cabeçalho). Só roda se a tabela existe sem `fonte`.
+do $$
+declare
+  n_doc bigint;
+  n_res bigint;
+  n_hom bigint;
+begin
+  if not exists (
+    select 1 from information_schema.tables
+     where table_schema = 'private' and table_name = 'pncp_fuso_linha_339'
+  ) or exists (
+    select 1 from information_schema.columns
+     where table_schema = 'private' and table_name = 'pncp_fuso_linha_339' and column_name = 'fonte'
+  ) then
+    return;
+  end if;
+
+  alter table private.pncp_fuso_linha_339 add column fonte text, add column regra text;
+
+  -- fonte real da linha marcada (a primeira versão não a guardava)
+  update private.pncp_fuso_linha_339 m
+     set fonte = l.fonte
+    from public.licitacao_documentos d
+    join public.licitacoes_externas l on l.id = d.licitacao_id
+   where m.relacao = 'licitacao_documentos' and d.id = m.id;
+  update private.pncp_fuso_linha_339 m
+     set fonte = l.fonte
+    from public.licitacao_resultados r
+    join public.licitacoes_externas l on l.id = r.licitacao_id
+   where m.relacao = 'licitacao_resultados' and r.id = m.id;
+  update private.pncp_fuso_linha_339 m
+     set fonte = l.fonte
+    from public.licitacoes_externas l
+   where m.relacao = 'licitacoes_externas' and l.id = m.id;
+
+  -- Linhas que não são do PNCP: a primeira versão somou 3 h em data que já era UTC. Devolve e marca manter_utc.
+  update public.licitacao_documentos d
+     set data_documento = d.data_documento - interval '3 hours'
+    from private.pncp_fuso_linha_339 m
+   where m.relacao = 'licitacao_documentos' and m.id = d.id
+     and m.fonte is not null and m.fonte <> 'pncp' and d.data_documento is not null;
+  get diagnostics n_doc = row_count;
+  update public.licitacao_resultados r
+     set data_resultado = r.data_resultado - interval '3 hours'
+    from private.pncp_fuso_linha_339 m
+   where m.relacao = 'licitacao_resultados' and m.id = r.id
+     and m.fonte is not null and m.fonte <> 'pncp' and r.data_resultado is not null;
+  get diagnostics n_res = row_count;
+  update public.licitacoes_externas l
+     set data_homologacao = l.data_homologacao - interval '3 hours'
+    from private.pncp_fuso_linha_339 m
+   where m.relacao = 'licitacoes_externas' and m.id = l.id
+     and m.fonte is not null and m.fonte <> 'pncp' and l.data_homologacao is not null;
+  get diagnostics n_hom = row_count;
+
+  update private.pncp_fuso_linha_339
+     set regra = case when fonte = 'pncp' then 'pncp_mais_3h' else 'manter_utc' end
+   where fonte is not null;
+  -- Marca órfã (linha apagada depois da primeira versão): não há como saber a fonte; fica registrada como pncp,
+  -- que foi a regra aplicada. A função nova não a encontra (o join com a licitação falha), então não soma de novo.
+  update private.pncp_fuso_linha_339
+     set fonte = 'pncp', regra = 'pncp_mais_3h'
+   where fonte is null;
+
+  alter table private.pncp_fuso_linha_339
+    alter column fonte set not null,
+    alter column regra set not null,
+    drop constraint if exists pncp_fuso_linha_339_pkey,
+    add primary key (relacao, id, fonte),
+    add constraint pncp_fuso_linha_339_regra_check check (regra in ('pncp_mais_3h', 'manter_utc'));
+
+  raise notice 'fuso 339 compatibilidade: devolvidas 3 h em % documentos, % resultados e % homologacoes fora do PNCP',
+    n_doc, n_res, n_hom;
+end $$;
+
+-- A primeira versão tinha outro retorno; create or replace não troca o tipo de retorno.
+drop function if exists private.corrigir_fuso_pncp_339();
 
 create table if not exists private.pncp_fuso_linha_339 (
   relacao text not null check (relacao in ('licitacao_documentos', 'licitacao_resultados', 'licitacoes_externas')),

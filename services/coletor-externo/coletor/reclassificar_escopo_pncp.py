@@ -118,8 +118,8 @@ def carregar_itens(sb, linhas: list[dict], lote: int = LOTE_COMPRAS_ITENS) -> in
 
 def carregar_documentos(sb, linhas: list[dict], lote: int = LOTE_COMPRAS_ITENS) -> int:
     """Preenche ln["_documentos"] com os documentos gravados da compra (só título, tipo, data e se ainda está
-    ativo: o sinal de fase vem do nome). data_documento foi gravado com o horário de Brasília rotulado como UTC
-    (pncp._data), então o fuso é descartado e a data volta a ser lida como Brasília, igual a data_atualizacao_pncp.
+    ativo: o sinal de fase vem do nome). data_documento é lido com _instante, sem cortar o fuso (#339): o PostgREST
+    devolve timestamptz em UTC, e cortar os 19 primeiros caracteres faria o horário de Brasília parecer 3 h depois.
     Limitação: removido_do_portal_em só é marcado quando o coletor recoleta a compra; documento inativado depois da
     última recoleta ainda conta aqui. Com --consultar-detalhe vale a lista ao vivo de /arquivos (só ativos)."""
     por_compra: dict[int, list[dict]] = {ln["id"]: [] for ln in linhas}
@@ -132,9 +132,10 @@ def carregar_documentos(sb, linhas: list[dict], lote: int = LOTE_COMPRAS_ITENS) 
         for d in docs:
             if d.get("licitacao_id") in por_compra:
                 raw = d.get("raw") if isinstance(d.get("raw"), dict) else {}
+                instante = _instante(d.get("data_documento"))
                 por_compra[d["licitacao_id"]].append({
                     "nome_original": d.get("nome_original"), "tipo_documento": raw.get("tipo_documento"),
-                    "data_documento": str(d["data_documento"])[:19] if d.get("data_documento") else None,
+                    "data_documento": instante.isoformat() if instante else None,
                     "statusAtivo": not d.get("removido_do_portal_em")})
                 total += 1
     for ln in linhas:

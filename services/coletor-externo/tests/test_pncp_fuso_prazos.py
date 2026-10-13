@@ -24,10 +24,11 @@ def test_data_pncp_vazia_ou_invalida():
     assert _data_pncp("não é data") is None
 
 
-def test_data_legado_continua_rotulando_utc():
-    # data_documento/data_resultado/data_homologacao seguem no formato antigo, que o reclassificador lê cortando o
-    # fuso (reclassificar_escopo_pncp.carregar_documentos). Mudar isto exige migrar as linhas antigas (issue própria).
-    assert _data("2026-09-14T10:00") == "2026-09-14T10:00:00+00:00"
+def test_data_sem_fuso_fica_em_brasilia():
+    # #339: data_documento, data_resultado e data_homologacao usam o mesmo fuso da #332.
+    assert _data("2026-09-14T10:00") == "2026-09-14T10:00:00-03:00"
+    assert _data("2026-09-14T13:00:00+00:00") == "2026-09-14T13:00:00+00:00"
+    assert _data(None) is None
 
 
 def test_linha_da_compra_usa_o_fuso_do_pncp_no_prazo_e_na_publicacao():

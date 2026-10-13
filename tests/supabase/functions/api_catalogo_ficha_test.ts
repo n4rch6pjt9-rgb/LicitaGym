@@ -2,7 +2,7 @@ import { assertEquals } from "jsr:@std/assert@1";
 import type { AuthenticatedUser } from "../../../supabase/functions/_shared/http.ts";
 import { handleRequest, LIMITE_CATALOGO } from "../../../supabase/functions/api-catalogo-ficha/index.ts";
 import { type AtributoFicha, familiaDe, fichaTecnica, planejar, validarFicha, type ProdutoExistente } from "../../../supabase/functions/api-catalogo-ficha/ficha.ts";
-import type { FichaRepo } from "../../../supabase/functions/api-catalogo-ficha/repo.ts";
+import { createSupabaseRepo, type FichaRepo } from "../../../supabase/functions/api-catalogo-ficha/repo.ts";
 import type { LinhaProduto } from "../../../supabase/functions/api-catalogo-ficha/ficha.ts";
 
 const USER: AuthenticatedUser = { id: "u-1", email: "a@konnen.test", app_metadata: {} };
@@ -380,4 +380,56 @@ Deno.test("ação desconhecida responde 400 e sem sessão 401 também no listar"
   assertEquals((await handleRequest(pedido({}), ctxDe(mem))).status, 400);
   const semSessao = await handleRequest(pedido({ action: "listar" }), { ...ctxDe(mem), getUser: () => Promise.resolve(null) });
   assertEquals(semSessao.status, 401);
+});
+
+// Cliente falso mínimo do supabase-js para repo.listar: cada tabela resolve com o resultado dado.
+function clienteCatalogo(produtos: Record<string, unknown>[], atributos: Record<string, unknown>[]) {
+  const consulta = (resultado: { data: unknown; error: unknown }) => {
+    const q: Record<string, unknown> = {};
+    for (const m of ["select", "eq", "order", "limit", "in"]) q[m] = () => q;
+    q.then = (ok: (v: unknown) => unknown, falha?: (e: unknown) => unknown) => Promise.resolve(resultado).then(ok, falha);
+    return q;
+  };
+  return {
+    from: (tabela: string) =>
+      consulta(tabela === "catalogo_produtos" ? { data: produtos, error: null } : { data: atributos, error: null }),
+  } as unknown as Parameters<typeof createSupabaseRepo>[0];
+}
+
+Deno.test("repo real: listar corta no limite, avisa truncado, converte numeric e junta os atributos por produto", async () => {
+  const produtos = Array.from({ length: LIMITE_CATALOGO + 1 }, (_, i) => ({
+    id: i + 1, marca: "Konnen", codigo: `P${i + 1}`, nome: `Produto ${i + 1}`, url: null, categorias: ["Cardio"],
+    familia_equipamento: "cardio", no_taxonomia: i === 0 ? "esteira_eletrica" : null,
+    carga_maxima_kg: i === 0 ? "180.00" : null, peso_equipamento_kg: null, ativo: true,
+    last_seen_at: "2026-10-13T20:00:00+00:00",
+    atributos: i === 0 ? { imagens: ["https://www.konnenfitness.com.br/a.jpg", 7], origem: "html" } : {},
+  }));
+  const atributos = [
+    { produto_id: 1, atributo: "capacidade_usuario_kg_min", valor_texto: "180 kg", valor_num: "180" },
+    { produto_id: 1, atributo: "medida", valor_texto: "2048 x 955 x 1545 mm", valor_num: null },
+    { produto_id: 2, atributo: "medida", valor_texto: "1 x 1 m", valor_num: null },
+  ];
+  const repo = createSupabaseRepo(clienteCatalogo(produtos, atributos));
+  const { itens, truncado } = await repo.listar(7, LIMITE_CATALOGO);
+  assertEquals(truncado, true);
+  assertEquals(itens.length, LIMITE_CATALOGO);
+  assertEquals(itens[0].carga_maxima_kg, 180);
+  assertEquals(itens[0].imagens, ["https://www.konnenfitness.com.br/a.jpg"]);
+  assertEquals(itens[0].atributos, [
+    { atributo: "capacidade_usuario_kg_min", valor_texto: "180 kg", valor_num: 180 },
+    { atributo: "medida", valor_texto: "2048 x 955 x 1545 mm", valor_num: null },
+  ]);
+  assertEquals(itens[1].atributos.map((a) => a.atributo), ["medida"]);
+  assertEquals(itens[2].atributos, []);
+  assertEquals(itens[2].no_taxonomia, null);
+});
+
+Deno.test("repo real: erro do banco no listar vira exceção, não lista vazia", async () => {
+  const falha = { data: null, error: { message: "permission denied" } };
+  const q: Record<string, unknown> = {};
+  for (const m of ["select", "eq", "order", "limit", "in"]) q[m] = () => q;
+  q.then = (ok: (v: unknown) => unknown, f?: (e: unknown) => unknown) => Promise.resolve(falha).then(ok, f);
+  const repo = createSupabaseRepo({ from: () => q } as unknown as Parameters<typeof createSupabaseRepo>[0]);
+  const erro = await repo.listar(7, LIMITE_CATALOGO).then(() => null, (e) => e);
+  assertEquals(erro instanceof Error && erro.message, "permission denied");
 });

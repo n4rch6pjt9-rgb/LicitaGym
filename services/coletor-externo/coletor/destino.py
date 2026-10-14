@@ -22,7 +22,8 @@ POSTGREST_MAX_ROWS = max(1, min(100, int(os.environ.get("SUPABASE_PAGE_SIZE", "1
 _PK_SEM_ID = {
     "fornecedores": "cnpj",
     "portal_visitante": "fonte",
-    # Catálogo CATMAT (lido por catmat_ancoras/catmat_codigo): PK é o código oficial. Sem esta entrada o cliente
+    # Catálogo CATMAT: PK é o código oficial. Lida hoje: catmat_itens (catmat_ancoras); as outras três entram por
+    # prevenção (acesso atual é pela RPC catmat_itens_mapa). Sem a entrada de catmat_itens o cliente
     # acrescentava `,id.asc` ao order e o PostgREST respondia 400 (coluna id inexistente): coleta abortava (14/10/2026).
     "catmat_itens": "codigo_item",
     "catmat_pdms": "codigo_pdm",

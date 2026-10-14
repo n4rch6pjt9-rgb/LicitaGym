@@ -212,7 +212,6 @@ def test_falha_persistente_conta_como_erro():
 
 
 def test_retry_do_cliente_em_503(monkeypatch):
-    import requests
     cli = P.PNCP(delay=0, tentativas=3)
     monkeypatch.setattr(P.time, "sleep", lambda s: None)
     respostas = [MagicMock(status_code=503), MagicMock(status_code=200, headers={"content-type": "application/json"})]
@@ -494,7 +493,6 @@ def test_cobertura_termos_completa_catmat():
     from coletor.escopo import (
         PDMS_ESCOPO,
         PDMS_CLASSE_7830,
-        TERMOS_POR_PDM,
         TERMOS_ESCOPO_COMPLETO,
         pdms_sem_termo,
         termos_do_pdm,
@@ -932,15 +930,89 @@ def test_main_lote_invalido_e_selecoes_conflitantes_saem_com_erro(monkeypatch):
 
 def test_coletar_isola_falha_de_busca_e_main_sai_com_1(monkeypatch):
     pncp = MagicMock()
-    pncp.buscar.side_effect = [RuntimeError("429 do PNCP"), {"items": [], "total": 0}]
+    # 1ª passada: falha no 1º termo, o 2º roda; 2ª passada: o 1º termo falha de novo.
+    pncp.buscar.side_effect = [RuntimeError("429 do PNCP"), {"items": [], "total": 0},
+                               RuntimeError("429 do PNCP")]
     r = P.coletar(pncp, None, None, ["grama sintética", "tatame"], "recebendo_proposta", 20, 50,
-                  False, False, 1, True)
+                  False, False, 1, True, pausa_segunda_passada=0)
     assert r["falha_busca"] == 1 and r["termos_com_falha"] == ["grama sintética [recebendo_proposta] pág. 1"]
-    assert pncp.buscar.call_count == 2   # o segundo termo rodou
+    assert pncp.buscar.call_count == 3   # o segundo termo rodou e o primeiro teve a segunda passada
+    assert "busca_recuperada" not in r
 
     visto = {"resumo": {"falha_busca": 1, "termos_com_falha": ["x [s] pág. 1"]}}
     monkeypatch.setattr(P, "coletar", lambda *a, **kw: visto["resumo"])
     assert P.main(["--dry-run"]) == 1
+
+
+def _compra(n: str) -> dict:
+    return {"numero_controle_pncp": n}
+
+
+def test_coletar_segunda_passada_recupera_busca_que_caiu(monkeypatch):
+    """PNCP derruba a conexão da busca de forma intermitente (log de 14/10: RemoteDisconnected nas 6 tentativas).
+    A busca que falhou é refeita depois dos outros termos; se passar, não conta como falha e main sai com 0."""
+    processadas = []
+    monkeypatch.setattr(P, "_processar", lambda pncp, sb, arm, c, termo, *a, **kw: processadas.append(
+        (c["numero_controle_pncp"], termo, kw.get("status_busca"))))
+    pncp = MagicMock()
+    pncp.buscar.side_effect = [
+        RuntimeError("('Connection aborted.', RemoteDisconnected(...))"),   # academia ao ar livre, 1ª passada
+        {"items": [_compra("B-1")], "total": 1},                            # tatame
+        {"items": [_compra("A-1"), _compra("B-1")], "total": 2},             # academia ao ar livre, 2ª passada
+    ]
+    r = P.coletar(pncp, None, None, ["academia ao ar livre", "tatame"], "recebendo_proposta", 20, 50,
+                  False, False, 1, True, pausa_segunda_passada=0)
+    assert "falha_busca" not in r and "termos_com_falha" not in r
+    assert r["busca_recuperada"] == 1
+    assert r["encontradas"] == 2   # B-1 já vista pelo tatame não conta de novo
+    assert processadas == [("B-1", "tatame", "recebendo_proposta"),
+                           ("A-1", "academia ao ar livre", "recebendo_proposta")]
+    assert [c.args[:3] for c in pncp.buscar.call_args_list] == [
+        ("academia ao ar livre", "recebendo_proposta", 1), ("tatame", "recebendo_proposta", 1),
+        ("academia ao ar livre", "recebendo_proposta", 1)]
+
+
+def test_coletar_segunda_passada_retoma_da_pagina_que_falhou(monkeypatch):
+    monkeypatch.setattr(P, "_processar", lambda *a, **kw: None)
+    pncp = MagicMock()
+    pagina1 = {"items": [_compra(f"P1-{i}") for i in range(2)], "total": 3}
+    pncp.buscar.side_effect = [pagina1, RuntimeError("503 do PNCP"),
+                               {"items": [_compra("P2-0")], "total": 3}]
+    r = P.coletar(pncp, None, None, ["piso emborrachado"], "recebendo_proposta", 20, 2,
+                  False, False, 1, True, pausa_segunda_passada=0)
+    assert [c.args[2] for c in pncp.buscar.call_args_list] == [1, 2, 2]
+    assert r["encontradas"] == 3 and r["busca_recuperada"] == 1 and "falha_busca" not in r
+
+
+def test_coletar_sem_falha_de_busca_nao_pausa(monkeypatch):
+    dormiu = []
+    monkeypatch.setattr(P.time, "sleep", lambda s: dormiu.append(s))
+    pncp = MagicMock()
+    pncp.buscar.return_value = {"items": [], "total": 0}
+    r = P.coletar(pncp, None, None, ["tatame"], "recebendo_proposta", 20, 50, False, False, 1, True)
+    assert dormiu == [] and "falha_busca" not in r and "busca_recuperada" not in r
+
+
+def test_coletar_resposta_inesperada_repetida_e_falha_nao_fim_de_dados():
+    """Envelope fora do contrato nas duas passadas: falha registrada (main sai com 1), nunca tratado como fim."""
+    pncp = MagicMock()
+    pncp.buscar.side_effect = [{"erro": "x"}, {"erro": "x"}]
+    r = P.coletar(pncp, None, None, ["tatame"], "recebendo_proposta", 20, 50,
+                  False, False, 1, True, pausa_segunda_passada=0)
+    assert r["falha_busca"] == 1 and r["termos_com_falha"] == ["tatame [recebendo_proposta] pág. 1"]
+    assert "busca_recuperada" not in r
+
+
+def test_coletar_segunda_passada_que_cai_em_pagina_seguinte_registra_essa_pagina(monkeypatch):
+    monkeypatch.setattr(P, "_processar", lambda *a, **kw: None)
+    pncp = MagicMock()
+    pncp.buscar.side_effect = [{"items": [_compra("1")], "total": 3}, RuntimeError("503 do PNCP"),
+                               {"items": [_compra("2")], "total": 3}, RuntimeError("503 do PNCP")]
+    r = P.coletar(pncp, None, None, ["tatame"], "recebendo_proposta", 20, 1,
+                  False, False, 1, True, pausa_segunda_passada=0)
+    assert [c.args[2] for c in pncp.buscar.call_args_list] == [1, 2, 2, 3]
+    assert r["termos_com_falha"] == ["tatame [recebendo_proposta] pág. 3"] and r["falha_busca"] == 1
+    assert "busca_recuperada" not in r and r["encontradas"] == 2
 
 
 def test_main_baixar_pendentes_passa_prioridades(monkeypatch):

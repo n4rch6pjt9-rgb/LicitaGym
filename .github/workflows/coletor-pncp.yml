@@ -88,10 +88,13 @@ jobs:
             monitorar) rodar --modo monitorar ${TERMOS} ;;
             historico) rodar --modo historico ${TERMOS} ;;
             recoleta)  rodar --recoletar-atualizadas --limite-recoleta 200 ;;
+            # Uma etapa que falha (ex.: busca do PNCP derrubada) não impede as outras; o job sai com erro no fim.
             todos)
-              rodar ${TERMOS}
-              rodar --modo monitorar ${TERMOS}
-              rodar --recoletar-atualizadas --limite-recoleta 200
+              FALHOU=""
+              rodar ${TERMOS} || FALHOU="${FALHOU} leads"
+              rodar --modo monitorar ${TERMOS} || FALHOU="${FALHOU} monitorar"
+              rodar --recoletar-atualizadas --limite-recoleta 200 || FALHOU="${FALHOU} recoleta"
+              if [ -n "${FALHOU}" ]; then echo "::error::etapa(s) com falha:${FALHOU}"; exit 1; fi
               ;;
             *) echo "modo desconhecido: ${MODO}"; exit 2 ;;
           esac

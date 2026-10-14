@@ -1,6 +1,7 @@
 -- Checagem da spec 0023 (#363): proveniência por linha em licitacoes_externas.
 --   CA-1 colunas ingestao_origem (cron|manual|nulo), ingestao_em, payload_hash; view prioridade_efetiva as expõe
---   CA-3 regravação (upsert) troca origem/hora, mantém hash igual e não toca created_at/first_seen_at
+--   CA-3 regravação (upsert pelos dois alvos reais: fonte,modulo,id_externo e fonte,codigo_externo) troca origem/hora
+--        e não toca created_at/first_seen_at (o determinismo do hash é provado no pytest, não aqui)
 --   CA-6 job do pg_cron de sync-portal-compras manda origem "cron" (só onde pg_cron existe)
 --   CA-7 anon e authenticated sem SELECT direto na tabela (ACL atual preservada)
 -- Fixtures em begin/rollback; trava de 100 linhas em licitacoes_externas (nunca em produção).
@@ -65,6 +66,22 @@ begin
       f := f + 1; raise notice 'FALHA CA-3: origem/hora nao sao da passagem nova (% %)', v_r.ingestao_origem, v_r.ingestao_em; end if;
     if v_r.created_at <> v_created or v_r.first_seen_at <> v_first then
       f := f + 1; raise notice 'FALHA CA-3: created_at/first_seen_at mudaram na regravacao'; end if;
+    -- terceira passagem pelo alvo do coletor PNCP (pncp.py: on_conflict=fonte,codigo_externo)
+    n := n + 1;
+    insert into public.licitacoes_externas (fonte, codigo_externo, raw, payload_hash, ingestao_origem, ingestao_em)
+    values ('pncp', 'chk-0023', '{"a": 2}'::jsonb, repeat('b', 64), 'manual', timestamptz '2026-10-14 18:00+00')
+    on conflict (fonte, codigo_externo) do update
+      set raw = excluded.raw, payload_hash = excluded.payload_hash,
+          ingestao_origem = excluded.ingestao_origem, ingestao_em = excluded.ingestao_em;
+    select * into v_r from public.licitacoes_externas where id = v_id;
+    if v_r.payload_hash <> repeat('b', 64) or v_r.ingestao_origem <> 'manual'
+       or v_r.ingestao_em <> timestamptz '2026-10-14 18:00+00' or v_r.created_at <> v_created then
+      f := f + 1; raise notice 'FALHA CA-3: regravacao pelo alvo fonte,codigo_externo nao atualizou a proveniencia'; end if;
+    -- nulo permitido (linha anterior à spec)
+    n := n + 1;
+    update public.licitacoes_externas set ingestao_origem = null, ingestao_em = null where id = v_id;
+    if (select ingestao_origem from public.licitacoes_externas where id = v_id) is not null then
+      f := f + 1; raise notice 'FALHA CA-1: ingestao_origem nao aceita nulo'; end if;
     begin
       update public.licitacoes_externas set ingestao_origem = 'robo' where id = v_id;
       f := f + 1; raise notice 'FALHA CA-1: ingestao_origem aceitou valor fora de cron|manual';

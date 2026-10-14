@@ -14,6 +14,7 @@ Todas as `sync-*` e a `link-catmat-pca` autenticam com `validateCronAuth`: **`Au
 | `sync-pncp-orgaos` | nenhum | 21–27 s (191 CNPJs) | pncp.gov.br (integração) | **agendar** |
 | `sync-pncp-legislation` | nenhum | 2 s | www.gov.br | **agendar** (semanal) |
 | `sync-pncp-catalogo` | nenhum | não medido (nunca rodou) | pncp.gov.br (integração) | **agendar** (mensal) |
+| `sync-portal-compras` | `limite` (40), `origem` (`cron` no job `licitagym-sync-portal-compras`, `0 11 * * *`; `manual` pela api-syncs; spec 0023). Só grava `portal_consulta`; não toca a proveniência de `licitacoes_externas` | não medido | portaldecompraspublicas.com.br | **agendado** diário (migration `20261008180000`, corpo com `origem` desde `20261014190000`) |
 | `sync-pncp-contratacoes-editais/atas/contratos` | `data_inicial`, `data_final` (janela padrão de 2 dias), `modalidade`, `modo`, `usar_atualizacao`, `async` | 1–183 s | pncp.gov.br | **não agendar**: bloqueadas por `PNCP_NATIONAL_SYNC_ENABLED` (responde 423) e fora do escopo. As oportunidades vêm do coletor-externo. |
 | `sync-pncp-irp` | `orgaos` | | | **não agendar**: gate `IRP_SYNC_ENABLED` (CLA-34) |
 | `sync-comprasgov-consulta` | | | | **não agendar**: placeholder, os 77 endpoints não estão ligados |

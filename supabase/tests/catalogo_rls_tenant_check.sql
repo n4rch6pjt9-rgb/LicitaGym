@@ -7,7 +7,8 @@
 -- Como: begin/rollback; fixtures próprias; auth.uid()/auth.jwt() redefinidos dentro da transação (stub de
 -- supabase/tests/pre.sql); `set local role authenticated` para a policy valer (superusuário ignora RLS).
 -- Só para o Postgres descartável do scripts/validar-migrations.sh: redefine funções do schema auth (desfeito no rollback).
--- Trava: aborta se catalogo_produtos tiver mais de 100 linhas (nunca em produção).
+-- Travas: aborta se auth.uid() não for o stub de pre.sql ou existir supabase_auth_admin (produção), e se
+-- catalogo_produtos tiver mais de 100 linhas.
 
 begin;
 
@@ -42,6 +43,13 @@ declare
   n int := 0;
   v_qual text;
 begin
+  -- Guarda: esta checagem redefine auth.uid()/auth.jwt(). Só roda onde elas são o stub de supabase/tests/pre.sql
+  -- (Postgres descartável). Em Supabase (papel supabase_auth_admin) aborta antes de qualquer fixture.
+  if exists (select 1 from pg_roles where rolname = 'supabase_auth_admin')
+     or coalesce((select p.prosrc from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+                   where n.nspname = 'auth' and p.proname = 'uid' and p.pronargs = 0), '') not like '%select null::uuid%' then
+    raise exception 'TRAVA DE SEGURANCA: catalogo_rls_tenant_check so roda no Postgres descartavel (auth.uid() nao e o stub de pre.sql).';
+  end if;
   select count(*) into v_qtd from public.catalogo_produtos;
   if v_qtd > 100 then
     raise exception 'TRAVA DE SEGURANCA: catalogo_produtos tem % linhas (> 100). Abortando para proteger producao.', v_qtd;
@@ -90,9 +98,12 @@ begin
   if n_attr <> 1 then
     f := f + 1; raise notice 'FALHA CA-3: sem vinculo ve % atributos (esperado 1)', n_attr; end if;
 
-  -- CA-3: membro de U não vê o atributo de T, vê o de U ------------------------------------------------------------
+  -- CA-2 / CA-3: membro de U não vê o produto nem o atributo de T; vê o de U --------------------------------------
   perform pg_temp.como(u_u, null);
-  n := n + 1;
+  n := n + 2;
+  if exists (select 1 from public.catalogo_produtos where id = v_pt)
+     or not exists (select 1 from public.catalogo_produtos where id = v_pu) then
+    f := f + 1; raise notice 'FALHA CA-2: membro de U ve o produto de T ou nao ve o de U'; end if;
   if exists (select 1 from public.catalogo_produto_atributos where produto_id = v_pt)
      or not exists (select 1 from public.catalogo_produto_atributos where produto_id = v_pu) then
     f := f + 1; raise notice 'FALHA CA-3: membro de U ve atributo de T ou nao ve o de U'; end if;
@@ -148,10 +159,13 @@ begin
       f := f + 1; raise notice 'FALHA CA-6: policy de SELECT sem filtro por empresa: %', v_qual;
     end if;
   end loop;
-  if (select count(*) from pg_policy where polrelid = 'public.catalogo_produtos'::regclass and polname = 'catprod_select') <> 1
-     or (select count(*) from pg_policy where polrelid = 'public.catalogo_produto_atributos'::regclass
-          and polname = 'catalogo_produto_atributos_select') <> 1 then
-    f := f + 1; raise notice 'FALHA CA-6: policies catprod_select / catalogo_produto_atributos_select ausentes ou duplicadas';
+  -- exatamente uma policy por tabela (qualquer comando): nada além de catprod_select / catalogo_produto_atributos_select
+  if (select count(*) from pg_policy where polrelid = 'public.catalogo_produtos'::regclass) <> 1
+     or not exists (select 1 from pg_policy where polrelid = 'public.catalogo_produtos'::regclass and polname = 'catprod_select')
+     or (select count(*) from pg_policy where polrelid = 'public.catalogo_produto_atributos'::regclass) <> 1
+     or not exists (select 1 from pg_policy where polrelid = 'public.catalogo_produto_atributos'::regclass
+                     and polname = 'catalogo_produto_atributos_select') then
+    f := f + 1; raise notice 'FALHA CA-6: esperada exatamente uma policy por tabela (catprod_select / catalogo_produto_atributos_select)';
   end if;
 
   if f > 0 then

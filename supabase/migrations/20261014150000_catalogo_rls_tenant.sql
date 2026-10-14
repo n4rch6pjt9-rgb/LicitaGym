@@ -12,6 +12,7 @@
 --   * desenvolvedor (public.licitagym_desenvolvedor(): app_metadata.licitagym_role = 'admin') lê tudo (decisão do
 --     Marcelo, 14/10/2026), como em tenant_membros_desenvolvedor;
 --   * atributos seguem o produto (exists na linha de catalogo_produtos).
+--   (select licitagym_desenvolvedor()) não depende da linha: o planejador avalia uma vez por consulta.
 --   Grants inalterados: authenticated continua com SELECT (a policy filtra); escrita segue só service_role.
 --   Aditiva, idempotente (drop policy if exists + create policy). Sem backfill. Sem branch Supabase (decisão de 14/10).
 -- Quem lê/escreve: api-catalogo-ficha (service_role, ignora RLS), coletor/catalogos.py (service_role).
@@ -30,7 +31,7 @@ create policy catprod_select on public.catalogo_produtos
   using (
     tenant_id is null
     or public.tenant_papel(tenant_id) is not null
-    or public.licitagym_desenvolvedor()
+    or (select public.licitagym_desenvolvedor())
   );
 
 drop policy if exists catalogo_produto_atributos_select on public.catalogo_produto_atributos;
@@ -44,7 +45,7 @@ create policy catalogo_produto_atributos_select on public.catalogo_produto_atrib
          and (
            p.tenant_id is null
            or public.tenant_papel(p.tenant_id) is not null
-           or public.licitagym_desenvolvedor()
+           or (select public.licitagym_desenvolvedor())
          )
     )
   );

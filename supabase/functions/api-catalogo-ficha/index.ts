@@ -6,10 +6,16 @@ import { ErroFicha, planejar, validarFicha } from "./ficha.ts";
 import { createSupabaseRepo, type FichaRepo } from "./repo.ts";
 
 /**
- * api-catalogo-ficha: grava a ficha lida de uma página de produto no catálogo da empresa.
- * O navegador manda os campos já extraídos (não o HTML). service_role só depois do JWT
- * e da empresa de quem chama (_shared/tenant.ts). A marca sai do host da URL.
+ * api-catalogo-ficha: catálogo de produtos da empresa.
+ * - action "gravar": grava a ficha lida de uma página de produto. O navegador manda os campos já extraídos
+ *   (não o HTML). A marca sai do host da URL.
+ * - action "listar": os produtos da empresa de quem chama, com os atributos da ficha (catalogo_produto_atributos).
+ *   A RLS de catalogo_produtos libera authenticated sem filtro de empresa: a tela lê só por aqui.
+ * service_role só depois do JWT e da empresa de quem chama (_shared/tenant.ts).
  */
+
+/** Até quantos produtos a listagem devolve; `truncado` avisa quando havia mais. */
+export const LIMITE_CATALOGO = 500;
 
 export interface ApiFichaContext {
   getRepo?: () => FichaRepo;
@@ -44,13 +50,22 @@ export async function handleRequest(req: Request, ctx: ApiFichaContext = {}): Pr
     return jsonResponse({ error: "Corpo JSON inválido. Esperado objeto JSON." }, 400);
   }
 
+  const corpo = body as Record<string, unknown>;
+  const action = corpo.action;
+  if (action !== "gravar" && action !== "listar") return jsonResponse({ error: "Ação desconhecida." }, 400);
+
   try {
-    const entrada = validarFicha(body as Record<string, unknown>);
+    // Validar antes de abrir o banco: pedido inválido não gasta conexão.
+    const entrada = action === "gravar" ? validarFicha(corpo) : null;
     const client = ctx.getRepo ? null : getDefaultServiceClient();
     const repo = (ctx.getRepo ?? (() => createSupabaseRepo(client!)))();
     const tenantDe = ctx.tenantDe ?? ((u: AuthenticatedUser) =>
       lerTenantDoUsuario(client!, u.id, isLicitagymAdmin(u)));
     const { tenant } = await tenantDe(user);
+    if (!entrada) {
+      const { itens, truncado } = await repo.listar(tenant, LIMITE_CATALOGO);
+      return jsonResponse({ itens, truncado });
+    }
     const porUrl = await repo.porUrl(entrada.url);
     const porCodigo = await repo.porCodigo(tenant, entrada.codigo);
     const agora = (ctx.agora ?? (() => new Date().toISOString()))();
@@ -75,7 +90,7 @@ export async function handleRequest(req: Request, ctx: ApiFichaContext = {}): Pr
     if (err instanceof ErroFicha) return jsonResponse({ error: err.message }, err.status);
     if (err instanceof ErroTenantAcesso) return jsonResponse({ error: err.message }, err.status);
     console.error("[api-catalogo-ficha]", err instanceof Error ? err.message : "erro");
-    return jsonResponse({ error: "Não foi possível gravar a ficha." }, 500);
+    return jsonResponse({ error: action === "listar" ? "Não foi possível ler o catálogo." : "Não foi possível gravar a ficha." }, 500);
   }
 }
 

@@ -1,8 +1,8 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import type { AuthenticatedUser } from "../../../supabase/functions/_shared/http.ts";
-import { handleRequest } from "../../../supabase/functions/api-catalogo-ficha/index.ts";
-import { familiaDe, fichaTecnica, planejar, validarFicha, type ProdutoExistente } from "../../../supabase/functions/api-catalogo-ficha/ficha.ts";
-import type { FichaRepo } from "../../../supabase/functions/api-catalogo-ficha/repo.ts";
+import { handleRequest, LIMITE_CATALOGO } from "../../../supabase/functions/api-catalogo-ficha/index.ts";
+import { type AtributoFicha, ATRIBUTOS_ONTOLOGIA_FICHA, familiaDe, fichaTecnica, planejar, validarFicha, type ProdutoExistente } from "../../../supabase/functions/api-catalogo-ficha/ficha.ts";
+import { createSupabaseRepo, type FichaRepo } from "../../../supabase/functions/api-catalogo-ficha/repo.ts";
 import type { LinhaProduto } from "../../../supabase/functions/api-catalogo-ficha/ficha.ts";
 
 const USER: AuthenticatedUser = { id: "u-1", email: "a@konnen.test", app_metadata: {} };
@@ -22,6 +22,7 @@ const AIR = {
 function repoMemoria() {
   const linhas = new Map<number, LinhaProduto & { id: number }>();
   const medidas = new Map<number, string>();
+  const atributos = new Map<number, AtributoFicha[]>();
   let seq = 0;
   const achar = (pred: (l: LinhaProduto & { id: number }) => boolean): ProdutoExistente | null => {
     for (const l of linhas.values()) {
@@ -39,14 +40,38 @@ function repoMemoria() {
       return Promise.resolve(id);
     },
     atualizar: (id, linha) => {
-      linhas.set(id, { ...linha, id });
+      // UPDATE só mexe nas colunas enviadas: no_taxonomia corrigido à mão não some quando a ficha não o manda.
+      linhas.set(id, { ...linhas.get(id), ...linha, id });
       return Promise.resolve();
     },
     gravarMedida: (id, texto) => {
       medidas.set(id, texto);
       return Promise.resolve();
     },
-    gravarAtributos: () => Promise.resolve(),
+    gravarAtributos: (id, itens) => {
+      const vieram = new Set(itens.map((i) => i.atributo));
+      const mantidos = (atributos.get(id) ?? []).filter((a) =>
+        !(ATRIBUTOS_ONTOLOGIA_FICHA as readonly string[]).includes(a.atributo) || vieram.has(a.atributo)
+      );
+      atributos.set(id, [...mantidos.filter((a) => !vieram.has(a.atributo)), ...itens]);
+      return Promise.resolve();
+    },
+    listar: (tenant, limite) => {
+      const minhas = [...linhas.values()].filter((l) => l.tenant_id === tenant)
+        .sort((a, b) => b.last_seen_at.localeCompare(a.last_seen_at));
+      const itens = minhas.slice(0, limite).map((l) => ({
+        id: l.id, marca: l.marca, codigo: l.codigo, nome: l.nome, url: l.url, categorias: l.categorias,
+        familia_equipamento: l.familia_equipamento, no_taxonomia: l.no_taxonomia ?? null,
+        carga_maxima_kg: l.carga_maxima_kg ?? null, peso_equipamento_kg: l.peso_equipamento_kg ?? null,
+        ativo: l.ativo, last_seen_at: l.last_seen_at,
+        imagens: (l.atributos.imagens as string[] | undefined) ?? [],
+        atributos: [
+          ...(medidas.has(l.id) ? [{ atributo: "medida", valor_texto: medidas.get(l.id)!, valor_num: null }] : []),
+          ...(atributos.get(l.id) ?? []),
+        ],
+      }));
+      return Promise.resolve({ itens, truncado: minhas.length > limite });
+    },
   };
   return { repo, linhas, medidas };
 }
@@ -223,6 +248,43 @@ Deno.test("regras do dicionário: sem motor, esteira ambígua e esteira de yoga"
   assertEquals(comMotor.atributos.find((a) => a.atributo === "motor_hp_min")!.valor_num, 2.5);
 });
 
+Deno.test("Codex #359: 'sem motor' nas especificações vence a evidência de motor; 'manual' no destaque não nega", () => {
+  const semMotor = fichaTecnica(validarFicha({ ...K_RUN, nome: "Esteira X", destaques: [],
+    especificacoes: [{ rotulo: "Motor", valor: "sem motor" }, { rotulo: "Velocidade", valor: "até 20 km/h" }] }));
+  assertEquals(semMotor.no_taxonomia, "esteira_nao_eletrica");
+  assertEquals(semMotor.atributos, []);
+  const tipoManual = fichaTecnica(validarFicha({ ...K_RUN, nome: "Esteira X", destaques: [],
+    especificacoes: [{ rotulo: "Tipo", valor: "manual" }] }));
+  assertEquals(tipoManual.no_taxonomia, "esteira_nao_eletrica");
+  const manualNoDestaque = fichaTecnica(validarFicha({ ...K_RUN, nome: "Esteira X", especificacoes: [],
+    destaques: [{ titulo: "Documentação", texto: "Acompanha manual do usuário. Motor de 3.0 PHP." }] }));
+  assertEquals(manualNoDestaque.no_taxonomia, "esteira_eletrica");
+});
+
+Deno.test("Codex #359: o número da velocidade e do motor é o que está junto da unidade", () => {
+  const t = fichaTecnica(validarFicha({ ...K_RUN, destaques: [], especificacoes: [
+    { rotulo: "Velocidade", valor: "1–20 km/h, 220 V" },
+    { rotulo: "Motor", valor: "2.5 HP (5.0 HP pico), 220 V" },
+  ] }));
+  const por = new Map(t.atributos.map((a) => [a.atributo, a.valor_num]));
+  assertEquals(por.get("velocidade_kmh_min"), 20);
+  assertEquals(por.get("motor_hp_min"), 2.5);
+});
+
+Deno.test("Codex #359: corrigir à mão para não elétrica apaga os atributos da elétrica na regravação", async () => {
+  const mem = repoMemoria();
+  const ctx = ctxDe(mem, 7);
+  const primeira = await (await handleRequest(pedido(K_RUN), ctx)).json();
+  let lista = (await (await handleRequest(pedido({ action: "listar" }), ctx)).json()).itens[0];
+  assertEquals(lista.atributos.some((a: { atributo: string }) => a.atributo === "motor_hp_min"), true);
+  // admin corrige a taxonomia à mão
+  mem.linhas.get(primeira.id)!.no_taxonomia = "esteira_nao_eletrica";
+  await handleRequest(pedido(K_RUN), ctx);
+  lista = (await (await handleRequest(pedido({ action: "listar" }), ctx)).json()).itens[0];
+  assertEquals(lista.no_taxonomia, "esteira_nao_eletrica");
+  assertEquals(lista.atributos.map((a: { atributo: string }) => a.atributo), ["medida"]);
+});
+
 Deno.test("produto corrigido à mão para não elétrica não ganha atributos da elétrica", () => {
   const existente: ProdutoExistente = {
     id: 3, tenant_id: 7, codigo: "K-RUN", url: K_RUN.url, atributos: {}, descricao: null, no_taxonomia: "esteira_nao_eletrica",
@@ -300,4 +362,119 @@ Deno.test("mais de 12 imagens é recusado", () => {
     status = (err as { status: number }).status;
   }
   assertEquals(status, 400);
+});
+
+function ctxDe(mem: ReturnType<typeof repoMemoria>, tenant = 7) {
+  return {
+    getUser: () => Promise.resolve(USER),
+    getRepo: () => mem.repo,
+    tenantDe: () => Promise.resolve({ tenant, papel: "admin" as const }),
+    agora: () => "2026-10-13T20:00:00.000Z",
+  };
+}
+
+function pedido(body: unknown) {
+  return new Request("https://local/api-catalogo-ficha", { method: "POST", body: JSON.stringify(body) });
+}
+
+Deno.test("listar devolve só os produtos da empresa de quem chama, com os atributos da ficha", async () => {
+  const mem = repoMemoria();
+  await handleRequest(pedido(K_RUN), ctxDe(mem, 7));
+  await handleRequest(pedido(AIR), ctxDe(mem, 7));
+  await handleRequest(pedido({ ...AIR, codigo: "HR009", url: "https://www.konnenfitness.com.br/produto/outra/" }), ctxDe(mem, 9));
+  const res = await handleRequest(pedido({ action: "listar" }), ctxDe(mem, 7));
+  assertEquals(res.status, 200);
+  const corpo = await res.json();
+  assertEquals(corpo.truncado, false);
+  assertEquals(corpo.itens.length, 2);
+  const krun = corpo.itens.find((i: { codigo: string }) => i.codigo === "K-RUN");
+  assertEquals(krun.nome, "ESTEIRA K-RUN");
+  assertEquals(krun.no_taxonomia, "esteira_eletrica");
+  assertEquals(krun.carga_maxima_kg, 180);
+  assertEquals(krun.familia_equipamento, "cardio");
+  assertEquals(krun.imagens.length, 1);
+  assertEquals(krun.atributos.find((a: { atributo: string }) => a.atributo === "capacidade_usuario_kg_min").valor_num, 180);
+  const air = corpo.itens.find((i: { codigo: string }) => i.codigo === "HR007");
+  assertEquals(air.no_taxonomia, null);
+  assertEquals(air.atributos, []);
+});
+
+Deno.test("listar com catálogo vazio devolve lista vazia, não erro", async () => {
+  const res = await handleRequest(pedido({ action: "listar" }), ctxDe(repoMemoria(), 7));
+  assertEquals(res.status, 200);
+  assertEquals(await res.json(), { itens: [], truncado: false });
+});
+
+Deno.test("listar avisa truncado quando a empresa tem mais produtos que o limite", async () => {
+  const mem = repoMemoria();
+  for (let i = 0; i < LIMITE_CATALOGO + 1; i++) {
+    mem.repo.inserir({
+      marca: "Konnen", codigo: `P${i}`, nome: `Produto ${i}`, url: `https://www.konnenfitness.com.br/produto/p${i}/`,
+      tenant_id: 7, categorias: [], familia_equipamento: null, descricao: null, atributos: {}, ativo: true,
+      last_seen_at: `2026-10-13T20:${String(i % 60).padStart(2, "0")}:00.000Z`,
+    });
+  }
+  const corpo = await (await handleRequest(pedido({ action: "listar" }), ctxDe(mem, 7))).json();
+  assertEquals(corpo.itens.length, LIMITE_CATALOGO);
+  assertEquals(corpo.truncado, true);
+});
+
+Deno.test("ação desconhecida responde 400 e sem sessão 401 também no listar", async () => {
+  const mem = repoMemoria();
+  assertEquals((await handleRequest(pedido({ action: "apagar" }), ctxDe(mem))).status, 400);
+  assertEquals((await handleRequest(pedido({}), ctxDe(mem))).status, 400);
+  const semSessao = await handleRequest(pedido({ action: "listar" }), { ...ctxDe(mem), getUser: () => Promise.resolve(null) });
+  assertEquals(semSessao.status, 401);
+});
+
+// Cliente falso mínimo do supabase-js para repo.listar: cada tabela resolve com o resultado dado.
+function clienteCatalogo(produtos: Record<string, unknown>[], atributos: Record<string, unknown>[]) {
+  const consulta = (resultado: { data: unknown; error: unknown }) => {
+    const q: Record<string, unknown> = {};
+    for (const m of ["select", "eq", "order", "limit", "in"]) q[m] = () => q;
+    q.then = (ok: (v: unknown) => unknown, falha?: (e: unknown) => unknown) => Promise.resolve(resultado).then(ok, falha);
+    return q;
+  };
+  return {
+    from: (tabela: string) =>
+      consulta(tabela === "catalogo_produtos" ? { data: produtos, error: null } : { data: atributos, error: null }),
+  } as unknown as Parameters<typeof createSupabaseRepo>[0];
+}
+
+Deno.test("repo real: listar corta no limite, avisa truncado, converte numeric e junta os atributos por produto", async () => {
+  const produtos = Array.from({ length: LIMITE_CATALOGO + 1 }, (_, i) => ({
+    id: i + 1, marca: "Konnen", codigo: `P${i + 1}`, nome: `Produto ${i + 1}`, url: null, categorias: ["Cardio"],
+    familia_equipamento: "cardio", no_taxonomia: i === 0 ? "esteira_eletrica" : null,
+    carga_maxima_kg: i === 0 ? "180.00" : null, peso_equipamento_kg: null, ativo: true,
+    last_seen_at: "2026-10-13T20:00:00+00:00",
+    atributos: i === 0 ? { imagens: ["https://www.konnenfitness.com.br/a.jpg", 7], origem: "html" } : {},
+  }));
+  const atributos = [
+    { produto_id: 1, atributo: "capacidade_usuario_kg_min", valor_texto: "180 kg", valor_num: "180" },
+    { produto_id: 1, atributo: "medida", valor_texto: "2048 x 955 x 1545 mm", valor_num: null },
+    { produto_id: 2, atributo: "medida", valor_texto: "1 x 1 m", valor_num: null },
+  ];
+  const repo = createSupabaseRepo(clienteCatalogo(produtos, atributos));
+  const { itens, truncado } = await repo.listar(7, LIMITE_CATALOGO);
+  assertEquals(truncado, true);
+  assertEquals(itens.length, LIMITE_CATALOGO);
+  assertEquals(itens[0].carga_maxima_kg, 180);
+  assertEquals(itens[0].imagens, ["https://www.konnenfitness.com.br/a.jpg"]);
+  assertEquals(itens[0].atributos, [
+    { atributo: "capacidade_usuario_kg_min", valor_texto: "180 kg", valor_num: 180 },
+    { atributo: "medida", valor_texto: "2048 x 955 x 1545 mm", valor_num: null },
+  ]);
+  assertEquals(itens[1].atributos.map((a) => a.atributo), ["medida"]);
+  assertEquals(itens[2].atributos, []);
+  assertEquals(itens[2].no_taxonomia, null);
+});
+
+Deno.test("repo real: erro do banco no listar vira exceção, não lista vazia", async () => {
+  const falha = { data: null, error: { message: "permission denied" } };
+  const q: Record<string, unknown> = {};
+  for (const m of ["select", "eq", "order", "limit", "in"]) q[m] = () => q;
+  q.then = (ok: (v: unknown) => unknown, f?: (e: unknown) => unknown) => Promise.resolve(falha).then(ok, f);
+  const repo = createSupabaseRepo({ from: () => q } as unknown as Parameters<typeof createSupabaseRepo>[0]);
+  const erro = await repo.listar(7, LIMITE_CATALOGO).then(() => null, (e) => e);
+  assertEquals(erro instanceof Error && erro.message, "permission denied");
 });

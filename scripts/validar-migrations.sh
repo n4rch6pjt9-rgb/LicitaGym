@@ -6,7 +6,7 @@
 #  4. roda todos os supabase/tests/*_check.sql (falham com EXCEPTION).
 # Arquivos em supabase/tests/pendentes.txt podem falhar (PENDENTE, com issue); se passarem, a validação falha
 # até saírem da lista.
-# Uso: scripts/validar-migrations.sh [base_git]   (padrão: origin/main)
+# Uso: scripts/validar-migrations.sh [base_git]   (padrão: origin/main). PG_ESPERA=<s> muda a espera pelo Postgres.
 # Requer: docker, git. Sai com código != 0 se algo falhar.
 set -uo pipefail
 
@@ -36,9 +36,11 @@ fi
 # -h 127.0.0.1: o initdb da imagem sobe um servidor temporário só no socket Unix e o derruba em seguida; por TCP
 # só o servidor definitivo responde, então a sonda abaixo não pega o temporário.
 psql_() { docker exec -i -e PGPASSWORD=x "$NOME" psql -q -h 127.0.0.1 -U postgres -tA -v ON_ERROR_STOP=1 -f - ; }
+# PG_ESPERA (s): dois validadores ao mesmo tempo no Docker Desktop fazem o initdb passar de 60 s; padrão 120.
+ESPERA="${PG_ESPERA:-120}"
 pronto=0
-for _ in $(seq 1 30); do echo 'select 1' | psql_ >/dev/null 2>&1 && { pronto=1; break; }; sleep 2; done
-if [ "$pronto" -ne 1 ]; then echo "Postgres ($IMG) não respondeu em 60 s."; exit 2; fi
+for _ in $(seq 1 $((ESPERA / 2))); do echo 'select 1' | psql_ >/dev/null 2>&1 && { pronto=1; break; }; sleep 2; done
+if [ "$pronto" -ne 1 ]; then echo "Postgres ($IMG) não respondeu em $ESPERA s (PG_ESPERA)."; exit 2; fi
 echo "Postgres: $(echo 'show server_version' | psql_)"
 
 # Lista: "<arquivo> | <trecho do erro esperado> | <issue>". Só vale para checks: migration (ou pre.sql) listada

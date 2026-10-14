@@ -26,8 +26,8 @@ export interface ApiSyncsContext {
   baseUrl?: () => string | null;
   /** Token do GitHub com permissão Actions: write no repositório (fine-grained). */
   githubToken?: () => string | null;
-  /** "dono/repo" do workflow; padrão GITHUB_ACTIONS_REPO ou n4rch6pjt9-rgb/LicitaGym. */
-  githubRepo?: () => string;
+  /** "dono/repo" do workflow: GITHUB_ACTIONS_REPO, padrão n4rch6pjt9-rgb/LicitaGym; null = variável inválida. */
+  githubRepo?: () => string | null;
 }
 
 const REPO_PADRAO = "n4rch6pjt9-rgb/LicitaGym";
@@ -37,9 +37,11 @@ function tokenGithub(): string | null {
   return t.length > 0 ? t : null;
 }
 
-function repoGithub(): string {
+/** "dono/repo" válido, o padrão quando a variável está ausente, ou null quando ela existe e está errada (não cai no padrão em silêncio). */
+function repoGithub(): string | null {
   const r = Deno.env.get("GITHUB_ACTIONS_REPO")?.trim() ?? "";
-  return /^[\w.-]+\/[\w.-]+$/.test(r) ? r : REPO_PADRAO;
+  if (r.length === 0) return REPO_PADRAO;
+  return /^[\w.-]+\/[\w.-]+$/.test(r) ? r : null;
 }
 
 function segredoCron(): string | null {
@@ -101,6 +103,7 @@ export async function handleRequest(req: Request, ctx: ApiSyncsContext = {}): Pr
     const token = (ctx.githubToken ?? tokenGithub)();
     const repo = (ctx.githubRepo ?? repoGithub)();
     if (!token) return jsonResponse({ error: "Disparo do coletor não configurado (GITHUB_ACTIONS_TOKEN)." }, 500);
+    if (!repo) return jsonResponse({ error: "GITHUB_ACTIONS_REPO inválido (use dono/repo)." }, 500);
     const inputs = Object.fromEntries(Object.entries(item.corpo).map(([k, v]) => [k, String(v)]));
     try {
       const fetchFn = ctx.fetchFn ?? fetch;

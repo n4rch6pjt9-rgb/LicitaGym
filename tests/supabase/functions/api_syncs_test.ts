@@ -147,3 +147,15 @@ Deno.test("api-syncs: GitHub recusa (422) volta como http da resposta, sem segre
   assertEquals(body.resposta.message, "Unexpected inputs provided");
   assertEquals(JSON.stringify(body).includes("github-token-de-teste"), false);
 });
+
+Deno.test("api-syncs: GITHUB_ACTIONS_REPO inválido responde 500 sem cair no repositório padrão", async () => {
+  let chamou = false;
+  const c = ctx({
+    githubToken: () => "github-token-de-teste",
+    githubRepo: () => null,
+    fetchFn: () => { chamou = true; return Promise.resolve(new Response(null, { status: 204 })); },
+  });
+  const res = await handleRequest(post({ action: "rodar", sync: "coletor-pncp" }), c);
+  assertEquals(res.status, 500);
+  assertEquals(chamou, false);
+});

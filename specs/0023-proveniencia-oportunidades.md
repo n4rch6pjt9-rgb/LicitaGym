@@ -1,6 +1,6 @@
 # 0023: Registrar na linha da oportunidade o SHA do payload, a origem e a hora da última ingestão
 
-- **Status:** em implementação
+- **Status:** entregue
 - **Issue:** #363 (requisito registrado nos comentários de 14/10/2026); Dashboard #93 (coluna Sync)
 - **Área:** migrations + coletor + edge-functions + dashboard-contrato
 - **Depende do ok do Marcelo:** sim (migration em `licitacoes_externas`, mudança de contrato da `api-dashboard-oportunidades`, republicação de funções)
@@ -41,7 +41,7 @@ com data/hora; UTC no banco, Brasília na tela; **só a última passagem, em col
 | CA-6 | **Dado** a `api-syncs` com `action: "rodar"`, **então** o corpo enviado à função disparada inclui `origem: "manual"`; e o job do pg_cron chama a mesma função com `origem: "cron"` (migration do cron, `private.cron_edge_chamadas.corpo`). O `sync-portal-compras` recebe `origem` mas não altera `ingestao_*` (só link do portal; decisão 4). | Deno `tests/supabase/functions/api_syncs_test.ts` (já existe; caso novo) + SQL `supabase/tests/proveniencia_oportunidades_check.sql` (corpo do job com `origem`, só onde há pg_cron): passa |
 | CA-7 | **Dado** `anon` ou `authenticated` sem vínculo, **quando** tenta ler `licitacoes_externas` direto, **então** sem acesso (ACL atual preservada: migration `20260928140000`). CA negativo. | SQL `supabase/tests/proveniencia_oportunidades_check.sql`: passa |
 | CA-9 | **Dado** qualquer escritor de `licitacoes_externas` que grave ou regrave o payload (hoje `coletor.pncp` e `coletor.paradigma`; depois da #363, os syncs nacionais), **então** envia os três campos; o `sync-portal-compras` (só link do portal) e os `backfill_*.py` não os tocam. | pytest `services/coletor-externo/tests/test_pncp_proveniencia.py` (paradigma incluso) + Deno `tests/supabase/functions/sync_portal_compras_test.ts` (caso: linha regravada sem mudar `ingestao_*`): passa |
-| CA-8 | **Dado** o Dashboard com um item com `ingestao_origem = 'cron'` e `ingestao_em = '2026-10-14T09:00:00Z'`, **então** a célula Sync mostra `cron · 14/10/2026 às 06:00`; com os campos nulos, mostra `Coleta <first_seen_at>` como hoje (sem inventar origem). | Dashboard: vitest `src/test/oportunidades-ux-48.test.tsx` (caso novo; PR separado no Dashboard depois do backend): pendente, só depois do merge deste PR |
+| CA-8 | **Dado** o Dashboard com um item com `ingestao_origem = 'cron'` e `ingestao_em = '2026-10-14T09:00:00Z'`, **então** a célula Sync mostra `cron · 14/10/2026 às 06:00`; com os campos nulos, mostra `Coleta <first_seen_at>` como hoje (sem inventar origem). | Dashboard: vitest `src/test/oportunidades-ux-48.test.tsx` (`src/test/sync-origem.test.ts`, Dashboard #94 mergeado `5969e20` em 14/10): passa |
 
 ## Fora de escopo
 

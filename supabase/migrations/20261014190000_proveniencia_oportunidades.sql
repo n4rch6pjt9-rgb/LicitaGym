@@ -7,7 +7,8 @@
 -- O que muda (aditivo, idempotente, sem backfill):
 --   * licitacoes_externas.ingestao_origem text ('cron' | 'manual' | nulo = linha anterior à spec) e
 --     ingestao_em timestamptz (UTC); payload_hash passa a ter semântica definida: sha256 hex do raw serializado de
---     forma estável (chaves ordenadas, sem espaços, UTF-8; coletor/proveniencia.py e _shared/pncp/hash.ts).
+--     forma estável (chaves ordenadas, sem espaços, UTF-8; coletor/proveniencia.py). Não é o mesmo cálculo de
+--     _shared/pncp/hash.ts (números e chaves voláteis diferem): alinhar antes de os syncs em TS gravarem a tabela (#363).
 --     Só a última passagem fica na linha (decisão do Marcelo, 14/10/2026).
 --   * a view licitacoes_externas_prioridade_efetiva expõe as três colunas (a api-dashboard-oportunidades lê a view).
 --   * o job do pg_cron de sync-portal-compras manda origem "cron" no corpo (a api-syncs manda "manual"); esse sync
@@ -38,7 +39,7 @@ begin
 end $$;
 
 comment on column public.licitacoes_externas.payload_hash is
-  'sha256 hex do raw serializado de forma estável (chaves ordenadas, sem espaços, UTF-8). Nulo sem payload ou em linha anterior à spec 0023. Mesmo raw = mesmo hash.';
+  'sha256 hex do raw serializado de forma estável (chaves ordenadas, sem espaços, UTF-8; coletor/proveniencia.py). Nulo sem payload ou em linha anterior à spec 0023. Mesmo raw pelo mesmo escritor = mesmo hash; não comparável com _shared/pncp/hash.ts até o alinhamento (#363).';
 comment on column public.licitacoes_externas.ingestao_origem is
   'Origem da última ingestão da linha: cron (agendado) ou manual (tela ou linha de comando). Nulo em linha anterior à spec 0023. Backfills e sync-portal-compras não mexem.';
 comment on column public.licitacoes_externas.ingestao_em is

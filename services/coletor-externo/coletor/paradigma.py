@@ -46,8 +46,6 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-
-from .proveniencia import ORIGENS, campos_proveniencia
 from typing import Any
 
 import requests
@@ -56,6 +54,7 @@ from .paginacao import TAMANHO_PAGINA_MAX, avaliar_pagina, clamp_tamanho, pagina
 from .perfil_item import normalizar_marca, perfil_item, texto_do_item
 from .escopo import ITEM_FORA, classificar, contexto_academia, e_peca, classificar_texto_item, interesse_borracha, normalizar
 from .portal import cnpj_ou_none, limpar, parse_data
+from .proveniencia import ORIGENS, campos_proveniencia
 from .retry import retry_after_s
 
 log = logging.getLogger("coletor.paradigma")

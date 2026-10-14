@@ -14,11 +14,10 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-
-from .proveniencia import campos_proveniencia
 from typing import Any, Iterable
 
 import requests
+from .proveniencia import campos_proveniencia
 
 BASE = "https://compras.sestsenat.org.br/portal"
 WS = f"{BASE}/WebService/Servicos.asmx"

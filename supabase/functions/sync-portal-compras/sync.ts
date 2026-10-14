@@ -56,8 +56,8 @@ export async function executarSyncPortal(
   const finalizar = deps.finalizar ?? finishSyncRun;
   const agora = deps.agora ?? new Date();
   // `deps.origem` (cron|manual) chega da api-syncs ou do job do pg_cron (spec 0023). Este sync só grava
-  // portal_consulta e nunca a proveniência de licitacoes_externas: não reingere o payload da licitação.
-  void deps.origem;
+  // portal_consulta e nunca a proveniência de licitacoes_externas (não reingere o payload); fica só no log.
+  console.info(`[sync-portal-compras] execução ${runId}: origem ${deps.origem ?? "desconhecida"}, limite ${limite}`);
   const stats: StatsPortal = { lidos: 0, atualizados: 0, erros: 0, interrompido: false };
 
   /** Fecha a execução, com uma nova tentativa. Devolve false se não conseguiu (quem chama devolve erro). */

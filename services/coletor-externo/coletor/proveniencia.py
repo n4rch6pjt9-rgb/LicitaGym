@@ -1,8 +1,10 @@
 """Proveniência por linha de licitacoes_externas (spec 0023, #363).
 
 Toda gravação do payload de uma licitação leva três campos derivados da passagem do coletor:
-  payload_hash     sha256 hex do `raw` serializado de forma estável (chaves ordenadas, sem espaços, UTF-8),
-                   a mesma regra de _shared/pncp/hash.ts (hashPayload). Nulo quando não há payload.
+  payload_hash     sha256 hex do `raw` serializado de forma estável (chaves ordenadas, sem espaços, UTF-8).
+                   Regra própria do coletor Python: NÃO é comparável com _shared/pncp/hash.ts (hashPayload), que
+                   formata números diferente (150000.0 vs 150000) e descarta chaves voláteis. Alinhar as duas antes
+                   de os syncs em TS gravarem licitacoes_externas (#363). Nulo quando não há payload.
   ingestao_origem  'cron' (agendado) ou 'manual' (disparo pela tela ou pela linha de comando).
   ingestao_em      instante UTC da passagem (ISO 8601). A tela mostra em Brasília.
 Só a última passagem fica na linha (decisão do Marcelo, 14/10/2026). Backfills e o sync-portal-compras não mexem.
@@ -20,7 +22,8 @@ def hash_payload(raw) -> str | None:
     """sha256 hex do payload serializado de forma estável; None para payload ausente ou vazio."""
     if not raw:
         return None
-    texto = json.dumps(raw, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str)
+    # sem default=: tipo não serializável é erro de programação (o raw já precisa ser JSON para o PostgREST)
+    texto = json.dumps(raw, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(texto.encode("utf-8")).hexdigest()
 
 

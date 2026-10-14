@@ -1465,7 +1465,8 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
         "data_homologacao": data_homologacao.isoformat() if data_homologacao else None,
         "prioridade": prioridade, "categoria_escopo": categoria,
         "interesse_borracha": interesse, "termos_busca": [termo], "raw": raw,
-        # proveniência da passagem (spec 0023): hash do raw, origem cron|manual e instante UTC
+        # proveniência da passagem (spec 0023): hash do raw, origem cron|manual e instante UTC. `agora` é o início
+        # da passagem (coletar/recoletar_atualizadas fixam uma vez), não o instante de cada upsert.
         **campos_proveniencia(raw, origem, agora),
     }
     # valor_total: detalhe (valorTotalEstimado, via identificacao_do_detalhe) > valor_global da busca

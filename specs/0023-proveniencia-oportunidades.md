@@ -57,7 +57,9 @@ com data/hora; UTC no banco, Brasília na tela; **só a última passagem, em col
 - **Migration:** sim, `supabase/migrations/20261014190000_proveniencia_oportunidades.sql`, aditiva e idempotente:
   `add column if not exists ingestao_origem text`, `ingestao_em timestamptz`, check de `ingestao_origem`, comentários
   nas três colunas (inclusive `payload_hash`, que passa a ter semântica definida: sha256 hex do `raw` serializado de
-  forma estável, a mesma de `_shared/pncp/hash.ts` `hashPayload`). Sem `set not null` (linhas antigas ficam nulas).
+  forma estável pelo coletor Python). Achado do `revisor-codigo` em 14/10: esse cálculo **não** é o de
+  `_shared/pncp/hash.ts` (`150000.0` vs `150000`; chaves voláteis descartadas só no TS). Alinhar os dois é
+  pré-requisito da #363 antes de os syncs em TS gravarem `licitacoes_externas`. Sem `set not null` (linhas antigas ficam nulas).
   Ajuste do job do pg_cron de `sync-portal-compras` (`20261008180000`) para enviar `origem: "cron"` no corpo (migration
   de cron depende de `pg_cron`: pulada no validador, como as outras).
 - **Tabelas/views/funções tocadas:** `licitacoes_externas` (escreve: coletor Python, `sync-portal-compras`; lê:

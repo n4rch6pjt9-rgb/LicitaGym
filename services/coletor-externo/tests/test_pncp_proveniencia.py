@@ -7,12 +7,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from coletor import main as M
 from coletor import paradigma as PA
 from coletor import pncp as P
 from coletor import portal as PO
 from coletor.proveniencia import ORIGENS, campos_proveniencia, hash_payload
 from tests.test_paradigma import DETALHE_7752
 from tests.test_pncp import COMPRA, _pncp, _sb
+from tests.test_pncp_meta_versao_anexos import _cenario
 
 A1 = datetime(2026, 10, 14, 9, 0, tzinfo=timezone.utc)
 A2 = datetime(2026, 10, 14, 15, 30, tzinfo=timezone.utc)
@@ -74,6 +76,53 @@ def test_ca4_sem_raw_hash_nulo_mas_passagem_registrada():
     assert ORIGENS == ("cron", "manual")
     with pytest.raises(ValueError):
         campos_proveniencia({"x": 1}, "robo", A1)
+
+
+def test_ca3_recoleta_propaga_origem_cron():
+    """CA-3/CA-9: recoletar_atualizadas grava a passagem nova com a origem informada."""
+    sb, p = _cenario()
+    P.recoletar_atualizadas(p, sb, agora=A2, origem="cron")
+    lics = [ln for t, ln in sb.upserts if t == "licitacoes_externas"]
+    assert lics, "a recoleta não regravou nenhuma compra"
+    assert all(ln["ingestao_origem"] == "cron" and ln["ingestao_em"] == A2.isoformat() for ln in lics)
+    assert all(ln["payload_hash"] == _sha(ln["raw"]) for ln in lics)
+
+
+def test_ca9_paradigma_coletar_propaga_origem_ate_o_upsert():
+    """CA-9: paradigma.coletar -> processar_processo -> linha_licitacao levam a origem até o upsert."""
+    portal = MagicMock()
+    portal.fonte = PA.FONTES["sfiec"]
+    d = {"nCdProcesso": 103, "nCdModulo": 18, "sNrEdital": "PE000192023", "sDsSituacao": "Homologado",
+         "sDsObjeto": "Aquisição de Equipamentos de Crossfit", "tDtFinal": None}
+    portal.detalhes.return_value = d
+    portal.itens.return_value = []
+    sb = MagicMock()
+    sb.upsert.side_effect = lambda t, l, c: [{"id": 7}] if t == "licitacoes_externas" else l
+    PA.coletar(portal, sb, [], None, False, com_resultados=False, processos=[(103, 18)], origem="cron")
+    lic = {c.args[0]: c.args[1] for c in sb.upsert.call_args_list}["licitacoes_externas"]
+    assert lic["ingestao_origem"] == "cron" and lic["payload_hash"] == _sha(lic["raw"])
+
+
+def test_ca9_parsers_de_paradigma_e_sestsenat_aceitam_origem(monkeypatch):
+    """CA-9: --origem existe nos três CLIs e recusa valor fora de cron|manual."""
+    import argparse
+    capturado = {}
+    original = argparse.ArgumentParser.parse_args
+
+    def parse_e_para(self, args=None, namespace=None):
+        ns = original(self, args, namespace)
+        capturado["origem"] = ns.origem
+        raise SystemExit(0)  # interrompe antes de qualquer rede
+
+    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", parse_e_para)
+    with pytest.raises(SystemExit):
+        PA.main(["--fonte", "sfiec", "--origem", "cron"])
+    assert capturado["origem"] == "cron"
+    with pytest.raises(SystemExit):
+        M.main(["--origem", "manual"])
+    assert capturado["origem"] == "manual"
+    with pytest.raises(SystemExit):
+        M.main(["--origem", "robo"])
 
 
 def test_ca9_paradigma_e_sestsenat_tambem_gravam_proveniencia():

@@ -59,7 +59,7 @@ Deno.test("api-syncs: rodar encaminha o corpo do catálogo e não devolve o segr
   assertEquals(res.status, 200);
   assertEquals(url, "https://exemplo.supabase.co/functions/v1/sync-portal-compras");
   assertEquals(authorization, "Bearer segredo-de-teste");
-  assertEquals(JSON.parse(enviado), { limite: 40 });
+  assertEquals(JSON.parse(enviado), { limite: 40, origem: "manual" });
   assertEquals(JSON.stringify(body).includes("segredo-de-teste"), false);
 });
 

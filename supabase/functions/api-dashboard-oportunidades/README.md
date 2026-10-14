@@ -130,10 +130,17 @@ Lê a view da prioridade efetiva. Uma compra `historico` é devolvida normalment
     "url_edital": "https://pncp.gov.br/app/editais/07486108000185/2026/1",
     "created_at": "2026-09-20T08:05:00Z",
     "updated_at": "2026-09-28T09:00:00Z",
-    "last_synced_at": "2026-09-28T09:00:00Z"
+    "last_synced_at": "2026-09-28T09:00:00Z",
+    "payload_hash": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+    "ingestao_origem": "cron",
+    "ingestao_em": "2026-10-14T09:00:00+00:00"
   }
 }
 ```
+
+`payload_hash`, `ingestao_origem` (`cron` | `manual`) e `ingestao_em` (UTC) são a proveniência da **última**
+ingestão da linha (spec 0023): sha256 do `raw` serializado de forma estável e quem/quando gravou. Nulos nas linhas
+anteriores à spec. `last_synced_at` continua sendo a data da primeira gravação (o coletor não o atualiza).
 
 #### Resposta de Sucesso por Processo Administrativo (HTTP 200)
 ```json

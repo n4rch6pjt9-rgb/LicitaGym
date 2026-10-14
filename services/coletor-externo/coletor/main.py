@@ -31,6 +31,7 @@ import json
 
 from . import compras_precos
 from .destino import Armazenamento, Supabase, drenar_licitacao_match, env, parece_html, sha256
+from .proveniencia import ORIGENS
 from .portal import (SECOES_CONTRATACAO, ArquivoGrande, PortalSestSenat, encerrado, no_escopo_fitness,
                      processo_para_linha)
 
@@ -44,7 +45,8 @@ SECOES_DOWNLOAD_PADRAO = "processo,recurso,contrarrazoes,parecer"
 
 def coletar_processo(portal: PortalSestSenat, sb: Supabase | None, arm: Armazenamento | None,
                      id_proc: int, modulo: int, secoes_download: set[str], max_bytes: int,
-                     somente_encerrados: bool, dry_run: bool, escopo: str = "fitness") -> dict:
+                     somente_encerrados: bool, dry_run: bool, escopo: str = "fitness",
+                     origem: str = "manual") -> dict:
     resumo = {"id": id_proc, "status": "", "docs": 0, "baixados": 0, "erros": 0}
     d = portal.detalhes(id_proc, modulo)
     if not d or not d.get("nCdProcesso"):
@@ -57,7 +59,7 @@ def coletar_processo(portal: PortalSestSenat, sb: Supabase | None, arm: Armazena
         resumo["status"] = f"ignorado ({d.get('sDsSituacao')})"
         return resumo
 
-    linha = processo_para_linha(d, modulo)
+    linha = processo_para_linha(d, modulo, origem=origem)
     linha["esclarecimentos"] = portal.esclarecimentos(id_proc, modulo)
     linha["notas"] = portal.notas(id_proc, d.get("nCdEdital"), modulo)
 
@@ -169,7 +171,8 @@ def coletar_sestsenat(args, sb: Supabase | None, arm: Armazenamento | None) -> i
     for id_proc in ids:
         try:
             r = coletar_processo(portal, sb, arm, id_proc, args.modulo, secoes, max_bytes,
-                                 somente_encerrados=not args.todos, dry_run=args.dry_run, escopo=args.escopo)
+                                 somente_encerrados=not args.todos, dry_run=args.dry_run, escopo=args.escopo,
+                                 origem=args.origem)
         except Exception as e:
             log.error("proc %s falhou: %s", id_proc, e)
             falhas_operacionais += 1
@@ -197,6 +200,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--parar-apos-vazios", type=int, default=15,
                     help="encerra a varredura após N IDs inexistentes seguidos")
     ap.add_argument("--dry-run", action="store_true", help="só consulta as fontes; não grava nada")
+    ap.add_argument("--origem", choices=list(ORIGENS), default="manual",
+                    help="origem da ingestão gravada em cada linha (spec 0023): cron ou manual (padrão)")
     ap.add_argument("--coleta", default="todas", choices=["sestsenat", "precos", "todas"],
                     help="o que rodar: sestsenat, precos (Pesquisa de Preço, modo catálogo) ou todas (padrão)")
     args = ap.parse_args(argv)

@@ -46,6 +46,8 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+
+from .proveniencia import ORIGENS, campos_proveniencia
 from typing import Any
 
 import requests
@@ -530,7 +532,7 @@ class PortalParadigma:
 
 # ---------------- mapeamento para o schema (licitacoes_externas / licitacao_itens / licitacao_resultados) ----------------
 def linha_licitacao(fonte: Fonte, d: dict, categoria: str | None, borracha: bool, agora: datetime | None = None,
-                    listagem: dict | None = None) -> dict:
+                    listagem: dict | None = None, origem: str = "manual") -> dict:
     d = limpar(d)
     est = limpar(listagem or {})
     if est.get("nAnoFinalizacao"):  # veio do mural estatístico: guarda os totais do certame
@@ -567,6 +569,7 @@ def linha_licitacao(fonte: Fonte, d: dict, categoria: str | None, borracha: bool
         "interesse_borracha": borracha,
         "escopo_estado": "CLASSIFICATION_CANDIDATE" if categoria else "OUT_OF_SCOPE",
         "raw": d,
+        **campos_proveniencia(d, origem, agora),  # spec 0023
     }
     if prio is not None:
         row["prioridade"] = prio
@@ -751,7 +754,8 @@ TERMOS_SISTEMA_S = [
 
 def processar_processo(portal: "PortalParadigma", sb, pid: int, mod: int, resumo: dict, dry_run: bool,
                        com_resultados: bool, produtos: dict[int, dict] | None, fornecedores=None,
-                       forcar: bool = False, listagem: dict | None = None, documentos=None) -> None:
+                       forcar: bool = False, listagem: dict | None = None, documentos=None,
+                       origem: str = "manual") -> None:
     d = portal.detalhes(pid, mod)
     if not d or not d.get("nCdProcesso"):
         return
@@ -772,7 +776,8 @@ def processar_processo(portal: "PortalParadigma", sb, pid: int, mod: int, resumo
           f"{d.get('sDsSituacao')}{prio_tag} | {(d.get('sDsObjeto') or '')[:80]}")
     lic = None
     if not dry_run:
-        lic = sb.upsert("licitacoes_externas", linha_licitacao(portal.fonte, d, cat, borr, listagem=listagem),
+        lic = sb.upsert("licitacoes_externas",
+                        linha_licitacao(portal.fonte, d, cat, borr, listagem=listagem, origem=origem),
                         "fonte,modulo,id_externo")[0]
         for i in li:
             i["licitacao_id"] = lic["id"]
@@ -840,7 +845,8 @@ def processar_processo(portal: "PortalParadigma", sb, pid: int, mod: int, resumo
 
 def coletar(portal: "PortalParadigma", sb, termos: list[str], paginas: int | None, dry_run: bool,
             com_resultados: bool = True, produtos: dict[int, dict] | None = None, fornecedores=None,
-            processos: list[tuple[int, int]] | None = None, anos: list[int] | None = None, documentos=None) -> dict:
+            processos: list[tuple[int, int]] | None = None, anos: list[int] | None = None, documentos=None,
+            origem: str = "manual") -> dict:
     resumo = {"listados": 0, "processos": 0, "no_escopo": 0, "itens_escopo": 0, "itens_catalogo": 0,
               "resultados": 0, "itens_com_vencedor": 0, "alertas": 0, "erros": 0,
               "participantes": 0, "fornecedores_consultados": 0, "fornecedores_em_cache": 0,
@@ -867,7 +873,7 @@ def coletar(portal: "PortalParadigma", sb, termos: list[str], paginas: int | Non
     for (pid, mod), x in vistos.items():
         try:
             processar_processo(portal, sb, pid, mod, resumo, dry_run, com_resultados, produtos, fornecedores,
-                               forcar=bool(processos), listagem=x, documentos=documentos)
+                               forcar=bool(processos), listagem=x, documentos=documentos, origem=origem)
         except Exception as e:  # um processo com erro não derruba a coleta, mas é contado
             resumo["erros"] += 1
             log.warning("%s %s: %s", portal.fonte.slug, pid, e)
@@ -894,6 +900,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--sem-fornecedores", action="store_true", help="não consulta CNPJ dos participantes")
     ap.add_argument("--sem-documentos", action="store_true", help="não registra/baixa os anexos do processo")
     ap.add_argument("--dry-run", action="store_true", help="não grava; mostra vencedores e fornecedores consultados")
+    ap.add_argument("--origem", choices=list(ORIGENS), default="manual",
+                    help="origem da ingestão gravada em cada linha (spec 0023): cron ou manual (padrão)")
     args = ap.parse_args(argv)
     if args.paginas is not None and args.paginas < 1:
         ap.error("--paginas deve ser >= 1")
@@ -937,7 +945,7 @@ def main(argv: list[str] | None = None) -> int:
             log.warning("VISITANTE_* não configurado: documentos que exigem cadastro ficam registrados como pendentes")
         docs = DocumentosParadigma(portal, sb, arm, visitante, int(float(env("MAX_MB", "50")) * 1048576), args.dry_run)
     r = coletar(portal, sb, termos, args.paginas, args.dry_run, not args.sem_resultados, produtos, forn, processos, anos,
-                docs)
+                docs, origem=args.origem)
     drenar_licitacao_match(sb)  # recorte CATMAT por texto: zera a pendência de licitacao_match (sem efeito no dry-run)
     print(json.dumps(r, ensure_ascii=False))
     return 1 if r["erros"] and not r["no_escopo"] else 0

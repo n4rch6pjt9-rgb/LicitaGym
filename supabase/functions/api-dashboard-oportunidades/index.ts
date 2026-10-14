@@ -75,6 +75,10 @@ export const PUBLIC_LICITACAO_COLUMNS = [
   "last_synced_at",
   "objeto_categoria",
   "objeto_registro_preco",
+  // proveniência da última ingestão (spec 0023): nulos nas linhas anteriores à spec
+  "payload_hash",
+  "ingestao_origem",
+  "ingestao_em",
 ].join(",");
 
 /**

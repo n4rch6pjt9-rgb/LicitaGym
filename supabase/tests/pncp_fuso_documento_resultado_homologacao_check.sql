@@ -5,6 +5,122 @@
 -- portal_rlc_rca (sesi_pe): não é o bug do PNCP e o coletor não grava /Date(ms)/; a data não muda e não ganha marca.
 -- Segunda chamada corrige 0. Dados fictícios. begin/rollback. Aborta se licitacoes_externas tiver mais de 100 linhas.
 
+-- Caminho de compatibilidade (13/10/2026): recria o formato da primeira versão (tabela sem fonte/regra, pk (relacao,id),
+-- 3 h somadas em toda linha marcada) com dados fictícios, chama private.pncp_fuso_339_compatibilidade() e confere:
+-- pncp intacto, sestsenat devolvido 3 h, marcas com fonte/regra, órfã como 'desconhecida', chave nova. begin/rollback.
+begin;
+
+do $$
+declare
+  v_qtd int;
+  v_lic_pncp bigint;
+  v_doc_pncp bigint;
+  v_lic_sest bigint;
+  v_doc_sest bigint;
+  v_antes timestamptz := timestamptz '2026-10-08 10:00+00';
+  v_mais3 timestamptz := timestamptz '2026-10-08 10:00+00' + interval '3 hours';
+  v_r record;
+  v_doc timestamptz;
+  v_hom timestamptz;
+  v_pk text;
+begin
+  select count(*) into v_qtd from public.licitacoes_externas;
+  if v_qtd > 100 then
+    raise exception 'TRAVA DE SEGURANCA: licitacoes_externas contem % linhas (> 100). Abortando para proteger producao.', v_qtd;
+  end if;
+
+  insert into public.fontes_externas (slug, entidade, plataforma, base_url, modo_coleta)
+  values ('pncp', 'PNCP', 'pncp', 'https://pncp.gov.br', 'automatico'),
+         ('sestsenat', 'SEST SENAT', 'paradigma', 'https://compras.sestsenat.org.br/portal', 'automatico')
+  on conflict (slug) do nothing;
+
+  -- estado que a v1 deixou: as datas já estão 3 h adiantadas nos dois, e a marca não tem fonte
+  insert into public.licitacoes_externas (fonte, modulo, id_externo, codigo_externo, data_homologacao)
+  values ('pncp', 1, 910339, 'compat-pncp', v_mais3) returning id into v_lic_pncp;
+  insert into public.licitacao_documentos (licitacao_id, secao, arquivo_origem, data_documento)
+  values (v_lic_pncp, 'processo', 'compat-pncp', v_mais3) returning id into v_doc_pncp;
+  insert into public.licitacoes_externas (fonte, modulo, id_externo, codigo_externo, data_homologacao)
+  values ('sestsenat', 1, 910340, 'compat-sest', v_mais3) returning id into v_lic_sest;
+  insert into public.licitacao_documentos (licitacao_id, secao, arquivo_origem, data_documento)
+  values (v_lic_sest, 'processo', 'compat-sest', v_mais3) returning id into v_doc_sest;
+
+  drop table private.pncp_fuso_linha_339;
+  create table private.pncp_fuso_linha_339 (
+    relacao text not null check (relacao in ('licitacao_documentos', 'licitacao_resultados', 'licitacoes_externas')),
+    id bigint not null,
+    corrigida_em timestamptz not null default now(),
+    primary key (relacao, id)
+  );
+  insert into private.pncp_fuso_linha_339 (relacao, id) values
+    ('licitacao_documentos', v_doc_pncp), ('licitacoes_externas', v_lic_pncp),
+    ('licitacao_documentos', v_doc_sest), ('licitacoes_externas', v_lic_sest),
+    ('licitacao_resultados', 999999339);  -- órfã: resultado que não existe mais
+
+  select * into v_r from private.pncp_fuso_339_compatibilidade();
+  if v_r.documentos <> 1 or v_r.resultados <> 0 or v_r.homologacoes <> 1 then
+    raise exception 'compat 339: devolvidas % documentos, % resultados, % homologacoes (esperado 1, 0, 1)',
+      v_r.documentos, v_r.resultados, v_r.homologacoes;
+  end if;
+
+  select d.data_documento into v_doc from public.licitacao_documentos d where d.id = v_doc_pncp;
+  select l.data_homologacao into v_hom from public.licitacoes_externas l where l.id = v_lic_pncp;
+  if v_doc is distinct from v_mais3 or v_hom is distinct from v_mais3 then
+    raise exception 'compat 339: pncp mudou, documento % homologacao % (esperado %)', v_doc, v_hom, v_mais3;
+  end if;
+  select d.data_documento into v_doc from public.licitacao_documentos d where d.id = v_doc_sest;
+  select l.data_homologacao into v_hom from public.licitacoes_externas l where l.id = v_lic_sest;
+  if v_doc is distinct from v_antes or v_hom is distinct from v_antes then
+    raise exception 'compat 339: sestsenat nao voltou, documento % homologacao % (esperado %)', v_doc, v_hom, v_antes;
+  end if;
+
+  if not exists (select 1 from private.pncp_fuso_linha_339 where relacao = 'licitacao_documentos' and id = v_doc_pncp and fonte = 'pncp' and regra = 'pncp_mais_3h')
+     or not exists (select 1 from private.pncp_fuso_linha_339 where relacao = 'licitacao_documentos' and id = v_doc_sest and fonte = 'sestsenat' and regra = 'manter_utc')
+     or not exists (select 1 from private.pncp_fuso_linha_339 where relacao = 'licitacao_resultados' and id = 999999339 and fonte = 'desconhecida' and regra = 'pncp_mais_3h') then
+    raise exception 'compat 339: marcas sem fonte/regra esperadas';
+  end if;
+  select string_agg(a.attname, ',' order by k.ord) into v_pk
+    from pg_constraint c
+    join lateral unnest(c.conkey) with ordinality as k(attnum, ord) on true
+    join pg_attribute a on a.attrelid = c.conrelid and a.attnum = k.attnum
+   where c.conrelid = 'private.pncp_fuso_linha_339'::regclass and c.contype = 'p';
+  if v_pk is distinct from 'relacao,id,fonte' then
+    raise exception 'compat 339: chave primaria % (esperado relacao,id,fonte)', v_pk;
+  end if;
+
+  -- segunda chamada: tabela já no formato novo, nada a fazer
+  select * into v_r from private.pncp_fuso_339_compatibilidade();
+  if v_r.documentos <> 0 or v_r.homologacoes <> 0 then
+    raise exception 'compat 339: segunda chamada devolveu % documentos e % homologacoes', v_r.documentos, v_r.homologacoes;
+  end if;
+
+  raise notice 'SUCESSO: compatibilidade da #339 devolve 3 h so fora do PNCP, marca fonte/regra e refaz a chave.';
+end $$;
+
+rollback;
+
+-- Invariantes da compatibilidade com a primeira versão (13/10/2026): toda marca tem fonte e regra coerentes.
+do $$
+declare
+  v_sem_fonte bigint;
+  v_errada bigint;
+  v_retorno text;
+begin
+  select count(*) into v_sem_fonte from private.pncp_fuso_linha_339 where fonte is null or regra is null;
+  select count(*) into v_errada from private.pncp_fuso_linha_339
+   where (fonte = 'pncp' and regra <> 'pncp_mais_3h')
+      or (fonte not in ('pncp', 'desconhecida') and regra <> 'manter_utc');
+  select pg_get_function_result(p.oid) into v_retorno
+    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+   where n.nspname = 'private' and p.proname = 'corrigir_fuso_pncp_339';
+  if v_sem_fonte > 0 or v_errada > 0 then
+    raise exception 'ACL CHECK FALHOU: pncp_fuso_linha_339 com % marcas sem fonte/regra e % com regra incoerente', v_sem_fonte, v_errada;
+  end if;
+  if v_retorno is distinct from 'TABLE(fonte text, relacao text, corrigidas bigint)' then
+    raise exception 'ACL CHECK FALHOU: corrigir_fuso_pncp_339 com retorno %, esperado TABLE(fonte, relacao, corrigidas)', v_retorno;
+  end if;
+  raise notice 'SUCESSO: marcas da #339 com fonte e regra coerentes; função no retorno novo.';
+end $$;
+
 begin;
 
 do $$

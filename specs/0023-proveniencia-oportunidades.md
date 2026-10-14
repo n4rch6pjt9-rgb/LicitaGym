@@ -1,6 +1,6 @@
 # 0023: Registrar na linha da oportunidade o SHA do payload, a origem e a hora da última ingestão
 
-- **Status:** aprovada
+- **Status:** em implementação
 - **Issue:** #363 (requisito registrado nos comentários de 14/10/2026); Dashboard #93 (coluna Sync)
 - **Área:** migrations + coletor + edge-functions + dashboard-contrato
 - **Depende do ok do Marcelo:** sim (migration em `licitacoes_externas`, mudança de contrato da `api-dashboard-oportunidades`, republicação de funções)
@@ -31,17 +31,17 @@ com data/hora; UTC no banco, Brasília na tela; **só a última passagem, em col
 
 ## Critérios de aceite
 
-| ID | Dado / Quando / Então | Teste que prova |
+| ID | Dado / Quando / Então | Teste que prova (resultado em 14/10/2026) |
 |---|---|---|
-| CA-1 | **Dado** a migration aplicada, **então** `licitacoes_externas` tem `ingestao_origem text check in ('cron','manual')` (nulo permitido: linha anterior à spec), `ingestao_em timestamptz` e reutiliza `payload_hash text`; aplicada duas vezes, sem erro; `anon` sem privilégio e `authenticated` sem SELECT direto (como hoje). | `scripts/validar-migrations.sh` + SQL `supabase/tests/proveniencia_oportunidades_check.sql` |
-| CA-2 | **Dado** uma compra do PNCP coletada por `coletor.pncp`, **quando** a linha é gravada ou regravada, **então** `payload_hash = sha256(json.dumps(raw, sort_keys=True, ensure_ascii=False, separators=(',', ':')))`, `ingestao_em = agora (UTC)` e `ingestao_origem` = valor do argumento `--origem` (`cron` ou `manual`; padrão `manual`). Teste unitário sem API real. | pytest `services/coletor-externo/tests/test_pncp_proveniencia.py` |
-| CA-3 | **Dado** a mesma compra recoletada com `raw` idêntico, **quando** o coletor grava de novo, **então** `payload_hash` não muda, `ingestao_em` e `ingestao_origem` mudam para a passagem nova (última passagem, não histórico) e `first_seen_at`/`created_at` ficam como estavam. | pytest `services/coletor-externo/tests/test_pncp_proveniencia.py` + SQL `supabase/tests/proveniencia_oportunidades_check.sql` (upsert duas vezes em `begin/rollback`) |
-| CA-4 | **Dado** `raw` ausente ou vazio, **então** `payload_hash` é nulo (nada inventado) e `ingestao_em`/`ingestao_origem` ainda são gravados. | pytest `services/coletor-externo/tests/test_pncp_proveniencia.py` |
-| CA-5 | **Dado** `action=list` ou `get` da `api-dashboard-oportunidades`, **então** cada item traz `ingestao_origem`, `ingestao_em` e `payload_hash` (nulos quando a linha é anterior à spec), sem mudar os campos existentes. | Deno `tests/supabase/functions/api_dashboard_oportunidades_proveniencia_test.ts` |
-| CA-6 | **Dado** a `api-syncs` com `action: "rodar"`, **então** o corpo enviado à função disparada inclui `origem: "manual"`; e o job do pg_cron chama a mesma função com `origem: "cron"` (migration do cron, `private.cron_edge_chamadas.corpo`). O `sync-portal-compras` recebe `origem` mas não altera `ingestao_*` (só link do portal; decisão 4). | Deno `tests/supabase/functions/api_syncs_test.ts` (já existe; caso novo) + SQL `supabase/tests/cron_sync_jobs_check.sql` (corpo com `origem`) |
-| CA-7 | **Dado** `anon` ou `authenticated` sem vínculo, **quando** tenta ler `licitacoes_externas` direto, **então** sem acesso (ACL atual preservada: migration `20260928140000`). CA negativo. | SQL `supabase/tests/proveniencia_oportunidades_check.sql` |
-| CA-9 | **Dado** qualquer escritor de `licitacoes_externas` que grave ou regrave o payload (hoje `coletor.pncp` e `coletor.paradigma`; depois da #363, os syncs nacionais), **então** envia os três campos; o `sync-portal-compras` (só link do portal) e os `backfill_*.py` não os tocam. | pytest `services/coletor-externo/tests/test_pncp_proveniencia.py` (paradigma incluso) + Deno `tests/supabase/functions/sync_portal_compras_test.ts` (caso: linha regravada sem mudar `ingestao_*`) |
-| CA-8 | **Dado** o Dashboard com um item com `ingestao_origem = 'cron'` e `ingestao_em = '2026-10-14T09:00:00Z'`, **então** a célula Sync mostra `cron · 14/10/2026 às 06:00`; com os campos nulos, mostra `Coleta <first_seen_at>` como hoje (sem inventar origem). | Dashboard: vitest `src/test/oportunidades-ux-48.test.tsx` (caso novo; PR separado no Dashboard depois do backend) |
+| CA-1 | **Dado** a migration aplicada, **então** `licitacoes_externas` tem `ingestao_origem text check in ('cron','manual')` (nulo permitido: linha anterior à spec), `ingestao_em timestamptz` e reutiliza `payload_hash text`; aplicada duas vezes, sem erro; `anon` sem privilégio e `authenticated` sem SELECT direto (como hoje). | `scripts/validar-migrations.sh` + SQL `supabase/tests/proveniencia_oportunidades_check.sql`: passa |
+| CA-2 | **Dado** uma compra do PNCP coletada por `coletor.pncp`, **quando** a linha é gravada ou regravada, **então** `payload_hash = sha256(json.dumps(raw, sort_keys=True, ensure_ascii=False, separators=(',', ':')))`, `ingestao_em = agora (UTC)` e `ingestao_origem` = valor do argumento `--origem` (`cron` ou `manual`; padrão `manual`). Teste unitário sem API real. | pytest `services/coletor-externo/tests/test_pncp_proveniencia.py`: passa |
+| CA-3 | **Dado** a mesma compra recoletada com `raw` idêntico, **quando** o coletor grava de novo, **então** `payload_hash` não muda, `ingestao_em` e `ingestao_origem` mudam para a passagem nova (última passagem, não histórico) e `first_seen_at`/`created_at` ficam como estavam. | pytest `services/coletor-externo/tests/test_pncp_proveniencia.py` + SQL `supabase/tests/proveniencia_oportunidades_check.sql` (upsert duas vezes em `begin/rollback`): passa |
+| CA-4 | **Dado** `raw` ausente ou vazio, **então** `payload_hash` é nulo (nada inventado) e `ingestao_em`/`ingestao_origem` ainda são gravados. | pytest `services/coletor-externo/tests/test_pncp_proveniencia.py`: passa |
+| CA-5 | **Dado** `action=list` ou `get` da `api-dashboard-oportunidades`, **então** cada item traz `ingestao_origem`, `ingestao_em` e `payload_hash` (nulos quando a linha é anterior à spec), sem mudar os campos existentes. | Deno `tests/supabase/functions/api_dashboard_oportunidades_proveniencia_test.ts`: passa |
+| CA-6 | **Dado** a `api-syncs` com `action: "rodar"`, **então** o corpo enviado à função disparada inclui `origem: "manual"`; e o job do pg_cron chama a mesma função com `origem: "cron"` (migration do cron, `private.cron_edge_chamadas.corpo`). O `sync-portal-compras` recebe `origem` mas não altera `ingestao_*` (só link do portal; decisão 4). | Deno `tests/supabase/functions/api_syncs_test.ts` (já existe; caso novo) + SQL `supabase/tests/proveniencia_oportunidades_check.sql` (corpo do job com `origem`, só onde há pg_cron): passa |
+| CA-7 | **Dado** `anon` ou `authenticated` sem vínculo, **quando** tenta ler `licitacoes_externas` direto, **então** sem acesso (ACL atual preservada: migration `20260928140000`). CA negativo. | SQL `supabase/tests/proveniencia_oportunidades_check.sql`: passa |
+| CA-9 | **Dado** qualquer escritor de `licitacoes_externas` que grave ou regrave o payload (hoje `coletor.pncp` e `coletor.paradigma`; depois da #363, os syncs nacionais), **então** envia os três campos; o `sync-portal-compras` (só link do portal) e os `backfill_*.py` não os tocam. | pytest `services/coletor-externo/tests/test_pncp_proveniencia.py` (paradigma incluso) + Deno `tests/supabase/functions/sync_portal_compras_test.ts` (caso: linha regravada sem mudar `ingestao_*`): passa |
+| CA-8 | **Dado** o Dashboard com um item com `ingestao_origem = 'cron'` e `ingestao_em = '2026-10-14T09:00:00Z'`, **então** a célula Sync mostra `cron · 14/10/2026 às 06:00`; com os campos nulos, mostra `Coleta <first_seen_at>` como hoje (sem inventar origem). | Dashboard: vitest `src/test/oportunidades-ux-48.test.tsx` (caso novo; PR separado no Dashboard depois do backend): pendente, só depois do merge deste PR |
 
 ## Fora de escopo
 
@@ -54,7 +54,7 @@ com data/hora; UTC no banco, Brasília na tela; **só a última passagem, em col
 
 ## Impacto em dados
 
-- **Migration:** sim, `supabase/migrations/<timestamp>_proveniencia_oportunidades.sql`, aditiva e idempotente:
+- **Migration:** sim, `supabase/migrations/20261014190000_proveniencia_oportunidades.sql`, aditiva e idempotente:
   `add column if not exists ingestao_origem text`, `ingestao_em timestamptz`, check de `ingestao_origem`, comentários
   nas três colunas (inclusive `payload_hash`, que passa a ter semântica definida: sha256 hex do `raw` serializado de
   forma estável, a mesma de `_shared/pncp/hash.ts` `hashPayload`). Sem `set not null` (linhas antigas ficam nulas).

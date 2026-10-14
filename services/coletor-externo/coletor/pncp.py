@@ -1196,52 +1196,71 @@ def coletar(pncp: PNCP, sb: Supabase | None, arm: Armazenamento | None, termos: 
             log.warning("  %s: %s (vai para a segunda passada)", c.get("numero_controle_pncp"), str(e)[:120])
             return c, e
 
+    def _varrer(termo, st, inicio=1, lidos=0, segunda=False) -> tuple[int, int] | None:
+        """Pagina a busca de (termo, status) a partir de `inicio`. Devolve None quando chega ao fim, ou
+        (página que falhou, itens lidos até ali) quando a busca esgota as tentativas ou volta fora do envelope:
+        quem chama refaz dali na segunda passada."""
+        nivel, destino = ((logging.ERROR, "falhou também na segunda passada") if segunda
+                          else (logging.WARNING, "vai para a segunda passada"))
+        for pagina in range(inicio, paginas + 1):
+            try:
+                res = pncp.buscar(termo, st, pagina, tam)
+            except Exception as e:
+                # Uma busca que esgotou as tentativas (429/5xx/timeout/conexão derrubada) não derruba os outros
+                # termos: volta para a segunda passada.
+                log.log(nivel, '"%s" [%s] pág. %s: busca falhou, %s: %s', termo, st, pagina, destino, str(e)[:160])
+                return pagina, lidos
+            if not isinstance(res, dict) or not isinstance(res.get("items"), list):
+                log.log(nivel, '"%s" [%s] pág. %s: resposta inesperada (não é fim de coleta), %s',
+                        termo, st, pagina, destino)
+                return pagina, lidos
+            lote = res.get("items") or []
+            log.info('"%s" [%s] pág. %s: %s de %s', termo, st, pagina, len(lote), res.get("total"))
+            fila = []
+            for c in lote:
+                chave = c.get("numero_controle_pncp")
+                if not chave:
+                    continue
+                if chave in vistos:
+                    vistos[chave].append(termo)
+                    continue
+                vistos[chave] = [termo]
+                resumo["encontradas"] += 1
+                fila.append(c)
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                for c, erro in ex.map(lambda c: _tentar(c, termo, st), fila):
+                    if erro:
+                        falhas.append((c, termo, st))
+            lidos += len(lote)
+            decisao = avaliar_pagina(lote, tamanho=tam, pagina=pagina, corpo=res, acumulado=lidos)
+            if decisao.aviso:
+                log.warning('"%s" [%s] pág. %s: %s', termo, st, pagina, decisao.aviso)
+            if decisao.encerrar:
+                return None
+        log.warning('"%s" [%s]: parou no teto de %s páginas sem o total confirmar o fim', termo, st, paginas)
+        return None
+
     try:
+        buscas_falhas: list[tuple[str, str, int, int]] = []
         for termo in termos:
             for st in status_lista:
-                lidos = 0
-                for pagina in range(1, paginas + 1):
-                    try:
-                        res = pncp.buscar(termo, st, pagina, tam)
-                    except Exception as e:
-                        # Uma busca que esgotou as tentativas (429/5xx/timeout) não derruba os outros termos;
-                        # fica no resumo e o processo sai com código 1 (ver main).
-                        _inc(resumo, "falha_busca")
-                        with _trava:
-                            resumo.setdefault("termos_com_falha", []).append(f"{termo} [{st}] pág. {pagina}")
-                        log.error('"%s" [%s] pág. %s: busca falhou, segue para o próximo termo: %s',
-                                  termo, st, pagina, str(e)[:160])
-                        break
-                    if not isinstance(res, dict) or not isinstance(res.get("items"), list):
-                        _inc(resumo, "falha_busca")
-                        log.warning('"%s" [%s] pág. %s: resposta inesperada; não é fim de coleta', termo, st, pagina)
-                        break
-                    lote = res.get("items") or []
-                    log.info('"%s" [%s] pág. %s: %s de %s', termo, st, pagina, len(lote), res.get("total"))
-                    fila = []
-                    for c in lote:
-                        chave = c.get("numero_controle_pncp")
-                        if not chave:
-                            continue
-                        if chave in vistos:
-                            vistos[chave].append(termo)
-                            continue
-                        vistos[chave] = [termo]
-                        resumo["encontradas"] += 1
-                        fila.append(c)
-                    with ThreadPoolExecutor(max_workers=workers) as ex:
-                        for c, erro in ex.map(lambda c: _tentar(c, termo, st), fila):
-                            if erro:
-                                falhas.append((c, termo, st))
-                    lidos += len(lote)
-                    decisao = avaliar_pagina(lote, tamanho=tam, pagina=pagina, corpo=res, acumulado=lidos)
-                    if decisao.aviso:
-                        log.warning('"%s" [%s] pág. %s: %s', termo, st, pagina, decisao.aviso)
-                    if decisao.encerrar:
-                        break
+                parou = _varrer(termo, st)
+                if parou:
+                    buscas_falhas.append((termo, st, *parou))
+
+        if buscas_falhas:
+            # O /api/search do PNCP derruba conexões em rajadas (14/10: ~60% das chamadas): refazer depois dos outros
+            # termos costuma passar. O que falhar de novo fica no resumo e o processo sai com código 1 (ver main).
+            log.info("Segunda passada: %s busca(s) que falharam por instabilidade do PNCP", len(buscas_falhas))
+            time.sleep(pausa_segunda_passada)
+            for termo, st, pagina, lidos in buscas_falhas:
+                parou = _varrer(termo, st, pagina, lidos, segunda=True)
+                if parou:
+                    _inc(resumo, "falha_busca")
+                    resumo.setdefault("termos_com_falha", []).append(f"{termo} [{st}] pág. {parou[0]}")
                 else:
-                    log.warning('"%s" [%s]: parou no teto de %s páginas sem o total confirmar o fim',
-                                termo, st, paginas)
+                    _inc(resumo, "busca_recuperada")
+                    log.info('"%s" [%s]: recuperada na segunda passada a partir da pág. %s', termo, st, pagina)
 
         if falhas:
             log.info("Segunda passada: %s compra(s) que falharam por instabilidade do PNCP", len(falhas))

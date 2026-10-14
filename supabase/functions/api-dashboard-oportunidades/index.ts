@@ -75,6 +75,10 @@ export const PUBLIC_LICITACAO_COLUMNS = [
   "last_synced_at",
   "objeto_categoria",
   "objeto_registro_preco",
+  // proveniência da última ingestão (spec 0023): nulos nas linhas anteriores à spec
+  "payload_hash",
+  "ingestao_origem",
+  "ingestao_em",
 ].join(",");
 
 /**
@@ -91,28 +95,39 @@ export const PRIORIDADE_MOTIVO_COLUMN = "prioridade_motivo";
 /** Projeção de list/get (sempre na view): colunas públicas da tabela + as da canônica + o motivo. */
 export const OPORTUNIDADES_COLUMNS = `${PUBLIC_LICITACAO_COLUMNS},${CANONICA_COLUMNS},${PRIORIDADE_MOTIVO_COLUMN}`;
 
-/** Colunas do objeto canônico (migration 20261004140000_objeto_canonico). */
-const COLUNAS_OBJETO = ["objeto_categoria", "objeto_registro_preco"];
-/** Mesmas colunas sem as do objeto canônico: usadas se a função for publicada antes de a migration existir no banco. */
-export const OPORTUNIDADES_COLUMNS_SEM_OBJETO = OPORTUNIDADES_COLUMNS.split(",")
-  .filter((c) => !COLUNAS_OBJETO.includes(c))
+/**
+ * Colunas que podem ainda não existir na view quando a função é publicada antes da migration (o merge republica as
+ * funções e aplica a migration em ordem não garantida): objeto canônico (20261004140000) e proveniência (20261014190000).
+ */
+export const COLUNAS_OPCIONAIS = [
+  "objeto_categoria",
+  "objeto_registro_preco",
+  "payload_hash",
+  "ingestao_origem",
+  "ingestao_em",
+];
+/** Mesmas colunas sem as opcionais: usadas se a view ainda não as tiver. */
+export const OPORTUNIDADES_COLUMNS_SEM_OPCIONAIS = OPORTUNIDADES_COLUMNS.split(",")
+  .filter((c) => !COLUNAS_OPCIONAIS.includes(c))
   .join(",");
 
-/** O banco respondeu "coluna não existe" (42703) para uma coluna do objeto canônico? */
-function colunaDoObjetoAusente(error: unknown): boolean {
+/** O banco respondeu "coluna não existe" (42703) para uma coluna opcional? */
+export function colunaOpcionalAusente(error: unknown): boolean {
   const e = error as { code?: string; message?: string } | null;
-  return e?.code === "42703" && COLUNAS_OBJETO.some((c) => (e.message ?? "").includes(c));
+  return e?.code === "42703" && COLUNAS_OPCIONAIS.some((c) => (e.message ?? "").includes(c));
 }
 
 /**
- * Executa a leitura com as colunas do objeto canônico e, se a view ainda não as tiver (função publicada antes da
- * migration, ou migration atrasada), repete sem elas: list e get continuam respondendo, só sem a categoria.
+ * Executa a leitura com todas as colunas e, se a view ainda não tiver alguma opcional (função publicada antes da
+ * migration, ou migration atrasada/falha), repete sem elas: list e get continuam respondendo, só sem esses campos.
  */
-async function comColunasDoObjeto<R extends { error: unknown }>(ler: (colunas: string) => PromiseLike<R>): Promise<R> {
+export async function comColunasOpcionais<R extends { error: unknown }>(
+  ler: (colunas: string) => PromiseLike<R>,
+): Promise<R> {
   const r = await ler(OPORTUNIDADES_COLUMNS);
-  if (!colunaDoObjetoAusente(r.error)) return r;
-  console.warn("[api-dashboard-oportunidades] colunas do objeto canônico ausentes na view; respondendo sem elas");
-  return await ler(OPORTUNIDADES_COLUMNS_SEM_OBJETO);
+  if (!colunaOpcionalAusente(r.error)) return r;
+  console.warn("[api-dashboard-oportunidades] coluna opcional ausente na view; respondendo sem as opcionais");
+  return await ler(OPORTUNIDADES_COLUMNS_SEM_OPCIONAIS);
 }
 
 export interface DashboardOportunidadesClientContext {
@@ -402,7 +417,7 @@ async function handleGet(
 
     // Caso 1: Busca única por ID
     if (params.id !== undefined && params.id !== null) {
-      const { data, error } = await comColunasDoObjeto((colunas) =>
+      const { data, error } = await comColunasOpcionais((colunas) =>
         client
           .from(OPORTUNIDADES_VIEW)
           .select(colunas)
@@ -442,7 +457,7 @@ async function handleGet(
         );
       }
 
-      const { data, error } = await comColunasDoObjeto((colunas) =>
+      const { data, error } = await comColunasOpcionais((colunas) =>
         client
           .from(OPORTUNIDADES_VIEW)
           .select(colunas)
@@ -480,7 +495,7 @@ async function handleGet(
       const limit = params.limit && params.limit > 0 ? params.limit : 20;
       const { from, to } = calculateRange(page, limit);
 
-      const { data, error, count } = await comColunasDoObjeto((colunas) =>
+      const { data, error, count } = await comColunasOpcionais((colunas) =>
         client
           .from(OPORTUNIDADES_VIEW)
           .select(colunas, { count: "exact" })
@@ -737,7 +752,7 @@ async function listarCatmatEmDuasFases(
     return jsonResponse({ action: "list", page, limit, total, order_by, order_direction, items: [] });
   }
   // Mesmos filtros e escopo da fase 1: uma compra que saiu do escopo entre as fases não volta na página.
-  const { data, error } = await comColunasDoObjeto((colunas) => {
+  const { data, error } = await comColunasOpcionais((colunas) => {
     let paginaQuery = client.from(OPORTUNIDADES_VIEW).select(colunas);
     paginaQuery = applyOportunidadesScope(applyLicitacaoFilters(paginaQuery, { ...filtros, ids: idsPagina }), filtros);
     return paginaQuery;
@@ -808,7 +823,7 @@ async function handleList(
     }
 
     const isAscending = order_direction === "asc";
-    const { data, error, count } = await comColunasDoObjeto((colunas) => {
+    const { data, error, count } = await comColunasOpcionais((colunas) => {
       let baseQuery = client
         .from(OPORTUNIDADES_VIEW)
         .select(colunas, { count: "exact" });

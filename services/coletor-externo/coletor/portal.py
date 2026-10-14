@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable
 
 import requests
+from .proveniencia import campos_proveniencia
 
 BASE = "https://compras.sestsenat.org.br/portal"
 WS = f"{BASE}/WebService/Servicos.asmx"
@@ -253,8 +254,9 @@ def _deduplicar(secao: str, itens: Iterable[dict]) -> list[Arquivo]:
     return list(por_arquivo.values())
 
 
-def processo_para_linha(d: dict, modulo: int) -> dict:
+def processo_para_linha(d: dict, modulo: int, origem: str = "manual", agora: datetime | None = None) -> dict:
     return {
+        **campos_proveniencia(d, origem, agora),  # spec 0023
         "fonte": "sestsenat",
         "modulo": modulo,
         "id_externo": d["nCdProcesso"],

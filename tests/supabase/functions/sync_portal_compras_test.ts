@@ -153,3 +153,22 @@ Deno.test("executarSyncPortal: fechar tenta de novo; se não fechar a execução
   const r2 = await executarSyncPortal(clienteFalso(base).client, "run-7", 40, { consultar, finalizar: duas.finalizar, agora: AGORA });
   assertEquals([r2.status, duas.chamadas.length], ["erro", 2]);
 });
+
+Deno.test("CA-9 (spec 0023): sync-portal-compras não grava proveniência em licitacoes_externas", async () => {
+  const { client, upserts } = clienteFalso({
+    tenants: EMPRESAS,
+    pipeline_oportunidades: { data: [], error: null },
+    licitacoes_externas: { data: [ABERTA], error: null },
+    portal_consulta: { data: [], error: null },
+  });
+  const { finalizar } = finalizador();
+  const consultar = () => Promise.resolve({ httpStatus: 200, body: FIXTURE, erro: null });
+  const r = await executarSyncPortal(client, "run-9", 40, { consultar, finalizar, agora: AGORA, origem: "cron" });
+  assertEquals(r.status, "ok");
+  // só o portal_consulta é gravado; nenhuma linha leva ingestao_origem/ingestao_em/payload_hash para licitacoes_externas
+  for (const u of upserts) {
+    assertEquals("ingestao_origem" in u, false);
+    assertEquals("ingestao_em" in u, false);
+    assertEquals("licitacao_id" in u, true);
+  }
+});

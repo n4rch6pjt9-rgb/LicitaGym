@@ -91,7 +91,8 @@ export async function handleRequest(req: Request, ctx: ApiSyncsContext = {}): Pr
         Authorization: `Bearer ${segredo}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(item.corpo),
+      // origem manual: quem disparou foi a tela (spec 0023); o pg_cron manda origem cron no corpo do job.
+      body: JSON.stringify({ ...item.corpo, origem: "manual" }),
       signal: AbortSignal.timeout(140_000),
     });
     const resposta = await corpoResposta(res);

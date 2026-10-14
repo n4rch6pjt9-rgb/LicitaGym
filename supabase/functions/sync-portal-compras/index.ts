@@ -35,7 +35,9 @@ Deno.serve(async (req) => {
   if (alreadyRunning) return jsonResponse({ status: "already_running", sync_id: runId });
 
   // executarSyncPortal fecha a execução (private.pncp_sync_run) em todos os caminhos.
-  const { status, stats } = await executarSyncPortal(client, runId, limiteDe(body));
+  const origemCorpo = body && typeof body === "object" ? (body as Record<string, unknown>).origem : undefined;
+  const origem = origemCorpo === "cron" || origemCorpo === "manual" ? origemCorpo : undefined;
+  const { status, stats } = await executarSyncPortal(client, runId, limiteDe(body), { origem });
   if (status === "erro") {
     return jsonResponse({ error: "Falha na leitura do portal", sync_id: runId, ...stats }, 500);
   }

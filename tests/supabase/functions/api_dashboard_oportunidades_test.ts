@@ -795,6 +795,10 @@ Deno.test("handleRequest list com filtro uf asserte eq('uf', 'AC') e PUBLIC_LICI
     // objeto canônico (20261004140000_objeto_canonico)
     "objeto_categoria",
     "objeto_registro_preco",
+    // proveniência (spec 0023)
+    "payload_hash",
+    "ingestao_origem",
+    "ingestao_em",
     // só na view (20261003170000_licitacoes_pncp_canonica)
     "canonica_id",
     "eh_canonica",

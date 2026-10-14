@@ -59,7 +59,7 @@ Deno.test("api-syncs: rodar encaminha o corpo do catálogo e não devolve o segr
   assertEquals(res.status, 200);
   assertEquals(url, "https://exemplo.supabase.co/functions/v1/sync-portal-compras");
   assertEquals(authorization, "Bearer segredo-de-teste");
-  assertEquals(JSON.parse(enviado), { limite: 40 });
+  assertEquals(JSON.parse(enviado), { limite: 40, origem: "manual" });
   assertEquals(JSON.stringify(body).includes("segredo-de-teste"), false);
 });
 
@@ -81,4 +81,19 @@ Deno.test("api-syncs: coletor e sync desconhecido não disparam", async () => {
   assertEquals((await handleRequest(post({ action: "rodar", sync: "coletor-pncp" }), c)).status, 400);
   assertEquals((await handleRequest(post({ action: "rodar", sync: "nao-existe" }), c)).status, 400);
   assertEquals(chamou, false);
+});
+
+Deno.test("CA-6 (spec 0023): rodar manda origem manual no corpo da função disparada", async () => {
+  let enviado = "";
+  const c = ctx({
+    fetchFn: (_input, init) => {
+      enviado = String(init?.body);
+      return Promise.resolve(new Response(JSON.stringify({ status: "ok" }), { status: 200 }));
+    },
+  });
+  const res = await handleRequest(post({ action: "rodar", sync: "sync-portal-compras" }), c);
+  assertEquals(res.status, 200);
+  const corpo = JSON.parse(enviado);
+  assertEquals(corpo.origem, "manual");
+  assertEquals(corpo.limite, 40);
 });

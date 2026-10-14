@@ -51,6 +51,7 @@ import requests
 
 from .arquivo_raw import ArquivoRaw, ArquivoRawErro, fechar_todos
 from .destino import Armazenamento, Supabase, drenar_licitacao_match, env, parece_html, sha256
+from .proveniencia import ORIGENS, campos_proveniencia
 from .paginacao import TAMANHO_PAGINA_MAX, avaliar_pagina, clamp_tamanho
 from . import escopo as _escopo
 from .catmat_codigo import (
@@ -1163,8 +1164,10 @@ def _dt(v) -> datetime | None:
 def coletar(pncp: PNCP, sb: Supabase | None, arm: Armazenamento | None, termos: list[str], status,
             paginas: int, tam: int, com_resultados: bool, baixar_arquivos: bool, max_bytes: int,
             dry_run: bool, modo: str | None = None, agora: datetime | None = None, workers: int = 3,
-            pausa_segunda_passada: float = 30, mapa_catmat: MapaCatmat | None = None) -> dict:
-    """Busca `status` para cada termo e grava as compras no escopo. `modo` só vai para o log/resumo:
+            pausa_segunda_passada: float = 30, mapa_catmat: MapaCatmat | None = None,
+            origem: str = "manual") -> dict:
+    """Busca `status` para cada termo e grava as compras no escopo. `origem` (cron|manual) vai para a
+    proveniência de cada linha gravada (spec 0023). `modo` só vai para o log/resumo:
     a prioridade de cada compra vem de prioridade_da_compra() (estado real, com o status da busca só
     como último recurso). Uma compra encerrada vira historico mesmo que já fosse lead (rebaixa).
     `mapa_catmat`: código CATMAT antes do texto em avaliar (None = só texto)."""
@@ -1182,7 +1185,7 @@ def coletar(pncp: PNCP, sb: Supabase | None, arm: Armazenamento | None, termos: 
         try:
             _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos,
                        max_bytes, dry_run, resumo, modo, status_busca=st, agora=agora, mapa_catmat=mapa_catmat,
-                       arquivos_raw=arquivos_raw)
+                       arquivos_raw=arquivos_raw, origem=origem)
             return c, None
         except ArquivoRawErro:
             raise
@@ -1339,7 +1342,7 @@ def _enviar_raw(arquivos_raw: dict[str, ArquivoRaw] | None, tabela: str, chave: 
 
 def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_bytes, dry_run, resumo,
                modo=None, status_busca=None, agora=None, det=None, mapa_catmat=None,
-               arquivos_raw: dict[str, ArquivoRaw] | None = None):
+               arquivos_raw: dict[str, ArquivoRaw] | None = None, origem: str = "manual"):
     """Coleta completa de uma compra: itens, resultados, detalhe e lista de arquivos do PNCP, gravados em
     licitacoes_externas, licitacao_itens, licitacao_resultados e licitacao_documentos.
     `det` = detalhe já consultado (recoletar_atualizadas); None consulta aqui.
@@ -1462,6 +1465,9 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
         "data_homologacao": data_homologacao.isoformat() if data_homologacao else None,
         "prioridade": prioridade, "categoria_escopo": categoria,
         "interesse_borracha": interesse, "termos_busca": [termo], "raw": raw,
+        # proveniência da passagem (spec 0023): hash do raw, origem cron|manual e instante UTC. `agora` é o início
+        # da passagem (coletar/recoletar_atualizadas fixam uma vez), não o instante de cada upsert.
+        **campos_proveniencia(raw, origem, agora),
     }
     # valor_total: detalhe (valorTotalEstimado, via identificacao_do_detalhe) > valor_global da busca
     # (vazio em editais). Sem nenhum dos dois a chave fica fora: o upsert (merge-duplicates) atualiza
@@ -1729,7 +1735,7 @@ def recoletar_atualizadas(pncp: PNCP, sb: Supabase, arm: Armazenamento | None = 
                           prioridades: list[str] | set[str] | str | None = PRIORIDADES_RECOLETA_PADRAO,
                           com_resultados: bool = True, max_bytes: int = 80 * 1048576, dry_run: bool = False,
                           limite: int | None = None, agora: datetime | None = None,
-                          mapa_catmat: MapaCatmat | None = None) -> dict:
+                          mapa_catmat: MapaCatmat | None = None, origem: str = "manual") -> dict:
     """Recoleta (metadados + itens + resultados + lista de arquivos) as compras PNCP já gravadas cujo
     dataAtualizacao/dataAtualizacaoGlobal no detalhe do PNCP difere do guardado em
     licitacoes_externas.pncp_data_atualizacao[_global] (ou que ainda não têm valor guardado).
@@ -1774,7 +1780,8 @@ def recoletar_atualizadas(pncp: PNCP, sb: Supabase, arm: Armazenamento | None = 
                     c = compra_para_recoleta(ln.get("raw") or {}, ln["codigo_externo"], {})
                     if c is not None:
                         _processar(pncp, sb, arm, c, None, com_resultados, False, max_bytes, False, resumo,
-                                   agora=agora, det=None, mapa_catmat=mapa_catmat, arquivos_raw=arquivos_raw)
+                                   agora=agora, det=None, mapa_catmat=mapa_catmat, arquivos_raw=arquivos_raw,
+                                   origem=origem)
                         resumo["recoletadas"] += 1
                 except ArquivoRawErro:
                     raise
@@ -1801,7 +1808,7 @@ def recoletar_atualizadas(pncp: PNCP, sb: Supabase, arm: Armazenamento | None = 
             try:
                 _processar(pncp, sb, arm, compra_para_recoleta(ln.get("raw"), ln["codigo_externo"], det), None,
                            com_resultados, False, max_bytes, False, resumo, agora=agora, det=det,
-                           mapa_catmat=mapa_catmat, arquivos_raw=arquivos_raw)
+                           mapa_catmat=mapa_catmat, arquivos_raw=arquivos_raw, origem=origem)
                 resumo["recoletadas"] += 1
             except ArquivoRawErro:
                 raise
@@ -2190,6 +2197,8 @@ def criar_parser() -> argparse.ArgumentParser:
     ap.add_argument("--limite-recoleta", type=int, default=None,
                     help="máximo de compras recoletadas por --recoletar-atualizadas")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--origem", choices=list(ORIGENS), default="manual",
+                    help="origem da ingestão gravada em cada linha (spec 0023): cron (agendado) ou manual (padrão)")
     ap.add_argument("--corrigir-processos", action="store_true",
                     help="só corrige numero_processo das compras PNCP já gravadas (processo administrativo real)")
     return ap
@@ -2234,7 +2243,8 @@ def main(argv: list[str] | None = None) -> int:
                                   prioridades=args.prioridades or PRIORIDADES_RECOLETA_PADRAO,
                                   com_resultados=not args.sem_resultados,
                                   max_bytes=int(float(env("MAX_MB", "80")) * 1048576),
-                                  dry_run=args.dry_run, limite=args.limite_recoleta, mapa_catmat=mapa)
+                                  dry_run=args.dry_run, limite=args.limite_recoleta, mapa_catmat=mapa,
+                                  origem=args.origem)
         if not args.dry_run:
             drenar_licitacao_match(sb)
         log.info("RESUMO RECOLETA: %s", r)
@@ -2297,7 +2307,7 @@ def main(argv: list[str] | None = None) -> int:
     r = coletar(PNCP(delay=delay), sb, arm, termos, status, paginas,
                 tam, not args.sem_resultados, args.baixar_arquivos,
                 int(float(env("MAX_MB", "80")) * 1048576), args.dry_run,
-                modo=args.modo, workers=workers, mapa_catmat=mapa)
+                modo=args.modo, workers=workers, mapa_catmat=mapa, origem=args.origem)
     drenar_licitacao_match(sb)  # recorte CATMAT por texto: zera a pendência de licitacao_match (sem efeito no dry-run)
     log.info("RESUMO: %s", r)
     if r.get("falha_busca"):

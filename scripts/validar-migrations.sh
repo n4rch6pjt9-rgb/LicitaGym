@@ -24,6 +24,8 @@ fi
 if ! NOVAS=$(git diff --name-only --diff-filter=AM "$BASE"...HEAD -- 'supabase/migrations/2*.sql'); then
   echo "git diff contra '$BASE' falhou."; exit 2
 fi
+# Guarda de nome/conteúdo das migrations novas (sem banco): falha antes de subir o Postgres.
+bash scripts/ci/guard-migrations.sh "$BASE" || exit $?
 limpar() { docker rm -f "$NOME" >/dev/null 2>&1; }
 trap limpar EXIT
 if ! docker run -d --name "$NOME" -e POSTGRES_PASSWORD=x "$IMG" >/dev/null; then

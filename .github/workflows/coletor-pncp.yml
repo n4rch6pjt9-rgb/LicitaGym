@@ -1,0 +1,85 @@
+# Coleta recorrente de oportunidades do PNCP (#357): roda o coletor Python (services/coletor-externo, `python -m
+# coletor.pncp`) no runner do GitHub, todo dia, sem GCP. Sem actions de terceiros (regra do repo): checkout por git,
+# Python do runner. Grava em licitacoes_externas com proveniência `ingestao_origem = cron` (spec 0023).
+# Pré-requisitos (secrets do repositório, cadastrados pelo Marcelo): SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY.
+# Passos: leads (recebendo proposta), monitorar (em julgamento) e recoleta das compras que mudaram no PNCP.
+# Arquivos (edital/anexos) não são baixados aqui: ficam para a máquina do coletor ou o Cloud Run (#187).
+# Risco medido na #159: o PNCP pode responder 429 a um IP; o coletor já faz backoff e DELAY_SEGUNDOS >= 1.
+# Disparo manual (workflow_dispatch) serve para testar antes de confiar no horário.
+name: Coletor PNCP
+
+on:
+  schedule:
+    - cron: "0 9 * * *"   # 06:00 em Brasília
+  workflow_dispatch:
+    inputs:
+      modo:
+        description: "leads | monitorar | historico | recoleta | todos"
+        default: "todos"
+        required: false
+      dry_run:
+        description: "true = só consulta, não grava"
+        default: "false"
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coletor-pncp
+  cancel-in-progress: false
+
+jobs:
+  coletar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      DELAY_SEGUNDOS: "1.5"
+      PNCP_WORKERS: "2"
+      ARQUIVO_RAW_GCS: "0"
+      ARQUIVO_RAW_DIR: ${{ github.workspace }}/arquivo-raw
+      MODO: ${{ github.event.inputs.modo || 'todos' }}
+      DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+      ORIGEM: ${{ github.event_name == 'schedule' && 'cron' || 'manual' }}
+    steps:
+      - name: Checkout (git, sem actions de terceiros)
+        run: |
+          git init -q .
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --depth 1 origin "${GITHUB_SHA}"
+          git checkout -q FETCH_HEAD -- services/coletor-externo
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Conferir segredos
+        run: |
+          if [ -z "${SUPABASE_URL}" ] || [ -z "${SUPABASE_SERVICE_ROLE_KEY}" ]; then
+            echo "Secrets SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY ausentes no repositório."; exit 1
+          fi
+
+      - name: Dependências
+        working-directory: services/coletor-externo
+        run: |
+          python3 --version
+          python3 -m pip install --quiet --disable-pip-version-check -r requirements.txt
+
+      - name: Coleta
+        working-directory: services/coletor-externo
+        run: |
+          set -o pipefail
+          DRY=""; [ "${DRY_RUN}" = "true" ] && DRY="--dry-run"
+          rodar() { echo "== coletor.pncp $*"; python3 -m coletor.pncp "$@" --origem "${ORIGEM}" ${DRY}; }
+          case "${MODO}" in
+            leads)     rodar ;;
+            monitorar) rodar --modo monitorar ;;
+            historico) rodar --modo historico ;;
+            recoleta)  rodar --recoletar-atualizadas --limite-recoleta 200 ;;
+            todos)
+              rodar
+              rodar --modo monitorar
+              rodar --recoletar-atualizadas --limite-recoleta 200
+              ;;
+            *) echo "modo desconhecido: ${MODO}"; exit 2 ;;
+          esac

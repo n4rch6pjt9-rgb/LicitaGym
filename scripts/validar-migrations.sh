@@ -31,7 +31,9 @@ if ! docker run -d --name "$NOME" -e POSTGRES_PASSWORD=x "$IMG" >/dev/null; then
 fi
 # docker exec, não docker run: subir um contêiner por arquivo custa dezenas de segundos no Docker Desktop (WSL2);
 # o psql dentro do próprio Postgres responde em milissegundos. São ~200 arquivos por validação.
-psql_() { docker exec -i "$NOME" psql -q -U postgres -tA -v ON_ERROR_STOP=1 -f - ; }
+# -h 127.0.0.1: o initdb da imagem sobe um servidor temporário só no socket Unix e o derruba em seguida; por TCP
+# só o servidor definitivo responde, então a sonda abaixo não pega o temporário.
+psql_() { docker exec -i -e PGPASSWORD=x "$NOME" psql -q -h 127.0.0.1 -U postgres -tA -v ON_ERROR_STOP=1 -f - ; }
 pronto=0
 for _ in $(seq 1 30); do echo 'select 1' | psql_ >/dev/null 2>&1 && { pronto=1; break; }; sleep 2; done
 if [ "$pronto" -ne 1 ]; then echo "Postgres ($IMG) não respondeu em 60 s."; exit 2; fi

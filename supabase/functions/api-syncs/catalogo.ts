@@ -8,21 +8,25 @@ export interface SyncCatalogo {
   /** null = nunca houve job no pg_cron. */
   cron: string | null;
   corpo: Record<string, unknown>;
-  /** Edge Function disparável daqui. O coletor Python não roda neste processo. */
+  /** Disparável daqui: Edge Function (`funcao`) ou workflow do GitHub Actions (`github_workflow`). */
   disparavel: boolean;
   aviso: string | null;
+  /** Arquivo do workflow em .github/workflows (ex.: coletor-pncp.yml): `rodar` dispara workflow_dispatch com `corpo` como inputs. */
+  github_workflow?: string;
 }
 
 export const SYNCS: SyncCatalogo[] = [
   {
     slug: "coletor-pncp",
     funcao: null,
+    github_workflow: "coletor-pncp.yml",
     titulo: "Coletor PNCP de oportunidades",
     faz: "Grava licitacoes_externas, a lista do dashboard.",
-    cron: null,
-    corpo: {},
-    disparavel: false,
-    aviso: "Roda na máquina do coletor: python -m coletor.pncp. Não é Edge Function.",
+    cron: "Todo dia às 06:00, no GitHub Actions (coleta completa: leads, monitorar e recoleta).",
+    // inputs do workflow_dispatch são sempre texto
+    corpo: { modo: "leads", dry_run: "false", rapido: "true" },
+    disparavel: true,
+    aviso: "Rodar agora dispara o workflow no GitHub só com os 12 termos principais (rápido). Acompanhe em Actions › Coletor PNCP.",
   },
   {
     slug: "sync-compras-catmat",

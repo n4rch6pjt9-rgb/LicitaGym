@@ -13,8 +13,9 @@ import { SYNCS, syncPorSlug } from "./catalogo.ts";
  * api-syncs: catálogo dos syncs e disparo manual.
  *   POST {action:"listar"} -> { syncs: [...] }
  *   POST {action:"rodar", sync:"sync-portal-compras"} -> encaminha o corpo do catálogo para a função.
+ *   POST {action:"rodar", sync:"coletor-pncp"} -> workflow_dispatch no GitHub (GITHUB_ACTIONS_TOKEN, GITHUB_ACTIONS_REPO).
  * Acesso: cron (SYNC_CRON_SECRET) ou app_metadata.licitagym_role = 'admin'.
- * O segredo de cron sai só no servidor, no Authorization da função chamada. Não volta na resposta.
+ * Os segredos (cron e token do GitHub) saem só no servidor, nos headers das chamadas. Não voltam na resposta.
  */
 
 export interface ApiSyncsContext {
@@ -23,6 +24,22 @@ export interface ApiSyncsContext {
   fetchFn?: typeof fetch;
   segredo?: () => string | null;
   baseUrl?: () => string | null;
+  /** Token do GitHub com permissão Actions: write no repositório (fine-grained). */
+  githubToken?: () => string | null;
+  /** "dono/repo" do workflow; padrão GITHUB_ACTIONS_REPO ou n4rch6pjt9-rgb/LicitaGym. */
+  githubRepo?: () => string;
+}
+
+const REPO_PADRAO = "n4rch6pjt9-rgb/LicitaGym";
+
+function tokenGithub(): string | null {
+  const t = Deno.env.get("GITHUB_ACTIONS_TOKEN")?.trim() ?? "";
+  return t.length > 0 ? t : null;
+}
+
+function repoGithub(): string {
+  const r = Deno.env.get("GITHUB_ACTIONS_REPO")?.trim() ?? "";
+  return /^[\w.-]+\/[\w.-]+$/.test(r) ? r : REPO_PADRAO;
 }
 
 function segredoCron(): string | null {
@@ -75,8 +92,37 @@ export async function handleRequest(req: Request, ctx: ApiSyncsContext = {}): Pr
   if (typeof slug !== "string" || !slug) return jsonResponse({ error: "Informe sync." }, 400);
   const item = syncPorSlug(slug);
   if (!item) return jsonResponse({ error: "Sync desconhecido." }, 400);
-  if (!item.disparavel || !item.funcao) {
+  if (!item.disparavel || (!item.funcao && !item.github_workflow)) {
     return jsonResponse({ error: item.aviso ?? "Este sync não dispara daqui." }, 400);
+  }
+
+  if (item.github_workflow) {
+    // Coletor Python: roda no GitHub Actions. O token nunca volta na resposta.
+    const token = (ctx.githubToken ?? tokenGithub)();
+    const repo = (ctx.githubRepo ?? repoGithub)();
+    if (!token) return jsonResponse({ error: "Disparo do coletor não configurado (GITHUB_ACTIONS_TOKEN)." }, 500);
+    const inputs = Object.fromEntries(Object.entries(item.corpo).map(([k, v]) => [k, String(v)]));
+    try {
+      const fetchFn = ctx.fetchFn ?? fetch;
+      const res = await fetchFn(`https://api.github.com/repos/${repo}/actions/workflows/${item.github_workflow}/dispatches`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ ref: "main", inputs }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      const resposta = res.status === 204
+        ? { status: "disparado", inputs, acompanhe: `https://github.com/${repo}/actions/workflows/${item.github_workflow}` }
+        : await corpoResposta(res);
+      return jsonResponse({ action: "rodar", sync: item.slug, http: res.status, resposta });
+    } catch (e) {
+      console.error("[api-syncs]", item.slug, e instanceof Error ? e.message : String(e));
+      return jsonResponse({ error: "Falha ao disparar o workflow no GitHub." }, 502);
+    }
   }
 
   const segredo = (ctx.segredo ?? segredoCron)();
@@ -85,7 +131,7 @@ export async function handleRequest(req: Request, ctx: ApiSyncsContext = {}): Pr
 
   try {
     const fetchFn = ctx.fetchFn ?? fetch;
-    const res = await fetchFn(`${base}/${item.funcao}`, {
+    const res = await fetchFn(`${base}/${item.funcao as string}`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${segredo}`,

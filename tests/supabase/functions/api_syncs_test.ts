@@ -37,7 +37,10 @@ Deno.test("api-syncs: listar separa cron de quem nunca entrou", async () => {
   assertEquals(portal.cron, "Todo dia às 08:00.");
   assertEquals(portal.disparavel, true);
   assertEquals(editais.cron, null);
-  assertEquals(coletor.disparavel, false);
+  // coletor Python agora dispara pelo GitHub Actions (workflow coletor-pncp.yml)
+  assertEquals(coletor.disparavel, true);
+  assertEquals(coletor.github_workflow, "coletor-pncp.yml");
+  assertEquals(coletor.cron?.includes("GitHub Actions"), true);
   assertEquals(body.syncs.length, SYNCS.length);
   assertEquals(JSON.stringify(body).includes("segredo-de-teste"), false);
 });
@@ -75,12 +78,13 @@ Deno.test("api-syncs: sync que responde erro ainda devolve o corpo e o status", 
   assertEquals(JSON.stringify(body).includes("segredo-de-teste"), false);
 });
 
-Deno.test("api-syncs: coletor e sync desconhecido não disparam", async () => {
+Deno.test("api-syncs: sync desconhecido e sync sem função nem workflow não disparam", async () => {
   let chamou = false;
   const c = ctx({ fetchFn: () => { chamou = true; return Promise.resolve(new Response("{}")); } });
-  assertEquals((await handleRequest(post({ action: "rodar", sync: "coletor-pncp" }), c)).status, 400);
   assertEquals((await handleRequest(post({ action: "rodar", sync: "nao-existe" }), c)).status, 400);
   assertEquals(chamou, false);
+  // o catálogo não pode ter item disparável sem destino (função ou workflow)
+  assertEquals(SYNCS.every((s) => !s.disparavel || Boolean(s.funcao) || Boolean(s.github_workflow)), true);
 });
 
 Deno.test("CA-6 (spec 0023): rodar manda origem manual no corpo da função disparada", async () => {
@@ -96,4 +100,50 @@ Deno.test("CA-6 (spec 0023): rodar manda origem manual no corpo da função disp
   const corpo = JSON.parse(enviado);
   assertEquals(corpo.origem, "manual");
   assertEquals(corpo.limite, 40);
+});
+
+Deno.test("api-syncs: rodar coletor-pncp dispara o workflow no GitHub com rapido=true e não devolve o token", async () => {
+  let url = "";
+  let authorization = "";
+  let enviado = "";
+  const c = ctx({
+    githubToken: () => "github-token-de-teste",
+    githubRepo: () => "dono/repo",
+    fetchFn: (input, init) => {
+      url = String(input);
+      authorization = new Headers(init?.headers).get("authorization") ?? "";
+      enviado = String(init?.body);
+      return Promise.resolve(new Response(null, { status: 204 }));
+    },
+  });
+  const res = await handleRequest(post({ action: "rodar", sync: "coletor-pncp" }), c);
+  const body = await res.json();
+  assertEquals(res.status, 200);
+  assertEquals(url, "https://api.github.com/repos/dono/repo/actions/workflows/coletor-pncp.yml/dispatches");
+  assertEquals(authorization, "Bearer github-token-de-teste");
+  assertEquals(JSON.parse(enviado), { ref: "main", inputs: { modo: "leads", dry_run: "false", rapido: "true" } });
+  assertEquals(body.http, 204);
+  assertEquals(body.resposta.status, "disparado");
+  assertEquals(JSON.stringify(body).includes("github-token-de-teste"), false);
+});
+
+Deno.test("api-syncs: coletor-pncp sem GITHUB_ACTIONS_TOKEN responde 500 sem chamar o GitHub", async () => {
+  let chamou = false;
+  const c = ctx({ githubToken: () => null, fetchFn: () => { chamou = true; return Promise.resolve(new Response(null, { status: 204 })); } });
+  const res = await handleRequest(post({ action: "rodar", sync: "coletor-pncp" }), c);
+  assertEquals(res.status, 500);
+  assertEquals(chamou, false);
+});
+
+Deno.test("api-syncs: GitHub recusa (422) volta como http da resposta, sem segredo", async () => {
+  const c = ctx({
+    githubToken: () => "github-token-de-teste",
+    fetchFn: () => Promise.resolve(new Response(JSON.stringify({ message: "Unexpected inputs provided" }), { status: 422 })),
+  });
+  const res = await handleRequest(post({ action: "rodar", sync: "coletor-pncp" }), c);
+  const body = await res.json();
+  assertEquals(res.status, 200);
+  assertEquals(body.http, 422);
+  assertEquals(body.resposta.message, "Unexpected inputs provided");
+  assertEquals(JSON.stringify(body).includes("github-token-de-teste"), false);
 });

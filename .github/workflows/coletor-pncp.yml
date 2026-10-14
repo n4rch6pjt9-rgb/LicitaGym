@@ -21,6 +21,10 @@ on:
         description: "true = só consulta, não grava"
         default: "false"
         required: false
+      rapido:
+        description: "true = só os 12 termos principais (--termos-padrao); o cron diário roda completo"
+        default: "true"
+        required: false
 
 permissions:
   contents: read
@@ -40,6 +44,7 @@ jobs:
       ARQUIVO_RAW_DIR: ${{ github.workspace }}/arquivo-raw
       MODO: ${{ github.event.inputs.modo || 'todos' }}
       DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+      RAPIDO: ${{ github.event.inputs.rapido || 'false' }}
       ORIGEM: ${{ github.event_name == 'schedule' && 'cron' || 'manual' }}
     steps:
       - name: Checkout (git, sem actions de terceiros)
@@ -76,15 +81,16 @@ jobs:
         run: |
           set -o pipefail
           DRY=""; [ "${DRY_RUN}" = "true" ] && DRY="--dry-run"
+          TERMOS=""; [ "${RAPIDO}" = "true" ] && TERMOS="--termos-padrao"   # só na busca por termos, não na recoleta
           rodar() { echo "== coletor.pncp $*"; python3 -m coletor.pncp "$@" --origem "${ORIGEM}" ${DRY}; }
           case "${MODO}" in
-            leads)     rodar ;;
-            monitorar) rodar --modo monitorar ;;
-            historico) rodar --modo historico ;;
+            leads)     rodar ${TERMOS} ;;
+            monitorar) rodar --modo monitorar ${TERMOS} ;;
+            historico) rodar --modo historico ${TERMOS} ;;
             recoleta)  rodar --recoletar-atualizadas --limite-recoleta 200 ;;
             todos)
-              rodar
-              rodar --modo monitorar
+              rodar ${TERMOS}
+              rodar --modo monitorar ${TERMOS}
               rodar --recoletar-atualizadas --limite-recoleta 200
               ;;
             *) echo "modo desconhecido: ${MODO}"; exit 2 ;;

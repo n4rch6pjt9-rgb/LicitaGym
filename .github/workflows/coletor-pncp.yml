@@ -34,8 +34,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 300
     env:
-      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       DELAY_SEGUNDOS: "1.5"
       PNCP_WORKERS: "2"
       ARQUIVO_RAW_GCS: "0"
@@ -54,19 +52,27 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
       - name: Conferir segredos
+        env:
+          TEM_URL: ${{ secrets.SUPABASE_URL != '' }}
+          TEM_CHAVE: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY != '' }}
         run: |
-          if [ -z "${SUPABASE_URL}" ] || [ -z "${SUPABASE_SERVICE_ROLE_KEY}" ]; then
+          if [ "${TEM_URL}" != "true" ] || [ "${TEM_CHAVE}" != "true" ]; then
             echo "Secrets SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY ausentes no repositório."; exit 1
           fi
 
+      # Só binários prontos (--only-binary): nenhum setup.py de pacote roda aqui. Os segredos ficam fora deste passo.
       - name: Dependências
         working-directory: services/coletor-externo
         run: |
           python3 --version
-          python3 -m pip install --quiet --disable-pip-version-check -r requirements.txt
+          python3 -m pip install --quiet --disable-pip-version-check --only-binary :all: -r requirements.txt
 
+      # Os segredos entram só neste passo (padrão do saude.yml).
       - name: Coleta
         working-directory: services/coletor-externo
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           set -o pipefail
           DRY=""; [ "${DRY_RUN}" = "true" ] && DRY="--dry-run"

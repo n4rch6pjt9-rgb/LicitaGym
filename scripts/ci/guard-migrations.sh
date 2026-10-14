@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Guarda as migrations NOVAS do PR (git diff contra a base). Só lê git e arquivos: sem banco, Docker ou rede.
-#  1. FALHA: arquivo novo em supabase/migrations/ com nome fora de <AAAAMMDDHHMMSS>_<assunto>.sql (minúsculas, _).
+#  1. FALHA: arquivo novo ou renomeado em supabase/migrations/ com nome fora de <AAAAMMDDHHMMSS>_<assunto>.sql
+#     (minúsculas, _).
 #     Arquivos já existentes não são olhados: os de 12 dígitos antigos continuam válidos.
 #  2. ALERTA (não falha): conteúdo que costuma ser de teste/stub e não de migration. Pode ser legítimo; revisar.
 # Uso: scripts/ci/guard-migrations.sh [base_git]   (padrão: origin/main)
@@ -14,7 +15,8 @@ cd "$RAIZ"
 if ! git rev-parse --verify --quiet "${BASE}^{commit}" >/dev/null; then
   echo "guard-migrations: base '$BASE' não encontrada (rode git fetch ou informe outra base)."; exit 2
 fi
-if ! NOVAS=$(git diff --name-only --diff-filter=A "$BASE"...HEAD -- 'supabase/migrations/*'); then
+# A (adicionada) e R (renomeada): com --name-only o rename sai só pelo caminho de destino, que é o que se valida.
+if ! NOVAS=$(git diff --name-only --diff-filter=AR "$BASE"...HEAD -- 'supabase/migrations/*'); then
   echo "guard-migrations: git diff contra '$BASE' falhou."; exit 2
 fi
 [ -z "$NOVAS" ] && { echo "guard-migrations: nenhuma migration nova vs $BASE."; exit 0; }

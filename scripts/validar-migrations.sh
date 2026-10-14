@@ -2,7 +2,7 @@
 # Valida as migrations num Postgres descartável (Docker), sem tocar em produção.
 #  1. sobe pgvector/pgvector:pg17 (mesma versão major da produção; troque com PG_IMAGE) e aplica supabase/tests/pre.sql (stubs de auth/storage/roles do Supabase);
 #  2. aplica todas as migrations em ordem;
-#  3. reaplica as migrations novas/alteradas em relação à base (idempotência);
+#  3. reaplica as migrations novas, alteradas ou renomeadas em relação à base (idempotência);
 #  4. roda todos os supabase/tests/*_check.sql (falham com EXCEPTION).
 # Arquivos em supabase/tests/pendentes.txt podem falhar (PENDENTE, com issue); se passarem, a validação falha
 # até saírem da lista.
@@ -21,9 +21,11 @@ cd "$RAIZ"
 if ! git rev-parse --verify --quiet "${BASE}^{commit}" >/dev/null; then
   echo "Base '$BASE' não encontrada (rode git fetch ou informe outra base)."; exit 2
 fi
-if ! NOVAS=$(git diff --name-only --diff-filter=AM "$BASE"...HEAD -- 'supabase/migrations/2*.sql'); then
+if ! NOVAS=$(git diff --name-only --diff-filter=AMR "$BASE"...HEAD -- 'supabase/migrations/2*.sql'); then
   echo "git diff contra '$BASE' falhou."; exit 2
 fi
+# Guarda de nome/conteúdo das migrations novas (sem banco): falha antes de subir o Postgres.
+bash scripts/ci/guard-migrations.sh "$BASE" || exit $?
 limpar() { docker rm -f "$NOME" >/dev/null 2>&1; }
 trap limpar EXIT
 if ! docker run -d --name "$NOME" -e POSTGRES_PASSWORD=x "$IMG" >/dev/null; then

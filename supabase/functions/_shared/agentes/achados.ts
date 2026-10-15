@@ -1,6 +1,6 @@
 import type { Achado, Fonte } from "./tipos.ts";
 
-const CODIGO = /^(exigencia|prazo|preco|juridico)\.[a-z_]+$/;
+const CODIGO = /^(exigencia|prazo|preco|juridico|portal)\.[a-z_]+$/;
 const SIGILOSAS = new Set(["preco_tabela", "desconto_max_pct", "piso", "piso_centavos"]);
 const PRIMARIA = new Set(["chunk", "registro", "dispositivo", "cliente"]);
 

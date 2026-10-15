@@ -1,4 +1,5 @@
 import { normalizarComMapa } from "./achados.ts";
+import type { PortalOficial } from "../portal-oficial.ts";
 import { REGRA_VERSAO, type Achado, type Fonte, type ResultadoAgente, type Severidade } from "./tipos.ts";
 
 export interface ChunkEdital {
@@ -87,8 +88,49 @@ export function detectarExigencias(chunks: ChunkEdital[]): Achado[] {
   }));
 }
 
-export function agenteEdital(entrada: { chunks: ChunkEdital[]; data_abertura: string | null }): ResultadoAgente {
+/**
+ * Portal oficial da disputa: o PNCP é o meio, não o fim (decisão de 15/10/2026). Todo edital lido diz onde a
+ * sessão, o chat e os documentos de origem ficam. Sem link seguro, o achado diz isso em vez de omitir.
+ */
+export function achadoPortalOficial(licitacaoId: number, portal: PortalOficial): Achado {
+  const fontes: Fonte[] = [{ tipo: "registro", tabela: "licitacoes_externas", id: String(licitacaoId) }];
+  const dados = { nome: portal.nome, url: portal.url, host: portal.host, metodo: portal.metodo, url_pncp: portal.url_pncp };
+  if (portal.url) {
+    return {
+      codigo: "portal.oficial",
+      natureza: "fato",
+      metodo: "regra",
+      severidade: "info",
+      titulo: "portal.oficial",
+      detalhe: "Sessão, chat e documentos de origem ficam no portal oficial; o PNCP repete com atraso.",
+      dados,
+      fontes,
+    };
+  }
+  return {
+    codigo: portal.nome ? "portal.oficial_sem_link" : "portal.nao_informado",
+    natureza: "fato",
+    metodo: "regra",
+    severidade: "atencao",
+    titulo: portal.nome ? "portal.oficial_sem_link" : "portal.nao_informado",
+    detalhe: portal.nome
+      ? "O órgão informou o sistema da disputa, mas sem link público seguro: acompanhar direto nesse portal."
+      : "O órgão não informou ao PNCP o sistema da disputa: localizar o portal no edital antes da sessão.",
+    dados,
+    fontes,
+  };
+}
+
+export function agenteEdital(entrada: {
+  chunks: ChunkEdital[];
+  data_abertura: string | null;
+  licitacao_id?: number;
+  portal_oficial?: PortalOficial | null;
+}): ResultadoAgente {
   const achados = entrada.chunks.length === 0 ? [] : detectarExigencias(entrada.chunks);
+  if (entrada.portal_oficial && entrada.licitacao_id !== undefined) {
+    achados.push(achadoPortalOficial(entrada.licitacao_id, entrada.portal_oficial));
+  }
   if (entrada.data_abertura) {
     const local = dataLocal(entrada.data_abertura);
     achados.push({

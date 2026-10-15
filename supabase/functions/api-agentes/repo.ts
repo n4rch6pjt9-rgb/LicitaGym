@@ -11,6 +11,7 @@ import {
   type PropostaItem,
 } from "../_shared/agentes/preco.ts";
 import { lerTenantDoUsuario, type TenantResolvido } from "../_shared/tenant.ts";
+import { type PortalOficial, resolverPortalOficial } from "../_shared/portal-oficial.ts";
 
 export interface Dossie {
   licitacao: { id: number; payload_hash: string | null; data_abertura: string | null };
@@ -20,6 +21,8 @@ export interface Dossie {
   natureza: NaturezaContratacao;
   itens: ItemPreco[];
   dispositivos: Dispositivo[];
+  /** Portal oficial da disputa (link de origem, derivado ou só o nome). Ausente em dossiê montado à mão. */
+  portal_oficial?: PortalOficial;
 }
 
 export interface Execucao {
@@ -113,7 +116,7 @@ export function createSupabaseRepo(client: SupabaseClient): AgentesRepo {
     async carregarDossie(tenant, licitacaoId) {
       const { data: lic, error: eLic } = await client
         .from("licitacoes_externas")
-        .select("id")
+        .select("id,fonte,codigo_externo,numero_edital,link_sistema_origem,usuario_nome:raw->>usuario_nome")
         .eq("id", licitacaoId)
         .maybeSingle();
       if (eLic) throw new Error(eLic.message);
@@ -232,6 +235,7 @@ export function createSupabaseRepo(client: SupabaseClient): AgentesRepo {
         natureza: null,
         itens,
         dispositivos: ((dispositivos ?? []) as Dispositivo[]),
+        portal_oficial: resolverPortalOficial(lic as Record<string, unknown>),
       };
     },
 

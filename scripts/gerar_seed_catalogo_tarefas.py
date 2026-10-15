@@ -170,6 +170,8 @@ def gerar(cat: dict, textos: dict[int, dict]) -> str:
 
     out.append("\n-- fases")
     for f in cat["fases"]:
+        if not all(isinstance(x, int) for x in f["artigos"]):
+            raise ValueError("Invalid input")
         arts = "array[" + ",".join(str(x) for x in f["artigos"]) + "]::integer[]"
         out.append(
             "insert into public.processo_fases (codigo, norma, ordem, nome, macro, descricao, artigos) values "

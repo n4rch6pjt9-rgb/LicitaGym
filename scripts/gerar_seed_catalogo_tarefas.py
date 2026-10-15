@@ -247,7 +247,7 @@ def gerar(cat: dict, textos: dict[int, dict]) -> str:
             vistos.add(chave)
             out.append(
                 "insert into public.tarefas_catalogo_base_legal (tarefa_codigo, norma, artigo, dispositivo, papel) values "
-                f"({lit(t['codigo'])}, {lit(norma)}, {art}, {lit(disp)}, {lit(papel)});"
+                f"({lit(t['codigo'])}, {lit(norma)}, {lit(art)}, {lit(disp)}, {lit(papel)});"
             )
 
     out.append("\n-- dependências (recria por tarefa)")

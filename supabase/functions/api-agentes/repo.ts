@@ -225,17 +225,19 @@ export function createSupabaseRepo(client: SupabaseClient): AgentesRepo {
         .eq("norma", NORMA);
       if (eDisp) throw new Error(eDisp.message);
 
+      const chunksEdital = (chunks ?? []) as ChunkEdital[];
       return {
         // licitacoes_externas ainda não registra uma data inequívoca de sessão pública.
         // Não usar início/fim de propostas para calcular prazo de impugnação.
         licitacao: { id: Number(lic.id), payload_hash: null, data_abertura: null },
         documentos_sha256,
-        chunks: ((chunks ?? []) as ChunkEdital[]),
+        chunks: chunksEdital,
         // licitacoes_externas.raw não traz a categoria do processo: a natureza fica desconhecida.
         natureza: null,
         itens,
         dispositivos: ((dispositivos ?? []) as Dispositivo[]),
-        portal_oficial: resolverPortalOficial(lic as Record<string, unknown>),
+        // Rota do portal: link de origem, depois portal mapeado ou indicado no edital (com o trecho).
+        portal_oficial: resolverPortalOficial(lic as Record<string, unknown>, chunksEdital),
       };
     },
 

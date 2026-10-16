@@ -59,6 +59,7 @@ def _get(sessao, url: str, params: dict, dormir: Callable[[float], None], delay:
     """Uma chamada com retentativas. Devolve (status, corpo) ou levanta RuntimeError com o motivo."""
     ultimo = ""
     for tentativa in range(TENTATIVAS):
+        conta["requisicoes"] += 1
         try:
             r = sessao.get(url, params=params, timeout=TIMEOUT_S)
         except requests.RequestException as e:  # conexão, timeout, resposta cortada (ChunkedEncodingError) etc.
@@ -99,7 +100,8 @@ def medir_um(sessao, dia: date, endpoint: str, modalidade: int, *, dormir, relog
     data = dia.strftime("%Y%m%d")
     conta: Counter = Counter()
     categorias: Counter = Counter()
-    linha = {"endpoint": endpoint, "modalidade": modalidade, "paginas": 0, "registros_api": None, "recebidos": 0,
+    linha = {"endpoint": endpoint, "modalidade": modalidade, "paginas": 0, "requisicoes": 0, "registros_api": None,
+             "recebidos": 0,
              "no_escopo": 0, "http_429": 0, "segundos": 0.0, "completa": True, "erros": []}
     inicio = relogio()
     pagina, total_paginas = 1, 1
@@ -136,6 +138,7 @@ def medir_um(sessao, dia: date, endpoint: str, modalidade: int, *, dormir, relog
         linha["divergencia"] = linha["recebidos"] - (linha["registros_api"] or 0)
         linha["erros"].append(f"recebidos {linha['recebidos']} != totalRegistros {linha['registros_api']}")
     linha["http_429"] = conta["http_429"]
+    linha["requisicoes"] = conta["requisicoes"]
     linha["por_categoria"] = dict(categorias)
     linha["segundos"] = round(relogio() - inicio, 1)
     return linha
@@ -144,8 +147,11 @@ def medir_um(sessao, dia: date, endpoint: str, modalidade: int, *, dormir, relog
 def _relatorio(dia: date, delay: float, medicoes: list[dict]) -> dict:
     resumo = {
         "chamadas": sum(x["paginas"] for x in medicoes),
+        "requisicoes": sum(x["requisicoes"] for x in medicoes),
         "recebidos": sum(x["recebidos"] for x in medicoes),
-        "registros_api": sum(x["registros_api"] or 0 for x in medicoes),
+        # Total desconhecido em alguma combinação (falha na 1ª página): o agregado também fica desconhecido.
+        "registros_api": (None if any(x["registros_api"] is None for x in medicoes)
+                          else sum(x["registros_api"] for x in medicoes)),
         "no_escopo": sum(x["no_escopo"] for x in medicoes),
         "http_429": sum(x["http_429"] for x in medicoes),
         "segundos": round(sum(x["segundos"] for x in medicoes), 1),
@@ -198,7 +204,7 @@ def main(argv: list[str] | None = None) -> int:
     rel = medir(sessao, dia, modalidades=modalidades, endpoints=endpoints, delay=a.delay, ao_medir=gravar)
     gravar(rel)
     r = rel["resumo"]
-    print(f"{rel['data']}: {r['chamadas']} chamadas, {r['recebidos']} registros, {r['no_escopo']} no escopo, "
+    print(f"{rel['data']}: {r['requisicoes']} requisições ({r['chamadas']} páginas), {r['recebidos']} registros, {r['no_escopo']} no escopo, "
           f"{r['http_429']} 429, {r['segundos']} s, {r['incompletas']} incompletas")
     for x in rel["medicoes"]:
         print(f"  {x['endpoint']:<12} mod {x['modalidade']:>2}: {x['paginas']:>4} pág, {x['recebidos']:>6} reg, "

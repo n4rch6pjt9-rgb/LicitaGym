@@ -191,3 +191,11 @@ def test_relatorio_parcial_a_cada_combinacao():
 def test_data_mal_formada_e_recusada():
     with pytest.raises(SystemExit, match="YYYYMMDD"):
         m.main(["--data", "15/10/2026", "--saida", "x_resultado.json"])
+
+
+def test_requisicoes_contam_tentativas_e_total_desconhecido_nao_vira_zero():
+    sessao = Sessao([Resp(429, headers={"Retry-After": "1"}), pagina([compra("bola")], 1, 1)] + [Resp(503)] * m.TENTATIVAS)
+    rel, _ = medir(sessao, modalidades=[6, 8])
+    r = rel["resumo"]
+    assert r["requisicoes"] == 2 + m.TENTATIVAS and r["chamadas"] == 1
+    assert rel["medicoes"][1]["registros_api"] is None and r["registros_api"] is None

@@ -26,7 +26,6 @@
 
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
-| #8826 | 7:55 PM | ○ | Mapa de termos de busca — 4 constantes distintas em 3 módulos | ~425 |
 | #8773 | 7:10 PM | ○ | Root cause of 16-digit id_compra confirmed in compras_precos.py docstring | ~370 |
 | #8772 | 7:09 PM | ○ | id_compra derivation logic found in compras_precos.py | ~411 |
 | #8763 | 5:52 PM | ○ | Volume Fitness Sesc SP — 22 Processos, 87 Itens, Taxonomia por Categoria | ~381 |
@@ -38,15 +37,4 @@
 | #8669 | 1:38 PM | ○ | LicitaGym Sistema S — Arquitetura Espalhada: Repo Separado + Múltiplos Artefatos no Mono-repo | ~454 |
 | #8633 | 12:29 PM | ○ | LicitaGym Coletor — Bucket Hardcoded como "licitagym-documentos" e Arquitetura de Destino | ~409 |
 | #8599 | 11:46 AM | ○ | Commit 7ea7c3c — Arquivamento Raw GCS: Estrutura Completa e Arquivos | ~416 |
-
-### Oct 13, 2026
-
-| ID | Time | T | Title | Read |
-|----|------|---|-------|------|
-| #8952 | 3:25 PM | ○ | carga_maxima_kg and peso_equipamento_kg columns predate PR #356 | ~329 |
-| #8951 | " | ○ | Coletor slug resolution pattern confirmed — perfil_item.py uses dict slug, not display names | ~433 |
-| #8939 | 3:18 PM | ○ | no_taxonomia system-wide uses slug format — fichaTecnica() "ESTEIRA ERGOMETRICA" is wrong format | ~382 |
-| #8919 | 2:53 PM | ○ | coletor.pncp is a standalone module — NOT invoked by main.py; has its own CLI with --modo/--lote/--termos flags | ~344 |
-| #8917 | " | ○ | PNCP leads written by coletor-externo/coletor/pncp.py — separate scripts/collector_pncp_contratacoes.py also exists | ~397 |
-| #8915 | 2:52 PM | ○ | coletor-externo architecture — Cloud Run Jobs with Cloud Scheduler, writes licitacoes_externas directly | ~399 |
 </claude-mem-context>

@@ -15,8 +15,8 @@
 
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
-| #7733 | 11:43 AM | ○ | Copilot Pós-Merge PR #44 — Terceiro Finding Aberto Não Coberto por PR #57 | ~398 |
-| #7729 | " | ○ | PR #44 Copilot Review Threads Navigated — Triage para PR #57 | ~455 |
+| #7729 | 11:43 AM | ○ | PR #44 Copilot Review Threads Navigated — Triage para PR #57 | ~455 |
+| #7733 | " | ○ | Copilot Pós-Merge PR #44 — Terceiro Finding Aberto Não Coberto por PR #57 | ~398 |
 | #7712 | 11:36 AM | ○ | PR #44 Owner Comment — Raiz do Problema do Coletor Externo | ~353 |
 | #7700 | 11:28 AM | ○ | Copilot Review PR #44 — 4 Findings Detalhados via gh api | ~310 |
 | #7696 | 11:19 AM | ○ | link_catmat_pca_test.ts em main — 3 Testes Confirmados, withEnv Usa Deno.env, Bearer Token Válido | ~551 |
@@ -37,12 +37,4 @@
 |----|------|---|-------|------|
 | #8767 | 6:54 PM | ○ | SAUDE_TOKEN = SYNC_CRON_SECRET value | ~316 |
 | #8617 | 12:07 PM | ○ | LicitaGym — Deploy Manual via gcloud, Sem CI/CD para Cloud Run Jobs | ~356 |
-
-### Oct 13, 2026
-
-| ID | Time | T | Title | Read |
-|----|------|---|-------|------|
-| #8930 | 3:03 PM | ○ | deploy-supabase-functions workflow deploys 25 functions — api-syncs and 7 stale functions absent from list | ~427 |
-| #8929 | " | ○ | deploy-supabase-functions last run shows FAILED=() and SUCCESS=() — workflow ran but deployed zero functions | ~393 |
-| #8928 | " | ○ | deploy-supabase-functions workflow is healthy — Supabase integration failure is migrations-only, not functions | ~462 |
 </claude-mem-context>

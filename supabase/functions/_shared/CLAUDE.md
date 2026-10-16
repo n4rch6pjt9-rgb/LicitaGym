@@ -20,10 +20,4 @@
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
 | #8817 | 7:51 PM | ○ | _shared/http.ts auth helpers — full implementation of validateCronAuth, requireCronAuth, requireUserAuth | ~405 |
-
-### Oct 13, 2026
-
-| ID | Time | T | Title | Read |
-|----|------|---|-------|------|
-| #8977 | 3:44 PM | ○ | catalogo_produtos RLS: SELECT open to all authenticated — tenant filter is Edge Function responsibility | ~380 |
 </claude-mem-context>

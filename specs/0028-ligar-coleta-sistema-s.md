@@ -1,6 +1,6 @@
 # 0028: Ligar a coleta diária do Sistema S e registrar cada execução
 
-- **Status:** rascunho, **em revisão pela spec 0029** (16/10/2026)
+- **Status:** rascunho, **reduzida pela spec 0029** (16/10/2026): valem só CA-2, CA-6 e CA-7; CA-1, CA-3 e CA-4 (Cloud Run) saíram
 
 > **Nota de 16/10/2026.** O Marcelo questionou o Cloud Run: não havia decisão registrada de rodar o Sistema S no GCP
 > (a #187 era um desenho de 03/10, nunca implantado). A spec 0029 separa a coleta do dia (Edge Function, minutos) do

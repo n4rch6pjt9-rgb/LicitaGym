@@ -168,6 +168,22 @@ Oportunidades: isso é da 0026b, depois da tela de suspensas (decisão l).
 
 ## Perguntas em aberto
 
-1. **Homologadas em Oportunidades:** pelos dados, nenhuma homologada está fora do `historico`. Você tem um exemplo
-   (link ou id)? Se for homologação que só o portal mostra, o CA-3 cobre pelos estados terminais ("Homologad…" →
-   `encerrada`), mas preciso de um caso real para conferir o texto exato do `statusProcesso` na fixture.
+1. **Atualização das recém-encerradas:** o caso 3035 (abaixo) mostra que a homologada fica em Oportunidades até a
+   próxima coleta que termine. Basta o coletor diário voltar a terminar (0025), ou as compras com fim do recebimento
+   nas últimas 48 h devem ser reconsultadas no PNCP mais de uma vez por dia (job leve, só o detalhe da compra)?
+
+**Caso 3035, homologada que não foi para o histórico** (JSON de acompanhamento mandado pelo Marcelo em 16/10/2026):
+- `07954480000179-1-026134/2026`, dispensa do Estado do Ceará (EEM Manoel Barboza Maciel), material esportivo.
+- **No PNCP:** situação "Divulgada no PNCP" (`situacaoCompraId` 1), `existeResultado` = true, valor homologado
+  R$ 1.880,00, os 7 itens "Homologado" com resultado de 16/10/2026, incluídos às 15:55, e `dataAtualizacao`
+  16/10/2026 15:55:10. Sem `linkSistemaOrigem`, então não há leitura do portal.
+- **No LicitaGym** (consulta de 16/10): fase "Recebendo propostas", `leads`, `data_homologacao` nula, última coleta
+  em **15/10/2026 13:20 (Brasília)**, antes do resultado.
+- **Causa:** a regra já existe (`existeResultado` → `historico`, em `services/coletor-externo/coletor/pncp.py`), mas a
+  linha não foi recoletada. O coletor PNCP não termina desde 14/10: as execuções de 15/10 e de 16/10 (06:00) foram
+  canceladas, e a de 16/10 13:42 continua na fila. Mesmo com o cron em dia, o resultado das 15:55 só entraria na
+  coleta do dia seguinte, às 06:00.
+- **O que já acontece:** com o fim do recebimento (16/10 15:50, Brasília) vencido, a view rebaixa a compra de `leads`
+  para `monitorar`, mas não para `historico`: ela continua em Oportunidades.
+- **Nesta spec:** o CA-5 (ii) cobre o caso quando a linha está atualizada; a fixture do 3035 entra no
+  `situacao_atual_check.sql`. A atualização da linha depende da pergunta 1.

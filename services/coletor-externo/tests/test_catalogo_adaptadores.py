@@ -169,6 +169,20 @@ def test_movement_paginas_de_cardio_12_12_11_0():
     assert sum(contagens) == 35
 
 
+def test_konnen_card_com_link_fechado_antes_do_productline():
+    ctx = _ctx("KONNEN", "konnen")
+    entrada = "https://www.konnenfitness.com.br/categoria-produto/cardio/"
+    pagina = Konnen().listar(
+        _resp("konnen-cardio-card-fechado.html", entrada),
+        entrada,
+        ctx,
+    )
+    assert [(i.nome, i.url) for i in pagina.itens] == [(
+        "ESTEIRA E12",
+        "https://www.konnenfitness.com.br/produto/cardio-esteira-e12/",
+    )]
+
+
 def test_konnen_e12_supino_e_paginas():
     ctx = _ctx("KONNEN", "konnen")
     kn = Konnen()
@@ -211,6 +225,30 @@ def test_konnen_e12_supino_e_paginas():
     assert supino["declaracao_fabricante"]["valor"] == "Konnen by Impulse"
     assert len(supino["imagens"]) == 2
     assert supino["imagens"][0]["url"].endswith("FE9701.836.png")
+
+
+def test_konnen_air_bike_le_codigo_solto_medidas_e_destaques():
+    ctx = _ctx("KONNEN", "konnen")
+    url = "https://www.konnenfitness.com.br/produto/cardio-air-bike/"
+    produto = Konnen().detalhar(
+        _resp("konnen-air-bike.html", url),
+        {"url": url, "fontes": ["https://www.konnenfitness.com.br/categoria-produto/cardio/"]},
+        ctx,
+    )
+    validar(produto)
+    assert produto["id_externo"] == "8477"
+    assert produto["nome"]["valor"] == "Air Bike"
+    assert produto["modelos"][0]["codigo_fabricante"] == "HB007"
+    ev_cod = produto["evidencias"][produto["modelos"][0]["ev"]]["trecho"]
+    assert ev_cod == "HB007"
+    medidas = next(a for a in produto["atributos"] if a["rotulo_original"] == "Medidas")
+    assert medidas["valor_original"] == "2041 x 1270 x 1174 mm"
+    assert medidas["unidade"] == "mm"
+    destaques = [t["texto"] for t in produto["textos"] if t["tipo"] == "destaque"]
+    assert destaques[0].startswith("Banco ajustável em 2 posições.")
+    assert "10 níveis de ajuste vertical" in destaques[0]
+    assert destaques[1].startswith("Suporte de garrafa.")
+    assert produto["oferta"]["status_preco"] == "sob_consulta"
 
 
 def test_generico_reaproveita_extrair_ficha():

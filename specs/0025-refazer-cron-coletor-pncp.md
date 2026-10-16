@@ -1,6 +1,6 @@
 # 0025: Refazer pela tela as etapas que falharam no cron do Coletor PNCP
 
-- **Status:** aprovada (Marcelo, 16/10/2026)
+- **Status:** em implementação (aprovada pelo Marcelo em 16/10/2026)
 - **Issue:** nenhuma (relacionada: #363, spec 0024; #377, um job por etapa)
 - **Área:** edge-functions + dashboard-contrato
 - **Depende do ok do Marcelo:** sim (republicação da `api-syncs` em produção e contrato novo com o Dashboard)
@@ -49,6 +49,22 @@ servidor localiza o último run com `event=schedule` e decide.
 | CA-6 | **Dado** `GITHUB_ACTIONS_TOKEN` ausente, **quando** o admin chama `refazer`, **então** recebe 500 com "Disparo do coletor não configurado (GITHUB_ACTIONS_TOKEN)."; o token nunca aparece em nenhuma resposta, nem quando o GitHub devolve erro. | Deno `tests/supabase/functions/api_syncs_test.ts` |
 | CA-7 | **Regressão:** **dado** o item `coletor-pncp`, **quando** o admin chama `rodar`, **então** continua sendo um `workflow_dispatch` com `{modo: "leads", dry_run: "false", rapido: "true"}`, como hoje. | Deno `tests/supabase/functions/api_syncs_test.ts` |
 | CA-8 | **Dashboard:** **dado** `pode_refazer: true`, **quando** o `SyncView` renderiza o card do Coletor PNCP, **então** aparece o botão "Refazer o cron de DD/MM" (data de `ultimo_cron.created_at` no horário de Brasília; o run escolhido pode não ser o de hoje) junto com a conclusão e a duração de cada etapa (`completed_at − started_at`, como o GitHub devolveu; etapa sem `completed_at` aparece "em andamento", sem duração); com `pode_refazer: false` o botão não aparece, e com `erro_ultimo_cron` o card mostra o erro, não um estado "ok". | vitest `src/test/sync-view-refazer.test.tsx` (repo `n4rch6pjt9-rgb/Dashboard---LicitaGym`) |
+
+### Cobertura (implementação, 16/10/2026)
+
+Backend: `tests/supabase/functions/api_syncs_test.ts`, 28 testes passando (suíte Deno: 800). Dashboard:
+`src/test/sync-view-refazer.test.tsx`, 4 testes (vitest: 418).
+
+| CA | Testes |
+|---|---|
+| CA-1 | "CA-1: último cron agendado em failure / cancelled / timed_out libera refazer e traz as etapas como o GitHub devolveu" |
+| CA-2 | "CA-2: cron em success…", "…run do workflow na fila ou rodando bloqueia…", "…o próprio cron ainda rodando…", "…run criado há 30 dias ou mais…", "…passou de 50 re-runs…", "…run antigo refeito no GitHub e ainda rodando…" |
+| CA-3 | "CA-3: refazer faz um único POST rerun-failed-jobs…", "CA-3: GitHub recusa o rerun → erro, nunca 'refeito'" |
+| CA-4 | "CA-4: leitura do GitHub falha…", "CA-4: timeout…", "CA-4: GitHub 200 com lista fora do formato vira erro…" |
+| CA-5 | "CA-5: refazer por usuário sem papel admin 403, pelo cron 403 e sem token 401…" |
+| CA-6 | "CA-6: refazer sem GITHUB_ACTIONS_TOKEN…", "CA-6: o token nunca aparece…" |
+| CA-7 | "CA-7: rodar coletor-pncp continua um workflow_dispatch rápido, sem rerun" |
+| CA-8 | os 4 testes "CA-8: …" do Dashboard (botão "Refazer o cron de DD/MM", etapas com conclusão e duração, motivo, erro, recusa do servidor) |
 
 ## Fora de escopo
 

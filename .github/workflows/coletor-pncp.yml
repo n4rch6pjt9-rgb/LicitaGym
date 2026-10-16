@@ -2,7 +2,10 @@
 # coletor.pncp`) no runner do GitHub, todo dia, sem GCP. Sem actions de terceiros (regra do repo): checkout por git,
 # Python do runner. Grava em licitacoes_externas com proveniência `ingestao_origem = cron` (spec 0023).
 # Pré-requisitos (secrets do repositório, cadastrados pelo Marcelo): SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY.
-# Passos: leads (recebendo proposta), monitorar (em julgamento) e recoleta das compras que mudaram no PNCP.
+# Etapas: leads (recebendo proposta), monitorar (em julgamento) e recoleta das compras que mudaram no PNCP.
+# Uma etapa por job (matriz), uma de cada vez e cada uma com o seu timeout: em 15/10 o modo `todos` num job só passou
+# de 300 min (leads levou 3h43, monitorar foi cortado e a recoleta não rodou). A lógica fica em
+# services/coletor-externo/ci/coletor-pncp.sh (testada em tests/test_ci_coletor_pncp.py).
 # Arquivos (edital/anexos) não são baixados aqui: ficam para a máquina do coletor ou o Cloud Run (#187).
 # Risco medido na #159: o PNCP pode responder 429 a um IP; o coletor já faz backoff e DELAY_SEGUNDOS >= 1.
 # Disparo manual (workflow_dispatch) serve para testar antes de confiar no horário.
@@ -29,20 +32,60 @@ on:
 permissions:
   contents: read
 
+# Um run por vez. O GitHub guarda só um run pendente por grupo: um disparo novo enquanto outro espera cancela o que
+# esperava (inclusive o cron do dia, se um manual estiver rodando). Com as etapas em sequência o run dura horas.
 concurrency:
   group: coletor-pncp
   cancel-in-progress: false
 
 jobs:
-  coletar:
+  # Traduz o modo do disparo nas etapas da matriz (modo desconhecido falha aqui, antes de qualquer coleta).
+  plano:
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 5
+    outputs:
+      etapas: ${{ steps.etapas.outputs.etapas }}
+    steps:
+      - name: Checkout (git, sem actions de terceiros)
+        run: |
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          # Token só no cabeçalho do fetch, sem gravar em .git/config (padrão do pr-quality.yml).
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c http.extraheader="$auth" fetch -q --depth 1 origin "${GITHUB_SHA}"
+          git checkout -q FETCH_HEAD -- services/coletor-externo/ci
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Etapas
+        id: etapas
+        env:
+          MODO: ${{ github.event.inputs.modo || 'todos' }}
+        run: |
+          ETAPAS="$(bash services/coletor-externo/ci/coletor-pncp.sh etapas "${MODO}")"
+          echo "etapas=${ETAPAS}" >> "${GITHUB_OUTPUT}"
+          echo "modo ${MODO}: ${ETAPAS}"
+
+  coletar:
+    needs: plano
+    name: coletar (${{ matrix.etapa }})
+    runs-on: ubuntu-latest
+    # Por etapa, abaixo do teto de 360 min do runner. leads completo (~160 termos) levou 3h43 em 15/10. A coleta tem o
+    # seu próprio limite (LIMITE_ETAPA, 330 min, em ci/coletor-pncp.sh) para terminar como falha antes deste.
+    timeout-minutes: 350
+    strategy:
+      # Uma etapa por vez (o PNCP já derruba conexões com um job só); na prática saem na ordem da lista, e cada etapa
+      # é independente. A que falhar (inclusive por LIMITE_ETAPA) não cancela as seguintes; o run fica vermelho no fim.
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        etapa: ${{ fromJSON(needs.plano.outputs.etapas) }}
     env:
       DELAY_SEGUNDOS: "1.5"
       PNCP_WORKERS: "2"
       ARQUIVO_RAW_GCS: "0"
       ARQUIVO_RAW_DIR: ${{ github.workspace }}/arquivo-raw
-      MODO: ${{ github.event.inputs.modo || 'todos' }}
+      ETAPA: ${{ matrix.etapa }}
       DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
       RAPIDO: ${{ github.event.inputs.rapido || 'false' }}
       ORIGEM: ${{ github.event_name == 'schedule' && 'cron' || 'manual' }}
@@ -50,8 +93,10 @@ jobs:
       - name: Checkout (git, sem actions de terceiros)
         run: |
           git init -q .
-          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          git fetch -q --depth 1 origin "${GITHUB_SHA}"
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          # Token só no cabeçalho do fetch, sem gravar em .git/config (padrão do pr-quality.yml).
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c http.extraheader="$auth" fetch -q --depth 1 origin "${GITHUB_SHA}"
           git checkout -q FETCH_HEAD -- services/coletor-externo
         env:
           GH_TOKEN: ${{ github.token }}
@@ -78,23 +123,4 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        run: |
-          set -o pipefail
-          DRY=""; [ "${DRY_RUN}" = "true" ] && DRY="--dry-run"
-          TERMOS=""; [ "${RAPIDO}" = "true" ] && TERMOS="--termos-padrao"   # só na busca por termos, não na recoleta
-          rodar() { echo "== coletor.pncp $*"; python3 -m coletor.pncp "$@" --origem "${ORIGEM}" ${DRY}; }
-          case "${MODO}" in
-            leads)     rodar ${TERMOS} ;;
-            monitorar) rodar --modo monitorar ${TERMOS} ;;
-            historico) rodar --modo historico ${TERMOS} ;;
-            recoleta)  rodar --recoletar-atualizadas --limite-recoleta 200 ;;
-            # Uma etapa que falha (ex.: busca do PNCP derrubada) não impede as outras; o job sai com erro no fim.
-            todos)
-              FALHOU=""
-              rodar ${TERMOS} || FALHOU="${FALHOU} leads"
-              rodar --modo monitorar ${TERMOS} || FALHOU="${FALHOU} monitorar"
-              rodar --recoletar-atualizadas --limite-recoleta 200 || FALHOU="${FALHOU} recoleta"
-              if [ -n "${FALHOU}" ]; then echo "::error::etapa(s) com falha:${FALHOU}"; exit 1; fi
-              ;;
-            *) echo "modo desconhecido: ${MODO}"; exit 2 ;;
-          esac
+        run: bash ci/coletor-pncp.sh rodar "${ETAPA}"

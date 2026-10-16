@@ -28,6 +28,8 @@ export interface ApiSyncsContext {
   githubToken?: () => string | null;
   /** "dono/repo" do workflow: GITHUB_ACTIONS_REPO, padrão n4rch6pjt9-rgb/LicitaGym; null = variável inválida. */
   githubRepo?: () => string | null;
+  /** Relógio (testes): a janela de 30 dias do re-run do GitHub depende de "agora". */
+  agora?: () => Date;
 }
 
 const REPO_PADRAO = "n4rch6pjt9-rgb/LicitaGym";

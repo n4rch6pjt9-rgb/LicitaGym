@@ -221,7 +221,14 @@ function github(opts: { agendado?: RunGh | null; recentes?: RunGh[]; falha?: num
 }
 
 function ctxGh(gh: ReturnType<typeof github>, over: Partial<ApiSyncsContext> = {}): ApiSyncsContext {
-  return ctx({ githubToken: () => "github-token-de-teste", githubRepo: () => "dono/repo", fetchFn: gh.fetchFn, ...over });
+  // relógio fixo: a janela de 30 dias do GitHub não pode depender do dia em que o teste roda
+  return ctx({
+    githubToken: () => "github-token-de-teste",
+    githubRepo: () => "dono/repo",
+    fetchFn: gh.fetchFn,
+    agora: () => new Date("2026-10-16T16:00:00Z"),
+    ...over,
+  });
 }
 
 async function coletorListado(c: ApiSyncsContext) {
@@ -275,6 +282,28 @@ Deno.test("CA-2: o próprio cron ainda rodando não libera refazer", async () =>
   const { coletor } = await coletorListado(ctxGh(gh));
   assertEquals(coletor.pode_refazer, false);
   assertEquals((await handleRequest(post({ action: "refazer", sync: "coletor-pncp" }), ctxGh(gh))).status, 409);
+});
+
+Deno.test("CA-2: run criado há 30 dias ou mais não libera refazer (limite do GitHub)", async () => {
+  const gh = github({ agendado: runGh({ conclusion: "failure", created_at: "2026-09-16T16:00:00Z" }) });
+  const { coletor } = await coletorListado(ctxGh(gh));
+  assertEquals(coletor.pode_refazer, false);
+  assertEquals(typeof coletor.motivo_refazer, "string");
+  assertEquals((await handleRequest(post({ action: "refazer", sync: "coletor-pncp" }), ctxGh(gh))).status, 409);
+  assertEquals(gh.chamadas.some((c) => c.url.includes("rerun")), false);
+  // um pouco menos de 30 dias ainda libera
+  const dentro = github({ agendado: runGh({ conclusion: "failure", created_at: "2026-09-16T16:00:01Z" }) });
+  assertEquals((await coletorListado(ctxGh(dentro))).coletor.pode_refazer, true);
+});
+
+Deno.test("CA-2: run que já passou de 50 re-runs não libera refazer (limite do GitHub)", async () => {
+  const esgotado = github({ agendado: runGh({ conclusion: "failure", run_attempt: 51 }) });
+  const { coletor } = await coletorListado(ctxGh(esgotado));
+  assertEquals(coletor.pode_refazer, false);
+  assertEquals((await handleRequest(post({ action: "refazer", sync: "coletor-pncp" }), ctxGh(esgotado))).status, 409);
+  assertEquals(esgotado.chamadas.some((c) => c.url.includes("rerun")), false);
+  const ultimo = github({ agendado: runGh({ conclusion: "failure", run_attempt: 50 }) });
+  assertEquals((await coletorListado(ctxGh(ultimo))).coletor.pode_refazer, true);
 });
 
 Deno.test("CA-3: refazer faz um único POST rerun-failed-jobs no run que o servidor achou, ignorando run_id do corpo", async () => {

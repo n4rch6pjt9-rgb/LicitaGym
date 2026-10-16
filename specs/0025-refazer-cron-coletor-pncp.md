@@ -32,19 +32,23 @@ Ação nova na `api-syncs`: `POST {action: "refazer", sync: "coletor-pncp"}`. O 
 `coletor-pncp`, o bloco `ultimo_cron` (o id do run, `status`, `conclusion`, `run_attempt`, `created_at` e as etapas
 com `conclusion`, `started_at` e `completed_at` de cada uma, como o GitHub devolveu) e `pode_refazer: boolean`.
 "Último cron" é o último run com `event=schedule`, de quando for (sem janela de 24 h). Não há limite de tentativas
-por `run_attempt`. Só o admin chama `refazer`. O cliente nunca envia o id do run: o
+nosso por `run_attempt`, mas valem os limites do GitHub
+([re-run de workflows](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs)): o
+re-run só é aceito "up to 30 days after its initial run", e "a workflow run can be re-run a maximum of 50 times". Por
+isso `pode_refazer` exige `created_at` há menos de 30 dias e `run_attempt <= 50` (a tentativa 1 é o run original). Só o
+admin chama `refazer`. O cliente nunca envia o id do run: o
 servidor localiza o último run com `event=schedule` e decide.
 
 | ID | Dado / Quando / Então | Teste que prova |
 |---|---|---|
 | CA-1 | **Dado** que o último run `event=schedule` de `coletor-pncp.yml` terminou (`status: completed`) com `conclusion` `failure`, `cancelled` ou `timed_out`, **quando** um admin chama `listar`, **então** o item `coletor-pncp` traz `ultimo_cron` com o id, o `conclusion` e as etapas como o GitHub devolveu, e `pode_refazer: true`. | Deno `tests/supabase/functions/api_syncs_test.ts` |
-| CA-2 | **Dado** que o último run agendado terminou em `success`, **ou** que existe qualquer run de `coletor-pncp.yml` (agendado ou manual) em `queued`/`in_progress`, **quando** o admin chama `listar`, **então** `pode_refazer: false` (com o motivo); **e quando** chama `refazer`, **então** recebe 409 e nenhuma chamada a `rerun-failed-jobs` acontece. | Deno `tests/supabase/functions/api_syncs_test.ts` |
+| CA-2 | **Dado** que o último run agendado terminou em `success`, **ou** que existe qualquer run de `coletor-pncp.yml` (agendado ou manual) em `queued`/`in_progress`, **ou** que o run foi criado há 30 dias ou mais, **ou** que `run_attempt` passou de 50 (limites do GitHub), **quando** o admin chama `listar`, **então** `pode_refazer: false` (com o motivo); **e quando** chama `refazer`, **então** recebe 409 e nenhuma chamada a `rerun-failed-jobs` acontece. | Deno `tests/supabase/functions/api_syncs_test.ts` |
 | CA-3 | **Dado** `pode_refazer: true`, **quando** o admin chama `refazer`, **então** a função faz exatamente um `POST /repos/{repo}/actions/runs/{id}/rerun-failed-jobs` para o id que ela mesma achou (nunca um do corpo da requisição), sem `workflow_dispatch`, e devolve `{status: "refeito", run_id, acompanhe}` quando o GitHub responde 201. | Deno `tests/supabase/functions/api_syncs_test.ts` |
 | CA-4 | **Dado** que a leitura dos runs no GitHub falha (5xx, timeout ou 401), **quando** o admin chama `listar`, **então** o item traz `ultimo_cron: null`, `pode_refazer: false` e um `erro_ultimo_cron` com a mensagem; a falha não vira "cron ok" nem lista vazia, e os outros syncs continuam listados. | Deno `tests/supabase/functions/api_syncs_test.ts` |
 | CA-5 | **Dado** um usuário `authenticated` sem `app_metadata.licitagym_role = 'admin'`, **ou** a chamada com `SYNC_CRON_SECRET` (cron), **quando** chama `refazer`, **então** recebe 403; **e sem token**, 401. Em nenhum desses casos há chamada ao GitHub. | Deno `tests/supabase/functions/api_syncs_test.ts` |
 | CA-6 | **Dado** `GITHUB_ACTIONS_TOKEN` ausente, **quando** o admin chama `refazer`, **então** recebe 500 com "Disparo do coletor não configurado (GITHUB_ACTIONS_TOKEN)."; o token nunca aparece em nenhuma resposta, nem quando o GitHub devolve erro. | Deno `tests/supabase/functions/api_syncs_test.ts` |
 | CA-7 | **Regressão:** **dado** o item `coletor-pncp`, **quando** o admin chama `rodar`, **então** continua sendo um `workflow_dispatch` com `{modo: "leads", dry_run: "false", rapido: "true"}`, como hoje. | Deno `tests/supabase/functions/api_syncs_test.ts` |
-| CA-8 | **Dashboard:** **dado** `pode_refazer: true`, **quando** o `SyncView` renderiza o card do Coletor PNCP, **então** aparece o botão "Refazer o cron de hoje" junto com a conclusão e a duração de cada etapa (`completed_at − started_at`, como o GitHub devolveu; etapa sem `completed_at` aparece "em andamento", sem duração); com `pode_refazer: false` o botão não aparece, e com `erro_ultimo_cron` o card mostra o erro, não um estado "ok". | vitest `src/test/sync-view-refazer.test.tsx` (repo `n4rch6pjt9-rgb/Dashboard---LicitaGym`) |
+| CA-8 | **Dashboard:** **dado** `pode_refazer: true`, **quando** o `SyncView` renderiza o card do Coletor PNCP, **então** aparece o botão "Refazer o cron de DD/MM" (data de `ultimo_cron.created_at` no horário de Brasília; o run escolhido pode não ser o de hoje) junto com a conclusão e a duração de cada etapa (`completed_at − started_at`, como o GitHub devolveu; etapa sem `completed_at` aparece "em andamento", sem duração); com `pode_refazer: false` o botão não aparece, e com `erro_ultimo_cron` o card mostra o erro, não um estado "ok". | vitest `src/test/sync-view-refazer.test.tsx` (repo `n4rch6pjt9-rgb/Dashboard---LicitaGym`) |
 
 ## Fora de escopo
 
@@ -92,7 +96,9 @@ servidor localiza o último run com `event=schedule` e decide.
 4. **Bloquear `refazer`** quando houver run do workflow em `queued`/`in_progress` (CA-2).
 5. **Conferir** se o `rerun-failed-jobs` refaz job `cancelled`. Ver "Verificação antes do merge".
 6. **Só admin** (CA-5).
-7. **O card mostra também a duração de cada etapa** (CA-8).
+7. **O card mostra também a duração de cada etapa** (CA-8). O rótulo do botão passa de "Refazer o cron de hoje" para
+   "Refazer o cron de DD/MM", com a data do run escolhido. Achado do Codex no #382: o último run agendado pode ser de
+   outro dia (atraso do GitHub ou cron que não rodou), e o re-run usa o commit daquele run.
 
 ## Verificação antes do merge
 

@@ -324,6 +324,17 @@ Deno.test("CA-2: run antigo refeito no GitHub e ainda rodando (fora dos 30 recen
   assertEquals((await handleRequest(post({ action: "refazer", sync: "coletor-pncp" }), ctxGh(gh))).status, 409);
 });
 
+for (const status of ["requested", "waiting", "pending"]) {
+  Deno.test(`CA-2: run antigo fora dos 30 recentes em ${status} também bloqueia`, async () => {
+    const falhou = runGh({ conclusion: "failure" });
+    const antigo = runGh({ id: 8, event: "schedule", status, conclusion: null, created_at: "2026-10-01T09:00:00Z" });
+    const gh = github({ agendado: falhou, recentes: [falhou], ativosAntigos: [antigo] });
+    const { coletor } = await coletorListado(ctxGh(gh));
+    assertEquals(coletor.pode_refazer, false);
+    assertEquals((await handleRequest(post({ action: "refazer", sync: "coletor-pncp" }), ctxGh(gh))).status, 409);
+  });
+}
+
 Deno.test("CA-4: GitHub 200 com lista fora do formato vira erro, não 'nada na fila'", async () => {
   const gh = github({ agendado: runGh({ conclusion: "failure" }), foraDoFormato: true });
   const { coletor } = await coletorListado(ctxGh(gh));

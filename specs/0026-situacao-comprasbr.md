@@ -20,6 +20,17 @@ ou "Em andamento" quando a compra está recebendo propostas ou com sessão marca
   abaixo).
 - **(d)** Sem coletar a ComprasBR.
 
+**Decisões do Marcelo em 16/10/2026, sobre as perguntas da primeira revisão:**
+- **(e)** O **Portal de Compras Públicas sempre vence** o PNCP quando há leitura do portal.
+- **(f)** A **operação** do portal ("Operação: Suspensa") entra nesta spec, porque está ligada à situação.
+- **(g)** O rótulo é **"Em julgamento"**. **Homologada vira histórico e sai de Oportunidades.** **Suspensa também sai
+  de Oportunidades** e vai para uma **rota própria de licitações suspensas**, com API, e um **cron que verifica
+  cada suspensa conforme a regra do documento de suspensão**.
+- **(h)** O cálculo fica na **view**.
+- **(i)** Só documento do **tipo Edital** conta como reabertura. "Errata" em "Outros documentos" não conta: "não
+  podemos ficar à mercê de erro de terceiros".
+- **(j)** "Aguardando recebimento" é vago. O rótulo precisa dizer **o que** vai abrir e **quando**.
+
 **Caso 1, Biguaçu/SC, `82892308000153-1-000174/2026` (id 2392), PERP 120/2026, na ComprasBR.**
 - O aviso de suspensão *sine die* foi assinado em 19/08/2026 17:40 (texto colado pelo Marcelo).
 - A errata 01, assinada em 29/09/2026 11:20, reabre o pregão. O edital pós-errata traz "Sessão pública: 23/10/2026;
@@ -72,76 +83,92 @@ colunas):
 **Tela:** o card "Valor homologado" diz "Fase de julgamento ou disputa" sempre que não há valor homologado
 (`OpportunityAcompanhamentoView.tsx`, ~linha 708 do Dashboard), inclusive numa compra recebendo propostas.
 
+**Medição de homologadas e suspensas** (somente leitura, 16/10/2026, `prioridade` gravada na tabela):
+- todas as fases de homologação, revogação, anulação e itens finalizados já estão em `historico` (656 + 20 + 22 +
+  13 + 6 + 1), menos **3** em "Homologação" com prioridade nula (fora do escopo);
+- **nenhuma** compra em `leads`/`monitorar` tem `data_homologacao` ou resultado em `resultados_itens_14133`;
+- **28** suspensas estão em `monitorar` e por isso aparecem em Oportunidades: 19 "Suspensa" (oficial) e 9
+  "Suspensa (documento)";
+- **não reproduzido:** "temos vários homologados em oportunidades". Pelos dados, nenhuma homologada está fora do
+  `historico`. Pode ser homologação que só o portal mostra (o PNCP ainda diz "Divulgada"). Falta um exemplo (pergunta 1).
+
 ## Critérios de aceite
 
-`situacao_atual` é o campo novo: um objeto `{ codigo, rotulo, desde, ate, fonte }`.
-- `codigo`: `recebendo_propostas`, `aguardando_recebimento`, `sessao_ou_julgamento`, `suspensa`, `encerrada` ou
-  `null`.
+`situacao_atual` é o campo novo: `{ codigo, rotulo, desde, ate, fonte, lido_em }`.
+- `codigo`: `recebendo_propostas`, `propostas_abrem_em`, `em_julgamento`, `suspensa`, `encerrada` ou `null`.
 - `rotulo`: texto com a data, por exemplo "Recebendo propostas até 23/10 14:00".
 - `desde`/`ate`: as datas usadas, como vieram da fonte.
 - `fonte`: `portal_compras_publicas`, `pncp` ou `documento_pncp`.
+- `lido_em`: a hora da leitura do portal (nulo para o PNCP).
 
 `situacao` (oficial do PNCP) e `fase` continuam expostos como hoje.
 
 | ID | Dado / Quando / Então | Teste que prova |
 |---|---|---|
-| CA-1 | **Regressão (Biguaçu):** **dado** um aviso de suspensão e, no mesmo upload, um documento do tipo Edital com "pos-errata"/"errata"/"retificado" no título, com o fim do recebimento depois do upload, **quando** `fase_da_compra` roda, **então** a fase é "Recebendo propostas", a prioridade é `leads`, e o motivo traz "(suspensão anterior; retificado)". | pytest `services/coletor-externo/tests/test_fase_compra.py` |
-| CA-2 | **Dado** um aviso de suspensão publicado mais de 10 min **depois** do último edital retificado ou republicado (caso 492), **ou** um edital retificado sem fim de recebimento posterior ao upload, **quando** `fase_da_compra` roda, **então** continua "Suspensa (documento)" / `monitorar`. | pytest `services/coletor-externo/tests/test_fase_compra.py` |
-| CA-3 | **Dado** uma compra com leitura do Portal de Compras Públicas de **até 24 h** (`portal_consulta.consultado_em`), **quando** a situação é calculada, **então** `fonte` = `portal_compras_publicas` e o `codigo` sai do `statusProcesso` cru, por tabela escrita: "Recebendo Propostas" → `recebendo_propostas`; "Sessão Pública Iniciada" → `sessao_ou_julgamento`; "Suspenso…" → `suspensa`. Um valor fora da tabela vira `null`, com o texto cru no `rotulo`, nunca um código inventado. | SQL `supabase/tests/situacao_atual_check.sql` |
-| CA-4 | **Dado** uma compra sem leitura recente do portal, **quando** a situação é calculada pelo PNCP, **então**: (i) fase de suspensão → `suspensa` "Suspensa desde DD/MM" (data do documento ou da situação oficial); (ii) homologada, revogada, anulada, itens finalizados, registro de preço ou excluída → `encerrada`, com o motivo; (iii) "Em julgamento" → `sessao_ou_julgamento` "Propostas encerradas em DD/MM; sem vencedor homologado" (resposta b); (iv) `data_inicio` no futuro → `aguardando_recebimento` "Recebimento das propostas a partir de DD/MM HH:MM"; (v) `data_fim` no futuro → `recebendo_propostas` "Recebendo propostas até DD/MM HH:MM". | SQL `supabase/tests/situacao_atual_check.sql` |
-| CA-5 | **Dado** dados insuficientes (fase nula e datas nulas, ou situação oficial desconhecida), **quando** a situação é calculada, **então** `codigo` = `null` e `rotulo` = "Situação não informada"; nunca `recebendo_propostas` por padrão. O rótulo nunca chama a data de início do recebimento do PNCP de "abertura das propostas" nem de "sessão" (resposta c). | SQL `supabase/tests/situacao_atual_check.sql` |
-| CA-6 | **Dado** um usuário com vínculo ativo, **quando** chama `api-dashboard-oportunidades` (`list` e `get`), **então** cada oportunidade traz `situacao_atual` igual à da função para aquela linha; **e** sem token a resposta continua 401, e usuário sem vínculo, 403. | Deno `tests/supabase/functions/api_dashboard_oportunidades_test.ts` |
-| CA-7 | **Dado** `situacao_atual`, **quando** o cabeçalho e o card "Valor homologado" renderizam, **então** o selo mostra o `rotulo` com a data e a fonte ("Portal de Compras Públicas, lido às HH:MM" ou "PNCP"), e o subtítulo do card sem valor homologado acompanha o `codigo`; "Fase de julgamento ou disputa" só aparece com `sessao_ou_julgamento`. | vitest `src/test/situacao-atual.test.tsx` (repo `Dashboard---LicitaGym`) |
-| CA-8 | **Dado** o dry-run do reprocessamento das linhas em "Suspensa (documento)", **quando** ele roda com a regra nova, **então** só mudam as linhas com edital retificado no mesmo upload ou depois e com fim de recebimento futuro; pela medição de 16/10, 2392, 2410 e 3183. A 2660 já passou do prazo, e o portal dela diz "Sessão Pública Iniciada". A contagem antes/depois vai no PR. | pytest `services/coletor-externo/tests/test_fase_compra.py`, com fixtures dos casos e da 492, mais o dry-run no PR |
+| CA-1 | **Regressão (Biguaçu):** **dado** um aviso de suspensão e, no mesmo upload ou depois, um documento do **tipo Edital** com "pos-errata"/"errata"/"retificado"/"republicado" no título, com o fim do recebimento depois do upload, **quando** `fase_da_compra` roda, **então** a fase é "Recebendo propostas", a prioridade é `leads` e o motivo traz "(suspensão anterior; edital retificado)". | pytest `services/coletor-externo/tests/test_fase_compra.py` |
+| CA-2 | **Dado** só um documento "Errata" em "Outros documentos" (tipo diferente de Edital) depois do aviso de suspensão, **ou** um aviso publicado mais de 10 min depois do último edital retificado (caso 492), **ou** um edital retificado sem fim de recebimento posterior ao upload, **quando** `fase_da_compra` roda, **então** continua "Suspensa (documento)" (decisão i). | pytest `services/coletor-externo/tests/test_fase_compra.py` |
+| CA-3 | **Dado** uma leitura do Portal de Compras Públicas, **quando** a situação é calculada, **então** ela **sempre vence** o PNCP (decisão e), com `fonte` = `portal_compras_publicas` e `lido_em`. O `codigo` sai do `statusProcesso` e da operação, por tabela escrita: operação suspensa → `suspensa`, qualquer que seja o status; "Recebendo Propostas" → `recebendo_propostas`; "Sessão Pública Iniciada" → `em_julgamento`; "Suspenso…" → `suspensa`. Um valor fora da tabela vira `null`, com o texto cru no `rotulo`, nunca um código inventado. | SQL `supabase/tests/situacao_atual_check.sql` |
+| CA-4 | **Dado** a página pública de uma compra no portal, **quando** o `sync-portal-compras` lê, **então** grava em `portal_consulta` também a operação crua (coluna nova `operacao`), ao lado do `statusProcesso`; com a operação ausente na resposta, a coluna fica nula e a leitura não falha. Fixture: o caso de Ibatiba ("Sessão Pública Iniciada" + "Operação: Suspensa"). | Deno `tests/supabase/functions/sync_portal_compras_test.ts` |
+| CA-5 | **Dado** uma compra sem leitura do portal, **quando** a situação é calculada pelo PNCP, **então**: (i) fase de suspensão → `suspensa` "Suspensa desde DD/MM"; (ii) homologada, revogada, anulada, itens finalizados ou excluída → `encerrada`, com o motivo; (iii) "Em julgamento" → `em_julgamento` "Em julgamento desde DD/MM" (fim do recebimento; decisão g); (iv) `data_inicio` no futuro → `propostas_abrem_em` "Recebimento de propostas abre em DD/MM HH:MM" (decisão j); (v) `data_fim` no futuro → `recebendo_propostas` "Recebendo propostas até DD/MM HH:MM". | SQL `supabase/tests/situacao_atual_check.sql` |
+| CA-6 | **Dado** dados insuficientes, **quando** a situação é calculada, **então** `codigo` = `null` e `rotulo` = "Situação não informada"; nunca `recebendo_propostas` por padrão. O rótulo nunca chama o início do recebimento do PNCP de "abertura das propostas" nem de "sessão". | SQL `supabase/tests/situacao_atual_check.sql` |
+| CA-7 | **Dado** uma compra com `situacao_atual.codigo` = `suspensa` ou `encerrada`, **quando** o usuário lista Oportunidades (`api-dashboard-oportunidades` `list`, lista e contagem), **então** ela não aparece (decisão g); `get` por id continua respondendo, para links do BI e do pipeline. Contagem antes/depois no PR. | Deno `tests/supabase/functions/api_dashboard_oportunidades_test.ts` |
+| CA-8 | **Dado** um usuário com vínculo ativo, **quando** chama a rota nova de suspensas (`api-dashboard-oportunidades?action=suspensas`), **então** recebe só as compras com `codigo` = `suspensa`, cada uma com `desde`, a fonte, o documento ou a leitura que suspendeu, a regra de verificação (CA-9) e a data da última e da próxima verificação; sem token, 401; sem vínculo, 403. | Deno `tests/supabase/functions/api_dashboard_oportunidades_test.ts` |
+| CA-9 | **Dado** uma compra suspensa, **quando** o cron de suspensas roda, **então** ela é reverificada (PNCP e, quando houver página, portal) conforme a regra do documento: (i) **com data de retomada escrita no documento** → verificação nessa data; (ii) **sine die ou sem data** → verificação diária; (iii) suspensão só do portal, sem documento → diária. Ao achar edital retificado (CA-1) ou status do portal fora da suspensão, a compra volta a ser calculada normalmente. Falha de leitura não tira a compra da suspensão e fica registrada na execução. | pytest `services/coletor-externo/tests/test_suspensas.py` + Deno do cron |
+| CA-10 | **Dado** `situacao_atual`, **quando** o cabeçalho e o card "Valor homologado" renderizam, **então** o selo mostra o `rotulo` e a fonte ("Portal de Compras Públicas, lido às HH:MM" ou "PNCP"); o subtítulo do card sem valor homologado acompanha o `codigo` ("Em julgamento" só com `em_julgamento`); e a rota de suspensas tem tela própria no menu. | vitest `src/test/situacao-atual.test.tsx` e `src/test/suspensas.test.tsx` (repo `Dashboard---LicitaGym`) |
+| CA-11 | **Dado** o dry-run do reprocessamento, **quando** roda com a regra nova, **então** só mudam as linhas com edital retificado no mesmo upload ou depois e com fim de recebimento futuro (medição de 16/10: 2392, 2410 e 3183). As 28 suspensas saem da lista de Oportunidades e entram na rota de suspensas. Contagem antes/depois no PR. | pytest `services/coletor-externo/tests/test_fase_compra.py` + dry-run no PR |
 
 ## Fora de escopo
 
 - Coletar a ComprasBR ou outro portal além do que o `sync-portal-compras` já lê (decisão d).
 - **Hora da sessão de disputa:** em Biguaçu, 14h15, só no edital. Ler o horário do edital é trabalho do Agente de
   Edital. Esta spec mostra o fim do recebimento, que é o que o PNCP traz.
-- **Alerta da sessão pública para oportunidade no pipeline** (pedido do Marcelo em 16/10): vira spec própria, que usa
-  `situacao_atual.ate` e, quando houver, a hora do edital.
+- **Alerta da sessão pública para oportunidade no pipeline:** spec própria, que usa `situacao_atual.ate` e, quando
+  houver, a hora do edital.
 - A URL da oportunidade com `CNPJ|processo` ambígua (duas publicações do mesmo pregão, como 2392/2393 e 1315/2660):
   item à parte. A exportação JSON já foi corrigida no Dashboard#96.
-- A situação de cada item (`situacaoCompraItemNome`): continua a oficial do PNCP.
-- Os 194 `leads` com prazo vencido na tabela: a view `licitacoes_externas_prioridade_efetiva` já os rebaixa (#319).
+- A situação de cada item (`situacaoCompraItemNome`): continua a oficial do PNCP. Item 73 suspenso em Ibatiba não
+  suspende a compra.
+- Compra suspensa que já está no pipeline: continua lá; esta spec só tira da lista de Oportunidades.
 
 ## Impacto em dados
 
-- **Migration:** sim, `supabase/migrations/<timestamp>_situacao_atual.sql`, aditiva e idempotente:
-  - função `public.situacao_atual(...)` com `search_path` fixo, `revoke all` e grant mínimo;
-  - coluna derivada na view lida pela API (pergunta 4), juntando com `portal_consulta`;
-  - checagem em `supabase/tests/situacao_atual_check.sql`.
+- **Migrations:** sim, aditivas e idempotentes, cada uma com seu `_check.sql`:
+  - `<timestamp>_portal_consulta_operacao.sql`: coluna `operacao text` em `portal_consulta`;
+  - `<timestamp>_situacao_atual.sql`: função `public.situacao_atual(...)` (`search_path` fixo, `revoke all`, grant
+    mínimo) e a coluna derivada na view lida pela API (decisão h), juntando com `portal_consulta`;
+  - `<timestamp>_suspensas_verificacao.sql`: tabela `private.suspensa_verificacao` (licitação, regra, data de
+    retomada do documento, última e próxima verificação, resultado), RLS ligada, só `service_role`, e o job do
+    `pg_cron`. **Pede branch Supabase** (depende de pg_cron, que o stub não reproduz).
 - **Tabelas/views/funções tocadas:**
   - `licitacoes_externas.fase`/`prioridade`: o coletor grava; muda a regra em `analise_documental`;
-  - `portal_consulta`: só leitura, o `sync-portal-compras` continua gravando;
+  - `portal_consulta`: coluna nova, gravada pelo `sync-portal-compras`;
   - a view `licitacoes_externas_prioridade_efetiva` (ou a que a API lê);
-  - `api-dashboard-oportunidades`.
-- **ACL/RLS:** nenhuma mudança em tabela. A função nova só recebe o grant que a view precisa. `portal_consulta`
-  continua só para `service_role`.
-- **Backfill/reprocessamento:** sim, das linhas em "Suspensa (documento)", com dry-run e contagem antes/depois no PR;
-  as demais mudam na próxima coleta diária.
-- **Edge Functions republicadas no merge:** todas. O código muda em `api-dashboard-oportunidades`.
-- **Contrato com o Dashboard:** muda. Entra o campo `situacao_atual`. O backend vai ao ar antes do front, e o front
-  atual ignora o campo.
+  - `api-dashboard-oportunidades` (filtro do `list` e `action=suspensas`) e `sync-portal-compras`.
+- **ACL/RLS:** tabela nova só para `service_role`; `portal_consulta` continua só para `service_role`.
+- **Backfill/reprocessamento:** sim, das linhas em "Suspensa (documento)", com dry-run e contagem antes/depois.
+- **Edge Functions republicadas no merge:** todas. O código muda em `api-dashboard-oportunidades`,
+  `sync-portal-compras` e na função do cron de suspensas.
+- **Contrato com o Dashboard:** muda. Entram `situacao_atual` e `action=suspensas`, e o `list` deixa de trazer
+  suspensas. O backend vai ao ar antes do front; o front atual ignora o campo novo, mas **a lista perde as 28
+  suspensas no merge do backend**, antes da tela nova existir (pergunta 3).
 - **Dado oficial x derivado:**
-  - o `statusProcesso` do portal, a `situacao` do PNCP, os documentos e as datas aparecem como vieram, com a fonte
-    e a hora da leitura;
-  - `codigo` e `rotulo` saem de tabela escrita nesta spec;
+  - o `statusProcesso` e a operação do portal, a `situacao` do PNCP, os documentos e as datas aparecem como vieram,
+    com a fonte e a hora da leitura;
+  - `codigo`, `rotulo` e a regra de verificação saem de tabela escrita nesta spec;
   - nada é estimado: com dado insuficiente aparece "Situação não informada".
 
 ## Perguntas em aberto
 
-1. **Portal × PNCP:** quando o portal diz uma coisa e o PNCP outra (em Ibatiba, o portal disse "Sessão Pública
-   Iniciada" e o PNCP "Divulgada"), o portal vence sempre que a leitura tiver até 24 h? Outra janela de validade?
-2. **"Operação: Suspensa" com status "Sessão Pública Iniciada":** a página do portal tem os dois campos, e o
-   `portal_consulta` guarda só o `statusProcesso`. Ler também a operação (mudança no `sync-portal-compras`) entra
-   aqui ou vira spec à parte?
-3. **Rótulo de `sessao_ou_julgamento`:** "Propostas encerradas em DD/MM; sem vencedor homologado" atende à resposta
-   b, ou prefere "Em julgamento desde DD/MM"?
-4. **Onde calcular:** na view (SQL, testável em `_check.sql`, uma regra para a API e para o BI) ou na Edge Function.
-   A proposta é a view.
-5. **Sinal de reabertura:** só documento do **tipo Edital** com "retificado/errata/pós-errata/republicado" no título,
-   ou também um documento "Errata" em "Outros documentos"? Em Biguaçu existem os dois.
-6. **`aguardando_recebimento` entra nos `leads`?** Hoje lead é "recebendo proposta"; uma compra que ainda vai abrir
-   pode valer como lead, para o fornecedor se preparar.
+1. **Homologadas em Oportunidades:** pelos dados, nenhuma homologada está fora do `historico`. Você tem um exemplo
+   (link ou id)? Se for homologação que só o portal mostra, a regra do CA-3 já cobre, mas preciso de um caso real para
+   a fixture.
+2. **Data de retomada no documento de suspensão (CA-9):** ler a data no texto do termo é trabalho do pipeline de
+   documentos. Proposta: regra simples sobre o texto extraído do PDF ("até DD/MM/AAAA", "por N dias"); sem achar,
+   verificação diária. Atende, ou a leitura do documento fica para outra spec e aqui todas são verificadas
+   diariamente?
+3. **Ordem de publicação:** a lista de Oportunidades perde as suspensas no merge do backend, antes da tela de
+   suspensas no Dashboard. Aceita esse intervalo, ou o filtro do `list` só liga depois do front no ar?
+4. **`propostas_abrem_em` entra nos `leads`?** Uma compra cujo recebimento ainda vai abrir pode ser lead, para o
+   fornecedor se preparar; hoje lead é só "recebendo proposta".
+5. **Tamanho:** a spec ficou com 11 critérios e três migrations. Divido em 0026a (situação atual e reabertura) e
+   0026b (rota e cron de suspensas), nessa ordem, ou segue uma só?

@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 
 import pytest
+import requests
 
 from coletor import medir_consulta_pncp as m
 
@@ -56,7 +57,7 @@ def test_ultimo_dia_util_em_brasilia():
     assert m.ultimo_dia_util(datetime(2026, 10, 17, 4, 0, tzinfo=timezone.utc)) == date(2026, 10, 16)
     # segunda 19/10 10:00 -> sexta 16/10 (dia completo anterior)
     assert m.ultimo_dia_util(datetime(2026, 10, 19, 13, 0, tzinfo=timezone.utc)) == date(2026, 10, 16)
-    # quinta 16/10 02:00 UTC ainda é quarta 15/10 23:00 em Brasília -> terça 14/10
+    # sexta 16/10 02:00 UTC ainda é quinta 15/10 23:00 em Brasília -> quarta 14/10
     assert m.ultimo_dia_util(datetime(2026, 10, 16, 2, 0, tzinfo=timezone.utc)) == date(2026, 10, 14)
 
 
@@ -129,3 +130,64 @@ def test_resumo_soma_endpoints_e_modalidades():
 def test_delay_abaixo_de_1_e_recusado():
     with pytest.raises(SystemExit):
         m.main(["--delay", "0.5", "--saida", "x.json"])
+
+
+def test_falha_de_rede_e_resposta_cortada_tentam_de_novo():
+    sessao = Sessao([requests.ConnectionError("x"), requests.exceptions.ChunkedEncodingError("cortada"),
+                     pagina([compra("halter")], 1, 1)])
+    rel, _ = medir(sessao)
+    linha = rel["medicoes"][0]
+    assert linha["completa"] and linha["recebidos"] == 1 and len(sessao.pedidos) == 3
+
+
+def test_5xx_seguido_de_sucesso():
+    rel, _ = medir(Sessao([Resp(502), pagina([compra("halter")], 1, 1)]))
+    assert rel["medicoes"][0]["completa"]
+
+
+def test_4xx_nao_tenta_de_novo_e_marca_incompleta():
+    sessao = Sessao([Resp(400)])
+    rel, _ = medir(sessao)
+    linha = rel["medicoes"][0]
+    assert len(sessao.pedidos) == 1 and linha["completa"] is False and "HTTP 400" in linha["erros"][0]
+
+
+def test_429_sem_retry_after_usa_backoff():
+    sessao = Sessao([Resp(429), pagina([compra("halter")], 1, 1)])
+    rel, esperas = medir(sessao)
+    assert rel["medicoes"][0]["http_429"] == 1 and rel["medicoes"][0]["completa"]
+    assert any(e not in (1.0,) for e in esperas)  # houve uma espera de backoff além do delay
+
+
+def test_204_no_meio_da_paginacao_nao_e_fim():
+    sessao = Sessao([pagina([compra("bola")], total_paginas=3, total_registros=3), Resp(204)])
+    rel, _ = medir(sessao)
+    linha = rel["medicoes"][0]
+    assert linha["completa"] is False and "vazia antes de totalPaginas=3" in linha["erros"][0]
+
+
+def test_envelope_sem_total_paginas_e_incompleto():
+    sessao = Sessao([Resp(200, {"data": [compra("bola")], "totalRegistros": 1})])
+    rel, _ = medir(sessao)
+    linha = rel["medicoes"][0]
+    assert linha["completa"] is False and "envelope" in linha["erros"][0]
+
+
+def test_recebidos_diferente_do_total_marca_divergencia():
+    sessao = Sessao([pagina([compra("bola")], total_paginas=1, total_registros=2)])
+    rel, _ = medir(sessao)
+    linha = rel["medicoes"][0]
+    assert linha["completa"] is False and linha["divergencia"] == -1
+
+
+def test_relatorio_parcial_a_cada_combinacao():
+    parciais = []
+    sessao = Sessao([pagina([compra("bola")], 1, 1), pagina([], 1, 0)])
+    m.medir(sessao, date(2026, 10, 15), modalidades=[6, 8], endpoints=["publicacao"], dormir=lambda _s: None,
+            relogio=iter(range(0, 100)).__next__, delay=1.0, ao_medir=parciais.append)
+    assert [len(p["medicoes"]) for p in parciais] == [1, 2]
+
+
+def test_data_mal_formada_e_recusada():
+    with pytest.raises(SystemExit, match="YYYYMMDD"):
+        m.main(["--data", "15/10/2026", "--saida", "x_resultado.json"])

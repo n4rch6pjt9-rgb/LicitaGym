@@ -9,11 +9,16 @@ Regras do projeto:
   - `tamanhoPagina` vai a 50, o teto destes endpoints (docs/pncp/contract-matrix.md);
   - a paginação para pelo `totalPaginas` da API, nunca por página curta (#186);
   - espera `--delay` (>= 1 s) entre chamadas; 429 respeita Retry-After; 5xx e falha de rede tentam de novo com backoff;
-  - erro persistente deixa a linha `completa = false`, nunca vira zero registros.
+  - erro persistente deixa a linha `completa = false`, nunca vira zero registros;
+  - página vazia ou 204 antes do `totalPaginas`, envelope sem `totalPaginas` ou `recebidos` diferente do `totalRegistros`
+    também deixam a linha incompleta (`divergencia` guarda a diferença);
+  - o JSON é regravado a cada combinação endpoint × modalidade, então uma queda no meio não perde o que já foi medido.
 
 Uso:
-  python -m coletor.medir_consulta_pncp --saida medicao.json            # último dia útil completo (Brasília)
-  python -m coletor.medir_consulta_pncp --data 20261015 --modalidades 6,8 --saida medicao.json
+  python -m coletor.medir_consulta_pncp --saida medicao_resultado.json      # último dia útil completo (Brasília)
+  python -m coletor.medir_consulta_pncp --data 20261015 --modalidades 6,8 --saida medicao_resultado.json
+
+`*_resultado.json` já é ignorado pelo `.gitignore`: o relatório é dado de coleta e não vai para o repositório.
 """
 from __future__ import annotations
 
@@ -32,7 +37,8 @@ from coletor.retry import backoff_s, retry_after_s
 
 BASE = "https://pncp.gov.br/api/consulta/v1/contratacoes/"
 ENDPOINTS = ("publicacao", "atualizacao")
-# Domínio de modalidades de contratação do PNCP (Lei 14.133).
+# Domínio `codigoModalidadeContratacao` do manual de integração do PNCP (1 a 13 na versão usada em 10/2026; conferir
+# no manual antes de confiar na cobertura: um código novo ficaria de fora sem erro).
 MODALIDADES = tuple(range(1, 14))
 TAMANHO_PAGINA = 50
 TENTATIVAS = 5
@@ -55,7 +61,7 @@ def _get(sessao, url: str, params: dict, dormir: Callable[[float], None], delay:
     for tentativa in range(TENTATIVAS):
         try:
             r = sessao.get(url, params=params, timeout=TIMEOUT_S)
-        except (requests.ConnectionError, requests.Timeout) as e:
+        except requests.RequestException as e:  # conexão, timeout, resposta cortada (ChunkedEncodingError) etc.
             ultimo = f"rede: {type(e).__name__}"
             dormir(backoff_s(tentativa, 5.0))
             continue
@@ -80,6 +86,11 @@ def _get(sessao, url: str, params: dict, dormir: Callable[[float], None], delay:
             raise RuntimeError(f"JSON inválido: {e}") from e
         if not isinstance(corpo, dict):
             raise RuntimeError(f"esperava objeto, veio {type(corpo).__name__}")
+        try:
+            corpo["totalPaginas"] = int(corpo["totalPaginas"])
+            corpo["totalRegistros"] = int(corpo["totalRegistros"])
+        except (KeyError, TypeError, ValueError) as e:
+            raise RuntimeError(f"envelope sem totalPaginas/totalRegistros numéricos ({type(e).__name__})") from e
         return 200, corpo
     raise RuntimeError(f"{ultimo} depois de {TENTATIVAS} tentativas")
 
@@ -102,28 +113,35 @@ def medir_um(sessao, dia: date, endpoint: str, modalidade: int, *, dormir, relog
             linha["erros"].append(f"página {pagina}: {e}")
             break
         linha["paginas"] += 1
-        if status == 204 or not corpo:
-            linha["registros_api"] = linha["registros_api"] or 0
+        registros = (corpo or {}).get("data") or []
+        if status == 204 or not registros:
+            if pagina == 1:
+                linha["registros_api"] = (corpo or {}).get("totalRegistros", 0)
+                break
+            # Vazio antes do fim anunciado pela API não é fim de dados (regra de paginação do PNCP).
+            linha["completa"] = False
+            linha["erros"].append(f"página {pagina}: vazia antes de totalPaginas={total_paginas}")
             break
-        total_paginas = int(corpo.get("totalPaginas") or 0)
-        linha["registros_api"] = int(corpo.get("totalRegistros") or 0)
-        for c in corpo.get("data") or []:
+        total_paginas = corpo["totalPaginas"]
+        linha["registros_api"] = corpo["totalRegistros"]
+        for c in registros:
             linha["recebidos"] += 1
             cat = escopo.classificar((c or {}).get("objetoCompra") or "")
             if cat:
                 linha["no_escopo"] += 1
                 categorias[cat] += 1
         pagina += 1
+    if linha["completa"] and linha["recebidos"] != (linha["registros_api"] or 0):
+        linha["completa"] = False
+        linha["divergencia"] = linha["recebidos"] - (linha["registros_api"] or 0)
+        linha["erros"].append(f"recebidos {linha['recebidos']} != totalRegistros {linha['registros_api']}")
     linha["http_429"] = conta["http_429"]
     linha["por_categoria"] = dict(categorias)
     linha["segundos"] = round(relogio() - inicio, 1)
     return linha
 
 
-def medir(sessao, dia: date, *, modalidades=MODALIDADES, endpoints=ENDPOINTS, dormir=time.sleep,
-          relogio=time.monotonic, delay: float = 1.0) -> dict:
-    medicoes = [medir_um(sessao, dia, ep, mod, dormir=dormir, relogio=relogio, delay=delay)
-                for ep in endpoints for mod in modalidades]
+def _relatorio(dia: date, delay: float, medicoes: list[dict]) -> dict:
     resumo = {
         "chamadas": sum(x["paginas"] for x in medicoes),
         "recebidos": sum(x["recebidos"] for x in medicoes),
@@ -137,6 +155,21 @@ def medir(sessao, dia: date, *, modalidades=MODALIDADES, endpoints=ENDPOINTS, do
             "medicoes": medicoes}
 
 
+def medir(sessao, dia: date, *, modalidades=MODALIDADES, endpoints=ENDPOINTS, dormir=time.sleep,
+          relogio=time.monotonic, delay: float = 1.0, ao_medir: Callable[[dict], None] | None = None) -> dict:
+    """Mede cada endpoint × modalidade. `ao_medir` recebe o relatório parcial depois de cada combinação."""
+    medicoes: list[dict] = []
+    for ep in endpoints:
+        for mod in modalidades:
+            linha = medir_um(sessao, dia, ep, mod, dormir=dormir, relogio=relogio, delay=delay)
+            medicoes.append(linha)
+            print(f"[medir] {ep} mod {mod}: {linha['paginas']} pág, {linha['recebidos']} reg, {linha['http_429']} 429"
+                  f"{'' if linha['completa'] else ', INCOMPLETA: ' + '; '.join(linha['erros'])}", file=sys.stderr)
+            if ao_medir:
+                ao_medir(_relatorio(dia, delay, list(medicoes)))
+    return _relatorio(dia, delay, medicoes)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Mede a consulta do PNCP por data (spec 0029, CA-1). Não grava.")
     ap.add_argument("--data", help="YYYYMMDD; padrão: último dia útil completo em Brasília")
@@ -147,16 +180,23 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     if a.delay < 1:
         raise SystemExit("--delay precisa ser >= 1 (respeito ao PNCP).")
-    dia = datetime.strptime(a.data, "%Y%m%d").date() if a.data else ultimo_dia_util()
+    try:
+        dia = datetime.strptime(a.data, "%Y%m%d").date() if a.data else ultimo_dia_util()
+    except ValueError:
+        raise SystemExit("--data no formato YYYYMMDD (ex.: 20261015)") from None
     modalidades = [int(x) for x in a.modalidades.split(",")] if a.modalidades else list(MODALIDADES)
     endpoints = [x.strip() for x in a.endpoints.split(",") if x.strip()]
     if any(e not in ENDPOINTS for e in endpoints):
         raise SystemExit(f"endpoint desconhecido; use {', '.join(ENDPOINTS)}")
     sessao = requests.Session()
     sessao.headers["User-Agent"] = "LicitaGym-Coletor/1.0 (pesquisa de licitações públicas)"
-    rel = medir(sessao, dia, modalidades=modalidades, endpoints=endpoints, delay=a.delay)
-    with open(a.saida, "w", encoding="utf-8") as f:
-        json.dump(rel, f, ensure_ascii=False, indent=2)
+
+    def gravar(rel: dict) -> None:
+        with open(a.saida, "w", encoding="utf-8") as f:
+            json.dump(rel, f, ensure_ascii=False, indent=2)
+
+    rel = medir(sessao, dia, modalidades=modalidades, endpoints=endpoints, delay=a.delay, ao_medir=gravar)
+    gravar(rel)
     r = rel["resumo"]
     print(f"{rel['data']}: {r['chamadas']} chamadas, {r['recebidos']} registros, {r['no_escopo']} no escopo, "
           f"{r['http_429']} 429, {r['segundos']} s, {r['incompletas']} incompletas")

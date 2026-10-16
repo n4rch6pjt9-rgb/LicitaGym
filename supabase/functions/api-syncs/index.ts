@@ -71,6 +71,9 @@ async function corpoResposta(res: Response): Promise<unknown> {
 
 /** Conclusões do run agendado que liberam o `refazer` (decisão do Marcelo, 16/10: `cancelled` também). */
 const CONCLUSOES_REFAZER = new Set(["failure", "cancelled", "timed_out"]);
+/** Limites do GitHub para re-run: "up to 30 days after its initial run" e "a maximum of 50 times" (tentativa 1 = run original). */
+const JANELA_RERUN_MS = 30 * 24 * 60 * 60 * 1000;
+const MAX_TENTATIVA = 51;
 
 interface EtapaCron {
   nome: string;
@@ -130,6 +133,7 @@ async function estadoCron(
   token: string | null,
   repo: string | null,
   fetchFn: typeof fetch,
+  agora: Date,
 ): Promise<EstadoCron> {
   const erro = (m: string): EstadoCron => ({ ultimo_cron: null, pode_refazer: false, motivo_refazer: null, erro_ultimo_cron: m });
   if (!token) return erro("Leitura do cron não configurada (GITHUB_ACTIONS_TOKEN).");
@@ -166,6 +170,14 @@ async function estadoCron(
     if (ultimo.status !== "completed") motivo = "O cron agendado ainda não terminou.";
     else if (!CONCLUSOES_REFAZER.has(ultimo.conclusion ?? "")) motivo = `O cron agendado terminou em ${ultimo.conclusion ?? "estado desconhecido"}.`;
     else if (ativo) motivo = "Há um run do workflow na fila ou rodando.";
+    else {
+      const criado = ultimo.created_at ? Date.parse(ultimo.created_at) : NaN;
+      if (!Number.isFinite(criado) || agora.getTime() - criado >= JANELA_RERUN_MS) {
+        motivo = "O GitHub só refaz runs criados há menos de 30 dias.";
+      } else if (ultimo.run_attempt === null || ultimo.run_attempt >= MAX_TENTATIVA) {
+        motivo = "O GitHub não refaz um run mais de 50 vezes.";
+      }
+    }
     return { ultimo_cron: ultimo, pode_refazer: motivo === null, motivo_refazer: motivo, erro_ultimo_cron: null };
   } catch (e) {
     if (e instanceof FalhaGithub) return erro(e.message);
@@ -195,10 +207,11 @@ export async function handleRequest(req: Request, ctx: ApiSyncsContext = {}): Pr
 
   const action = body.action ?? "listar";
   const fetchGh = ctx.fetchFn ?? fetch;
+  const agora = (ctx.agora ?? (() => new Date()))();
   if (action === "listar") {
     const syncs = await Promise.all(SYNCS.map(async (s) => {
       if (!s.refazer_cron) return s;
-      const estado = await estadoCron(s, (ctx.githubToken ?? tokenGithub)(), (ctx.githubRepo ?? repoGithub)(), fetchGh);
+      const estado = await estadoCron(s, (ctx.githubToken ?? tokenGithub)(), (ctx.githubRepo ?? repoGithub)(), fetchGh, agora);
       return { ...s, ...estado };
     }));
     return jsonResponse({ action: "listar", syncs });
@@ -213,7 +226,7 @@ export async function handleRequest(req: Request, ctx: ApiSyncsContext = {}): Pr
     if (!token) return jsonResponse({ error: "Disparo do coletor não configurado (GITHUB_ACTIONS_TOKEN)." }, 500);
     if (!repo) return jsonResponse({ error: "GITHUB_ACTIONS_REPO inválido (use dono/repo)." }, 500);
     // O run vem sempre da leitura do servidor; um run_id no corpo é ignorado.
-    const estado = await estadoCron(item, token, repo, fetchGh);
+    const estado = await estadoCron(item, token, repo, fetchGh, agora);
     if (estado.erro_ultimo_cron) return jsonResponse({ error: estado.erro_ultimo_cron }, 502);
     if (!estado.pode_refazer || !estado.ultimo_cron) {
       return jsonResponse({ error: estado.motivo_refazer ?? "Nada para refazer.", ultimo_cron: estado.ultimo_cron }, 409);

@@ -110,10 +110,10 @@ function cabecalhosGithub(token: string): Record<string, string> {
   };
 }
 
-async function lerGithub(fetchFn: typeof fetch, token: string, url: string): Promise<Record<string, unknown>> {
+async function lerGithub(fetchFn: typeof fetch, token: string, url: string, signal: AbortSignal): Promise<Record<string, unknown>> {
   let res: Response;
   try {
-    res = await fetchFn(url, { headers: cabecalhosGithub(token), signal: AbortSignal.timeout(15_000) });
+    res = await fetchFn(url, { headers: cabecalhosGithub(token), signal });
   } catch (e) {
     throw new FalhaGithub(`GitHub não respondeu (${e instanceof Error ? e.name : "erro"}).`);
   }
@@ -121,6 +121,12 @@ async function lerGithub(fetchFn: typeof fetch, token: string, url: string): Pro
   const corpo = await res.json().catch(() => null);
   if (typeof corpo !== "object" || corpo === null) throw new FalhaGithub("GitHub devolveu um corpo inválido.");
   return corpo as Record<string, unknown>;
+}
+
+/** Lista de runs do GitHub. Sem o array `workflow_runs` é erro, nunca "nenhum run" (isso abriria o refazer). */
+function runsDe(corpo: Record<string, unknown>): Record<string, unknown>[] {
+  if (!Array.isArray(corpo.workflow_runs)) throw new FalhaGithub("GitHub devolveu a lista de runs fora do formato.");
+  return corpo.workflow_runs as Record<string, unknown>[];
 }
 
 function texto(v: unknown): string | null {
@@ -139,15 +145,28 @@ async function estadoCron(
   if (!token) return erro("Leitura do cron não configurada (GITHUB_ACTIONS_TOKEN).");
   if (!repo) return erro("GITHUB_ACTIONS_REPO inválido (use dono/repo).");
   const base = `https://api.github.com/repos/${repo}/actions`;
+  // Um prazo só para todas as leituras: com o GitHub lento a tela não espera mais que isso.
+  const signal = AbortSignal.timeout(12_000);
+  const runs = `${base}/workflows/${item.github_workflow}/runs`;
   try {
-    const agendados = await lerGithub(fetchFn, token, `${base}/workflows/${item.github_workflow}/runs?event=schedule&per_page=1`);
-    const lista = Array.isArray(agendados.workflow_runs) ? agendados.workflow_runs : [];
-    const run = lista[0] as Record<string, unknown> | undefined;
-    if (!run || typeof run.id !== "number") {
+    // Em paralelo: o último agendado, os 30 runs mais recentes (pegam pending/waiting da fila de concorrência) e os
+    // ativos por status, que pegam um run antigo refeito no GitHub e que não está entre os 30 recentes.
+    const [agendados, recentes, emAndamento, naFila] = await Promise.all([
+      lerGithub(fetchFn, token, `${runs}?event=schedule&per_page=1`, signal),
+      lerGithub(fetchFn, token, `${runs}?per_page=30`, signal),
+      lerGithub(fetchFn, token, `${runs}?status=in_progress&per_page=1`, signal),
+      lerGithub(fetchFn, token, `${runs}?status=queued&per_page=1`, signal),
+    ]);
+    const run = runsDe(agendados)[0];
+    const ativo = runsDe(recentes).some((r) => r.status !== "completed") ||
+      runsDe(emAndamento).length > 0 || runsDe(naFila).length > 0;
+    if (!run) {
       return { ultimo_cron: null, pode_refazer: false, motivo_refazer: "Nenhum run agendado encontrado.", erro_ultimo_cron: null };
     }
-    const jobs = await lerGithub(fetchFn, token, `${base}/runs/${run.id}/jobs?per_page=100`);
-    const etapas: EtapaCron[] = (Array.isArray(jobs.jobs) ? jobs.jobs : []).map((j: Record<string, unknown>) => ({
+    if (typeof run.id !== "number") throw new FalhaGithub("GitHub devolveu um run sem id.");
+    const jobs = await lerGithub(fetchFn, token, `${base}/runs/${run.id}/jobs?per_page=100`, signal);
+    if (!Array.isArray(jobs.jobs)) throw new FalhaGithub("GitHub devolveu as etapas fora do formato.");
+    const etapas: EtapaCron[] = jobs.jobs.map((j: Record<string, unknown>) => ({
       nome: texto(j.name) ?? "",
       status: texto(j.status),
       conclusion: texto(j.conclusion),
@@ -163,9 +182,6 @@ async function estadoCron(
       html_url: texto(run.html_url),
       etapas,
     };
-    const recentes = await lerGithub(fetchFn, token, `${base}/workflows/${item.github_workflow}/runs?per_page=30`);
-    const ativo = (Array.isArray(recentes.workflow_runs) ? recentes.workflow_runs : [])
-      .some((r: Record<string, unknown>) => r.status !== "completed");
     let motivo: string | null = null;
     if (ultimo.status !== "completed") motivo = "O cron agendado ainda não terminou.";
     else if (!CONCLUSOES_REFAZER.has(ultimo.conclusion ?? "")) motivo = `O cron agendado terminou em ${ultimo.conclusion ?? "estado desconhecido"}.`;
@@ -239,7 +255,12 @@ export async function handleRequest(req: Request, ctx: ApiSyncsContext = {}): Pr
         signal: AbortSignal.timeout(30_000),
       });
       if (res.status !== 201) {
-        return jsonResponse({ error: "O GitHub recusou refazer as etapas.", http: res.status, resposta: await corpoResposta(res) }, 502);
+        // Só o status e a `message` do GitHub vão para a tela; o corpo inteiro não sai.
+        const corpo = await corpoResposta(res);
+        const msg = typeof corpo === "object" && corpo !== null && typeof (corpo as Record<string, unknown>).message === "string"
+          ? `: ${(corpo as Record<string, unknown>).message}`
+          : "";
+        return jsonResponse({ error: `O GitHub recusou refazer as etapas (HTTP ${res.status}${msg}).`, http: res.status }, 502);
       }
       return jsonResponse({
         action: "refazer",

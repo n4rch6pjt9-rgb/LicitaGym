@@ -19,8 +19,6 @@ import re
 import sys
 from pathlib import Path
 
-import yaml
-
 UNIDADES_COM_QTD = {"dias_uteis", "dias_corridos", "meses", "anos"}
 UNIDADES_SEM_QTD = {"imediato", "definido_no_edital", "sem_prazo_legal"}
 CODIGO_RE = re.compile(r"^14133-F\d{2}-T\d{2}$")
@@ -31,7 +29,7 @@ class CatalogoInvalido(Exception):
 
 
 def lit(valor) -> str:
-    """Literal SQL com dollar-quoting; None vira NULL."""
+    """Literal SQL com dollar-quoting; None vira NULL. Inteiro sai sem aspas."""
     if valor is None:
         return "null"
     if isinstance(valor, bool):
@@ -42,7 +40,19 @@ def lit(valor) -> str:
     tag = "$t$"
     while tag in texto:
         tag = tag[:-1] + "x$"
-    return f"{tag}{texto}{tag}"
+    return tag + texto + tag
+
+
+def inteiro(valor) -> str:
+    """Inteiro já validado. Recusa str e bool para não gravar texto cru no SQL."""
+    if isinstance(valor, bool) or not isinstance(valor, int):
+        raise CatalogoInvalido(f"esperado inteiro, veio {valor!r}")
+    return str(valor)
+
+
+def juntar(*partes: str) -> str:
+    """Junta pedaços de um statement. Valores só entram por lit() ou inteiro()."""
+    return "".join(partes)
 
 
 def ler_textos(pasta: Path) -> dict[int, dict]:
@@ -159,85 +169,96 @@ def gerar(cat: dict, textos: dict[int, dict]) -> str:
     out.append("-- dispositivos legais")
     for num in sorted(textos):
         a = textos[num]
-        out.append(
-            "insert into public.norma_dispositivos (norma, artigo, texto, recorte, fonte_url, observacao) values "
-            f"({lit(norma)}, {num}, {lit(a['texto'])}, {lit(a['recorte'])}, {lit(a['fonte'])}, {lit(a['obs'])})\n"
-            "on conflict (norma, artigo) do update set texto = excluded.texto, recorte = excluded.recorte, "
-            "fonte_url = excluded.fonte_url, observacao = excluded.observacao, atualizado_em = now(), "
-            "conferido_oficial = case when public.norma_dispositivos.texto = excluded.texto "
-            "then public.norma_dispositivos.conferido_oficial else false end;"
-        )
+        out.append(juntar(
+            "insert into public.norma_dispositivos (norma, artigo, texto, recorte, fonte_url, observacao) values (",
+            lit(norma), ", ", inteiro(num), ", ", lit(a["texto"]), ", ", lit(a["recorte"]), ", ",
+            lit(a["fonte"]), ", ", lit(a["obs"]),
+            ")\n",
+            "on conflict (norma, artigo) do update set texto = excluded.texto, recorte = excluded.recorte, ",
+            "fonte_url = excluded.fonte_url, observacao = excluded.observacao, atualizado_em = now(), ",
+            "conferido_oficial = case when public.norma_dispositivos.texto = excluded.texto ",
+            "then public.norma_dispositivos.conferido_oficial else false end;",
+        ))
 
     out.append("\n-- fases")
     for f in cat["fases"]:
-        arts = "array[" + ",".join(str(x) for x in f["artigos"]) + "]::integer[]"
-        out.append(
-            "insert into public.processo_fases (codigo, norma, ordem, nome, macro, descricao, artigos) values "
-            f"({lit(f['codigo'])}, {lit(norma)}, {lit(f['ordem'])}, {lit(f['nome'])}, {lit(f['macro'])}, "
-            f"{lit(f['descricao'])}, {arts})\n"
-            "on conflict (codigo) do update set ordem = excluded.ordem, nome = excluded.nome, macro = excluded.macro, "
-            "descricao = excluded.descricao, artigos = excluded.artigos;"
-        )
+        arts = juntar("array[", ",".join(inteiro(x) for x in f["artigos"]), "]::integer[]")
+        out.append(juntar(
+            "insert into public.processo_fases (codigo, norma, ordem, nome, macro, descricao, artigos) values (",
+            lit(f["codigo"]), ", ", lit(norma), ", ", lit(f["ordem"]), ", ", lit(f["nome"]), ", ", lit(f["macro"]), ", ",
+            lit(f["descricao"]), ", ", arts,
+            ")\n",
+            "on conflict (codigo) do update set ordem = excluded.ordem, nome = excluded.nome, macro = excluded.macro, ",
+            "descricao = excluded.descricao, artigos = excluded.artigos;",
+        ))
 
     out.append("\n-- eventos")
     for e in cat["eventos"]:
-        out.append(
-            "insert into public.processo_eventos (codigo, fase_codigo, nome, descricao, origem, fonte_dado) values "
-            f"({lit(e['codigo'])}, {lit(e.get('fase'))}, {lit(e['nome'])}, {lit(e['descricao'])}, "
-            f"{lit(e['origem'])}, {lit(e.get('fonte_dado'))})\n"
-            "on conflict (codigo) do update set fase_codigo = excluded.fase_codigo, nome = excluded.nome, "
-            "descricao = excluded.descricao, origem = excluded.origem, fonte_dado = excluded.fonte_dado;"
-        )
+        out.append(juntar(
+            "insert into public.processo_eventos (codigo, fase_codigo, nome, descricao, origem, fonte_dado) values (",
+            lit(e["codigo"]), ", ", lit(e.get("fase")), ", ", lit(e["nome"]), ", ", lit(e["descricao"]), ", ",
+            lit(e["origem"]), ", ", lit(e.get("fonte_dado")),
+            ")\n",
+            "on conflict (codigo) do update set fase_codigo = excluded.fase_codigo, nome = excluded.nome, ",
+            "descricao = excluded.descricao, origem = excluded.origem, fonte_dado = excluded.fonte_dado;",
+        ))
 
     out.append("\n-- transições")
     for tr in cat["transicoes"]:
-        out.append(
-            "insert into public.processo_fase_transicoes (norma, fase_origem, fase_destino, evento_codigo, condicao, artigo_base) values "
-            f"({lit(norma)}, {lit(tr['de'])}, {lit(tr['para'])}, {lit(tr['evento'])}, "
-            f"{lit(json.dumps(tr.get('condicao') or {}, ensure_ascii=False))}::jsonb, {lit(tr['artigo'])})\n"
-            "on conflict (norma, fase_origem, fase_destino, evento_codigo) do update set "
-            "condicao = excluded.condicao, artigo_base = excluded.artigo_base;"
-        )
+        out.append(juntar(
+            "insert into public.processo_fase_transicoes (norma, fase_origem, fase_destino, evento_codigo, condicao, artigo_base) values (",
+            lit(norma), ", ", lit(tr["de"]), ", ", lit(tr["para"]), ", ", lit(tr["evento"]), ", ",
+            lit(json.dumps(tr.get("condicao") or {}, ensure_ascii=False)), "::jsonb, ", lit(tr["artigo"]),
+            ")\n",
+            "on conflict (norma, fase_origem, fase_destino, evento_codigo) do update set ",
+            "condicao = excluded.condicao, artigo_base = excluded.artigo_base;",
+        ))
 
     out.append("\n-- tarefas (duas passadas: parent depois, para respeitar a FK)")
     ordem_por_fase: dict[str, int] = {}
     for t in cat["tarefas"]:
         ordem_por_fase[t["fase"]] = ordem_por_fase.get(t["fase"], 0) + 10
         p = t["prazo"]
-        out.append(
-            "insert into public.tarefas_catalogo (codigo, norma, fase_codigo, ordem, titulo, descricao, natureza, ator, "
-            "evento_abertura, prazo_quantidade, prazo_unidade, prazo_sentido, prazo_evento, prazo_observacao, condicao, "
-            "consequencia_omissao, efeito_suspensivo, saida_esperada, ativo) values ("
-            f"{lit(t['codigo'])}, {lit(norma)}, {lit(t['fase'])}, {ordem_por_fase[t['fase']]}, {lit(t['titulo'])}, "
-            f"{lit(t['descricao'])}, {lit(t['natureza'])}::public.tarefa_natureza, {lit(t['ator'])}, "
-            f"{lit(t.get('evento_abertura'))}, {lit(p.get('qtd'))}, {lit(p['unidade'])}::public.prazo_unidade, "
-            f"{lit(p.get('sentido'))}::public.prazo_sentido, {lit(p.get('evento'))}, {lit(p.get('obs'))}, "
-            f"{lit(json.dumps(t.get('condicao') or {}, ensure_ascii=False))}::jsonb, {lit(t.get('consequencia'))}, "
-            f"{lit(bool(t.get('efeito_suspensivo', False)))}, {lit(t.get('saida'))}, true)\n"
-            "on conflict (codigo) do update set fase_codigo = excluded.fase_codigo, ordem = excluded.ordem, "
-            "titulo = excluded.titulo, descricao = excluded.descricao, natureza = excluded.natureza, ator = excluded.ator, "
-            "evento_abertura = excluded.evento_abertura, prazo_quantidade = excluded.prazo_quantidade, "
-            "prazo_unidade = excluded.prazo_unidade, prazo_sentido = excluded.prazo_sentido, prazo_evento = excluded.prazo_evento, "
-            "prazo_observacao = excluded.prazo_observacao, condicao = excluded.condicao, "
-            "consequencia_omissao = excluded.consequencia_omissao, efeito_suspensivo = excluded.efeito_suspensivo, "
-            "saida_esperada = excluded.saida_esperada, ativo = true, atualizado_em = now(), "
-            "versao = public.tarefas_catalogo.versao + case when public.tarefas_catalogo.descricao is distinct from excluded.descricao "
-            "or public.tarefas_catalogo.prazo_quantidade is distinct from excluded.prazo_quantidade "
-            "or public.tarefas_catalogo.prazo_unidade is distinct from excluded.prazo_unidade "
-            "or public.tarefas_catalogo.condicao is distinct from excluded.condicao then 1 else 0 end;"
-        )
+        out.append(juntar(
+            "insert into public.tarefas_catalogo (codigo, norma, fase_codigo, ordem, titulo, descricao, natureza, ator, ",
+            "evento_abertura, prazo_quantidade, prazo_unidade, prazo_sentido, prazo_evento, prazo_observacao, condicao, ",
+            "consequencia_omissao, efeito_suspensivo, saida_esperada, ativo) values (",
+            lit(t["codigo"]), ", ", lit(norma), ", ", lit(t["fase"]), ", ", inteiro(ordem_por_fase[t["fase"]]), ", ",
+            lit(t["titulo"]), ", ",
+            lit(t["descricao"]), ", ", lit(t["natureza"]), "::public.tarefa_natureza, ", lit(t["ator"]), ", ",
+            lit(t.get("evento_abertura")), ", ", lit(p.get("qtd")), ", ", lit(p["unidade"]), "::public.prazo_unidade, ",
+            lit(p.get("sentido")), "::public.prazo_sentido, ", lit(p.get("evento")), ", ", lit(p.get("obs")), ", ",
+            lit(json.dumps(t.get("condicao") or {}, ensure_ascii=False)), "::jsonb, ", lit(t.get("consequencia")), ", ",
+            lit(bool(t.get("efeito_suspensivo", False))), ", ", lit(t.get("saida")), ", true)\n",
+            "on conflict (codigo) do update set fase_codigo = excluded.fase_codigo, ordem = excluded.ordem, ",
+            "titulo = excluded.titulo, descricao = excluded.descricao, natureza = excluded.natureza, ator = excluded.ator, ",
+            "evento_abertura = excluded.evento_abertura, prazo_quantidade = excluded.prazo_quantidade, ",
+            "prazo_unidade = excluded.prazo_unidade, prazo_sentido = excluded.prazo_sentido, prazo_evento = excluded.prazo_evento, ",
+            "prazo_observacao = excluded.prazo_observacao, condicao = excluded.condicao, ",
+            "consequencia_omissao = excluded.consequencia_omissao, efeito_suspensivo = excluded.efeito_suspensivo, ",
+            "saida_esperada = excluded.saida_esperada, ativo = true, atualizado_em = now(), ",
+            "versao = public.tarefas_catalogo.versao + case when public.tarefas_catalogo.descricao is distinct from excluded.descricao ",
+            "or public.tarefas_catalogo.prazo_quantidade is distinct from excluded.prazo_quantidade ",
+            "or public.tarefas_catalogo.prazo_unidade is distinct from excluded.prazo_unidade ",
+            "or public.tarefas_catalogo.condicao is distinct from excluded.condicao then 1 else 0 end;",
+        ))
     for t in cat["tarefas"]:
-        out.append(
-            f"update public.tarefas_catalogo set parent_codigo = {lit(t.get('parent'))} where codigo = {lit(t['codigo'])};"
-        )
+        out.append(juntar(
+            "update public.tarefas_catalogo set parent_codigo = ", lit(t.get("parent")),
+            " where codigo = ", lit(t["codigo"]), ";",
+        ))
 
     codigos = ", ".join(lit(t["codigo"]) for t in cat["tarefas"])
-    out.append(f"\n-- tarefas removidas do YAML ficam inativas (histórico preservado)")
-    out.append(f"update public.tarefas_catalogo set ativo = false, atualizado_em = now() "
-               f"where norma = {lit(norma)} and codigo not in ({codigos});")
+    out.append("\n-- tarefas removidas do YAML ficam inativas (histórico preservado)")
+    out.append(juntar(
+        "update public.tarefas_catalogo set ativo = false, atualizado_em = now() ",
+        "where norma = ", lit(norma), " and codigo not in (", codigos, ");",
+    ))
 
     out.append("\n-- base legal (recria por tarefa)")
-    out.append(f"delete from public.tarefas_catalogo_base_legal where tarefa_codigo in ({codigos});")
+    out.append(juntar(
+        "delete from public.tarefas_catalogo_base_legal where tarefa_codigo in (", codigos, ");",
+    ))
     for t in cat["tarefas"]:
         vistos = set()
         for art, disp, papel in t["base_legal"]:
@@ -245,19 +266,21 @@ def gerar(cat: dict, textos: dict[int, dict]) -> str:
             if chave in vistos:  # mesmo dispositivo com dois papéis: fica o primeiro
                 continue
             vistos.add(chave)
-            out.append(
-                "insert into public.tarefas_catalogo_base_legal (tarefa_codigo, norma, artigo, dispositivo, papel) values "
-                f"({lit(t['codigo'])}, {lit(norma)}, {art}, {lit(disp)}, {lit(papel)});"
-            )
+            out.append(juntar(
+                "insert into public.tarefas_catalogo_base_legal (tarefa_codigo, norma, artigo, dispositivo, papel) values (",
+                lit(t["codigo"]), ", ", lit(norma), ", ", inteiro(art), ", ", lit(disp), ", ", lit(papel), ");",
+            ))
 
     out.append("\n-- dependências (recria por tarefa)")
-    out.append(f"delete from public.tarefas_catalogo_dependencias where tarefa_codigo in ({codigos});")
+    out.append(juntar(
+        "delete from public.tarefas_catalogo_dependencias where tarefa_codigo in (", codigos, ");",
+    ))
     for t in cat["tarefas"]:
         for dep, tipo in t.get("depende_de", []):
-            out.append(
-                "insert into public.tarefas_catalogo_dependencias (tarefa_codigo, depende_de_codigo, tipo) values "
-                f"({lit(t['codigo'])}, {lit(dep)}, {lit(tipo)});"
-            )
+            out.append(juntar(
+                "insert into public.tarefas_catalogo_dependencias (tarefa_codigo, depende_de_codigo, tipo) values (",
+                lit(t["codigo"]), ", ", lit(dep), ", ", lit(tipo), ");",
+            ))
 
     out += ["", "commit;", ""]
     return "\n".join(out)
@@ -271,6 +294,8 @@ def main() -> int:
     ap.add_argument("--check", action="store_true", help="só valida, não escreve")
     args = ap.parse_args()
 
+    # PyYAML só entra no CLI. Os testes da CI não instalam o pacote e importam lit/gerar direto.
+    import yaml
     cat = yaml.safe_load(Path(args.catalogo).read_text(encoding="utf-8"))
     textos = ler_textos(Path(args.textos))
     try:

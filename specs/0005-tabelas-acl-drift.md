@@ -67,7 +67,7 @@ Medição só de leitura em produção, em 09/10/2026, com `has_table_privilege`
   - O Dashboard não lê tabelas diretamente; tudo passa pelas Edge Functions com `service_role`.
   - As Edge Functions com JWT do usuário (`api-pncp-*`, `analyze-public-material`) leem tabelas e views que estão
     na lista intencional de `authenticated`.
-  - O coletor Python e o Kuib-Harness usam `service_role`.
+  - O coletor Python usa `service_role`.
 - **Backfill:** não. **Contrato com o Dashboard:** não muda.
 
 ## Perguntas em aberto

@@ -2,7 +2,7 @@
 # Regras: pyflakes (F: import/variável não usada, nome indefinido) e erros de sintaxe (E9). Estilo fica de fora
 # porque o legado tem ~4.700 linhas longas; amplie aqui quando a base estiver limpa.
 target-version = "py312"
-extend-exclude = ["Kuib-Harness", "untitled", "licitagym-coletor-sistema-s"]
+extend-exclude = ["untitled", "licitagym-coletor-sistema-s"]
 
 [lint]
 select = ["F", "E9"]

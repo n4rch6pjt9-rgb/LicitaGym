@@ -1,6 +1,6 @@
 # 0029: Separar a coleta do dia (minutos, várias vezes ao dia) da coleta de acervo (horas, sem pressa)
 
-- **Status:** rascunho
+- **Status:** aprovada (Marcelo, 16/10/2026; respostas às perguntas 3 e 4 em "Perguntas em aberto")
 - **Issue:** #357 (oportunidades sem coleta recorrente); relacionadas #372, #371, #187, #319
 - **Área:** coletor + edge-functions + migrations + workflows
 - **Depende do ok do Marcelo:** sim (muda de onde vêm as oportunidades em produção, cron novo e desligamento de etapas)
@@ -83,6 +83,10 @@ A trilha do dia não espera o acervo; o acervo nunca é pré-requisito para o us
    ajustável depois pela medição do CA-1.
 2. ~~Escopo em TypeScript~~ **Decidido (Marcelo, 16/10/2026):** portar as regras de escopo para a Edge Function, com
    as mesmas fixtures do Python, para o lead aparecer na mesma execução (CA-10).
-3. **Sistema S do dia:** quais fontes entram já (SEST SENAT e FIESC validadas em 24/09; Sesc pelo mural autorizado)?
-4. **Spec 0028:** com esta spec, o Sistema S do dia sai do Cloud Run. A 0028 fica só com o registro de execução
-   (`coleta_externa_run`) e o acervo do Sistema S no GitHub Actions, ou é absorvida por esta?
+3. ~~Sistema S do dia~~ **Decidido (16/10/2026):** entram já as fontes validadas em leitura real, SEST SENAT e FIESC
+   (24/09/2026). As 5 do mural autorizado (Sesc SP, Sesc/Senac RS, Sesc DN, Sesc RJ, Sesc BA; decisão de 05/10) entram
+   uma a uma, cada uma depois de uma execução sem erro registrada em `coleta_externa_run`. SFIEC espera a #202; FIEMG
+   continua fora (WAF).
+4. ~~Spec 0028~~ **Decidido (16/10/2026):** a 0028 fica só com o registro de execução (`coleta_externa_run` por RPC em
+   `public`, saúde por fonte esperada e idempotência: CA-2, CA-6 e CA-7 dela). O Cloud Run (CA-1, CA-3 e CA-4 dela)
+   sai; o Sistema S do dia é desta spec (CA-5) e o acervo do Sistema S vai para o GitHub Actions (CA-6).

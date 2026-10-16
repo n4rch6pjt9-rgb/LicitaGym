@@ -38,4 +38,12 @@
 | #8616 | 12:05 PM | ○ | marcas_resolvedor_views_check.sql — existing cases A-L and fixture structure | ~587 |
 | #8615 | " | ○ | marcas_resolvedor_acl_check.sql — structure and coverage of existing ACL test file | ~555 |
 | #8614 | 12:04 PM | ○ | PR #148 marcas resolvedor — state reconciled: MERGED 2026-10-04 | ~525 |
+
+### Oct 13, 2026
+
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #9020 | 4:07 PM | ○ | revisor-migration review returned — no blockers, 3 important findings on compat block | ~591 |
+| #9015 | 4:02 PM | ○ | pncp_fuso check test file fully examined — worktree fix/339-migration-compat created | ~369 |
+| #9000 | 3:52 PM | ○ | Migration review complete: no blockers — one suggestion about backfill assumption documentation | ~380 |
 </claude-mem-context>

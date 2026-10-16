@@ -1,6 +1,6 @@
 # 0025: Refazer pela tela as etapas que falharam no cron do Coletor PNCP
 
-- **Status:** rascunho
+- **Status:** aprovada (Marcelo, 16/10/2026)
 - **Issue:** nenhuma (relacionada: #363, spec 0024; #377, um job por etapa)
 - **Área:** edge-functions + dashboard-contrato
 - **Depende do ok do Marcelo:** sim (republicação da `api-syncs` em produção e contrato novo com o Dashboard)
@@ -78,8 +78,10 @@ servidor localiza o último run com `event=schedule` e decide.
   antes do PR do Dashboard.
 - **Dado oficial x derivado:** status, conclusão, etapas e datas vêm da API do GitHub como ela devolveu, sem tradução
   inventada. `pode_refazer` é derivado por regra escrita (CA-1/CA-2).
-- **Spec 0024 (#363):** as duas mexem em `supabase/functions/api-syncs/index.ts` e `catalogo.ts`. Combinar a ordem
-  dos PRs antes de implementar.
+- **Spec 0024 (#363):** as duas mexem em `supabase/functions/api-syncs/index.ts` e `catalogo.ts`. Ordem combinada em
+  16/10/2026: **a 0025 vai primeiro** (aprovada; a 0024 ainda está em rascunho, com perguntas em aberto e sem branch
+  de implementação). A 0025 não muda o campo `cron` do `listar`; ele continua texto. A 0024, que troca `cron` por
+  objeto, rebaseia sobre a 0025 e mantém `ultimo_cron`, `pode_refazer` e `erro_ultimo_cron`.
 
 ## Respostas do Marcelo (16/10/2026)
 

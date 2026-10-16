@@ -20,7 +20,6 @@ o que ele pode disputar agora, o que acompanhar e o que já foi homologado (pre�
 | `services/coletor-externo/` | coletores Python (PNCP detalhe, Sistema S/Paradigma, taxonomia, escopo). Imagem Docker do Cloud Run Job |
 | `scripts/` | coletores Python antigos e scripts PowerShell de operação |
 | `tests/` | pytest dos `scripts/` e testes Deno (`tests/supabase/**`) |
-| `Kuib-Harness/` | app desktop de administração (Electron + Vue) |
 | `docs/` | arquitetura, schemas das APIs oficiais, runbooks |
 
 ## Como testar (os mesmos comandos da CI `pr-quality.yml`, que roda em todo PR e push na `main`)

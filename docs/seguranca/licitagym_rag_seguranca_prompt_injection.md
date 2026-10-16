@@ -226,7 +226,7 @@ Todos são institucionais. Esse conjunto serve de **allowlist inicial** para o g
 
 ### 4.7 [REFERÊNCIA] `analyze-public-material` como modelo a seguir
 
-> Função aposentada em 11/10/2026: nenhum chamador no Dashboard nem no Kuib-Harness e nenhuma invocação em 5 dias de log.
+> Função aposentada em 11/10/2026: nenhum chamador no Dashboard e nenhuma invocação em 5 dias de log.
 > O código fica no histórico do git (último commit com ela: `1b83e0a`). O padrão abaixo continua valendo como referência.
 
 A Edge Function `analyze-public-material` aplicava várias camadas da live:

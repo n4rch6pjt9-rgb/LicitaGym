@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Lint só dos arquivos informados (os alterados no PR ou os do commit), para não travar no legado.
 #   .ts/.tsx em supabase/functions e tests/supabase -> deno lint (sem as regras ruidosas do legado, abaixo)
-#   .py (fora de Kuib-Harness)                       -> ruff check (regras em ruff.toml)
+#   .py                                              -> ruff check (regras em ruff.toml)
 # Uso: scripts/ci/lint-alterados.sh <arquivo> [...]     |  git diff --name-only ... | scripts/ci/lint-alterados.sh -
 set -uo pipefail
 cd "$(git rev-parse --show-toplevel)"
@@ -17,7 +17,6 @@ for a in "${ARQS[@]}"; do
   case "$a" in
     supabase/functions/*/_shared_prod/*) ;;   # cópia antiga, a eliminar
     supabase/functions/*.ts|supabase/functions/*.tsx|tests/supabase/*.ts) TS+=("$a") ;;
-    Kuib-Harness/*) ;;
     *.py) PY+=("$a") ;;
   esac
 done

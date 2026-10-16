@@ -74,6 +74,8 @@ const CONCLUSOES_REFAZER = new Set(["failure", "cancelled", "timed_out"]);
 /** Limites do GitHub para re-run: "up to 30 days after its initial run" e "a maximum of 50 times" (tentativa 1 = run original). */
 const JANELA_RERUN_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_TENTATIVA = 51;
+/** Status de run ainda não terminado na API do GitHub; cada um é consultado (o filtro aceita um valor por vez). */
+const STATUS_ATIVOS = ["in_progress", "queued", "requested", "waiting", "pending"] as const;
 
 interface EtapaCron {
   nome: string;
@@ -149,17 +151,16 @@ async function estadoCron(
   const signal = AbortSignal.timeout(12_000);
   const runs = `${base}/workflows/${item.github_workflow}/runs`;
   try {
-    // Em paralelo: o último agendado, os 30 runs mais recentes (pegam pending/waiting da fila de concorrência) e os
-    // ativos por status, que pegam um run antigo refeito no GitHub e que não está entre os 30 recentes.
-    const [agendados, recentes, emAndamento, naFila] = await Promise.all([
+    // Em paralelo: o último agendado, os 30 runs mais recentes e uma consulta por status ativo. Esta última pega um
+    // run antigo refeito no GitHub que não está entre os 30 recentes.
+    const [agendados, recentes, ...ativos] = await Promise.all([
       lerGithub(fetchFn, token, `${runs}?event=schedule&per_page=1`, signal),
       lerGithub(fetchFn, token, `${runs}?per_page=30`, signal),
-      lerGithub(fetchFn, token, `${runs}?status=in_progress&per_page=1`, signal),
-      lerGithub(fetchFn, token, `${runs}?status=queued&per_page=1`, signal),
+      ...STATUS_ATIVOS.map((st) => lerGithub(fetchFn, token, `${runs}?status=${st}&per_page=1`, signal)),
     ]);
     const run = runsDe(agendados)[0];
     const ativo = runsDe(recentes).some((r) => r.status !== "completed") ||
-      runsDe(emAndamento).length > 0 || runsDe(naFila).length > 0;
+      ativos.some((corpo) => runsDe(corpo).length > 0);
     if (!run) {
       return { ultimo_cron: null, pode_refazer: false, motivo_refazer: "Nenhum run agendado encontrado.", erro_ultimo_cron: null };
     }

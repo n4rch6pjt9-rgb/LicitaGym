@@ -24,7 +24,11 @@ _FAIXA_KMH = re.compile(
 _PULAR_ROTULO = {"informações", "informacoes", "descrição", "descricao", "fale com um consultor"}
 # Código sozinho na descrição curta (a E12 escreve "COD: E12"; a Air Bike escreve só "HB007").
 _CODIGO_SOLTO = re.compile(r"^[A-Za-z]{1,8}\d{2,}[A-Za-z0-9._-]*$")
-_ROTULO_LINHA = re.compile(r"^([^:]{2,40}):\s+(\S.*)$")
+# Norma citada sozinha (NR12, ISO9001) não é código do fabricante.
+_NORMA = re.compile(r"^(?:NR|NBR|ISO|ABNT|IEC|EN|INMETRO)\d", re.I)
+# Rótulo curto + valor que começa por número ("Medidas: 2041 x 1270 mm", "Peso: 120 kg").
+# Frase com dois-pontos ("Atenção: não utilize...") fica texto.
+_ROTULO_LINHA = re.compile(r"^([^:,.]{2,40}):\s+(\d.*)$")
 
 
 def _num(token: str):
@@ -133,9 +137,19 @@ class Konnen(AdaptadorBase):
             produto["textos"].append({"tipo": "marketing", "texto": marketing, "ev": ev})
             self._divergencia_velocidade(produto, marketing, ev)
         for titulo, corpo in _destaques(principal):
-            texto = f"{titulo}. {corpo}" if titulo and corpo else (titulo or corpo)
-            ev = bloco.ev("destaque", "div.infosp", texto[:300])
-            produto["textos"].append({"tipo": "destaque", "texto": texto, "ev": ev})
+            # Título e corpo ficam separados, cada um com o trecho como a página escreveu.
+            # Corpo já capturado como marketing não entra de novo.
+            if corpo and marketing and corpo in marketing:
+                corpo = ""
+            if not corpo and not titulo:
+                continue
+            ev_titulo = bloco.ev("destaque", "div.infosp h2", titulo[:300]) if titulo else None
+            texto = corpo or titulo
+            ev = bloco.ev("destaque", "div.infosp p", texto[:300]) if corpo else ev_titulo
+            produto["textos"].append({
+                "tipo": "destaque", "titulo": titulo or None, "texto": texto, "ev": ev,
+                "ev_titulo": ev_titulo,
+            })
         cta = _cta(principal)
         if cta:
             ev = bloco.ev("oferta", "a.btn-primary", cta)
@@ -179,7 +193,7 @@ def _codigo(html: str) -> tuple[str | None, str]:
         return None, ""
     for p in re.findall(r"(?s)<p[^>]*>(.*?)</p>", curto.group(1)):
         t = uma_linha(p)
-        if _CODIGO_SOLTO.fullmatch(t):
+        if _CODIGO_SOLTO.fullmatch(t) and not _NORMA.match(t):
             return t, t
     return None, ""
 
@@ -236,10 +250,10 @@ def _pares_aba(html: str) -> list[tuple[str | None, str]]:
 def _rotulo_livre(linha: str) -> tuple[str | None, str]:
     """'Medidas: 2041 x 1270 x 1174 mm' vira rótulo + valor. Frase com dois-pontos fica texto."""
     m = _ROTULO_LINHA.match(linha)
-    if not m or "." in m.group(1):
+    if not m:
         return None, linha
     rotulo = m.group(1).strip()
-    if rotulo.lower() in _PULAR_ROTULO:
+    if len(rotulo.split()) > 4 or rotulo.lower() in _PULAR_ROTULO:
         return None, linha
     return rotulo, m.group(2).strip()
 

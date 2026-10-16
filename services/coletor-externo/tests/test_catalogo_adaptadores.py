@@ -9,7 +9,7 @@ import requests
 
 from coletor.catalogo.adaptadores.base import Ctx
 from coletor.catalogo.adaptadores.generico import Generico
-from coletor.catalogo.adaptadores.konnen_wc import Konnen
+from coletor.catalogo.adaptadores.konnen_wc import Konnen, _codigo, _rotulo_livre
 from coletor.catalogo.adaptadores.macsport_rsc import Macsport, aplicar_detalhe
 from coletor.catalogo.adaptadores.movement_wp import Movement
 from coletor.catalogo.contrato import validar
@@ -244,11 +244,49 @@ def test_konnen_air_bike_le_codigo_solto_medidas_e_destaques():
     medidas = next(a for a in produto["atributos"] if a["rotulo_original"] == "Medidas")
     assert medidas["valor_original"] == "2041 x 1270 x 1174 mm"
     assert medidas["unidade"] == "mm"
-    destaques = [t["texto"] for t in produto["textos"] if t["tipo"] == "destaque"]
-    assert destaques[0].startswith("Banco ajustável em 2 posições.")
-    assert "10 níveis de ajuste vertical" in destaques[0]
-    assert destaques[1].startswith("Suporte de garrafa.")
+    destaques = [t for t in produto["textos"] if t["tipo"] == "destaque"]
+    assert destaques[0]["titulo"] == "Banco ajustável em 2 posições"
+    assert "10 níveis de ajuste vertical" in destaques[0]["texto"]
+    assert destaques[1]["titulo"] == "Suporte de garrafa"
+    # a evidência é o trecho como a página escreveu, sem pontuação colada
+    for d in destaques:
+        assert produto["evidencias"][d["ev"]]["trecho"] == d["texto"][:300]
+        assert produto["evidencias"][d["ev_titulo"]]["trecho"] == d["titulo"]
     assert produto["oferta"]["status_preco"] == "sob_consulta"
+
+
+def test_konnen_destaque_nao_repete_o_marketing():
+    ctx = _ctx("KONNEN", "konnen")
+    produto = Konnen().detalhar(
+        _resp("konnen-esteira-e12.html", "https://www.konnenfitness.com.br/produto/cardio-esteira-e12/"),
+        {"url": "https://www.konnenfitness.com.br/produto/cardio-esteira-e12/", "fontes": []},
+        ctx,
+    )
+    marketing = [t["texto"] for t in produto["textos"] if t["tipo"] == "marketing"]
+    corpos = [t["texto"] for t in produto["textos"] if t["tipo"] == "destaque" and t["texto"] != t["titulo"]]
+    assert marketing
+    assert not any(c in marketing[0] for c in corpos)
+
+
+@pytest.mark.parametrize("linha", [
+    "Atenção: não utilize sem supervisão",
+    "Praticidade durante o treino: permite manter a hidratação",
+    "Garantia: consulte o fabricante, sujeito a análise",
+])
+def test_konnen_frase_com_dois_pontos_fica_texto(linha):
+    assert _rotulo_livre(linha) == (None, linha)
+
+
+def test_konnen_rotulo_curto_com_numero_vira_atributo():
+    assert _rotulo_livre("Peso máximo do usuário: 150 kg") == ("Peso máximo do usuário", "150 kg")
+
+
+def test_konnen_norma_sozinha_nao_vira_codigo():
+    html = (
+        '<div class="woocommerce-product-details__short-description"><p>NR12</p><p>HB007</p></div>'
+    )
+    assert _codigo(html) == ("HB007", "HB007")
+    assert _codigo('<div class="woocommerce-product-details__short-description"><p>ISO9001</p></div>') == (None, "")
 
 
 def test_generico_reaproveita_extrair_ficha():

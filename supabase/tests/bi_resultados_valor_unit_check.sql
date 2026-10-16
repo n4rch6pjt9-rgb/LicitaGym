@@ -9,6 +9,7 @@
 --   Z  resultado PNCP com homologado 0                          -> valor_unit ausente (null), sem desconto
 --   L  lance do Paradigma (valor_proposta 800, sem homologado)  -> valor_unit = 800, como antes
 --   V  vencedor do Paradigma (lance 700 e homologado 750)       -> valor_unit = 700 (o lance tem precedência)
+--   Q  lance zero com homologado 900                           -> valor_unit = 900 (lance zero não é preço)
 -- Saída esperada: NOTICE por caso e "SUCESSO: bi_resultados_valor_unit_check".
 -- =============================================================================
 
@@ -41,7 +42,8 @@ begin
       ('P', 'pncp', '00000000000301-1-000001/2026', '00000000000301'),
       ('Z', 'pncp', '00000000000302-1-000001/2026', '00000000000302'),
       ('L', 'sestsenat', null, '00000000000303'),
-      ('V', 'sestsenat', null, '00000000000304')
+      ('V', 'sestsenat', null, '00000000000304'),
+      ('Q', 'sestsenat', null, '00000000000305')
     ) v(rotulo, fonte, codigo, cnpj)
   loop
     insert into public.licitacoes_externas (fonte, codigo_externo, orgao_cnpj, orgao_nome, numero_processo,
@@ -60,10 +62,10 @@ select id, 1, 'ITEM FICTICIO', 2, 1500, 3000 from _vu;
 insert into public.licitacao_resultados (licitacao_id, numero_item, sequencial_resultado, fornecedor_cnpj, fornecedor_nome,
     vencedor, valor_proposta, quantidade_homologada, valor_unitario_homologado, valor_total_homologado, data_resultado)
 select id, 1, 1, '00000000000399', 'FORNECEDOR FICTICIO DE TESTE LTDA', null,
-       case rotulo when 'L' then 800 when 'V' then 700 end,
+       case rotulo when 'L' then 800 when 'V' then 700 when 'Q' then 0 end,
        case rotulo when 'L' then null else 2 end,
-       case rotulo when 'P' then 1234.56 when 'Z' then 0 when 'V' then 750 end,
-       case rotulo when 'P' then 2469.12 when 'Z' then 0 when 'V' then 1500 end,
+       case rotulo when 'P' then 1234.56 when 'Z' then 0 when 'V' then 750 when 'Q' then 900 end,
+       case rotulo when 'P' then 2469.12 when 'Z' then 0 when 'V' then 1500 when 'Q' then 1800 end,
        '2026-09-01'::timestamptz
 from _vu;
 
@@ -103,6 +105,12 @@ begin
   raise notice 'CASO V: valor_unit %, homologado %', v.valor_unit, v.valor_unitario_homologado;
   if v.valor_unit is distinct from 700 then falhas := falhas || format('V valor_unit %s (esperado 700)', v.valor_unit); end if;
   if v.valor_unitario_homologado is distinct from 750 then falhas := falhas || format('V homologado %s (esperado 750)', v.valor_unitario_homologado); end if;
+
+  -- Q: lance zero não é preço; cai no homologado
+  select b.valor_unit into v
+    from public.v_bi_resultados_itens b where b.licitacao_id = (select id from _vu where rotulo = 'Q');
+  raise notice 'CASO Q: valor_unit %', v.valor_unit;
+  if v.valor_unit is distinct from 900 then falhas := falhas || format('Q valor_unit %s (esperado 900)', v.valor_unit); end if;
 
   -- ACL inalterada
   if not has_table_privilege('authenticated', 'public.v_bi_resultados_itens', 'SELECT') then

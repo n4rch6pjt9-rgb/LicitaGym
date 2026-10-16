@@ -7,9 +7,9 @@
 -- e valor_unitario_homologado preenchido em todas as linhas de licitacao_resultados (fonte pncp).
 --
 -- O que muda (só a definição da view, nenhuma tabela nem dado):
---   valor_unit             = valor_proposta quando houver (lance do Paradigma, como hoje); senão o
---                            valor_unitario_homologado, só quando > 0 (zero ou nulo não é preço: fica ausente,
---                            a mesma regra da api-precos).
+--   valor_unit             = valor_proposta quando > 0 (lance do Paradigma, como hoje); senão o
+--                            valor_unitario_homologado quando > 0. Zero ou nulo não é preço e fica ausente, nas
+--                            duas fontes (a mesma regra da api-precos).
 --   desconto_vs_referencia = calculado sobre esse mesmo valor_unit.
 --   valor_unitario_homologado (coluna nova, no fim): o homologado como veio da fonte, para quem precisa separar
 --                            homologado de lance.
@@ -53,7 +53,7 @@ select l.id                         as licitacao_id,
        r.valor_unitario_homologado
 from public.licitacao_resultados r
 cross join lateral (
-  select coalesce(r.valor_proposta,
+  select coalesce(case when r.valor_proposta > 0 then r.valor_proposta end,
                   case when r.valor_unitario_homologado > 0 then r.valor_unitario_homologado end) as valor_unit
 ) v
 join public.licitacao_itens i       on i.licitacao_id = r.licitacao_id and i.numero_item = r.numero_item
@@ -66,6 +66,6 @@ grant select on table public.v_bi_resultados_itens to authenticated;
 grant all on table public.v_bi_resultados_itens to service_role;
 
 comment on view public.v_bi_resultados_itens is
-  'Resultados por item (só compras canônicas). valor_unit = lance (valor_proposta, Paradigma) quando houver, senão valor_unitario_homologado > 0 (PNCP); zero ou nulo fica ausente. desconto_vs_referencia sobre valor_unit. valor_unitario_homologado como veio da fonte. security_invoker.';
+  'Resultados por item (só compras canônicas). valor_unit = lance (valor_proposta > 0, Paradigma; inclui proposta perdedora) senão valor_unitario_homologado > 0 (PNCP); zero ou nulo fica ausente. Para preço homologado, filtre vencedor ou use valor_unitario_homologado. desconto_vs_referencia sobre valor_unit. valor_unitario_homologado como veio da fonte. security_invoker.';
 
 commit;

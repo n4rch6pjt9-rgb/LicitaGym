@@ -1,6 +1,12 @@
 # 0028: Ligar a coleta diária do Sistema S e registrar cada execução
 
-- **Status:** rascunho
+- **Status:** rascunho, **em revisão pela spec 0029** (16/10/2026)
+
+> **Nota de 16/10/2026.** O Marcelo questionou o Cloud Run: não havia decisão registrada de rodar o Sistema S no GCP
+> (a #187 era um desenho de 03/10, nunca implantado). A spec 0029 separa a coleta do dia (Edge Function, minutos) do
+> acervo (GitHub Actions, horas). Por ela, o Sistema S do dia sai pelo mural do Paradigma em Edge Function, e a
+> varredura por ID do SEST SENAT vai para o acervo. Os CA-1, CA-3 e CA-4 abaixo (Cloud Run) ficam suspensos até a
+> pergunta 4 da 0029; os CA-2, CA-6 e CA-7 (registro de execução, saúde e idempotência) valem nos dois desenhos.
 - **Issue:** #187 (Cloud Run Job + Scheduler, aberta desde 03/10); relacionadas #202, #204, #300
 - **Área:** coletor + migrations + edge-functions + infra GCP
 - **Depende do ok do Marcelo:** sim (custo no GCP, cron novo em produção e primeira execução feita por ele)

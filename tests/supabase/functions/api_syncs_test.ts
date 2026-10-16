@@ -194,7 +194,9 @@ const JOBS_GH = {
 };
 
 /** GitHub falso: responde por URL e anota cada chamada. */
-function github(opts: { agendado?: RunGh | null; recentes?: RunGh[]; falha?: number; rerun?: number } = {}) {
+function github(
+  opts: { agendado?: RunGh | null; recentes?: RunGh[]; ativosAntigos?: RunGh[]; falha?: number; rerun?: number; foraDoFormato?: boolean } = {},
+) {
   const chamadas: { url: string; method: string; authorization: string }[] = [];
   const agendado = opts.agendado === undefined ? runGh() : opts.agendado;
   const fetchFn: typeof fetch = (input, init) => {
@@ -210,6 +212,13 @@ function github(opts: { agendado?: RunGh | null; recentes?: RunGh[]; falha?: num
     if (url.includes("/actions/runs/") && url.includes("/jobs")) return json(JOBS_GH);
     if (url.includes("/workflows/coletor-pncp.yml/runs") && url.includes("event=schedule")) {
       return json({ total_count: agendado ? 1 : 0, workflow_runs: agendado ? [agendado] : [] });
+    }
+    if (opts.foraDoFormato && url.includes("/workflows/coletor-pncp.yml/runs")) return json({ total_count: 0 });
+    const filtro = /[?&]status=([a-z_]+)/.exec(url)?.[1];
+    if (url.includes("/workflows/coletor-pncp.yml/runs") && filtro) {
+      const todos = [...(opts.recentes ?? []), ...(opts.ativosAntigos ?? [])];
+      const achados = todos.filter((r) => r.status === filtro);
+      return json({ total_count: achados.length, workflow_runs: achados });
     }
     if (url.includes("/workflows/coletor-pncp.yml/runs")) {
       const recentes = opts.recentes ?? (agendado ? [agendado] : []);
@@ -306,6 +315,26 @@ Deno.test("CA-2: run que já passou de 50 re-runs não libera refazer (limite do
   assertEquals((await coletorListado(ctxGh(ultimo))).coletor.pode_refazer, true);
 });
 
+Deno.test("CA-2: run antigo refeito no GitHub e ainda rodando (fora dos 30 recentes) também bloqueia", async () => {
+  const falhou = runGh({ conclusion: "failure" });
+  const antigoRodando = runGh({ id: 7, event: "schedule", status: "in_progress", conclusion: null, created_at: "2026-10-01T09:00:00Z" });
+  const gh = github({ agendado: falhou, recentes: [falhou], ativosAntigos: [antigoRodando] });
+  const { coletor } = await coletorListado(ctxGh(gh));
+  assertEquals(coletor.pode_refazer, false);
+  assertEquals((await handleRequest(post({ action: "refazer", sync: "coletor-pncp" }), ctxGh(gh))).status, 409);
+});
+
+Deno.test("CA-4: GitHub 200 com lista fora do formato vira erro, não 'nada na fila'", async () => {
+  const gh = github({ agendado: runGh({ conclusion: "failure" }), foraDoFormato: true });
+  const { coletor } = await coletorListado(ctxGh(gh));
+  assertEquals(coletor.pode_refazer, false);
+  assertEquals(coletor.ultimo_cron, null);
+  assertEquals(typeof coletor.erro_ultimo_cron, "string");
+  const res = await handleRequest(post({ action: "refazer", sync: "coletor-pncp" }), ctxGh(gh));
+  assertEquals(res.status, 502);
+  assertEquals(gh.chamadas.some((c) => c.url.includes("rerun")), false);
+});
+
 Deno.test("CA-3: refazer faz um único POST rerun-failed-jobs no run que o servidor achou, ignorando run_id do corpo", async () => {
   const gh = github({ agendado: runGh({ conclusion: "failure" }) });
   const res = await handleRequest(post({ action: "refazer", sync: "coletor-pncp", run_id: 1 }), ctxGh(gh));
@@ -326,6 +355,9 @@ Deno.test("CA-3: GitHub recusa o rerun → erro, nunca 'refeito'", async () => {
   const body = await res.json();
   assertEquals(res.status, 502);
   assertEquals(body.http, 403);
+  // a tela recebe o motivo do GitHub na mensagem de erro
+  assertEquals(String(body.error).includes("403"), true);
+  assertEquals(String(body.error).includes("Cannot rerun"), true);
   assertEquals(JSON.stringify(body).includes("refeito"), false);
   assertEquals(JSON.stringify(body).includes("github-token-de-teste"), false);
 });

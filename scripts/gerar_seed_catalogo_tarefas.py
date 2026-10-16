@@ -38,7 +38,8 @@ def lit(valor) -> str:
         return str(valor)
     texto = str(valor)
     tag = "$t$"
-    while tag in texto:
+    # A tag não pode aparecer no texto nem se formar com o fim dele ('R$t' + '$t$' fecharia antes).
+    while tag in texto + tag[:-1]:
         tag = tag[:-1] + "x$"
     return tag + texto + tag
 
@@ -48,6 +49,10 @@ def inteiro(valor) -> str:
     if isinstance(valor, bool) or not isinstance(valor, int):
         raise CatalogoInvalido(f"esperado inteiro, veio {valor!r}")
     return str(valor)
+
+
+def inteiro_ou_nulo(valor) -> str:
+    return "null" if valor is None else inteiro(valor)
 
 
 def juntar(*partes: str) -> str:
@@ -185,7 +190,7 @@ def gerar(cat: dict, textos: dict[int, dict]) -> str:
         arts = juntar("array[", ",".join(inteiro(x) for x in f["artigos"]), "]::integer[]")
         out.append(juntar(
             "insert into public.processo_fases (codigo, norma, ordem, nome, macro, descricao, artigos) values (",
-            lit(f["codigo"]), ", ", lit(norma), ", ", lit(f["ordem"]), ", ", lit(f["nome"]), ", ", lit(f["macro"]), ", ",
+            lit(f["codigo"]), ", ", lit(norma), ", ", inteiro_ou_nulo(f["ordem"]), ", ", lit(f["nome"]), ", ", lit(f["macro"]), ", ",
             lit(f["descricao"]), ", ", arts,
             ")\n",
             "on conflict (codigo) do update set ordem = excluded.ordem, nome = excluded.nome, macro = excluded.macro, ",
@@ -226,7 +231,7 @@ def gerar(cat: dict, textos: dict[int, dict]) -> str:
             lit(t["codigo"]), ", ", lit(norma), ", ", lit(t["fase"]), ", ", inteiro(ordem_por_fase[t["fase"]]), ", ",
             lit(t["titulo"]), ", ",
             lit(t["descricao"]), ", ", lit(t["natureza"]), "::public.tarefa_natureza, ", lit(t["ator"]), ", ",
-            lit(t.get("evento_abertura")), ", ", lit(p.get("qtd")), ", ", lit(p["unidade"]), "::public.prazo_unidade, ",
+            lit(t.get("evento_abertura")), ", ", inteiro_ou_nulo(p.get("qtd")), ", ", lit(p["unidade"]), "::public.prazo_unidade, ",
             lit(p.get("sentido")), "::public.prazo_sentido, ", lit(p.get("evento")), ", ", lit(p.get("obs")), ", ",
             lit(json.dumps(t.get("condicao") or {}, ensure_ascii=False)), "::jsonb, ", lit(t.get("consequencia")), ", ",
             lit(bool(t.get("efeito_suspensivo", False))), ", ", lit(t.get("saida")), ", true)\n",

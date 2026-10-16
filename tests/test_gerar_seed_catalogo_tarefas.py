@@ -14,6 +14,8 @@ def test_lit_isola_aspas_e_troca_a_tag_se_ela_aparece_no_texto():
     assert lit(3) == "3"
     assert lit("a'; drop table t;--") == "$t$a'; drop table t;--$t$"
     assert lit("tem $t$ no meio") == "$tx$tem $t$ no meio$tx$"
+    # o fim do texto colado na tag de fechamento não pode formar a tag antes da hora
+    assert lit("custa R$t") == "$tx$custa R$t$tx$"
 
 
 def test_inteiro_recusa_texto():

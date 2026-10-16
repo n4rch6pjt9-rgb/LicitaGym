@@ -13,6 +13,8 @@ export interface SyncCatalogo {
   aviso: string | null;
   /** Arquivo do workflow em .github/workflows (ex.: coletor-pncp.yml): `rodar` dispara workflow_dispatch com `corpo` como inputs. */
   github_workflow?: string;
+  /** Spec 0025: o `listar` traz o último run agendado do workflow e a ação `refazer` refaz as etapas que falharam. */
+  refazer_cron?: boolean;
 }
 
 export const SYNCS: SyncCatalogo[] = [
@@ -20,6 +22,7 @@ export const SYNCS: SyncCatalogo[] = [
     slug: "coletor-pncp",
     funcao: null,
     github_workflow: "coletor-pncp.yml",
+    refazer_cron: true,
     titulo: "Coletor PNCP de oportunidades",
     faz: "Grava licitacoes_externas, a lista do dashboard.",
     cron: "Todo dia às 06:00, no GitHub Actions (coleta completa: leads, monitorar e recoleta).",

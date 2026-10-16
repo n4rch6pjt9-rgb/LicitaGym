@@ -11,6 +11,7 @@ import {
   type PropostaItem,
 } from "../_shared/agentes/preco.ts";
 import { lerTenantDoUsuario, type TenantResolvido } from "../_shared/tenant.ts";
+import { type PortalOficial, resolverPortalOficial } from "../_shared/portal-oficial.ts";
 
 export interface Dossie {
   licitacao: { id: number; payload_hash: string | null; data_abertura: string | null };
@@ -20,6 +21,8 @@ export interface Dossie {
   natureza: NaturezaContratacao;
   itens: ItemPreco[];
   dispositivos: Dispositivo[];
+  /** Portal oficial da disputa (link de origem, derivado ou só o nome). Ausente em dossiê montado à mão. */
+  portal_oficial?: PortalOficial;
 }
 
 export interface Execucao {
@@ -113,7 +116,7 @@ export function createSupabaseRepo(client: SupabaseClient): AgentesRepo {
     async carregarDossie(tenant, licitacaoId) {
       const { data: lic, error: eLic } = await client
         .from("licitacoes_externas")
-        .select("id")
+        .select("id,fonte,codigo_externo,numero_edital,link_sistema_origem,usuario_nome:raw->>usuario_nome")
         .eq("id", licitacaoId)
         .maybeSingle();
       if (eLic) throw new Error(eLic.message);
@@ -222,16 +225,19 @@ export function createSupabaseRepo(client: SupabaseClient): AgentesRepo {
         .eq("norma", NORMA);
       if (eDisp) throw new Error(eDisp.message);
 
+      const chunksEdital = (chunks ?? []) as ChunkEdital[];
       return {
         // licitacoes_externas ainda não registra uma data inequívoca de sessão pública.
         // Não usar início/fim de propostas para calcular prazo de impugnação.
         licitacao: { id: Number(lic.id), payload_hash: null, data_abertura: null },
         documentos_sha256,
-        chunks: ((chunks ?? []) as ChunkEdital[]),
+        chunks: chunksEdital,
         // licitacoes_externas.raw não traz a categoria do processo: a natureza fica desconhecida.
         natureza: null,
         itens,
         dispositivos: ((dispositivos ?? []) as Dispositivo[]),
+        // Rota do portal: link de origem, depois portal mapeado ou indicado no edital (com o trecho).
+        portal_oficial: resolverPortalOficial(lic as Record<string, unknown>, chunksEdital),
       };
     },
 

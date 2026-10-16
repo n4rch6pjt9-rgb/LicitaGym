@@ -46,6 +46,7 @@ export async function contextos(d: Dossie, proposta: PropostaItem[] | null): Pro
     abertura: d.licitacao.data_abertura,
     documentos: d.documentos_sha256,
     chunks: await impressaoChunks(d.chunks),
+    portal: d.portal_oficial ?? null,
   });
   const preco = await hashContexto({
     agente: "preco",
@@ -74,7 +75,12 @@ export async function contextos(d: Dossie, proposta: PropostaItem[] | null): Pro
 function rodar(agente: Agente, dossie: Dossie, proposta: PropostaItem[] | null, sinais: Achado[]): ResultadoAgente {
   switch (agente) {
     case "edital":
-      return agenteEdital({ chunks: dossie.chunks, data_abertura: dossie.licitacao.data_abertura });
+      return agenteEdital({
+        chunks: dossie.chunks,
+        data_abertura: dossie.licitacao.data_abertura,
+        licitacao_id: dossie.licitacao.id,
+        portal_oficial: dossie.portal_oficial ?? null,
+      });
     case "preco":
       return agentePreco({ natureza: dossie.natureza, itens: dossie.itens, proposta });
     case "juridico":

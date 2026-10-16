@@ -45,7 +45,8 @@ A trilha do dia não espera o acervo; o acervo nunca é pré-requisito para o us
 
 | ID | Dado / Quando / Então | Teste que prova |
 |---|---|---|
-| CA-1 | **Medição antes de construir:** **dado** um dia útil, **quando** se consulta `/contratacoes/publicacao` e `/contratacoes/atualizacao` para todas as modalidades, **então** o PR registra páginas, registros, tempo e respostas 429 por modalidade, e quantos registros passam no filtro de escopo. Esse número decide a frequência (pergunta 1). | relatório no PR (script de medição sem gravar) |
+| CA-1 | **Medição antes de construir:** **dado** um dia útil, **quando** se consulta `/contratacoes/publicacao` e `/contratacoes/atualizacao` para todas as modalidades, **então** o PR registra páginas, registros, tempo e respostas 429 por modalidade, e quantos registros passam no filtro de escopo. Esse número decide a frequência (pergunta 1). | relatório no PR (script de medição sem gravar); se a medição pedir outra frequência, o PR propõe o ajuste |
+| CA-1b | **Dado** a frequência decidida (a cada 2 h, das 06:00 às 22:00 de Brasília: 9 execuções por dia), **quando** a migration aplica, **então** o `pg_cron` agenda a trilha do dia nesses horários (em UTC no `cron.schedule`, com o horário de Brasília no comentário) e a primeira execução das 06:00 cobre a noite inteira desde o último cursor. | SQL `supabase/tests/coleta_dia_cron_check.sql` |
 | CA-2 | **Dado** o cursor da última execução concluída (`private.coleta_cursor`, por fonte), **quando** a trilha do dia roda, **então** consulta publicações e atualizações do intervalo `[cursor − 1 h, agora]`, aplica o mesmo filtro de escopo do coletor (termos e regras de `escopo.py`, portadas e testadas com as mesmas fixtures) e grava em `licitacoes_externas` com `ingestao_origem = cron`; o cursor só avança se todas as fatias terminarem. Erro de página deixa a execução parcial e não avança o cursor. | Deno `tests/supabase/functions/sync_pncp_do_dia_test.ts` + pytest das fixtures de escopo compartilhadas |
 | CA-3 | **Dado** uma compra em `leads` ou `monitorar`, ou no pipeline de alguma empresa, **quando** a trilha do dia roda, **então** as que tiveram atualização no PNCP no intervalo, ou cujo fim do recebimento passou nas últimas 48 h, são reconsultadas no detalhe; com `existeResultado` ou situação terminal, vão para `historico` na mesma execução. Fixture: caso 3035. | Deno `tests/supabase/functions/sync_pncp_do_dia_test.ts` |
 | CA-4 | **Dado** uma execução que não cabe no tempo da Edge Function, **quando** o orçamento acaba, **então** ela termina como `retomada` e a continuação seguinte pega as fatias pendentes (padrão do PCA), sem duplicar linha e sem perder fatia. | Deno, reaproveitando os testes de `pagination-budget.ts` |
@@ -77,7 +78,8 @@ A trilha do dia não espera o acervo; o acervo nunca é pré-requisito para o us
 
 ## Perguntas em aberto
 
-1. **Frequência da trilha do dia:** a cada 1 h, 2 h ou 4 h, das 06:00 às 22:00? O CA-1 mede o custo de cada uma.
+1. ~~Frequência da trilha do dia~~ **Decidido (Marcelo, 16/10/2026):** a cada 2 h, das 06:00 às 22:00 (Brasília),
+   ajustável depois pela medição do CA-1.
 2. **Escopo em TypeScript:** portar as regras de `escopo.py` (termos e exclusões) para a Edge Function, com fixtures
    compartilhadas, ou a Edge Function grava cru numa fila e o Python classifica? A proposta é portar, para o lead
    aparecer na mesma execução.

@@ -1,6 +1,6 @@
 # 0025: Refazer pela tela as etapas que falharam no cron do Coletor PNCP
 
-- **Status:** em implementação (aprovada pelo Marcelo em 16/10/2026)
+- **Status:** entregue (backend #383, Dashboard #95, mergeados em 16/10/2026; aprovada pelo Marcelo em 16/10/2026)
 - **Issue:** nenhuma (relacionada: #363, spec 0024; #377, um job por etapa)
 - **Área:** edge-functions + dashboard-contrato
 - **Depende do ok do Marcelo:** sim (republicação da `api-syncs` em produção e contrato novo com o Dashboard)
@@ -49,6 +49,16 @@ servidor localiza o último run com `event=schedule` e decide.
 | CA-6 | **Dado** `GITHUB_ACTIONS_TOKEN` ausente, **quando** o admin chama `refazer`, **então** recebe 500 com "Disparo do coletor não configurado (GITHUB_ACTIONS_TOKEN)."; o token nunca aparece em nenhuma resposta, nem quando o GitHub devolve erro. | Deno `tests/supabase/functions/api_syncs_test.ts` |
 | CA-7 | **Regressão:** **dado** o item `coletor-pncp`, **quando** o admin chama `rodar`, **então** continua sendo um `workflow_dispatch` com `{modo: "leads", dry_run: "false", rapido: "true"}`, como hoje. | Deno `tests/supabase/functions/api_syncs_test.ts` |
 | CA-8 | **Dashboard:** **dado** `pode_refazer: true`, **quando** o `SyncView` renderiza o card do Coletor PNCP, **então** aparece o botão "Refazer o cron de DD/MM" (data de `ultimo_cron.created_at` no horário de Brasília; o run escolhido pode não ser o de hoje) junto com a conclusão e a duração de cada etapa (`completed_at − started_at`, como o GitHub devolveu; etapa sem `completed_at` aparece "em andamento" só com `status` `in_progress`, "na fila" com `queued`/`waiting`/`pending`/`requested`, e "estado desconhecido" (com o status recebido, ou "sem status") em qualquer outro caso, sem duração; o GitHub preenche `started_at` até em etapa que espera na fila, como na resposta de produção de 16/10); com `pode_refazer: false` o botão não aparece, e com `erro_ultimo_cron` o card mostra o erro, não um estado "ok". | vitest `src/test/sync-view-refazer.test.tsx` (repo `n4rch6pjt9-rgb/Dashboard---LicitaGym`) |
+
+### Entrega (16/10/2026)
+
+- Backend: #383, mergeado em 16/10/2026. A `api-syncs` publicada em produção (versão 25) tem `ultimo_cron`,
+  `pode_refazer`, `motivo_refazer`, `erro_ultimo_cron` e a ação `refazer` (conferido pelo MCP somente leitura); POST sem
+  token responde 401.
+- Dashboard: `n4rch6pjt9-rgb/Dashboard---LicitaGym#95`, mergeado em 16/10/2026.
+- Verificação antes do merge: `rerun-failed-jobs` refaz job `cancelled` (201; run de CI `38941253307`, comentário no #383).
+- **Não verificado:** a permissão do `GITHUB_ACTIONS_TOKEN` de produção para ler runs/jobs e refazer jobs. Confere-se
+  na tela de sincronizações como admin: o card do Coletor PNCP mostra o último cron, sem erro 401/403 do GitHub.
 
 ### Cobertura (implementação, 16/10/2026)
 

@@ -80,3 +80,28 @@ def test_sistema_s_item_vetado_nao_marca_interesse(desc):
 def test_sistema_s_piso_da_linha_continua():
     cat, interesse, _, _ = PG.classificar_item_detalhe({"sDsItem": PISO_DA_LINHA})
     assert cat == "piso" and interesse is True
+
+
+# Extensão da #390 (decisão do Marcelo, 16/10/2026): borracha explícita (EPDM, SBR) em outro produto também fica fora.
+BORRACHA_EM_OUTRO_PRODUTO = [
+    "ESCADA COM PISO DE BORRACHA EPDM",
+    "CERA PARA PISO DE BORRACHA EPDM",
+    "RETIRADA DE PISO EM BORRACHA SBR",
+]
+BORRACHA_DA_LINHA = "Aquisição de borracha granulada SBR para reposição do campo sintético"
+
+
+@pytest.mark.parametrize("desc", BORRACHA_EM_OUTRO_PRODUTO)
+def test_borracha_em_outro_produto_e_vetada(desc):
+    assert classificar(desc) == "borracha" and piso_item_fora(desc)
+    assert interesse_borracha_item(desc, None) is False and interesse_borracha_item(desc, "borracha") is False
+    cat, interesse, por_item = P.avaliar(HOSPITALAR, [_item(1, desc)])
+    assert cat is None and interesse is False and por_item == {1: (None, False)}
+    cat_s, interesse_s, _, _ = PG.classificar_item_detalhe({"sDsItem": desc})
+    assert cat_s is None and interesse_s is False
+
+
+def test_borracha_da_linha_continua():
+    assert classificar(BORRACHA_DA_LINHA) == "borracha" and not piso_item_fora(BORRACHA_DA_LINHA)
+    cat, interesse, por_item = P.avaliar({"description": "Aquisição de material esportivo"}, [_item(1, BORRACHA_DA_LINHA)])
+    assert por_item[1] == ("borracha", True) and interesse is True

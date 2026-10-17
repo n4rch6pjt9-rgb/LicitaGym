@@ -52,7 +52,7 @@ import requests
 
 from .paginacao import TAMANHO_PAGINA_MAX, avaliar_pagina, clamp_tamanho, pagina_repetida
 from .perfil_item import normalizar_marca, perfil_item, texto_do_item
-from .escopo import ITEM_FORA, classificar, contexto_academia, e_peca, classificar_texto_item, interesse_borracha, interesse_borracha_item, normalizar, piso_item_fora
+from .escopo import ITEM_FORA, classificar, contexto_academia, e_peca, classificar_texto_item, interesse_borracha, interesse_borracha_item, normalizar, piso_item_fora, CATEGORIAS_PISO_VETAVEL
 from .portal import cnpj_ou_none, limpar, parse_data
 from .proveniencia import ORIGENS, campos_proveniencia
 from .retry import retry_after_s
@@ -360,7 +360,7 @@ def classificar_item_detalhe(it: dict, produtos: dict[int, dict] | None = None,
         return cat, interesse_borracha_item(texto, cat), ms, "catalogo"
     cat, metodo = classificar_texto_item(texto, contexto)
     # #390: piso de borracha de outro produto (escada, balança, cera) ou piso fino de obra não é piso da linha
-    if cat in ("piso", "obra_piso") and piso_item_fora(texto):
+    if cat in CATEGORIAS_PISO_VETAVEL and piso_item_fora(texto):
         cat = None
     return cat, interesse_borracha_item(texto, cat), ms, metodo
 

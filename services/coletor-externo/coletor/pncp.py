@@ -70,6 +70,7 @@ from .escopo import (
     excluir_compra,
     interesse_borracha,
     interesse_borracha_item,
+    CATEGORIAS_PISO_VETAVEL,
     normalizar,
     obra_ou_construcao,
     piso_item_fora,
@@ -672,7 +673,7 @@ def avaliar(compra: dict, itens: list[dict], mapa_catmat: MapaCatmat | None = No
             cat = None
         if ar_livre and cat in CATEGORIAS_SO_MATERIAL:
             cat = None
-        if cat in ("piso", "obra_piso") and piso_item_fora(desc):
+        if cat in CATEGORIAS_PISO_VETAVEL and piso_item_fora(desc):
             cat = None
         if obra and cat in CATEGORIAS_SO_MATERIAL:
             cat = None

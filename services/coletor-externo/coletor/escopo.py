@@ -982,13 +982,18 @@ def classificar(objeto: str, classes_catmat: set[int] | None = None,
     return None
 
 
+# Categorias que o veto `piso_item_fora` alcança no item: piso/obra_piso (#390) e borracha explícita em outro produto
+# ("ESCADA COM PISO DE BORRACHA EPDM", "CERA PARA PISO DE BORRACHA EPDM"; extensão da #390, decisão de 16/10/2026).
+CATEGORIAS_PISO_VETAVEL = ("piso", "obra_piso", "borracha")
+
+
 def interesse_borracha_item(texto: str, categoria: str | None = None) -> bool:
     """Interesse em borracha de UM item (PNCP e Sistema S). #390 (decisão de 16/10/2026): o piso de borracha de
     outro produto (escada, balança, cadeira, cera) ou o piso fino de obra (`piso_item_fora`) não é da linha Playfit e
     não marca interesse, mesmo quando o item já chega sem categoria (vetado, ou decidido pelo código CATMAT): a
     `interesse_borracha(texto, None)` reclassifica o texto e acharia "piso" de novo."""
     cat = categoria if categoria is not None else classificar(texto)
-    if cat in ("piso", "obra_piso") and piso_item_fora(texto):
+    if cat in CATEGORIAS_PISO_VETAVEL and piso_item_fora(texto):
         return False
     return interesse_borracha(texto, cat)
 

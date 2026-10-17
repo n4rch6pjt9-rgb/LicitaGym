@@ -691,10 +691,23 @@ def classificar_texto_item(texto: str, contexto: bool = False) -> tuple[str | No
 # ---------------- terceira rodada: regras de ITEM do PNCP e de contexto do OBJETO (01/10/2026) ----------------
 # "piso de borracha"/"piso emborrachado" como característica de OUTRO produto: escada hospitalar "com piso de
 # borracha antiderrapante", balança "plataforma com piso de borracha", cadeira de alimentação, bancada, cera
-# "para piso de borracha", demolição/remoção de piso. O item começa pelo nome do outro produto.
-PISO_EM_OUTRO_PRODUTO = re.compile(
-    r"^\W*(\d+\W+)?(catmat\s+\d+\W+)?(cera|escadas?|escadinhas?|balancas?|cadeiras?|bancadas?|demolic\w*|remoc\w*|"
-    r"retirada|limpeza|mesas?|banquetas?|macas?|carrinhos?|andador\w*)\b", re.I)
+# "para piso de borracha". O item começa pelo nome do outro produto; esse prefixo veta sempre.
+_PREFIXO_ITEM = r"^\W*(\d+\W+)?(catmat\s+\d+\W+)?"
+PRODUTO_PREFIXO = re.compile(
+    _PREFIXO_ITEM + r"(cera|escadas?|escadinhas?|balancas?|cadeiras?|bancadas?|mesas?|banquetas?|macas?|carrinhos?|"
+    r"andador\w*)\b", re.I)
+# Demolição/remoção/retirada/limpeza de piso veta, MENOS quando o mesmo item repõe, instala ou fornece grama, piso ou
+# granulado (decisões do Marcelo de 16/10/2026: compra 46 "REMOÇÃO E INSTALAÇÃO DE GRAMADO SINTÉTICO"; limpeza de
+# campo sintético com reposição de granulado é a venda de infill). "aplicação de solvente", "fornecimento da mão de
+# obra", placa cerâmica, manta asfáltica e rodapé de borracha não contam.
+REMOCAO_PREFIXO = re.compile(_PREFIXO_ITEM + r"(demolic\w*|remoc\w*|retirada|limpeza)\b", re.I)
+PISO_EM_OUTRO_PRODUTO = re.compile(PRODUTO_PREFIXO.pattern + "|" + REMOCAO_PREFIXO.pattern, re.I)
+INSTALA_GRAMA_OU_PISO = re.compile(
+    r"\b(instala\w*|fornec\w*|assenta\w*|coloca\w*|recoloca\w*|implanta\w*|reposi\w*|repor|espalha\w*|"
+    r"substitui\w*)\s+(e\s+\w+\s+)?(\w+\s+){0,3}?(de\s+)?"
+    r"(gram(a|ado)\b|pisos?\s+(de\s+borracha|emborrachad|sintetic|esportiv)|"
+    r"(placas?|mantas?)\s+(de\s+)?(borracha|emborrachad\w*|epdm|sbr)|"
+    r"(borracha\s+)?granulad\w*|borracha\s+(sbr|epdm|triturad\w*|reciclad\w*))", re.I)
 # Piso de borracha fino de obra civil (pastilhado/frisado/canelado/moeda, ou espessura abaixo de 10 mm), como nas
 # composições SINAPI de manutenção predial: a linha Playfit é placa de 10 a 99 mm (mesma régua de _ITEM_PISO).
 # Fica quando o mesmo texto fala de academia/esporte/playground/amortecimento.
@@ -708,7 +721,9 @@ PISO_ESPORTIVO_CONTEXTO = re.compile(r"academia|esportiv|crossfit|playground|par
 def piso_item_fora(texto: str | None) -> bool:
     """Item do PNCP que casa piso mas não é piso da linha Playfit (outro produto, ou piso fino de obra)."""
     t = normalizar(texto or "")
-    return bool(PISO_EM_OUTRO_PRODUTO.search(t) or (PISO_FINO.search(t) and not PISO_ESPORTIVO_CONTEXTO.search(t)))
+    outro_produto = bool(PRODUTO_PREFIXO.search(t)) or bool(
+        REMOCAO_PREFIXO.search(t) and not INSTALA_GRAMA_OU_PISO.search(t))
+    return bool(outro_produto or (PISO_FINO.search(t) and not PISO_ESPORTIVO_CONTEXTO.search(t)))
 
 
 # Objeto de obra/construção/engenharia/manutenção predial ou compra de material de construção: os itens só contam
@@ -980,6 +995,22 @@ def classificar(objeto: str, classes_catmat: set[int] | None = None,
     if FRACO.search(t) and EQUIP.search(t):
         return "fraco"
     return None
+
+
+# Categorias que o veto `piso_item_fora` alcança no item: piso/obra_piso (#390) e borracha explícita em outro produto
+# ("ESCADA COM PISO DE BORRACHA EPDM", "CERA PARA PISO DE BORRACHA EPDM"; extensão da #390, decisão de 16/10/2026).
+CATEGORIAS_PISO_VETAVEL = ("piso", "obra_piso", "borracha")
+
+
+def interesse_borracha_item(texto: str, categoria: str | None = None) -> bool:
+    """Interesse em borracha de UM item (PNCP e Sistema S). #390 (decisão de 16/10/2026): o piso de borracha de
+    outro produto (escada, balança, cadeira, cera) ou o piso fino de obra (`piso_item_fora`) não é da linha Playfit e
+    não marca interesse, mesmo quando o item já chega sem categoria (vetado, ou decidido pelo código CATMAT): a
+    `interesse_borracha(texto, None)` reclassifica o texto e acharia "piso" de novo."""
+    cat = categoria if categoria is not None else classificar(texto)
+    if cat in CATEGORIAS_PISO_VETAVEL and piso_item_fora(texto):
+        return False
+    return interesse_borracha(texto, cat)
 
 
 def interesse_borracha(objeto: str, categoria: str | None = None) -> bool:

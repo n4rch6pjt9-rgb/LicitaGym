@@ -69,6 +69,8 @@ from .escopo import (
     classificar,
     excluir_compra,
     interesse_borracha,
+    interesse_borracha_item,
+    CATEGORIAS_PISO_VETAVEL,
     normalizar,
     obra_ou_construcao,
     piso_item_fora,
@@ -671,7 +673,7 @@ def avaliar(compra: dict, itens: list[dict], mapa_catmat: MapaCatmat | None = No
             cat = None
         if ar_livre and cat in CATEGORIAS_SO_MATERIAL:
             cat = None
-        if cat in ("piso", "obra_piso") and piso_item_fora(desc):
+        if cat in CATEGORIAS_PISO_VETAVEL and piso_item_fora(desc):
             cat = None
         if obra and cat in CATEGORIAS_SO_MATERIAL:
             cat = None
@@ -680,7 +682,7 @@ def avaliar(compra: dict, itens: list[dict], mapa_catmat: MapaCatmat | None = No
         if predial:   # manutenção predial: só o objeto decide (nem o piso da planilha SINAPI conta)
             por_item[it["numeroItem"]] = (None, False)
             continue
-        por_item[it["numeroItem"]] = (cat, interesse_borracha(desc, cat))
+        por_item[it["numeroItem"]] = (cat, interesse_borracha_item(desc, cat))  # #390: piso de outro produto não
     cat_obj = classificar(objeto)
     if ancoras is not None and cat_obj == "forte":   # o objeto não tem âncora: as listas fixas só dão "fraco"
         cat_obj = "fraco"

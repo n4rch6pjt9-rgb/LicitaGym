@@ -691,10 +691,23 @@ def classificar_texto_item(texto: str, contexto: bool = False) -> tuple[str | No
 # ---------------- terceira rodada: regras de ITEM do PNCP e de contexto do OBJETO (01/10/2026) ----------------
 # "piso de borracha"/"piso emborrachado" como característica de OUTRO produto: escada hospitalar "com piso de
 # borracha antiderrapante", balança "plataforma com piso de borracha", cadeira de alimentação, bancada, cera
-# "para piso de borracha", demolição/remoção de piso. O item começa pelo nome do outro produto.
-PISO_EM_OUTRO_PRODUTO = re.compile(
-    r"^\W*(\d+\W+)?(catmat\s+\d+\W+)?(cera|escadas?|escadinhas?|balancas?|cadeiras?|bancadas?|demolic\w*|remoc\w*|"
-    r"retirada|limpeza|mesas?|banquetas?|macas?|carrinhos?|andador\w*)\b", re.I)
+# "para piso de borracha". O item começa pelo nome do outro produto; esse prefixo veta sempre.
+_PREFIXO_ITEM = r"^\W*(\d+\W+)?(catmat\s+\d+\W+)?"
+PRODUTO_PREFIXO = re.compile(
+    _PREFIXO_ITEM + r"(cera|escadas?|escadinhas?|balancas?|cadeiras?|bancadas?|mesas?|banquetas?|macas?|carrinhos?|"
+    r"andador\w*)\b", re.I)
+# Demolição/remoção/retirada/limpeza de piso veta, MENOS quando o mesmo item repõe, instala ou fornece grama, piso ou
+# granulado (decisões do Marcelo de 16/10/2026: compra 46 "REMOÇÃO E INSTALAÇÃO DE GRAMADO SINTÉTICO"; limpeza de
+# campo sintético com reposição de granulado é a venda de infill). "aplicação de solvente", "fornecimento da mão de
+# obra", placa cerâmica, manta asfáltica e rodapé de borracha não contam.
+REMOCAO_PREFIXO = re.compile(_PREFIXO_ITEM + r"(demolic\w*|remoc\w*|retirada|limpeza)\b", re.I)
+PISO_EM_OUTRO_PRODUTO = re.compile(PRODUTO_PREFIXO.pattern + "|" + REMOCAO_PREFIXO.pattern, re.I)
+INSTALA_GRAMA_OU_PISO = re.compile(
+    r"\b(instala\w*|fornec\w*|assenta\w*|coloca\w*|recoloca\w*|implanta\w*|reposi\w*|repor|espalha\w*|"
+    r"substitui\w*)\s+(e\s+\w+\s+)?(\w+\s+){0,3}?(de\s+)?"
+    r"(gram(a|ado)\b|pisos?\s+(de\s+borracha|emborrachad|sintetic|esportiv)|"
+    r"(placas?|mantas?)\s+(de\s+)?(borracha|emborrachad\w*|epdm|sbr)|"
+    r"(borracha\s+)?granulad\w*|borracha\s+(sbr|epdm|triturad\w*|reciclad\w*))", re.I)
 # Piso de borracha fino de obra civil (pastilhado/frisado/canelado/moeda, ou espessura abaixo de 10 mm), como nas
 # composições SINAPI de manutenção predial: a linha Playfit é placa de 10 a 99 mm (mesma régua de _ITEM_PISO).
 # Fica quando o mesmo texto fala de academia/esporte/playground/amortecimento.
@@ -705,20 +718,11 @@ PISO_FINO = re.compile(
 PISO_ESPORTIVO_CONTEXTO = re.compile(r"academia|esportiv|crossfit|playground|parque|quadra|amortec|ginastic", re.I)
 
 
-# Remoção/retirada/demolição só veta quando o item não instala nem fornece grama ou piso (decisão do Marcelo de
-# 16/10/2026, compra 46: "REMOÇÃO E INSTALAÇÃO DE GRAMADO SINTÉTICO"). "aplicação de solvente" não conta.
-REMOCAO_PREFIXO = re.compile(r"^\W*(\d+\W+)?(catmat\s+\d+\W+)?(demolic\w*|remoc\w*|retirada)\b", re.I)
-INSTALA_GRAMA_OU_PISO = re.compile(
-    r"\b(instala\w*|fornec\w*|assenta\w*|coloca\w*|implanta\w*)\s+(e\s+\w+\s+)?(\w+\s+){0,3}?(de\s+)?"
-    r"(gram(a|ado)|pisos?|placas?|mantas?|borracha|emborrachad\w*)", re.I)
-
-
 def piso_item_fora(texto: str | None) -> bool:
     """Item do PNCP que casa piso mas não é piso da linha Playfit (outro produto, ou piso fino de obra)."""
     t = normalizar(texto or "")
-    outro_produto = bool(PISO_EM_OUTRO_PRODUTO.search(t))
-    if outro_produto and REMOCAO_PREFIXO.search(t) and INSTALA_GRAMA_OU_PISO.search(t):
-        outro_produto = False
+    outro_produto = bool(PRODUTO_PREFIXO.search(t)) or bool(
+        REMOCAO_PREFIXO.search(t) and not INSTALA_GRAMA_OU_PISO.search(t))
     return bool(outro_produto or (PISO_FINO.search(t) and not PISO_ESPORTIVO_CONTEXTO.search(t)))
 
 

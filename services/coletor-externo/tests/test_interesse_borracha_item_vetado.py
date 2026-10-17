@@ -131,3 +131,38 @@ def test_remocao_com_instalacao_de_grama_ou_piso_nao_veta(desc):
 def test_remocao_sem_instalacao_continua_vetada(desc):
     assert piso_item_fora(desc)
     assert interesse_borracha_item(desc, None) is False
+
+
+# Revisão do #389 (16/10/2026): limpeza/retirada com REPOSIÇÃO de granulado é a venda de infill e continua valendo;
+# a exceção da remoção não vale para placa cerâmica, manta asfáltica nem rodapé de borracha.
+REPOSICAO_DE_INFILL = [
+    "LIMPEZA DE GRAMA SINTETICA COM REPOSICAO DE BORRACHA GRANULADA",
+    "Limpeza e reposição de granulado de borracha SBR em campo de grama sintética",
+    "Retirada e reposição de borracha granulada SBR no campo society",
+    "Retirada de piso de borracha e recolocação de piso de borracha 20mm academia",
+    "Remoção do gramado e fornecimento e espalhamento de borracha granulada",
+]
+REMOCAO_COM_OUTRA_COISA = [
+    "Remoção de piso de borracha e colocação de placas cerâmicas",
+    "Remoção de piso de borracha e instalação de mantas asfálticas",
+    "Retirada de piso de borracha, com instalação de rodapé de borracha",
+    "LIMPEZA DE PISO EMBORRACHADO DA QUADRA",
+]
+
+
+@pytest.mark.parametrize("desc", REPOSICAO_DE_INFILL)
+def test_limpeza_ou_retirada_com_reposicao_de_infill_continua_com_interesse(desc):
+    assert not piso_item_fora(desc)
+    assert interesse_borracha_item(desc, None) is True
+
+
+@pytest.mark.parametrize("desc", REMOCAO_COM_OUTRA_COISA)
+def test_remocao_com_instalacao_de_outra_coisa_continua_vetada(desc):
+    assert piso_item_fora(desc)
+    assert interesse_borracha_item(desc, None) is False
+
+
+@pytest.mark.parametrize("desc", ["ESCADA COM PISO DE BORRACHA EPDM E INSTALAÇÃO DE PISO DE BORRACHA",
+                                  "CERA PARA PISO DE BORRACHA, COM APLICAÇÃO E REPOSIÇÃO"])
+def test_prefixo_de_outro_produto_veta_mesmo_com_instalacao(desc):
+    assert piso_item_fora(desc)

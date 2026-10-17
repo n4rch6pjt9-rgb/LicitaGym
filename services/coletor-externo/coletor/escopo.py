@@ -705,10 +705,21 @@ PISO_FINO = re.compile(
 PISO_ESPORTIVO_CONTEXTO = re.compile(r"academia|esportiv|crossfit|playground|parque|quadra|amortec|ginastic", re.I)
 
 
+# Remoção/retirada/demolição só veta quando o item não instala nem fornece grama ou piso (decisão do Marcelo de
+# 16/10/2026, compra 46: "REMOÇÃO E INSTALAÇÃO DE GRAMADO SINTÉTICO"). "aplicação de solvente" não conta.
+REMOCAO_PREFIXO = re.compile(r"^\W*(\d+\W+)?(catmat\s+\d+\W+)?(demolic\w*|remoc\w*|retirada)\b", re.I)
+INSTALA_GRAMA_OU_PISO = re.compile(
+    r"\b(instala\w*|fornec\w*|assenta\w*|coloca\w*|implanta\w*)\s+(e\s+\w+\s+)?(\w+\s+){0,3}?(de\s+)?"
+    r"(gram(a|ado)|pisos?|placas?|mantas?|borracha|emborrachad\w*)", re.I)
+
+
 def piso_item_fora(texto: str | None) -> bool:
     """Item do PNCP que casa piso mas não é piso da linha Playfit (outro produto, ou piso fino de obra)."""
     t = normalizar(texto or "")
-    return bool(PISO_EM_OUTRO_PRODUTO.search(t) or (PISO_FINO.search(t) and not PISO_ESPORTIVO_CONTEXTO.search(t)))
+    outro_produto = bool(PISO_EM_OUTRO_PRODUTO.search(t))
+    if outro_produto and REMOCAO_PREFIXO.search(t) and INSTALA_GRAMA_OU_PISO.search(t):
+        outro_produto = False
+    return bool(outro_produto or (PISO_FINO.search(t) and not PISO_ESPORTIVO_CONTEXTO.search(t)))
 
 
 # Objeto de obra/construção/engenharia/manutenção predial ou compra de material de construção: os itens só contam

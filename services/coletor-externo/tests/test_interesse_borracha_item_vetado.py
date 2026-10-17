@@ -105,3 +105,29 @@ def test_borracha_da_linha_continua():
     assert classificar(BORRACHA_DA_LINHA) == "borracha" and not piso_item_fora(BORRACHA_DA_LINHA)
     cat, interesse, por_item = P.avaliar({"description": "Aquisição de material esportivo"}, [_item(1, BORRACHA_DA_LINHA)])
     assert por_item[1] == ("borracha", True) and interesse is True
+
+
+# Exceção (decisão do Marcelo, 16/10/2026): remoção/retirada/demolição só veta quando o item não instala nem fornece
+# grama ou piso. Caso real: compra 46 ("REMOÇÃO E INSTALAÇÃO DE GRAMADO SINTÉTICO").
+REMOCAO_COM_INSTALACAO = [
+    "REMOÇÃO E INSTALAÇÃO DE GRAMADO SINTÉTICO - Avaliação técnica do contrapiso ou base de concreto",
+    "Remoção do piso existente e fornecimento e instalação de piso de borracha 20 mm",
+    "Retirada de grama antiga e assentamento de grama sintética com granulado de borracha SBR",
+]
+REMOCAO_SO = [
+    "RETIRADA MANUAL DE PISO DE BORRACHA COM APLICAÇÃO DE SOLVENTE A BASE DE ÁLCOOL, SEM REAPROVEITAMENTO",
+    "DEMOLICAO MANUAL DE PISO VINILICO, INCLUSIVE AFASTAMENTO - PISO EMBORRACHADO",
+    "RETIRADA DE PISO EM BORRACHA SBR",
+]
+
+
+@pytest.mark.parametrize("desc", REMOCAO_COM_INSTALACAO)
+def test_remocao_com_instalacao_de_grama_ou_piso_nao_veta(desc):
+    assert not piso_item_fora(desc)
+    assert interesse_borracha_item(desc, None) is True
+
+
+@pytest.mark.parametrize("desc", REMOCAO_SO)
+def test_remocao_sem_instalacao_continua_vetada(desc):
+    assert piso_item_fora(desc)
+    assert interesse_borracha_item(desc, None) is False

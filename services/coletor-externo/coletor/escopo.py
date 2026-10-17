@@ -982,6 +982,17 @@ def classificar(objeto: str, classes_catmat: set[int] | None = None,
     return None
 
 
+def interesse_borracha_item(texto: str, categoria: str | None = None) -> bool:
+    """Interesse em borracha de UM item (PNCP e Sistema S). #390 (decisão de 16/10/2026): o piso de borracha de
+    outro produto (escada, balança, cadeira, cera) ou o piso fino de obra (`piso_item_fora`) não é da linha Playfit e
+    não marca interesse, mesmo quando o item já chega sem categoria (vetado, ou decidido pelo código CATMAT): a
+    `interesse_borracha(texto, None)` reclassifica o texto e acharia "piso" de novo."""
+    cat = categoria if categoria is not None else classificar(texto)
+    if cat in ("piso", "obra_piso") and piso_item_fora(texto):
+        return False
+    return interesse_borracha(texto, cat)
+
+
 def interesse_borracha(objeto: str, categoria: str | None = None) -> bool:
     """Oportunidade para fornecer raspa/granulado de borracha ao vencedor do certame:
     grama sintética (infill), piso emborrachado, obras com esses itens ou compra direta de borracha."""

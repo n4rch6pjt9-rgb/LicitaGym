@@ -52,7 +52,7 @@ import requests
 
 from .paginacao import TAMANHO_PAGINA_MAX, avaliar_pagina, clamp_tamanho, pagina_repetida
 from .perfil_item import normalizar_marca, perfil_item, texto_do_item
-from .escopo import ITEM_FORA, classificar, contexto_academia, e_peca, classificar_texto_item, interesse_borracha, normalizar
+from .escopo import ITEM_FORA, classificar, contexto_academia, e_peca, classificar_texto_item, interesse_borracha, interesse_borracha_item, normalizar, piso_item_fora
 from .portal import cnpj_ou_none, limpar, parse_data
 from .proveniencia import ORIGENS, campos_proveniencia
 from .retry import retry_after_s
@@ -357,9 +357,12 @@ def classificar_item_detalhe(it: dict, produtos: dict[int, dict] | None = None,
         if ITEM_FORA.search(normalizar(texto)):
             return None, False, ms, "catalogo"
         cat = "manutencao" if e_peca(normalizar(texto)) else "forte"  # ex.: MOLA PARA TRAMPOLIM (peça)
-        return cat, interesse_borracha(texto, cat), ms, "catalogo"
+        return cat, interesse_borracha_item(texto, cat), ms, "catalogo"
     cat, metodo = classificar_texto_item(texto, contexto)
-    return cat, interesse_borracha(texto, cat), ms, metodo
+    # #390: piso de borracha de outro produto (escada, balança, cera) ou piso fino de obra não é piso da linha
+    if cat in ("piso", "obra_piso") and piso_item_fora(texto):
+        cat = None
+    return cat, interesse_borracha_item(texto, cat), ms, metodo
 
 
 def classificar_item(it: dict, produtos: dict[int, dict] | None = None, contexto: bool = False) -> tuple[str | None, bool, str]:

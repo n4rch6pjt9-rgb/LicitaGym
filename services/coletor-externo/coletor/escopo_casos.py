@@ -70,6 +70,9 @@ FUNCOES: dict[str, Callable[[str], object]] = {
     "interesse_borracha_categoria_none": lambda t: escopo.interesse_borracha(t, None),
     "interesse_borracha_categoria_piso": lambda t: escopo.interesse_borracha(t, "piso"),
     "interesse_borracha_categoria_forte": lambda t: escopo.interesse_borracha(t, "forte"),
+    # #390: interesse de UM item (PNCP e Sistema S); com categoria None reclassifica e respeita piso_item_fora.
+    "interesse_borracha_item": lambda t: escopo.interesse_borracha_item(t),
+    "interesse_borracha_item_categoria_piso": lambda t: escopo.interesse_borracha_item(t, "piso"),
     "normalizar": escopo.normalizar,
 }
 

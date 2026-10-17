@@ -69,6 +69,7 @@ from .escopo import (
     classificar,
     excluir_compra,
     interesse_borracha,
+    interesse_borracha_item,
     normalizar,
     obra_ou_construcao,
     piso_item_fora,
@@ -671,11 +672,7 @@ def avaliar(compra: dict, itens: list[dict], mapa_catmat: MapaCatmat | None = No
             cat = None
         if ar_livre and cat in CATEGORIAS_SO_MATERIAL:
             cat = None
-        # #390 (decisão de 16/10/2026): o piso de borracha de outro produto (escada, balança, cera...) não é da linha
-        # Playfit e não marca interesse em borracha. Sem a marca, interesse_borracha(desc, None) reclassificaria o
-        # texto e acharia "piso" de novo.
-        vetado_piso = cat in ("piso", "obra_piso") and piso_item_fora(desc)
-        if vetado_piso:
+        if cat in ("piso", "obra_piso") and piso_item_fora(desc):
             cat = None
         if obra and cat in CATEGORIAS_SO_MATERIAL:
             cat = None
@@ -684,7 +681,7 @@ def avaliar(compra: dict, itens: list[dict], mapa_catmat: MapaCatmat | None = No
         if predial:   # manutenção predial: só o objeto decide (nem o piso da planilha SINAPI conta)
             por_item[it["numeroItem"]] = (None, False)
             continue
-        por_item[it["numeroItem"]] = (cat, False if vetado_piso else interesse_borracha(desc, cat))
+        por_item[it["numeroItem"]] = (cat, interesse_borracha_item(desc, cat))  # #390: piso de outro produto não
     cat_obj = classificar(objeto)
     if ancoras is not None and cat_obj == "forte":   # o objeto não tem âncora: as listas fixas só dão "fraco"
         cat_obj = "fraco"

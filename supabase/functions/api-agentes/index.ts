@@ -8,7 +8,7 @@ import { REGRA_VERSAO, type Achado, type Agente, type ResultadoAgente } from "..
 import { type AuthenticatedUser, authenticateUser, corsHeaders, isLicitagymAdmin, jsonResponse } from "../_shared/http.ts";
 import { ErroTenantAcesso } from "../_shared/tenant.ts";
 import type { ChunkEdital } from "../_shared/agentes/edital.ts";
-import { createSupabaseRepo, ErroAgentes, type AgentesRepo, type Dossie, type Execucao } from "./repo.ts";
+import { createSupabaseRepo, ErroAgentes, type AgentesRepo, type Dossie, type Execucao, type Preparacao } from "./repo.ts";
 import { parseActionFromBody } from "./validation.ts";
 
 export interface ApiAgentesContext {
@@ -139,6 +139,24 @@ async function enriquecer(repo: AgentesRepo, tenant: number, execucoes: Execucao
   return saida;
 }
 
+/**
+ * Estado da preparação do edital (spec 0032, fase 1). "em_preparacao" só quando o edital ainda não tem chunks e o pedido
+ * da fila está pendente ou em andamento: a tarefa mostra "análise em preparação" em vez de "sem documento".
+ * Falha ao ler o estado não derruba a análise: vira aviso.
+ */
+async function estadoPreparacao(repo: AgentesRepo, tenant: number, licitacaoId: number, temChunks: boolean) {
+  let preparacao: Preparacao | null = null;
+  const avisos: string[] = [];
+  try {
+    preparacao = await repo.preparacao(tenant, licitacaoId);
+  } catch (e) {
+    console.error("[api-agentes] preparação indisponível", { licitacao: licitacaoId, erro: e instanceof Error ? e.message : e });
+    avisos.push("preparacao_indisponivel");
+  }
+  const em_preparacao = !temChunks && preparacao !== null && (preparacao.status === "pending" || preparacao.status === "processing");
+  return { preparacao, em_preparacao, ...(avisos.length ? { avisos } : {}) };
+}
+
 export async function handleRequest(req: Request, ctx: ApiAgentesContext = {}): Promise<Response> {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return jsonResponse({ error: "Método não permitido. Utilize POST." }, 405);
@@ -166,15 +184,18 @@ export async function handleRequest(req: Request, ctx: ApiAgentesContext = {}): 
     switch (params.action) {
       case "analise_executar": {
         const execucoes = await executar(repo, tenant, user.id, params.licitacao_id, params.proposta);
+        const edital = execucoes.find((e) => e.agente === "edital");
+        const prep = await estadoPreparacao(repo, tenant, params.licitacao_id, edital?.situacao !== "sem_documento");
         console.info("[api-agentes] analise_executar", { user: user.id, licitacao: params.licitacao_id, n: execucoes.length });
-        return jsonResponse({ action: params.action, execucoes });
+        return jsonResponse({ action: params.action, execucoes, ...prep });
       }
       case "analise_obter": {
         const dossie = await repo.carregarDossie(tenant, params.licitacao_id);
         if (!dossie) throw new ErroAgentes("Licitação não encontrada.", 404);
         const execucoes = await enriquecer(repo, tenant, await repo.ultimasExecucoes(tenant, params.licitacao_id));
+        const prep = await estadoPreparacao(repo, tenant, params.licitacao_id, dossie.chunks.length > 0);
         console.info("[api-agentes] analise_obter", { user: user.id, licitacao: params.licitacao_id, n: execucoes.length });
-        return jsonResponse({ action: params.action, execucoes });
+        return jsonResponse({ action: params.action, execucoes, ...prep });
       }
       case "analise_revisar": {
         const atual = await repo.obterExecucao(tenant, params.execucao_id);

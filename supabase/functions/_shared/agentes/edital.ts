@@ -103,6 +103,7 @@ const RE_PICO_ENTRE_PARENTESES = /^\s*\(\s*(?:(?:pico|peak)\s*(?:de\s*)?\d+(?:[.
 const MESMO_ITEM = 150;
 const HP_MAXIMO = 50;
 
+/** "1.500" vira 1,5 (separador de milhar não é tratado); inócuo aqui, HP acima de 50 é descartado. */
 function numero(s: string): number {
   return Number(s.replace(",", "."));
 }
@@ -130,8 +131,9 @@ function mencoesPotencia(norm: string): Mencao[] {
     if (m[2] !== undefined) {
       const den = numero(m[2]);
       // "1/2 HP" é fração (meio HP), não faixa; "3/5 HP" é a faixa do CATMAT.
-      if (hp === 1 && [2, 3, 4, 8].includes(den)) {
-        hp = 1 / den;
+      // Frações usuais de motor pequeno (1/2, 3/4, 3/8...): denominador 2, 4 ou 8 maior que o numerador.
+      if ([2, 4, 8].includes(den) && hp < den) {
+        hp = hp / den;
         tipoFracao = true;
       } else if (hp >= 1 && den > hp) {
         hpMax = den;
@@ -151,7 +153,7 @@ function mencoesPotencia(norm: string): Mencao[] {
       continue;
     }
     if (m[3] === "hpm" || m[3] === "hpp" || /(pico|peak)\s*(de\s*)?$/.test(antes) ||
-      /^\s*(de\s+)?(pico|peak|potencia maxima)\b/.test(depois)) {
+      /^\s*\(?\s*(de\s+)?(pico|peak|potencia maxima)\b(?!\s*(de\s*)?:?\s*\d)/.test(depois)) {
       mencao("pico");
       continue;
     }
@@ -173,11 +175,24 @@ function mencoesPotencia(norm: string): Mencao[] {
   return saida;
 }
 
-/** Duas menções do mesmo item: próximas e sem "item N"/"lote N" entre elas. */
+/** Fronteira de item: "item N", "lote N" ou lista numerada ("2. ", "2) ") depois de fim de frase. */
+const RE_FRONTEIRA_ITEM = /\b(item|lote)\s*\d|(^|[.;:]\s)\d{1,3}\s?[.)]\s/g;
+
+/** Duas menções do mesmo item: próximas e sem fronteira de item entre elas. */
 function mesmoItem(norm: string, a: Mencao, b: Mencao): boolean {
   const [x, y] = a.inicio < b.inicio ? [a, b] : [b, a];
   if (y.inicio - x.fim > MESMO_ITEM) return false;
-  return !/\b(item|lote)\s*\d/.test(norm.slice(x.fim, y.inicio));
+  return !new RegExp(RE_FRONTEIRA_ITEM.source).test(norm.slice(x.fim, y.inicio));
+}
+
+/** Janela do item da menção: até 400 caracteres para cada lado, cortada na fronteira de item mais próxima. */
+function janelaDoItem(norm: string, m: Mencao): string {
+  let ini = Math.max(0, m.inicio - 400);
+  let fim = Math.min(norm.length, m.fim + 400);
+  for (const f of norm.slice(ini, m.inicio).matchAll(RE_FRONTEIRA_ITEM)) ini = Math.max(ini, ini + (f.index ?? 0));
+  const depois = new RegExp(RE_FRONTEIRA_ITEM.source).exec(norm.slice(m.fim, fim));
+  if (depois) fim = m.fim + depois.index;
+  return norm.slice(ini, fim);
 }
 
 /** Sinais de uso profissional perto da menção: palavra, motor AC ou capacidade do usuário acima de 150 kg. */
@@ -186,14 +201,15 @@ function perfilProfissional(norm: string): string[] {
   if (/\bprofissiona(l|is)\b|\buso (continuo|intenso|comercial)\b|\bacademias?\b/.test(norm)) perfil.push("profissional");
   if (/corrente alternada|\bmotor (c\.?a\.?|ac)\b|\(ac\)/.test(norm)) perfil.push("motor_ac");
   const pesos: number[] = [];
-  for (const clausula of norm.split(/[;\n]|\.\s/)) {
-    // Só capacidade do usuário; peso do equipamento, líquido, bruto ou de embalagem não conta.
-    if (!/usuario|capacidade|suport|peso maximo/.test(clausula)) continue;
-    if (/equipamento|liquido|bruto|embalagem|do produto|do aparelho/.test(clausula)) continue;
-    for (const x of clausula.matchAll(/(?<![\d.,])(\d{3})\s*kg/g)) {
-      const n = Number(x[1]);
-      if (n > 150 && n <= 300) pesos.push(n);
-    }
+  // Por ocorrência: nos ~40 caracteres antes do número, a palavra mais próxima decide (usuário × equipamento).
+  for (const x of norm.matchAll(/(?<![\d.,])(\d{3})\s*kg/g)) {
+    const n = Number(x[1]);
+    if (n <= 150 || n > 300) continue;
+    const antes = norm.slice(Math.max(0, (x.index ?? 0) - 40), x.index ?? 0);
+    const ultima = (re: RegExp) => Math.max(-1, ...[...antes.matchAll(re)].map((y) => y.index ?? -1));
+    const usuario = ultima(/usuario|capacidade|suport|peso maximo/g);
+    const exclui = ultima(/equipamento|liquido|bruto|embalagem|produto|aparelho|piso/g);
+    if (usuario > exclui) pesos.push(n);
   }
   if (pesos.length) perfil.push(`peso_usuario_${Math.min(...pesos)}kg`);
   return perfil;
@@ -204,7 +220,11 @@ export function detectarPotencia(chunks: ChunkEdital[]): Achado[] {
   const juntar = (a: Achado) => {
     const g = grupos.get(a.codigo);
     if (!g) grupos.set(a.codigo, a);
-    else if (g.fontes.filter((f) => f.tipo === "chunk").length < 3) g.fontes.unshift(...a.fontes.filter((f) => f.tipo === "chunk"));
+    else if (g.fontes.filter((f) => f.tipo === "chunk").length < 3) {
+      // Trechos em ordem de citação; a fonte de cálculo (se houver) fica no fim.
+      const calculo = g.fontes.filter((f) => f.tipo !== "chunk");
+      g.fontes = [...g.fontes.filter((f) => f.tipo === "chunk"), ...a.fontes.filter((f) => f.tipo === "chunk"), ...calculo];
+    }
   };
   for (const chunk of chunks) {
     const { norm, origem } = normalizarComMapa(chunk.texto);
@@ -249,7 +269,7 @@ export function detectarPotencia(chunks: ChunkEdital[]): Achado[] {
         });
       }
       // Perfil só ao redor da menção: o trecho indexado pode ter vários itens.
-      const perfil = perfilProfissional(norm.slice(Math.max(0, m.inicio - 400), m.fim + 400));
+      const perfil = perfilProfissional(janelaDoItem(norm, m));
       if (perfil.length === 0) continue;
       const pico = m.tipo === "pico";
       juntar({

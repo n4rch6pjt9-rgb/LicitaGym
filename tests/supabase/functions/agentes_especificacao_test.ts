@@ -119,10 +119,44 @@ Deno.test("peso do equipamento ou de piso não vira capacidade do usuário", () 
   assertEquals(codigos("Esteira 3 HP de pico; carga do piso 1250 kg"), ["especificacao.potencia_so_pico"]);
 });
 
-Deno.test("sequência longa de dígitos não trava a regex (ReDoS)", () => {
-  const t0 = performance.now();
-  detectarPotencia([chunk("9".repeat(50_000))]);
-  assertEquals(performance.now() - t0 < 200, true);
+Deno.test("sequência longa de dígitos não trava a regex (ReDoS): tempo cresce linear, não quadrático", () => {
+  const medir = (n: number) => {
+    const t0 = performance.now();
+    detectarPotencia([chunk("9".repeat(n))]);
+    return performance.now() - t0;
+  };
+  medir(1_000); // aquecimento
+  const pequeno = Math.max(medir(10_000), 1);
+  const grande = medir(100_000);
+  // 10× mais texto: linear dá ~10×, quadrático daria ~100×.
+  assertEquals(grande / pequeno < 40, true, `razão ${grande / pequeno}`);
 });
 
 Deno.test("número absurdo de HP é descartado", () => assertEquals(codigos("motor " + "9".repeat(400) + " hp de pico"), []));
+
+Deno.test("revisão 2: '3 HP (pico)' e '3 HP (de pico)' continuam sendo pico", () => {
+  assertEquals(codigos("Esteira motor 3.0 HP (pico), academia"), ["especificacao.inconsistente", "especificacao.potencia_so_pico"]);
+  assertEquals(codigos("Esteira motor 3 HP (de pico), uso profissional"), ["especificacao.inconsistente", "especificacao.potencia_so_pico"]);
+});
+
+Deno.test("revisão 2: perfil não vaza para o item vizinho", () => {
+  const achados = detectarPotencia([chunk("Item 1 esteira 3 HP de pico, academia. Item 2 esteira 5/7 HP, residencial")]);
+  const inc = achados.find((a) => a.codigo === "especificacao.inconsistente")!;
+  assertEquals(inc.fontes.filter((f) => f.tipo === "chunk").length, 1);
+  assertEquals(inc.dados.pico_hp, 3);
+});
+
+Deno.test("revisão 2: '3/4 HP' é fração, não faixa", () =>
+  assertEquals(codigos("Bomba de recirculação 3/4 HP, para academia"), []));
+
+Deno.test("revisão 2: vírgula separa capacidade do usuário e peso do equipamento", () =>
+  assertEquals(codigos("Esteira 3 HP de pico, capacidade máxima do usuário 180 kg, peso do equipamento 120 kg"), [
+    "especificacao.inconsistente",
+    "especificacao.potencia_so_pico",
+  ]));
+
+Deno.test("revisão 2: lista numerada sem a palavra 'item' separa itens", () =>
+  assertEquals(codigos("1. Esteira 3 HP de pico, academia. 2. Bicicleta motor 0,5 HP"), [
+    "especificacao.inconsistente",
+    "especificacao.potencia_so_pico",
+  ]));

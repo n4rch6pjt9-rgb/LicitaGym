@@ -2,6 +2,7 @@ import { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { errorDetail, jsonResponse } from "../_shared/http.ts";
 import { buildAcompanhamentoUrl, buildEditalUrl, buildPncpEditalUrl } from "../_shared/edital-url.ts";
 import { secaoPortal, type TenantDoUsuario } from "./portal.ts";
+import { anexarReferenciaPreco } from "./precoReferencia.ts";
 import { diaBrasilia } from "../_shared/portal-compras.ts";
 import { UnifiedHttpClient } from "../_shared/http-client/index.ts";
 import type {
@@ -783,9 +784,17 @@ export async function handleAcompanhamento(
     const linkPortal = (typeof row.link_sistema_origem === "string" ? row.link_sistema_origem : null) ??
       (payload.disponivel ? payload.compra.dados?.linkSistemaOrigem : null) ??
       linkSistemaOrigemFromRaw(row.raw);
-    const portal = payload.disponivel
-      ? await secaoPortal(client, Number(row.id), linkPortal, params.atualizar === true, ctx?.tenantDoUsuario ?? semTenant)
-      : null;
+    // PDM e unidade por item (CA-8 da spec 0009): lidos do banco a cada resposta, também quando o PNCP veio do cache.
+    const itensDoPayload = payload.disponivel && Array.isArray(payload.itens.dados) ? payload.itens.dados : [];
+    const [portal, itensComPreco] = await Promise.all([
+      payload.disponivel
+        ? secaoPortal(client, Number(row.id), linkPortal, params.atualizar === true, ctx?.tenantDoUsuario ?? semTenant)
+        : Promise.resolve(null),
+      anexarReferenciaPreco(client, Number(row.id), itensDoPayload),
+    ]);
+    if (payload.disponivel && itensDoPayload.length > 0) {
+      payload = { ...payload, itens: { ...payload.itens, dados: itensComPreco } };
+    }
 
     const fase = typeof row.fase === "string" && row.fase.trim() !== "" ? row.fase : null;
     return jsonResponse(payload.disponivel ? { ...enriquecerAcompanhamento(payload, fase, new Date()), portal } : payload, 200, {

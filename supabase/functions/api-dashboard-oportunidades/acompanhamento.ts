@@ -784,16 +784,16 @@ export async function handleAcompanhamento(
     const linkPortal = (typeof row.link_sistema_origem === "string" ? row.link_sistema_origem : null) ??
       (payload.disponivel ? payload.compra.dados?.linkSistemaOrigem : null) ??
       linkSistemaOrigemFromRaw(row.raw);
-    const portal = payload.disponivel
-      ? await secaoPortal(client, Number(row.id), linkPortal, params.atualizar === true, ctx?.tenantDoUsuario ?? semTenant)
-      : null;
-
     // PDM e unidade por item (CA-8 da spec 0009): lidos do banco a cada resposta, também quando o PNCP veio do cache.
-    if (payload.disponivel && Array.isArray(payload.itens.dados) && payload.itens.dados.length > 0) {
-      payload = {
-        ...payload,
-        itens: { ...payload.itens, dados: await anexarReferenciaPreco(client, Number(row.id), payload.itens.dados) },
-      };
+    const itensDoPayload = payload.disponivel && Array.isArray(payload.itens.dados) ? payload.itens.dados : [];
+    const [portal, itensComPreco] = await Promise.all([
+      payload.disponivel
+        ? secaoPortal(client, Number(row.id), linkPortal, params.atualizar === true, ctx?.tenantDoUsuario ?? semTenant)
+        : Promise.resolve(null),
+      anexarReferenciaPreco(client, Number(row.id), itensDoPayload),
+    ]);
+    if (payload.disponivel && itensDoPayload.length > 0) {
+      payload = { ...payload, itens: { ...payload.itens, dados: itensComPreco } };
     }
 
     const fase = typeof row.fase === "string" && row.fase.trim() !== "" ? row.fase : null;

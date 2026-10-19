@@ -49,51 +49,72 @@ Deno.test("CA-8: siglaUnidadeFornecimento devolve null para embalagem, quantidad
 });
 
 // -----------------------------------------------------------------------------
-// PDM do item: catálogo oficial do PNCP primeiro; casamento por texto só com um PDM; serviço nunca
+// PDM do item: catálogo oficial do PNCP primeiro; casamento por texto só sem código oficial e com um PDM; serviço nunca
 // -----------------------------------------------------------------------------
 
-Deno.test("CA-8: decidirPdmDoItem prefere o PDM do código CATMAT oficial ao casamento por texto", () => {
+const BASE_PDM = {
+  material: "M" as const,
+  codigoCatmat: null,
+  pdmCatalogo: null,
+  catalogoFalhou: false,
+  carregado: true,
+  pdmsTexto: [] as number[],
+  textoFalhou: false,
+};
+
+Deno.test("CA-8: decidirPdmDoItem usa o PDM do código CATMAT oficial", () => {
   assertEquals(
-    decidirPdmDoItem({ material: "M", pdmCatalogo: 4321, catalogoFalhou: false, pdmsTexto: [999], textoFalhou: false, temCodigoCatmat: true }),
+    decidirPdmDoItem({ ...BASE_PDM, codigoCatmat: 150001, pdmCatalogo: 4321, pdmsTexto: [999] }),
     { codigoPdm: 4321, codigoPdmOrigem: "catalogo_pncp", codigoPdmMotivo: null },
+  );
+  // Falha só do texto não atrapalha quem tem código oficial.
+  assertEquals(
+    decidirPdmDoItem({ ...BASE_PDM, codigoCatmat: 150001, pdmCatalogo: 4321, textoFalhou: true }).codigoPdm,
+    4321,
+  );
+});
+
+Deno.test("CA-8: código CATMAT oficial sem PDM na base local não cai no texto", () => {
+  assertEquals(
+    decidirPdmDoItem({ ...BASE_PDM, codigoCatmat: 150001, pdmCatalogo: null, pdmsTexto: [777] }),
+    {
+      codigoPdm: null,
+      codigoPdmOrigem: null,
+      codigoPdmMotivo: "Código CATMAT 150001 sem PDM na base local (catmat_itens): sem PDM para comparar.",
+    },
   );
 });
 
 Deno.test("CA-8: decidirPdmDoItem usa o casamento por texto só com um PDM", () => {
   assertEquals(
-    decidirPdmDoItem({ material: "M", pdmCatalogo: null, catalogoFalhou: false, pdmsTexto: [777], textoFalhou: false, temCodigoCatmat: false }),
+    decidirPdmDoItem({ ...BASE_PDM, pdmsTexto: [777] }),
     { codigoPdm: 777, codigoPdmOrigem: "casamento_texto", codigoPdmMotivo: null },
   );
-  const varios = decidirPdmDoItem({ material: null, pdmCatalogo: null, catalogoFalhou: false, pdmsTexto: [5, 7], textoFalhou: false, temCodigoCatmat: false });
+  const varios = decidirPdmDoItem({ ...BASE_PDM, material: null, pdmsTexto: [5, 7] });
   assertEquals(varios.codigoPdm, null);
   assertEquals(varios.codigoPdmOrigem, null);
   assertEquals(varios.codigoPdmMotivo, "Mais de um PDM casou pelo texto do item (5, 7): sem PDM único para comparar.");
 });
 
-Deno.test("CA-8: decidirPdmDoItem não dá PDM a item de serviço nem a item sem código e sem casamento", () => {
-  const servico = decidirPdmDoItem({ material: "S", pdmCatalogo: null, catalogoFalhou: false, pdmsTexto: [777], textoFalhou: false, temCodigoCatmat: false });
+Deno.test("CA-8: decidirPdmDoItem não dá PDM a serviço, a item sem casamento nem a item não carregado", () => {
+  const servico = decidirPdmDoItem({ ...BASE_PDM, material: "S", pdmsTexto: [777] });
   assertEquals(servico.codigoPdm, null);
   assertEquals(servico.codigoPdmMotivo, "Item de serviço: a Pesquisa de Preço do PDM é de material.");
-  const nada = decidirPdmDoItem({ material: "M", pdmCatalogo: null, catalogoFalhou: false, pdmsTexto: [], textoFalhou: false, temCodigoCatmat: false });
+  const nada = decidirPdmDoItem({ ...BASE_PDM });
   assertEquals(nada.codigoPdm, null);
   assertEquals(nada.codigoPdmMotivo, "Item sem PDM: sem código CATMAT no PNCP e sem casamento pelo texto.");
+  const naoCarregado = decidirPdmDoItem({ ...BASE_PDM, carregado: false });
+  assertEquals(naoCarregado.codigoPdm, null);
+  assertEquals(naoCarregado.codigoPdmMotivo, "Item ainda não carregado na base: o casamento pelo texto não foi avaliado.");
 });
 
 Deno.test("CA-8: decidirPdmDoItem com consulta falha diz que está indisponível, sem cair em outra fonte", () => {
-  // Código CATMAT oficial cuja consulta falhou: não usa o texto (poderia contradizer o oficial).
-  const catFalhou = decidirPdmDoItem({ material: "M", pdmCatalogo: null, catalogoFalhou: true, pdmsTexto: [777], textoFalhou: false, temCodigoCatmat: true });
+  const catFalhou = decidirPdmDoItem({ ...BASE_PDM, codigoCatmat: 150001, catalogoFalhou: true, pdmsTexto: [777] });
   assertEquals(catFalhou.codigoPdm, null);
   assertEquals(catFalhou.codigoPdmMotivo, "Consulta do PDM indisponível agora; tente de novo.");
-  const textoFalhou = decidirPdmDoItem({ material: "M", pdmCatalogo: null, catalogoFalhou: false, pdmsTexto: [], textoFalhou: true, temCodigoCatmat: false });
+  const textoFalhou = decidirPdmDoItem({ ...BASE_PDM, textoFalhou: true });
   assertEquals(textoFalhou.codigoPdm, null);
   assertEquals(textoFalhou.codigoPdmMotivo, "Consulta do PDM indisponível agora; tente de novo.");
-});
-
-Deno.test("CA-8: código CATMAT oficial sem PDM na base local cai no casamento por texto", () => {
-  assertEquals(
-    decidirPdmDoItem({ material: "M", pdmCatalogo: null, catalogoFalhou: false, pdmsTexto: [777], textoFalhou: false, temCodigoCatmat: true }),
-    { codigoPdm: 777, codigoPdmOrigem: "casamento_texto", codigoPdmMotivo: null },
-  );
 });
 
 // -----------------------------------------------------------------------------
@@ -111,7 +132,8 @@ function mockSupabase(row: Record<string, unknown>, tabelas: Tabelas, chamadas: 
         if (tabela === "licitacoes_externas") return { data: row, error: null };
         const t = tabelas[tabela];
         if (t === "erro" || t === undefined) return { data: null, error: { message: `falha em ${tabela}` } };
-        return { data: t.filter((r) => filtros.every((f) => f(r))), error: null };
+        // PostgREST corta em max_rows = 1000.
+        return { data: t.filter((r) => filtros.every((f) => f(r))).slice(0, 1000), error: null };
       };
       const q: Record<string, unknown> = {
         select: (cols: string) => {
@@ -123,6 +145,7 @@ function mockSupabase(row: Record<string, unknown>, tabelas: Tabelas, chamadas: 
           return q;
         },
         in: (c: string, vs: unknown[]) => {
+          chamadas.push(`${tabela}.in(${c}):${vs.join(",")}`);
           filtros.push((r) => vs.map(String).includes(String(r[c])));
           return q;
         },
@@ -222,8 +245,9 @@ Deno.test("CA-8: acompanhamento devolve codigoPdm, origem, motivo e unidadeSigla
     assertEquals(porNumero(5).codigoPdmMotivo, "Item sem PDM: sem código CATMAT no PNCP e sem casamento pelo texto.");
     assertEquals(porNumero(5).unidadeSigla, "UN");
 
-    // Só um código CATMAT oficial consultado no catmat_itens.
-    assertEquals(chamadas.some((c) => c.startsWith("catmat_itens:")), true);
+    // Só o código CATMAT oficial vai ao catmat_itens; só itens sem código oficial (e não serviço) vão ao texto.
+    assertEquals(chamadas.filter((c) => c.startsWith("catmat_itens.in")), ["catmat_itens.in(codigo_item):150001"]);
+    assertEquals(chamadas.filter((c) => c.startsWith("licitacao_itens.in")), ["licitacao_itens.in(numero_item):2,3,5"]);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -269,6 +293,44 @@ Deno.test("CA-8: a segunda leitura (cache do PNCP) também traz o PDM", async ()
     const res = await handleAcompanhamento({ action: "acompanhamento", id: 200 }, { getClient: () => client as any, httpClient: httpClient() });
     const body = await res.json();
     assertEquals(body.itens.dados.find((i: { numeroItem: number }) => i.numeroItem === 1).codigoPdm, 4321);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("CA-8: lista cortada pelo PostgREST (1000 linhas) vira indisponível, nunca PDM único falso", async () => {
+  clearAcompanhamentoCache();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchPncp([ITENS_PNCP[1]]) as typeof fetch;
+  try {
+    // Item 2 casa com os PDMs 777 e 778, mas 1000 linhas repetidas do 777 vêm antes: o lote volta cheio e o 778 some.
+    const ruido = Array.from({ length: 1000 }, (_, i) => ({ licitacao_id: 200, item_id: 12, codigo_pdm: 777, origem: "texto_item", i }));
+    const client = mockSupabase(ROW, {
+      catmat_itens: [],
+      licitacao_itens: [{ id: 12, licitacao_id: 200, numero_item: 2 }],
+      licitacao_match: [...ruido, { licitacao_id: 200, item_id: 12, codigo_pdm: 778, origem: "texto_item" }],
+    }, []);
+    // deno-lint-ignore no-explicit-any
+    const res = await handleAcompanhamento({ action: "acompanhamento", id: 200 }, { getClient: () => client as any, httpClient: httpClient() });
+    const body = await res.json();
+    const it = body.itens.dados[0];
+    assertEquals(it.codigoPdm, null);
+    assertEquals(it.codigoPdmMotivo, "Consulta do PDM indisponível agora; tente de novo.");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("CA-8: item do PNCP ainda não carregado em licitacao_itens não é dado como sem casamento", async () => {
+  clearAcompanhamentoCache();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchPncp([ITENS_PNCP[4]]) as typeof fetch;
+  try {
+    const client = mockSupabase(ROW, { catmat_itens: [], licitacao_itens: [], licitacao_match: [] }, []);
+    // deno-lint-ignore no-explicit-any
+    const res = await handleAcompanhamento({ action: "acompanhamento", id: 200 }, { getClient: () => client as any, httpClient: httpClient() });
+    const body = await res.json();
+    assertEquals(body.itens.dados[0].codigoPdmMotivo, "Item ainda não carregado na base: o casamento pelo texto não foi avaliado.");
   } finally {
     globalThis.fetch = originalFetch;
   }

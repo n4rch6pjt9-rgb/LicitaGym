@@ -409,3 +409,22 @@ Deno.test("repo (0032): sem pedido na fila, preparação é null", async () => {
   // deno-lint-ignore no-explicit-any
   assertEquals(await createSupabaseRepo(client as any).preparacao(1, 101), null);
 });
+
+Deno.test("api-agentes (0032 CA-4): edital com potência só de pico em perfil profissional roda e grava os achados", async () => {
+  const { repo, dossie } = ambiente();
+  dossie.chunks = [{
+    id: 7,
+    documento_id: 9,
+    pagina: 12,
+    texto: "ESTEIRA PROFISSIONAL: MOTOR DE CORRENTE ALTERNADA (AC) COM POTENCIA MINIMA DE 3.0 HP PEAK POWER. CAPACIDADE DE PESO DO USUARIO: NO MINIMO 180 KG",
+  }];
+  const r = await chamar(ctx(repo), { action: "analise_executar", licitacao_id: 101, proposta: P });
+  assertEquals(r.status, 200);
+  const edital = r.json.execucoes.find((e: Execucao) => e.agente === "edital");
+  assertEquals(edital.achados.some((a: Achado) => a.codigo === "especificacao.inconsistente"), true);
+  const juridico = r.json.execucoes.find((e: Execucao) => e.agente === "juridico");
+  assertEquals(
+    juridico.achados.some((a: Achado) => a.dados.sinal_origem === "especificacao.inconsistente" && a.dados.peca_a_avaliar === "pedido_esclarecimento"),
+    true,
+  );
+});

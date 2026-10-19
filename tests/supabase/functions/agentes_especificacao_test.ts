@@ -2,6 +2,7 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import { agenteEdital, type ChunkEdital, detectarPotencia } from "../../../supabase/functions/_shared/agentes/edital.ts";
 import { agenteJuridico } from "../../../supabase/functions/_shared/agentes/juridico.ts";
+import { validarAchado } from "../../../supabase/functions/_shared/agentes/achados.ts";
 
 const chunk = (texto: string, id = 1): ChunkEdital => ({ id, documento_id: 9, pagina: 3, texto });
 const codigos = (texto: string) => detectarPotencia([chunk(texto)]).map((a) => a.codigo).sort();
@@ -39,6 +40,7 @@ Deno.test("CA-4: Horizontina, profissional + AC + 180 kg com potência só de pi
   assertEquals((inc.dados.perfil as string[]).sort(), ["motor_ac", "peso_usuario_180kg", "profissional"]);
   assertEquals(inc.fontes[0].tipo, "chunk");
   if (inc.fontes[0].tipo === "chunk") assertEquals(inc.fontes[0].trecho.includes("3.0 HP PEAK POWER"), true);
+  assertEquals(inc.fontes[1], { tipo: "calculo", regra: "pico_aprox_2x_continuo", versao: "2026-10-19.1" });
 });
 
 Deno.test("Paranavaí: 'entre 3 a 5 HP' é faixa ambígua, sem perfil profissional não é inconsistente", () =>
@@ -77,3 +79,50 @@ Deno.test("CA-4: jurídico sugere pedido de esclarecimento (art. 164) para incon
   assertEquals(porSinal["especificacao.potencia_faixa_ambigua"], "pedido_esclarecimento");
   assertEquals(porSinal["especificacao.potencia_so_pico"], "nenhuma");
 });
+
+// --- Revisão de 19/10 (revisor-codigo e revisor-seguranca) ----------------------------------------------------------
+
+Deno.test("todos os achados de potência passam em validarAchado (senão a api-agentes dá 500)", () => {
+  for (const t of [HORIZONTINA, PARANAVAI, CATMAT, ESCADA]) {
+    for (const a of detectarPotencia([chunk(t)])) assertEquals(validarAchado(a), null, a.codigo);
+  }
+});
+
+Deno.test("faixa grava hp_min e hp_max", () => {
+  assertEquals(detectarPotencia([chunk(CATMAT)])[0].dados, { hp_min: 3, hp_max: 5 });
+  assertEquals(detectarPotencia([chunk(PARANAVAI)])[0].dados, { hp_min: 3, hp_max: 5 });
+});
+
+Deno.test("'2 HP (pico 4 HP)' e '4 cv (8 cv de pico)': a primeira menção é a contínua, sem achado", () => {
+  assertEquals(codigos("Esteira motor 2 HP (pico 4 HP), uso em academia, usuário até 180 kg"), []);
+  assertEquals(codigos("Motor de 4 cv (8 cv de pico)"), []);
+});
+
+Deno.test("vários itens no trecho: o contínuo de um item não apaga o pico de outro", () => {
+  assertEquals(codigos("Item 1: bicicleta motor 0,5 HP. Item 2: esteira 3 HP de pico, academia"), [
+    "especificacao.inconsistente",
+    "especificacao.potencia_so_pico",
+  ]);
+  assertEquals(
+    codigos("Item 1: esteira 3 HP de pico, academia, capacidade do usuário 180 kg. Item 2: bomba potência nominal de 1 HP"),
+    ["especificacao.inconsistente", "especificacao.potencia_so_pico"],
+  );
+});
+
+Deno.test("'1/2 HP' é fração, não faixa", () =>
+  assertEquals(codigos("Bebedouro industrial com compressor 1/2 HP, para academia"), []));
+
+Deno.test("peso do equipamento ou de piso não vira capacidade do usuário", () => {
+  assertEquals(codigos("Esteira 3 HP de pico; capacidade do usuário 120 kg; peso do equipamento 160 kg"), [
+    "especificacao.potencia_so_pico",
+  ]);
+  assertEquals(codigos("Esteira 3 HP de pico; carga do piso 1250 kg"), ["especificacao.potencia_so_pico"]);
+});
+
+Deno.test("sequência longa de dígitos não trava a regex (ReDoS)", () => {
+  const t0 = performance.now();
+  detectarPotencia([chunk("9".repeat(50_000))]);
+  assertEquals(performance.now() - t0 < 200, true);
+});
+
+Deno.test("número absurdo de HP é descartado", () => assertEquals(codigos("motor " + "9".repeat(400) + " hp de pico"), []));

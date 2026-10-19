@@ -7,6 +7,7 @@ import {
   type Dossie,
   ErroAgentes,
   type Execucao,
+  type Preparacao,
 } from "../../../supabase/functions/api-agentes/repo.ts";
 import { ErroTenantAcesso } from "../../../supabase/functions/_shared/tenant.ts";
 import type { PropostaItem } from "../../../supabase/functions/_shared/agentes/preco.ts";
@@ -27,8 +28,10 @@ function ambiente() {
     ],
   };
 
+  const estado: { preparacao: Preparacao | null | Error } = { preparacao: null };
   const repo: AgentesRepo = {
     tenantDoUsuario: () => Promise.resolve({ tenant: 1, papel: null }),
+    preparacao: () => (estado.preparacao instanceof Error ? Promise.reject(estado.preparacao) : Promise.resolve(estado.preparacao)),
     carregarDossie: (_t, id) => Promise.resolve(id === dossie.licitacao.id ? dossie : null),
     buscarExecucao: (_t, licitacaoId, agente, contextoHash) =>
       Promise.resolve(execucoes.find((e) => e.licitacao_id === licitacaoId && e.agente === agente && e.contexto_hash === contextoHash) ?? null),
@@ -76,7 +79,7 @@ function ambiente() {
       return Promise.resolve(row);
     },
   };
-  return { repo, dossie, execucoes };
+  return { repo, dossie, execucoes, estado };
 }
 
 const USUARIO = { id: "u-1", app_metadata: {} };
@@ -325,4 +328,84 @@ Deno.test("validação: proposta", () => {
   }), true);
   assertEquals(parseActionFromBody({ action: "analise_executar", licitacao_id: 1 }), { action: "analise_executar", licitacao_id: 1, proposta: null });
   assertEquals("error" in parseActionFromBody({ action: "analise_revisar", execucao_id: 1, decisao: "talvez" }), true);
+});
+
+// Spec 0032, fase 1: "Analisar" com o edital ainda na fila de preparação mostra "em preparação", não "sem documento".
+Deno.test("api-agentes (0032 CA-1): sem chunks e preparação pendente, a resposta traz a preparação pendente", async () => {
+  const { repo, dossie, estado } = ambiente();
+  dossie.chunks = [];
+  estado.preparacao = { status: "pending", resultado: null, erro: null, atualizado_em: "2026-10-19T16:08:03Z" };
+  const r = await chamar(ctx(repo), { action: "analise_executar", licitacao_id: 101, proposta: P });
+  assertEquals(r.status, 200);
+  assertEquals(r.json.preparacao, { status: "pending", resultado: null, erro: null, atualizado_em: "2026-10-19T16:08:03Z" });
+  assertEquals(r.json.em_preparacao, true);
+  assertEquals(r.json.execucoes[0].situacao, "sem_documento");
+});
+
+Deno.test("api-agentes (0032 CA-2): sem chunks e sem pedido na fila, não está em preparação", async () => {
+  const { repo, dossie } = ambiente();
+  dossie.chunks = [];
+  const r = await chamar(ctx(repo), { action: "analise_executar", licitacao_id: 101, proposta: P });
+  assertEquals(r.json.preparacao, null);
+  assertEquals(r.json.em_preparacao, false);
+  assertEquals(r.json.execucoes[0].situacao, "sem_documento");
+});
+
+Deno.test("api-agentes (0032): preparação concluída sem documento não é 'em preparação'", async () => {
+  const { repo, dossie, estado } = ambiente();
+  dossie.chunks = [];
+  estado.preparacao = { status: "completed", resultado: "sem_documento", erro: null, atualizado_em: "t" };
+  const r = await chamar(ctx(repo), { action: "analise_executar", licitacao_id: 101, proposta: P });
+  assertEquals(r.json.em_preparacao, false);
+  assertEquals(r.json.preparacao.resultado, "sem_documento");
+});
+
+Deno.test("api-agentes (0032): com edital indexado, não está em preparação mesmo com pedido antigo na fila", async () => {
+  const { repo, estado } = ambiente();
+  estado.preparacao = { status: "pending", resultado: null, erro: null, atualizado_em: "t" };
+  const r = await chamar(ctx(repo), { action: "analise_executar", licitacao_id: 101, proposta: P });
+  assertEquals(r.json.em_preparacao, false);
+  assertEquals(r.json.execucoes[0].situacao, "ok");
+});
+
+Deno.test("api-agentes (0032): falha ao ler a preparação não derruba a análise", async () => {
+  const { repo, dossie, estado } = ambiente();
+  dossie.chunks = [];
+  estado.preparacao = new Error("rpc fora");
+  const r = await chamar(ctx(repo), { action: "analise_executar", licitacao_id: 101, proposta: P });
+  assertEquals(r.status, 200);
+  assertEquals(r.json.preparacao, null);
+  assertEquals(r.json.avisos, ["preparacao_indisponivel"]);
+  assertEquals(r.json.execucoes.length, 3);
+});
+
+Deno.test("api-agentes (0032): analise_obter também informa a preparação", async () => {
+  const { repo, dossie, estado } = ambiente();
+  dossie.chunks = [];
+  estado.preparacao = { status: "processing", resultado: null, erro: null, atualizado_em: "t" };
+  const r = await chamar(ctx(repo), { action: "analise_obter", licitacao_id: 101 });
+  assertEquals(r.json.em_preparacao, true);
+});
+
+Deno.test("repo (0032): preparação vem da RPC pipeline_preparacao_estado da empresa", async () => {
+  const chamadas: unknown[] = [];
+  const client = {
+    rpc: (fn: string, args: unknown) => {
+      chamadas.push([fn, args]);
+      return Promise.resolve({
+        data: [{ licitacao_id: 101, status: "pending", resultado: null, erro: null, atualizado_em: "t" }],
+        error: null,
+      });
+    },
+  };
+  // deno-lint-ignore no-explicit-any
+  const p = await createSupabaseRepo(client as any).preparacao(1, 101);
+  assertEquals(chamadas, [["pipeline_preparacao_estado", { p_tenant: 1, p_licitacoes: [101] }]]);
+  assertEquals(p, { status: "pending", resultado: null, erro: null, atualizado_em: "t" });
+});
+
+Deno.test("repo (0032): sem pedido na fila, preparação é null", async () => {
+  const client = { rpc: () => Promise.resolve({ data: [], error: null }) };
+  // deno-lint-ignore no-explicit-any
+  assertEquals(await createSupabaseRepo(client as any).preparacao(1, 101), null);
 });

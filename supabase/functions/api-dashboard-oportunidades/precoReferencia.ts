@@ -8,6 +8,9 @@
 //      exatamente um PDM. É derivado (padrões de texto do catálogo), por isso a origem vai junto.
 //   Serviço, mais de um PDM pelo texto, nenhum PDM, item ainda não carregado em licitacao_itens ou consulta falha:
 //   codigoPdm null, com o motivo.
+//   O casamento por texto só vale quando está em dia: item em public.licitacao_match_pendente (texto alterado; o
+//   trigger mantém as linhas antigas até licitacao_match_atualizar drenar a fila) ou carga nunca feita
+//   (licitacao_match_estado.carregado_em nulo) dá "ainda não avaliado", nunca o PDM antigo nem "sem casamento".
 // Leitura em lotes pequenos (bem abaixo do max_rows = 1000 do PostgREST); lote que volta cheio conta como falha, para
 // uma lista cortada nunca virar "sem PDM" ou um PDM único falso.
 // Unidade: o PNCP manda `unidadeMedida` em texto livre ("Unidade", "UND", "UNIDADE (UN)"...); a Pesquisa de Preço usa
@@ -24,6 +27,10 @@ export const MOTIVO_SERVICO = "Item de serviço: a Pesquisa de Preço do PDM é 
 export const MOTIVO_SEM_PDM = "Item sem PDM: sem código CATMAT no PNCP e sem casamento pelo texto.";
 export const MOTIVO_INDISPONIVEL = "Consulta do PDM indisponível agora; tente de novo.";
 export const MOTIVO_NAO_CARREGADO = "Item ainda não carregado na base: o casamento pelo texto não foi avaliado.";
+export const MOTIVO_PENDENTE =
+  "Texto do item em recálculo (casamento pendente): o PDM pelo texto ainda não foi avaliado.";
+export const MOTIVO_SEM_CARGA =
+  "Casamento pelo texto ainda não carregado na base: o PDM pelo texto não foi avaliado.";
 export const motivoCodigoSemPdm = (codigo: number) =>
   `Código CATMAT ${codigo} sem PDM na base local (catmat_itens): sem PDM para comparar.`;
 
@@ -80,6 +87,10 @@ export interface EntradaPdm {
   catalogoFalhou: boolean;
   /** O item (numeroItem) existe em licitacao_itens desta licitação. */
   carregado: boolean;
+  /** O item está em licitacao_match_pendente (texto_item): as linhas de licitacao_match são as de antes. */
+  pendente: boolean;
+  /** licitacao_match nunca foi carregado (licitacao_match_estado.carregado_em nulo). */
+  semCargaTexto?: boolean;
   /** PDMs distintos casados pelo texto do item, em ordem crescente. */
   pdmsTexto: number[];
   textoFalhou: boolean;
@@ -100,7 +111,9 @@ export function decidirPdmDoItem(e: EntradaPdm): PdmDoItem {
     return sem(motivoCodigoSemPdm(e.codigoCatmat));
   }
   if (e.textoFalhou) return sem(MOTIVO_INDISPONIVEL);
+  if (e.semCargaTexto) return sem(MOTIVO_SEM_CARGA);
   if (!e.carregado) return sem(MOTIVO_NAO_CARREGADO);
+  if (e.pendente) return sem(MOTIVO_PENDENTE);
   if (e.pdmsTexto.length === 1) return { codigoPdm: e.pdmsTexto[0], codigoPdmOrigem: "casamento_texto", codigoPdmMotivo: null };
   if (e.pdmsTexto.length > 1) {
     return sem(`Mais de um PDM casou pelo texto do item (${e.pdmsTexto.join(", ")}): sem PDM único para comparar.`);
@@ -167,15 +180,41 @@ async function pdmsDoCatalogo(client: SupabaseClient, codigos: number[]): Promis
   return mapa;
 }
 
+interface CasamentoTexto {
+  /** PDMs por numero_item; itens fora de licitacao_itens ficam fora do mapa (não carregados). */
+  pdms: Map<number, number[]>;
+  /** numero_item em licitacao_match_pendente (texto_item). */
+  pendentes: Set<number>;
+  semCarga: boolean;
+}
+
+/** Carga do casamento já feita (licitacao_match_estado). null = falhou. */
+async function cargaDoCasamentoFeita(client: SupabaseClient): Promise<boolean | null> {
+  try {
+    const { data, error } = await client.from("licitacao_match_estado").select("carregado_em");
+    if (error || !Array.isArray(data)) {
+      console.warn("[api-dashboard-oportunidades] estado do casamento indisponível (licitacao_match_estado):", error ?? "resposta inválida");
+      return null;
+    }
+    return (data as Array<{ carregado_em: unknown }>).some((r) => r.carregado_em !== null && r.carregado_em !== undefined);
+  } catch (e) {
+    console.warn("[api-dashboard-oportunidades] estado do casamento indisponível:", e instanceof Error ? e.message : String(e));
+    return null;
+  }
+}
+
 /**
- * PDMs casados pelo texto, por numero_item (licitacao_itens + licitacao_match texto_item). Itens fora de
- * licitacao_itens ficam fora do mapa (não carregados). null = falhou.
+ * PDMs casados pelo texto, por numero_item (licitacao_itens + licitacao_match texto_item), com os itens pendentes de
+ * recálculo (licitacao_match_pendente). null = falhou.
  */
 async function pdmsDoTexto(
   client: SupabaseClient,
   licitacaoId: number,
   numeros: number[],
-): Promise<Map<number, number[]> | null> {
+): Promise<CasamentoTexto | null> {
+  const carga = await cargaDoCasamentoFeita(client);
+  if (carga === null) return null;
+  if (!carga) return { pdms: new Map(), pendentes: new Set(), semCarga: true };
   const itens = await porLotes(
     "itens da licitação (licitacao_itens)",
     numeros,
@@ -196,6 +235,18 @@ async function pdmsDoTexto(
         .in("item_id", lote),
   );
   if (matches === null) return null;
+  const pendentesRows = await porLotes(
+    "itens com casamento pendente (licitacao_match_pendente)",
+    [...numeroPorId.keys()],
+    (lote) => client.from("licitacao_match_pendente").select("ref_id").eq("origem", "texto_item").in("ref_id", lote),
+  );
+  if (pendentesRows === null) return null;
+  const pendentes = new Set<number>();
+  for (const r of pendentesRows) {
+    const id = inteiroPositivo(r.ref_id);
+    const numero = id === null ? undefined : numeroPorId.get(id);
+    if (numero !== undefined) pendentes.add(numero);
+  }
   const porNumero = new Map<number, Set<number>>([...numeroPorId.values()].map((n) => [n, new Set<number>()]));
   for (const r of matches) {
     const id = inteiroPositivo(r.item_id);
@@ -203,7 +254,11 @@ async function pdmsDoTexto(
     const numero = id === null ? undefined : numeroPorId.get(id);
     if (numero !== undefined && pdm !== null) porNumero.get(numero)!.add(pdm);
   }
-  return new Map([...porNumero].map(([n, s]) => [n, [...s].sort((a, b) => a - b)]));
+  return {
+    pdms: new Map([...porNumero].map(([n, s]) => [n, [...s].sort((a, b) => a - b)])),
+    pendentes,
+    semCarga: false,
+  };
 }
 
 /** Acrescenta PDM e sigla da unidade a cada item (cópias; a lista do cache não muda). Nunca lança. */
@@ -220,7 +275,9 @@ export async function anexarReferenciaPreco(
   ].filter((n) => Number.isSafeInteger(n) && n > 0);
   const [catalogo, texto] = await Promise.all([
     pdmsDoCatalogo(client, codigos),
-    numerosTexto.length > 0 ? pdmsDoTexto(client, licitacaoId, numerosTexto) : Promise.resolve(new Map<number, number[]>()),
+    numerosTexto.length > 0
+      ? pdmsDoTexto(client, licitacaoId, numerosTexto)
+      : Promise.resolve<CasamentoTexto>({ pdms: new Map(), pendentes: new Set(), semCarga: false }),
   ]);
   return itens.map((it) => {
     const codigo = codigoCatmat(it);
@@ -229,8 +286,10 @@ export async function anexarReferenciaPreco(
       codigoCatmat: codigo,
       pdmCatalogo: codigo !== null ? catalogo?.get(codigo) ?? null : null,
       catalogoFalhou: catalogo === null,
-      carregado: texto?.has(it.numeroItem) ?? false,
-      pdmsTexto: texto?.get(it.numeroItem) ?? [],
+      carregado: texto?.pdms.has(it.numeroItem) ?? false,
+      pendente: texto?.pendentes.has(it.numeroItem) ?? false,
+      semCargaTexto: texto?.semCarga ?? false,
+      pdmsTexto: texto?.pdms.get(it.numeroItem) ?? [],
       textoFalhou: texto === null,
     });
     const sigla = siglaUnidadeFornecimento(it.unidade);

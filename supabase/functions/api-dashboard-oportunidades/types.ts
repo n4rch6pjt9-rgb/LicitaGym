@@ -144,6 +144,20 @@ export interface ItemAcompanhamento {
    * Propostas" (fase da licitação); senão a do PNCP. situacaoCompraItemNome continua sendo o bruto.
    */
   situacaoExibida?: string | null;
+  /**
+   * PDM do item para a Inteligência de Preços (spec 0009, CA-8; precoReferencia.ts): pelo código CATMAT oficial
+   * (`catalogo_pncp`) ou pelo casamento do texto com um único PDM (`casamento_texto`, derivado). null com
+   * `codigoPdmMotivo` quando não há PDM único (serviço, nenhum, mais de um, consulta falha).
+   */
+  codigoPdm?: number | null;
+  codigoPdmOrigem?: "catalogo_pncp" | "casamento_texto" | null;
+  codigoPdmMotivo?: string | null;
+  /**
+   * Sigla de fornecimento da Pesquisa de Preço (UN, PAR, M2, RO) normalizada de `unidade` (texto livre do PNCP) por
+   * dicionário fechado; null quando não dá para afirmar. Origem `normalizada_da_unidade_pncp`.
+   */
+  unidadeSigla?: string | null;
+  unidadeSiglaOrigem?: "normalizada_da_unidade_pncp" | null;
 }
 
 export interface AtaAcompanhamento {

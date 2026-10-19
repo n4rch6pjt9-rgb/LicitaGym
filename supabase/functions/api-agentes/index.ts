@@ -145,16 +145,16 @@ async function enriquecer(repo: AgentesRepo, tenant: number, execucoes: Execucao
  * Falha ao ler o estado não derruba a análise: vira aviso.
  */
 async function estadoPreparacao(repo: AgentesRepo, tenant: number, licitacaoId: number, temChunks: boolean) {
-  let preparacao: Preparacao | null = null;
-  const avisos: string[] = [];
   try {
-    preparacao = await repo.preparacao(tenant, licitacaoId);
+    const preparacao: Preparacao | null = await repo.preparacao(tenant, licitacaoId);
+    const em_preparacao = !temChunks && preparacao !== null &&
+      (preparacao.status === "pending" || preparacao.status === "processing");
+    return { preparacao, em_preparacao };
   } catch (e) {
+    // Mesmo contrato da api-pipeline: estado desconhecido não vira "sem pedido". Os campos somem e o aviso explica.
     console.error("[api-agentes] preparação indisponível", { licitacao: licitacaoId, erro: e instanceof Error ? e.message : e });
-    avisos.push("preparacao_indisponivel");
+    return { avisos: ["preparacao_indisponivel"] };
   }
-  const em_preparacao = !temChunks && preparacao !== null && (preparacao.status === "pending" || preparacao.status === "processing");
-  return { preparacao, em_preparacao, ...(avisos.length ? { avisos } : {}) };
 }
 
 export async function handleRequest(req: Request, ctx: ApiAgentesContext = {}): Promise<Response> {

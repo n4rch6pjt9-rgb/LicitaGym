@@ -374,7 +374,8 @@ Deno.test("api-agentes (0032): falha ao ler a preparação não derruba a análi
   estado.preparacao = new Error("rpc fora");
   const r = await chamar(ctx(repo), { action: "analise_executar", licitacao_id: 101, proposta: P });
   assertEquals(r.status, 200);
-  assertEquals(r.json.preparacao, null);
+  assertEquals("preparacao" in r.json, false);
+  assertEquals("em_preparacao" in r.json, false);
   assertEquals(r.json.avisos, ["preparacao_indisponivel"]);
   assertEquals(r.json.execucoes.length, 3);
 });
@@ -385,6 +386,32 @@ Deno.test("api-agentes (0032): analise_obter também informa a preparação", as
   estado.preparacao = { status: "processing", resultado: null, erro: null, atualizado_em: "t" };
   const r = await chamar(ctx(repo), { action: "analise_obter", licitacao_id: 101 });
   assertEquals(r.json.em_preparacao, true);
+  assertEquals(r.json.preparacao, { status: "processing", resultado: null, erro: null, atualizado_em: "t" });
+});
+
+Deno.test("api-agentes (0032): pedido failed sem chunks não está em preparação e devolve o erro", async () => {
+  const { repo, dossie, estado } = ambiente();
+  dossie.chunks = [];
+  estado.preparacao = { status: "failed", resultado: null, erro: "download: HTTP 504", atualizado_em: "t" };
+  const r = await chamar(ctx(repo), { action: "analise_executar", licitacao_id: 101, proposta: P });
+  assertEquals(r.json.em_preparacao, false);
+  assertEquals(r.json.preparacao.erro, "download: HTTP 504");
+});
+
+Deno.test("api-agentes (0032): analise_obter com chunks e pedido pending não está em preparação", async () => {
+  const { repo, estado } = ambiente();
+  estado.preparacao = { status: "pending", resultado: null, erro: null, atualizado_em: "t" };
+  const r = await chamar(ctx(repo), { action: "analise_obter", licitacao_id: 101 });
+  assertEquals(r.json.em_preparacao, false);
+});
+
+Deno.test("api-agentes (0032): analise_obter com a RPC fora omite a preparação e avisa", async () => {
+  const { repo, estado } = ambiente();
+  estado.preparacao = new Error("rpc fora");
+  const r = await chamar(ctx(repo), { action: "analise_obter", licitacao_id: 101 });
+  assertEquals(r.status, 200);
+  assertEquals("em_preparacao" in r.json, false);
+  assertEquals(r.json.avisos, ["preparacao_indisponivel"]);
 });
 
 Deno.test("repo (0032): preparação vem da RPC pipeline_preparacao_estado da empresa", async () => {

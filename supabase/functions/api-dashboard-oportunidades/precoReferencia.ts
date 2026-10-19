@@ -29,6 +29,7 @@ export const motivoCodigoSemPdm = (codigo: number) =>
 
 /** Lote das consultas `in`: com até 5 PDMs por item, 100 itens ficam abaixo de 1000 linhas. */
 export const LOTE = 100;
+/** Igual ao max_rows do PostgREST (supabase/config.toml, [api]); mudou lá, muda aqui. */
 const MAX_ROWS = 1000;
 
 /** Forma escrita (sem acento, maiúscula, sem ponto final) → sigla de fornecimento da Pesquisa de Preço. */

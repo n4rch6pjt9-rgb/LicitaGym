@@ -135,3 +135,9 @@ def test_peca_continua_peca_no_caminho_de_texto(clf):
 @pytest.mark.parametrize("texto", ["Estação 3 em 1 para musculação", "Kit 3x1 de elásticos"])
 def test_3_em_1_sem_supino_ou_banco_nao_vira_posicao(clf, texto):
     assert "posicao" not in clf.classificar(texto)["atributos"]
+
+
+def test_tipo_mecanismo_sem_pdm_mantem_o_comportamento_anterior(clf):
+    # Revisão do Codex no PR #398: sem codigo_pdm, o desvio pelos campos não roda e o texto inteiro decide
+    r = clf.classificar("CADEIRA EXTENSORA, TIPO: ELÉTRICA, MODELO: ESTEIRA COM MOTOR", tipo_catmat="ELÉTRICA")
+    assert r["slug"] == "cadeira_extensora"

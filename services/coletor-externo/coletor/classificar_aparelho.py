@@ -93,7 +93,8 @@ class Classificador:
         if tipo_catmat:
             chave = next((k for k in ((str(codigo_pdm or ""), norm(tipo_catmat)), ("", norm(tipo_catmat)))
                           if k in self.tipo_catmat and k[0] in ("", str(codigo_pdm or ""))), None)
-            mecanismo = self.tipo_mecanismo.get(norm(tipo_catmat))
+            # Só com o PDM informado (descrição estruturada do CATMAT); sem ele vale o comportamento anterior
+            mecanismo = self.tipo_mecanismo.get(norm(tipo_catmat)) if codigo_pdm else None
             if mecanismo is not None:
                 # O TIPO diz como funciona, não o que é (spec 0030): o aparelho vem das características adicionais,
                 # do modelo ou da identificação. O catmat_tipo do valor só vale se esses campos não disserem o aparelho.

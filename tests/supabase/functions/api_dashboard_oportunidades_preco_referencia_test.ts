@@ -59,6 +59,7 @@ const BASE_PDM = {
   catalogoFalhou: false,
   carregado: true,
   pendente: false,
+  semCargaTexto: false,
   pdmsTexto: [] as number[],
   textoFalhou: false,
 };
@@ -113,6 +114,11 @@ Deno.test("CA-8: item com texto em recálculo (licitacao_match_pendente) não us
   const r = decidirPdmDoItem({ ...BASE_PDM, pendente: true, pdmsTexto: [777] });
   assertEquals(r.codigoPdm, null);
   assertEquals(r.codigoPdmMotivo, "Texto do item em recálculo (casamento pendente): o PDM pelo texto ainda não foi avaliado.");
+});
+
+Deno.test("CA-8: sem carga do casamento vence 'item não carregado'", () => {
+  const r = decidirPdmDoItem({ ...BASE_PDM, semCargaTexto: true, carregado: false });
+  assertEquals(r.codigoPdmMotivo, "Casamento pelo texto ainda não carregado na base: o PDM pelo texto não foi avaliado.");
 });
 
 Deno.test("CA-8: decidirPdmDoItem com consulta falha diz que está indisponível, sem cair em outra fonte", () => {
@@ -400,3 +406,26 @@ Deno.test("CA-8: sem carga do casamento (licitacao_match_estado) nenhum item é 
     globalThis.fetch = originalFetch;
   }
 });
+
+for (const tabela of ["licitacao_match_estado", "licitacao_match_pendente"]) {
+  Deno.test(`CA-8: falha ao ler ${tabela} dá indisponível, não "sem casamento"`, async () => {
+    clearAcompanhamentoCache();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fetchPncp([ITENS_PNCP[4]]) as typeof fetch;
+    try {
+      const client = mockSupabase(ROW, {
+        catmat_itens: [],
+        licitacao_itens: [{ id: 15, licitacao_id: 200, numero_item: 5 }],
+        licitacao_match: [],
+        [tabela]: "erro",
+      }, []);
+      // deno-lint-ignore no-explicit-any
+      const res = await handleAcompanhamento({ action: "acompanhamento", id: 200 }, { getClient: () => client as any, httpClient: httpClient() });
+      const body = await res.json();
+      assertEquals(body.itens.dados[0].codigoPdm, null);
+      assertEquals(body.itens.dados[0].codigoPdmMotivo, "Consulta do PDM indisponível agora; tente de novo.");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+}

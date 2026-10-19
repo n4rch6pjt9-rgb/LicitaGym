@@ -90,7 +90,7 @@ export interface EntradaPdm {
   /** O item está em licitacao_match_pendente (texto_item): as linhas de licitacao_match são as de antes. */
   pendente: boolean;
   /** licitacao_match nunca foi carregado (licitacao_match_estado.carregado_em nulo). */
-  semCargaTexto?: boolean;
+  semCargaTexto: boolean;
   /** PDMs distintos casados pelo texto do item, em ordem crescente. */
   pdmsTexto: number[];
   textoFalhou: boolean;
@@ -227,14 +227,8 @@ async function pdmsDoTexto(
     const numero = inteiroPositivo(r.numero_item);
     if (id !== null && numero !== null) numeroPorId.set(id, numero);
   }
-  const matches = await porLotes(
-    "PDM pelo texto (licitacao_match)",
-    [...numeroPorId.keys()],
-    (lote) =>
-      client.from("licitacao_match").select("item_id,codigo_pdm").eq("licitacao_id", licitacaoId).eq("origem", "texto_item")
-        .in("item_id", lote),
-  );
-  if (matches === null) return null;
+  // Fila antes do casamento: se a drenagem acontecer entre as leituras, o item continua pendente (conservador) em vez
+  // de sair com as linhas antigas e sem a marca.
   const pendentesRows = await porLotes(
     "itens com casamento pendente (licitacao_match_pendente)",
     [...numeroPorId.keys()],
@@ -247,6 +241,14 @@ async function pdmsDoTexto(
     const numero = id === null ? undefined : numeroPorId.get(id);
     if (numero !== undefined) pendentes.add(numero);
   }
+  const matches = await porLotes(
+    "PDM pelo texto (licitacao_match)",
+    [...numeroPorId.keys()],
+    (lote) =>
+      client.from("licitacao_match").select("item_id,codigo_pdm").eq("licitacao_id", licitacaoId).eq("origem", "texto_item")
+        .in("item_id", lote),
+  );
+  if (matches === null) return null;
   const porNumero = new Map<number, Set<number>>([...numeroPorId.values()].map((n) => [n, new Set<number>()]));
   for (const r of matches) {
     const id = inteiroPositivo(r.item_id);

@@ -58,6 +58,8 @@ const BASE_PDM = {
   pdmCatalogo: null,
   catalogoFalhou: false,
   carregado: true,
+  pendente: false,
+  semCargaTexto: false,
   pdmsTexto: [] as number[],
   textoFalhou: false,
 };
@@ -108,6 +110,17 @@ Deno.test("CA-8: decidirPdmDoItem não dá PDM a serviço, a item sem casamento 
   assertEquals(naoCarregado.codigoPdmMotivo, "Item ainda não carregado na base: o casamento pelo texto não foi avaliado.");
 });
 
+Deno.test("CA-8: item com texto em recálculo (licitacao_match_pendente) não usa o casamento antigo", () => {
+  const r = decidirPdmDoItem({ ...BASE_PDM, pendente: true, pdmsTexto: [777] });
+  assertEquals(r.codigoPdm, null);
+  assertEquals(r.codigoPdmMotivo, "Texto do item em recálculo (casamento pendente): o PDM pelo texto ainda não foi avaliado.");
+});
+
+Deno.test("CA-8: sem carga do casamento vence 'item não carregado'", () => {
+  const r = decidirPdmDoItem({ ...BASE_PDM, semCargaTexto: true, carregado: false });
+  assertEquals(r.codigoPdmMotivo, "Casamento pelo texto ainda não carregado na base: o PDM pelo texto não foi avaliado.");
+});
+
 Deno.test("CA-8: decidirPdmDoItem com consulta falha diz que está indisponível, sem cair em outra fonte", () => {
   const catFalhou = decidirPdmDoItem({ ...BASE_PDM, codigoCatmat: 150001, catalogoFalhou: true, pdmsTexto: [777] });
   assertEquals(catFalhou.codigoPdm, null);
@@ -130,7 +143,11 @@ function mockSupabase(row: Record<string, unknown>, tabelas: Tabelas, chamadas: 
       const filtros: Array<(r: Record<string, unknown>) => boolean> = [];
       const resultado = () => {
         if (tabela === "licitacoes_externas") return { data: row, error: null };
-        const t = tabelas[tabela];
+        const padrao: Tabelas = {
+          licitacao_match_estado: [{ id: true, carregado_em: "2026-10-02T00:00:00Z" }],
+          licitacao_match_pendente: [],
+        };
+        const t = tabela in tabelas ? tabelas[tabela] : padrao[tabela];
         if (t === "erro" || t === undefined) return { data: null, error: { message: `falha em ${tabela}` } };
         // PostgREST corta em max_rows = 1000.
         return { data: t.filter((r) => filtros.every((f) => f(r))).slice(0, 1000), error: null };
@@ -335,3 +352,80 @@ Deno.test("CA-8: item do PNCP ainda não carregado em licitacao_itens não é da
     globalThis.fetch = originalFetch;
   }
 });
+
+Deno.test("CA-8: item pendente de recálculo não é comparado com o PDM antigo (Codex P2 no #395)", async () => {
+  clearAcompanhamentoCache();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchPncp([ITENS_PNCP[1], ITENS_PNCP[4]]) as typeof fetch;
+  const chamadas: string[] = [];
+  try {
+    const client = mockSupabase(ROW, {
+      catmat_itens: [],
+      licitacao_itens: [
+        { id: 12, licitacao_id: 200, numero_item: 2 },
+        { id: 15, licitacao_id: 200, numero_item: 5 },
+      ],
+      // Casamento antigo do item 2 (777): o texto mudou e o trigger marcou o item; a fila ainda não drenou.
+      licitacao_match: [{ licitacao_id: 200, item_id: 12, codigo_pdm: 777, origem: "texto_item" }],
+      licitacao_match_pendente: [
+        { origem: "texto_item", ref_id: 12 },
+        // pendência de objeto não afeta o item
+        { origem: "texto_objeto", ref_id: 15 },
+      ],
+    }, chamadas);
+    // deno-lint-ignore no-explicit-any
+    const res = await handleAcompanhamento({ action: "acompanhamento", id: 200 }, { getClient: () => client as any, httpClient: httpClient() });
+    const body = await res.json();
+    const porNumero = (n: number) => body.itens.dados.find((it: { numeroItem: number }) => it.numeroItem === n);
+    assertEquals(porNumero(2).codigoPdm, null);
+    assertEquals(porNumero(2).codigoPdmMotivo, "Texto do item em recálculo (casamento pendente): o PDM pelo texto ainda não foi avaliado.");
+    assertEquals(porNumero(5).codigoPdmMotivo, "Item sem PDM: sem código CATMAT no PNCP e sem casamento pelo texto.");
+    assertEquals(chamadas.filter((c) => c.startsWith("licitacao_match_pendente.in")), ["licitacao_match_pendente.in(ref_id):12,15"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("CA-8: sem carga do casamento (licitacao_match_estado) nenhum item é dado como sem casamento", async () => {
+  clearAcompanhamentoCache();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchPncp([ITENS_PNCP[4]]) as typeof fetch;
+  try {
+    const client = mockSupabase(ROW, {
+      catmat_itens: [],
+      licitacao_itens: [{ id: 15, licitacao_id: 200, numero_item: 5 }],
+      licitacao_match: [],
+      licitacao_match_estado: [{ id: true, carregado_em: null }],
+    }, []);
+    // deno-lint-ignore no-explicit-any
+    const res = await handleAcompanhamento({ action: "acompanhamento", id: 200 }, { getClient: () => client as any, httpClient: httpClient() });
+    const body = await res.json();
+    assertEquals(body.itens.dados[0].codigoPdm, null);
+    assertEquals(body.itens.dados[0].codigoPdmMotivo, "Casamento pelo texto ainda não carregado na base: o PDM pelo texto não foi avaliado.");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+for (const tabela of ["licitacao_match_estado", "licitacao_match_pendente"]) {
+  Deno.test(`CA-8: falha ao ler ${tabela} dá indisponível, não "sem casamento"`, async () => {
+    clearAcompanhamentoCache();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fetchPncp([ITENS_PNCP[4]]) as typeof fetch;
+    try {
+      const client = mockSupabase(ROW, {
+        catmat_itens: [],
+        licitacao_itens: [{ id: 15, licitacao_id: 200, numero_item: 5 }],
+        licitacao_match: [],
+        [tabela]: "erro",
+      }, []);
+      // deno-lint-ignore no-explicit-any
+      const res = await handleAcompanhamento({ action: "acompanhamento", id: 200 }, { getClient: () => client as any, httpClient: httpClient() });
+      const body = await res.json();
+      assertEquals(body.itens.dados[0].codigoPdm, null);
+      assertEquals(body.itens.dados[0].codigoPdmMotivo, "Consulta do PDM indisponível agora; tente de novo.");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+}

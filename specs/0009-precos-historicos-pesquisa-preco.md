@@ -2,7 +2,7 @@
 
 - **Status:** em implementação (backend: CA-1 a CA-6 e CA-9 mergeados; front: CA-7 em PR no Dashboard, branch
   `claude/0009-precos-tela`; CA-8 em PR draft: backend LicitaGym#395, branch `claude/0009-ca8-pdm-unidade-itens`, PDM e
-  sigla da unidade por item no acompanhamento, vai antes; front na branch `claude/0009-ca8-aba-precos` do Dashboard,
+  sigla da unidade por item no acompanhamento, vai antes; front no Dashboard #98, branch `claude/0009-ca8-aba-precos`,
   empilhada no PR #97)
 - **Issue:** nenhuma. Pedido do Marcelo em 09/10: os preços históricos vêm de
   `/modulo-pesquisa-preco/1_consultarMaterial` (via catálogo do tenant), com o detalhe de

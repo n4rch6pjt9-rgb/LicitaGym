@@ -1,7 +1,9 @@
 # 0009: Preços históricos e a aba "Inteligência de Preços" a partir da Pesquisa de Preço do Compras.gov
 
 - **Status:** em implementação (backend: CA-1 a CA-6 e CA-9 mergeados; front: CA-7 em PR no Dashboard, branch
-  `claude/0009-precos-tela`; CA-8 falta, depende do PDM e da unidade de cada item no detalhe da oportunidade)
+  `claude/0009-precos-tela`; CA-8 em PR draft: backend LicitaGym#395, branch `claude/0009-ca8-pdm-unidade-itens`, PDM e
+  sigla da unidade por item no acompanhamento, vai antes; front na branch `claude/0009-ca8-aba-precos` do Dashboard,
+  empilhada no PR #97)
 - **Issue:** nenhuma. Pedido do Marcelo em 09/10: os preços históricos vêm de
   `/modulo-pesquisa-preco/1_consultarMaterial` (via catálogo do tenant), com o detalhe de
   `/modulo-pesquisa-preco/2_consultarMaterialDetalhe`. Eles alimentam a tela "Preços Históricos" e a aba "Inteligência
@@ -97,7 +99,7 @@ opcional da mesma coleta (ver Perguntas).
 | CA-5 | A coleta agendada roda `compras_precos` em modo catálogo; o teste unitário não chama a API real. | pytest `services/coletor-externo/tests/test_precos_agendado.py` (`test_ca5_*`) |
 | CA-6 | A saúde acusa coleta de preço com mais de 8 dias. | `supabase/tests/saude_coleta_precos_check.sql` |
 | CA-7 | `/precos` mostra os KPIs e as amostras do recorte; valor ausente aparece como "—"; n pequeno não mostra mediana. | Dashboard: vitest `src/test/precos-tela.test.tsx` e `src/test/precos-api.test.ts` (`CA-7: ...`) |
-| CA-8 | A aba "Inteligência de Preços" mostra, para cada item da oportunidade com PDM, o valor unitário estimado contra a média, a mediana e o p25–p75 do PDM no período escolhido (12 ou 24 meses), com a diferença em R$ e em %. Com unidade diferente ou `n < 3`, não mostra diferença e diz o motivo. | vitest |
+| CA-8 | A aba "Inteligência de Preços" mostra, para cada item da oportunidade com PDM, o valor unitário estimado contra a média, a mediana e o p25–p75 do PDM no período escolhido (12 ou 24 meses), com a diferença em R$ e em %. Com unidade diferente ou `n < 3`, não mostra diferença e diz o motivo. | Dashboard: vitest `src/test/inteligencia-precos.test.tsx` (`CA-8: ...`); backend (PDM e unidade por item): Deno `tests/supabase/functions/api_dashboard_oportunidades_preco_referencia_test.ts` (`CA-8: ...`) |
 | CA-9 | A coleta completa a descrição detalhada pelo `2_consultarMaterialDetalhe` só nas linhas sem descrição, e marca `detalhe_sincronizado_em`. | pytest `services/coletor-externo/tests/test_precos_agendado.py` (`test_ca9_*`) |
 
 ## Fora de escopo
@@ -147,6 +149,22 @@ opcional da mesma coleta (ver Perguntas).
 7. **Alerta de coleta de preço:** crítico com 8 dias sem coleta, atenção com 7,5. Decisão do Marcelo 09/10: avisar já
    na primeira semana perdida.
 
+## Implementação do CA-8 (19/10)
+
+- **PDM do item** (`api-dashboard-oportunidades`, ação `acompanhamento`, `precoReferencia.ts`): primeiro o código CATMAT
+  oficial do item no PNCP (→ `catmat_itens`); sem código oficial, o casamento por texto (`licitacao_match`,
+  `texto_item`) só quando dá **um** PDM, marcado como derivado. Serviço, ambíguo, sem casamento, item não carregado ou
+  consulta falha: sem PDM, com o motivo.
+- **Unidade do item:** sigla de fornecimento (UN, PAR, M2, RO) tirada do texto livre do PNCP por dicionário fechado;
+  forma ambígua fica sem sigla e a aba não compara.
+- **Comparação** (Dashboard, `comparacaoPreco.ts`): resumo do PDM sem unidade para achar a predominante; resumo
+  filtrado por ela para média, mediana, p25–p75 e n. Diferença = estimado − média, em R$ e em % da média.
+- Medição de 19/10 (177.351 itens): 17.752 com algum PDM (288 pelo código oficial), 16.442 com PDM e valor estimado.
+
 ## Perguntas em aberto
 
-Nenhuma.
+1. **CONFIRMAR:** item com código CATMAT oficial cujo PDM não está no `catmat_itens` local fica sem PDM (não usa o
+   casamento por texto, que poderia contradizer o oficial). Hoje são ~4.800 dos 5.116 itens com código.
+2. **CONFIRMAR:** a Pesquisa de Preço grava PAR com duas siglas (`PAR` 1.578 linhas e `P` 824, ambas com nome "PAR").
+   O `resumo` filtra pela sigla exata, então um item em PAR não conta as linhas `P`. Unificar exige mudar a
+   `api-precos` e `precos_praticados_resumo` (PR próprio).

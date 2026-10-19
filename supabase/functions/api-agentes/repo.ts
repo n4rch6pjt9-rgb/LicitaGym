@@ -42,14 +42,6 @@ export interface Execucao {
   created_at: string;
 }
 
-/** Último pedido da fila de preparação (download + indexação do edital) da licitação na empresa. Spec 0018/0032. */
-export interface Preparacao {
-  status: "pending" | "processing" | "completed" | "failed" | string;
-  resultado: string | null;
-  erro: string | null;
-  atualizado_em: string | null;
-}
-
 export class ErroAgentes extends Error {
   constructor(message: string, readonly status: number) {
     super(message);
@@ -60,8 +52,6 @@ export interface AgentesRepo {
   /** Regra de _shared/tenant.ts (#263); ErroTenantAcesso vira 403/409. */
   tenantDoUsuario(userId: string, desenvolvedor: boolean): Promise<TenantResolvido>;
   carregarDossie(tenant: number, licitacaoId: number): Promise<Dossie | null>;
-  /** null: não há pedido de preparação para esta licitação na empresa. */
-  preparacao(tenant: number, licitacaoId: number): Promise<Preparacao | null>;
   buscarExecucao(tenant: number, licitacaoId: number, agente: Agente, contextoHash: string): Promise<Execucao | null>;
   gravarExecucao(
     tenant: number,
@@ -121,19 +111,6 @@ export function createSupabaseRepo(client: SupabaseClient): AgentesRepo {
   return {
     tenantDoUsuario(userId, desenvolvedor) {
       return lerTenantDoUsuario(client, userId, desenvolvedor);
-    },
-
-    async preparacao(tenant, licitacaoId) {
-      const { data, error } = await client.rpc("pipeline_preparacao_estado", { p_tenant: tenant, p_licitacoes: [licitacaoId] });
-      if (error) throw new Error(error.message);
-      const row = ((data ?? []) as Array<Record<string, unknown>>)[0];
-      if (!row) return null;
-      return {
-        status: String(row.status),
-        resultado: (row.resultado as string | null) ?? null,
-        erro: (row.erro as string | null) ?? null,
-        atualizado_em: (row.atualizado_em as string | null) ?? null,
-      };
     },
 
     async carregarDossie(tenant, licitacaoId) {

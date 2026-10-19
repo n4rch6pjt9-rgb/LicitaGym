@@ -88,6 +88,146 @@ export function detectarExigencias(chunks: ChunkEdital[]): Achado[] {
   }));
 }
 
+// --- Potência do motor no termo de referência (spec 0032, fase 3, CA-4) -------------------------------------------
+// O CATMAT 373980 diz "potência motor 3/5 HP" e muitos termos copiam ("entre 3 a 5 HP"): não diz se é contínua ou de
+// pico. Regra de mercado informada pelo Marcelo (19/10): pico ≈ 2 × contínuo. Estudo de 7 editais do mesmo CATMAT: o
+// termo que fecha contínuo + pico homologou R$ 18–58 mil; o que copia "3/5 HP", R$ 7–8 mil (residencial).
+
+const RE_HP = /(\d+(?:[.,]\d+)?)\s*(?:\/\s*(\d+(?:[.,]\d+)?)\s*)?(hpm|hpp|hp|cv)\b/g;
+const RE_FAIXA_ANTES = /(entre|de)\s+(\d+(?:[.,]\d+)?)\s+(a|ate|e)\s+$/;
+const RE_CONTINUO = /\b(continu[ao]|nominal|real|rms)\b/;
+
+function numero(s: string): number {
+  return Number(s.replace(",", "."));
+}
+
+type TipoPotencia = "continua" | "pico" | "faixa" | "sem_tipo";
+
+/** Classifica cada menção "N HP" pelo que está colado a ela. "corrente contínua" (motor DC) não é potência contínua. */
+function mencoesPotencia(norm: string): { tipo: TipoPotencia; hp: number; inicio: number; fim: number }[] {
+  const saida: { tipo: TipoPotencia; hp: number; inicio: number; fim: number }[] = [];
+  for (const m of norm.matchAll(RE_HP)) {
+    const inicio = m.index ?? 0;
+    const fim = inicio + m[0].length;
+    const antes = norm.slice(Math.max(0, inicio - 40), inicio).replaceAll("corrente continua", "");
+    const depois = norm.slice(fim, fim + 25).replaceAll("corrente continua", "");
+    const hp = numero(m[1]);
+    // "4.0 hp (8.0 hp de pico)": o primeiro é o contínuo.
+    if (/^\s*\(\s*\d+(?:[.,]\d+)?\s*hp\s*(de )?pico/.test(norm.slice(fim, fim + 30))) {
+      saida.push({ tipo: "continua", hp, inicio, fim });
+      continue;
+    }
+    // O qualificador colado antes do número vale mais que o que vem depois ("nominal de 4,0 hp, com pico de 8 hp").
+    if (/(nominal|continua|real)\s*(de\s*)?$/.test(antes) || /potencia (nominal|continua|real)( minima)?( de)?\s*$/.test(antes)) {
+      saida.push({ tipo: "continua", hp, inicio, fim });
+      continue;
+    }
+    if (m[3] === "hpm" || m[3] === "hpp" || /(pico|peak)\s*(de\s*)?$/.test(antes) ||
+      /^\s*\(?\s*(de\s+)?(pico|peak|potencia maxima)\b/.test(depois)) {
+      saida.push({ tipo: "pico", hp, inicio, fim });
+      continue;
+    }
+    if (RE_CONTINUO.test(depois.slice(0, 15))) {
+      saida.push({ tipo: "continua", hp, inicio, fim });
+      continue;
+    }
+    if (m[2] !== undefined || RE_FAIXA_ANTES.test(antes)) {
+      saida.push({ tipo: "faixa", hp, inicio, fim });
+      continue;
+    }
+    saida.push({ tipo: "sem_tipo", hp, inicio, fim });
+  }
+  return saida;
+}
+
+/** Sinais de uso profissional no mesmo trecho: palavra, motor AC ou usuário acima de 150 kg. */
+function perfilProfissional(norm: string): string[] {
+  const perfil: string[] = [];
+  if (/\bprofissiona(l|is)\b|\buso (continuo|intenso|comercial)\b|\bacademias?\b/.test(norm)) perfil.push("profissional");
+  if (/corrente alternada|\bmotor (c\.?a\.?|ac)\b|\(ac\)/.test(norm)) perfil.push("motor_ac");
+  const pesos = [...norm.matchAll(/(\d{3})\s*kg/g)].map((x) => Number(x[1])).filter((n) => n > 150 && n <= 300);
+  if (pesos.length) perfil.push(`peso_usuario_${Math.min(...pesos)}kg`);
+  return perfil;
+}
+
+export function detectarPotencia(chunks: ChunkEdital[]): Achado[] {
+  const grupos = new Map<string, Achado>();
+  const juntar = (a: Achado) => {
+    const g = grupos.get(a.codigo);
+    if (!g) grupos.set(a.codigo, a);
+    else if (g.fontes.length < 3) g.fontes.push(...a.fontes);
+  };
+  for (const chunk of chunks) {
+    const { norm, origem } = normalizarComMapa(chunk.texto);
+    const mencoes = mencoesPotencia(norm);
+    if (mencoes.length === 0) continue;
+    // Contínuo informado em qualquer ponto do trecho fecha a questão para o trecho.
+    if (mencoes.some((m) => m.tipo === "continua")) continue;
+    // "Potência do motor 2 a 3 HP ... potência de pico 4 a 6 HP": o número menor sem tipo, ao lado de um pico maior,
+    // é o contínuo.
+    const picos = mencoes.filter((m) => m.tipo === "pico");
+    if (picos.length && mencoes.some((m) => m.tipo !== "pico" && picos.some((p) => p.hp > m.hp))) continue;
+    const fonte = (m: { inicio: number; fim: number }) => ({
+      tipo: "chunk" as const,
+      chunk_id: chunk.id,
+      documento_id: chunk.documento_id,
+      pagina: chunk.pagina,
+      trecho: trechoNoOriginal(chunk.texto, m.inicio, m.fim, origem),
+    });
+    const pico = mencoes.find((m) => m.tipo === "pico");
+    const faixa = mencoes.find((m) => m.tipo === "faixa");
+    if (pico) {
+      juntar({
+        codigo: "especificacao.potencia_so_pico",
+        natureza: "fato",
+        metodo: "regra",
+        severidade: "info",
+        titulo: "especificacao.potencia_so_pico",
+        detalhe: "O termo informa só a potência de pico do motor, não a contínua.",
+        dados: { pico_hp: pico.hp },
+        fontes: [fonte(pico)],
+      });
+    }
+    if (faixa && !pico) {
+      juntar({
+        codigo: "especificacao.potencia_faixa_ambigua",
+        natureza: "fato",
+        metodo: "regra",
+        severidade: "atencao",
+        titulo: "especificacao.potencia_faixa_ambigua",
+        detalhe: "Potência em faixa (ex.: \"3/5 HP\", \"entre 3 a 5 HP\") sem dizer se é contínua ou de pico.",
+        dados: { hp: faixa.hp },
+        fontes: [fonte(faixa)],
+      });
+    }
+    // Perfil só ao redor da menção: o trecho indexado pode ter vários itens (esteira residencial ao lado de um aparelho
+    // "profissional").
+    const ref = pico ?? faixa;
+    const perfil = ref ? perfilProfissional(norm.slice(Math.max(0, ref.inicio - 400), ref.fim + 400)) : [];
+    const fraca = pico ?? faixa;
+    if (fraca && perfil.length > 0) {
+      const picoHp = pico ? pico.hp : null;
+      juntar({
+        codigo: "especificacao.inconsistente",
+        natureza: "inferencia",
+        metodo: "regra",
+        severidade: "atencao",
+        titulo: "especificacao.inconsistente",
+        detalhe: "Perfil de uso profissional com potência só de pico ou em faixa: um motor residencial atende o texto. " +
+          "Contínuo estimado pela regra de mercado (pico ≈ 2 × contínuo), não pelo edital.",
+        dados: {
+          pico_hp: picoHp,
+          continuo_estimado_hp: picoHp === null ? null : Math.round((picoHp / 2) * 100) / 100,
+          regra_estimativa: "pico_aprox_2x_continuo",
+          perfil,
+        },
+        fontes: [fonte(fraca)],
+      });
+    }
+  }
+  return [...grupos.values()];
+}
+
 /**
  * Portal oficial da disputa: o PNCP é o meio, não o fim (decisão de 15/10/2026). Todo edital lido diz onde a
  * sessão, o chat e os documentos de origem ficam. Sem link seguro, o achado diz isso em vez de omitir.
@@ -149,7 +289,7 @@ export function agenteEdital(entrada: {
   licitacao_id?: number;
   portal_oficial?: PortalOficial | null;
 }): ResultadoAgente {
-  const achados = entrada.chunks.length === 0 ? [] : detectarExigencias(entrada.chunks);
+  const achados = entrada.chunks.length === 0 ? [] : [...detectarExigencias(entrada.chunks), ...detectarPotencia(entrada.chunks)];
   if (entrada.portal_oficial && entrada.licitacao_id !== undefined) {
     achados.push(achadoPortalOficial(entrada.licitacao_id, entrada.portal_oficial));
   }

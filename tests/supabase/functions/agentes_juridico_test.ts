@@ -31,7 +31,7 @@ Deno.test("jurídico: liga sinal ao artigo, marca não conferido e ausente", () 
   });
   assertEquals(a.fontes, [
     { tipo: "dispositivo", norma: "LEI_14133_2021", artigo: 59, conferido_oficial: false },
-    { tipo: "calculo", regra: "mapa_sinal_dispositivo", versao: "2026-10-06.1" },
+    { tipo: "calculo", regra: "mapa_sinal_dispositivo", versao: "2026-10-19.1" },
   ]);
   assertEquals(validarAchado(a), null);
 });

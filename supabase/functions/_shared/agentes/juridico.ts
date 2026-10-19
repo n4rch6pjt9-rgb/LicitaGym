@@ -20,6 +20,10 @@ export const MAPA_SINAL_DISPOSITIVO: Record<string, { artigos: number[]; peca: P
   "exigencia.garantia_proposta": { artigos: [58], peca: "nenhuma" },
   "exigencia.garantia_contratual": { artigos: [96], peca: "nenhuma" },
   "prazo.impugnacao": { artigos: [164], peca: "nenhuma" },
+  // Spec 0032 (CA-4): pedir que o termo fixe a potência contínua mínima antes da sessão.
+  "especificacao.inconsistente": { artigos: [164], peca: "pedido_esclarecimento" },
+  "especificacao.potencia_faixa_ambigua": { artigos: [164], peca: "pedido_esclarecimento" },
+  "especificacao.potencia_so_pico": { artigos: [164], peca: "nenhuma" },
   "preco.indicio_inexequibilidade": { artigos: [59, 11], peca: "demonstracao_exequibilidade" },
   "preco.inexequivel_presumida": { artigos: [59], peca: "demonstracao_exequibilidade" },
   "preco.custo_zero": { artigos: [59, 11], peca: "demonstracao_exequibilidade" },

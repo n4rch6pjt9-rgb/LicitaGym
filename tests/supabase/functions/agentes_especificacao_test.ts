@@ -184,3 +184,25 @@ Deno.test("revisão final: várias fronteiras antes da menção não cortam o it
 
 Deno.test("revisão final: referência cruzada 'conforme item 3.2' não separa o item", () =>
   assertEquals(codigos("Esteira profissional motor 4 HP de pico, conforme item 3.2 do TR, potência nominal de 2 HP"), []));
+
+Deno.test("revisão final 2: 'do item 2' e 'no lote 2' abrem item novo; duas esteiras não se anulam", () => {
+  const dois = ["especificacao.inconsistente", "especificacao.potencia_so_pico"];
+  assertEquals(codigos("Especificação do item 1: esteira 3 HP de pico, academia. Especificação do item 2: esteira 4 HP nominal"), dois);
+  assertEquals(codigos("Esteira 3 HP de pico, academia; no lote 2 esteira 4 HP nominal"), dois);
+  assertEquals(codigos("Item 1 esteira 3 HP de pico, academia. Item 2 esteira 4 HP nominal"), dois);
+});
+
+Deno.test("revisão final 2: referência cruzada com número de dois dígitos ou artigo não separa o item", () => {
+  assertEquals(codigos("Esteira profissional 4 HP de pico, de acordo com o item 12.3, potência nominal de 2 HP"), []);
+  assertEquals(codigos("Esteira profissional 4 HP de pico, conforme o item 3, potência nominal de 2 HP"), []);
+  // "item 3," continua sendo fronteira (vírgula depois do número não é N.N).
+  assertEquals(codigos("Item 3, esteira 3 HP de pico, academia. Item 4, compressor potência nominal de 2 HP"), [
+    "especificacao.inconsistente",
+    "especificacao.potencia_so_pico",
+  ]);
+});
+
+Deno.test("revisão final 2: equipamento do item anterior ou ausente não separa menções da mesma esteira", () => {
+  assertEquals(codigos("Item 1 Compressor 1 HP. Item 2: potência nominal 2 HP, para esteira profissional, pico 4 HP"), []);
+  assertEquals(codigos("Motor potência nominal 2 HP, esteira profissional com pico de 4 HP, academia"), []);
+});

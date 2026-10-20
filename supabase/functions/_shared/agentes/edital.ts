@@ -176,33 +176,41 @@ function mencoesPotencia(norm: string): Mencao[] {
 }
 
 /** Fronteira de item: "item N", "lote N" ou lista numerada ("2. ", "2) ") depois de fim de frase. */
-// "item 67", "lote 2" ou lista numerada; não conta referência cruzada ("conforme item 3.2 do TR", "vide item 4").
+// "item 67", "do item 2:", "lote 2" ou lista numerada. Não conta referência cruzada: "conforme (o) item 3",
+// "vide item 4", "de acordo com o item 12.3" ou número no formato N.N ("item 3.2").
 const RE_FRONTEIRA_ITEM =
-  /(?<!\b(?:conforme|vide|do|no|ao|subitem|nos|dos)\s)\b(item|lote)\s*\d+(?![.,]\d)|(^|[.;:]\s)\d{1,3}\s?[.)]\s/g;
+  /(?<!\b(?:conforme|vide|ver|subitem|acordo com)(?:\s(?:o|a|ao|no|do|os|as))?\s)\b(item|lote)\s*\d+(?!\d|[.,]\d)|(^|[.;:]\s)\d{1,3}\s?[.)]\s/g;
 // Equipamentos que separam itens quando aparecem entre duas menções e são diferentes do equipamento da primeira.
 // "aparelho" fica de fora: é genérico e costuma retomar o próprio item.
 const RE_EQUIPAMENTO =
   /\b(esteira|bicicleta|eliptico|transport|simulador|bomba|compressor|bebedouro|ventilador|gerador|elevador|climatizador)(?:es|s)?\b/g;
 
-/** Equipamento nomeado mais perto antes da posição (até 300 caracteres), no singular. */
+/** Equipamento nomeado mais perto antes da posição, no mesmo item (até 300 caracteres, sem passar de fronteira). */
 function equipamentoAntes(norm: string, pos: number): string | null {
+  const base = Math.max(0, pos - 300);
+  let ini = base;
+  for (const f of norm.slice(base, pos).matchAll(RE_FRONTEIRA_ITEM)) ini = base + (f.index ?? 0);
   let ultimo: string | null = null;
-  for (const e of norm.slice(Math.max(0, pos - 300), pos).matchAll(RE_EQUIPAMENTO)) ultimo = e[1];
+  for (const e of norm.slice(ini, pos).matchAll(RE_EQUIPAMENTO)) ultimo = e[1];
   return ultimo;
 }
 
 /**
  * Duas menções do mesmo item: próximas, sem fronteira de item entre elas e sem outro equipamento nomeado entre elas
  * (Codex no #401: compressor "4 HP nominal" seguido de "esteira ... 3 HPM"). A mesma esteira citada de novo
- * ("a esteira deverá ter potência nominal de 2 HP") continua sendo o mesmo item.
+ * ("a esteira deverá ter potência nominal de 2 HP") continua sendo o mesmo item. Sem equipamento antes da primeira
+ * menção, o primeiro nomeado entre as duas passa a ser o do item.
  */
 function mesmoItem(norm: string, a: Mencao, b: Mencao): boolean {
   const [x, y] = a.inicio < b.inicio ? [a, b] : [b, a];
   if (y.inicio - x.fim > MESMO_ITEM) return false;
   const entre = norm.slice(x.fim, y.inicio);
   if (new RegExp(RE_FRONTEIRA_ITEM.source).test(entre)) return false;
-  const doItem = equipamentoAntes(norm, x.inicio);
-  for (const e of entre.matchAll(RE_EQUIPAMENTO)) if (e[1] !== doItem) return false;
+  let doItem = equipamentoAntes(norm, x.inicio);
+  for (const e of entre.matchAll(RE_EQUIPAMENTO)) {
+    if (doItem === null) doItem = e[1];
+    else if (e[1] !== doItem) return false;
+  }
   return true;
 }
 

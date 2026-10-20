@@ -132,3 +132,49 @@ def test_cabecalho_e_prompt_usam_a_fonte_real(tmp_path):
     assert not any("SEST SENAT" in l["texto"] for l in linhas)
     assert all(l["metadados"]["fonte"] == "pncp" for l in linhas)
     assert ia.extrair_campos.call_args.args[4] == "PNCP Prefeitura de Lages"
+
+
+# --- Ficha opcional (19/10: "VALORES MEDIA CNPJ E ÓRGÃO" da licitação 3558 estourou o prazo do Gemini em todas as
+# tentativas; a preparação inteira falhou e os trechos do documento nunca foram gravados) ---------------------------
+
+def _doc(arq):
+    return [{"id": 7, "licitacao_id": 3558, "secao": "processo", "nome_original": "VALORES_MEDIA.pdf",
+             "arquivo_origem": "v.pdf", "fornecedor_nome": None, "sha256": "h", "storage_uri": str(arq)}]
+
+
+def test_ficha_com_prazo_estourado_nao_impede_os_trechos(tmp_path):
+    arq = tmp_path / "v.pdf"; arq.write_bytes(_pdf([RECURSO]))
+    ia = MagicMock()
+    ia.extrair_campos.side_effect = RuntimeError("504 DEADLINE_EXCEEDED. Deadline expired before operation could complete.")
+    ia.embed.side_effect = lambda ts, **k: [[0.1] * 768 for _ in ts]
+    sb = MagicMock()
+    r = IX.indexar_grupo(sb, ia, _doc(arq), {"numero_processo": "58/2026"}, True)
+    assert r["status"] == "indexado"
+    linhas = sb.upsert.call_args.args[1]
+    assert linhas and all(l["metadados"]["chunk_kind"] == "trecho" for l in linhas)   # sem resumo inventado
+    extracao = sb.atualizar.call_args.args[2]["extracao"]
+    assert extracao["ficha"] == "indisponivel"
+    assert "DEADLINE_EXCEEDED" in extracao["ficha_erro"]
+
+
+def test_ficha_com_json_invalido_tambem_nao_impede_os_trechos(tmp_path):
+    arq = tmp_path / "v.pdf"; arq.write_bytes(_pdf([RECURSO]))
+    ia = MagicMock()
+    ia.extrair_campos.side_effect = RuntimeError("Gemini retornou JSON inválido na extração: {")
+    ia.embed.side_effect = lambda ts, **k: [[0.1] * 768 for _ in ts]
+    sb = MagicMock()
+    r = IX.indexar_grupo(sb, ia, _doc(arq), {"numero_processo": "58/2026"}, True)
+    assert r["status"] == "indexado"
+    assert sb.atualizar.call_args.args[2]["extracao"]["ficha"] == "indisponivel"
+
+
+def test_ficha_com_cota_esgotada_continua_transitoria(tmp_path):
+    """429 é cota: o pedido volta para a fila e a ficha é tentada de novo depois, sem gravar nada agora."""
+    import pytest
+    arq = tmp_path / "v.pdf"; arq.write_bytes(_pdf([RECURSO]))
+    ia = MagicMock()
+    ia.extrair_campos.side_effect = RuntimeError("429 RESOURCE_EXHAUSTED")
+    sb = MagicMock()
+    with pytest.raises(RuntimeError):
+        IX.indexar_grupo(sb, ia, _doc(arq), {"numero_processo": "58/2026"}, True)
+    sb.upsert.assert_not_called()

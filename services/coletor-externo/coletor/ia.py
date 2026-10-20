@@ -19,6 +19,8 @@ GEN_MODEL = os.environ.get("GEN_MODEL", "gemini-2.5-flash")
 # Teto de saída do OCR por página. Página A4 densa fica perto de 2 mil tokens; as páginas degeneradas de 09/10/2026
 # passaram de 15 mil caracteres. O valor fino se mede nos casos da spec 0016.
 OCR_MAX_TOKENS = int(os.environ.get("OCR_MAX_TOKENS", "4096"))
+FICHA_MAX_TOKENS = int(os.environ.get("FICHA_MAX_TOKENS", "8192"))
+FICHA_TENTATIVAS = int(os.environ.get("FICHA_TENTATIVAS", "3"))
 DIM = 768  # mesma dimensão de legislacao_embeddings / licitacao_chunks
 
 TIPOS = ["edital", "aviso", "termo_referencia", "esclarecimento", "impugnacao", "ata_sessao",
@@ -113,11 +115,17 @@ class Gemini:
         return vetores
 
     def extrair_campos(self, texto: str, nome: str, secao: str, processo: str, fonte: str = "licitação") -> dict:
+        """Ficha do documento (tipo, resumo, campos). Pensamento desligado no flash, como no OCR: em tabela longa de
+        preços (licitação 3558) o pensamento estourava o prazo de 90 s em todas as tentativas. Menos tentativas que o
+        padrão: quem chama trata a falha como ficha indisponível e segue indexando os trechos."""
         prompt = PROMPT_EXTRACAO.format(fonte=fonte, nome=nome, secao=secao, processo=processo,
                                         tipos=TIPOS, texto=texto[:120_000])
+        pensamento = self.types.ThinkingConfig(thinking_budget=0) if "flash" in GEN_MODEL else None
         r = self._retry(lambda: self.client.models.generate_content(
             model=GEN_MODEL, contents=prompt,
-            config=self.types.GenerateContentConfig(response_mime_type="application/json", temperature=0)))
+            config=self.types.GenerateContentConfig(response_mime_type="application/json", temperature=0,
+                                                    max_output_tokens=FICHA_MAX_TOKENS, thinking_config=pensamento)),
+            tentativas=FICHA_TENTATIVAS)
         try:
             return json.loads(r.text)
         except (json.JSONDecodeError, TypeError) as e:

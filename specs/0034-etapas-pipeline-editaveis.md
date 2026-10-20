@@ -5,7 +5,7 @@
 - **Repositório:** os dois (uma ação nova na `api-pipeline`; o backend vai ao ar antes do front)
 - **Issue:** #408
 - **Área:** migrations | edge-functions | dashboard-tela
-- **Depende do ok do Marcelo:** sim (migration com 3 funções SQL novas e republica a `api-pipeline`)
+- **Depende do ok do Marcelo:** sim (migration com 4 funções SQL novas e republica a `api-pipeline`)
 
 ## Leitura obrigatória antes de implementar
 
@@ -49,8 +49,8 @@ Medido em 20/10/2026 no Dashboard (`190d61a`) e no LicitaGym (`8436bdd`):
 | K-3 | Kanban, detalhe e painel lendo as etapas do servidor | `etapas_listar` | colunas, funil e KPIs a partir das etapas e fases do tenant | falha de leitura → estado de erro explícito, nunca a lista fixa | — |
 | K-4 | Aviso de alteração não salva | — | confirmação ao sair da página com rascunho | — | — |
 | K-5 | `api-pipeline` `action=etapas_reordenar` (nova), que chama a função SQL `public.pipeline_etapas_reordenar(p_tenant, p_ids bigint[], p_versao text, p_user uuid)` | `ids[]`: a lista **completa** das etapas do tenant na nova ordem; `versao`: o texto lido em `etapas_listar`, repassado sem conversão | `etapas[]` na ordem nova (`ordem` = posição × 10) e a `versao` nova | 400 `lista_invalida` se a lista tiver id repetido, faltar alguma etapa ou trouxer etapa de outro tenant, mas só quando a `versao` confere (nada é gravado); 409 `versao_desatualizada` se a lista mudou desde a leitura (vale também quando a diferença é uma etapa criada ou excluída); 403 para quem não é admin | admin da empresa ou desenvolvedor |
-| K-6 | `versao` da lista | — | função SQL `public.pipeline_etapas_versao(p_tenant)`: `md5` de `string_agg(id || ':' || ordem || ':' || updated_at, ',' order by id)` das etapas do tenant, em texto. `etapas_listar` passa a devolver `versao` chamando essa função, e `pipeline_etapas_reordenar` usa a mesma função: um só cálculo, sem reimplementar no TypeScript | — | autenticado |
-| K-7 | Toda mutação da lista de etapas usa o mesmo lock | — | (a) `etapa_criar` passa a chamar a função SQL `public.pipeline_etapa_criar(p_tenant, p_nome, p_fase, p_ordem, p_desfecho, p_exige_motivo, p_user)`, que pega o lock e calcula `ordem` = maior + 10 dentro dele; (b) `etapa_atualizar` deixa de aceitar `ordem`: mudar a ordem só por `etapas_reordenar`; (c) `pipeline_etapa_excluir` já pega o lock (sem mudança) | `etapa_atualizar` com `ordem` → 400 "Use etapas_reordenar para mudar a ordem."; nome repetido em `etapa_criar` continua 409 | admin da empresa ou desenvolvedor |
+| K-6 | `versao` da lista, lida **na mesma consulta** que as etapas | — | função SQL `public.pipeline_etapas_versao(p_tenant)`: `md5` de `string_agg(id \|\| ':' \|\| ordem \|\| ':' \|\| updated_at, ',' order by id)` das etapas do tenant, em texto. `etapas_listar` passa a chamar a função SQL `public.pipeline_etapas_listar(p_tenant)`, que devolve as etapas (os campos de hoje, inclusive `total`) e a `versao` num só comando, no mesmo snapshot. Não há leitura das linhas por PostgREST seguida de outra chamada para a versão. `pipeline_etapas_reordenar` usa a mesma `pipeline_etapas_versao`: um só cálculo, sem reimplementar no TypeScript | — | autenticado |
+| K-7 | Toda mutação da lista de etapas usa o mesmo lock | — | (a) `etapa_criar` passa a chamar a função SQL `public.pipeline_etapa_criar(p_tenant, p_nome, p_fase, p_desfecho, p_exige_motivo, p_user)`, **sem parâmetro de ordem**, que pega o lock e põe a etapa no fim (`ordem` = maior + 10) dentro dele; `etapa_criar` deixa de aceitar `ordem`; (b) `etapa_atualizar` deixa de aceitar `ordem`: mudar a ordem só por `etapas_reordenar`; (c) `pipeline_etapa_excluir` já pega o lock (sem mudança) | `etapa_criar` ou `etapa_atualizar` com `ordem` → 400 "Use etapas_reordenar para mudar a ordem."; nome repetido em `etapa_criar` continua 409 | admin da empresa ou desenvolvedor |
 
 **Funções SQL (migration nova, padrão de `pipeline_mover`):** `security invoker`, `set search_path = public, pg_temp`,
 `revoke execute ... from PUBLIC, anon, authenticated` e `grant execute ... to service_role`; o lock é
@@ -85,8 +85,9 @@ Erros saem com `raise exception` e um código próprio, que o `repo.ts` traduz p
 | CA-3b | K-5 | **Dado** uma lista com id repetido, sem uma das etapas ou com etapa do tenant B, **quando** chama `etapas_reordenar`, **então** 400 e nenhuma `ordem` muda. | Deno `api_pipeline_test.ts` |
 | CA-3c | K-5, K-6 | **Dado** que outro admin reordenou depois da leitura, **quando** chama com a `versao` antiga, **então** 409 `versao_desatualizada` e nada muda; `operacao` recebe 403. | Deno `api_pipeline_test.ts` |
 | CA-3d | K-6, K-7 | **Dado** uma `versao` lida, **quando** outra pessoa cria ou exclui uma etapa e depois chega a reordenação com a `versao` antiga, **então** 409 `versao_desatualizada` (não 400) e nada muda. | `supabase/tests/pipeline_etapas_reordenar_check.sql` + Deno `api_pipeline_test.ts` |
-| CA-3e | K-5, K-7 | **Dado** a migration aplicada, **quando** `anon` ou `authenticated` chamam `pipeline_etapas_reordenar`, `pipeline_etapas_versao` ou `pipeline_etapa_criar`, **então** a chamada é negada; só `service_role` executa. A ordem final é única e contínua (10, 20, 30...). | `supabase/tests/pipeline_etapas_reordenar_check.sql` (skill `validar-migrations`) |
-| CA-3f | K-7 | **Dado** um admin, **quando** chama `etapa_atualizar` com `ordem`, **então** 400 com a mensagem para usar `etapas_reordenar`, e nada muda. `etapa_criar` sem `ordem` coloca a etapa no fim. | Deno `api_pipeline_test.ts` |
+| CA-3g | K-6 | **Dado** `pipeline_etapas_listar`, **quando** devolve as etapas, **então** a `versao` devolvida é igual a `pipeline_etapas_versao` calculada sobre exatamente essas linhas (mesmo comando); o `repo.ts` não lê as etapas por PostgREST para o `etapas_listar`. | `pipeline_etapas_reordenar_check.sql` + Deno `api_pipeline_test.ts` |
+| CA-3e | K-5, K-7 | **Dado** a migration aplicada, **quando** `anon` ou `authenticated` chamam `pipeline_etapas_reordenar`, `pipeline_etapas_versao`, `pipeline_etapas_listar` ou `pipeline_etapa_criar`, **então** a chamada é negada; só `service_role` executa. A ordem final é única e contínua (10, 20, 30...). | `supabase/tests/pipeline_etapas_reordenar_check.sql` (skill `validar-migrations`) |
+| CA-3f | K-7 | **Dado** um admin, **quando** chama `etapa_atualizar` ou `etapa_criar` com `ordem`, **então** 400 com a mensagem para usar `etapas_reordenar`, e nada muda (nenhuma etapa criada). `etapa_criar` sem `ordem` coloca a etapa no fim. | Deno `api_pipeline_test.ts` |
 | CA-4 | K-1, K-2 | **Dado** uma etapa com oportunidades, **quando** o admin pede para excluir, **então** o botão de confirmar só habilita depois de escolher a etapa de destino, e a chamada leva `mover_para`. A última etapa não oferece exclusão. | vitest `pipeline-etapas.test.tsx` |
 | CA-5 | K-2 | **Dado** um usuário `operacao`, **quando** abre a aba, **então** vê a lista sem botões de edição e o aviso "Peça a um admin". Se a API responder 403, a mensagem aparece na tela. | vitest `pipeline-etapas.test.tsx` |
 | CA-6 | K-3 | **Dado** `etapas_listar` com 3 etapas de nomes livres, **quando** o Kanban e o painel montam, **então** aparecem exatamente 3 colunas/estágios com esses nomes, e nenhuma lista fixa de etapas existe no código (busca no `src/` sem as 13 etapas literais, fora das fixtures do demo). | vitest `src/test/pipeline-etapas-servidor.test.tsx` + teste de varredura em `src/test/sem-etapas-fixas.test.ts` |
@@ -101,8 +102,8 @@ Erros saem com `raise exception` e um código próprio, que o `repo.ts` traduz p
 | K-2 aba Etapas | agente `ux-ui-licitagym`: mockup da aba (claro, escuro, celular) antes do código | `frontend-dashboard` | vitest CA-1 a CA-5; skill `run-dashboard` em `/configuracoes/pipeline` (admin e operação no demo) | `ux-ui-licitagym` (acessibilidade do reordenar por teclado) + `revisor-codigo` | `deploy-dashboard` |
 | K-3 listas fixas → servidor | `frontend-dashboard` (varredura das listas) | `frontend-dashboard` | vitest CA-6, CA-7; `run-dashboard` em `/pipeline` e `/dashboard` | `revisor-codigo` (zero alucinação: nenhum fallback para a lista fixa) | `deploy-dashboard` |
 | K-4 aviso de rascunho | — | `frontend-dashboard` | vitest CA-8 | `revisor-codigo` | — |
-| K-5, K-6, K-7 migration (3 funções SQL) | skill `nova-migration`; leitura do lock e da ACL de `pipeline_mover` | `/implement` (backend) | `supabase/tests/pipeline_etapas_reordenar_check.sql` CA-3d, CA-3e; skill `validar-migrations` (Postgres descartável) | `revisor-migration` + `revisor-seguranca` | skill `verificar-producao` (migration aplicada, ACL das 3 funções) e `get_advisors` |
-| K-5, K-6, K-7 `api-pipeline` | leitura de `.claude/rules/edge-functions.md` e do `repo.ts` | `/implement` (backend) | Deno CA-3a a CA-3f | `revisor-codigo` + `revisor-seguranca` (escrita de configuração por papel e tenant) | `verificar-producao` |
+| K-5, K-6, K-7 migration (4 funções SQL) | skill `nova-migration`; leitura do lock e da ACL de `pipeline_mover` | `/implement` (backend) | `supabase/tests/pipeline_etapas_reordenar_check.sql` CA-3d, CA-3e, CA-3g; skill `validar-migrations` (Postgres descartável) | `revisor-migration` + `revisor-seguranca` | skill `verificar-producao` (migration aplicada, ACL das 4 funções) e `get_advisors` |
+| K-5, K-6, K-7 `api-pipeline` | leitura de `.claude/rules/edge-functions.md` e do `repo.ts` | `/implement` (backend) | Deno CA-3a a CA-3g | `revisor-codigo` + `revisor-seguranca` (escrita de configuração por papel e tenant) | `verificar-producao` |
 | Fechamento | — | — | — | — | skill `ciclo-janelas` (fecha o aviso de rascunho e as etapas fixas do inventário da `FASE-1-FRONTEND.md`) |
 
 ## Fora de escopo
@@ -117,14 +118,14 @@ Erros saem com `raise exception` e um código próprio, que o `repo.ts` traduz p
 
 ## Impacto em dados
 
-- **Migration:** sim, aditiva: 3 funções novas (`pipeline_etapas_reordenar`, `pipeline_etapas_versao`,
-  `pipeline_etapa_criar`). Nenhuma tabela, coluna ou dado muda; rollback = `drop function`.
+- **Migration:** sim, aditiva: 4 funções novas (`pipeline_etapas_listar`, `pipeline_etapas_reordenar`,
+  `pipeline_etapas_versao`, `pipeline_etapa_criar`). Nenhuma tabela, coluna ou dado muda; rollback = `drop function`.
 - **Tabelas/views/funções tocadas:** `pipeline_etapas` (escrita pelas funções novas e pela `api-pipeline`).
-- **ACL/RLS:** só `service_role` executa as 3 funções (revoke de PUBLIC, anon, authenticated). RLS sem mudança.
+- **ACL/RLS:** só `service_role` executa as 4 funções (revoke de PUBLIC, anon, authenticated). RLS sem mudança.
 - **Backfill/reprocessamento:** não.
 - **Edge Functions republicadas no merge:** todas (regra do repositório); muda só a `api-pipeline`.
-- **Contrato com o Dashboard:** `etapas_reordenar` nova e `versao` em `etapas_listar` (aditivos). `etapa_atualizar`
-  deixa de aceitar `ordem`: o Dashboard hoje não chama essa ação (`pipelineApi.ts` só usa `etapas_listar`), então
+- **Contrato com o Dashboard:** `etapas_reordenar` nova e `versao` em `etapas_listar` (aditivos). `etapa_criar` e
+  `etapa_atualizar` deixam de aceitar `ordem` (o README da `api-pipeline` é atualizado junto): o Dashboard hoje não chama essas ações (`pipelineApi.ts` só usa `etapas_listar`), então
   nada quebra. O backend vai antes.
 - **Dado oficial x derivado:** etapas são configuração do tenant; nenhum número de funil sem dado do servidor.
 

@@ -6,11 +6,11 @@ paths:
 <!-- GERADO de .github/instructions/coletor.instructions.md por scripts/ci/sincronizar-regras-claude.sh. Não edite aqui. -->
 # Coletor — sinalizar como Alto
 
-O cliente vende produtos que casam com o CATMAT dele (equipamentos fitness). Não serviços.
+O escopo é decidido pelo texto do item no Termo de Referência (e no edital), contra o catálogo de produtos do cliente; o CATMAT é sinal de apoio, porque o órgão erra o enquadramento com frequência. Produtos, não serviços.
 
 ## Lead e classificação
 - Contrato de serviço nunca vira lead: credenciamento, locação, manutenção (inclusive com fornecimento de peças), obra, oficineiros.
-- Um termo de busca sozinho não torna a linha `forte`. Exigir o casamento com o produto/CATMAT, não a frase da busca.
+- Um termo de busca sozinho não torna a linha `forte`. Exigir o casamento do texto do item (TR/edital) com o produto, não a frase da busca; o CATMAT apoia.
 - `forte`: polia, espaldar.
 - `fraco`: pilates, "aparelho para condicionamento físico" genérico, colchonete.
 - `Puxador` é positivo só na categoria acessórios.

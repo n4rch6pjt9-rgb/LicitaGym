@@ -4,12 +4,13 @@
      Item ainda não decidido fica em docs/produto/ESCOPO.md > "Decisões pendentes", não aqui. -->
 
 ## Escopo do que é oportunidade
-- **O código CATMAT do item não basta para decidir escopo.** O órgão pode cadastrar um CATMAT que não corresponde ao
-  que o Termo de Referência descreve, e o TR prevalece quando diverge do CATMAT (cláusula comum nos TRs federais).
-  Em caso de divergência, vale o texto do TR. O desenho do escopo por catálogo está em revisão
-  (ver `docs/produto/ESCOPO.md` > Decisões pendentes).
+- **O Termo de Referência é a fonte da verdade do escopo; o CATMAT é suporte** (decisão de 20/10). Analise primeiro
+  o texto do item no TR (e no edital). O código CATMAT confirma ou levanta suspeita, mas nunca decide sozinho: os
+  órgãos erram o enquadramento com frequência, e o TR prevalece quando diverge (cláusula comum nos TRs federais).
+- Divergência entre o texto do TR e o CATMAT do item vira achado registrado ("CATMAT divergente"), nunca motivo para
+  descartar o item.
 - Demanda principal: objeto do tipo "AQUISIÇÃO DE EQUIPAMENTO DE MUSCULAÇÃO".
-- CATMAT núcleo 78/7830, extensão curada 72/7220, sem misturar automaticamente.
+- Como sinal de apoio: CATMAT núcleo 78/7830, extensão curada 72/7220, sem misturar automaticamente.
 - **Academia ao ar livre está fora de escopo** (multi estação "ar livre", academia de praça). Termos de "ar livre"
   desqualificam o item quando aparecem no texto do TR ou do edital, não só na descrição do código CATMAT.
 - Contrato de serviço (credenciamento, locação, manutenção mesmo com peças, obra, oficineiros) nunca vira lead.
@@ -31,7 +32,8 @@
 - Agentes (edital, preço, jurídico; aderência faz parte do edital) rodam **só no botão "Analisar"**, nunca ao entrar
   na etapa. Cada achado traz fonte, trecho e página.
 - Admin e operação aprovam ou rejeitam achados; rejeitar exige nota.
-- O agente de edital sempre informa o portal oficial da disputa.
+- O agente de edital sempre informa o portal oficial da disputa, lê o TR antes do CATMAT e aponta divergência entre
+  os dois.
 - A proposta da empresa (marca, modelo e preço por item) é montada e guardada na etapa Proposta do pipeline.
 
 ## Tenant e papéis

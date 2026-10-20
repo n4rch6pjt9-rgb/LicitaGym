@@ -17,7 +17,7 @@ O cliente vende produtos que casam com o CATMAT dele. Contrato de serviço (cred
 - `forte`: polia, espaldar.
 - `fraco`: pilates, "aparelho para condicionamento físico" genérico, colchonete.
 - `Puxador` é positivo só na categoria acessórios.
-- Academia ao ar livre só conta junto com piso.
+- Academia ao ar livre está fora de escopo: termos de "ar livre" no texto do TR ou do edital desqualificam o item (ver `.claude/rules/regras-negocio.md`).
 - Mudança de classificação sem dry-run (contagem antes e depois) no texto do PR.
 
 ## Alto ([BLOQUEANTE]) ao revisar

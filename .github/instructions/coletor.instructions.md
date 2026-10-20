@@ -11,7 +11,7 @@ O cliente vende produtos que casam com o CATMAT dele (equipamentos fitness). Nã
 - `forte`: polia, espaldar.
 - `fraco`: pilates, "aparelho para condicionamento físico" genérico, colchonete.
 - `Puxador` é positivo só na categoria acessórios.
-- Academia ao ar livre só conta junto com piso.
+- Academia ao ar livre está fora de escopo: termos de "ar livre" no texto do TR ou do edital desqualificam o item (ver `.claude/rules/regras-negocio.md`).
 - Mudança de `classificar` / termos / taxonomia sem dry-run no texto do PR (contagem antes e depois, por categoria).
 
 ## Prioridade

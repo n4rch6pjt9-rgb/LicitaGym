@@ -176,26 +176,43 @@ function mencoesPotencia(norm: string): Mencao[] {
 }
 
 /** Fronteira de item: "item N", "lote N" ou lista numerada ("2. ", "2) ") depois de fim de frase. */
-const RE_FRONTEIRA_ITEM = /\b(item|lote)\s*\d|(^|[.;:]\s)\d{1,3}\s?[.)]\s/g;
+// "item 67", "lote 2" ou lista numerada; não conta referência cruzada ("conforme item 3.2 do TR", "vide item 4").
+const RE_FRONTEIRA_ITEM =
+  /(?<!\b(?:conforme|vide|do|no|ao|subitem|nos|dos)\s)\b(item|lote)\s*\d+(?![.,]\d)|(^|[.;:]\s)\d{1,3}\s?[.)]\s/g;
+// Equipamentos que separam itens quando aparecem entre duas menções e são diferentes do equipamento da primeira.
+// "aparelho" fica de fora: é genérico e costuma retomar o próprio item.
+const RE_EQUIPAMENTO =
+  /\b(esteira|bicicleta|eliptico|transport|simulador|bomba|compressor|bebedouro|ventilador|gerador|elevador|climatizador)(?:es|s)?\b/g;
 
-const RE_OUTRO_EQUIPAMENTO =
-  /\b(esteiras?|bicicletas?|elipticos?|transports?|simuladores?|bombas?|compressor(es)?|bebedouros?|ventiladores?|geradores?|elevadores?|climatizadores?|aparelhos?)\b/;
+/** Equipamento nomeado mais perto antes da posição (até 300 caracteres), no singular. */
+function equipamentoAntes(norm: string, pos: number): string | null {
+  let ultimo: string | null = null;
+  for (const e of norm.slice(Math.max(0, pos - 300), pos).matchAll(RE_EQUIPAMENTO)) ultimo = e[1];
+  return ultimo;
+}
 
-/** Duas menções do mesmo item: próximas e sem fronteira de item entre elas. */
+/**
+ * Duas menções do mesmo item: próximas, sem fronteira de item entre elas e sem outro equipamento nomeado entre elas
+ * (Codex no #401: compressor "4 HP nominal" seguido de "esteira ... 3 HPM"). A mesma esteira citada de novo
+ * ("a esteira deverá ter potência nominal de 2 HP") continua sendo o mesmo item.
+ */
 function mesmoItem(norm: string, a: Mencao, b: Mencao): boolean {
   const [x, y] = a.inicio < b.inicio ? [a, b] : [b, a];
   if (y.inicio - x.fim > MESMO_ITEM) return false;
   const entre = norm.slice(x.fim, y.inicio);
-  // Outro equipamento nomeado entre as duas menções também é outro item (Codex no #401: "4 HP nominal" de um compressor
-  // seguido de "esteira ... 3 HPM" no mesmo trecho, sem "item N").
-  return !new RegExp(RE_FRONTEIRA_ITEM.source).test(entre) && !RE_OUTRO_EQUIPAMENTO.test(entre);
+  if (new RegExp(RE_FRONTEIRA_ITEM.source).test(entre)) return false;
+  const doItem = equipamentoAntes(norm, x.inicio);
+  for (const e of entre.matchAll(RE_EQUIPAMENTO)) if (e[1] !== doItem) return false;
+  return true;
 }
 
 /** Janela do item da menção: até 400 caracteres para cada lado, cortada na fronteira de item mais próxima. */
 function janelaDoItem(norm: string, m: Mencao): string {
-  let ini = Math.max(0, m.inicio - 400);
+  const base = Math.max(0, m.inicio - 400);
+  let ini = base;
   let fim = Math.min(norm.length, m.fim + 400);
-  for (const f of norm.slice(ini, m.inicio).matchAll(RE_FRONTEIRA_ITEM)) ini = Math.max(ini, ini + (f.index ?? 0));
+  // Índices do matchAll são relativos a `base` (revisão final do #401: somar ao `ini` já deslocado cortava o item).
+  for (const f of norm.slice(base, m.inicio).matchAll(RE_FRONTEIRA_ITEM)) ini = base + (f.index ?? 0);
   const depois = new RegExp(RE_FRONTEIRA_ITEM.source).exec(norm.slice(m.fim, fim));
   if (depois) fim = m.fim + depois.index;
   return norm.slice(ini, fim);
@@ -242,9 +259,18 @@ export function detectarPotencia(chunks: ChunkEdital[]): Achado[] {
       pagina: chunk.pagina,
       trecho: trechoNoOriginal(chunk.texto, m.inicio, m.fim, origem),
     });
-    for (const m of mencoes) {
+    for (let i = 0; i < mencoes.length; i++) {
+      const m = mencoes[i];
       if (m.tipo !== "pico" && m.tipo !== "faixa") continue;
-      const vizinhas = mencoes.filter((o) => o !== m && mesmoItem(norm, m, o));
+      // Menções saem em ordem de posição: só as que estão a até MESMO_ITEM caracteres podem ser do mesmo item
+      // (janela deslizante; comparar com todas era quadrático no número de menções).
+      const vizinhas: Mencao[] = [];
+      for (let j = i - 1; j >= 0 && m.inicio - mencoes[j].fim <= MESMO_ITEM; j--) {
+        if (mesmoItem(norm, m, mencoes[j])) vizinhas.push(mencoes[j]);
+      }
+      for (let j = i + 1; j < mencoes.length && mencoes[j].inicio - m.fim <= MESMO_ITEM; j++) {
+        if (mesmoItem(norm, m, mencoes[j])) vizinhas.push(mencoes[j]);
+      }
       // Contínuo do mesmo item informado: nada a apontar.
       if (vizinhas.some((o) => o.tipo === "continua")) continue;
       // "Potência do motor 2 a 3 HP ... potência de pico 4 a 6 HP": o número menor ao lado de um pico maior é o contínuo.

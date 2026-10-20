@@ -166,3 +166,21 @@ Deno.test("Codex #401 (P2): contínuo de outro equipamento no mesmo trecho, sem 
     "especificacao.inconsistente",
     "especificacao.potencia_so_pico",
   ]));
+
+// --- Revisão final do #401 ---------------------------------------------------------------------------------------
+
+Deno.test("revisão final: a mesma esteira citada duas vezes com a nominal não gera aviso", () => {
+  assertEquals(codigos("Esteira ergométrica profissional, potência de pico 4 HP, uso em academia. A esteira deverá ter potência nominal de 2 HP"), []);
+  assertEquals(codigos("Esteira profissional, potência de pico 4 HP. A esteira deverá ter motor de 1,5 HP contínuo"), []);
+  assertEquals(codigos("Esteira profissional, potência de pico 4 HP. O aparelho deve ter potência nominal de 2 HP"), []);
+});
+
+Deno.test("revisão final: várias fronteiras antes da menção não cortam o item (achado central em TR com vários itens)", () => {
+  const t = "ITEM 64 Banco supino. ITEM 65 Bicicleta ergométrica. ITEM 66 Elíptico. " +
+    "ITEM 67 ESTEIRA PROFISSIONAL, USUARIO ATE 180 KG, MOTOR 3.0 HP PEAK POWER.";
+  const inc = detectarPotencia([chunk(t)]).find((a) => a.codigo === "especificacao.inconsistente");
+  assertEquals((inc?.dados.perfil as string[] | undefined)?.sort(), ["peso_usuario_180kg", "profissional"]);
+});
+
+Deno.test("revisão final: referência cruzada 'conforme item 3.2' não separa o item", () =>
+  assertEquals(codigos("Esteira profissional motor 4 HP de pico, conforme item 3.2 do TR, potência nominal de 2 HP"), []));

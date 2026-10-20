@@ -22,7 +22,7 @@ Base: repositório `n4rch6pjt9-rgb/LicitaGym` (commit `8436bdd`) e a documentaç
 | Tema | `CLAUDE.md` atual dizia | Novo texto (sua decisão) |
 |---|---|---|
 | Academia ao ar livre | "só conta junto com piso" | fora de escopo; "ar livre" desqualifica o item |
-| Fonte da verdade do escopo | JSON de taxonomia | **em revisão** (20/10): o TR prevalece sobre o CATMAT; ver Decisões pendentes no `ESCOPO.md` |
+| Fonte da verdade do escopo | JSON de taxonomia / catálogo CATMAT | **TR primeiro, CATMAT como suporte** (decisão de 20/10) |
 | Fonte de acompanhamento | PNCP/Compras.gov como fontes | portal oficial do edital é primário; PNCP é alternativa |
 
 Se algum deles não vale mais, ajuste `regras-negocio.md` e `ESCOPO.md` antes do PR.

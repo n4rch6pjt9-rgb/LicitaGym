@@ -77,3 +77,8 @@ scripts/.sync_state/
 # saidas locais e pendencias (nao versionar)
 var/
 supabase/.temp/
+
+# logs do plugin claude-mem (só o CLAUDE.md da raiz é instrução)
+**/CLAUDE.md
+!/CLAUDE.md
+CLAUDE.local.md

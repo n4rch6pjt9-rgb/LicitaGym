@@ -56,7 +56,7 @@ Valor a declarar no frontmatter (tarefa 0.3 do plano faseado). `inherit` = usa o
 |---|---|---|
 | padrão (issue, conferência de spec, revisão de PR, verificação) | `sonnet` | N0/N1 |
 | desenho de spec N2/N3 | `opus` | N2/N3 |
-| tarefas agendadas | modelo da sessão (a tarefa agendada não fixa modelo); o nível vai escrito no texto da tarefa | N0/N1 |
+| tarefas agendadas | criadas pela sessão na nuvem (as 3 de hoje): usam o modelo da sessão, porque a ferramenta de agendamento da nuvem não tem campo de modelo, e o nível vai escrito no texto da tarefa. Criadas à mão no app do Cowork: fixar o modelo do nível (`haiku` para N0, `sonnet` para N1) no campo de modelo | N0/N1 |
 
 ## Registro de uso
 

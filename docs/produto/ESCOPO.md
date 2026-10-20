@@ -19,7 +19,7 @@ Fornecedor de equipamentos de musculação que disputa licitações públicas. C
 
 | # | Módulo | O que entrega | Specs | Situação |
 |---|---|---|---|---|
-| 1 | Radar de oportunidades | licitações abertas dentro do catálogo CATMAT da empresa, com prioridade | 0006, 0023–0030 | no ar, em ajuste |
+| 1 | Radar de oportunidades | licitações abertas aderentes ao catálogo de produtos do tenant, julgadas pelo texto do TR (CATMAT como apoio), com prioridade | 0006, 0023–0030 | no ar, em ajuste |
 | 2 | Pipeline e tarefas | etapas por tenant, tarefas padrão por etapa e por certame | 0017–0019 | no ar |
 | 3 | **Agentes na tarefa** | edital (com aderência), preço, jurídico dentro do cartão da tarefa | **0032** (fases 1–4) | **agora** |
 | 4 | Proposta | marca, modelo e preço por item, guardados na etapa Proposta | (spec a criar) | próximo |
@@ -31,6 +31,12 @@ Fornecedor de equipamentos de musculação que disputa licitações públicas. C
 
 **Regra de foco:** enquanto a 0032 não terminar a fase 3, spec nova só entra se alimentar uma fase da 0032.
 As outras ficam com status `parada` e uma linha nesta tabela.
+
+## Evidência da decisão "TR primeiro" (20/10)
+Dispensa 311/2026 da BAvT (#2691). O TR pede leg press horizontal, cadeira flexora e piso emborrachado de 15 mm, mas o
+órgão cadastrou os CATMAT 623742 (multi estação ao ar livre), 628720 (banco regulável) e 620884 (piso de 3 mm), e o
+próprio TR cita o 641560, que no CATMAT é barra olímpica. O TR diz que prevalece sobre o CATMAT. Pelo catálogo CATMAT
+da empresa, o item 1 ficaria fora e ainda cairia na regra de "ar livre", embora seja um leg press.
 
 ## Fora de escopo
 - Academia ao ar livre (multi estação "ar livre", academia de praça).
@@ -56,19 +62,14 @@ Detalhe em `AGENTS.md`.
 | 20/10 | Catálogo, escopo CATMAT e ficha de produto ficam em `/configuracoes` |
 | 20/10 | Visões salvas de filtro são da equipe do tenant |
 | até 20/10 | Homologadas com documentos e chat da sessão são o núcleo do treino dos agentes |
+| 20/10 | **TR primeiro, CATMAT como suporte.** O catálogo CATMAT deixa de ser a fonte da verdade do escopo: os órgãos erram o enquadramento com frequência (evidência: Dispensa 311/2026 da BAvT, #2691). Divergência TR × CATMAT vira achado |
 
 ## Decisões pendentes
 <!-- Itens que estavam como CONFIRMAR no CLAUDE.md antigo. Resolvido → vai para "Decisões registradas" e para
      .claude/rules/regras-negocio.md. -->
-- **Catálogo CATMAT como fonte do escopo (em revisão, 20/10).** Evidência: Dispensa 311/2026 da BAvT (#2691).
-  O TR pede leg press horizontal, cadeira flexora e piso emborrachado de 15 mm, mas o órgão cadastrou os CATMAT
-  623742 (multi estação ao ar livre), 628720 (banco regulável) e 620884 (piso de 3 mm), e o próprio TR cita
-  o 641560, que no CATMAT é barra olímpica. O TR diz que prevalece sobre o CATMAT. Pelo catálogo da empresa, o item 1
-  ficaria fora (PDM 6827 excluído) e ainda cairia na regra de "ar livre". Pergunta: o escopo passa a ser decidido
-  pelo texto do item/TR, com o CATMAT como sinal auxiliar?
 - **Mesma compra publicada duas vezes no PNCP:** tratar como uma só pela chave `(orgao_cnpj, processo_norm,
   numero_edital)` na view `licitacoes_pncp_canonica`?
 - **Sistema S:** precisa de fase, prazo ou tarefa própria (RLC/RCA), ou segue a 14.133?
 - **Taxonomia:** os JSON `taxonomia-pisos-v0.2.json` e `dicionario-aparelhos-v0.3.json` continuam fonte da verdade ou
-  passam a derivar do catálogo CATMAT da empresa (issue #272)?
+  passam a derivar do catálogo de produtos do tenant (issue #272)?
 - **Piso de borracha:** continua no escopo de oportunidade da Konnen ou vira escopo de outro tenant?

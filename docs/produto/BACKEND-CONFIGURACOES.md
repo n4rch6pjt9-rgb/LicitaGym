@@ -98,8 +98,9 @@ tentando importar preço (403).
   - a taxonomia da plataforma (global, curada, continua por migration);
   - `tenant_termos(tenant_id, termo, tipo inclui|exclui, origem, ativo)`, editável na tela. É aqui que entra o
     portão de "ar livre", aplicado ao **texto do TR/edital**.
-- **Fica em aberto:** a decisão de 20/10 sobre o CATMAT ser fonte do escopo continua pendente. Este desenho não
-  depende dela, porque o catálogo de produtos via CSV passa a ser outra entrada do escopo.
+- **Decisão de 20/10: TR primeiro, CATMAT como suporte.** O escopo CATMAT por tenant continua útil como sinal de apoio
+  e para buscar nas fontes, mas não decide sozinho se um item é oportunidade. A entrada principal é o casamento do texto
+  do item no TR com o catálogo de produtos do tenant (CSV). Divergência TR × CATMAT vira achado.
 
 ### 2.4 Modelo de Dados (campos customizados do CRM): proposta de não construir agora
 A tela da demo desenha objetos e campos customizados do CRM (Pessoas, Organizações). Isso não é alicerce do negócio

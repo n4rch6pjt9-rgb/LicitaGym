@@ -144,7 +144,18 @@ async function enriquecer(repo: AgentesRepo, tenant: number, execucoes: Execucao
  * da fila está pendente ou em andamento: a tarefa mostra "análise em preparação" em vez de "sem documento".
  * Falha ao ler o estado não derruba a análise: vira aviso.
  */
-async function estadoPreparacao(repo: AgentesRepo, tenant: number, licitacaoId: number, temChunks: boolean) {
+interface EstadoPreparacao {
+  preparacao?: Preparacao | null;
+  em_preparacao?: boolean;
+  avisos?: string[];
+}
+
+async function estadoPreparacao(
+  repo: AgentesRepo,
+  tenant: number,
+  licitacaoId: number,
+  temChunks: boolean,
+): Promise<EstadoPreparacao> {
   try {
     const preparacao: Preparacao | null = await repo.preparacao(tenant, licitacaoId);
     const em_preparacao = !temChunks && preparacao !== null &&
@@ -155,6 +166,16 @@ async function estadoPreparacao(repo: AgentesRepo, tenant: number, licitacaoId: 
     console.error("[api-agentes] preparação indisponível", { licitacao: licitacaoId, erro: e instanceof Error ? e.message : e });
     return { avisos: ["preparacao_indisponivel"] };
   }
+}
+
+/**
+ * Spec 0032, fase 1 (CA-1): no clique em "Analisar", edital sem chunks e sem pedido aberto na fila (nenhum, ou o último
+ * falhou) é pedido para download e indexação. Pedido concluído (ex.: sem_documento) não é repetido: a fonte não tem o
+ * documento. Estado ilegível (aviso) não pede: sem saber, não enfileira às cegas. analise_obter nunca pede.
+ */
+function precisaPreparar(prep: EstadoPreparacao, temChunks: boolean): boolean {
+  if (temChunks || prep.preparacao === undefined) return false;
+  return prep.preparacao === null || prep.preparacao.status === "failed";
 }
 
 export async function handleRequest(req: Request, ctx: ApiAgentesContext = {}): Promise<Response> {
@@ -185,9 +206,24 @@ export async function handleRequest(req: Request, ctx: ApiAgentesContext = {}): 
       case "analise_executar": {
         const execucoes = await executar(repo, tenant, user.id, params.licitacao_id, params.proposta);
         const edital = execucoes.find((e) => e.agente === "edital");
-        const prep = await estadoPreparacao(repo, tenant, params.licitacao_id, edital?.situacao !== "sem_documento");
+        const temChunks = edital?.situacao !== "sem_documento";
+        let prep = await estadoPreparacao(repo, tenant, params.licitacao_id, temChunks);
+        const extra: { preparacao_solicitada?: boolean } = {};
+        if (precisaPreparar(prep, temChunks)) {
+          try {
+            await repo.solicitarPreparacao(tenant, params.licitacao_id);
+            extra.preparacao_solicitada = true;
+            prep = await estadoPreparacao(repo, tenant, params.licitacao_id, temChunks);
+          } catch (e) {
+            console.error("[api-agentes] preparação não solicitada", {
+              licitacao: params.licitacao_id,
+              erro: e instanceof Error ? e.message : e,
+            });
+            prep = { ...prep, avisos: [...(prep.avisos ?? []), "preparacao_nao_solicitada"] };
+          }
+        }
         console.info("[api-agentes] analise_executar", { user: user.id, licitacao: params.licitacao_id, n: execucoes.length });
-        return jsonResponse({ action: params.action, execucoes, ...prep });
+        return jsonResponse({ action: params.action, execucoes, ...prep, ...extra });
       }
       case "analise_obter": {
         const dossie = await repo.carregarDossie(tenant, params.licitacao_id);

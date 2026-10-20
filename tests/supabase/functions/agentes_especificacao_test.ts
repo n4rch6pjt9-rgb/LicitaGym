@@ -160,3 +160,9 @@ Deno.test("revisão 2: lista numerada sem a palavra 'item' separa itens", () =>
     "especificacao.inconsistente",
     "especificacao.potencia_so_pico",
   ]));
+
+Deno.test("Codex #401 (P2): contínuo de outro equipamento no mesmo trecho, sem 'item N', não apaga o aviso da esteira", () =>
+  assertEquals(codigos("Compressor potência nominal de 4 HP, 220 V. Esteira profissional motor 3 HPM, uso em academia"), [
+    "especificacao.inconsistente",
+    "especificacao.potencia_so_pico",
+  ]));

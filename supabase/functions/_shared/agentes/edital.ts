@@ -178,11 +178,17 @@ function mencoesPotencia(norm: string): Mencao[] {
 /** Fronteira de item: "item N", "lote N" ou lista numerada ("2. ", "2) ") depois de fim de frase. */
 const RE_FRONTEIRA_ITEM = /\b(item|lote)\s*\d|(^|[.;:]\s)\d{1,3}\s?[.)]\s/g;
 
+const RE_OUTRO_EQUIPAMENTO =
+  /\b(esteiras?|bicicletas?|elipticos?|transports?|simuladores?|bombas?|compressor(es)?|bebedouros?|ventiladores?|geradores?|elevadores?|climatizadores?|aparelhos?)\b/;
+
 /** Duas menções do mesmo item: próximas e sem fronteira de item entre elas. */
 function mesmoItem(norm: string, a: Mencao, b: Mencao): boolean {
   const [x, y] = a.inicio < b.inicio ? [a, b] : [b, a];
   if (y.inicio - x.fim > MESMO_ITEM) return false;
-  return !new RegExp(RE_FRONTEIRA_ITEM.source).test(norm.slice(x.fim, y.inicio));
+  const entre = norm.slice(x.fim, y.inicio);
+  // Outro equipamento nomeado entre as duas menções também é outro item (Codex no #401: "4 HP nominal" de um compressor
+  // seguido de "esteira ... 3 HPM" no mesmo trecho, sem "item N").
+  return !new RegExp(RE_FRONTEIRA_ITEM.source).test(entre) && !RE_OUTRO_EQUIPAMENTO.test(entre);
 }
 
 /** Janela do item da menção: até 400 caracteres para cada lado, cortada na fronteira de item mais próxima. */

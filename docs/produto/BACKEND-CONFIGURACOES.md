@@ -43,8 +43,9 @@ tenant entrar, as APIs precisam receber o tenant explicitamente (ver 2.0).
 ### 2.0 Tenant explícito (pré-requisito de tudo)
 - **Contrato:** toda chamada `api-*` de dado de tenant aceita `tenant_id` (no corpo ou num header `X-Tenant-Id`).
 - **Validação:** a `_shared/tenant.ts` confere se quem chama é membro ativo desse tenant, ou se é o desenvolvedor.
-  Sem `tenant_id` e com um só vínculo, usa esse vínculo. Com dois ou mais, devolve 400 pedindo a escolha (não "a única ativa").
-- **Front:** um seletor de empresa no shell (`minha_empresa` já lista as empresas e o papel), guardado por sessão.
+  Sem `tenant_id` e com um só vínculo, usa esse vínculo. Com dois ou mais, devolve 409 `tenant_ambiguo`.
+- **Front:** um seletor de empresa no shell. A escolha fica gravada no servidor (`usuario_preferencias`); o
+  desenvolvedor vê todas as empresas no MVP. Detalhe na spec 0033.
 - **Testes:** CA negativo para cada `api-*` (membro do tenant A pedindo o tenant B → 403).
 
 ### 2.1 Usuários e papéis (substitui a tela "Usuários & RBAC" da demo)
@@ -135,8 +136,8 @@ Função de leitura, por membro, com cache curto:
 
 | # | Spec | Depende de | Migration | Tamanho |
 |---|---|---|---|---|
-| 1 | Tenant explícito nas `api-*` + seletor no shell | — | não | M |
-| 2 | Etapas do pipeline editáveis (só front) | — | não | P |
+| 1 | Tenant explícito nas `api-*` + seletor no shell (spec 0033) | — | sim (`usuario_preferencias`) | M |
+| 2 | Etapas do pipeline editáveis + `etapas_reordenar` atômica (spec 0034) | — | não | P |
 | 3 | `api-metadados` (`filtros`, `limites`, `rotulos`) + visões salvas da equipe | 1 | sim (`filtro_visoes`) | M |
 | 4 | `api-catalogo`: importação de produtos por CSV, histórico e desfazer | 1 | sim | G |
 | 5 | Preços por CSV (só admin) | 4 | não (tabela existe) | P |

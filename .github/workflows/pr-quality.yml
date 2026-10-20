@@ -89,6 +89,9 @@ jobs:
             git -c http.extraheader="$auth" fetch -q --depth=50 origin "$BASE_SHA" || echo "base ${BASE_SHA} não baixou"
           fi
 
+      - name: Regras do Claude (.claude/rules) sincronizadas com .github/instructions
+        run: bash scripts/ci/sincronizar-regras-claude.sh --check
+
       - name: Instalar Deno (release oficial, SHA-256 conferido)
         run: |
           set -euo pipefail

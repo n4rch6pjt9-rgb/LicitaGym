@@ -1,6 +1,7 @@
 # 0032: Fazer os agentes de Edital, Preço e Jurídico trabalharem dentro das tarefas da oportunidade
 
 - **Status:** em implementação (aprovada pelo Marcelo em 19/10)
+- **Contrato (revisão de 19/10):** `preparacao` e `em_preparacao` somem da resposta quando a leitura do estado falha (aviso `preparacao_indisponivel`), como na api-pipeline; nunca viram "sem pedido".
 - **Issue:** nenhuma (pedido do Marcelo em 19/10: "estamos andando em círculos, specs espalhadas")
 - **Área:** edge-functions | coletor (indexação) | dashboard-contrato
 - **Depende do ok do Marcelo:** sim (muda o que a tela de tarefas mostra e quando os agentes rodam)

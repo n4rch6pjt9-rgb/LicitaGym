@@ -62,6 +62,8 @@ export interface AgentesRepo {
   carregarDossie(tenant: number, licitacaoId: number): Promise<Dossie | null>;
   /** null: não há pedido de preparação para esta licitação na empresa. */
   preparacao(tenant: number, licitacaoId: number): Promise<Preparacao | null>;
+  /** Pede o download e a indexação do edital (fila 'preparar_triagem'); nunca duplica o pedido aberto. Spec 0032 CA-1. */
+  solicitarPreparacao(tenant: number, licitacaoId: number): Promise<"enfileirado" | "ja_na_fila">;
   buscarExecucao(tenant: number, licitacaoId: number, agente: Agente, contextoHash: string): Promise<Execucao | null>;
   gravarExecucao(
     tenant: number,
@@ -134,6 +136,13 @@ export function createSupabaseRepo(client: SupabaseClient): AgentesRepo {
         erro: (row.erro as string | null) ?? null,
         atualizado_em: (row.atualizado_em as string | null) ?? null,
       };
+    },
+
+    async solicitarPreparacao(tenant, licitacaoId) {
+      const { data, error } = await client.rpc("fila_preparacao_solicitar", { p_tenant: tenant, p_licitacao: licitacaoId });
+      if (error) throw new Error(error.message);
+      if (data !== "enfileirado" && data !== "ja_na_fila") throw new Error(`fila_preparacao_solicitar devolveu ${String(data)}`);
+      return data;
     },
 
     async carregarDossie(tenant, licitacaoId) {

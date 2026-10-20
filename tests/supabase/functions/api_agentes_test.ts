@@ -28,10 +28,23 @@ function ambiente() {
     ],
   };
 
-  const estado: { preparacao: Preparacao | null | Error } = { preparacao: null };
+  const estado: { preparacao: Preparacao | null | Error; solicitacoes: number; falhaSolicitar: Error | null } = {
+    preparacao: null,
+    solicitacoes: 0,
+    falhaSolicitar: null,
+  };
   const repo: AgentesRepo = {
     tenantDoUsuario: () => Promise.resolve({ tenant: 1, papel: null }),
     preparacao: () => (estado.preparacao instanceof Error ? Promise.reject(estado.preparacao) : Promise.resolve(estado.preparacao)),
+    // Como a RPC fila_preparacao_solicitar: pedido aberto não duplica; sem pedido ou failed, cria um pending.
+    solicitarPreparacao: () => {
+      if (estado.falhaSolicitar) return Promise.reject(estado.falhaSolicitar);
+      estado.solicitacoes++;
+      const atual = estado.preparacao instanceof Error ? null : estado.preparacao;
+      if (atual && (atual.status === "pending" || atual.status === "processing")) return Promise.resolve("ja_na_fila" as const);
+      estado.preparacao = { status: "pending", resultado: null, erro: null, atualizado_em: "agora" };
+      return Promise.resolve("enfileirado" as const);
+    },
     carregarDossie: (_t, id) => Promise.resolve(id === dossie.licitacao.id ? dossie : null),
     buscarExecucao: (_t, licitacaoId, agente, contextoHash) =>
       Promise.resolve(execucoes.find((e) => e.licitacao_id === licitacaoId && e.agente === agente && e.contexto_hash === contextoHash) ?? null),
@@ -342,13 +355,63 @@ Deno.test("api-agentes (0032 CA-1): sem chunks e preparação pendente, a respos
   assertEquals(r.json.execucoes[0].situacao, "sem_documento");
 });
 
-Deno.test("api-agentes (0032 CA-2): sem chunks e sem pedido na fila, não está em preparação", async () => {
-  const { repo, dossie } = ambiente();
+Deno.test("api-agentes (0032 CA-1): sem chunks e sem pedido na fila, Analisar pede a preparação e fica em preparação", async () => {
+  const { repo, dossie, estado } = ambiente();
   dossie.chunks = [];
   const r = await chamar(ctx(repo), { action: "analise_executar", licitacao_id: 101, proposta: P });
+  assertEquals(estado.solicitacoes, 1);
+  assertEquals(r.json.preparacao_solicitada, true);
+  assertEquals(r.json.preparacao.status, "pending");
+  assertEquals(r.json.em_preparacao, true);
+  assertEquals(r.json.execucoes[0].situacao, "sem_documento");
+});
+
+Deno.test("api-agentes (0032 CA-1): com pedido pendente, Analisar não pede de novo", async () => {
+  const { repo, dossie, estado } = ambiente();
+  dossie.chunks = [];
+  estado.preparacao = { status: "pending", resultado: null, erro: null, atualizado_em: "t" };
+  const r = await chamar(ctx(repo), { action: "analise_executar", licitacao_id: 101, proposta: P });
+  assertEquals(estado.solicitacoes, 0);
+  assertEquals("preparacao_solicitada" in r.json, false);
+  assertEquals(r.json.em_preparacao, true);
+});
+
+Deno.test("api-agentes (0032 CA-1): com edital indexado, Analisar não pede preparação", async () => {
+  const { repo, estado } = ambiente();
+  const r = await chamar(ctx(repo), { action: "analise_executar", licitacao_id: 101, proposta: P });
+  assertEquals(estado.solicitacoes, 0);
   assertEquals(r.json.preparacao, null);
   assertEquals(r.json.em_preparacao, false);
-  assertEquals(r.json.execucoes[0].situacao, "sem_documento");
+});
+
+Deno.test("api-agentes (0032 CA-1): analise_obter nunca pede preparação", async () => {
+  const { repo, dossie, estado } = ambiente();
+  dossie.chunks = [];
+  const r = await chamar(ctx(repo), { action: "analise_obter", licitacao_id: 101 });
+  assertEquals(estado.solicitacoes, 0);
+  assertEquals(r.json.preparacao, null);
+  assertEquals(r.json.em_preparacao, false);
+});
+
+Deno.test("api-agentes (0032 CA-1): falha ao pedir a preparação não derruba a análise e vira aviso", async () => {
+  const { repo, dossie, estado } = ambiente();
+  dossie.chunks = [];
+  estado.falhaSolicitar = new Error("rpc fora");
+  const r = await chamar(ctx(repo), { action: "analise_executar", licitacao_id: 101, proposta: P });
+  assertEquals(r.status, 200);
+  assertEquals(r.json.avisos, ["preparacao_nao_solicitada"]);
+  assertEquals(r.json.em_preparacao, false);
+  assertEquals("preparacao_solicitada" in r.json, false);
+  assertEquals(r.json.execucoes.length, 3);
+});
+
+Deno.test("api-agentes (0032 CA-1): estado da fila ilegível não pede às cegas", async () => {
+  const { repo, dossie, estado } = ambiente();
+  dossie.chunks = [];
+  estado.preparacao = new Error("rpc fora");
+  const r = await chamar(ctx(repo), { action: "analise_executar", licitacao_id: 101, proposta: P });
+  assertEquals(estado.solicitacoes, 0);
+  assertEquals(r.json.avisos, ["preparacao_indisponivel"]);
 });
 
 Deno.test("api-agentes (0032): preparação concluída sem documento não é 'em preparação'", async () => {
@@ -356,6 +419,7 @@ Deno.test("api-agentes (0032): preparação concluída sem documento não é 'em
   dossie.chunks = [];
   estado.preparacao = { status: "completed", resultado: "sem_documento", erro: null, atualizado_em: "t" };
   const r = await chamar(ctx(repo), { action: "analise_executar", licitacao_id: 101, proposta: P });
+  assertEquals(estado.solicitacoes, 0);
   assertEquals(r.json.em_preparacao, false);
   assertEquals(r.json.preparacao.resultado, "sem_documento");
 });
@@ -389,13 +453,24 @@ Deno.test("api-agentes (0032): analise_obter também informa a preparação", as
   assertEquals(r.json.preparacao, { status: "processing", resultado: null, erro: null, atualizado_em: "t" });
 });
 
-Deno.test("api-agentes (0032): pedido failed sem chunks não está em preparação e devolve o erro", async () => {
+Deno.test("api-agentes (0032): pedido failed sem chunks, analise_obter não está em preparação e devolve o erro", async () => {
+  const { repo, dossie, estado } = ambiente();
+  dossie.chunks = [];
+  estado.preparacao = { status: "failed", resultado: null, erro: "download: HTTP 504", atualizado_em: "t" };
+  const r = await chamar(ctx(repo), { action: "analise_obter", licitacao_id: 101 });
+  assertEquals(r.json.em_preparacao, false);
+  assertEquals(r.json.preparacao.erro, "download: HTTP 504");
+});
+
+Deno.test("api-agentes (0032 CA-1): pedido failed, Analisar pede de novo", async () => {
   const { repo, dossie, estado } = ambiente();
   dossie.chunks = [];
   estado.preparacao = { status: "failed", resultado: null, erro: "download: HTTP 504", atualizado_em: "t" };
   const r = await chamar(ctx(repo), { action: "analise_executar", licitacao_id: 101, proposta: P });
-  assertEquals(r.json.em_preparacao, false);
-  assertEquals(r.json.preparacao.erro, "download: HTTP 504");
+  assertEquals(estado.solicitacoes, 1);
+  assertEquals(r.json.preparacao_solicitada, true);
+  assertEquals(r.json.em_preparacao, true);
+  assertEquals(r.json.preparacao.erro, null);
 });
 
 Deno.test("api-agentes (0032): analise_obter com chunks e pedido pending não está em preparação", async () => {
@@ -435,6 +510,31 @@ Deno.test("repo (0032): sem pedido na fila, preparação é null", async () => {
   const client = { rpc: () => Promise.resolve({ data: [], error: null }) };
   // deno-lint-ignore no-explicit-any
   assertEquals(await createSupabaseRepo(client as any).preparacao(1, 101), null);
+});
+
+Deno.test("repo (0032 CA-1): solicitar preparação chama fila_preparacao_solicitar da empresa", async () => {
+  const chamadas: unknown[] = [];
+  const client = {
+    rpc: (fn: string, args: unknown) => {
+      chamadas.push([fn, args]);
+      return Promise.resolve({ data: "enfileirado", error: null });
+    },
+  };
+  // deno-lint-ignore no-explicit-any
+  assertEquals(await createSupabaseRepo(client as any).solicitarPreparacao(1, 101), "enfileirado");
+  assertEquals(chamadas, [["fila_preparacao_solicitar", { p_tenant: 1, p_licitacao: 101 }]]);
+});
+
+Deno.test("repo (0032 CA-1): resposta inesperada da RPC de solicitar vira erro", async () => {
+  const client = { rpc: () => Promise.resolve({ data: "talvez", error: null }) };
+  let erro = "";
+  try {
+    // deno-lint-ignore no-explicit-any
+    await createSupabaseRepo(client as any).solicitarPreparacao(1, 101);
+  } catch (e) {
+    erro = (e as Error).message;
+  }
+  assertEquals(erro, "fila_preparacao_solicitar devolveu talvez");
 });
 
 Deno.test("api-agentes (0032 CA-4): edital com potência só de pico em perfil profissional roda e grava os achados", async () => {

@@ -40,6 +40,9 @@ begin
     if exists (select 1 from pg_proc where oid = f::regprocedure and prosecdef) then
       raise exception 'CHECK FALHOU: % é security definer', f;
     end if;
+    if not exists (select 1 from pg_proc where oid = f::regprocedure and proconfig @> array['search_path=public, pg_temp']) then
+      raise exception 'CHECK FALHOU: % sem search_path fixo', f;
+    end if;
   end loop;
 
   begin
@@ -85,8 +88,11 @@ begin
 
     -- CA-3a: as 13 ao contrário com a versão lida; ordem = posição × 10; versão nova devolvida em todas as linhas
     select array_agg(x order by i desc) into v_rev from unnest(v_ids) with ordinality as u (x, i);
+    -- como service_role (o papel da api-pipeline), para pegar grant de tabela que falte
+    set local role service_role;
     select count(*), min(versao), array_agg(id order by ordem) into v_n, v_v1, v_ids2
       from public.pipeline_etapas_reordenar(v_t, v_rev, v_v0, v_u);
+    reset role;
     if v_n <> 13 or v_ids2 <> v_rev or v_v1 = v_v0 or v_v1 is distinct from public.pipeline_etapas_versao(v_t) then
       raise exception 'CHECK FALHOU: reordenar (n=%, versao nova=%, atual=%)', v_n, v_v1, public.pipeline_etapas_versao(v_t);
     end if;
@@ -119,8 +125,10 @@ begin
     end if;
 
     -- K-7: criar põe no fim (maior + 10), dentro do lock; nome repetido continua 23505
+    set local role service_role;
     select id, ordem into v_nova, v_ordem
       from public.pipeline_etapa_criar(v_t, 'Visita técnica', 'proposta', null, false, v_u);
+    reset role;
     if v_ordem <> 140 then
       raise exception 'CHECK FALHOU: etapa criada com ordem % (esperado 140)', v_ordem;
     end if;
@@ -141,6 +149,16 @@ begin
     end;
     if not v_ok then
       raise exception 'CHECK FALHOU: criar sem usuário aceito';
+    end if;
+    -- fase inválida chamando a função direto (sem a api-pipeline) continua barrada pela constraint
+    v_ok := false;
+    begin
+      perform public.pipeline_etapa_criar(v_t, 'Fase errada', 'outra', null, false, v_u);
+    exception when check_violation then
+      v_ok := true;
+    end;
+    if not v_ok then
+      raise exception 'CHECK FALHOU: criar com fase inválida aceito';
     end if;
 
     -- CA-3d: a versão v_v1 (13 etapas) depois de criar a 14ª → LG002, não LG001, embora a lista esteja incompleta

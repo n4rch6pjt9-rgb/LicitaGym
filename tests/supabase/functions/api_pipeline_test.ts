@@ -601,7 +601,8 @@ Deno.test("CA-3c: versão antiga depois de outra reordenação → 409 versao_de
   assertEquals(outro.status, 200);
   const atrasado = await chamar(a, { action: "etapas_reordenar", ids: [...todos].reverse(), versao: lida.json.versao });
   assertEquals([atrasado.status, atrasado.json.codigo], [409, "versao_desatualizada"]);
-  assertEquals(ids((await chamar(a, { action: "etapas_listar" })).json.etapas), ids(outro.json.etapas));
+  const depois = (await chamar(a, { action: "etapas_listar" })).json;
+  assertEquals([ids(depois.etapas), depois.versao], [ids(outro.json.etapas), outro.json.versao]);
 
   repo.tenantDoUsuario = () => Promise.resolve({ tenant: 1, papel: "operacao" });
   const negado = await chamar(ctx(repo), { action: "etapas_reordenar", ids: todos, versao: outro.json.versao });

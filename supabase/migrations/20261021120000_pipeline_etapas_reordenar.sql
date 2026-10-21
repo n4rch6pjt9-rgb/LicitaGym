@@ -16,7 +16,8 @@ begin;
 
 set local lock_timeout = '10s';
 
--- 1) Versão da lista. updated_at em UTC, para o texto não depender do TimeZone da sessão.
+-- 1) Versão da lista. updated_at em UTC com to_char, para o texto não depender do TimeZone nem do DateStyle da sessão.
+-- Duas gravações na mesma transação têm o mesmo now(); cada chamada da api-pipeline é uma transação, então não há ABA.
 create or replace function public.pipeline_etapas_versao(p_tenant bigint)
 returns text
 language sql
@@ -25,7 +26,7 @@ security invoker
 set search_path = public, pg_temp
 as $$
   select md5(coalesce(
-    string_agg(e.id::text || ':' || e.ordem::text || ':' || (e.updated_at at time zone 'UTC')::text, ',' order by e.id),
+    string_agg(e.id::text || ':' || e.ordem::text || ':' || to_char(e.updated_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US'), ',' order by e.id),
     ''))
     from public.pipeline_etapas e
    where e.tenant_id = p_tenant

@@ -418,6 +418,7 @@ def test_coletar_precos_falha_se_resposta_rpc_invalida():
 def test_coletar_precos_catalogo_vazio_nao_usa_pdms_padrao():
     cliente = MagicMock()
     sb = MagicMock()
+    sb.selecionar.return_value = []  # sem itens avulsos no catálogo
     sb.rpc.return_value = []
 
     res = compras_precos.coletar(cliente, sb)
@@ -433,6 +434,7 @@ def test_coletar_precos_usa_pdms_da_rpc():
     cliente = MagicMock()
     cliente.consultar_material.return_value = {"resultado": [], "totalRegistros": 0}
     sb = MagicMock()
+    sb.selecionar.return_value = []  # sem itens avulsos no catálogo
     sb.rpc.return_value = [{"codigo_pdm": 9999}]
 
     compras_precos.coletar(cliente, sb)

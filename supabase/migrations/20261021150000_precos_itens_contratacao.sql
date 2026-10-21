@@ -15,6 +15,7 @@
 --                                       busca livre), usado pelas três funções abaixo.
 --   public.precos_praticados_amostras(...)  linhas do recorte com estimado, nº PNCP e link, paginadas, com o total.
 --   public.precos_praticados_itens_pdm(...) itens do PDM com N > 0 no recorte (dropdown da /precos).
+--   public.precos_praticados_municipios(...) cidades (UF e município) com preço no recorte (filtro Cidade).
 -- O que muda:
 --   public.precos_praticados_resumo     recriada com os filtros novos (com default) e três saídas novas: item com mais
 --                                       amostras, n com estimado e mediana da diferença estimado → homologado (%).
@@ -131,13 +132,23 @@ as $$
                                          or k.data_hora_atualizacao_compra < c.atualizacao))
       -- não encontrada no PNCP: reconsulta depois de 30 dias (publicação tardia ou vazio passageiro da API)
       or (k.encontrada = false and k.consultado_em < now() - interval '30 days')
+      -- encontrada, mas algum item com preço ainda sem resultado na API 2.1 (estava "Em andamento" na consulta):
+      -- reconsulta depois de 7 dias, mesmo que a Pesquisa de Preço não tenha mudado
+      or (k.encontrada = true and k.consultado_em < now() - interval '7 days'
+          and exists (select 1
+                        from public.precos_praticados_itens p2
+                        left join public.precos_itens_contratacao i
+                          on i.id_compra = p2.id_compra and i.numero_item_compra = p2.numero_item_compra
+                       where p2.id_compra = c.id_compra
+                         and coalesce(i.tem_resultado, false) = false))
    order by c.ultima desc, c.id_compra
    limit greatest(1, least(coalesce(p_limite, 500), 5000))
 $$;
 
 comment on function public.precos_compras_pendentes_contratacao(date, integer) is
   'Compras da Pesquisa de Preço com data_resultado >= p_desde ainda sem linha em precos_compras_contratacao, ou com '
-  'data_hora_atualizacao_compra mais nova que a da última consulta, ou não encontradas no PNCP há mais de 30 dias. '
+  'data_hora_atualizacao_compra mais nova que a da última consulta, ou não encontradas no PNCP há mais de 30 dias, ou '
+  'encontradas com item de preço ainda sem resultado na API 2.1 há mais de 7 dias. '
   'Mais recentes primeiro. Limite de 1 a 5000. '
   'EXECUTE só service_role (coletor). Spec 0031.';
 
@@ -202,7 +213,7 @@ as $$
      and public.precos_texto_tem_todas(
            concat_ws(' ', p.objeto_compra, p.descricao_item, p.marca,
                      -- LGPD (decisão de 09/10): nome de pessoa física (CPF) não é buscável, como não é exibido
-                     case when p.ni_fornecedor ~ '^[0-9]{11}$' then null else p.nome_fornecedor end,
+                     case when btrim(p.ni_fornecedor) ~ '^[0-9]{11}$' then null else p.nome_fornecedor end,
                      p.nome_uasg), p_q)
 $$;
 
@@ -292,7 +303,9 @@ as $$
          k.ano_compra_pncp,
          k.sequencial_compra_pncp,
          k.link_sistema_origem,
-         case when i.valor_unitario_estimado > 0 then i.valor_unitario_estimado end,
+         -- estimado só de compra consultada e encontrada no PNCP (item antigo de uma compra que passou a vir vazia
+         -- não vale)
+         case when k.encontrada and i.valor_unitario_estimado > 0 then i.valor_unitario_estimado end,
          r.total
     from r
     left join public.precos_compras_contratacao k on k.id_compra = r.id_compra
@@ -345,6 +358,40 @@ comment on function public.precos_praticados_itens_pdm(integer, date, date, text
   'Itens de catálogo do PDM com ao menos um preço no recorte (n > 0 por construção), com a descrição do preço mais '
   'recente e o n. O filtro de item não se aplica (é a lista para escolher o item). A api-precos ordena por n desc. '
   'EXECUTE só service_role (api-precos). Spec 0031.';
+
+-- 6b) Cidades do recorte (lista do filtro Cidade) -------------------------------------------------------------------
+
+create or replace function public.precos_praticados_municipios(
+  p_pdm integer,
+  p_inicio date,
+  p_fim date,
+  p_item integer default null,
+  p_uf text default null,
+  p_unidade text default null,
+  p_uasg text default null,
+  p_objeto text default null,
+  p_q text default null
+)
+returns table (uf text, municipio text, n integer)
+language sql
+stable
+security invoker
+set search_path = public, pg_temp
+as $$
+  -- uma linha por cidade como o filtro compara (sem acento, sem diferenciar maiúsculas); o nome mostrado é a grafia
+  -- mais frequente na fonte (empate: a menor)
+  select p.estado, mode() within group (order by btrim(p.municipio)), count(*)::int
+    from public.precos_praticados_recorte(p_pdm, p_inicio, p_fim, p_item, p_uf, p_unidade, null, p_uasg,
+                                          p_objeto, p_q) p
+   where p.estado is not null and nullif(btrim(p.municipio), '') is not null
+   group by p.estado, public.lg_normalizar(btrim(p.municipio))
+   order by p.estado, count(*) desc, 2
+$$;
+
+comment on function public.precos_praticados_municipios(integer, date, date, integer, text, text, text, text, text) is
+  'Cidades com preço no recorte da /precos (uma por UF e nome sem acento; mostra a grafia mais frequente), com o n; o '
+  'filtro de cidade não se aplica (é a lista para escolher a cidade). Lista do filtro Cidade (spec 0031, Proposta 7). '
+  'EXECUTE só service_role (api-precos).';
 
 -- 7) Resumo com filtros novos e KPIs ---------------------------------------------------------------------------------
 
@@ -446,6 +493,8 @@ as $$
       from base b
       join public.precos_itens_contratacao c
         on c.id_compra = b.id_compra and c.numero_item_compra = b.numero_item_compra
+      join public.precos_compras_contratacao k
+        on k.id_compra = b.id_compra and k.encontrada
      where c.valor_unitario_estimado > 0
   )
   select a.n,
@@ -490,6 +539,7 @@ revoke all on function public.precos_texto_tem_todas(text, text) from public, an
 revoke all on function public.precos_praticados_recorte(integer, date, date, integer, text, text, text, text, text, text) from public, anon, authenticated;
 revoke all on function public.precos_praticados_amostras(integer, date, date, integer, text, text, text, text, text, text, integer, integer) from public, anon, authenticated;
 revoke all on function public.precos_praticados_itens_pdm(integer, date, date, text, text, text, text, text, text) from public, anon, authenticated;
+revoke all on function public.precos_praticados_municipios(integer, date, date, integer, text, text, text, text, text) from public, anon, authenticated;
 revoke all on function public.precos_praticados_resumo(integer, date, date, integer, text, text, text, text, text, text) from public, anon, authenticated;
 
 grant execute on function public.precos_compras_pendentes_contratacao(date, integer) to service_role;
@@ -497,6 +547,7 @@ grant execute on function public.precos_texto_tem_todas(text, text) to service_r
 grant execute on function public.precos_praticados_recorte(integer, date, date, integer, text, text, text, text, text, text) to service_role;
 grant execute on function public.precos_praticados_amostras(integer, date, date, integer, text, text, text, text, text, text, integer, integer) to service_role;
 grant execute on function public.precos_praticados_itens_pdm(integer, date, date, text, text, text, text, text, text) to service_role;
+grant execute on function public.precos_praticados_municipios(integer, date, date, integer, text, text, text, text, text) to service_role;
 grant execute on function public.precos_praticados_resumo(integer, date, date, integer, text, text, text, text, text, text) to service_role;
 
 commit;

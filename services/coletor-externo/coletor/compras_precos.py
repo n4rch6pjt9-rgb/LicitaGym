@@ -38,7 +38,7 @@ import requests
 
 from .arquivo_raw import ArquivoRaw
 from .compras_api import ErroApiCompras, ParametroInvalido, corpo_json, erro_http, instabilidade_compras, validar_codigo
-from .compras_pdms import CatalogoPdmsIndisponivel, carregar_pdms_efetivos
+from .compras_pdms import CatalogoPdmsIndisponivel, carregar_itens_avulsos, carregar_pdms_efetivos
 from .destino import Supabase, env
 from .paginacao import TAMANHO_PAGINA_MAX, DecisaoPagina, avaliar_pagina, clamp_tamanho, pagina_repetida
 from .retry import espera_retry
@@ -368,10 +368,13 @@ def _coletar_precos(
         if sb is None:
             # Sem banco (dry-run sem --pdms/--itens): única situação em que a lista fixa é usada.
             pdms_efetivos = list(PDMS_PADRAO)
+            itens_avulsos: list[int] = []
         else:
             # Com banco, só o catálogo efetivo: falha/resposta inválida da RPC falha a coleta, sem PDMS_PADRAO.
+            # Itens incluídos fora dos PDMs efetivos entram como consulta por item (codigoItemCatalogo).
             try:
                 pdms_efetivos = carregar_pdms_efetivos(sb)
+                itens_avulsos = carregar_itens_avulsos(sb, pdms_efetivos)
             except CatalogoPdmsIndisponivel as e:
                 log.error("Coleta de Pesquisa de Preço abortada: %s", e)
                 return {
@@ -382,7 +385,7 @@ def _coletar_precos(
                     "erros": 1,
                     "amostras": [],
                 }
-            if not pdms_efetivos:
+            if not pdms_efetivos and not itens_avulsos:
                 # Modo catálogo com banco: catálogo vazio não é "coleta sem nada a fazer" com sucesso. Falha explícita
                 # (spec 0009, revisão I5), para o Job sair com código 1 e alguém olhar o catálogo.
                 msg = "catálogo de PDMs efetivos vazio: nenhuma consulta de Pesquisa de Preço"
@@ -397,6 +400,8 @@ def _coletar_precos(
                 }
         for p in pdms_efetivos:
             consultas.append(("codigoPdm", p))
+        for it in itens_avulsos:
+            consultas.append(("codigoItemCatalogo", it))
 
     for tipo, cod in consultas:
         pagina = 1

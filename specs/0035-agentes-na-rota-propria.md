@@ -184,10 +184,9 @@ visíveis na rota, como fato com trecho e página, mas não vão para a aba.
 - 21/10: as Etapas e tarefas do pipeline já criam uma tarefa padrão por agente.
 - 21/10: o responsável de uma tarefa pode ser usuário cadastrado ou agente; o agente carrega o nome da API de execução,
   para servir a agentes futuros em outras etapas.
+- 21/10: "Enviar para a oportunidade" manda a análise inteira (sem escolher alerta por alerta).
 - 21/10: protótipos da rota antiga só para o admin da plataforma até esta spec entrar (prazo para desligar: 21/11/2026).
 
 ## Perguntas em aberto
 
-1. "Enviar" manda a execução inteira ou o usuário escolhe quais alertas vão? Recomendação: a execução inteira. Quem
-   revisa na aba aprova ou rejeita, e escolher alerta por alerta seria uma revisão em dobro. Sem resposta, a
-   implementação segue a recomendação.
+Nenhuma.

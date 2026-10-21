@@ -40,6 +40,44 @@ export interface Execucao {
   revisado_em: string | null;
   solicitado_por: string;
   created_at: string;
+  /** Spec 0035 (K-3/K-4): enviada para a aba da oportunidade. Nula: só aparece na rota do agente. */
+  enviada_em: string | null;
+  enviada_por: string | null;
+  /** Tarefa do agente ligada no envio (R-8); nula sem tarefa aberta na etapa atual. */
+  tarefa_id: number | null;
+  /** Revisões rejeitadas antes de um reenvio (R-9). */
+  revisoes_anteriores: Array<{ decisao: string; nota: string | null; por: string | null; em: string | null; enviada_em: string | null }>;
+}
+
+/** Oportunidade da busca da rota do agente (K-0). */
+export interface OportunidadeAgente {
+  licitacao_id: number;
+  numero_edital: string | null;
+  numero_processo: string | null;
+  orgao_nome: string | null;
+  municipio: string | null;
+  uf: string | null;
+  objeto: string | null;
+  modalidade: string | null;
+  data_fim: string | null;
+  etapa: { id: number; nome: string };
+}
+
+/** Categoria do erro de processamento (R-3): nunca o texto livre, que pode trazer URI de storage. */
+export type CategoriaErro = "download" | "extracao" | "indexacao" | "outro";
+
+/** Documento oficial da licitação na rota do agente (K-1), com colunas fixas. */
+export interface DocumentoAgente {
+  id: number;
+  secao: string;
+  nome: string;
+  data_documento: string | null;
+  status_processamento: "pendente" | "baixado" | "extraido" | "indexado" | "erro" | "ignorado";
+  /** Páginas distintas indexadas; null se o documento não tem texto indexado. */
+  paginas: number | null;
+  /** Só a seção "processo" vira texto para o agente (licitacao_chunks.secao = 'processo'). */
+  entra_na_analise: boolean;
+  erro: CategoriaErro | null;
 }
 
 /** Último pedido da fila de preparação (download + indexação do edital) da licitação na empresa. Spec 0018/0032. */
@@ -48,6 +86,19 @@ export interface Preparacao {
   resultado: string | null;
   erro: string | null;
   atualizado_em: string | null;
+}
+
+const STATUS_DOCUMENTO = new Set(["pendente", "baixado", "extraido", "indexado", "erro", "ignorado"]);
+
+/** R-3: categoria fixa do erro gravado pelo coletor/indexador. Texto sem padrão conhecido vira "outro". */
+export function categoriaErro(texto: string | null): CategoriaErro | null {
+  if (texto === null || texto.trim() === "") return null;
+  if (/index|chunk|embedding/i.test(texto)) return "indexacao";
+  if (/texto aproveit|extra[cç]/i.test(texto)) return "extracao";
+  // antes de "pdf": o erro HTTP traz a URL do arquivo
+  if (/\b[45]\d\d\b|url|download|baix|timeout|tempo esgotado|conex/i.test(texto)) return "download";
+  if (/ocr|pdf|zip|corrompid/i.test(texto)) return "extracao";
+  return "outro";
 }
 
 export class ErroAgentes extends Error {
@@ -73,7 +124,22 @@ export interface AgentesRepo {
     proposta: PropostaItem[] | null,
     r: ResultadoAgente,
   ): Promise<Execucao>;
-  ultimasExecucoes(tenant: number, licitacaoId: number): Promise<Execucao[]>;
+  /** Última execução por agente; com `somenteEnviadas`, a mais recente **enviada** por agente (R-10). */
+  ultimasExecucoes(tenant: number, licitacaoId: number, somenteEnviadas?: boolean): Promise<Execucao[]>;
+  /** R-1: a licitação está no pipeline da empresa (fora dele, 404 sem vazar dado). */
+  estaNoPipeline(tenant: number, licitacaoId: number): Promise<boolean>;
+  /** K-0 (agente_oportunidades_buscar): página de oportunidades e o total. */
+  buscarOportunidades(
+    tenant: number,
+    agente: string,
+    busca: string | null,
+    limite: number,
+    deslocamento: number,
+  ): Promise<{ itens: OportunidadeAgente[]; total: number }>;
+  /** K-1 (agente_documentos_listar): P0002 vira 404. */
+  listarDocumentos(tenant: number, licitacaoId: number): Promise<DocumentoAgente[]>;
+  /** K-4 (agente_execucao_enviar): LG003 vira 409, P0002 vira 404. */
+  enviar(tenant: number, id: number, userId: string): Promise<Execucao>;
   obterExecucao(tenant: number, id: number): Promise<Execucao | null>;
   ultimaAprovada(tenant: number, licitacaoId: number, agente: Agente): Promise<Execucao | null>;
   revisar(
@@ -104,6 +170,10 @@ function comoExecucao(row: Record<string, unknown>): Execucao {
     revisado_em: (row.revisado_em as string | null) ?? null,
     solicitado_por: String(row.solicitado_por),
     created_at: String(row.created_at),
+    enviada_em: (row.enviada_em as string | null) ?? null,
+    enviada_por: (row.enviada_por as string | null) ?? null,
+    tarefa_id: row.tarefa_id == null ? null : Number(row.tarefa_id),
+    revisoes_anteriores: Array.isArray(row.revisoes_anteriores) ? row.revisoes_anteriores as Execucao["revisoes_anteriores"] : [],
   };
 }
 
@@ -306,14 +376,15 @@ export function createSupabaseRepo(client: SupabaseClient): AgentesRepo {
       return comoExecucao(data as Record<string, unknown>);
     },
 
-    async ultimasExecucoes(tenant, licitacaoId) {
-      const { data, error } = await client
+    async ultimasExecucoes(tenant, licitacaoId, somenteEnviadas = false) {
+      let q = client
         .from("agente_execucoes")
         .select("*")
         .eq("tenant_id", tenant)
-        .eq("licitacao_id", licitacaoId)
-        .order("created_at", { ascending: false })
-        .limit(200);
+        .eq("licitacao_id", licitacaoId);
+      // R-10: filtra antes de escolher a mais recente, para uma execução nova não enviada não esconder a enviada.
+      if (somenteEnviadas) q = q.not("enviada_em", "is", null).order("enviada_em", { ascending: false });
+      const { data, error } = await q.order("created_at", { ascending: false }).limit(200);
       if (error) throw new Error(error.message);
       const vistas = new Set<Agente>();
       const saida: Execucao[] = [];
@@ -327,6 +398,67 @@ export function createSupabaseRepo(client: SupabaseClient): AgentesRepo {
         const achou = saida.find((e) => e.agente === agente);
         return achou ? [achou] : [];
       });
+    },
+
+    async estaNoPipeline(tenant, licitacaoId) {
+      const { data, error } = await client.from("pipeline_oportunidades").select("licitacao_id")
+        .eq("tenant_id", tenant).eq("licitacao_id", licitacaoId).maybeSingle();
+      if (error) throw new Error(error.message);
+      return data !== null;
+    },
+
+    async buscarOportunidades(tenant, agente, busca, limite, deslocamento) {
+      const { data, error } = await client.rpc("agente_oportunidades_buscar", {
+        p_tenant: tenant, p_agente: agente, p_busca: busca, p_limite: limite, p_deslocamento: deslocamento,
+      });
+      if (error) throw new Error(error.message);
+      const linhas = (data ?? []) as Array<Record<string, unknown>>;
+      return {
+        total: Number(linhas[0]?.total ?? 0),
+        itens: linhas.map((l) => ({
+          licitacao_id: Number(l.licitacao_id),
+          numero_edital: (l.numero_edital as string | null) ?? null,
+          numero_processo: (l.numero_processo as string | null) ?? null,
+          orgao_nome: (l.orgao_nome as string | null) ?? null,
+          municipio: (l.municipio as string | null) ?? null,
+          uf: (l.uf as string | null) ?? null,
+          objeto: (l.objeto as string | null) ?? null,
+          modalidade: (l.modalidade as string | null) ?? null,
+          data_fim: (l.data_fim as string | null) ?? null,
+          etapa: { id: Number(l.etapa_id), nome: String(l.etapa_nome) },
+        })),
+      };
+    },
+
+    async listarDocumentos(tenant, licitacaoId) {
+      const { data, error } = await client.rpc("agente_documentos_listar", { p_tenant: tenant, p_licitacao: licitacaoId });
+      if (error?.code === "P0002") throw new ErroAgentes("Licitação não encontrada.", 404);
+      if (error) throw new Error(error.message);
+      // Lista fixa de chaves (R-3): nada além disto sai, mesmo que a função passe a devolver mais colunas.
+      return ((data ?? []) as Array<Record<string, unknown>>).map((d): DocumentoAgente => {
+        const status = String(d.status_processamento);
+        if (!STATUS_DOCUMENTO.has(status)) throw new Error(`status_processamento desconhecido: ${status}`);
+        return {
+          id: Number(d.id),
+          secao: String(d.secao),
+          nome: String(d.nome),
+          data_documento: (d.data_documento as string | null) ?? null,
+          status_processamento: status as DocumentoAgente["status_processamento"],
+          paginas: d.paginas == null ? null : Number(d.paginas),
+          entra_na_analise: d.secao === "processo",
+          erro: categoriaErro((d.erro as string | null) ?? null),
+        };
+      });
+    },
+
+    async enviar(tenant, id, userId) {
+      const { data, error } = await client.rpc("agente_execucao_enviar", { p_tenant: tenant, p_execucao: id, p_user: userId });
+      if (error?.code === "LG003") throw new ErroAgentes("Esta análise já foi enviada.", 409);
+      if (error?.code === "P0002") throw new ErroAgentes("Execução não encontrada.", 404);
+      if (error) throw new Error(error.message);
+      const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | null;
+      if (!row) throw new Error("agente_execucao_enviar não devolveu a execução");
+      return comoExecucao(row);
     },
 
     async obterExecucao(tenant, id) {

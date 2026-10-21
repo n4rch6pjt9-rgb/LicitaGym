@@ -1,4 +1,4 @@
-import { type Acao, DESFECHOS, type Desfecho, type Fase, FASES, type ItemModelo } from "./types.ts";
+import { type Acao, DESFECHOS, type Desfecho, type Fase, FASES, type ItemAgente, type ItemModelo, type ResponsavelModelo } from "./types.ts";
 
 export const MAX_LOTE = 200;
 const MAX_NOME = 60;
@@ -46,6 +46,58 @@ const erro = (x: unknown): x is { error: string } => typeof x === "object" && x 
 const MAX_TAREFAS_ETAPA = 100;
 const CODIGO_CATALOGO_RE = /^\d{5}-F\d{2}-T\d{2}$/;
 const CHAVE_RE = /^[a-z0-9][a-z0-9-]{2,59}$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const AGENTE_RE = /^[a-z][a-z0-9_]{1,30}$/;
+const MAX_AGENTES_ETAPA = 20;
+
+/** Responsável da tarefa da empresa (spec 0035). O banco confere que o usuário é membro ativo da empresa. */
+function responsavel(v: unknown, i: number): ResponsavelModelo | { error: string } {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return { error: `'tarefas[${i}].responsavel' deve ser objeto.` };
+  const o = v as Record<string, unknown>;
+  if (o.tipo === "papel") {
+    const papel = o.papel === undefined || o.papel === null ? null : o.papel;
+    if (papel !== null && papel !== "admin" && papel !== "operacao") {
+      return { error: `'tarefas[${i}].responsavel.papel' deve ser admin ou operacao.` };
+    }
+    return { tipo: "papel", papel: papel as "admin" | "operacao" | null };
+  }
+  if (o.tipo === "usuario") {
+    if (typeof o.user_id !== "string" || !UUID_RE.test(o.user_id)) return { error: `'tarefas[${i}].responsavel.user_id' inválido.` };
+    return { tipo: "usuario", user_id: o.user_id.toLowerCase() };
+  }
+  return { error: `'tarefas[${i}].responsavel.tipo' deve ser papel ou usuario (agente vai em etapa_tarefas_agentes_salvar).` };
+}
+
+/** Lista completa de agentes de uma etapa (etapa_tarefas_agentes_salvar). O banco confere o catálogo de agentes. */
+function itensAgentes(v: unknown): ItemAgente[] | { error: string } {
+  if (!Array.isArray(v)) return { error: "'agentes' deve ser a lista completa de agentes da etapa (array)." };
+  if (v.length > MAX_AGENTES_ETAPA) return { error: `'agentes' aceita no máximo ${MAX_AGENTES_ETAPA} itens.` };
+  const out: ItemAgente[] = [];
+  for (const [i, it] of v.entries()) {
+    if (typeof it !== "object" || it === null || Array.isArray(it)) return { error: `'agentes[${i}]' deve ser objeto.` };
+    const o = it as Record<string, unknown>;
+    if (typeof o.agente !== "string" || !AGENTE_RE.test(o.agente)) return { error: `'agentes[${i}].agente' inválido.` };
+    const titulo = o.titulo === undefined || o.titulo === null ? null : o.titulo;
+    if (titulo !== null && (typeof titulo !== "string" || titulo.trim().length > 200)) {
+      return { error: `'agentes[${i}].titulo' deve ser texto (até 200 caracteres).` };
+    }
+    const descricao = o.descricao === undefined || o.descricao === null ? null : o.descricao;
+    if (descricao !== null && (typeof descricao !== "string" || descricao.length > 2000)) {
+      return { error: `'agentes[${i}].descricao' deve ser texto (até 2000 caracteres).` };
+    }
+    const prazo = o.prazo_horas === undefined || o.prazo_horas === null ? null : o.prazo_horas;
+    if (prazo !== null && (typeof prazo !== "number" || !Number.isInteger(prazo) || prazo < 1 || prazo > 8760)) {
+      return { error: `'agentes[${i}].prazo_horas' deve ser inteiro de 1 a 8760, ou null.` };
+    }
+    out.push({
+      agente: o.agente,
+      titulo: (titulo as string | null)?.trim().replace(/\s+/g, " ") || null,
+      descricao: (descricao as string | null)?.trim() || null,
+      prazo_horas: prazo as number | null,
+    });
+  }
+  return out;
+}
 
 /** Lista completa do modelo de uma etapa (etapa_tarefas_salvar). O banco confere o catálogo e a chave. */
 function itensModelo(v: unknown): ItemModelo[] | { error: string } {
@@ -75,7 +127,13 @@ function itensModelo(v: unknown): ItemModelo[] | { error: string } {
       if (prazo !== null && (typeof prazo !== "number" || !Number.isInteger(prazo) || prazo < 1 || prazo > 8760)) {
         return { error: `'tarefas[${i}].prazo_horas' deve ser inteiro de 1 a 8760, ou null.` };
       }
-      out.push({ origem: "empresa", chave: chave as string | null, titulo, descricao: (descricao as string | null)?.trim() || null, prazo_horas: prazo as number | null });
+      const item: ItemModelo = { origem: "empresa", chave: chave as string | null, titulo, descricao: (descricao as string | null)?.trim() || null, prazo_horas: prazo as number | null };
+      if (o.responsavel !== undefined && o.responsavel !== null) {
+        const r = responsavel(o.responsavel, i);
+        if (erro(r)) return r;
+        item.responsavel = r;
+      }
+      out.push(item);
     } else {
       return { error: `'tarefas[${i}].origem' deve ser catalogo ou empresa.` };
     }
@@ -179,6 +237,12 @@ export function parseActionFromBody(body: Corpo): Resultado {
       if (!etapa_id) return { error: "'etapa_id' é obrigatório." };
       const tarefas = itensModelo(body.tarefas);
       return erro(tarefas) ? tarefas : { action, etapa_id, tarefas };
+    }
+    case "etapa_tarefas_agentes_salvar": {
+      const etapa_id = idPositivo(body.etapa_id);
+      if (!etapa_id) return { error: "'etapa_id' é obrigatório." };
+      const agentes = itensAgentes(body.agentes);
+      return erro(agentes) ? agentes : { action, etapa_id, agentes };
     }
     case "tarefas_reaplicar": {
       const licitacao_id = idPositivo(body.licitacao_id);

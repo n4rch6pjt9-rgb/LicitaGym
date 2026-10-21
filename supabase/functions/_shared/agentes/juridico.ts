@@ -60,6 +60,8 @@ export function agenteJuridico(entrada: { sinais: Achado[]; dispositivos: Dispos
       const aviso = dispositivo.conferido_oficial ? "" : " (texto não conferido com a fonte oficial)";
       trechos.push(`Art. ${artigo} ${dispositivo.texto}${aviso}`);
     }
+    // Spec 0035, R-19: o trecho do edital que acendeu o sinal vem junto, para o badge mostrar a página.
+    for (const f of sinal.fontes) if (f.tipo === "chunk") fontes.push({ ...f });
     fontes.push({ tipo: "calculo", regra: "mapa_sinal_dispositivo", versao: REGRA_VERSAO });
     achados.push({
       codigo: `juridico.${sinal.codigo.replaceAll(".", "_")}`,

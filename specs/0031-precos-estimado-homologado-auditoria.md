@@ -1,11 +1,11 @@
 # 0031: Revisar a /precos: estimado × homologado, links da compra, filtros, KPIs e marca pela ata
 
-- **Status:** rascunho (revisada em 21/10 com o feedback do Marcelo, as respostas às perguntas e medições novas)
+- **Status:** aprovada (21/10, pelo Marcelo, depois das respostas às perguntas e das medições)
 - **Alimenta:** spec-mãe 0032, fase 3 (agente de preço: estimado × homologado e "fora do perfil")
 - **Repositório:** os dois (backend vai ao ar antes do front)
 - **Issue:** nenhuma (feedback do Marcelo de 19/10 e de 21/10 sobre a página /precos)
 - **Área:** coletor | migrations | edge-functions | dashboard-contrato | dashboard-tela
-- **Depende do ok do Marcelo:** sim (migration nova, decisão de produto, dado de produção)
+- **Depende do ok do Marcelo:** sim (migration nova, decisão de produto, dado de produção); ok dado em 21/10
 
 ## Leitura obrigatória antes de implementar
 
@@ -131,10 +131,11 @@ A coleta de preços não roda desde 03/10 (18 dias em 21/10). A conferir pelo Ma
    - `valor_estimado` (oficial ou `null`), `valor_homologado` (o `preco_unitario`), `diferenca_valor` e
      `diferenca_percentual` = (homologado − estimado) / estimado × 100, 2 casas, meio para longe do zero, só com estimado;
    - `link_pncp` = `https://pncp.gov.br/app/editais/<cnpj>/<ano>/<sequencial>`, a partir do nº de controle;
-   - `link_portal_oficial` = o `linkSistemaOrigem` que o PNCP mostra (decisão de 21/10). Sem ele, montado a partir do
-     `id_compra` no formato que o PNCP usa para as dispensas
+   - `link_portal_oficial` = o `linkSistemaOrigem` que o PNCP mostra, com `link_portal_oficial_origem = "pncp"`. Sem ele
+     (25% do recorte em 21/10, todas dispensas), **montado** a partir do `id_compra` no formato que o PNCP usa para as
+     dispensas com link
      (`https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/acompanhamento-compra?compra=<id_compra>`),
-     com `link_portal_oficial_origem = "montado"`; com ele, `"pncp"` (pergunta 1 em aberto);
+     com `link_portal_oficial_origem = "montado"` (decisão de 21/10);
    - os campos já gravados e hoje descartados: município, esfera (F Federal, E Estadual, M Municipal), poder
      (E Executivo, L Legislativo), modalidade, forma (SISPP/SISRP), critério de julgamento e
      `percentual_maior_desconto`;
@@ -174,7 +175,7 @@ A coleta de preços não roda desde 03/10 (18 dias em 21/10). A conferir pelo Ma
     - **Quadro descritivo:** uma linha só: "UN (UNIDADE) em 145 de 146 preços · Fonte: Compras.gov (Pesquisa de Preço +
       Contratações 14.133) e PNCP · período 22/10/2024 a 21/10/2026 · última coleta: <data>". O aviso de unidades
       mistas fica, com o filtro de item sugerido. A regra de cálculo vai para um ícone de ajuda.
-    - **Selo** no link do portal oficial quando ele foi montado e não veio do PNCP.
+    - **Selo** "montado" no link do portal oficial quando ele não veio do PNCP.
 12. **Navegação para o BI** (decisão de 21/10): a /precos leva ao BI de preços com o mesmo recorte (os filtros vão
     na URL do BI). O BI passa a usar o estimado, o homologado e a diferença da `precos_itens_contratacao`.
 
@@ -217,7 +218,7 @@ A coleta de preços não roda desde 03/10 (18 dias em 21/10). A conferir pelo Ma
 | CA-4 | A | **Dado** compras com `data_resultado` dentro e fora dos 24 meses, **quando** a coleta roda, **então** só as de dentro são consultadas. | pytest (mesmo arquivo) |
 | CA-5 | A | **Dado** erro HTTP ou JSON ilegível em uma compra, **quando** a coleta roda, **então** a compra conta em `falhas`, nada é gravado para ela e o Job sai com código 1. | pytest (mesmo arquivo) |
 | CA-6 | A | **Dado** uma linha com estimado 80800 e homologado 52000, **quando** a amostra é pedida, **então** vêm `diferenca_valor` −28800, `diferenca_percentual` −35,64, `link_pncp` e `link_portal_oficial`. | Deno `tests/supabase/api-precos/amostra_estimado_test.ts` |
-| CA-6b | A | **Dado** a compra 16021805900022026 com `linkSistemaOrigem` no PNCP, **quando** a amostra é pedida, **então** `link_portal_oficial` é esse link e a origem é `"pncp"`; **dado** uma compra sem ele, o link é montado do `id_compra` e a origem é `"montado"`. | Deno (mesmo arquivo) |
+| CA-6b | A | **Dado** a compra 16021805900022026 com `linkSistemaOrigem` no PNCP, **quando** a amostra é pedida, **então** `link_portal_oficial` é esse link e a origem é `"pncp"`; **dado** uma dispensa sem ele, o link é `.../public/compras/acompanhamento-compra?compra=<id_compra>` e a origem é `"montado"`. | Deno (mesmo arquivo) |
 | CA-7 | A | **Dado** `uasg=160218`, **quando** a amostra e o resumo são pedidos, **então** só entram linhas dessa UASG; com `uasg=belem`, entram as de nome com "Belém". | Deno `tests/supabase/api-precos/filtros_test.ts` |
 | CA-7b | A | **Dado** `uf=PA` e `municipio=BELÉM`, **quando** a amostra é pedida, **então** só entram linhas de Belém/PA; `municipio` sem `uf` dá 400. | Deno (mesmo arquivo) |
 | CA-7c | A | **Dado** `q=klopf mesa`, **quando** a amostra é pedida, **então** só entram linhas com as duas palavras em algum dos campos da busca livre, sem diferenciar acento e maiúsculas; com `objeto=esportivo`, só as de objeto com "esportivo". | Deno (mesmo arquivo) |
@@ -271,7 +272,7 @@ A coleta de preços não roda desde 03/10 (18 dias em 21/10). A conferir pelo Ma
 - 21/10: o dropdown de itens mostra só itens com amostra, com o N.
 - 21/10: a faixa de 0,4× a 2,5× a mediana com mínimo de 5 preços vale como regra de produto (para o agente de preço).
 - 21/10: não existe orçamento sigiloso depois de homologado: a /precos não mostra campo nem selo de sigilo.
-- 21/10: o link do portal oficial é o que o PNCP mostra (`linkSistemaOrigem`); sem ele, montado a partir do portal oficial do edital.
+- 21/10: o link do portal oficial é o que o PNCP mostra (`linkSistemaOrigem`); sem ele (dispensas), o link do Compras.gov é montado a partir do `id_compra`, com selo "montado".
 - 21/10: "fora do perfil" não entra na /precos; o operador limpa o recorte pelos filtros.
 - 21/10: filtros: objeto da contratação, PDM, item, 12 e 24 meses, UF, cidade, UASG e busca livre por palavras. O HAR da pesquisa do Licitar Digital é referência de formato, não regra.
 - 21/10: navegação: a /precos leva ao BI.
@@ -280,6 +281,4 @@ A coleta de preços não roda desde 03/10 (18 dias em 21/10). A conferir pelo Ma
 
 ## Perguntas em aberto
 
-1. **Link montado (medido em 21/10):** 25% das compras do recorte, todas dispensas, não têm `linkSistemaOrigem` no PNCP.
-   Nenhuma compra de outro portal apareceu. Proposta: montar o link do Compras.gov a partir do `id_compra`, no formato
-   que o PNCP usa nas dispensas com link, com selo "montado". Alternativa: mostrar só o link do PNCP nessas linhas.
+Nenhuma.

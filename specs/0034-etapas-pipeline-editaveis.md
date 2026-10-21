@@ -1,6 +1,6 @@
 # 0034: Editar as etapas do pipeline na tela e tirar as listas fixas de etapas do front
 
-- **Status:** em implementação (aprovada por Marcelo em 20/10, reaprovada com a migration em 21/10 no merge do #412; backend K-5 a K-7 em PR draft, front K-1 a K-4 pendente)
+- **Status:** em implementação (aprovada por Marcelo em 20/10, reaprovada com a migration em 21/10 no merge do #412; backend K-5 a K-7 no #414, front K-1 a K-4 pendente)
 - **Alimenta:** módulo 2 (Pipeline e tarefas) de `docs/produto/ESCOPO.md`; área `/configuracoes` > Processo
 - **Repositório:** os dois (uma ação nova na `api-pipeline`; o backend vai ao ar antes do front)
 - **Issue:** #408

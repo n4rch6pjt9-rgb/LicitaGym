@@ -1,6 +1,6 @@
 # 0035: Rodar os agentes de Edital e Jurídico na rota própria e enviar os alertas para a oportunidade
 
-- **Status:** rascunho
+- **Status:** aprovada (Marcelo, 21/10/2026)
 - **Alimenta:** spec-mãe 0032, fase 2 (ligação: o agente roda pelo botão e o resultado chega à oportunidade para revisão)
 - **Repositório:** os dois (backend vai ao ar antes do front)
 - **Issue:** nenhuma (pedido do Marcelo em 21/10, comentário no print da rota antiga `/agentes/editais`)

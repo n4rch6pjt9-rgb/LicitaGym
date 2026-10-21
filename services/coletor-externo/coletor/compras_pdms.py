@@ -1,4 +1,9 @@
-"""PDMs efetivos do catálogo da empresa (RPC catalogo_catmat_pdms_efetivos) para os coletores Compras.gov.
+"""PDMs efetivos e itens avulsos do catálogo da empresa para os coletores Compras.gov.
+
+- PDMs efetivos: RPC catalogo_catmat_pdms_efetivos (regra de PDM, classe ou grupo incluída).
+- Itens avulsos: regras de nível item incluídas cujo PDM não é efetivo (ex.: um item de piso sintético marcado sem
+  incluir o PDM 10779 inteiro). A Pesquisa de Preço consulta esses itens um a um (tipo=codigoItemCatalogo); item de
+  PDM efetivo já vem na consulta do PDM e não é repetido.
 
 Sem fallback: se a RPC falhar ou responder fora do contrato, levanta CatalogoPdmsIndisponivel e a coleta
 falha (nada de cair nos PDMs fixos e terminar com sucesso parcial). Lista vazia é resposta válida:
@@ -11,6 +16,7 @@ import logging
 log = logging.getLogger("coletor.compras_pdms")
 
 RPC_PDMS_EFETIVOS = "catalogo_catmat_pdms_efetivos"
+TABELA_CATALOGO = "catalogo_empresa_catmat"
 
 
 class CatalogoPdmsIndisponivel(RuntimeError):
@@ -44,3 +50,31 @@ def carregar_pdms_efetivos(sb) -> list[int]:
     else:
         log.warning("Catálogo de PDMs efetivos vazio: nenhuma consulta de PDM será feita")
     return pdms
+
+
+def carregar_itens_avulsos(sb, pdms_efetivos: list[int]) -> list[int]:
+    """Itens incluídos no catálogo (nível item) fora dos PDMs efetivos, em ordem crescente e sem repetição.
+
+    Mesma regra de erro dos PDMs: leitura que falha ou linha fora do contrato levanta CatalogoPdmsIndisponivel.
+    [] = nenhum item avulso (válido).
+    """
+    try:
+        linhas = sb.selecionar(TABELA_CATALOGO, select="id,codigo_item,codigo_pdm", nivel="eq.item",
+                               incluido="is.true")
+    except Exception as e:  # rede, HTTP >= 300, JSON inválido
+        raise CatalogoPdmsIndisponivel(f"leitura dos itens de {TABELA_CATALOGO} falhou: {e}") from e
+    if not isinstance(linhas, list):
+        raise CatalogoPdmsIndisponivel(
+            f"leitura dos itens de {TABELA_CATALOGO} respondeu {type(linhas).__name__}, esperado lista")
+    efetivos = set(pdms_efetivos)
+    itens: set[int] = set()
+    for linha in linhas:
+        codigo = linha.get("codigo_item") if isinstance(linha, dict) else None
+        if isinstance(codigo, bool) or not isinstance(codigo, int) or codigo <= 0:
+            raise CatalogoPdmsIndisponivel(f"{TABELA_CATALOGO}: regra de item sem codigo_item válido: {linha!r}")
+        if linha.get("codigo_pdm") in efetivos:
+            continue
+        itens.add(codigo)
+    if itens:
+        log.info("Carregados %d itens avulsos do catálogo da empresa (fora dos PDMs efetivos)", len(itens))
+    return sorted(itens)

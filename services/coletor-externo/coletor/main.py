@@ -9,11 +9,15 @@ Uso (Cloud Run Job, varre IDs 1..120 e grava tudo; depois coleta os preços):
 --coleta escolhe o que roda (padrão: todas):
     sestsenat  só o portal SEST SENAT
     precos     só a Pesquisa de Preço (spec 0009): compras_precos em modo catálogo (PDMs de
-               catalogo_catmat_pdms_efetivos(), nunca a lista fixa) e, em seguida, o 2_consultarMaterialDetalhe só
+               catalogo_catmat_pdms_efetivos(), nunca a lista fixa, mais os itens incluídos no catálogo fora desses
+               PDMs, consultados por item) e, em seguida, o 2_consultarMaterialDetalhe só
                para completar as linhas sem descrição detalhada; por fim, o estimado e o link da compra (spec 0031,
                compras_itens_contratacao) das compras do recorte de 24 meses. No --dry-run não grava nem completa o
                detalhe nem o estimado.
     todas      os dois, um depois do outro; a falha de um não impede o outro.
+Rodada pontual de preços (só com --coleta precos), sem varrer o catálogo: --pdms 6762 3672 e/ou --itens 614555.
+O detalhe e o estimado/link rodam depois sobre todas as pendências, como na rodada normal.
+No Cloud Run: gcloud run jobs execute coletor-precos --args="--coleta,precos,--origem,manual,--pdms,6762,3672"
 O código de saída é 1 se qualquer parte falhar (inclusive falha de uma linha do detalhe).
 
 Variáveis de ambiente:
@@ -142,10 +146,21 @@ def coletar_processo(portal: PortalSestSenat, sb: Supabase | None, arm: Armazena
     return resumo
 
 
-def coletar_precos(sb: Supabase | None, dry_run: bool, delay: float) -> bool:
-    """Pesquisa de Preço em modo catálogo + detalhe só para completar. True se tudo deu certo."""
+def coletar_precos(sb: Supabase | None, dry_run: bool, delay: float,
+                   pdms: list[int] | None = None, itens: list[int] | None = None) -> bool:
+    """Pesquisa de Preço + detalhe só para completar. True se tudo deu certo.
+
+    Sem `pdms`/`itens`: modo catálogo (PDMs efetivos + itens avulsos do catálogo da empresa). Com eles: só esses
+    códigos, para uma rodada pontual (ex.: PDM recém-incluído) sem varrer o catálogo inteiro.
+    O recorte vale só para a consulta de preços: o detalhe e o estimado/link rodam depois como na rodada normal, sobre
+    todas as pendências da base (idempotentes; o PDM recém-incluído precisa deles). Falha numa pendência de outro PDM
+    também deixa o Job com código 1.
+    """
     cliente = compras_precos.ClienteComprasPrecos(delay=max(1.0, delay))
-    res = compras_precos.coletar(cliente, sb, dry_run=dry_run)
+    recorte = {k: v for k, v in (("pdms", pdms), ("itens", itens)) if v}
+    if recorte:
+        log.info("precos: rodada só com %s", json.dumps(recorte))
+    res = compras_precos.coletar(cliente, sb, dry_run=dry_run, **recorte)
     ok = bool(res.get("sucesso"))
     resumo = {k: v for k, v in res.items() if k not in ("amostras", "arquivo_raw")}
     if dry_run or sb is None:
@@ -219,7 +234,19 @@ def main(argv: list[str] | None = None) -> int:
                     help="origem da ingestão gravada em cada linha (spec 0023): cron ou manual (padrão)")
     ap.add_argument("--coleta", default="todas", choices=["sestsenat", "precos", "todas"],
                     help="o que rodar: sestsenat, precos (Pesquisa de Preço, modo catálogo) ou todas (padrão)")
+    # Rodada pontual de preços. nargs="+" porque o gcloud separa --args por vírgula:
+    #   --args="--coleta,precos,--pdms,6762,3672"  =>  --pdms 6762 3672
+    ap.add_argument("--pdms", nargs="+", type=int, help="Pesquisa de Preço só destes PDMs (em vez do catálogo)")
+    ap.add_argument("--itens", nargs="+", type=int,
+                    help="Pesquisa de Preço só destes itens CATMAT (em vez do catálogo)")
     args = ap.parse_args(argv)
+    if (args.pdms or args.itens) and args.coleta != "precos":
+        ap.error("--pdms/--itens só valem com --coleta precos")
+    if any(c <= 0 for c in (args.pdms or []) + (args.itens or [])):
+        ap.error("--pdms/--itens: códigos devem ser inteiros positivos")
+    # sem repetir consulta (ex.: --itens 1 1), mantendo a ordem pedida
+    args.pdms = list(dict.fromkeys(args.pdms)) if args.pdms else None
+    args.itens = list(dict.fromkeys(args.itens)) if args.itens else None
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -240,7 +267,7 @@ def main(argv: list[str] | None = None) -> int:
             falhou = True
     if roda_precos:
         try:
-            ok = coletar_precos(sb, args.dry_run, float(env("DELAY_SEGUNDOS", "1.5")))
+            ok = coletar_precos(sb, args.dry_run, float(env("DELAY_SEGUNDOS", "1.5")), pdms=args.pdms, itens=args.itens)
         except Exception as e:  # erro inesperado na coleta de preços: execução falha, nunca sucesso silencioso
             log.error("precos falhou: %s", e)
             ok = False

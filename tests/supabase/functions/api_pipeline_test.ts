@@ -18,7 +18,10 @@ function repoMemoria() {
   let seqRev = 0;
   const revs = new Map<number, number>();
   const tocar = (id: number) => revs.set(id, ++seqRev);
-  const versao = () => [...etapas].sort((a, b) => a.id - b.id).map((e) => `${e.id}:${e.ordem}:${revs.get(e.id) ?? 0}`).join(",");
+  // resumo curto (como o md5 do banco, cabe no limite de 'versao'): hash djb2 do texto id:ordem:revisão
+  const versao = () =>
+    [...[...etapas].sort((a, b) => a.id - b.id).map((e) => `${e.id}:${e.ordem}:${revs.get(e.id) ?? 0}`).join(",")]
+      .reduce((h, c) => (h * 33 + c.charCodeAt(0)) >>> 0, 5381).toString(16);
   const ops = new Map<number, { etapa_id: number; motivo: string | null }>();
   const hist: EventoHistorico[] = [];
   const nova = (nome: string, ordem: number, extra: Partial<Etapa> = {}) => {

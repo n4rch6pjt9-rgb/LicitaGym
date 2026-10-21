@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { lerTenantDoUsuario, type TenantResolvido } from "../_shared/tenant.ts";
-import type { Desfecho, Etapa, EtapaComTotal, EventoHistorico, Fase, ItemModelo, ItemPipeline, ModeloTarefa, ResultadoPreparacao, StatusPreparacao, TarefaCatalogo } from "./types.ts";
+import type { Desfecho, Etapa, EtapaComTotal, EventoHistorico, Fase, ItemModelo, ItemPipeline, ListaEtapas, ModeloTarefa, ResultadoPreparacao, StatusPreparacao, TarefaCatalogo } from "./types.ts";
 
 /** Campos da licitação que o Kanban e os selos mostram (subconjunto das colunas públicas da api-dashboard-oportunidades). */
 export const LICITACAO_CARD_COLUMNS = [
@@ -13,9 +13,10 @@ export const LIMITE_LISTA = 1000;
 /** Norma do catálogo de tarefas (tarefas_catalogo.norma; seed 20260927100100). Outro regulamento terá o seu. */
 export const NORMA_CATALOGO = "LEI_14133_2021";
 
-/** Erro de regra vindo do banco (pipeline_mover / pipeline_etapa_excluir), já com status HTTP. */
+/** Erro de regra vindo do banco (pipeline_mover / pipeline_etapa_excluir), já com status HTTP. `codigo` vai na
+ * resposta quando o cliente precisa distinguir o caso (lista_invalida, versao_desatualizada). */
 export class ErroPipeline extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(message: string, readonly status: number, readonly codigo?: string) {
     super(message);
   }
 }
@@ -23,7 +24,10 @@ export class ErroPipeline extends Error {
 export interface PipelineRepo {
   /** Empresa e papel do usuário (_shared/tenant.ts: vínculo com empresa ativa; sem vínculo, só o desenvolvedor, na única empresa ativa). */
   tenantDoUsuario(userId: string, desenvolvedor: boolean): Promise<TenantResolvido>;
-  listarEtapas(tenant: number): Promise<EtapaComTotal[]>;
+  /** Etapas e versão num só comando (pipeline_etapas_listar). */
+  listarEtapas(tenant: number): Promise<ListaEtapas>;
+  /** Lista completa na ordem nova, com a versão lida (pipeline_etapas_reordenar, no lock do tenant). */
+  reordenarEtapas(tenant: number, ids: number[], versao: string, userId: string): Promise<ListaEtapas>;
   /** Até LIMITE_LISTA itens, mais recentes primeiro; `truncado` avisa quando havia mais. `avisos` lista o complemento
    * que não pôde ser lido (o card vem sem ele, nunca com valor inventado). */
   listarPipeline(tenant: number, etapaId: number | null): Promise<{ itens: ItemPipeline[]; truncado: boolean; avisos: string[] }>;
@@ -31,7 +35,8 @@ export interface PipelineRepo {
   /** soNovos: só adiciona quem ainda não está no pipeline (atômico no banco; não move quem já está). */
   mover(tenant: number, licitacaoIds: number[], etapaId: number | null, motivo: string | null, userId: string, soNovos?: boolean): Promise<number>;
   historico(tenant: number, licitacaoId: number): Promise<EventoHistorico[]>;
-  criarEtapa(tenant: number, e: { nome: string; fase: Fase; ordem: number | null; desfecho: Desfecho | null; exige_motivo: boolean }, userId: string): Promise<Etapa>;
+  /** No fim da lista, dentro do lock do tenant (pipeline_etapa_criar). */
+  criarEtapa(tenant: number, e: { nome: string; fase: Fase; desfecho: Desfecho | null; exige_motivo: boolean }, userId: string): Promise<Etapa>;
   atualizarEtapa(tenant: number, id: number, campos: Partial<Omit<Etapa, "id" | "padrao">>, userId: string): Promise<Etapa | null>;
   excluirEtapa(tenant: number, id: number, moverPara: number | null, userId: string): Promise<number>;
   /** Tarefas ativas do catálogo 14.133 (para o modelo da etapa), com fase e base legal. */
@@ -44,15 +49,28 @@ export interface PipelineRepo {
   reaplicarTarefas(tenant: number, licitacaoId: number, userId: string): Promise<{ criadas: number; existentes: number; bloqueio: string | null }>;
 }
 
-/** Traduz o erro do Postgres das funções do pipeline para HTTP (22023 = regra, P0002 = não existe, 23505 = nome repetido). */
+/** Traduz o erro do Postgres das funções do pipeline para HTTP (22023 = regra, P0002 = não existe, 23505 = nome repetido,
+ * LG001 = lista de etapas inválida, LG002 = versão da lista desatualizada). */
 function traduzir(error: { code?: string; message?: string } | null): never {
-  const msg = (error?.message ?? "Erro no pipeline").replace(/^pipeline_(mover|etapa_excluir): /, "");
+  const msg = (error?.message ?? "Erro no pipeline").replace(/^pipeline_(mover|etapa_excluir|etapas_reordenar|etapa_criar): /, "");
+  if (error?.code === "LG001") throw new ErroPipeline(msg, 400, "lista_invalida");
+  if (error?.code === "LG002") throw new ErroPipeline(msg, 409, "versao_desatualizada");
   if (error?.code === "22023") throw new ErroPipeline(msg, 400);
   if (error?.code === "P0002") throw new ErroPipeline(msg, 404);
   if (error?.code === "23514") throw new ErroPipeline(msg || "Tarefa não aceita no modelo.", 400);
   if (error?.code === "23505") throw new ErroPipeline("Já existe uma etapa com esse nome.", 409);
   if (error?.code === "23503") throw new ErroPipeline("A etapa tem oportunidades; mova-as antes de excluir.", 409);
   throw new Error(error?.message ?? "Erro no pipeline");
+}
+
+const etapa = (l: Etapa): Etapa => ({
+  id: Number(l.id), nome: l.nome, fase: l.fase, ordem: Number(l.ordem), desfecho: l.desfecho, exige_motivo: l.exige_motivo, padrao: l.padrao,
+});
+
+/** Linhas de pipeline_etapas_listar / _reordenar (cada uma com a mesma `versao`) no formato da resposta. */
+function listaEtapas(data: unknown): ListaEtapas {
+  const linhas = (data ?? []) as Array<EtapaComTotal & { versao: string }>;
+  return { etapas: linhas.map((l) => ({ ...etapa(l), total: Number(l.total) })), versao: linhas[0]?.versao ?? null };
 }
 
 export function createSupabaseRepo(client: SupabaseClient): PipelineRepo {
@@ -62,13 +80,16 @@ export function createSupabaseRepo(client: SupabaseClient): PipelineRepo {
     },
 
     async listarEtapas(tenant) {
-      const { data, error } = await client.from("pipeline_etapas").select(ETAPA_COLUMNS).eq("tenant_id", tenant).order("ordem").order("id");
+      // etapas, total e versão no mesmo comando: a versão descreve exatamente estas linhas (spec 0034, K-6)
+      const { data, error } = await client.rpc("pipeline_etapas_listar", { p_tenant: tenant });
       if (error) throw new Error(error.message);
-      // contagem no banco (pipeline_contagem): não traz as linhas nem esbarra no max_rows do PostgREST
-      const { data: cont, error: e2 } = await client.rpc("pipeline_contagem", { p_tenant: tenant });
-      if (e2) throw new Error(e2.message);
-      const total = new Map<number, number>((cont ?? []).map((c: { etapa_id: number; total: number }) => [Number(c.etapa_id), Number(c.total)]));
-      return (data ?? []).map((e) => ({ ...(e as unknown as Etapa), total: total.get((e as { id: number }).id) ?? 0 }));
+      return listaEtapas(data);
+    },
+
+    async reordenarEtapas(tenant, ids, versao, userId) {
+      const { data, error } = await client.rpc("pipeline_etapas_reordenar", { p_tenant: tenant, p_ids: ids, p_versao: versao, p_user: userId });
+      if (error) traduzir(error);
+      return listaEtapas(data);
     },
 
     async listarPipeline(tenant, etapaId) {
@@ -155,18 +176,13 @@ export function createSupabaseRepo(client: SupabaseClient): PipelineRepo {
     },
 
     async criarEtapa(tenant, e, userId) {
-      let ordem = e.ordem;
-      if (ordem === null) {
-        const { data, error } = await client.from("pipeline_etapas").select("ordem").eq("tenant_id", tenant).order("ordem", { ascending: false }).limit(1);
-        if (error) throw new Error(error.message);
-        ordem = ((data?.[0]?.ordem as number | undefined) ?? 0) + 10;
-      }
-      const { data, error } = await client
-        .from("pipeline_etapas")
-        .insert({ tenant_id: tenant, nome: e.nome, fase: e.fase, ordem, desfecho: e.desfecho, exige_motivo: e.exige_motivo, updated_by: userId })
-        .select(ETAPA_COLUMNS).single();
+      const { data, error } = await client.rpc("pipeline_etapa_criar", {
+        p_tenant: tenant, p_nome: e.nome, p_fase: e.fase, p_desfecho: e.desfecho, p_exige_motivo: e.exige_motivo, p_user: userId,
+      });
       if (error) traduzir(error);
-      return data as unknown as Etapa;
+      const linha = (data as Etapa[] | null)?.[0];
+      if (!linha) throw new Error("pipeline_etapa_criar não devolveu a etapa");
+      return etapa(linha);
     },
 
     async atualizarEtapa(tenant, id, campos, userId) {

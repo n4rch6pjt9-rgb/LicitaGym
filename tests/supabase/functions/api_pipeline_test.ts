@@ -14,10 +14,17 @@ function repoMemoria() {
   let seqEtapa = 0;
   let seqHist = 0;
   const etapas: Etapa[] = [];
+  // updated_at simulado por etapa: a versão (spec 0034, K-6) resume id, ordem e esta revisão, como pipeline_etapas_versao
+  let seqRev = 0;
+  const revs = new Map<number, number>();
+  const tocar = (id: number) => revs.set(id, ++seqRev);
+  const versao = () => [...etapas].sort((a, b) => a.id - b.id).map((e) => `${e.id}:${e.ordem}:${revs.get(e.id) ?? 0}`).join(",");
   const ops = new Map<number, { etapa_id: number; motivo: string | null }>();
   const hist: EventoHistorico[] = [];
-  const nova = (nome: string, ordem: number, extra: Partial<Etapa> = {}) =>
+  const nova = (nome: string, ordem: number, extra: Partial<Etapa> = {}) => {
     etapas.push({ id: ++seqEtapa, nome, fase: "prospeccao", ordem, desfecho: null, exige_motivo: false, padrao: true, ...extra });
+    tocar(seqEtapa);
+  };
   nova("Nova", 10);
   nova("Triagem", 20);
   nova("Descartada", 130, { fase: "conclusao", desfecho: "descartada", exige_motivo: true });
@@ -77,10 +84,31 @@ function repoMemoria() {
     return n;
   };
 
+  const listar = () => ({
+    etapas: [...etapas].sort((a, b) => a.ordem - b.ordem || a.id - b.id).map((e) => ({ ...e, total: [...ops.values()].filter((o) => o.etapa_id === e.id).length })),
+    versao: versao(),
+  });
+
   const repo: PipelineRepo = {
     tenantDoUsuario: () => Promise.resolve({ tenant: 1, papel: null }),
-    listarEtapas: () =>
-      Promise.resolve([...etapas].sort((a, b) => a.ordem - b.ordem).map((e) => ({ ...e, total: [...ops.values()].filter((o) => o.etapa_id === e.id).length }))),
+    listarEtapas: () => Promise.resolve(listar()),
+    // mesmas regras de pipeline_etapas_reordenar: versão primeiro (409), depois a lista (400); nada muda em erro
+    reordenarEtapas: (_t, ids, versaoLida, _u) =>
+      Promise.resolve().then(() => {
+        if (versaoLida !== versao()) throw new ErroPipeline("A ordem das etapas mudou desde a leitura. Recarregue a lista.", 409, "versao_desatualizada");
+        const atuais = new Set(etapas.map((e) => e.id));
+        if (new Set(ids).size !== ids.length || ids.length !== atuais.size || ids.some((id) => !atuais.has(id))) {
+          throw new ErroPipeline("A lista deve trazer todas as etapas da empresa, uma vez cada.", 400, "lista_invalida");
+        }
+        ids.forEach((id, i) => {
+          const e = etapas.find((x) => x.id === id)!;
+          if (e.ordem !== (i + 1) * 10) {
+            e.ordem = (i + 1) * 10;
+            tocar(id);
+          }
+        });
+        return listar();
+      }),
     listarPipeline: (_t, etapaId) =>
       Promise.resolve({
         truncado: false,
@@ -94,14 +122,16 @@ function repoMemoria() {
     historico: (_t, id) => Promise.resolve(hist.filter((h) => h.licitacao_id === id).reverse()),
     criarEtapa: (_t, e) => {
       if (etapas.some((x) => x.nome === e.nome)) return Promise.reject(new ErroPipeline("Já existe uma etapa com esse nome.", 409));
-      const etapa: Etapa = { id: ++seqEtapa, nome: e.nome, fase: e.fase, ordem: e.ordem ?? Math.max(...etapas.map((x) => x.ordem)) + 10, desfecho: e.desfecho, exige_motivo: e.exige_motivo, padrao: false };
+      const etapa: Etapa = { id: ++seqEtapa, nome: e.nome, fase: e.fase, ordem: Math.max(0, ...etapas.map((x) => x.ordem)) + 10, desfecho: e.desfecho, exige_motivo: e.exige_motivo, padrao: false };
       etapas.push(etapa);
+      tocar(etapa.id);
       return Promise.resolve(etapa);
     },
     atualizarEtapa: (_t, id, campos) => {
       const e = etapas.find((x) => x.id === id);
       if (!e) return Promise.resolve(null);
       Object.assign(e, campos);
+      tocar(id);
       return Promise.resolve(e);
     },
     excluirEtapa: (_t, id, moverPara, user) =>
@@ -207,7 +237,7 @@ Deno.test("api-pipeline: configurar etapas só admin; criar, renomear, excluir m
   assertEquals(criada.json.etapa.ordem, 140);
   assertEquals((await chamar(a, { action: "etapa_criar", nome: "Visita técnica", fase: "proposta" })).status, 409);
 
-  const ren = await chamar(a, { action: "etapa_atualizar", id: criada.json.etapa.id, nome: "Visita", ordem: 45 });
+  const ren = await chamar(a, { action: "etapa_atualizar", id: criada.json.etapa.id, nome: "Visita" });
   assertEquals(ren.json.etapa.nome, "Visita");
 
   await chamar(a, { action: "pipeline_adicionar", licitacao_ids: [101] });
@@ -217,7 +247,7 @@ Deno.test("api-pipeline: configurar etapas só admin; criar, renomear, excluir m
   assertEquals(exc.json, { action: "etapa_excluir", excluida: 1, movidas: 1 });
   assertEquals(ops.get(101)?.etapa_id, 2);
   const etapas = await chamar(a, { action: "etapas_listar" });
-  assertEquals(etapas.json.etapas.map((e: { nome: string }) => e.nome), ["Triagem", "Visita", "Descartada"]);
+  assertEquals(etapas.json.etapas.map((e: { nome: string }) => e.nome), ["Triagem", "Descartada", "Visita"]);
 });
 
 Deno.test("api-pipeline: admin da empresa configura etapas sem ser desenvolvedor; operação não", async () => {
@@ -518,4 +548,154 @@ Deno.test("catalogo_listar (repo real): erro do banco rejeita (não vira catálo
   const cheia = Array.from({ length: 1000 }, (_, i) => ({ codigo: `c${i}`, fase_codigo: "F01", ordem: i, base: [] }));
   const e2 = await createSupabaseRepo(clienteCatalogo({ data: cheia, error: null })).listarCatalogo().then(() => null, (x) => x);
   assertEquals(e2 instanceof Error, true);
+});
+
+// --- Etapas editáveis (spec 0034: K-5 reordenar, K-6 versão, K-7 lock e ordem só por reordenar) -------------------
+
+/** Repositório em memória com as 13 etapas padrão (3 da semente do teste + 10 criadas no fim). */
+async function com13Etapas() {
+  const r = repoMemoria();
+  const a = ctx(r.repo, ADMIN);
+  for (let i = 1; i <= 10; i++) assertEquals((await chamar(a, { action: "etapa_criar", nome: `Etapa ${i}`, fase: "proposta" })).status, 201);
+  return { ...r, a };
+}
+
+const ids = (etapas: Array<{ id: number }>) => etapas.map((e) => e.id);
+const ordens = (etapas: Array<{ ordem: number }>) => etapas.map((e) => e.ordem);
+
+Deno.test("CA-3a: admin reordena as 13 etapas com a versão lida; ordem = posição × 10 e versão nova", async () => {
+  const { a } = await com13Etapas();
+  const lida = await chamar(a, { action: "etapas_listar" });
+  assertEquals(lida.json.etapas.length, 13);
+  assertEquals(typeof lida.json.versao, "string");
+  const nova = ids(lida.json.etapas).reverse();
+  const r = await chamar(a, { action: "etapas_reordenar", ids: nova, versao: lida.json.versao });
+  assertEquals(r.status, 200);
+  assertEquals(ids(r.json.etapas), nova);
+  assertEquals(ordens(r.json.etapas), Array.from({ length: 13 }, (_, i) => (i + 1) * 10));
+  assertEquals(r.json.versao !== lida.json.versao, true);
+  // a versão devolvida é a que a próxima leitura mostra
+  assertEquals((await chamar(a, { action: "etapas_listar" })).json.versao, r.json.versao);
+});
+
+Deno.test("CA-3b: lista com id repetido, faltando etapa ou com etapa de fora → 400 lista_invalida e nada muda", async () => {
+  const { a } = await com13Etapas();
+  const lida = await chamar(a, { action: "etapas_listar" });
+  const todos = ids(lida.json.etapas);
+  for (const lista of [[...todos.slice(0, 12), todos[0]], todos.slice(1), [...todos.slice(0, 12), 999]]) {
+    const r = await chamar(a, { action: "etapas_reordenar", ids: lista, versao: lida.json.versao });
+    assertEquals([r.status, r.json.codigo], [400, "lista_invalida"], JSON.stringify(lista));
+  }
+  const depois = await chamar(a, { action: "etapas_listar" });
+  assertEquals([ids(depois.json.etapas), depois.json.versao], [todos, lida.json.versao]);
+});
+
+Deno.test("CA-3c: versão antiga depois de outra reordenação → 409 versao_desatualizada; operação → 403", async () => {
+  const { a, repo } = await com13Etapas();
+  const lida = await chamar(a, { action: "etapas_listar" });
+  const todos = ids(lida.json.etapas);
+  const outro = await chamar(a, { action: "etapas_reordenar", ids: [todos[1], todos[0], ...todos.slice(2)], versao: lida.json.versao });
+  assertEquals(outro.status, 200);
+  const atrasado = await chamar(a, { action: "etapas_reordenar", ids: [...todos].reverse(), versao: lida.json.versao });
+  assertEquals([atrasado.status, atrasado.json.codigo], [409, "versao_desatualizada"]);
+  assertEquals(ids((await chamar(a, { action: "etapas_listar" })).json.etapas), ids(outro.json.etapas));
+
+  repo.tenantDoUsuario = () => Promise.resolve({ tenant: 1, papel: "operacao" });
+  const negado = await chamar(ctx(repo), { action: "etapas_reordenar", ids: todos, versao: outro.json.versao });
+  assertEquals(negado.status, 403);
+});
+
+Deno.test("CA-3d: etapa criada ou excluída depois da leitura → 409 (não 400), mesmo com a lista incompleta", async () => {
+  const { a } = await com13Etapas();
+  const lida = await chamar(a, { action: "etapas_listar" });
+  const todos = ids(lida.json.etapas);
+  await chamar(a, { action: "etapa_criar", nome: "Visita técnica", fase: "proposta" });
+  const aposCriar = await chamar(a, { action: "etapas_reordenar", ids: [...todos].reverse(), versao: lida.json.versao });
+  assertEquals([aposCriar.status, aposCriar.json.codigo], [409, "versao_desatualizada"]);
+
+  const relida = await chamar(a, { action: "etapas_listar" });
+  await chamar(a, { action: "etapa_excluir", id: todos[1] });
+  const aposExcluir = await chamar(a, { action: "etapas_reordenar", ids: ids(relida.json.etapas), versao: relida.json.versao });
+  assertEquals([aposExcluir.status, aposExcluir.json.codigo], [409, "versao_desatualizada"]);
+});
+
+Deno.test("CA-3f: ordem em etapa_criar ou etapa_atualizar → 400 (usar etapas_reordenar) e nada muda; criar vai para o fim", async () => {
+  const { repo, etapas } = repoMemoria();
+  const a = ctx(repo, ADMIN);
+  const criar = await chamar(a, { action: "etapa_criar", nome: "Visita", fase: "proposta", ordem: 5 });
+  assertEquals([criar.status, criar.json.error], [400, "Use etapas_reordenar para mudar a ordem."]);
+  assertEquals(etapas.length, 3);
+  const atualizar = await chamar(a, { action: "etapa_atualizar", id: 2, nome: "Triagem 2", ordem: 5 });
+  assertEquals([atualizar.status, atualizar.json.error], [400, "Use etapas_reordenar para mudar a ordem."]);
+  assertEquals(etapas.find((e) => e.id === 2)?.nome, "Triagem");
+  const fim = await chamar(a, { action: "etapa_criar", nome: "Visita", fase: "proposta" });
+  assertEquals([fim.status, fim.json.etapa.ordem], [201, 140]);
+});
+
+Deno.test("validação etapas_reordenar: tipos e limite; repetido passa para o banco decidir (400 só com versão certa)", () => {
+  assertEquals(parseActionFromBody({ action: "etapas_reordenar", ids: [3, 1, 3], versao: "abc" }), { action: "etapas_reordenar", ids: [3, 1, 3], versao: "abc" });
+  for (const corpo of [
+    { ids: [1, 2] },
+    { ids: [1, 2], versao: "" },
+    { ids: [1, 2], versao: 7 },
+    { ids: [], versao: "v" },
+    { ids: [1, -2], versao: "v" },
+    { ids: "1,2", versao: "v" },
+    { ids: Array.from({ length: MAX_LOTE + 1 }, (_, i) => i + 1), versao: "v" },
+  ]) {
+    assertEquals("error" in parseActionFromBody({ action: "etapas_reordenar", ...corpo }), true, JSON.stringify(corpo));
+  }
+});
+
+/** Cliente falso que registra tabelas lidas por PostgREST e as RPCs chamadas, com resposta por RPC. */
+function clienteEtapas(respostas: Record<string, { data: unknown; error: unknown }>, chamadas: string[]) {
+  const q: Record<string, unknown> = {};
+  for (const m of ["select", "eq", "order", "limit", "insert", "single"]) q[m] = () => q;
+  q.then = (ok: (v: unknown) => unknown) => Promise.resolve({ data: [], error: null }).then(ok);
+  return {
+    from: (t: string) => (chamadas.push(`from:${t}`), q),
+    rpc: (nome: string, args: unknown) => {
+      chamadas.push(`rpc:${nome}:${JSON.stringify(args)}`);
+      return Promise.resolve(respostas[nome] ?? { data: null, error: { code: "PGRST202", message: `sem ${nome}` } });
+    },
+  } as unknown as Parameters<typeof createSupabaseRepo>[0];
+}
+
+const LINHA = { id: 1, nome: "Nova", fase: "prospeccao", ordem: 10, desfecho: null, exige_motivo: false, padrao: true, total: 2, versao: "v1" };
+
+Deno.test("CA-3g: etapas_listar (repo real) lê etapas e versão numa RPC só (pipeline_etapas_listar), sem PostgREST", async () => {
+  const chamadas: string[] = [];
+  const repo = createSupabaseRepo(clienteEtapas({ pipeline_etapas_listar: { data: [LINHA, { ...LINHA, id: 2, nome: "Triagem", ordem: 20, total: 0 }], error: null } }, chamadas));
+  const r = await repo.listarEtapas(1);
+  assertEquals(r.versao, "v1");
+  assertEquals(r.etapas.map((e) => [e.id, e.total, "versao" in e]), [[1, 2, false], [2, 0, false]]);
+  assertEquals(chamadas, ['rpc:pipeline_etapas_listar:{"p_tenant":1}']);
+  // erro do banco não vira lista vazia
+  const e = await createSupabaseRepo(clienteEtapas({ pipeline_etapas_listar: { data: null, error: { code: "XX000", message: "falhou" } } }, []))
+    .listarEtapas(1).then(() => null, (x) => x);
+  assertEquals(e instanceof Error && !(e instanceof ErroPipeline), true);
+});
+
+Deno.test("K-5/K-7 (repo real): reordenar e criar usam as funções com lock; códigos do banco viram 400/409 com o motivo", async () => {
+  const chamadas: string[] = [];
+  const repo = createSupabaseRepo(clienteEtapas({
+    pipeline_etapas_reordenar: { data: [{ ...LINHA, versao: "v2" }], error: null },
+    pipeline_etapa_criar: { data: [{ ...LINHA, id: 9, nome: "Visita", ordem: 140, padrao: false }], error: null },
+  }, chamadas));
+  assertEquals(await repo.reordenarEtapas(1, [1], "v1", "u"), { etapas: [{ id: 1, nome: "Nova", fase: "prospeccao", ordem: 10, desfecho: null, exige_motivo: false, padrao: true, total: 2 }], versao: "v2" });
+  const criada = await repo.criarEtapa(1, { nome: "Visita", fase: "proposta", desfecho: null, exige_motivo: false }, "u");
+  assertEquals([criada.id, criada.ordem, "total" in criada, "versao" in criada], [9, 140, false, false]);
+  assertEquals(chamadas, [
+    'rpc:pipeline_etapas_reordenar:{"p_tenant":1,"p_ids":[1],"p_versao":"v1","p_user":"u"}',
+    'rpc:pipeline_etapa_criar:{"p_tenant":1,"p_nome":"Visita","p_fase":"proposta","p_desfecho":null,"p_exige_motivo":false,"p_user":"u"}',
+  ]);
+
+  for (const [code, status, codigo] of [["LG001", 400, "lista_invalida"], ["LG002", 409, "versao_desatualizada"]] as const) {
+    const r = createSupabaseRepo(clienteEtapas({ pipeline_etapas_reordenar: { data: null, error: { code, message: `pipeline_etapas_reordenar: motivo ${code}` } } }, []));
+    const e = await r.reordenarEtapas(1, [1], "v1", "u").then(() => null, (x) => x);
+    assertEquals(e instanceof ErroPipeline ? [e.status, e.codigo, e.message] : e, [status, codigo, `motivo ${code}`]);
+  }
+  const dup = createSupabaseRepo(clienteEtapas({ pipeline_etapa_criar: { data: null, error: { code: "23505", message: "duplicate key" } } }, []));
+  const e = await dup.criarEtapa(1, { nome: "Nova", fase: "proposta", desfecho: null, exige_motivo: false }, "u").then(() => null, (x) => x);
+  assertEquals(e instanceof ErroPipeline ? e.status : e, 409);
 });

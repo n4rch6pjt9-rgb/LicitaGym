@@ -94,9 +94,9 @@ aba → aprovar (conclui a tarefa) ou rejeitar com nota (a tarefa volta a aberta
 | K-6 | `api-agentes` `action=analise_revisar` | igual | igual; 409 se a execução não foi enviada | 409 | membro da empresa |
 | K-10 | migration: catálogo `public.agentes_catalogo` (`codigo`, `nome`, `api`, `acao_api`, `agente_api`, `ativo`), semente `edital` e `juridico` (`api-agentes` / `analise_executar` / `agentes:[...]`) e `preco` (inativo nesta spec) | — | tabela nova, só `service_role` | — | — |
 | K-11 | migration: responsável no modelo e na instância. `pipeline_etapa_tarefas` e `tarefas_equipe` ganham `responsavel_tipo` (`papel`\|`usuario`\|`agente`, padrão `papel`), `responsavel_user_id` (no modelo) e `responsavel_agente` (FK para `agentes_catalogo`). Nova `origem = 'agente'` no modelo, com `chave` e `titulo`. Check: `agente` exige `responsavel_agente`; `usuario` exige `responsavel_user_id` membro da empresa | — | colunas novas com padrão que mantém o comportamento atual | — | — |
-| K-12 | migration: semente da tarefa padrão por agente na etapa Nova de cada empresa (idempotente, por `chave` fixa `agente-edital` e `agente-juridico`) e o mesmo na criação de empresa nova | — | 2 linhas por empresa, com contagem antes/depois no PR | — | — |
+| K-12 | migration: semente da tarefa padrão por agente na etapa Nova de cada empresa, dentro de `pipeline_semear_tarefas()` (já chamada na criação e na reativação de empresa); chaves `agente-edital` e `agente-juridico` | — | 2 linhas por empresa, com contagem antes/depois no PR | — | — |
 | K-13 | `api-pipeline`, salvar tarefas por etapa: aceita `responsavel_tipo`, `responsavel_user_id` (só membro ativo da empresa) e `responsavel_agente` (só agente ativo do catálogo); listar devolve o catálogo de agentes com `api` para a tela | — | — | 400 (usuário de outra empresa, agente inexistente ou inativo) | admin da empresa |
-| K-14 | liberação de tarefa (`tarefas_equipe_liberar` e a entrada na etapa): copia o responsável do modelo; tarefa de agente nasce `aberta` com `responsavel_agente` | — | — | — | — |
+| K-14 | entrada na etapa (`pipeline_etapa_tarefas_criar`, usada pelo gatilho de `pipeline_oportunidades` e por `pipeline_tarefas_reaplicar`; **não** `tarefas_equipe_liberar`, que é do catálogo por fase/evento): copia o responsável do modelo; tarefa de agente nasce `aberta` com `responsavel_agente` | — | — | — | — |
 | K-15 | `analise_enviar` (K-4) liga a execução à tarefa de agente aberta da licitação; `analise_revisar` aprovada conclui a tarefa; rejeitada a devolve a `aberta` | — | — | — | — |
 | K-16 | Dashboard, "Etapas e tarefas do pipeline", aba "Tarefas por etapa": campo **Responsável** nas tarefas (papel, usuário cadastrado ou agente) e um terceiro quadro **Tarefa de agente** (escolher o agente; a tela mostra o nome e a API de execução) | K-13 | — | — | admin da empresa |
 | K-7 | Dashboard `/agentes/editais` real (sai do protótipo) | busca → K-0; K-2 com `agentes:["edital"]`; K-4 | formato da rota antiga, com dado real | estados de carregando, vazio, erro e "em preparação" | membro da empresa |
@@ -105,6 +105,90 @@ aba → aprovar (conclui a tarefa) ou rejeitar com nota (a tarefa volta a aberta
 
 O que **não** vira badge: achado `dispensa.*` (o edital diz que não exige) e achado informativo sem risco. Eles continuam
 visíveis na rota, como fato com trecho e página, mas não vão para a aba.
+
+## Regras de implementação (revisão de 21/10)
+
+Saíram dos revisores `revisor-codigo`, `revisor-seguranca` e `revisor-migration` e valem sobre o texto da tabela acima.
+
+**Empresa e escopo**
+- R-1. Toda ação da `api-agentes` que recebe `licitacao_id` (`documentos_listar`, `analise_executar`, `analise_obter`)
+  responde **404 quando a licitação não está no pipeline da empresa** de quem chama, como o `estaNoPipeline` da
+  `api-tarefas`. `analise_enviar` e `analise_revisar` conferem a empresa pela execução. Fora do pipeline nunca vaza dado.
+- R-2. `oportunidades_buscar` (K-0): `busca` passa por `sanitizeSearchTerm`
+  (`api-dashboard-oportunidades/query.ts`); a junção etapa ↔ modelo de tarefa casa `tenant_id` dos dois lados;
+  página de 20, máximo 50, ordem por prazo (`data_fim`) crescente e depois `licitacao_id`.
+- R-3. `documentos_listar` (K-1) usa lista fixa de colunas (nunca `select('*')`; nunca `storage_uri`, `raw`, `extracao`).
+  `erro` sai como categoria fixa (`download`, `extracao`, `indexacao`, `outro`), sem texto livre nem URI. A resposta
+  mapeia os 6 `status_processamento` e marca `entra_na_analise` (só `secao = 'processo'` vira texto para o agente).
+
+**Execução**
+- R-4. O catálogo de agentes (K-10) é **só para mostrar** (nome, API e ação na tela). A Edge executa só os agentes da
+  lista fixa do código (`ORDEM` em `api-agentes/index.ts`); código fora dela dá 400. Agente novo no catálogo sem código
+  correspondente aparece como "sem execução" e não roda.
+- R-5. `agentes:["juridico"]` roda **edital e preço antes** (o jurídico usa sinais dos dois e o hash dele inclui o
+  do preço). `agentes:["preco"]` sozinho não entra nesta spec (400).
+- R-6. O hash do jurídico deixa de levar `referencia_em` (a data do dia). Ele passa a levar os hashes de edital e de
+  preço sem a data, para que uma análise enviada num dia continue atual no dia seguinte. `REGRA_VERSAO` sobe.
+
+**Envio, revisão e tarefa**
+- R-7. K-3 cria também `agente_execucoes.tarefa_id`, com FK `(tenant_id, tarefa_id)` para `tarefas_equipe`
+  `on delete set null (tarefa_id)`, porque tirar a oportunidade do pipeline apaga as tarefas. Para isso cria
+  `unique (tenant_id, id)` em `tarefas_equipe`. Acrescenta check `(enviada_em is null) = (enviada_por is null)` e
+  índice em `tarefa_id`.
+- R-8. `analise_enviar` é um update condicional (`where enviada_em is null`, como `repo.revisar`). Nenhuma linha
+  afetada dá 409. A ligação com a tarefa vai na mesma operação: a tarefa **aberta** da mesma empresa e licitação, com
+  `responsavel_agente` igual ao agente da execução, na **etapa atual** da oportunidade. Sem tarefa (oportunidade que já
+  estava em Nova antes da semente e não foi reaplicada), o envio funciona e grava `tarefa_id` nulo.
+- R-9. Rejeitar não trava: uma execução **rejeitada** pode ser enviada de novo. O reenvio volta a revisão para
+  `aguardando` e guarda a revisão anterior (decisão, nota, quem, quando) em `revisoes_anteriores jsonb`, que só cresce.
+  A tarefa volta a `aberta` na rejeição e fica aberta até a aprovação.
+- R-10. `analise_obter` com `somente_enviadas` devolve **a mais recente enviada por agente**, e não a mais recente
+  filtrada depois.
+- R-11. Na `api-tarefas`, tarefa com `responsavel_tipo = 'agente'` não muda de status à mão (`tarefa_atualizar`
+  devolve 409). Só a revisão (`analise_revisar`) conclui ou reabre. `tarefa_atribuir` não troca o tipo dela.
+
+**Modelo, instância e semente**
+- R-12. Modelo (`pipeline_etapa_tarefas`):
+  - Nova `origem = 'agente'`, com `chave` e `titulo` preenchidos, `tarefa_codigo` nulo e `responsavel_agente`
+    preenchido. O check é trocado com `drop` e `add` na mesma transação, com `lock_timeout` e guarda por
+    `pg_get_constraintdef`, no padrão de `20261011120000`.
+  - Índice único parcial próprio para `origem = 'agente'` em `(tenant_id, etapa_id, responsavel_agente)`: um agente
+    por etapa, mas o mesmo agente pode estar em várias etapas (CA-0b). A chave das tarefas criadas pelo admin é
+    `agt-` + 8 hex, e `agente-*` fica reservada à semente.
+- R-13. Instância (`tarefas_equipe`):
+  - A tarefa de agente nasce com `origem = 'empresa'` (reaproveita `tarefas_equipe_empresa_uq` e fica fora da trava
+    de regulamento), `responsavel_tipo = 'agente'`, `responsavel_agente` e `responsavel_papel = 'admin'`, na fila de
+    quem revisa.
+  - O check novo é só `agente ⇒ responsavel_agente not null`, porque as linhas de hoje com `papel` e
+    `responsavel_user_id` continuam válidas.
+  - `pipeline_etapa_tarefas_criar` e `pipeline_etapa_tarefas_salvar` são recriadas na mesma migration para aceitar a
+    origem nova.
+- R-14. Responsável usuário: FK `(tenant_id, responsavel_user_id)` para `tenant_membros (tenant_id, user_id)` no modelo.
+  Se o membro sai ou fica inativo, a tarefa nasce como `papel = admin` e nunca com responsável inválido. A conferência
+  é feita no salvar (K-13) e de novo na entrada na etapa (K-14). `responsavel_agente` tem FK `on delete restrict`, e um
+  agente inativo faz a tarefa nascer como `papel = admin`.
+- R-15. Semente (K-12): dentro de `pipeline_semear_tarefas`, pela regra já usada no repositório ("o nome é o
+  contrato": `padrao and nome = 'Nova'`). Uma Nova renomeada ou excluída não recebe a tarefa. A semente roda
+  `pipeline_tarefas_reaplicar` nos cards que já estão em Nova, com contagem antes e depois no PR.
+- R-16. `api-pipeline` (`etapa_tarefas_listar` e `etapa_tarefas_salvar`): as linhas de agente vêm num campo novo
+  (`tarefas_agente`), nunca na lista antiga, e salvar a lista antiga não desliga linha de agente. Assim o front de hoje
+  continua funcionando enquanto o backend vai ao ar primeiro. O catálogo de agentes vai como `agentes_disponiveis`,
+  para não confundir com o `catalogo_listar` da 14.133.
+- R-17. `agentes_catalogo`: `codigo text primary key`, RLS ligada, `revoke all` de public, anon e authenticated, e
+  `grant select` só ao `service_role`. Muda só por migration.
+- R-18. Checks existentes que mudam, com a justificativa no PR:
+  - `supabase/tests/pipeline_etapa_tarefas_check.sql`: Nova deixa de ter 0 modelos, passa a ter as 2 tarefas de agente.
+  - `supabase/tests/tarefas_equipe_check.sql`: a tarefa de agente nasce mesmo com regulamento nulo.
+
+**Tela**
+- R-19. Badge (K-9):
+  - entra achado com `severidade` `atencao` ou `critico`;
+  - não entra `dispensa.*` nem `info`;
+  - o badge do jurídico mostra o artigo, e a página vem das `fontes` herdadas do sinal de origem (o jurídico passa a
+    copiar `fontes` do tipo trecho do sinal).
+- R-20. O CA-12 vale também para o admin da plataforma: as rotas `/agentes/editais` e `/agentes/juridico` deixam de
+  ser protótipo para todos. `src/test/agentes-rotas-sem-demo.test.tsx` é atualizado. As outras rotas de protótipo
+  continuam só para o admin até 21/11.
 
 ## Critérios de aceite
 
@@ -130,11 +214,19 @@ visíveis na rota, como fato com trecho e página, mas não vão para a aba.
 | CA-15 | K-7 | **Dado** um resultado, **quando** "Enviar para a oportunidade", **então** a chamada é `analise_enviar` e a tela confirma com o link para a oportunidade. | idem |
 | CA-16 | K-8 | Como CA-12 a CA-15, na rota do jurídico, com `agentes:["juridico"]` e o artigo de cada alerta. | vitest `src/test/agente-juridico-rota.test.tsx` |
 | CA-20 | K-10, K-11 | **Dado** a migration, **então** `agentes_catalogo` existe com RLS ligada e sem grant para `anon`/`authenticated`; uma tarefa `agente` sem `responsavel_agente` é recusada; uma `usuario` sem `responsavel_user_id` é recusada; as linhas antigas ficam `papel`. | SQL `supabase/tests/agentes_catalogo_check.sql` |
-| CA-21 | K-12 | **Dado** N empresas, **quando** a migration roda duas vezes, **então** há exatamente 2N tarefas de agente na etapa Nova. | SQL idem + contagem no PR |
+| CA-21 | K-12 | **Dado** as empresas ativas com a etapa padrão Nova, **quando** a migration roda duas vezes, **então** há exatamente 2 tarefas de agente por empresa nessa etapa. | SQL idem + contagem no PR |
 | CA-22 | K-13 | **Dado** `responsavel_user_id` de outra empresa, **quando** salva, **então** 400 e nada muda. | Deno `tests/supabase/functions/pipeline_tarefas_responsavel_test.ts` |
 | CA-23 | K-14 | **Dado** a #3558 entra em Nova, **então** nascem as tarefas "Analisar o edital" e "Conferir a base legal" com o responsável agente. | SQL `supabase/tests/tarefas_equipe_check.sql` |
 | CA-24 | K-15 | **Dado** a execução enviada e aprovada, **então** a tarefa do agente fica `concluida`; rejeitada, volta a `aberta`. | Deno `tests/supabase/functions/agentes_envio_test.ts` |
-| CA-25 | K-16 | **Dado** a aba "Tarefas por etapa", **então** o quadro "Tarefa de agente" lista os agentes do catálogo com a API (`api-agentes · edital`), e o campo Responsável oferece papel, usuários da empresa e agentes. | vitest `src/test/pipeline-config-tarefas.test.tsx` |
+| CA-25 | K-16 | **Dado** a aba "Tarefas por etapa", **então** o quadro "Tarefa de agente" lista os agentes do catálogo com a API (`api-agentes · edital`), e o campo Responsável oferece papel, usuários da empresa e agentes. | vitest `src/test/pipeline-config.test.tsx` |
+| CA-26 | R-1 | **Dado** uma licitação fora do pipeline da empresa, **quando** `documentos_listar` ou `analise_executar`, **então** 404. | Deno `agentes_documentos_test.ts`, `agentes_contrato_test.ts` |
+| CA-27 | R-3 | **Dado** um documento com `erro` contendo `gs://...`, **então** a resposta tem só as chaves da lista fixa e `erro` em categoria. | Deno `agentes_documentos_test.ts` |
+| CA-28 | R-6 | **Dado** um jurídico enviado no dia D, **quando** revisado em D+1 sem mudança de documento, **então** 200 (não 409). | Deno `agentes_envio_test.ts` |
+| CA-29 | R-8 | **Dado** dois envios simultâneos da mesma execução, **então** um dá 200 e o outro 409; a tarefa ligada é a aberta da etapa atual. | idem |
+| CA-30 | R-9 | **Dado** uma execução rejeitada, **quando** enviada de novo, **então** volta a `aguardando`, `revisoes_anteriores` tem a rejeição e a tarefa segue `aberta`. | idem |
+| CA-31 | R-10 | **Dado** uma execução enviada e uma mais nova não enviada, **quando** `somente_enviadas:true`, **então** volta a enviada. | idem |
+| CA-32 | R-11 | **Dado** uma tarefa de agente, **quando** `tarefa_atualizar` para `concluida`, **então** 409. | Deno `tests/supabase/functions/tarefas_agente_test.ts` |
+| CA-33 | R-16 | **Dado** o front de hoje salvando a lista antiga, **então** as tarefas de agente continuam ativas. | Deno `pipeline_tarefas_responsavel_test.ts` |
 | CA-17 | K-9 | **Dado** uma execução enviada com 2 riscos e 1 `dispensa.amostra`, **então** a aba mostra 2 badges (com página) e nenhum para a dispensa. | vitest `src/test/analise-agentes.test.tsx` |
 | CA-18 | K-9 | **Dado** nada enviado, **então** a aba mostra "Nenhuma análise enviada" e o link para `/agentes/editais` com a oportunidade escolhida. | idem |
 | CA-19 | K-9 | **Dado** rejeitar sem nota, **então** o botão fica desabilitado; com nota, chama `analise_revisar`. | idem |

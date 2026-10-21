@@ -143,6 +143,7 @@ def normalizar_item(id_compra: str, linha: dict[str, Any]) -> dict[str, Any]:
         "raw": linha,
         "payload_hash": hashlib.sha256(raw_str.encode("utf-8")).hexdigest(),
         "last_synced_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -235,6 +236,7 @@ def consultar_compra(cliente: ClienteContratacoes, id_compra: str, atualizacao: 
         "link_sistema_origem": None,
         "data_hora_atualizacao_compra": atualizacao,
         "consultado_em": agora,
+        "updated_at": agora,
         "raw": None,
     }
     if not resultado:

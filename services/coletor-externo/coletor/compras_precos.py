@@ -37,7 +37,7 @@ from typing import Any
 import requests
 
 from .arquivo_raw import ArquivoRaw
-from .compras_api import ErroApiCompras, ParametroInvalido, corpo_json, erro_http, validar_codigo
+from .compras_api import ErroApiCompras, ParametroInvalido, corpo_json, erro_http, instabilidade_compras, validar_codigo
 from .compras_pdms import CatalogoPdmsIndisponivel, carregar_pdms_efetivos
 from .destino import Supabase, env
 from .paginacao import TAMANHO_PAGINA_MAX, DecisaoPagina, avaliar_pagina, clamp_tamanho, pagina_repetida
@@ -305,14 +305,18 @@ class ClienteComprasPrecos:
                 continue
             if r.status_code == 200:
                 return corpo_json(r, contexto)
-            if r.status_code in (429, 502, 503, 504):
+            instavel = instabilidade_compras(r)
+            if r.status_code in (429, 502, 503, 504) or instavel:
                 if tentativa == 3:
-                    raise ErroApiCompras(f"HTTP {r.status_code} esgotado em {nome}", status=r.status_code)
-                espera = espera_retry(r, tentativa, base=3.0)
-                log.warning("HTTP %d em %s (tentativa %d), aguardando %.1fs...", r.status_code, nome, tentativa, espera)
+                    raise ErroApiCompras(f"HTTP {r.status_code} esgotado em {nome}"
+                                         + (" (instabilidade do Compras.gov)" if instavel else ""), status=r.status_code)
+                espera = espera_retry(r, tentativa, base=10.0 if instavel else 3.0)
+                log.warning("HTTP %d%s em %s (tentativa %d), aguardando %.1fs...", r.status_code,
+                            " (instabilidade do Compras.gov)" if instavel else "", nome, tentativa, espera)
                 time.sleep(espera)
                 continue
             # 404 (parâmetro obrigatório faltando), 400 (codigo inválido) e demais: erro sem retry, nunca lista vazia.
+            # Exceção acima: o 400 de instabilidade do Compras.gov (instabilidade_compras).
             raise erro_http(r, contexto)
         raise ErroApiCompras(f"Falha ao consultar {nome} após retries")
 

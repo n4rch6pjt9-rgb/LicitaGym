@@ -1,6 +1,6 @@
 # 0034: Editar as etapas do pipeline na tela e tirar as listas fixas de etapas do front
 
-- **Status:** em revisão (aprovada em 20/10; ajustada depois da revisão do Codex no #407, aguarda reaprovação do Marcelo)
+- **Status:** aprovada (Marcelo, 20/10; reaprovada com a migration em 21/10, merge do #412)
 - **Alimenta:** módulo 2 (Pipeline e tarefas) de `docs/produto/ESCOPO.md`; área `/configuracoes` > Processo
 - **Repositório:** os dois (uma ação nova na `api-pipeline`; o backend vai ao ar antes do front)
 - **Issue:** #408
@@ -134,7 +134,7 @@ Erros saem com `raise exception` e um código próprio, que o `repo.ts` traduz p
 - 20/10: etapas do pipeline são metadado do tenant, editado na interface.
 - 20/10: reordenação segue a prática padrão de SaaS: ação atômica com lista completa e controle de versão (K-5, K-6).
 - 20/10: `exige_portao` fica fora desta spec (ver "Fora de escopo").
-- (pendente) Reaprovar a spec com a migration (K-5 a K-7), depois da revisão do Codex no #407.
+- 21/10: spec reaprovada com a migration (K-5 a K-7), depois das revisões do Codex no #407 e no #412.
 
 ## Perguntas em aberto
 

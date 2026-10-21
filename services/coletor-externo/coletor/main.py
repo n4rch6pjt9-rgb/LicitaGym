@@ -16,6 +16,7 @@ Uso (Cloud Run Job, varre IDs 1..120 e grava tudo; depois coleta os preços):
                detalhe nem o estimado.
     todas      os dois, um depois do outro; a falha de um não impede o outro.
 Rodada pontual de preços (só com --coleta precos), sem varrer o catálogo: --pdms 6762 3672 e/ou --itens 614555.
+O detalhe e o estimado/link rodam depois sobre todas as pendências, como na rodada normal.
 No Cloud Run: gcloud run jobs execute coletor-precos --args="--coleta,precos,--origem,manual,--pdms,6762,3672"
 O código de saída é 1 se qualquer parte falhar (inclusive falha de uma linha do detalhe).
 
@@ -151,6 +152,9 @@ def coletar_precos(sb: Supabase | None, dry_run: bool, delay: float,
 
     Sem `pdms`/`itens`: modo catálogo (PDMs efetivos + itens avulsos do catálogo da empresa). Com eles: só esses
     códigos, para uma rodada pontual (ex.: PDM recém-incluído) sem varrer o catálogo inteiro.
+    O recorte vale só para a consulta de preços: o detalhe e o estimado/link rodam depois como na rodada normal, sobre
+    todas as pendências da base (idempotentes; o PDM recém-incluído precisa deles). Falha numa pendência de outro PDM
+    também deixa o Job com código 1.
     """
     cliente = compras_precos.ClienteComprasPrecos(delay=max(1.0, delay))
     recorte = {k: v for k, v in (("pdms", pdms), ("itens", itens)) if v}
@@ -240,6 +244,9 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("--pdms/--itens só valem com --coleta precos")
     if any(c <= 0 for c in (args.pdms or []) + (args.itens or [])):
         ap.error("--pdms/--itens: códigos devem ser inteiros positivos")
+    # sem repetir consulta (ex.: --itens 1 1), mantendo a ordem pedida
+    args.pdms = list(dict.fromkeys(args.pdms)) if args.pdms else None
+    args.itens = list(dict.fromkeys(args.itens)) if args.itens else None
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 

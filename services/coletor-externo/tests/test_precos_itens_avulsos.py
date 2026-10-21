@@ -23,7 +23,9 @@ def test_itens_avulsos_so_fora_dos_pdms_efetivos_sem_repeticao():
                   {"id": 2, "codigo_item": 94846, "codigo_pdm": 10779},
                   {"id": 3, "codigo_item": 357264, "codigo_pdm": 16190},   # PDM efetivo: já vem na consulta do PDM
                   {"id": 4, "codigo_item": 94846, "codigo_pdm": 10779},    # repetido
-                  {"id": 5, "codigo_item": 150380, "codigo_pdm": None}])   # PDM desconhecido: consulta o item
+                  # codigo_pdm nulo não ocorre em produção (constraint catalogo_empresa_catmat_niveis_chk exige o PDM
+                  # no nível item); se vier, o item é consultado (conservador)
+                  {"id": 5, "codigo_item": 150380, "codigo_pdm": None}])
     assert compras_pdms.carregar_itens_avulsos(sb, [16190]) == [94846, 150380, 614555]
     tabela = sb.selecionar.call_args.args[0]
     filtros = sb.selecionar.call_args.kwargs
@@ -98,7 +100,7 @@ def test_main_rodada_pontual_como_o_gcloud_manda(monkeypatch):
 
 def test_main_itens_pontuais(monkeypatch):
     chamadas = _main_com_coletar(monkeypatch)
-    assert M.main(["--coleta", "precos", "--itens", "614555", "94846", "--dry-run"]) == 0
+    assert M.main(["--coleta", "precos", "--itens", "614555", "94846", "614555", "--dry-run"]) == 0
     assert chamadas == [{"pdms": None, "itens": [614555, 94846], "dry_run": True}]
 
 
@@ -116,3 +118,25 @@ def test_main_recorte_invalido_para_antes_de_rodar(monkeypatch, argv):
         M.main(argv + ["--dry-run"])
     assert exc.value.code == 2
     assert chamadas == []
+
+
+def test_coletar_precos_pontual_repassa_recorte_e_roda_detalhe_e_estimado(monkeypatch):
+    """Com banco: só os PDMs pedidos na consulta de preços (sem ler o catálogo); detalhe e estimado rodam depois."""
+    pedidos = {}
+
+    def coletar(cliente, sb, dry_run=False, **recorte):
+        pedidos["coletar"] = recorte
+        return {"sucesso": True}
+
+    monkeypatch.setattr(M.compras_precos, "coletar", coletar)
+    monkeypatch.setattr(M.compras_precos, "completar_detalhes",
+                        lambda cliente, sb: pedidos.setdefault("detalhe", True) and {"sucesso": True})
+    monkeypatch.setattr(M.compras_itens_contratacao, "coletar",
+                        lambda cliente, sb, limite=0: pedidos.setdefault("estimado", True) and {"sucesso": True})
+    monkeypatch.setattr(M, "env", lambda nome, padrao=None, obrigatorio=False: padrao if padrao else "x")
+    sb = MagicMock()
+
+    assert M.coletar_precos(sb, False, 1.0, pdms=[6762]) is True
+    assert pedidos == {"coletar": {"pdms": [6762]}, "detalhe": True, "estimado": True}
+    sb.rpc.assert_not_called()
+    sb.selecionar.assert_not_called()

@@ -18,6 +18,10 @@ function listaIds(v: unknown, campo = "licitacao_ids"): number[] | { error: stri
   return [...new Set(ids as number[])];
 }
 
+const MAX_VERSAO = 64;
+/** A ordem só muda por etapas_reordenar (spec 0034, K-7): lista inteira, com a versão lida, dentro do lock. */
+const SO_REORDENAR = "Use etapas_reordenar para mudar a ordem.";
+
 function nomeEtapa(v: unknown): string | { error: string } {
   if (typeof v !== "string" || v.trim().length === 0) return { error: "'nome' da etapa é obrigatório." };
   const nome = v.trim().replace(/\s+/g, " ");
@@ -115,9 +119,8 @@ export function parseActionFromBody(body: Corpo): Resultado {
       if (!f) return { error: `'fase' deve ser uma de: ${FASES.join(", ")}.` };
       const d = body.desfecho === undefined ? null : desfecho(body.desfecho);
       if (d === undefined) return { error: `'desfecho' deve ser null ou um de: ${DESFECHOS.join(", ")}.` };
-      const ordem = body.ordem === undefined || body.ordem === null ? null : idPositivo(body.ordem);
-      if (body.ordem !== undefined && body.ordem !== null && ordem === null) return { error: "'ordem' deve ser inteiro positivo." };
-      return { action, nome, fase: f, ordem, desfecho: d, exige_motivo: body.exige_motivo === true };
+      if (body.ordem !== undefined) return { error: SO_REORDENAR };
+      return { action, nome, fase: f, desfecho: d, exige_motivo: body.exige_motivo === true };
     }
     case "etapa_atualizar": {
       const id = idPositivo(body.id);
@@ -133,11 +136,7 @@ export function parseActionFromBody(body: Corpo): Resultado {
         if (!f) return { error: `'fase' deve ser uma de: ${FASES.join(", ")}.` };
         out.fase = f;
       }
-      if (body.ordem !== undefined) {
-        const ordem = idPositivo(body.ordem);
-        if (!ordem) return { error: "'ordem' deve ser inteiro positivo." };
-        out.ordem = ordem;
-      }
+      if (body.ordem !== undefined) return { error: SO_REORDENAR };
       if (body.desfecho !== undefined) {
         const d = desfecho(body.desfecho);
         if (d === undefined) return { error: `'desfecho' deve ser null ou um de: ${DESFECHOS.join(", ")}.` };
@@ -149,6 +148,18 @@ export function parseActionFromBody(body: Corpo): Resultado {
       }
       if (Object.keys(out).length === 2) return { error: "Nada para atualizar na etapa." };
       return out;
+    }
+    case "etapas_reordenar": {
+      // Sem tirar repetidos: id repetido, faltando ou de outra empresa é o banco que recusa (400), e só depois de
+      // conferir a versão (409), para uma lista velha não parecer lista errada.
+      if (!Array.isArray(body.ids) || body.ids.length === 0) return { error: "'ids' deve ser a lista completa das etapas." };
+      if (body.ids.length > MAX_LOTE) return { error: `'ids' aceita no máximo ${MAX_LOTE} etapas.` };
+      const ids = body.ids.map(idPositivo);
+      if (ids.some((x) => x === null)) return { error: "'ids' só aceita ids inteiros positivos." };
+      if (typeof body.versao !== "string" || body.versao.length === 0 || body.versao.length > MAX_VERSAO) {
+        return { error: "'versao' é obrigatória: use a que veio em etapas_listar." };
+      }
+      return { action, ids: ids as number[], versao: body.versao };
     }
     case "etapa_excluir": {
       const id = idPositivo(body.id);

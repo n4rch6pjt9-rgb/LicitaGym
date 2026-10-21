@@ -20,6 +20,13 @@ export interface EtapaComTotal extends Etapa {
   total: number;
 }
 
+/** Etapas na ordem do Kanban e a versão da lista (pipeline_etapas_versao), lidas no mesmo comando (spec 0034, K-6).
+ * O cliente devolve `versao` como veio em etapas_reordenar. null só se a empresa não tem etapa. */
+export interface ListaEtapas {
+  etapas: EtapaComTotal[];
+  versao: string | null;
+}
+
 /** Fila de preparação da Triagem (spec 0018, decisão 12). */
 export type StatusPreparacao = "pending" | "processing" | "completed" | "failed";
 export type ResultadoPreparacao = "ok" | "sem_documento" | "regulamento_nao_informado_pela_fonte";
@@ -57,7 +64,7 @@ export interface EventoHistorico {
   em: string;
 }
 
-export const ACOES_ADMIN = new Set(["etapa_criar", "etapa_atualizar", "etapa_excluir", "etapa_tarefas_salvar"]);
+export const ACOES_ADMIN = new Set(["etapa_criar", "etapa_atualizar", "etapas_reordenar", "etapa_excluir", "etapa_tarefas_salvar"]);
 
 /** Tarefa do modelo de uma etapa (spec 0018): do catálogo 14.133 ou escrita pela empresa. */
 export interface ModeloTarefa {
@@ -104,16 +111,16 @@ export type Acao =
   | { action: "pipeline_mover"; licitacao_ids: number[]; etapa_id: number; motivo: string | null }
   | { action: "pipeline_remover"; licitacao_ids: number[] }
   | { action: "pipeline_historico"; licitacao_id: number }
-  | { action: "etapa_criar"; nome: string; fase: Fase; ordem: number | null; desfecho: Desfecho | null; exige_motivo: boolean }
+  | { action: "etapa_criar"; nome: string; fase: Fase; desfecho: Desfecho | null; exige_motivo: boolean }
   | {
     action: "etapa_atualizar";
     id: number;
     nome?: string;
     fase?: Fase;
-    ordem?: number;
     desfecho?: Desfecho | null;
     exige_motivo?: boolean;
   }
+  | { action: "etapas_reordenar"; ids: number[]; versao: string }
   | { action: "etapa_excluir"; id: number; mover_para: number | null }
   | { action: "etapa_tarefas_listar"; etapa_id: number }
   | { action: "catalogo_listar" }

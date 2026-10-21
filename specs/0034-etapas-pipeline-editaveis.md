@@ -1,6 +1,6 @@
 # 0034: Editar as etapas do pipeline na tela e tirar as listas fixas de etapas do front
 
-- **Status:** aprovada (Marcelo, 20/10; reaprovada com a migration em 21/10, merge do #412)
+- **Status:** em implementação (aprovada por Marcelo em 20/10, reaprovada com a migration em 21/10 no merge do #412; backend K-5 a K-7 no #414, front K-1 a K-4 pendente)
 - **Alimenta:** módulo 2 (Pipeline e tarefas) de `docs/produto/ESCOPO.md`; área `/configuracoes` > Processo
 - **Repositório:** os dois (uma ação nova na `api-pipeline`; o backend vai ao ar antes do front)
 - **Issue:** #408
@@ -93,6 +93,21 @@ Erros saem com `raise exception` e um código próprio, que o `repo.ts` traduz p
 | CA-6 | K-3 | **Dado** `etapas_listar` com 3 etapas de nomes livres, **quando** o Kanban e o painel montam, **então** aparecem exatamente 3 colunas/estágios com esses nomes, e nenhuma lista fixa de etapas existe no código (busca no `src/` sem as 13 etapas literais, fora das fixtures do demo). | vitest `src/test/pipeline-etapas-servidor.test.tsx` + teste de varredura em `src/test/sem-etapas-fixas.test.ts` |
 | CA-7 | K-3 | **Dado** falha em `etapas_listar`, **quando** o painel monta, **então** mostra estado de erro com "Tentar de novo" e nenhum número. | vitest `pipeline-etapas-servidor.test.tsx` |
 | CA-8 | K-4 | **Dado** um rascunho não salvo, **quando** o usuário clica outro item do menu, **então** aparece a confirmação; cancelar mantém o rascunho. | vitest `pipeline-etapas.test.tsx` |
+
+### Onde cada critério do backend é testado (`/implement`, 21/10)
+
+| CA | Teste |
+|---|---|
+| CA-3a | Deno `CA-3a: admin reordena as 13 etapas...`; SQL `pipeline_etapas_reordenar_check.sql` (reordenar ao contrário) |
+| CA-3b | Deno `CA-3b: lista com id repetido...`; SQL (repetido, faltando, outro tenant, vazia → `LG001`) |
+| CA-3c | Deno `CA-3c: versão antiga...` (409 e 403 da operação); SQL (versão velha → `LG002`) |
+| CA-3d | Deno `CA-3d: etapa criada ou excluída...`; SQL (criar e excluir depois da leitura → `LG002`, não `LG001`) |
+| CA-3e | SQL (ACL das 4 funções para `anon`, `authenticated`, `PUBLIC` e `service_role`; nenhuma `security definer`; ordem 10, 20, 30...) |
+| CA-3f | Deno `CA-3f: ordem em etapa_criar ou etapa_atualizar...`; SQL (`pipeline_etapa_criar` no fim, nome repetido 23505) |
+| CA-3g | Deno `CA-3g: etapas_listar (repo real)...` (uma RPC só, sem PostgREST); SQL (versão das linhas = `pipeline_etapas_versao`) |
+
+Códigos do banco: `LG001` = `lista_invalida` (400) e `LG002` = `versao_desatualizada` (409), traduzidos no `repo.ts`; a
+resposta de erro traz `codigo` além de `error`.
 
 ## Skills e agentes por contrato
 

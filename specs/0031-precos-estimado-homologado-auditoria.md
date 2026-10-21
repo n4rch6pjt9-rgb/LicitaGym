@@ -63,6 +63,15 @@ e, na consulta da compra, o `linkSistemaOrigem` do portal oficial.
 
 O dígito "9" na posição da modalidade do `id_compra` não serve de filtro: 37 compras sem ele estavam no PNCP.
 
+**Link do portal oficial no recorte de 24 meses** (amostra de 150 das 2.463 compras com resultado desde 22/10/2024,
+consultada em 21/10):
+- 150 de 150 acham no PNCP; todas publicadas pelo usuário "Compras.gov.br" (nenhum outro portal apareceu).
+- 110 (73%) têm `linkSistemaOrigem`, todos no host `cnetmobile.estaleiro.serpro.gov.br`, em dois formatos:
+  `.../public/landing?destino=acompanhamento-compra&compra=<id_compra>` (90) e
+  `.../public/compras/acompanhamento-compra?compra=<id_compra>` (20). Os 110 contêm o próprio `id_compra`.
+- 38 (25%) sem link: **todas dispensas** (modalidade 06 no `id_compra`); 12 dispensas com link usam o segundo formato.
+- 2 (1%) sem resposta do PNCP na consulta (timeout).
+
 **Feedback de tela** (19/10 e 21/10):
 - Órgão e UASG repetem a mesma informação; fica só a UASG (código · nome).
 - A coluna "Objeto da compra" ocupa a tabela; sai, e no lugar entram os links do PNCP e do portal oficial.
@@ -100,7 +109,8 @@ A coleta de preços não roda desde 03/10 (18 dias em 21/10). A conferir pelo Ma
      `GET /api/consulta/v1/orgaos/<cnpj>/compras/<ano>/<sequencial>`, gravando `linkSistemaOrigem` (no caso 2:
      `https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/landing?destino=acompanhamento-compra&compra=16021805900022026`);
    - roda no mesmo Job, depois de `--coleta precos`, com delay de no mínimo 1 s;
-   - a primeira carga é o número de compras distintas do recorte (medir no PR com dry-run); depois, só as novas.
+   - a primeira carga é o número de compras distintas do recorte (2.463 em 21/10; confirmar no PR com dry-run); depois,
+     só as novas.
 3. **Regra de duplicata:** fica a linha com `temResultado = true`; havendo empate, a de `dataAtualizacaoPncp` mais nova.
    Estimado igual a 0 é ausente, nunca zero.
 4. **Migration aditiva** `supabase/migrations/<ts>_precos_itens_contratacao.sql`: tabela
@@ -112,8 +122,9 @@ A coleta de preços não roda desde 03/10 (18 dias em 21/10). A conferir pelo Ma
      `diferenca_percentual` = (homologado − estimado) / estimado × 100, 2 casas, meio para longe do zero, só com estimado;
    - `link_pncp` = `https://pncp.gov.br/app/editais/<cnpj>/<ano>/<sequencial>`, a partir do nº de controle;
    - `link_portal_oficial` = o `linkSistemaOrigem` que o PNCP mostra (decisão de 21/10). Sem ele, montado a partir do
-     `id_compra` no padrão do Compras.gov (`...landing?destino=acompanhamento-compra&compra=<id_compra>`), com
-     `link_portal_oficial_origem = "montado"`; com ele, `"pncp"`;
+     `id_compra` no formato que o PNCP usa para as dispensas
+     (`https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/acompanhamento-compra?compra=<id_compra>`),
+     com `link_portal_oficial_origem = "montado"`; com ele, `"pncp"` (pergunta 1 em aberto);
    - os campos já gravados e hoje descartados: município, modalidade, forma (SISPP/SISRP), critério de julgamento e
      `percentual_maior_desconto`.
 6. **Filtros** (decisão de 21/10), os mesmos na `amostras`, no `resumo` e na `itens`, num objeto só (`filtro`), como
@@ -152,6 +163,8 @@ A coleta de preços não roda desde 03/10 (18 dias em 21/10). A conferir pelo Ma
       Contratações 14.133) e PNCP · período 22/10/2024 a 21/10/2026 · última coleta: <data>". O aviso de unidades
       mistas fica, com o filtro de item sugerido. A regra de cálculo vai para um ícone de ajuda.
     - **Selo** no link do portal oficial quando ele foi montado e não veio do PNCP.
+11. **Navegação para o BI** (decisão de 21/10): a /precos leva ao BI de preços com o mesmo recorte (os filtros vão
+    na URL do BI). O BI passa a usar o estimado, o homologado e a diferença da `precos_itens_contratacao`.
 
 ### Fase B: marca homologada pela ata (com modelo de IA)
 
@@ -159,8 +172,10 @@ A coleta de preços não roda desde 03/10 (18 dias em 21/10). A conferir pelo Ma
    os arquivos de cada ata. Na amostra de 21/10, 29 de 96 compras achadas tinham ata publicada.
 2. **Leitura:** o PDF da ata vira texto; um extrator acha, por item, marca, modelo e fabricante. Saída com o trecho da
    ata que prova cada campo; sem trecho, o campo fica `null`.
-3. **Tela:** coluna Marca mostra a marca da ata, com selo "ata"; sem ata, mostra a da Pesquisa de Preço com selo
-   "informada pelo fornecedor". As duas ficam visíveis no detalhe da linha.
+3. **BI e tela** (decisão de 21/10: "pesquisa de preço sem análise não é nada"): a marca da ata é a marca das
+   estatísticas por marca do **BI**, e também a da coluna Marca da /precos, com selo "ata". Sem ata, vale a da
+   Pesquisa de Preço com selo "informada pelo fornecedor"; o BI mostra quantas linhas de cada marca vêm de ata. As duas
+   ficam visíveis no detalhe da linha.
 4. A marca da ata é **derivada** (leitura de documento), rotulada como tal; a da Pesquisa de Preço segue intacta.
 
 ## Plano de uso de modelos
@@ -178,7 +193,7 @@ A coleta de preços não roda desde 03/10 (18 dias em 21/10). A conferir pelo Ma
 1. **Operação:** o Marcelo confere o Job e o agendamento (seção "Operação"). Sem coleta rodando, o resto mostra dado velho.
 2. **Backend fase A:** `/implement` com CA-1 a CA-10 (com os 6b, 7b e 7c): coleta, migration, `api-precos`. PR draft no LicitaGym.
 3. **Front fase A:** agente `frontend-dashboard` com CA-11 a CA-14 (com o 11b), depois do backend no ar. PR draft no Dashboard.
-4. **Fase B:** só depois da A em produção e com a pergunta 2 respondida; CA-15 a CA-17.
+4. **Fase B:** só depois da A em produção; CA-15 a CA-18.
 
 ## Critérios de aceite
 
@@ -201,10 +216,11 @@ A coleta de preços não roda desde 03/10 (18 dias em 21/10). A conferir pelo Ma
 | CA-11b | A | **Dado** filtros aplicados, **quando** a tela renderiza, **então** cada filtro aparece na faixa de aplicados com "x", "Limpar filtros" zera todos, a contagem de preços aparece, e sem resultado aparece o estado vazio. | vitest (mesmo arquivo) |
 | CA-12 | A | **Dado** a ação `itens`, **quando** o dropdown abre, **então** cada opção mostra código, descrição curta e N, e nenhuma tem N = 0. | vitest (mesmo arquivo) |
 | CA-13 | A | **Dado** o resumo, **quando** os KPIs renderizam, **então** aparecem o item com mais amostras (código e N) e o desconto mediano com o `n_com_estimado`; o quadro descritivo tem uma só linha de fonte. | vitest (mesmo arquivo) |
-| CA-14 | A | **Dado** filtros escolhidos, **quando** a URL é aberta em outra aba, **então** o mesmo recorte aparece. | vitest (mesmo arquivo) |
+| CA-14 | A | **Dado** filtros escolhidos, **quando** a URL é aberta em outra aba, **então** o mesmo recorte aparece; o botão "Ver no BI" abre o BI com o mesmo recorte. | vitest (mesmo arquivo) |
 | CA-15 | B | **Dado** a ata 00102/2026 da compra 16021805900022026 (fixture), **quando** o extrator roda, **então** o item 66 sai com a marca da ata e o trecho que a prova. | pytest `.../test_atas_marca.py` |
 | CA-16 | B | **Dado** uma ata sem o item, **quando** o extrator roda, **então** a marca fica `null` e a tela mostra a da Pesquisa de Preço com o selo "informada pelo fornecedor". | pytest + vitest |
 | CA-17 | B | **Dado** a amostra de conferência de 30 atas, **quando** o Haiku e o Opus extraem, **então** o PR registra a taxa de concordância. | relatório no PR |
+| CA-18 | B | **Dado** linhas com marca da ata e linhas só com marca da Pesquisa de Preço, **quando** o BI agrega por marca, **então** usa a da ata quando existe e informa, por marca, quantas linhas vêm de ata. | SQL `supabase/tests/bi_precos_marca_ata_check.sql` |
 
 ## Skills e agentes por contrato
 
@@ -213,7 +229,7 @@ A coleta de preços não roda desde 03/10 (18 dias em 21/10). A conferir pelo Ma
 | Coleta (fases A e B) | `/implement` | `revisor-codigo` | `verificar-producao` |
 | Migration | skill `nova-migration` | `revisor-migration` + `revisor-seguranca` | `validar-migrations` antes; `verificar-producao` + `get_advisors` depois |
 | `api-precos` | `/implement` | `revisor-codigo` + `revisor-seguranca` | `verificar-producao` |
-| Tela /precos | agente `frontend-dashboard` | `revisor-codigo` + `revisor-seguranca` + `ux-ui-licitagym` | `run-dashboard` (claro, escuro, celular) antes; `deploy-dashboard` depois |
+| Tela /precos e BI | agente `frontend-dashboard` | `revisor-codigo` + `revisor-seguranca` + `ux-ui-licitagym` | `run-dashboard` (claro, escuro, celular) antes; `deploy-dashboard` depois |
 
 ## Fora de escopo
 
@@ -227,9 +243,9 @@ A coleta de preços não roda desde 03/10 (18 dias em 21/10). A conferir pelo Ma
 ## Impacto em dados
 
 - **Migration:** sim, aditiva e idempotente (tabela nova; função do resumo com parâmetros novos com default; fase B: tabela `precos_atas_marca`).
-- **Tabelas, views e funções tocadas:** `precos_itens_contratacao` (nova, escrita pelo coletor, lida pela `api-precos`; inclui `link_sistema_origem`); `precos_praticados_resumo` (parâmetros novos com default: `p_objeto`, `p_uf`, `p_municipio`, `p_uasg`, `p_q`).
+- **Tabelas, views e funções tocadas:** `precos_itens_contratacao` (nova, escrita pelo coletor, lida pela `api-precos`; inclui `link_sistema_origem`); `precos_praticados_resumo` (parâmetros novos com default: `p_objeto`, `p_uf`, `p_municipio`, `p_uasg`, `p_q`); views do BI de preços (passam a ler estimado, diferença e, na fase B, a marca da ata).
 - **ACL e RLS:** RLS ligada sem policy, `revoke all` de `anon` e `authenticated`, grant só a `service_role`.
-- **Backfill:** primeira carga das compras do recorte de 24 meses (contagem no PR, com dry-run). Não altera `precos_praticados_itens`.
+- **Backfill:** primeira carga das compras do recorte de 24 meses (2.463 em 21/10; contagem no PR, com dry-run). Não altera `precos_praticados_itens`.
 - **Edge Functions republicadas no merge:** todas (regra do repositório). Muda a `api-precos`.
 - **Contrato com o Dashboard:** aditivo. O backend vai ao ar antes do front.
 - **Dado oficial × derivado:** oficiais: estimado, homologado, situação, nº PNCP, link do sistema de origem (PNCP), marca da Pesquisa de Preço. Derivados: diferença, link do PNCP e link do portal montado (a partir de identificadores oficiais) e marca da ata (leitura de documento, com trecho).
@@ -244,10 +260,11 @@ A coleta de preços não roda desde 03/10 (18 dias em 21/10). A conferir pelo Ma
 - 21/10: o link do portal oficial é o que o PNCP mostra (`linkSistemaOrigem`); sem ele, montado a partir do portal oficial do edital.
 - 21/10: "fora do perfil" não entra na /precos; o operador limpa o recorte pelos filtros.
 - 21/10: filtros: objeto da contratação, PDM, item, 12 e 24 meses, UF, cidade, UASG e busca livre por palavras. O HAR da pesquisa do Licitar Digital é referência de formato, não regra.
+- 21/10: navegação: a /precos leva ao BI.
+- 21/10: a marca da ata vale principalmente no BI ("pesquisa de preço sem análise não é nada").
 
 ## Perguntas em aberto
 
-1. "Navegação": além dos filtros na URL, há outro fluxo esperado (por exemplo, ir da linha para a oportunidade ou para o BI)?
-2. Fase B: a marca da ata substitui a da Pesquisa de Preço nas estatísticas por marca do BI, ou só na tela?
-3. Link montado: a Pesquisa de Preço é do Compras.gov, então toda compra dela deveria ter portal oficial Compras.gov. Se
-   aparecer compra sem `linkSistemaOrigem` de outro portal (não medido), vale só o link do PNCP?
+1. **Link montado (medido em 21/10):** 25% das compras do recorte, todas dispensas, não têm `linkSistemaOrigem` no PNCP.
+   Nenhuma compra de outro portal apareceu. Proposta: montar o link do Compras.gov a partir do `id_compra`, no formato
+   que o PNCP usa nas dispensas com link, com selo "montado". Alternativa: mostrar só o link do PNCP nessas linhas.

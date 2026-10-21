@@ -93,10 +93,10 @@ const STATUS_DOCUMENTO = new Set(["pendente", "baixado", "extraido", "indexado",
 /** R-3: categoria fixa do erro gravado pelo coletor/indexador. Texto sem padrão conhecido vira "outro". */
 export function categoriaErro(texto: string | null): CategoriaErro | null {
   if (texto === null || texto.trim() === "") return null;
-  if (/index|chunk|embedding/i.test(texto)) return "indexacao";
   if (/texto aproveit|extra[cç]/i.test(texto)) return "extracao";
-  // antes de "pdf": o erro HTTP traz a URL do arquivo
+  // antes de "index" e "pdf": o erro HTTP traz a URL do arquivo (".../index.php", ".../edital.pdf")
   if (/\b[45]\d\d\b|url|download|baix|timeout|tempo esgotado|conex/i.test(texto)) return "download";
+  if (/index|chunk|embedding/i.test(texto)) return "indexacao";
   if (/ocr|pdf|zip|corrompid/i.test(texto)) return "extracao";
   return "outro";
 }

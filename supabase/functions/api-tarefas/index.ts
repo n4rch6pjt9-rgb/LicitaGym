@@ -143,7 +143,12 @@ export async function handleRequest(req: Request, ctx: ApiTarefasContext = {}): 
           papelResp = p;
         }
         const atualizada = await repo.atualizar(
-          tenant, params.id, { responsavel_user_id: params.user_id, responsavel_papel: papelResp }, user.id,
+          tenant, params.id, {
+            responsavel_user_id: params.user_id,
+            responsavel_papel: papelResp,
+            // tarefa de agente segue de agente (R-11); as outras passam a usuário ou voltam à fila do papel
+            ...(tarefa.responsavel_tipo === "agente" ? {} : { responsavel_tipo: params.user_id !== null ? "usuario" as const : "papel" as const }),
+          }, user.id,
         );
         if (!atualizada) return jsonResponse({ error: "Tarefa não encontrada." }, 404);
         console.info("[api-tarefas] atribuir", { user: user.id, tarefa: params.id, para: params.user_id });

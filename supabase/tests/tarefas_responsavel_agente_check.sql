@@ -157,7 +157,7 @@ begin
     insert into public.licitacoes_externas (fonte, regulamento) values ('pncp', 'LEI_14133') returning id into v_l2;
     perform public.pipeline_mover(v_t, array[v_l2], v_tri, null, v_u);
     if not exists (select 1 from public.tarefas_equipe where licitacao_id = v_l2 and titulo = 'Conferir catálogo'
-                    and responsavel_tipo = 'usuario' and responsavel_user_id = v_m)
+                    and responsavel_tipo = 'usuario' and responsavel_user_id = v_m and responsavel_papel = 'operacao')
        or not exists (select 1 from public.tarefas_equipe where licitacao_id = v_l2 and titulo = 'Fila da operação'
                     and responsavel_tipo = 'papel' and responsavel_papel = 'operacao') then
       raise exception 'CHECK FALHOU: responsável do modelo não foi copiado';
@@ -177,6 +177,32 @@ begin
     if not exists (select 1 from public.tarefas_equipe where licitacao_id = v_l1 and titulo = 'Conferir catálogo'
                     and responsavel_tipo = 'papel' and responsavel_papel = 'admin' and responsavel_user_id is null) then
       raise exception 'CHECK FALHOU: membro inativo não caiu em papel admin';
+    end if;
+
+    -- CA-20 (pela função): responsável usuario sem user_id é recusado no salvar. O check da tabela aceita, de
+    -- propósito: a FK com set null anula o usuário que sai da empresa, e a entrada na etapa cai em papel admin (R-14).
+    v_ok := false;
+    begin
+      perform public.pipeline_etapa_tarefas_salvar(v_t, v_tri, jsonb_build_array(
+        jsonb_build_object('origem', 'empresa', 'titulo', 'Sem usuário', 'responsavel', jsonb_build_object('tipo', 'usuario'))), v_u);
+    exception when sqlstate '22023' then v_ok := true;
+    end;
+    if not v_ok then
+      raise exception 'CHECK FALHOU: responsável usuario sem user_id aceito no salvar';
+    end if;
+
+    -- R-15: backfill dos cards que já estavam na Nova antes da semente cria as 2 tarefas de agente, sem duplicar
+    insert into public.licitacoes_externas (fonte) values ('pncp') returning id into v_l3;
+    perform public.pipeline_mover(v_t, array[v_l3], v_nova, null, v_u);
+    delete from public.tarefas_equipe where tenant_id = v_t and licitacao_id = v_l3 and responsavel_tipo = 'agente';
+    perform public.pipeline_tarefas_agente_backfill();
+    perform public.pipeline_tarefas_agente_backfill();
+    if (select count(*) from public.tarefas_equipe where tenant_id = v_t and licitacao_id = v_l3
+         and responsavel_tipo = 'agente' and responsavel_papel = 'admin' and status = 'aberta') <> 2 then
+      raise exception 'CHECK FALHOU: backfill das tarefas de agente';
+    end if;
+    if has_function_privilege('service_role', 'public.pipeline_tarefas_agente_backfill()'::regprocedure, 'EXECUTE') then
+      raise exception 'CHECK FALHOU: service_role executa o backfill';
     end if;
 
     raise exception 'ROLLBACK_PROPOSITAL';

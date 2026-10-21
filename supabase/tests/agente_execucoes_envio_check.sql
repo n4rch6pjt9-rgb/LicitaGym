@@ -108,10 +108,19 @@ begin
       raise exception 'CHECK FALHOU: reenvio de rejeitada (%)', v_x.revisoes_anteriores;
     end if;
 
+    -- aprovada antes da spec 0035 (nunca enviada): o envio guarda a aprovação em revisoes_anteriores
+    insert into public.agente_execucoes (tenant_id, licitacao_id, agente, situacao, contexto_hash, regra_versao, solicitado_por,
+                                         revisao, revisado_por, revisado_em)
+    values (v_t, v_l, 'preco', 'ok', repeat('c', 64), 'teste', v_u, 'aprovada', v_u, now()) returning id into v_e;
+    select * into v_x from public.agente_execucao_enviar(v_t, v_e, v_u);
+    if v_x.revisao <> 'aguardando' or v_x.revisoes_anteriores -> 0 ->> 'decisao' <> 'aprovada' then
+      raise exception 'CHECK FALHOU: envio de aprovada antiga perdeu a aprovação (%)', v_x.revisoes_anteriores;
+    end if;
+
     -- R-7: tirar do pipeline apaga a tarefa e anula tarefa_id (a execução fica)
     perform public.pipeline_mover(v_t, array[v_l], null, null, v_u);
-    if exists (select 1 from public.agente_execucoes where id in (v_e, v_ej) and tarefa_id is not null)
-       or (select count(*) from public.agente_execucoes where id in (v_e, v_ej)) <> 2 then
+    if exists (select 1 from public.agente_execucoes where tenant_id = v_t and tarefa_id is not null)
+       or (select count(*) from public.agente_execucoes where tenant_id = v_t) <> 3 then
       raise exception 'CHECK FALHOU: tarefa_id não foi anulado ao tirar do pipeline';
     end if;
 

@@ -215,7 +215,9 @@ begin
     select p_tenant, p_licitacao, 'empresa', m.titulo, m.descricao, true,
            case when m.prazo_horas is null then 'sem_prazo' else 'calculado' end,
            case when m.prazo_horas is null then null else v_desde + make_interval(hours => m.prazo_horas) end,
-           coalesce(m.responsavel_papel, 'admin'),
+           -- usuário: o papel dele na empresa (como tarefa_atribuir); senão o papel do modelo, padrão admin
+           case when m.origem = 'empresa' and m.responsavel_tipo = 'usuario' and tm.user_id is not null then tm.papel
+                else coalesce(m.responsavel_papel, 'admin') end,
            case when m.origem = 'agente' and ag.codigo is not null then 'agente'
                 when m.origem = 'empresa' and m.responsavel_tipo = 'usuario' and tm.user_id is not null then 'usuario'
                 else 'papel' end,

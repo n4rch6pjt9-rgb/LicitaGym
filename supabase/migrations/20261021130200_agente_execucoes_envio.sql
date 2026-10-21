@@ -48,7 +48,7 @@ comment on column public.agente_execucoes.enviada_em is
 comment on column public.agente_execucoes.tarefa_id is
   'Tarefa do agente ligada no envio (aberta, mesmo agente, etapa atual). Nula: não havia tarefa ou foi apagada.';
 comment on column public.agente_execucoes.revisoes_anteriores is
-  'Revisões rejeitadas antes de um reenvio: [{decisao, nota, por, em, enviada_em}]. Só cresce.';
+  'Revisões anteriores a um envio (rejeitada reenviada, ou aprovada antes da spec 0035): [{decisao, nota, por, em, enviada_em}]. Só cresce.';
 
 -- Envio atômico ---------------------------------------------------------------------------------------------------
 create or replace function public.agente_execucao_enviar(
@@ -90,7 +90,8 @@ begin
 
   return query
   update public.agente_execucoes e
-     set revisoes_anteriores = case when e.revisao = 'rejeitada'
+     -- qualquer revisão anterior fica registrada: a rejeitada que volta e a aprovada da spec 0032 que nunca foi enviada
+     set revisoes_anteriores = case when e.revisao <> 'aguardando'
                                     then e.revisoes_anteriores || jsonb_build_array(jsonb_build_object(
                                            'decisao', e.revisao, 'nota', e.revisao_nota, 'por', e.revisado_por,
                                            'em', e.revisado_em, 'enviada_em', e.enviada_em))
@@ -139,7 +140,7 @@ create or replace trigger agente_execucoes_tarefa_trg
   for each row execute function public.agente_execucoes_tarefa();
 
 revoke all on function public.agente_execucao_enviar(bigint, bigint, uuid) from PUBLIC, anon, authenticated;
-revoke all on function public.agente_execucoes_tarefa() from PUBLIC, anon, authenticated;
+revoke all on function public.agente_execucoes_tarefa() from PUBLIC, anon, authenticated, service_role;
 grant execute on function public.agente_execucao_enviar(bigint, bigint, uuid) to service_role;
 
 commit;

@@ -35,6 +35,15 @@ Deno.test("CA-8: execução desatualizada não é enviada (409)", async () => {
   assertEquals(execucoes.every((e) => e.enviada_em === null), true);
 });
 
+Deno.test("R-1: oportunidade fora do pipeline não envia nem revisa (404)", async () => {
+  const { c, id, pipeline } = await executado();
+  const e = id("edital");
+  await chamar(c, { action: "analise_enviar", execucao_id: e });
+  pipeline.clear();
+  assertEquals((await chamar(c, { action: "analise_enviar", execucao_id: id("preco") })).status, 404);
+  assertEquals((await chamar(c, { action: "analise_revisar", execucao_id: e, decisao: "aprovada" })).status, 404);
+});
+
 Deno.test("CA-9: execução de outra empresa (ou inexistente) é 404", async () => {
   const { c, repo } = await executado();
   repo.obterExecucao = () => Promise.resolve(null);

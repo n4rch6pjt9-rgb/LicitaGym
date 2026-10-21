@@ -45,7 +45,11 @@ stable
 security invoker
 set search_path = public, pg_temp
 as $$
-  with etapas as (
+  with termo as (
+    -- a api-agentes já saneia a busca; os curingas são escapados aqui também, para outro chamador
+    select nullif(replace(replace(replace(btrim(coalesce(p_busca, '')), '\', '\\'), '%', '\%'), '_', '\_'), '') as t
+  ),
+  etapas as (
     select distinct m.etapa_id
       from public.pipeline_etapa_tarefas m
      where m.tenant_id = p_tenant and m.origem = 'agente' and m.ativo and m.responsavel_agente = p_agente
@@ -57,14 +61,16 @@ as $$
       join etapas et on et.etapa_id = po.etapa_id
       join public.pipeline_etapas e on e.tenant_id = po.tenant_id and e.id = po.etapa_id
       join public.licitacoes_externas le on le.id = po.licitacao_id
+      cross join termo
      where po.tenant_id = p_tenant
-       and (nullif(btrim(p_busca), '') is null
-            or le.objeto ilike '%' || btrim(p_busca) || '%'
-            or le.orgao_nome ilike '%' || btrim(p_busca) || '%'
-            or le.municipio ilike '%' || btrim(p_busca) || '%'
-            or le.numero_edital ilike '%' || btrim(p_busca) || '%'
-            or le.numero_processo ilike '%' || btrim(p_busca) || '%'
-            or le.id::text = btrim(p_busca))
+       and (termo.t is null
+            or le.objeto ilike '%' || termo.t || '%'
+            or le.orgao_nome ilike '%' || termo.t || '%'
+            or le.municipio ilike '%' || termo.t || '%'
+            -- "048/2026" chega como "048 2026" (o saneamento troca a barra): compara o número sem pontuação
+            or regexp_replace(le.numero_edital, '[^[:alnum:]]+', ' ', 'g') ilike '%' || termo.t || '%'
+            or regexp_replace(le.numero_processo, '[^[:alnum:]]+', ' ', 'g') ilike '%' || termo.t || '%'
+            or le.id::text = termo.t)
   )
   select a.id, a.numero_edital, a.numero_processo, a.orgao_nome, a.municipio, a.uf, a.objeto, a.modalidade,
          a.data_fim, a.etapa_id, a.etapa_nome, count(*) over ()

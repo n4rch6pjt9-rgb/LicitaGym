@@ -60,6 +60,7 @@ Deno.test("R-3: categoria do erro gravado pelo coletor e pelo indexador", () => 
   assertEquals(categoriaErro("503 do PNCP"), "download");
   assertEquals(categoriaErro("sem texto aproveitável; ignorados: ['Edital.pdf']"), "extracao");
   assertEquals(categoriaErro("falha ao gravar chunks"), "indexacao");
+  assertEquals(categoriaErro("404 Client Error: for url: https://x/index.php"), "download");
   assertEquals(categoriaErro("algo estranho"), "outro");
   assertEquals(categoriaErro(null), null);
   assertEquals(categoriaErro("  "), null);

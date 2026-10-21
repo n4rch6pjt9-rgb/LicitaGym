@@ -84,6 +84,16 @@ begin
       raise exception 'CHECK FALHOU: paginação da busca';
     end if;
 
+    -- busca por número com barra (chega saneada como "48 2026") e curinga literal
+    update public.licitacoes_externas set numero_edital = '48/2026' where id = v_l1;
+    select array_agg(b.licitacao_id) into v_ids from public.agente_oportunidades_buscar(v_t, 'edital', '48 2026', 20, 0) b;
+    if v_ids is distinct from array[v_l1] then
+      raise exception 'CHECK FALHOU: busca pelo número com barra trouxe %', v_ids;
+    end if;
+    if exists (select 1 from public.agente_oportunidades_buscar(v_t, 'edital', '%', 20, 0)) then
+      raise exception 'CHECK FALHOU: %% na busca virou curinga';
+    end if;
+
     -- CA-1: documentos com páginas distintas; null sem chunks
     insert into public.licitacao_documentos (licitacao_id, secao, nome_original, arquivo_origem, status_processamento, storage_uri)
     values (v_l1, 'processo', 'Edital.pdf', 'edital.pdf', 'indexado', 'gs://segredo/edital.pdf') returning id into v_d1;

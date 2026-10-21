@@ -8,9 +8,11 @@
 --      na etapa padrão Nova (padrao and nome = 'Nova'; Nova renomeada ou excluída não recebe).
 --   2) roda a semente para as empresas ativas (on conflict do nothing: não desfaz edição do admin).
 --   3) cria a tarefa do agente nos cards que já estão numa etapa com tarefa de agente ativa (o gatilho só age na
---      entrada da etapa). Só as tarefas de agente; não cria outras tarefas que faltem.
+--      entrada da etapa), por pipeline_tarefas_agente_backfill(). Só as tarefas de agente: diferente do
+--      pipeline_tarefas_reaplicar citado na R-15, não cria as outras tarefas que faltem nesses cards (em produção, os 3
+--      cards da Nova não têm as tarefas de catálogo da Nova, e criá-las agora seria mudança que ninguém pediu).
 -- Contagem antes/depois (dry-run) no PR. Quem chama: só service_role. Idempotente. O merge na main aplica em produção.
--- Verificação: supabase/tests/tarefas_agente_semente_check.sql.
+-- Verificação: supabase/tests/tarefas_responsavel_agente_check.sql.
 
 begin;
 
@@ -113,23 +115,40 @@ comment on function public.pipeline_semear_tarefas(bigint) is
 select public.pipeline_semear_tarefas(t.id) from public.tenants t where t.ativo;
 
 -- Cards já parados na etapa: mesma regra de pipeline_etapa_tarefas_criar para a parte de agente.
-insert into public.tarefas_equipe (
-  tenant_id, licitacao_id, origem, titulo, descricao, condicao_verificada, prazo_situacao, prazo_em,
-  responsavel_papel, responsavel_tipo, responsavel_agente,
-  origem_etapa_id, origem_modelo_id, origem_etapa_nome, origem_modelo_chave
-)
-select po.tenant_id, po.licitacao_id, 'empresa', m.titulo, m.descricao, true,
-       case when m.prazo_horas is null then 'sem_prazo' else 'calculado' end,
-       case when m.prazo_horas is null then null else now() + make_interval(hours => m.prazo_horas) end,
-       'admin', 'agente', ag.codigo, e.id, m.id, e.nome, m.chave
-  from public.pipeline_oportunidades po
-  join public.tenants t on t.id = po.tenant_id and t.ativo
-  join public.pipeline_etapas e on e.id = po.etapa_id and e.tenant_id = po.tenant_id
-  join public.pipeline_etapa_tarefas m
-    on m.tenant_id = po.tenant_id and m.etapa_id = po.etapa_id and m.origem = 'agente' and m.ativo
-  join public.agentes_catalogo ag on ag.codigo = m.responsavel_agente and ag.ativo
-on conflict (tenant_id, licitacao_id, origem_modelo_chave) where origem = 'empresa' do nothing;
+create or replace function public.pipeline_tarefas_agente_backfill()
+returns integer
+language sql
+security invoker
+set search_path = public, pg_temp
+as $$
+  with ins as (
+    insert into public.tarefas_equipe (
+      tenant_id, licitacao_id, origem, titulo, descricao, condicao_verificada, prazo_situacao, prazo_em,
+      responsavel_papel, responsavel_tipo, responsavel_agente,
+      origem_etapa_id, origem_modelo_id, origem_etapa_nome, origem_modelo_chave
+    )
+    select po.tenant_id, po.licitacao_id, 'empresa', m.titulo, m.descricao, true,
+           case when m.prazo_horas is null then 'sem_prazo' else 'calculado' end,
+           case when m.prazo_horas is null then null else now() + make_interval(hours => m.prazo_horas) end,
+           'admin', 'agente', ag.codigo, e.id, m.id, e.nome, m.chave
+      from public.pipeline_oportunidades po
+      join public.tenants t on t.id = po.tenant_id and t.ativo
+      join public.pipeline_etapas e on e.id = po.etapa_id and e.tenant_id = po.tenant_id
+      join public.pipeline_etapa_tarefas m
+        on m.tenant_id = po.tenant_id and m.etapa_id = po.etapa_id and m.origem = 'agente' and m.ativo
+      join public.agentes_catalogo ag on ag.codigo = m.responsavel_agente and ag.ativo
+    on conflict (tenant_id, licitacao_id, origem_modelo_chave) where origem = 'empresa' do nothing
+    returning 1
+  )
+  select count(*)::integer from ins
+$$;
+comment on function public.pipeline_tarefas_agente_backfill() is
+  'Spec 0035 (R-15): cria a tarefa de agente dos cards que já estão numa etapa com tarefa de agente ativa. '
+  'on conflict do nothing: rodar de novo não duplica. Só a migration e os checks chamam (sem grant).';
 
+select public.pipeline_tarefas_agente_backfill();
+
+revoke all on function public.pipeline_tarefas_agente_backfill() from PUBLIC, anon, authenticated, service_role;
 revoke all on function public.pipeline_semear_tarefas(bigint) from PUBLIC, anon, authenticated;
 grant execute on function public.pipeline_semear_tarefas(bigint) to service_role;
 

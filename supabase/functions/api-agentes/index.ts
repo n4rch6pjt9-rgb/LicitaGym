@@ -261,7 +261,8 @@ export async function handleRequest(req: Request, ctx: ApiAgentesContext = {}): 
       }
       case "analise_revisar": {
         const exec = await repo.obterExecucao(tenant, params.execucao_id);
-        if (!exec) return jsonResponse({ error: "Execução não encontrada." }, 404);
+        // R-1 também aqui: oportunidade que saiu do pipeline não é revisada
+        if (!exec || !(await repo.estaNoPipeline(tenant, exec.licitacao_id))) return jsonResponse({ error: "Execução não encontrada." }, 404);
         // K-6: só se revisa o que foi enviado para a oportunidade
         if (!exec.enviada_em) return jsonResponse({ error: "Envie a análise para a oportunidade antes de revisar." }, 409);
         if (exec.revisao !== "aguardando") return jsonResponse({ error: "Esta análise já foi revisada." }, 409);
@@ -275,7 +276,9 @@ export async function handleRequest(req: Request, ctx: ApiAgentesContext = {}): 
       }
       case "analise_enviar": {
         const exec = await repo.obterExecucao(tenant, params.execucao_id);
-        if (!exec) return jsonResponse({ error: "Execução não encontrada." }, 404);
+        if (!exec || !(await repo.estaNoPipeline(tenant, exec.licitacao_id))) return jsonResponse({ error: "Execução não encontrada." }, 404);
+        // Confere fora da trava da RPC: um documento indexado entre esta leitura e o envio passa, e a revisão confere de
+        // novo antes de aprovar (achado aceito na revisão de segurança).
         if (!(await atual(repo, tenant, exec))) {
           return jsonResponse({ error: "Análise desatualizada. Execute de novo antes de enviar." }, 409);
         }

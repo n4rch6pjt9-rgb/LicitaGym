@@ -90,6 +90,8 @@ class SupabaseFalso:
 
     def selecionar(self, tabela, **filtros):
         self.selecoes.append((tabela, dict(filtros)))
+        if tabela == "catalogo_empresa_catmat":
+            return []  # sem itens avulsos no catálogo (casos de item avulso: test_precos_itens_avulsos.py)
         return [dict(p) for p in self.pendentes]
 
     def atualizar_onde(self, tabela, filtros, campos):
@@ -201,7 +203,7 @@ def test_ca5_catalogo_vazio_falha_explicita_e_main_sai_com_1(monkeypatch, sem_es
 
     assert M.main(["--coleta", "precos"]) == 1
     assert sessao.chamadas == []
-    assert sb.selecoes == []  # sem catálogo não completa detalhe
+    assert [t for t, _ in sb.selecoes if t != "catalogo_empresa_catmat"] == []  # sem catálogo não completa detalhe
 
 
 def test_ca5_falha_inesperada_no_sestsenat_nao_impede_precos(monkeypatch, sem_espera):

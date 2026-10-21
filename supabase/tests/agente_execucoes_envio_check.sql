@@ -14,6 +14,8 @@ declare
   v_e    bigint;
   v_ej   bigint;
   v_tar  bigint;
+  v_qual bigint;
+  v_tar2 bigint;
   v_u    uuid := '00000000-0000-0000-0000-0000000035b1';
   v_ok   boolean;
   v_x    public.agente_execucoes%rowtype;
@@ -26,6 +28,11 @@ begin
       raise exception 'CHECK FALHOU: % lê agente_execucoes', r;
     end if;
   end loop;
+  if has_function_privilege('anon', 'public.agente_tarefa_aberta(bigint,bigint,text)'::regprocedure, 'EXECUTE')
+     or has_function_privilege('authenticated', 'public.agente_tarefa_aberta(bigint,bigint,text)'::regprocedure, 'EXECUTE')
+     or not has_function_privilege('service_role', 'public.agente_tarefa_aberta(bigint,bigint,text)'::regprocedure, 'EXECUTE') then
+    raise exception 'CHECK FALHOU: ACL de agente_tarefa_aberta';
+  end if;
   if not has_function_privilege('service_role', 'public.agente_execucao_enviar(bigint,bigint,uuid)'::regprocedure, 'EXECUTE') then
     raise exception 'CHECK FALHOU: service_role não executa agente_execucao_enviar';
   end if;
@@ -106,6 +113,34 @@ begin
     if v_x.revisao <> 'aguardando' or jsonb_array_length(v_x.revisoes_anteriores) <> 1
        or v_x.revisoes_anteriores -> 0 ->> 'nota' <> 'faltou o TR' or v_x.revisado_por is not null then
       raise exception 'CHECK FALHOU: reenvio de rejeitada (%)', v_x.revisoes_anteriores;
+    end if;
+
+    -- aprovada e uma tarefa nova do mesmo agente (outra etapa): a mesma análise vai de novo para a nova tarefa
+    select id into v_qual from public.pipeline_etapas
+     where tenant_id = v_t and id <> v_nova and desfecho is null order by ordem limit 1;
+    perform public.pipeline_etapa_tarefas_agentes_salvar(v_t, v_qual, '[{"agente":"edital"}]'::jsonb, v_u);
+    perform public.pipeline_mover(v_t, array[v_l], v_qual, null, v_u);
+    v_tar2 := public.agente_tarefa_aberta(v_t, v_l, 'edital');
+    if v_tar2 is null or v_tar2 = v_tar then
+      raise exception 'CHECK FALHOU: a etapa nova não abriu tarefa do agente (%)', v_tar2;
+    end if;
+    select * into v_x from public.agente_execucao_enviar(v_t, v_e, v_u);
+    if v_x.tarefa_id is distinct from v_tar2 or v_x.revisao <> 'aguardando'
+       or v_x.revisoes_anteriores -> -1 ->> 'decisao' <> 'aprovada' then
+      raise exception 'CHECK FALHOU: aprovada não foi para a tarefa nova (%, %)', v_x.tarefa_id, v_x.revisoes_anteriores;
+    end if;
+    update public.agente_execucoes set revisao = 'aprovada', revisado_por = v_u, revisado_em = now() where id = v_e;
+    if (select status from public.tarefas_equipe where id = v_tar2) <> 'concluida' then
+      raise exception 'CHECK FALHOU: aprovar de novo não concluiu a tarefa nova';
+    end if;
+    -- sem outra tarefa aberta, volta a recusar
+    v_ok := false;
+    begin
+      perform public.agente_execucao_enviar(v_t, v_e, v_u);
+    exception when sqlstate 'LG003' then v_ok := true;
+    end;
+    if not v_ok then
+      raise exception 'CHECK FALHOU: aprovada reenviada sem tarefa nova';
     end if;
 
     -- aprovada antes da spec 0035 (nunca enviada): o envio guarda a aprovação em revisoes_anteriores

@@ -140,6 +140,8 @@ export interface AgentesRepo {
   listarDocumentos(tenant: number, licitacaoId: number): Promise<DocumentoAgente[]>;
   /** K-4 (agente_execucao_enviar): LG003 vira 409, P0002 vira 404. */
   enviar(tenant: number, id: number, userId: string): Promise<Execucao>;
+  /** Tarefa aberta do agente na etapa atual (agente_tarefa_aberta); null sem tarefa. */
+  tarefaAgenteAberta(tenant: number, licitacaoId: number, agente: Agente): Promise<number | null>;
   obterExecucao(tenant: number, id: number): Promise<Execucao | null>;
   ultimaAprovada(tenant: number, licitacaoId: number, agente: Agente): Promise<Execucao | null>;
   revisar(
@@ -459,6 +461,12 @@ export function createSupabaseRepo(client: SupabaseClient): AgentesRepo {
       const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | null;
       if (!row) throw new Error("agente_execucao_enviar não devolveu a execução");
       return comoExecucao(row);
+    },
+
+    async tarefaAgenteAberta(tenant, licitacaoId, agente) {
+      const { data, error } = await client.rpc("agente_tarefa_aberta", { p_tenant: tenant, p_licitacao: licitacaoId, p_agente: agente });
+      if (error) throw new Error(error.message);
+      return data == null ? null : Number(data);
     },
 
     async obterExecucao(tenant, id) {

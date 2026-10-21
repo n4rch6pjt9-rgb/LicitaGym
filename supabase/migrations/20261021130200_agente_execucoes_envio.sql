@@ -7,8 +7,10 @@
 -- O que muda:
 --   public.agente_execucoes              enviada_em, enviada_por, tarefa_id (FK com tenant_id para tarefas_equipe,
 --                                        set null: tirar a oportunidade do pipeline apaga a tarefa), revisoes_anteriores.
---   public.agente_execucao_enviar(...)   envio atômico: trava a linha, recusa reenvio (LG003) salvo de rejeitada,
---                                        liga a tarefa aberta do mesmo agente na etapa atual (ou nenhuma).
+--   public.agente_tarefa_aberta(...)     tarefa aberta do agente na etapa atual (ou null).
+--   public.agente_execucao_enviar(...)   envio atômico: trava a linha, recusa reenvio (LG003) salvo de rejeitada ou de
+--                                        aprovada com tarefa nova do agente, e liga a tarefa aberta do mesmo agente na
+--                                        etapa atual (ou nenhuma).
 --   gatilho agente_execucoes_tarefa_trg  aprovada → tarefa concluida; rejeitada → tarefa aberta.
 -- Quem chama: só service_role (api-agentes). Aditiva e idempotente. O merge na main aplica em produção.
 -- Verificação: supabase/tests/agente_execucoes_envio_check.sql.
@@ -50,6 +52,32 @@ comment on column public.agente_execucoes.tarefa_id is
 comment on column public.agente_execucoes.revisoes_anteriores is
   'Revisões anteriores a um envio (rejeitada reenviada, ou aprovada antes da spec 0035): [{decisao, nota, por, em, enviada_em}]. Só cresce.';
 
+-- Tarefa aberta do agente na etapa atual -----------------------------------------------------------------------
+create or replace function public.agente_tarefa_aberta(
+  p_tenant    bigint,
+  p_licitacao bigint,
+  p_agente    text
+)
+returns bigint
+language sql
+stable
+security invoker
+set search_path = public, pg_temp
+as $$
+  select te.id
+    from public.tarefas_equipe te
+    join public.pipeline_oportunidades po
+      on po.tenant_id = te.tenant_id and po.licitacao_id = te.licitacao_id and po.etapa_id = te.origem_etapa_id
+   where te.tenant_id = p_tenant and te.licitacao_id = p_licitacao
+     and te.responsavel_tipo = 'agente' and te.responsavel_agente = p_agente
+     and te.status in ('aberta', 'em_andamento')
+   order by te.criada_em desc, te.id desc
+   limit 1;
+$$;
+comment on function public.agente_tarefa_aberta(bigint, bigint, text) is
+  'Tarefa aberta (ou em andamento) do agente na etapa atual da licitação no pipeline da empresa; null sem tarefa. '
+  'Usada no envio e para dizer à rota que uma análise aprovada pode ir de novo para uma tarefa nova. Só service_role.';
+
 -- Envio atômico ---------------------------------------------------------------------------------------------------
 create or replace function public.agente_execucao_enviar(
   p_tenant   bigint,
@@ -74,19 +102,16 @@ begin
   if not found then
     raise exception 'Execução não encontrada.' using errcode = 'P0002';
   end if;
-  if v_exec.enviada_em is not null and v_exec.revisao <> 'rejeitada' then
+  v_tarefa := public.agente_tarefa_aberta(p_tenant, v_exec.licitacao_id, v_exec.agente);
+
+  -- Já enviada só volta quando foi rejeitada, ou quando foi aprovada e há uma tarefa nova do agente (outra etapa com o
+  -- mesmo agente, ou a oportunidade saiu e voltou ao pipeline): a mesma análise, sem mudança de entrada, abre o novo
+  -- ciclo de revisão dessa tarefa (achado do Codex no #416).
+  if v_exec.enviada_em is not null
+     and v_exec.revisao <> 'rejeitada'
+     and not (v_exec.revisao = 'aprovada' and v_tarefa is not null and v_tarefa is distinct from v_exec.tarefa_id) then
     raise exception 'Esta análise já foi enviada.' using errcode = 'LG003';
   end if;
-
-  select te.id into v_tarefa
-    from public.tarefas_equipe te
-    join public.pipeline_oportunidades po
-      on po.tenant_id = te.tenant_id and po.licitacao_id = te.licitacao_id and po.etapa_id = te.origem_etapa_id
-   where te.tenant_id = p_tenant and te.licitacao_id = v_exec.licitacao_id
-     and te.responsavel_tipo = 'agente' and te.responsavel_agente = v_exec.agente
-     and te.status in ('aberta', 'em_andamento')
-   order by te.criada_em desc, te.id desc
-   limit 1;
 
   return query
   update public.agente_execucoes e
@@ -108,8 +133,9 @@ begin
 end;
 $$;
 comment on function public.agente_execucao_enviar(bigint, bigint, uuid) is
-  'Envia a análise para a aba da oportunidade (spec 0035, K-4/R-8/R-9). LG003: já enviada (salvo rejeitada, que '
-  'volta a aguardando e guarda a revisão anterior). Liga a tarefa aberta do mesmo agente na etapa atual. Só service_role; '
+  'Envia a análise para a aba da oportunidade (spec 0035, K-4/R-8/R-9). LG003: já enviada (salvo rejeitada, ou aprovada '
+  'com tarefa nova do agente; as duas voltam a aguardando e guardam a revisão anterior). Liga a tarefa aberta do mesmo '
+  'agente na etapa atual. Só service_role; '
   'a api-agentes confere antes que a execução está atual.';
 
 -- Revisão move a tarefa ligada --------------------------------------------------------------------------------------
@@ -139,6 +165,8 @@ create or replace trigger agente_execucoes_tarefa_trg
   after update of revisao on public.agente_execucoes
   for each row execute function public.agente_execucoes_tarefa();
 
+revoke all on function public.agente_tarefa_aberta(bigint, bigint, text) from PUBLIC, anon, authenticated;
+grant execute on function public.agente_tarefa_aberta(bigint, bigint, text) to service_role;
 revoke all on function public.agente_execucao_enviar(bigint, bigint, uuid) from PUBLIC, anon, authenticated;
 revoke all on function public.agente_execucoes_tarefa() from PUBLIC, anon, authenticated, service_role;
 grant execute on function public.agente_execucao_enviar(bigint, bigint, uuid) to service_role;

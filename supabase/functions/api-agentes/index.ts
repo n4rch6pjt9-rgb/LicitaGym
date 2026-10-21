@@ -157,10 +157,18 @@ async function enriquecer(repo: AgentesRepo, tenant: number, execucoes: Execucao
     const hashes = dossie ? await contextos(dossie, execucao.entrada.proposta) : null;
     const desatualizada = hashes === null || execucao.contexto_hash !== hashes[execucao.agente];
     const aprovada = await repo.ultimaAprovada(tenant, execucao.licitacao_id, execucao.agente);
+    // aprovada e enviada com tarefa nova do agente (outra etapa, ou a oportunidade voltou ao pipeline): pode ir de novo
+    // para abrir a revisão da tarefa nova (mesma regra do agente_execucao_enviar)
+    let pode_reenviar = false;
+    if (execucao.enviada_em && execucao.revisao === "aprovada" && !desatualizada) {
+      const tarefa = await repo.tarefaAgenteAberta(tenant, execucao.licitacao_id, execucao.agente);
+      pode_reenviar = tarefa !== null && tarefa !== execucao.tarefa_id;
+    }
     saida.push({
       ...execucao,
       desatualizada,
       substitui_aprovada_id: aprovada && aprovada.id !== execucao.id ? aprovada.id : null,
+      pode_reenviar,
     });
   }
   return saida;

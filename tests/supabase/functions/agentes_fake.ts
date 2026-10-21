@@ -100,8 +100,11 @@ export function ambiente() {
     enviar: (_t, id, userId) => {
       const row = execucoes.find((e) => e.id === id);
       if (!row) return Promise.reject(new ErroAgentes("Execução não encontrada.", 404));
-      if (row.enviada_em && row.revisao !== "rejeitada") return Promise.reject(new ErroAgentes("Esta análise já foi enviada.", 409));
-      if (row.revisao === "rejeitada") {
+      const novaTarefa = row.revisao === "aprovada" && tarefaAberta !== null && tarefaAberta !== row.tarefa_id;
+      if (row.enviada_em && row.revisao !== "rejeitada" && !novaTarefa) {
+        return Promise.reject(new ErroAgentes("Esta análise já foi enviada.", 409));
+      }
+      if (row.revisao !== "aguardando") {
         row.revisoes_anteriores = [...row.revisoes_anteriores, {
           decisao: row.revisao, nota: row.revisao_nota, por: row.revisado_por, em: row.revisado_em, enviada_em: row.enviada_em,
         }];
@@ -112,6 +115,7 @@ export function ambiente() {
       });
       return Promise.resolve(row);
     },
+    tarefaAgenteAberta: () => Promise.resolve(tarefaAberta),
     obterExecucao: (_t, id) => Promise.resolve(execucoes.find((e) => e.id === id) ?? null),
     ultimaAprovada: (_t, licitacaoId, agente) => {
       const lista = execucoes.filter((e) => e.licitacao_id === licitacaoId && e.agente === agente && e.revisao === "aprovada");
@@ -131,6 +135,7 @@ export function ambiente() {
   return {
     repo, dossie, execucoes, estado, pipeline, oportunidades, chamadasBusca, documentosBrutos,
     semTarefa: () => (tarefaAberta = null),
+    novaTarefa: (id: number) => (tarefaAberta = id),
   };
 }
 

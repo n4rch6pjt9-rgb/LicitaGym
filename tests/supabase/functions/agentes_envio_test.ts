@@ -83,6 +83,23 @@ Deno.test("CA-30: rejeitada pode ser enviada de novo, volta a aguardando e guard
   assertEquals((await chamar(c, { action: "analise_enviar", execucao_id: e })).status, 409);
 });
 
+Deno.test("aprovada com tarefa nova do agente (outra etapa): pode_reenviar e o envio abre a revisão da tarefa nova", async () => {
+  const { c, id, novaTarefa } = await executado();
+  const e = id("edital");
+  await chamar(c, { action: "analise_enviar", execucao_id: e });
+  await chamar(c, { action: "analise_revisar", execucao_id: e, decisao: "aprovada", nota: null });
+  const obter = async () =>
+    (await chamar(c, { action: "analise_obter", licitacao_id: 101 })).json.execucoes.find((x: Execucao) => x.agente === "edital");
+  // mesma tarefa (77) já concluída por esta análise: não reenvia
+  assertEquals((await obter()).pode_reenviar, false);
+  assertEquals((await chamar(c, { action: "analise_enviar", execucao_id: e })).status, 409);
+  novaTarefa(88);
+  assertEquals((await obter()).pode_reenviar, true);
+  const r = await chamar(c, { action: "analise_enviar", execucao_id: e });
+  assertEquals([r.status, r.json.execucao.revisao, r.json.execucao.tarefa_id], [200, "aguardando", 88]);
+  assertEquals(r.json.execucao.revisoes_anteriores.at(-1).decisao, "aprovada");
+});
+
 Deno.test("CA-28 (R-6): jurídico enviado num dia continua atual no dia seguinte", async () => {
   const { c, id } = await executado();
   const e = id("juridico");

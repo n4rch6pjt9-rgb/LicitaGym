@@ -1,6 +1,8 @@
-// Spec specs/0009-precos-historicos-pesquisa-preco.md: GET api-precos (CA-1 a CA-4, backend).
-// PostgREST falso em memória (from + rpc, eq/gt/gte/lte, order com nulos, range e contagem) que registra cada chamada,
-// para provar que os filtros vão para o banco, que o catálogo é conferido e que nada é lido antes da autenticação.
+// Spec specs/0009-precos-historicos-pesquisa-preco.md: GET api-precos (CA-1 a CA-4, backend), com o contrato da
+// spec 0031 (as amostras passam a sair da função public.precos_praticados_amostras).
+// PostgREST falso em memória que registra cada chamada, para provar que os filtros vão para o banco, que o catálogo é
+// conferido e que nada é lido antes da autenticação. A função de amostras é simulada com o mesmo recorte do banco
+// (PDM, período, preço > 0, item, UF, unidade), ordem e paginação, e devolve o total de cada linha.
 import { assert, assertEquals } from "jsr:@std/assert@1";
 import { FONTE, periodoDe, type PrecosClient, responderPrecos } from "../../../supabase/functions/api-precos/precos.ts";
 
@@ -23,10 +25,31 @@ function cmp(a: unknown, b: unknown): number {
   return String(a).localeCompare(String(b));
 }
 
+/** Simulação de public.precos_praticados_amostras para os filtros que os testes usam. */
+function amostrasDoRecorte(linhas: Linha[], a: Record<string, unknown>): Linha[] {
+  const r = linhas.filter((l) =>
+    l.codigo_pdm === String(a.p_pdm) &&
+    typeof l.data_resultado === "string" && l.data_resultado >= String(a.p_inicio) &&
+    l.data_resultado <= String(a.p_fim) &&
+    typeof l.preco_unitario === "number" && l.preco_unitario > 0 &&
+    (a.p_item === null || a.p_item === undefined || l.codigo_item_catalogo === a.p_item) &&
+    (a.p_uf === null || a.p_uf === undefined || l.estado === a.p_uf) &&
+    (a.p_unidade === null || a.p_unidade === undefined || l.sigla_unidade_fornecimento === a.p_unidade)
+  ).sort((x, y) =>
+    String(y.data_resultado).localeCompare(String(x.data_resultado)) ||
+    String(x.id_compra).localeCompare(String(y.id_compra)) ||
+    Number(x.id_item_compra) - Number(y.id_item_compra)
+  );
+  const off = Number(a.p_offset ?? 0);
+  const lim = Number(a.p_limit ?? 20);
+  return r.slice(off, off + lim).map((l) => ({ ...l, total: r.length }));
+}
+
 function criarFake(opts: {
   catalogo?: number[];
   resumo?: Linha[];
   linhas?: Linha[];
+  itens?: Linha[];
   erros?: Erros;
 }) {
   const chamadas: Chamada[] = [];
@@ -112,6 +135,12 @@ function criarFake(opts: {
       chamadas.push({ alvo: funcao, metodo: "rpc", args: [args] });
       if (funcao === "catalogo_catmat_pdms_efetivos") {
         return builder(funcao, () => catalogo.map((codigo_pdm) => ({ codigo_pdm })), opts.erros?.catalogo);
+      }
+      if (funcao === "precos_praticados_amostras") {
+        return builder(funcao, () => amostrasDoRecorte(opts.linhas ?? [], args ?? {}), opts.erros?.amostras);
+      }
+      if (funcao === "precos_praticados_itens_pdm") {
+        return builder(funcao, () => opts.itens ?? [], opts.erros?.amostras);
       }
       return builder(funcao, () => opts.resumo ?? [], opts.erros?.resumo);
     },
@@ -228,9 +257,15 @@ Deno.test("CA-2: resumo confere o catálogo, chama a função do banco com o per
     p_item: 480144,
     p_uf: "PR",
     p_unidade: null,
+    p_municipio: null,
+    p_uasg: null,
+    p_objeto: null,
+    p_q: null,
   });
   assertEquals(body.fonte, FONTE);
-  assertEquals(body.filtro, { pdm: 2640, item: 480144, meses: 24, uf: "PR", unidade: null });
+  assertEquals(body.filtro, {
+    pdm: 2640, item: 480144, meses: 24, uf: "PR", unidade: null, municipio: null, uasg: null, objeto: null, q: null,
+  });
   assertEquals(body.periodo_inicio, "2024-10-10");
   assertEquals(body.periodo_fim, "2026-10-09");
   assertEquals(body.n, 10);
@@ -257,8 +292,14 @@ Deno.test("CA-2: meses padrão é 12; sem item e sem UF vão null para o banco",
     p_item: null,
     p_uf: null,
     p_unidade: null,
+    p_municipio: null,
+    p_uasg: null,
+    p_objeto: null,
+    p_q: null,
   });
-  assertEquals(body.filtro, { pdm: 2640, item: null, meses: 12, uf: null, unidade: null });
+  assertEquals(body.filtro, {
+    pdm: 2640, item: null, meses: 12, uf: null, unidade: null, municipio: null, uasg: null, objeto: null, q: null,
+  });
 });
 
 Deno.test("CA-2: com n < 3 média e quartis vão null, com motivo, mesmo que o banco mande número", async () => {
@@ -296,7 +337,7 @@ Deno.test("CA-2: PDM fora do catálogo da empresa dá 400 explícito e não lê 
   const { res, body, chamadas } = await chamar("action=resumo&pdm=9999", { catalogo: [2640] });
   assertEquals(res.status, 400);
   assertEquals(body.codigo, "pdm_fora_do_catalogo");
-  assert(!chamadas.some((c) => c.alvo === "precos_praticados_resumo" || c.alvo === "precos_praticados_itens"));
+  assert(!chamadas.some((c) => c.alvo === "precos_praticados_resumo" || c.alvo === "precos_praticados_amostras"));
 });
 
 Deno.test("CA-3: amostras filtra no banco, ordena por data_resultado desc com desempate pela chave e pagina", async () => {
@@ -310,21 +351,11 @@ Deno.test("CA-3: amostras filtra no banco, ordena por data_resultado desc com de
   ];
   const { res, body, chamadas } = await chamar("action=amostras&pdm=2640&uf=PR&limit=2&page=1", { linhas });
   assertEquals(res.status, 200);
-  const q = chamadas.filter((c) => c.alvo === "precos_praticados_itens");
-  const tem = (metodo: string, col: string, v: unknown) =>
-    q.some((c) => c.metodo === metodo && c.args[0] === col && c.args[1] === v);
-  assert(tem("eq", "codigo_pdm", "2640"));
-  assert(tem("gte", "data_resultado", "2025-10-10"));
-  assert(tem("lte", "data_resultado", "2026-10-09"));
-  assert(tem("eq", "estado", "PR"));
-  assert(tem("gt", "preco_unitario", 0));
-  const ordens = q.filter((c) => c.metodo === "order").map((c) => c.args);
-  assertEquals(ordens, [
-    ["data_resultado", { ascending: false, nullsFirst: false }],
-    ["id_compra", { ascending: true }],
-    ["id_item_compra", { ascending: true }],
-  ]);
-  assert(q.some((c) => c.metodo === "range" && c.args[0] === 0 && c.args[1] === 1));
+  const rpc = chamadas.find((c) => c.alvo === "precos_praticados_amostras" && c.metodo === "rpc");
+  assertEquals(rpc?.args[0], {
+    p_pdm: 2640, p_inicio: "2025-10-10", p_fim: "2026-10-09", p_item: null, p_uf: "PR", p_unidade: null,
+    p_municipio: null, p_uasg: null, p_objeto: null, p_q: null, p_offset: 0, p_limit: 2,
+  });
   assertEquals(body.total, 3);
   assertEquals(body.page, 1);
   assertEquals(body.limit, 2);
@@ -418,19 +449,22 @@ Deno.test("CA-4: resposta da função de resumo fora do contrato (0 ou 2 linhas)
 
 Deno.test("CA-4: amostras sem contagem é 500 (não verificado)", async () => {
   const fake = criarFake({ linhas: [amostra()] });
-  const semCount = {
+  const semTotal = {
     ...fake.client,
-    from: (t: string) => {
-      const q = fake.client.from(t);
-      const orig = q.select.bind(q);
-      q.select = (cols: string) => orig(cols); // ignora o count pedido
-      return q;
+    rpc: (f: string, a?: Record<string, unknown>) => {
+      if (f !== "precos_praticados_amostras") return fake.client.rpc(f, a);
+      const q = fake.client.rpc(f, a);
+      return {
+        ...q,
+        then: (ok: (r: unknown) => unknown, err?: (e: unknown) => unknown) =>
+          Promise.resolve({ data: [{ ...amostra(), total: null }], error: null }).then(ok, err),
+      };
     },
   } as unknown as PrecosClient;
   const url = new URL("https://x.supabase.co/functions/v1/api-precos?action=amostras&pdm=2640");
   const res = await responderPrecos(new Request(url), url, {
     requireAuth: () => Promise.resolve(null),
-    criarCliente: () => semCount,
+    criarCliente: () => semTotal,
     hoje: () => HOJE,
   });
   assertEquals(res.status, 500);
@@ -464,7 +498,8 @@ Deno.test("CA-3: amostras com unidade filtra sigla_unidade_fornecimento no banco
   ];
   const { res, body, chamadas } = await chamar("action=amostras&pdm=2640&unidade=PAR", { linhas });
   assertEquals(res.status, 200);
-  assert(chamadas.some((c) => c.metodo === "eq" && c.args[0] === "sigla_unidade_fornecimento" && c.args[1] === "PAR"));
+  const rpc = chamadas.find((c) => c.alvo === "precos_praticados_amostras" && c.metodo === "rpc");
+  assertEquals((rpc?.args[0] as Record<string, unknown>).p_unidade, "PAR");
   assertEquals(body.total, 1);
   assertEquals(body.itens.map((i: Linha) => i.id_compra), ["B"]);
   assertEquals(body.filtro.unidade, "PAR");

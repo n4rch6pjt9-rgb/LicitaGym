@@ -10,6 +10,8 @@ import { parseActionFromBody } from "./validation.ts";
  * api-pipeline: pipeline comercial da equipe (Dashboard #29).
  *   Tarefas por etapa (spec 0018): etapa_tarefas_listar, catalogo_listar e tarefas_reaplicar (qualquer usuário da empresa);
  *   etapa_tarefas_salvar (admin da empresa ou desenvolvedor: lista completa, nunca apaga; o que sai é desligado).
+ *   Tarefas de agente (spec 0035): etapa_tarefas_listar devolve também tarefas_agente e agentes_disponiveis;
+ *   etapa_tarefas_agentes_salvar (admin) grava a lista completa de agentes da etapa. etapa_tarefas_salvar não as toca.
  *   Leitura e movimentação (etapas_listar, pipeline_listar/estado/historico, pipeline_adicionar/mover/remover):
  *   qualquer usuário da empresa (admin ou operação). Configuração das etapas (etapa_criar/atualizar/excluir, etapas_reordenar): admin
  *   da empresa (tenant_membros.papel = 'admin') ou o desenvolvedor (app_metadata.licitagym_role = 'admin').
@@ -111,13 +113,25 @@ export async function handleRequest(req: Request, ctx: ApiPipelineContext = {}):
       case "etapa_tarefas_listar": {
         const tarefas = await repo.listarModelo(tenant, params.etapa_id);
         if (!tarefas) return jsonResponse({ error: "Etapa não encontrada." }, 404);
-        return jsonResponse({ action: params.action, etapa_id: params.etapa_id, tarefas });
+        return jsonResponse({ action: params.action, etapa_id: params.etapa_id, tarefas, ...(await repo.listarAgentes(tenant, params.etapa_id)) });
       }
 
       case "etapa_tarefas_salvar": {
         const salvas = await repo.salvarModelo(tenant, params.etapa_id, params.tarefas, user.id);
         console.info("[api-pipeline] etapa_tarefas_salvar", { user: user.id, etapa: params.etapa_id, salvas });
-        return jsonResponse({ action: params.action, etapa_id: params.etapa_id, salvas, tarefas: await repo.listarModelo(tenant, params.etapa_id) });
+        return jsonResponse({
+          action: params.action, etapa_id: params.etapa_id, salvas, tarefas: await repo.listarModelo(tenant, params.etapa_id),
+          ...(await repo.listarAgentes(tenant, params.etapa_id)),
+        });
+      }
+
+      case "etapa_tarefas_agentes_salvar": {
+        const salvas = await repo.salvarAgentes(tenant, params.etapa_id, params.agentes, user.id);
+        console.info("[api-pipeline] etapa_tarefas_agentes_salvar", { user: user.id, etapa: params.etapa_id, salvas });
+        return jsonResponse({
+          action: params.action, etapa_id: params.etapa_id, salvas, tarefas: await repo.listarModelo(tenant, params.etapa_id),
+          ...(await repo.listarAgentes(tenant, params.etapa_id)),
+        });
       }
 
       case "tarefas_reaplicar": {

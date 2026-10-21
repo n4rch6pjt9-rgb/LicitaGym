@@ -83,7 +83,9 @@ begin
     select id into v_agu  from public.pipeline_etapas where tenant_id = v_t and nome = 'Aguardando resultado';
 
     -- CA-8 / CA-16 / CA-18: tenant novo recebe o modelo padrão
-    if (select count(*) from public.pipeline_etapa_tarefas where etapa_id = v_nova) <> 0
+    -- Spec 0035 (R-18): Nova passa a ter só as 2 tarefas de agente (edital e jurídico), nenhuma do catálogo ou da empresa.
+    if (select count(*) from public.pipeline_etapa_tarefas where etapa_id = v_nova and origem <> 'agente') <> 0
+       or (select count(*) from public.pipeline_etapa_tarefas where etapa_id = v_nova and origem = 'agente') <> 2
        or (select count(*) from public.pipeline_etapa_tarefas where etapa_id = v_tri and origem = 'empresa') <> 2
        or (select count(*) from public.pipeline_etapa_tarefas where etapa_id = v_ana and origem = 'empresa') <> 4
        or (select count(*) from public.pipeline_etapa_tarefas where etapa_id = v_int and origem = 'empresa') <> 1

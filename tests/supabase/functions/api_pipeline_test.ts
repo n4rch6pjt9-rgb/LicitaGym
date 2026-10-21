@@ -6,7 +6,7 @@ import {
   lerTenantDoUsuario,
   resolverTenantDoUsuario,
 } from "../../../supabase/functions/_shared/tenant.ts";
-import type { Etapa, EventoHistorico, ItemModelo, ModeloTarefa } from "../../../supabase/functions/api-pipeline/types.ts";
+import type { Etapa, EventoHistorico, ItemAgente, ItemModelo, ModeloAgente, ModeloTarefa } from "../../../supabase/functions/api-pipeline/types.ts";
 import { MAX_LOTE, parseActionFromBody } from "../../../supabase/functions/api-pipeline/validation.ts";
 
 // Repositório em memória com as mesmas regras de pipeline_mover / pipeline_etapa_excluir
@@ -56,12 +56,29 @@ function repoMemoria() {
           chave: it.origem === "empresa" ? (it.chave ?? `emp-${seqModelo.toString(16).padStart(8, "0")}`) : null,
           titulo: it.origem === "empresa" ? it.titulo : null, descricao: null, prazo_horas: it.origem === "empresa" ? it.prazo_horas : null,
           ordem: (i + 1) * 10, ativo: true, catalogo: null,
+          responsavel_tipo: "papel", responsavel_papel: null, responsavel_user_id: null,
         };
         modelo.push(novo);
         vistos.add(novo.id);
       }
     });
     for (const m of modelo) if (m.etapa_id === etapaId && !vistos.has(m.id)) m.ativo = false;
+    return itens.length;
+  };
+  // tarefas de agente (spec 0035): mesmas regras de pipeline_etapa_tarefas_agentes_salvar
+  const agentesAtivos = new Map([["edital", "Agente de Edital"], ["juridico", "Agente Jurídico"]]);
+  const modeloAgentes: ModeloAgente[] = [];
+  const salvarAgentes = (etapaId: number, itens: ItemAgente[]) => {
+    if (!etapas.some((e) => e.id === etapaId)) throw new ErroPipeline("Etapa não encontrada.", 404);
+    if (new Set(itens.map((i) => i.agente)).size !== itens.length) throw new ErroPipeline("Agente repetido na lista.", 400);
+    for (const it of itens) if (!agentesAtivos.has(it.agente)) throw new ErroPipeline(`Agente ${it.agente} não existe ou não está ativo.`, 400);
+    itens.forEach((it, i) => {
+      const atual = modeloAgentes.find((m) => m.etapa_id === etapaId && m.agente === it.agente);
+      const campos = { titulo: it.titulo ?? agentesAtivos.get(it.agente)!, descricao: it.descricao, prazo_horas: it.prazo_horas, ordem: 1000 + (i + 1) * 10, ativo: true };
+      if (atual) Object.assign(atual, campos);
+      else modeloAgentes.push({ id: ++seqModelo, etapa_id: etapaId, chave: `agt-${seqModelo.toString(16).padStart(8, "0")}`, agente: it.agente, ...campos });
+    });
+    for (const m of modeloAgentes) if (m.etapa_id === etapaId && !itens.some((i) => i.agente === m.agente)) m.ativo = false;
     return itens.length;
   };
 
@@ -153,6 +170,14 @@ function repoMemoria() {
     listarModelo: (_t, etapaId) =>
       Promise.resolve(etapas.some((e) => e.id === etapaId) ? modelo.filter((m) => m.etapa_id === etapaId) : null),
     salvarModelo: (_t, etapaId, itens) => Promise.resolve().then(() => salvarModelo(etapaId, itens)),
+    listarAgentes: (_t, etapaId) =>
+      Promise.resolve({
+        tarefas_agente: modeloAgentes.filter((m) => m.etapa_id === etapaId),
+        agentes_disponiveis: [...agentesAtivos].map(([codigo, nome]) => ({
+          codigo, nome, api: "api-agentes", acao_api: "analise_executar", agente_api: codigo, descricao: null,
+        })),
+      }),
+    salvarAgentes: (_t, etapaId, itens) => Promise.resolve().then(() => salvarAgentes(etapaId, itens)),
     reaplicarTarefas: (_t, licitacaoId) =>
       Promise.resolve(ops.has(licitacaoId) ? { criadas: 2, existentes: 1, bloqueio: null } : { criadas: 0, existentes: 0, bloqueio: "fora_do_pipeline" }),
     listarCatalogo: () =>
@@ -162,7 +187,7 @@ function repoMemoria() {
         base_legal: "art. 54 (caput)",
       }]),
   };
-  return { repo, ops, hist, etapas, modelo };
+  return { repo, ops, hist, etapas, modelo, modeloAgentes };
 }
 
 const USUARIO = { id: "u-1", app_metadata: {} };
@@ -411,6 +436,94 @@ Deno.test("etapa_tarefas_salvar: lista completa — renomear mantém o modelo, o
   assertEquals([a.titulo, a.ativo, b.ativo], ["A renomeada", true, false]);
   const etapaInexistente = await chamar(c, { action: "etapa_tarefas_listar", etapa_id: 999 });
   assertEquals(etapaInexistente.status, 404);
+});
+
+// --- Tarefas de agente e responsável (spec 0035, K-11 e K-16) -----------------------------------------------------
+
+Deno.test("K-16 / CA-33: agentes_salvar só admin; listar traz os agentes à parte; salvar o modelo da empresa não desliga agente", async () => {
+  const { repo, modelo, modeloAgentes } = repoMemoria();
+  repo.tenantDoUsuario = () => Promise.resolve({ tenant: 1, papel: "operacao" });
+  const negado = await chamar(ctx(repo), { action: "etapa_tarefas_agentes_salvar", etapa_id: 1, agentes: [{ agente: "edital" }] });
+  assertEquals(negado.status, 403);
+  assertEquals(modeloAgentes.length, 0);
+  const c = ctx(repo, ADMIN);
+  const ok = await chamar(c, { action: "etapa_tarefas_agentes_salvar", etapa_id: 1, agentes: [{ agente: "edital" }, { agente: "juridico", titulo: "Base legal" }] });
+  assertEquals(ok.status, 200);
+  assertEquals(ok.json.tarefas, []);
+  assertEquals(ok.json.tarefas_agente.map((t: ModeloAgente) => [t.agente, t.titulo, t.ativo]), [["edital", "Agente de Edital", true], ["juridico", "Base legal", true]]);
+  assertEquals(ok.json.agentes_disponiveis.map((a: { codigo: string }) => a.codigo), ["edital", "juridico"]);
+  // tirar um agente da lista desliga, não apaga
+  await chamar(c, { action: "etapa_tarefas_agentes_salvar", etapa_id: 1, agentes: [{ agente: "juridico" }] });
+  assertEquals(modeloAgentes.map((m) => [m.agente, m.ativo]), [["edital", false], ["juridico", true]]);
+  // salvar o modelo da empresa não mexe nos agentes
+  await chamar(c, { action: "etapa_tarefas_salvar", etapa_id: 1, tarefas: [{ origem: "empresa", titulo: "A" }] });
+  assertEquals([modelo.length, modeloAgentes.filter((m) => m.ativo).length], [1, 1]);
+  const lista = await chamar(c, { action: "etapa_tarefas_listar", etapa_id: 1 });
+  assertEquals([lista.json.tarefas.length, lista.json.tarefas_agente.length], [1, 2]);
+});
+
+Deno.test("K-16: agente desconhecido, repetido ou mal formado → 400 e nada gravado", async () => {
+  const { repo, modeloAgentes } = repoMemoria();
+  const c = ctx(repo, ADMIN);
+  for (const agentes of [
+    [{ agente: "preco" }],
+    [{ agente: "edital" }, { agente: "edital" }],
+    [{ agente: "Edital" }],
+    [{ agente: "edital", prazo_horas: 0 }],
+    [{}],
+    "nao-e-lista",
+  ]) {
+    assertEquals((await chamar(c, { action: "etapa_tarefas_agentes_salvar", etapa_id: 1, agentes })).status, 400, JSON.stringify(agentes));
+  }
+  assertEquals(modeloAgentes.length, 0);
+  assertEquals((await chamar(c, { action: "etapa_tarefas_agentes_salvar", etapa_id: 999, agentes: [] })).status, 404);
+});
+
+Deno.test("K-13: responsável da tarefa da empresa: papel ou usuário; agente e valores inválidos → 400", () => {
+  const uid = "6F1D2C3B-0000-4000-8000-000000000001";
+  const ok = parseActionFromBody({
+    action: "etapa_tarefas_salvar", etapa_id: 2,
+    tarefas: [
+      { origem: "empresa", titulo: "A", responsavel: { tipo: "papel", papel: "operacao" } },
+      { origem: "empresa", titulo: "B", responsavel: { tipo: "usuario", user_id: uid } },
+      { origem: "empresa", titulo: "C" },
+    ],
+  });
+  assertEquals("error" in ok, false);
+  const itens = (ok as { tarefas: ItemModelo[] }).tarefas.map((t) => t.origem === "empresa" ? t.responsavel : undefined);
+  assertEquals(itens, [{ tipo: "papel", papel: "operacao" }, { tipo: "usuario", user_id: uid.toLowerCase() }, undefined]);
+  for (const responsavel of [{ tipo: "agente", agente: "edital" }, { tipo: "papel", papel: "dono" }, { tipo: "usuario", user_id: "x" }, "admin"]) {
+    const r = parseActionFromBody({ action: "etapa_tarefas_salvar", etapa_id: 2, tarefas: [{ origem: "empresa", titulo: "A", responsavel }] });
+    assertEquals("error" in r, true, JSON.stringify(responsavel));
+  }
+});
+
+Deno.test("CA-22 (repo real): usuário de outra empresa como responsável → o 22023 do banco vira 400 com o motivo", async () => {
+  const cliente = {
+    rpc: () => Promise.resolve({ data: null, error: { code: "22023", message: "Responsável não é membro ativo desta empresa." } }),
+  } as unknown as Parameters<typeof createSupabaseRepo>[0];
+  const repo = createSupabaseRepo(cliente);
+  repo.tenantDoUsuario = () => Promise.resolve({ tenant: 1, papel: "admin" });
+  const r = await chamar(ctx(repo), {
+    action: "etapa_tarefas_salvar", etapa_id: 2,
+    tarefas: [{ origem: "empresa", titulo: "A", responsavel: { tipo: "usuario", user_id: "6f1d2c3b-0000-4000-8000-000000000009" } }],
+  });
+  assertEquals([r.status, r.json.error], [400, "Responsável não é membro ativo desta empresa."]);
+});
+
+Deno.test("CA-33 (repo real): listarModelo pede só catálogo e empresa (agente fica fora do salvar do front anterior)", async () => {
+  const filtros: unknown[][] = [];
+  const consulta = (data: unknown) => {
+    const q: Record<string, unknown> = {};
+    for (const m of ["select", "eq", "order", "limit"]) q[m] = () => q;
+    q.in = (...args: unknown[]) => (filtros.push(args), q);
+    q.maybeSingle = () => Promise.resolve({ data: { id: 2 }, error: null });
+    q.then = (ok: (v: unknown) => unknown, falha?: (e: unknown) => unknown) => Promise.resolve({ data, error: null }).then(ok, falha);
+    return q;
+  };
+  const repo = createSupabaseRepo({ from: () => consulta([]) } as unknown as Parameters<typeof createSupabaseRepo>[0]);
+  assertEquals(await repo.listarModelo(1, 2), []);
+  assertEquals(filtros, [["origem", ["catalogo", "empresa"]]]);
 });
 
 Deno.test("tarefas_reaplicar: no pipeline devolve criadas/existentes; fora do pipeline 404", async () => {

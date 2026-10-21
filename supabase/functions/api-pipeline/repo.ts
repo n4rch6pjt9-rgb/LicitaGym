@@ -1,6 +1,9 @@
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { lerTenantDoUsuario, type TenantResolvido } from "../_shared/tenant.ts";
-import type { Desfecho, Etapa, EtapaComTotal, EventoHistorico, Fase, ItemModelo, ItemPipeline, ListaEtapas, ModeloTarefa, ResultadoPreparacao, StatusPreparacao, TarefaCatalogo } from "./types.ts";
+import type {
+  AgenteDisponivel, Desfecho, Etapa, EtapaComTotal, EventoHistorico, Fase, ItemAgente, ItemModelo, ItemPipeline, ListaEtapas, ModeloAgente,
+  ModeloTarefa, ResultadoPreparacao, StatusPreparacao, TarefaCatalogo,
+} from "./types.ts";
 
 /** Campos da licitação que o Kanban e os selos mostram (subconjunto das colunas públicas da api-dashboard-oportunidades). */
 export const LICITACAO_CARD_COLUMNS = [
@@ -41,8 +44,14 @@ export interface PipelineRepo {
   excluirEtapa(tenant: number, id: number, moverPara: number | null, userId: string): Promise<number>;
   /** Tarefas ativas do catálogo 14.133 (para o modelo da etapa), com fase e base legal. */
   listarCatalogo(): Promise<TarefaCatalogo[]>;
-  /** Modelo de tarefas da etapa (ativas e desligadas), com o resumo do catálogo. null se a etapa não é da empresa. */
+  /** Modelo de tarefas da etapa (ativas e desligadas), com o resumo do catálogo. null se a etapa não é da empresa.
+   * Sem as tarefas de agente (spec 0035): o front anterior as trataria como da empresa e as gravaria de volta. */
   listarModelo(tenant: number, etapaId: number): Promise<ModeloTarefa[] | null>;
+  /** Tarefas de agente da etapa (ativas e desligadas) e os agentes ativos do catálogo (spec 0035, K-16). Chamar só
+   * depois de listarModelo confirmar a etapa da empresa. */
+  listarAgentes(tenant: number, etapaId: number): Promise<{ tarefas_agente: ModeloAgente[]; agentes_disponiveis: AgenteDisponivel[] }>;
+  /** Lista completa de agentes da etapa (pipeline_etapa_tarefas_agentes_salvar): o que sai é desligado, nunca apagado. */
+  salvarAgentes(tenant: number, etapaId: number, itens: ItemAgente[], userId: string): Promise<number>;
   /** Lista completa da etapa, numa transação (pipeline_etapa_tarefas_salvar). */
   salvarModelo(tenant: number, etapaId: number, itens: ItemModelo[], userId: string): Promise<number>;
   /** Cria as tarefas que faltam da etapa atual e das visitadas (pipeline_tarefas_reaplicar). */
@@ -225,11 +234,38 @@ export function createSupabaseRepo(client: SupabaseClient): PipelineRepo {
       if (!etapa) return null;
       const { data, error } = await client
         .from("pipeline_etapa_tarefas")
-        .select("id,etapa_id,origem,tarefa_codigo,chave,titulo,descricao,prazo_horas,ordem,ativo,catalogo:tarefas_catalogo(titulo,fase_codigo,natureza,prazo_unidade,ativo)")
-        .eq("tenant_id", tenant).eq("etapa_id", etapaId)
+        .select(
+          "id,etapa_id,origem,tarefa_codigo,chave,titulo,descricao,prazo_horas,ordem,ativo,responsavel_tipo,responsavel_papel,responsavel_user_id," +
+            "catalogo:tarefas_catalogo(titulo,fase_codigo,natureza,prazo_unidade,ativo)",
+        )
+        .eq("tenant_id", tenant).eq("etapa_id", etapaId).in("origem", ["catalogo", "empresa"])
         .order("ativo", { ascending: false }).order("ordem").order("id");
       if (error) throw new Error(error.message);
       return (data ?? []) as unknown as ModeloTarefa[];
+    },
+
+    async listarAgentes(tenant, etapaId) {
+      const [mod, cat] = await Promise.all([
+        client.from("pipeline_etapa_tarefas")
+          .select("id,etapa_id,chave,titulo,descricao,prazo_horas,ordem,ativo,responsavel_agente")
+          .eq("tenant_id", tenant).eq("etapa_id", etapaId).eq("origem", "agente")
+          .order("ativo", { ascending: false }).order("ordem").order("id"),
+        client.from("agentes_catalogo").select("codigo,nome,api,acao_api,agente_api,descricao").eq("ativo", true).order("ordem").order("codigo"),
+      ]);
+      if (mod.error) throw new Error(mod.error.message);
+      if (cat.error) throw new Error(cat.error.message);
+      const tarefas_agente = ((mod.data ?? []) as Array<Record<string, unknown>>).map((m): ModeloAgente => ({
+        id: Number(m.id), etapa_id: Number(m.etapa_id), chave: String(m.chave), titulo: String(m.titulo),
+        descricao: (m.descricao as string | null) ?? null, prazo_horas: m.prazo_horas == null ? null : Number(m.prazo_horas),
+        ordem: Number(m.ordem), ativo: Boolean(m.ativo), agente: String(m.responsavel_agente),
+      }));
+      return { tarefas_agente, agentes_disponiveis: (cat.data ?? []) as AgenteDisponivel[] };
+    },
+
+    async salvarAgentes(tenant, etapaId, itens, userId) {
+      const { data, error } = await client.rpc("pipeline_etapa_tarefas_agentes_salvar", { p_tenant: tenant, p_etapa: etapaId, p_itens: itens, p_user: userId });
+      if (error) traduzir(error);
+      return (data as number) ?? 0;
     },
 
     async salvarModelo(tenant, etapaId, itens, userId) {

@@ -1,112 +1,15 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import type { Achado } from "../../../supabase/functions/_shared/agentes/tipos.ts";
-import { type ApiAgentesContext, contextos, handleRequest } from "../../../supabase/functions/api-agentes/index.ts";
+import { contextos, handleRequest } from "../../../supabase/functions/api-agentes/index.ts";
 import {
   type AgentesRepo,
   createSupabaseRepo,
   type Dossie,
-  ErroAgentes,
   type Execucao,
-  type Preparacao,
 } from "../../../supabase/functions/api-agentes/repo.ts";
 import { ErroTenantAcesso } from "../../../supabase/functions/_shared/tenant.ts";
-import type { PropostaItem } from "../../../supabase/functions/_shared/agentes/preco.ts";
 import { parseActionFromBody } from "../../../supabase/functions/api-agentes/validation.ts";
-
-function ambiente() {
-  let seq = 0;
-  const execucoes: Execucao[] = [];
-  const dossie: Dossie = {
-    licitacao: { id: 101, payload_hash: "h1", data_abertura: "2026-10-21T09:00:00-03:00" },
-    documentos_sha256: ["d1"],
-    chunks: [{ id: 1, documento_id: 9, pagina: 1, texto: "Apresentar amostra do equipamento." }],
-    natureza: null,
-    itens: [{ numero_item: 1, unidade: "UN", estimado_centavos: 1_000_000, amostras: [], piso_centavos: 600_000 }],
-    dispositivos: [
-      { norma: "LEI_14133_2021", artigo: 59, texto: "texto 59", conferido_oficial: false },
-      { norma: "LEI_14133_2021", artigo: 164, texto: "texto 164", conferido_oficial: false },
-    ],
-  };
-
-  const estado: { preparacao: Preparacao | null | Error; solicitacoes: number; falhaSolicitar: Error | null } = {
-    preparacao: null,
-    solicitacoes: 0,
-    falhaSolicitar: null,
-  };
-  const repo: AgentesRepo = {
-    tenantDoUsuario: () => Promise.resolve({ tenant: 1, papel: null }),
-    preparacao: () => (estado.preparacao instanceof Error ? Promise.reject(estado.preparacao) : Promise.resolve(estado.preparacao)),
-    // Como a RPC fila_preparacao_solicitar: pedido aberto não duplica; sem pedido ou failed, cria um pending.
-    solicitarPreparacao: () => {
-      if (estado.falhaSolicitar) return Promise.reject(estado.falhaSolicitar);
-      estado.solicitacoes++;
-      const atual = estado.preparacao instanceof Error ? null : estado.preparacao;
-      if (atual && (atual.status === "pending" || atual.status === "processing")) return Promise.resolve("ja_na_fila" as const);
-      estado.preparacao = { status: "pending", resultado: null, erro: null, atualizado_em: "agora" };
-      return Promise.resolve("enfileirado" as const);
-    },
-    carregarDossie: (_t, id) => Promise.resolve(id === dossie.licitacao.id ? dossie : null),
-    buscarExecucao: (_t, licitacaoId, agente, contextoHash) =>
-      Promise.resolve(execucoes.find((e) => e.licitacao_id === licitacaoId && e.agente === agente && e.contexto_hash === contextoHash) ?? null),
-    gravarExecucao: (_t, userId, licitacaoId, contextoHash, proposta, r) => {
-      const row: Execucao = {
-        id: ++seq,
-        licitacao_id: licitacaoId,
-        agente: r.agente,
-        situacao: r.situacao,
-        contexto_hash: contextoHash,
-        regra_versao: r.regra_versao,
-        entrada: { proposta },
-        achados: r.achados,
-        revisao: "aguardando",
-        revisao_nota: null,
-        revisado_por: null,
-        revisado_em: null,
-        solicitado_por: userId,
-        created_at: new Date(seq * 1000).toISOString(),
-      };
-      execucoes.push(row);
-      return Promise.resolve(row);
-    },
-    ultimasExecucoes: (_t, licitacaoId) => {
-      const ordem = ["edital", "preco", "juridico"] as const;
-      return Promise.resolve(ordem.flatMap((agente) => {
-        const lista = execucoes.filter((e) => e.licitacao_id === licitacaoId && e.agente === agente);
-        const ultima = lista[lista.length - 1];
-        return ultima ? [ultima] : [];
-      }));
-    },
-    obterExecucao: (_t, id) => Promise.resolve(execucoes.find((e) => e.id === id) ?? null),
-    ultimaAprovada: (_t, licitacaoId, agente) => {
-      const lista = execucoes.filter((e) => e.licitacao_id === licitacaoId && e.agente === agente && e.revisao === "aprovada");
-      return Promise.resolve(lista[lista.length - 1] ?? null);
-    },
-    revisar: (_t, id, decisao, nota, userId) => {
-      const row = execucoes.find((e) => e.id === id);
-      if (!row) return Promise.reject(new ErroAgentes("Execução não encontrada.", 404));
-      if (row.revisao !== "aguardando") return Promise.resolve(null);
-      row.revisao = decisao;
-      row.revisao_nota = nota;
-      row.revisado_por = userId;
-      row.revisado_em = "t";
-      return Promise.resolve(row);
-    },
-  };
-  return { repo, dossie, execucoes, estado };
-}
-
-const USUARIO = { id: "u-1", app_metadata: {} };
-
-function ctx(repo: AgentesRepo, user: typeof USUARIO | null = USUARIO): ApiAgentesContext {
-  return { getRepo: () => repo, getUser: () => Promise.resolve(user) };
-}
-
-async function chamar(c: ApiAgentesContext, body: unknown) {
-  const res = await handleRequest(new Request("http://x/api-agentes", { method: "POST", body: JSON.stringify(body) }), c);
-  return { status: res.status, json: await res.json() };
-}
-
-const P: PropostaItem[] = [{ numero_item: 1, preco_unitario_centavos: 400_000 }];
+import { ambiente, chamar, ctx, P, USUARIO } from "./agentes_fake.ts";
 
 Deno.test("api-agentes: sem sessão 401; GET 405; ação inválida 400; licitação inexistente 404", async () => {
   const { repo } = ambiente();
@@ -168,11 +71,12 @@ Deno.test("api-agentes: edital retificado marca desatualizada e bloqueia a revis
   const { repo, dossie } = ambiente();
   const c = ctx(repo);
   const a = await chamar(c, { action: "analise_executar", licitacao_id: 101, proposta: P });
+  await chamar(c, { action: "analise_enviar", execucao_id: a.json.execucoes[0].id });
   dossie.documentos_sha256 = ["d1", "d2"];
   const o = await chamar(c, { action: "analise_obter", licitacao_id: 101 });
   assertEquals(o.json.execucoes.map((e: { desatualizada: boolean }) => e.desatualizada), [true, false, true]);
   const rev = await chamar(c, { action: "analise_revisar", execucao_id: a.json.execucoes[0].id, decisao: "aprovada" });
-  assertEquals(rev.status, 409);
+  assertEquals([rev.status, rev.json.error], [409, "Análise desatualizada. Execute de novo antes de revisar."]);
 });
 
 Deno.test("api-agentes: sem edital indexado, edital é sem_documento e os outros seguem", async () => {
@@ -187,6 +91,7 @@ Deno.test("api-agentes: revisão registra quem aprovou; rejeitar exige nota; nã
   const c = ctx(repo);
   const a = await chamar(c, { action: "analise_executar", licitacao_id: 101, proposta: P });
   const id = a.json.execucoes[1].id;
+  await chamar(c, { action: "analise_enviar", execucao_id: id });
   assertEquals((await chamar(c, { action: "analise_revisar", execucao_id: id, decisao: "rejeitada" })).status, 400);
   const ok = await chamar(c, { action: "analise_revisar", execucao_id: id, decisao: "rejeitada", nota: "Preço errado" });
   assertEquals([ok.json.execucao.revisao, ok.json.execucao.revisado_por, ok.json.execucao.revisao_nota], ["rejeitada", "u-1", "Preço errado"]);
@@ -199,8 +104,9 @@ Deno.test("api-agentes: revisão concorrente que perde a atualização condicion
   const concorrente: AgentesRepo = { ...repo, revisar: () => Promise.resolve(null) };
   const c = ctx(concorrente);
   const a = await chamar(c, { action: "analise_executar", licitacao_id: 101, proposta: P });
+  await chamar(c, { action: "analise_enviar", execucao_id: a.json.execucoes[0].id });
   const r = await chamar(c, { action: "analise_revisar", execucao_id: a.json.execucoes[0].id, decisao: "aprovada" });
-  assertEquals(r.status, 409);
+  assertEquals([r.status, r.json.error], [409, "Esta análise já foi revisada."]);
 });
 
 Deno.test("api-agentes: execução nova não apaga a aprovada e aponta para ela", async () => {
@@ -208,6 +114,7 @@ Deno.test("api-agentes: execução nova não apaga a aprovada e aponta para ela"
   const c = ctx(repo);
   const a = await chamar(c, { action: "analise_executar", licitacao_id: 101, proposta: P });
   const aprovada = a.json.execucoes[1].id;
+  await chamar(c, { action: "analise_enviar", execucao_id: aprovada });
   await chamar(c, { action: "analise_revisar", execucao_id: aprovada, decisao: "aprovada" });
   await chamar(c, { action: "analise_executar", licitacao_id: 101, proposta: [{ numero_item: 1, preco_unitario_centavos: 900_000 }] });
   const o = await chamar(c, { action: "analise_obter", licitacao_id: 101 });
@@ -339,7 +246,7 @@ Deno.test("validação: proposta", () => {
     licitacao_id: 1,
     proposta: [{ numero_item: 1, preco_unitario_centavos: 5 }, { numero_item: 1, preco_unitario_centavos: 6 }],
   }), true);
-  assertEquals(parseActionFromBody({ action: "analise_executar", licitacao_id: 1 }), { action: "analise_executar", licitacao_id: 1, proposta: null });
+  assertEquals(parseActionFromBody({ action: "analise_executar", licitacao_id: 1 }), { action: "analise_executar", licitacao_id: 1, proposta: null, agentes: null });
   assertEquals("error" in parseActionFromBody({ action: "analise_revisar", execucao_id: 1, decisao: "talvez" }), true);
 });
 

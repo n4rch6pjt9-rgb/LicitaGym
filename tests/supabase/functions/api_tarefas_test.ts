@@ -22,7 +22,7 @@ function repoMemoria(papel: PapelTenant | null) {
     id: ++seq, tenant_id: 1, licitacao_id: lic, origem: "catalogo", tarefa_codigo: codigo, titulo: null, descricao: null,
     liberada_por_fase: null, liberada_por_evento: "ATA_HABILITACAO", condicao_verificada: null, contexto: {},
     prazo_situacao: "nao_calculado", prazo_em: null, prazo_informado_por: null, prazo_informado_em: null, status: "aberta",
-    responsavel_papel: "admin", responsavel_user_id: null, criada_em: "t", atualizada_em: "t", concluida_em: null, catalogo: null,
+    responsavel_papel: "admin", responsavel_user_id: null, responsavel_tipo: "papel", responsavel_agente: null, criada_em: "t", atualizada_em: "t", concluida_em: null, catalogo: null,
   });
   // tarefa de outra empresa (tenant 2), atribuída a OP1: nunca pode aparecer nem ser alterada pela empresa 1
   tarefas.push({ ...nova("14133-F05-T03", 99), id: 900, tenant_id: 2, responsavel_user_id: OP1 });
@@ -273,4 +273,27 @@ Deno.test("concluir de novo não troca a data de conclusão", async () => {
   a.concluida_em = "2026-10-01T00:00:00.000Z";
   await pedir({ action: "tarefa_atualizar", id: a.id, status: "concluida" }, adm.ctx);
   assertEquals(a.concluida_em, "2026-10-01T00:00:00.000Z");
+});
+
+// --- Spec 0035, R-11: tarefa de agente ------------------------------------------------------------------------------
+
+Deno.test("CA-32: tarefa de agente não muda de status à mão (409); prazo e atribuição seguem e o tipo fica", async () => {
+  const { ctx, tarefas } = ctxDe("admin");
+  tarefas.push({
+    ...tarefas[0], id: 50, tenant_id: 1, licitacao_id: 10, origem: "empresa", tarefa_codigo: null, titulo: "Analisar o edital",
+    responsavel_tipo: "agente", responsavel_agente: "edital", responsavel_user_id: null,
+  });
+  for (const status of ["concluida", "em_andamento", "cancelada"]) {
+    const r = await pedir({ action: "tarefa_atualizar", id: 50, status }, ctx);
+    assertEquals(r.status, 409, status);
+    await r.body?.cancel();
+  }
+  assertEquals(tarefas.find((t) => t.id === 50)!.status, "aberta");
+  const prazo = await pedir({ action: "tarefa_atualizar", id: 50, prazo_em: "2026-10-30T12:00:00Z" }, ctx);
+  assertEquals(prazo.status, 200);
+  await prazo.body?.cancel();
+  const atr = await pedir({ action: "tarefa_atribuir", id: 50, user_id: OP1 }, ctx);
+  assertEquals(atr.status, 200);
+  const t = (await atr.json()).tarefa;
+  assertEquals([t.responsavel_tipo, t.responsavel_agente, t.responsavel_user_id], ["agente", "edital", OP1]);
 });

@@ -1,6 +1,8 @@
 import { assertEquals, assertNotEquals } from "jsr:@std/assert@1";
 import { hashContexto, normalizarTexto, validarAchado } from "../../../supabase/functions/_shared/agentes/achados.ts";
 import type { Achado } from "../../../supabase/functions/_shared/agentes/tipos.ts";
+import { parseActionFromBody } from "../../../supabase/functions/api-agentes/validation.ts";
+import { ambiente, chamar, ctx } from "./agentes_fake.ts";
 
 const base: Achado = {
   codigo: "exigencia.amostra",
@@ -38,3 +40,33 @@ Deno.test("hashContexto: ordem das chaves não muda; ordem da lista muda", async
 });
 
 Deno.test("normalizarTexto", () => assertEquals(normalizarTexto("  Visita   TÉCNICA\nobrigatória "), "visita tecnica obrigatoria"));
+
+// --- Spec 0035: agentes pedidos em analise_executar (K-2, R-4, R-5) ------------------------------------------------
+
+Deno.test("CA-3: agentes:[edital] grava só o edital", async () => {
+  const { repo, execucoes } = ambiente();
+  const r = await chamar(ctx(repo), { action: "analise_executar", licitacao_id: 101, agentes: ["edital"] });
+  assertEquals(r.status, 200);
+  assertEquals(execucoes.map((e) => e.agente), ["edital"]);
+});
+
+Deno.test("CA-4: agentes:[juridico] sem execução anterior grava edital, preço e jurídico, com os sinais do edital", async () => {
+  const { repo, execucoes } = ambiente();
+  const r = await chamar(ctx(repo), { action: "analise_executar", licitacao_id: 101, agentes: ["juridico"] });
+  assertEquals(r.status, 200);
+  assertEquals(execucoes.map((e) => e.agente), ["edital", "preco", "juridico"]);
+  const juridico = execucoes.find((e) => e.agente === "juridico")!;
+  assertEquals(juridico.achados.some((a) => a.dados.sinal_origem === "exigencia.amostra"), true);
+  // com o edital já gravado, o jurídico de novo reaproveita tudo
+  await chamar(ctx(repo), { action: "analise_executar", licitacao_id: 101, agentes: ["juridico"] });
+  assertEquals(execucoes.length, 3);
+});
+
+Deno.test("CA-5: agente desconhecido, lista vazia ou preço sozinho dão 400", () => {
+  for (const agentes of [["xyz"], [], ["preco"], "edital"]) {
+    assertEquals("error" in parseActionFromBody({ action: "analise_executar", licitacao_id: 1, agentes }), true, JSON.stringify(agentes));
+  }
+  assertEquals(parseActionFromBody({ action: "analise_executar", licitacao_id: 1, agentes: ["juridico", "edital"] }), {
+    action: "analise_executar", licitacao_id: 1, proposta: null, agentes: ["edital", "preco", "juridico"],
+  });
+});

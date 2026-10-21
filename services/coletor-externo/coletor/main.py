@@ -10,7 +10,9 @@ Uso (Cloud Run Job, varre IDs 1..120 e grava tudo; depois coleta os preços):
     sestsenat  só o portal SEST SENAT
     precos     só a Pesquisa de Preço (spec 0009): compras_precos em modo catálogo (PDMs de
                catalogo_catmat_pdms_efetivos(), nunca a lista fixa) e, em seguida, o 2_consultarMaterialDetalhe só
-               para completar as linhas sem descrição detalhada. No --dry-run não grava nem completa o detalhe.
+               para completar as linhas sem descrição detalhada; por fim, o estimado e o link da compra (spec 0031,
+               compras_itens_contratacao) das compras do recorte de 24 meses. No --dry-run não grava nem completa o
+               detalhe nem o estimado.
     todas      os dois, um depois do outro; a falha de um não impede o outro.
 O código de saída é 1 se qualquer parte falhar (inclusive falha de uma linha do detalhe).
 
@@ -20,6 +22,7 @@ Variáveis de ambiente:
     SECOES_DOWNLOAD   seções cujos arquivos são baixados (padrão abaixo)
     DELAY_SEGUNDOS    pausa entre requisições ao portal (padrão 1.5)
     MAX_MB            ignora arquivos maiores que isso (padrão 80)
+    PRECOS_CONTRATACAO_LIMITE  compras por rodada no estimado/link da spec 0031 (padrão 600)
 """
 from __future__ import annotations
 
@@ -29,7 +32,7 @@ import sys
 
 import json
 
-from . import compras_precos
+from . import compras_itens_contratacao, compras_precos
 from .destino import Armazenamento, Supabase, drenar_licitacao_match, env, parece_html, sha256
 from .proveniencia import ORIGENS
 from .portal import (SECOES_CONTRATACAO, ArquivoGrande, PortalSestSenat, encerrado, no_escopo_fitness,
@@ -155,6 +158,18 @@ def coletar_precos(sb: Supabase | None, dry_run: bool, delay: float) -> bool:
     detalhe = compras_precos.completar_detalhes(cliente, sb)
     resumo["detalhe"] = detalhe
     ok = ok and bool(detalhe.get("sucesso"))
+    # Spec 0031: estimado × homologado e link da compra. Roda depois da coleta de preços (as compras novas já estão
+    # gravadas) e mesmo que o detalhe tenha falhado: são consultas independentes.
+    try:
+        limite = int(env("PRECOS_CONTRATACAO_LIMITE", str(compras_itens_contratacao.LIMITE_PADRAO)))
+        contratacao = compras_itens_contratacao.coletar(
+            compras_itens_contratacao.ClienteContratacoes(delay=max(1.0, delay)), sb, limite=limite)
+    except Exception as e:  # noqa: BLE001 - falha aqui não pode esconder o resultado da coleta de preços
+        log.error("precos (estimado e link) falhou: %s", e)
+        contratacao = {"sucesso": False, "erro": str(e)}
+    resumo["contratacao"] = {k: v for k, v in contratacao.items() if k != "erros"} | {
+        "erros": contratacao.get("erros", [])[:5]}
+    ok = ok and bool(contratacao.get("sucesso"))
     (log.info if ok else log.error)("precos -> %s", json.dumps(resumo, ensure_ascii=False, default=str))
     return ok
 

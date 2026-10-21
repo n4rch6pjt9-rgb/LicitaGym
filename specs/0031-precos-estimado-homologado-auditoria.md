@@ -47,6 +47,14 @@ e, na consulta da compra, o `linkSistemaOrigem` do portal oficial.
   preço está faltando; o que falta é a coleta voltar a rodar.
 - 21/10: o dropdown do PDM 9634 lista 14 itens; só 2 têm preço nos últimos 24 meses (602701: 234; 471988: 146). O
   67288 tem 27 preços, o último de 13/12/2022. Os outros 11 têm 0 na API.
+- 21/10, **coluna × JSON da API** (41 campos da `1_consultarMaterial`, contra o `raw` de 25.464 linhas e contra a API
+  ao vivo do PDM 9634, 741 linhas): a coleta grava **todos** os campos que a API devolve, 1 para 1.
+  - `esfera` (F, E, M) e `poder` (E, L) estão preenchidos em 100% e 99,8% das linhas: faltam só na `api-precos` e na tela.
+  - `sigla_unidade_medida` e `nome_unidade_medida`: a **API devolve nulo** (14 e 0 de 25.464 no banco; 0 de 741 ao vivo).
+    Não é falha da coleta; a unidade que vale para comparar é a de fornecimento (98% preenchida).
+  - `descricao_detalhada_item`: 4.081 linhas gravadas como texto vazio (`''`) em vez de NULL, quando a API não manda.
+  - `fabricante` e `modelo`: não existem na API; ficam vazios até a fase B (ata).
+  - Uma linha de teste (`id_compra` = `ZZTESTE`, sem `raw`) está na tabela de produção.
 - **PDM 7115:** 40 de 206 preços ficam fora de 0,4× a 2,5× a mediana do próprio item.
 
 **Cobertura do enriquecimento** (amostra de 180 compras, 30 por ano, consultada em 21/10 na API
@@ -111,13 +119,15 @@ A coleta de preços não roda desde 03/10 (18 dias em 21/10). A conferir pelo Ma
    - roda no mesmo Job, depois de `--coleta precos`, com delay de no mínimo 1 s;
    - a primeira carga é o número de compras distintas do recorte (2.463 em 21/10; confirmar no PR com dry-run); depois,
      só as novas.
-3. **Regra de duplicata:** fica a linha com `temResultado = true`; havendo empate, a de `dataAtualizacaoPncp` mais nova.
+3. **Higiene da tabela atual** (na mesma migration ou num script com dry-run): `descricao_detalhada_item = ''` vira
+   NULL, e a coleta de preços passa a gravar NULL quando o campo vier vazio; a linha `ZZTESTE` sai da produção.
+4. **Regra de duplicata:** fica a linha com `temResultado = true`; havendo empate, a de `dataAtualizacaoPncp` mais nova.
    Estimado igual a 0 é ausente, nunca zero.
-4. **Migration aditiva** `supabase/migrations/<ts>_precos_itens_contratacao.sql`: tabela
+5. **Migration aditiva** `supabase/migrations/<ts>_precos_itens_contratacao.sql`: tabela
    `public.precos_itens_contratacao`, chave `(id_compra, numero_item_compra)`, colunas da coleta mais
    `link_sistema_origem`, `payload_hash` e `last_synced_at`. RLS ligada, sem policy, `revoke all`, leitura só pela Edge
    Function.
-5. **`api-precos`, ação `amostras`** (aditiva): por linha,
+6. **`api-precos`, ação `amostras`** (aditiva): por linha,
    - `valor_estimado` (oficial ou `null`), `valor_homologado` (o `preco_unitario`), `diferenca_valor` e
      `diferenca_percentual` = (homologado − estimado) / estimado × 100, 2 casas, meio para longe do zero, só com estimado;
    - `link_pncp` = `https://pncp.gov.br/app/editais/<cnpj>/<ano>/<sequencial>`, a partir do nº de controle;
@@ -125,10 +135,12 @@ A coleta de preços não roda desde 03/10 (18 dias em 21/10). A conferir pelo Ma
      `id_compra` no formato que o PNCP usa para as dispensas
      (`https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/acompanhamento-compra?compra=<id_compra>`),
      com `link_portal_oficial_origem = "montado"`; com ele, `"pncp"` (pergunta 1 em aberto);
-   - os campos já gravados e hoje descartados: município, modalidade, forma (SISPP/SISRP), critério de julgamento e
-     `percentual_maior_desconto`.
-6. **Filtros** (decisão de 21/10), os mesmos na `amostras`, no `resumo` e na `itens`, num objeto só (`filtro`), como
-   na referência do HAR (ver item 10):
+   - os campos já gravados e hoje descartados: município, esfera (F Federal, E Estadual, M Municipal), poder
+     (E Executivo, L Legislativo), modalidade, forma (SISPP/SISRP), critério de julgamento e
+     `percentual_maior_desconto`;
+   - unidade de medida não entra: a API não a devolve.
+7. **Filtros** (decisão de 21/10), os mesmos na `amostras`, no `resumo` e na `itens`, num objeto só (`filtro`), como
+   na referência do HAR (ver item 11):
    - `objeto`: texto no objeto da contratação;
    - `pdm` e `item` (código CATMAT);
    - `meses`: 12 ou 24;
@@ -136,18 +148,18 @@ A coleta de preços não roda desde 03/10 (18 dias em 21/10). A conferir pelo Ma
    - `uasg`: código exato ou texto no nome da UASG ou do órgão;
    - `q`: busca livre por palavras em objeto, descrição do item, marca, fornecedor e nome da UASG;
    - texto sempre sem acento e sem diferenciar maiúsculas; várias palavras = todas presentes.
-7. **Itens do PDM com N:** ação nova `itens` na `api-precos`: para o PDM e o período, devolve
+8. **Itens do PDM com N:** ação nova `itens` na `api-precos`: para o PDM e o período, devolve
    `codigo_item_catalogo`, descrição e `n`, só com `n > 0`, ordenados por `n` desc.
-8. **"Fora do perfil" não entra na /precos** (decisão de 21/10): a tela não exclui nem marca linha sozinha; quem limpa
+9. **"Fora do perfil" não entra na /precos** (decisão de 21/10): a tela não exclui nem marca linha sozinha; quem limpa
    o recorte é o operador, pelos filtros. A regra (fora de [0,4×, 2,5×] a mediana do mesmo item e unidade, com ao
    menos 5 preços) vale como regra de produto e fica para a referência praticada do agente de preço (0032, fase 3).
-9. **KPIs** (`resumo`, aditivo): além de n, média, mediana, p25–p75 e mín–máx,
+10. **KPIs** (`resumo`, aditivo): além de n, média, mediana, p25–p75 e mín–máx,
    - `item_mais_amostras`: código, descrição curta e n (no recorte sem filtro de item);
    - `diferenca_mediana_percentual`: mediana da diferença estimado → homologado das linhas com estimado, com o `n_com_estimado`.
-10. **Front** (Dashboard, PR depois do backend no ar):
-    - **Tabela:** Data | UASG (código · nome) | UF | Cidade | Qtd. | Estimado | Homologado | Diferença (%) | Unidade |
-      Marca | Fornecedor | Links (ícones PNCP e Portal oficial). Sai "Órgão" e "Objeto da compra"; o objeto aparece
-      no `title` dos links.
+11. **Front** (Dashboard, PR depois do backend no ar):
+    - **Tabela:** Data | UASG (código · nome) | UF | Cidade | Esfera | Qtd. | Estimado | Homologado | Diferença (%) |
+      Unidade | Marca | Fornecedor | Links (ícones PNCP e Portal oficial). Sai "Órgão" e "Objeto da compra"; o objeto
+      aparece no `title` dos links.
     - **Filtros**, no formato da referência (HAR da pesquisa do Licitar Digital, 21/10; referência, não regra):
       - no topo, uma caixa de busca livre (`q`) com placeholder "Pesquise por objeto, item, marca, fornecedor ou UASG";
       - "Filtros rápidos" em chips: 12 | 24 meses;
@@ -163,7 +175,7 @@ A coleta de preços não roda desde 03/10 (18 dias em 21/10). A conferir pelo Ma
       Contratações 14.133) e PNCP · período 22/10/2024 a 21/10/2026 · última coleta: <data>". O aviso de unidades
       mistas fica, com o filtro de item sugerido. A regra de cálculo vai para um ícone de ajuda.
     - **Selo** no link do portal oficial quando ele foi montado e não veio do PNCP.
-11. **Navegação para o BI** (decisão de 21/10): a /precos leva ao BI de preços com o mesmo recorte (os filtros vão
+12. **Navegação para o BI** (decisão de 21/10): a /precos leva ao BI de preços com o mesmo recorte (os filtros vão
     na URL do BI). O BI passa a usar o estimado, o homologado e a diferença da `precos_itens_contratacao`.
 
 ### Fase B: marca homologada pela ata (com modelo de IA)
@@ -191,7 +203,7 @@ A coleta de preços não roda desde 03/10 (18 dias em 21/10). A conferir pelo Ma
 ## Fases no Cowork
 
 1. **Operação:** o Marcelo confere o Job e o agendamento (seção "Operação"). Sem coleta rodando, o resto mostra dado velho.
-2. **Backend fase A:** `/implement` com CA-1 a CA-10 (com os 6b, 7b e 7c): coleta, migration, `api-precos`. PR draft no LicitaGym.
+2. **Backend fase A:** `/implement` com CA-1 a CA-10 (com os 6b, 7b, 7c, 9b e 9c): coleta, migration, `api-precos`. PR draft no LicitaGym.
 3. **Front fase A:** agente `frontend-dashboard` com CA-11 a CA-14 (com o 11b), depois do backend no ar. PR draft no Dashboard.
 4. **Fase B:** só depois da A em produção; CA-15 a CA-18.
 
@@ -211,6 +223,8 @@ A coleta de preços não roda desde 03/10 (18 dias em 21/10). A conferir pelo Ma
 | CA-7c | A | **Dado** `q=klopf mesa`, **quando** a amostra é pedida, **então** só entram linhas com as duas palavras em algum dos campos da busca livre, sem diferenciar acento e maiúsculas; com `objeto=esportivo`, só as de objeto com "esportivo". | Deno (mesmo arquivo) |
 | CA-8 | A | **Dado** o PDM 9634 em 24 meses, **quando** a ação `itens` é pedida, **então** volta só itens com `n > 0`, ordenados por `n` desc, sem nenhum com `n = 0`. | Deno `tests/supabase/api-precos/itens_test.ts` |
 | CA-9 | A | **Dado** um item com 5 ou mais preços e um acima de 2,5× a mediana, **quando** o resumo da /precos é pedido sem filtro, **então** esse preço entra em n, mediana e quartis (nada é excluído sozinho). | Deno `tests/supabase/api-precos/resumo_sem_exclusao_test.ts` |
+| CA-9b | A | **Dado** a coleta de preços recebendo `descricaoDetalhadaItem` vazio, **quando** grava, **então** a coluna fica NULL; depois da migration, nenhuma linha tem `''` e não há `id_compra = 'ZZTESTE'`. | pytest `test_precos_agendado.py` + SQL `supabase/tests/precos_praticados_higiene_check.sql` |
+| CA-9c | A | **Dado** uma linha com esfera `M` e poder `E`, **quando** a amostra é pedida, **então** vêm `esfera` "Municipal" e `poder` "Executivo" (código e rótulo). | Deno `tests/supabase/api-precos/amostra_estimado_test.ts` |
 | CA-10 | A | **Dado** `anon` ou `authenticated` sem empresa, **quando** lê `precos_itens_contratacao` direto, **então** recebe erro de permissão. | SQL `supabase/tests/precos_itens_contratacao_check.sql` |
 | CA-11 | A | **Dado** a amostra com estimado, **quando** a tabela renderiza, **então** há as colunas UASG, Estimado, Homologado, Diferença (%) e Links, e não há "Órgão" nem "Objeto da compra"; sem estimado, as três colunas mostram "—". | vitest `src/test/precos-tela.test.tsx` |
 | CA-11b | A | **Dado** filtros aplicados, **quando** a tela renderiza, **então** cada filtro aparece na faixa de aplicados com "x", "Limpar filtros" zera todos, a contagem de preços aparece, e sem resultado aparece o estado vazio. | vitest (mesmo arquivo) |
@@ -262,6 +276,7 @@ A coleta de preços não roda desde 03/10 (18 dias em 21/10). A conferir pelo Ma
 - 21/10: filtros: objeto da contratação, PDM, item, 12 e 24 meses, UF, cidade, UASG e busca livre por palavras. O HAR da pesquisa do Licitar Digital é referência de formato, não regra.
 - 21/10: navegação: a /precos leva ao BI.
 - 21/10: a marca da ata vale principalmente no BI ("pesquisa de preço sem análise não é nada").
+- 21/10: todo campo que a API devolve precisa chegar à /precos ou ao BI.
 
 ## Perguntas em aberto
 

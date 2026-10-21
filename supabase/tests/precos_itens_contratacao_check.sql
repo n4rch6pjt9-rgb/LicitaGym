@@ -47,6 +47,7 @@ begin
     to_regprocedure('public.precos_praticados_recorte(integer, date, date, integer, text, text, text, text, text, text)'),
     to_regprocedure('public.precos_praticados_amostras(integer, date, date, integer, text, text, text, text, text, text, integer, integer)'),
     to_regprocedure('public.precos_praticados_itens_pdm(integer, date, date, text, text, text, text, text, text)'),
+    to_regprocedure('public.precos_praticados_municipios(integer, date, date, integer, text, text, text, text, text)'),
     to_regprocedure('public.precos_praticados_resumo(integer, date, date, integer, text, text, text, text, text, text)')
   ] loop
     if v_fn is null then raise exception 'CHECK FALHOU: função nova da spec 0031 não existe'; end if;
@@ -160,9 +161,14 @@ begin
   reset role;
   update public.precos_praticados_itens set ni_fornecedor = '12345678901', nome_fornecedor = 'FULANO DE TAL'
    where id_compra = '15316705900112026' and id_item_compra = 1;
+  -- NI com espaço em volta também é CPF (mesma regra da exibição, que apara)
+  update public.precos_praticados_itens set ni_fornecedor = ' 98765432100 ', nome_fornecedor = 'BELTRANO SILVA'
+   where id_compra = '15316705900112026' and id_item_compra = 2;
   set local role service_role;
   select count(*) into v_n from public.precos_praticados_recorte(999101, '2025-10-22', '2026-10-21', p_q => 'fulano');
   if v_n <> 0 then raise exception 'CHECK FALHOU (F3): nome de pessoa física buscável (n=%)', v_n; end if;
+  select count(*) into v_n from public.precos_praticados_recorte(999101, '2025-10-22', '2026-10-21', p_q => 'beltrano');
+  if v_n <> 0 then raise exception 'CHECK FALHOU (F3): CPF com espaço deixou o nome buscável (n=%)', v_n; end if;
   select count(*) into v_n from public.precos_praticados_recorte(999101, '2025-10-22', '2026-10-21', p_objeto => 'ESPORTIVO');
   if v_n <> 4 then raise exception 'CHECK FALHOU (F3): objeto=ESPORTIVO n=% (esperado 4)', v_n; end if;
   raise notice 'CASO F ok';
@@ -179,6 +185,21 @@ begin
     raise exception 'CHECK FALHOU (I): item com n = 0';
   end if;
   raise notice 'CASO I ok';
+
+  -- M (spec 0031, Proposta 7): cidades do recorte, sem o filtro de cidade; "BELÉM" e "Belem" são a mesma cidade
+  if (select count(*) from public.precos_praticados_municipios(999101, '2025-10-22', '2026-10-21')) <> 3 then
+    raise exception 'CHECK FALHOU (M): esperado 3 cidades (Belém, São Paulo, Rio de Janeiro), veio %',
+      (select count(*) from public.precos_praticados_municipios(999101, '2025-10-22', '2026-10-21'));
+  end if;
+  select * into r from public.precos_praticados_municipios(999101, '2025-10-22', '2026-10-21', p_uf => 'SP');
+  if r.uf is distinct from 'SP' or r.municipio is distinct from 'SÃO PAULO' or r.n is distinct from 3 then
+    raise exception 'CHECK FALHOU (M): SP % % %', r.uf, r.municipio, r.n;
+  end if;
+  select * into r from public.precos_praticados_municipios(999101, '2025-10-22', '2026-10-21', p_uf => 'PA');
+  if r.n is distinct from 2 or r.municipio not in ('BELÉM', 'Belem') then
+    raise exception 'CHECK FALHOU (M): PA % % (esperado Belém com 2)', r.municipio, r.n;
+  end if;
+  raise notice 'CASO M ok';
 
   -- R (CA-9) e K: resumo do item 111 sem filtro inclui o 37.293,40
   select * into r from public.precos_praticados_resumo(999101, '2025-10-22', '2026-10-21', 111);
@@ -227,6 +248,22 @@ begin
   if r.compra_consultada is distinct from false or r.compra_encontrada is not null then
     raise exception 'CHECK FALHOU (A): compra não consultada consultada=% encontrada=%', r.compra_consultada, r.compra_encontrada;
   end if;
+  -- estimado de compra que passou a vir vazia (encontrada=false) não vale, mesmo com o item antigo gravado
+  reset role;
+  update public.precos_compras_contratacao set encontrada = false where id_compra = '98756505900352026';
+  set local role service_role;
+  select * into r from public.precos_praticados_amostras(999101, '2025-10-22', '2026-10-21', 111)
+   where id_compra = '98756505900352026' and numero_item_compra = 1;
+  if r.valor_unitario_estimado is not null then
+    raise exception 'CHECK FALHOU (A): estimado de compra não encontrada deveria ser null (%)', r.valor_unitario_estimado;
+  end if;
+  select * into r from public.precos_praticados_resumo(999101, '2025-10-22', '2026-10-21', 111);
+  if r.n_com_estimado is distinct from 2 then
+    raise exception 'CHECK FALHOU (A): n_com_estimado sem a compra não encontrada=% (esperado 2)', r.n_com_estimado;
+  end if;
+  reset role;
+  update public.precos_compras_contratacao set encontrada = true where id_compra = '98756505900352026';
+  set local role service_role;
   if exists (select 1 from public.precos_praticados_amostras(999101, '2025-10-22', '2026-10-21', 111, p_offset => 5)) then
     raise exception 'CHECK FALHOU (A): offset além do total deveria vir vazio';
   end if;
@@ -253,6 +290,24 @@ begin
   if not exists (select 1 from public.precos_compras_pendentes_contratacao('2025-10-22', 100) where id_compra = '99999999999999999')
      or exists (select 1 from public.precos_compras_pendentes_contratacao('2025-10-22', 100) where id_compra = '15316705900112026') then
     raise exception 'CHECK FALHOU (P): reconsulta de não encontrada deveria valer só depois de 30 dias';
+  end if;
+  -- encontrada, consultada há mais de 7 dias, com item de preço sem resultado: volta a ser pendente
+  reset role;
+  update public.precos_compras_contratacao
+     set consultado_em = now() - interval '8 days', data_hora_atualizacao_compra = '2026-08-06 01:10:04+00'
+   where id_compra = '16021805900022026';
+  update public.precos_itens_contratacao set tem_resultado = null
+   where id_compra = '16021805900022026' and numero_item_compra = 67;
+  set local role service_role;
+  if not exists (select 1 from public.precos_compras_pendentes_contratacao('2025-10-22', 100) where id_compra = '16021805900022026') then
+    raise exception 'CHECK FALHOU (P): item sem resultado há mais de 7 dias deveria reabrir a compra';
+  end if;
+  reset role;
+  update public.precos_itens_contratacao set tem_resultado = true
+   where id_compra = '16021805900022026' and numero_item_compra = 67;
+  set local role service_role;
+  if exists (select 1 from public.precos_compras_pendentes_contratacao('2025-10-22', 100) where id_compra = '16021805900022026') then
+    raise exception 'CHECK FALHOU (P): compra com todos os itens com resultado não deveria reabrir';
   end if;
   if (select count(*) from public.precos_compras_pendentes_contratacao('2026-12-01', 100)) <> 0 then
     raise exception 'CHECK FALHOU (P): p_desde no futuro deveria dar 0';

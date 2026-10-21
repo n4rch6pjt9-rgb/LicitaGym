@@ -46,6 +46,11 @@ Deno.test("CA-6: caso de Belém −29,39%; sem estimado as três colunas vêm nu
     assertEquals(typeof i.motivo_sem_estimado, "string");
   }
   assertEquals(semEst.link_pncp, "https://pncp.gov.br/app/editais/00394452000103/2026/10524");
+  // compra não encontrada: estimado que tenha sobrado no item não vale
+  const sobra = await chamar("action=amostras&pdm=9634", {
+    amostras: [amostraBelem({ compra_encontrada: false, valor_unitario_estimado: 3156.67 })],
+  });
+  assertEquals([sobra.body.itens[0].valor_estimado, sobra.body.itens[0].diferenca_percentual], [null, null]);
   // compra não consultada ou fora do PNCP: sem links (não inventa)
   for (const i of [naoConsultada, naoEncontrada]) {
     assertEquals([i.link_pncp, i.link_portal_oficial, i.link_portal_oficial_origem], [null, null, null]);

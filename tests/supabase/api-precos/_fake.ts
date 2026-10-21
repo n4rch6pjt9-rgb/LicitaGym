@@ -5,7 +5,9 @@ import { type PrecosClient, responderPrecos } from "../../../supabase/functions/
 export type Linha = Record<string, unknown>;
 export const HOJE = "2026-10-21";
 
-export function fake(resp: { amostras?: Linha[]; resumo?: Linha[]; itens?: Linha[]; catalogo?: number[] }) {
+export function fake(
+  resp: { amostras?: Linha[]; resumo?: Linha[]; itens?: Linha[]; municipios?: Linha[]; catalogo?: number[] },
+) {
   const rpcs: Array<{ funcao: string; args: Record<string, unknown> }> = [];
   const catalogo = resp.catalogo ?? [9634];
   const pronto = (data: unknown) => {
@@ -39,6 +41,7 @@ export function fake(resp: { amostras?: Linha[]; resumo?: Linha[]; itens?: Linha
         return pronto(todas.slice(off, off + lim).map((l) => ({ ...l, total: todas.length })));
       }
       if (funcao === "precos_praticados_itens_pdm") return pronto(resp.itens ?? []);
+      if (funcao === "precos_praticados_municipios") return pronto(resp.municipios ?? []);
       return pronto(resp.resumo ?? []);
     },
   };

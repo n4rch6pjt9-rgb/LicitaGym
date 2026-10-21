@@ -19,6 +19,8 @@
 //       poder. Página além do total: 400 com codigo "page_alem_do_total".
 //   ?action=itens
 //       itens do PDM com N > 0 no recorte (sem o filtro de item), por n desc (dropdown da /precos).
+//   ?action=municipios
+//       cidades com preço no recorte (sem o filtro de cidade; com uf, só as da UF), com o n: lista do filtro Cidade.
 //
 // Links (spec 0031, decisão de 21/10): link_pncp = https://pncp.gov.br/app/editais/<cnpj>/<ano>/<sequencial>, do nº
 // de controle oficial; link_portal_oficial = o linkSistemaOrigem que o PNCP mostra ("pncp") ou, sem ele (dispensas),
@@ -48,6 +50,7 @@ export const TABELA = "precos_praticados_itens";
 export const RPC_RESUMO = "precos_praticados_resumo";
 export const RPC_AMOSTRAS = "precos_praticados_amostras";
 export const RPC_ITENS = "precos_praticados_itens_pdm";
+export const RPC_MUNICIPIOS = "precos_praticados_municipios";
 export const LINK_PNCP_BASE = "https://pncp.gov.br/app/editais";
 export const LINK_COMPRAS_GOV_BASE =
   "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/acompanhamento-compra?compra=";
@@ -97,7 +100,7 @@ export class PrecosNaoVerificado extends Error {}
 /** Página pedida além do total de amostras: erro de chamada (400), não falha de banco. */
 class PaginaAlemDoTotal extends Error {}
 
-type Action = "resumo" | "amostras" | "itens";
+type Action = "resumo" | "amostras" | "itens" | "municipios";
 
 interface PrecosParams {
   action: Action;
@@ -153,8 +156,8 @@ export function parsePrecosParams(url: URL): PrecosParams | { error: string } {
   const q = (k: string) => url.searchParams.get(k);
 
   const actionRaw = q("action");
-  if (vazio(actionRaw) || !["resumo", "amostras", "itens"].includes(actionRaw!.trim())) {
-    return { error: "action inválida: use resumo, amostras ou itens" };
+  if (vazio(actionRaw) || !["resumo", "amostras", "itens", "municipios"].includes(actionRaw!.trim())) {
+    return { error: "action inválida: use resumo, amostras, itens ou municipios" };
   }
   const action = actionRaw!.trim() as Action;
 
@@ -292,7 +295,8 @@ function enriquecimentoDe(raw: Record<string, unknown>, homologado: number | nul
   const consultada = raw.compra_consultada === true;
   const encontrada = raw.compra_encontrada === true;
   const estimado = numeroOuAusente(raw.valor_unitario_estimado);
-  const est = estimado !== null && estimado > 0 ? estimado : null;
+  // Estimado só de compra consultada e encontrada no PNCP (defesa em profundidade: o banco já anula o resto).
+  const est = consultada && encontrada && estimado !== null && estimado > 0 ? estimado : null;
   const portal = consultada && encontrada
     ? linkPortalOficial(raw.link_sistema_origem, raw.id_compra)
     : { link: null, origem: null };
@@ -485,6 +489,24 @@ async function itens(client: PrecosClient, p: PrecosParams, periodo: { inicio: s
   return { itens: lista, total: lista.length };
 }
 
+async function municipios(client: PrecosClient, p: PrecosParams, periodo: { inicio: string; fim: string }) {
+  const a = argsRecorte(p, periodo);
+  delete a.p_municipio;
+  const { data, error } = await client.rpc(RPC_MUNICIPIOS, { ...a, p_item: p.item });
+  if (error) throw error;
+  if (!Array.isArray(data)) throw new PrecosNaoVerificado("Não verificado: lista de cidades sem resposta.");
+  const lista = data.map((raw) => {
+    const uf = texto(raw.uf);
+    const nome = texto(raw.municipio);
+    const n = inteiro(raw.n);
+    if (uf === null || nome === null || n === null) {
+      throw new PrecosNaoVerificado("Não verificado: cidade sem UF, nome ou contagem.");
+    }
+    return { uf, municipio: nome, n };
+  }).filter((m) => m.n > 0);
+  return { municipios: lista, total: lista.length };
+}
+
 export async function responderPrecos(req: Request, url: URL, deps: PrecosDeps = {}): Promise<Response> {
   const denied = await (deps.requireAuth ?? requireUserAuth)(req);
   if (denied) return denied;
@@ -521,6 +543,8 @@ export async function responderPrecos(req: Request, url: URL, deps: PrecosDeps =
       ? await resumo(client, p, periodo)
       : p.action === "itens"
       ? await itens(client, p, periodo)
+      : p.action === "municipios"
+      ? await municipios(client, p, periodo)
       : await amostras(client, p, periodo);
     return jsonResponse({ ...base, ...corpo });
   } catch (error) {

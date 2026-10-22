@@ -9,8 +9,14 @@ import {
   ErroAgentes,
   type Execucao,
   type OportunidadeAgente,
+  type Pergunta,
   type Preparacao,
 } from "../../../supabase/functions/api-agentes/repo.ts";
+import type { ChunkEdital } from "../../../supabase/functions/_shared/agentes/edital.ts";
+import type { ServicoPerguntas } from "../../../supabase/functions/api-agentes/perguntas.ts";
+
+/** Pergunta como gravada (spec 0038): com a empresa e o uso, que não saem pela API. */
+export type PerguntaGravada = Pergunta & { tenant_id: number; uso: Record<string, unknown> | null };
 
 export function ambiente() {
   let seq = 0;
@@ -47,6 +53,13 @@ export function ambiente() {
   const documentosBrutos: Array<Omit<DocumentoAgente, "entra_na_analise" | "erro"> & { erro: string | null }> = [];
   let tarefaAberta: number | null = 77;
   let seqEnvio = 0;
+  // spec 0038: perguntas gravadas (de todas as empresas)
+  const perguntas: PerguntaGravada[] = [];
+  /** agente_cota_dia: "tenant|dia" → usadas. */
+  const cotas = new Map<string, number>();
+  let seqPergunta = 0;
+  let relogio = Date.UTC(2026, 9, 22, 15, 0, 0);
+  const publica = ({ tenant_id: _t, uso: _u, ...p }: PerguntaGravada): Pergunta => ({ ...p });
   const repo: AgentesRepo = {
     tenantDoUsuario: () => Promise.resolve({ tenant: 1, papel: null }),
     preparacao: () => (estado.preparacao instanceof Error ? Promise.reject(estado.preparacao) : Promise.resolve(estado.preparacao)),
@@ -143,9 +156,70 @@ export function ambiente() {
       row.revisado_em = "t";
       return Promise.resolve(row);
     },
+    // Como agente_cota_reservar: incremento atômico (síncrono aqui) só abaixo do limite; null = cheia.
+    reservarCota: (tenant, dia, limite) => {
+      const chave = `${tenant}|${dia}`;
+      const atual = cotas.get(chave) ?? 0;
+      if (atual >= limite) return Promise.resolve(null);
+      cotas.set(chave, atual + 1);
+      return Promise.resolve(atual + 1);
+    },
+    devolverCota: (tenant, dia) => {
+      const chave = `${tenant}|${dia}`;
+      if (cotas.has(chave)) cotas.set(chave, Math.max(0, cotas.get(chave)! - 1));
+      return Promise.resolve();
+    },
+    cotaUsada: (tenant, dia) => Promise.resolve(cotas.get(`${tenant}|${dia}`) ?? 0),
+    contarChunksIndexados: (licitacaoId) => Promise.resolve(licitacaoId === dossie.licitacao.id ? dossie.chunks.length : 0),
+    // Como o select com licitacao_id + in(id): só os chunks do dossiê da licitação; id de outra licitação não volta
+    chunksDaLicitacao: (licitacaoId, ids) =>
+      Promise.resolve((licitacaoId === dossie.licitacao.id ? dossie.chunks : []).filter((c: ChunkEdital) => ids.includes(c.id))),
+    gravarPergunta: (tenant, userId, p) => {
+      if ((p.resposta === null) === (p.motivo_sem_resposta === null)) return Promise.reject(new Error("check resposta xor motivo"));
+      const row: PerguntaGravada = {
+        id: ++seqPergunta,
+        tenant_id: tenant,
+        ...p,
+        perguntado_por: userId,
+        created_at: new Date(relogio).toISOString(),
+        favorita: false,
+        enviada_em: null,
+        enviada_por: null,
+      };
+      perguntas.push(row);
+      return Promise.resolve(publica(row));
+    },
+    listarPerguntas: (tenant, filtro, limite, deslocamento) => {
+      const lista = perguntas
+        .filter((p) =>
+          p.tenant_id === tenant && (filtro.agente === null || p.agente === filtro.agente) &&
+          (filtro.licitacao_id === null || p.licitacao_id === filtro.licitacao_id) && (!filtro.somente_enviadas || p.enviada_em !== null)
+        )
+        .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id - a.id);
+      return Promise.resolve({ itens: lista.slice(deslocamento, deslocamento + limite).map(publica), total: lista.length });
+    },
+    obterPergunta: (tenant, id) => {
+      const row = perguntas.find((p) => p.tenant_id === tenant && p.id === id);
+      return Promise.resolve(row ? publica(row) : null);
+    },
+    favoritarPergunta: (tenant, id, favorita) => {
+      const row = perguntas.find((p) => p.tenant_id === tenant && p.id === id);
+      if (!row) return Promise.resolve(null);
+      row.favorita = favorita;
+      return Promise.resolve(publica(row));
+    },
+    enviarPergunta: (tenant, id, userId) => {
+      const row = perguntas.find((p) => p.tenant_id === tenant && p.id === id && p.enviada_em === null);
+      if (!row) return Promise.resolve(null);
+      Object.assign(row, { enviada_em: new Date(relogio).toISOString(), enviada_por: userId });
+      return Promise.resolve(publica(row));
+    },
   };
   return {
-    repo, dossie, execucoes, estado, pipeline, oportunidades, chamadasBusca, documentosBrutos,
+    repo, dossie, execucoes, estado, pipeline, oportunidades, chamadasBusca, documentosBrutos, perguntas, cotas,
+    /** Relógio das perguntas gravadas (o mesmo instante vai para ctx.agora nos testes da cota). */
+    relogio: () => new Date(relogio),
+    avancar: (ms: number) => (relogio += ms),
     semTarefa: () => (tarefaAberta = null),
     novaTarefa: (id: number) => (tarefaAberta = id),
   };
@@ -155,6 +229,22 @@ export const USUARIO = { id: "u-1", app_metadata: {} };
 
 export function ctx(repo: AgentesRepo, user: typeof USUARIO | null = USUARIO): ApiAgentesContext {
   return { getRepo: () => repo, getUser: () => Promise.resolve(user) };
+}
+
+/** Serviço agente-perguntas falso (spec 0038): devolve o corpo pedido e guarda as chamadas. */
+export function servicoFalso(corpo: unknown | (() => unknown)) {
+  const chamadas: Array<{ licitacao_id: number; pergunta: string; k: number }> = [];
+  const servico: ServicoPerguntas = {
+    perguntarEdital: (entrada) => {
+      chamadas.push(entrada);
+      try {
+        return Promise.resolve(typeof corpo === "function" ? (corpo as () => unknown)() : corpo);
+      } catch (e) {
+        return Promise.reject(e);
+      }
+    },
+  };
+  return { servico, chamadas };
 }
 
 export async function chamar(c: ApiAgentesContext, body: unknown) {

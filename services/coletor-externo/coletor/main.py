@@ -36,7 +36,7 @@ import sys
 
 import json
 
-from . import compras_itens_contratacao, compras_precos
+from . import compras_itens_contratacao, compras_precos, perfil_precos
 from .destino import Armazenamento, Supabase, drenar_licitacao_match, env, parece_html, sha256
 from .proveniencia import ORIGENS
 from .portal import (SECOES_CONTRATACAO, ArquivoGrande, PortalSestSenat, encerrado, no_escopo_fitness,
@@ -218,6 +218,24 @@ def coletar_sestsenat(args, sb: Supabase | None, arm: Armazenamento | None) -> i
     return falhas_operacionais
 
 
+def coletar_perfil_precos(args) -> bool:
+    """Spec 0037, fase 0: rotula uma amostra e loga rótulos, tokens e a projeção. Só leitura no Supabase."""
+    if not args.dry_run:
+        log.error("perfil-precos: só --dry-run nesta fase (a gravação é da fase 1 da spec 0037)")
+        return False
+    sb = perfil_precos.SoLeitura(Supabase(env("SUPABASE_URL", obrigatorio=True),
+                                          env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True)))
+    try:
+        res = perfil_precos.executar(sb, perfil_precos.modelo_gemini(), dry_run=True, limite=args.limite or 50,
+                                     pdms=args.pdms, compras=args.compras)
+    except Exception as e:  # noqa: BLE001 - execução falha, nunca sucesso silencioso
+        log.error("perfil-precos falhou: %s", e)
+        return False
+    (log.info if res["sucesso"] else log.error)("perfil-precos (dry-run) -> %s",
+                                                 json.dumps(res, ensure_ascii=False, default=str))
+    return res["sucesso"]
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Coletor externo: portal SEST SENAT e Pesquisa de Preço do Compras.gov")
     ap.add_argument("--ids", help="lista de nCdProcesso separados por vírgula")
@@ -232,16 +250,28 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dry-run", action="store_true", help="só consulta as fontes; não grava nada")
     ap.add_argument("--origem", choices=list(ORIGENS), default="manual",
                     help="origem da ingestão gravada em cada linha (spec 0023): cron ou manual (padrão)")
-    ap.add_argument("--coleta", default="todas", choices=["sestsenat", "precos", "todas"],
-                    help="o que rodar: sestsenat, precos (Pesquisa de Preço, modo catálogo) ou todas (padrão)")
+    ap.add_argument("--coleta", default="todas", choices=["sestsenat", "precos", "todas", "perfil-precos"],
+                    help="o que rodar: sestsenat, precos (Pesquisa de Preço, modo catálogo), todas (padrão) ou "
+                         "perfil-precos (spec 0037: rótulo 'fora do perfil'; não entra em 'todas')")
     # Rodada pontual de preços. nargs="+" porque o gcloud separa --args por vírgula:
     #   --args="--coleta,precos,--pdms,6762,3672"  =>  --pdms 6762 3672
     ap.add_argument("--pdms", nargs="+", type=int, help="Pesquisa de Preço só destes PDMs (em vez do catálogo)")
     ap.add_argument("--itens", nargs="+", type=int,
                     help="Pesquisa de Preço só destes itens CATMAT (em vez do catálogo)")
+    ap.add_argument("--limite", type=int, default=None,
+                    help="perfil-precos: quantas compras rotular na amostra (padrão 50)")
+    ap.add_argument("--compras", nargs="+", help="perfil-precos: só estas compras (id_compra de 17 dígitos)")
     args = ap.parse_args(argv)
-    if (args.pdms or args.itens) and args.coleta != "precos":
-        ap.error("--pdms/--itens só valem com --coleta precos")
+    if args.itens and args.coleta != "precos":
+        ap.error("--itens só vale com --coleta precos")
+    if args.pdms and args.coleta not in ("precos", "perfil-precos"):
+        ap.error("--pdms só vale com --coleta precos ou perfil-precos")
+    if (args.compras or args.limite is not None) and args.coleta != "perfil-precos":
+        ap.error("--compras/--limite só valem com --coleta perfil-precos")
+    if args.limite is not None and args.limite <= 0:
+        ap.error("--limite: inteiro positivo")
+    if args.compras and any(not c.isdigit() or len(c) != 17 for c in args.compras):
+        ap.error("--compras: id_compra tem 17 dígitos")
     if any(c <= 0 for c in (args.pdms or []) + (args.itens or [])):
         ap.error("--pdms/--itens: códigos devem ser inteiros positivos")
     # sem repetir consulta (ex.: --itens 1 1), mantendo a ordem pedida
@@ -249,6 +279,9 @@ def main(argv: list[str] | None = None) -> int:
     args.itens = list(dict.fromkeys(args.itens)) if args.itens else None
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+    if args.coleta == "perfil-precos":
+        return 0 if coletar_perfil_precos(args) else 1
 
     roda_sestsenat = args.coleta in ("sestsenat", "todas")
     roda_precos = args.coleta in ("precos", "todas")

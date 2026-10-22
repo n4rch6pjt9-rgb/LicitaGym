@@ -106,6 +106,12 @@ def transitorio(e: BaseException) -> bool:
     return any(c in msg for c in ("RESOURCE_EXHAUSTED", "UNAVAILABLE", "imed out", "Timeout", "DEADLINE"))
 
 
+def erro_de_configuracao(e: BaseException) -> bool:
+    """401/403/404 do Vertex: modelo não habilitado, endpoint errado ou sem permissão. Vale para todos os documentos,
+    então quem chama falha a etapa inteira em vez de marcar cada documento como erro."""
+    return getattr(e, "code", None) in (401, 403, 404) and type(e).__name__ == "ClientError"
+
+
 def motivo_fim(resposta) -> str | None:
     """finish_reason do primeiro candidato como texto ("STOP", "MAX_TOKENS"...), ou None."""
     try:
@@ -118,13 +124,13 @@ def motivo_fim(resposta) -> str | None:
 
 
 class Gemini:
-    def __init__(self, project: str | None = None, location: str | None = None):
+    def __init__(self, project: str | None = None, location: str | None = None, gen_location: str | None = None):
         from google import genai
         from google.genai import types
         self.types = types
         projeto = project or os.environ.get("GOOGLE_CLOUD_PROJECT")
         local_embed = location or os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
-        local_gen = location or GEN_LOCATION
+        local_gen = gen_location or GEN_LOCATION   # `location` é só do embedding: o global não serve o text-*-embedding
         opcoes = types.HttpOptions(timeout=TIMEOUT_MS)
         # Dois clientes: geração (self.client, GEN_LOCATION) e embedding (self.client_embed, regional).
         self.client_embed = genai.Client(vertexai=True, project=projeto, location=local_embed, http_options=opcoes)

@@ -184,3 +184,14 @@ def test_ficha_com_cota_5xx_ou_configuracao_errada_sobe(tmp_path, codigo, status
         IX.indexar_grupo(sb, _ia(erro), _doc(arq), {"numero_processo": "58/2026"}, True)
     sb.upsert.assert_not_called()
     sb.atualizar.assert_not_called()
+
+
+def test_reprocessar_ficha_seleciona_indexados_sem_ficha(monkeypatch):
+    sb = MagicMock()
+    sb.selecionar.side_effect = [[], [], []]
+    monkeypatch.setattr(IX, "Supabase", lambda *a: sb)
+    monkeypatch.setattr(IX, "env", lambda *a, **k: "x")
+    monkeypatch.setattr("coletor.ia.Gemini", lambda: MagicMock())
+    IX.main(["--reprocessar-ficha"])
+    filtros = sb.selecionar.call_args_list[1].kwargs
+    assert filtros["status_processamento"] == "eq.indexado" and filtros["extracao->>ficha"] == "eq.indisponivel"

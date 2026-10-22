@@ -116,6 +116,7 @@ alter table public.licitacao_chunks
 - **Pergunta de arquitetura da live, aplicada:** antes de escolher a região, medir de onde a Edge Function roda até cada região candidata: número de saltos, latência média, **p95** e jitter.
 - **Candidatas:** `us-central1` (atual) e `southamerica-east1` (São Paulo). **Confirmar** se `text-multilingual-embedding-002` está disponível na região de São Paulo antes de trocar (a geração, `gemini-3.8-flash`, já usa o endpoint `global`). Se o modelo de embedding não existir lá, a regra da seção 3.4 impede trocar só a região da pergunta.
 - **Bônus de LGPD:** processar em São Paulo mantém propostas e dados de fornecedores no Brasil.
+- **Atenção (22/10/2026):** a geração (`gemini-3.8-flash`) passou a usar o endpoint `global` do Vertex, que não fixa onde o texto é processado. O texto dos documentos (público, mas com nome e CNPJ de fornecedor) vai para a geração; o embedding continua em `GOOGLE_CLOUD_LOCATION`. Rever se o 3.8 Flash for oferecido numa região fixa.
 
 **Script de medição sugerido:** 50 chamadas de embedding de uma frase curta por região, a partir de uma Edge Function (não do notebook do desenvolvedor), registrando p50, p95, máximo e desvio padrão.
 

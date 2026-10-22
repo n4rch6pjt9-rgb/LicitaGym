@@ -212,6 +212,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="reindexa também o que já foi indexado (ex.: após trocar EMBED_MODEL)")
     ap.add_argument("--reprocessar-ocr", action="store_true",
                     help="refaz também os 'ignorado' por OCR_DEGENERADO ou OCR_REQUIRED (ex.: após mudar OCR_MAX_TOKENS ou o limiar)")
+    ap.add_argument("--reprocessar-ficha", action="store_true",
+                    help="refaz também os 'indexado' com a ficha indisponível (prazo ou JSON inválido); regera os trechos")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     for ruidoso in ("httpx", "google_genai", "google_genai.models"):
@@ -230,6 +232,10 @@ def main(argv: list[str] | None = None) -> int:
         docs += sb.selecionar("licitacao_documentos", status_processamento="eq.ignorado",
                               sha256="not.is.null", storage_uri="not.is.null",
                               **{"or": f"(erro.like.{OCR_DEGENERADO}*,erro.like.{OCR_REQUIRED}*)"},
+                              order="id", select=campos)
+    if args.reprocessar_ficha and not args.refazer:   # --refazer já traz os indexados
+        docs += sb.selecionar("licitacao_documentos", status_processamento="eq.indexado", sha256="not.is.null",
+                              storage_uri="not.is.null", **{"extracao->>ficha": "eq.indisponivel"},
                               order="id", select=campos)
     lics = {l["id"]: l for l in sb.selecionar("licitacoes_externas", select="id,numero_processo,numero_edital,fonte,entidade,orgao_nome")}
 

@@ -1,4 +1,4 @@
-import { itemDoTrecho, trechoLimpo } from "../_shared/agentes/citacao.ts";
+import { itemNaPosicao, trechoLimpo } from "../_shared/agentes/citacao.ts";
 import type { ChunkEdital } from "../_shared/agentes/edital.ts";
 import { ErroAgentes } from "./repo.ts";
 
@@ -25,6 +25,10 @@ export interface CitacaoServico {
   documento_id: number;
   pagina: number | null;
   texto: string;
+  /** Recorte do texto do chunk que apoia a afirmação (o Dashboard destaca). */
+  apoio: string;
+  /** Posição do apoio no texto do chunk; a api-agentes confere contra o texto do banco. */
+  apoio_inicio: number;
 }
 
 export interface RespostaServicoEdital {
@@ -43,9 +47,12 @@ export interface CitacaoPergunta {
   documento_id: number;
   documento_nome: string | null;
   pagina: number | null;
-  /** Item/cláusula no início da frase citada ("8.4.2"); null sem numeração reconhecida. */
+  /** Item/cláusula vigente na posição do apoio ("8.4.2"); null sem cabeçalho de item antes dele. */
   item: string | null;
+  /** Frases inteiras em volta do apoio, até ~300 caracteres. */
   trecho_limpo: string;
+  /** Recorte exato do texto do chunk que apoia a afirmação (conferido contra o banco). */
+  apoio: string;
 }
 
 export interface EntradaServicoEdital {
@@ -134,9 +141,14 @@ export function validarRespostaEdital(bruto: unknown): RespostaServicoEdital | n
     if (!inteiroPositivo(c.n) || !inteiroPositivo(c.chunk_id) || !inteiroPositivo(c.documento_id)) return null;
     if (c.pagina !== null && !inteiroPositivo(c.pagina)) return null;
     if (typeof c.texto !== "string") return null;
+    if (typeof c.apoio !== "string" || c.apoio.trim() === "") return null;
+    if (typeof c.apoio_inicio !== "number" || !Number.isInteger(c.apoio_inicio) || c.apoio_inicio < 0) return null;
     if (vistos.has(c.n)) return null;
     vistos.add(c.n);
-    lista.push({ n: c.n, chunk_id: c.chunk_id, documento_id: c.documento_id, pagina: c.pagina, texto: c.texto });
+    lista.push({
+      n: c.n, chunk_id: c.chunk_id, documento_id: c.documento_id, pagina: c.pagina, texto: c.texto, apoio: c.apoio,
+      apoio_inicio: c.apoio_inicio,
+    });
   }
   return {
     resposta: resposta as string | null,
@@ -165,9 +177,10 @@ export function marcadores(resposta: string): Set<number> | null {
 }
 
 /**
- * Defesa em profundidade (K-1): a resposta só vale se tem ao menos um [n], todo [n] existe nas citações e toda citação
- * aponta para um chunk desta licitação (`chunks`, lidos do banco). Senão, "não encontrei no edital": a resposta não é
- * exibida. As citações saem só as marcadas no texto, em ordem de n, com documento, página e texto do banco.
+ * Defesa em profundidade (K-1): a resposta só vale se tem ao menos um [n], todo [n] existe nas citações, toda citação
+ * aponta para um chunk desta licitação (`chunks`, lidos do banco) e o apoio de cada uma está no texto do banco na
+ * posição informada. Senão, "não encontrei no edital": a resposta não é exibida. As citações saem só as marcadas no
+ * texto, em ordem de n, com documento, página e texto do banco; item e trecho limpo saem da posição do apoio.
  */
 export function conferirCitacoes(
   r: RespostaServicoEdital,
@@ -179,21 +192,23 @@ export function conferirCitacoes(
   if (usados === null || usados.size === 0) return null;
   const porN = new Map(r.citacoes.map((c) => [c.n, c]));
   for (const n of usados) if (!porN.has(n)) return null;
-  for (const c of r.citacoes) if (!chunks.has(c.chunk_id)) return null;
+  for (const c of r.citacoes) {
+    const chunk = chunks.get(c.chunk_id);
+    if (!chunk) return null;
+    if (chunk.texto.slice(c.apoio_inicio, c.apoio_inicio + c.apoio.length) !== c.apoio) return null;
+  }
   const citacoes = [...usados].sort((a, b) => a - b).map((n): CitacaoPergunta => {
     const c = porN.get(n)!;
     const chunk = chunks.get(c.chunk_id)!;
-    // o texto devolvido pelo serviço só serve de foco se estiver no chunk; senão, o trecho limpo sai do início do chunk
-    const t = c.texto.trim();
-    const foco = t !== "" && t !== chunk.texto.trim() && chunk.texto.includes(t) ? t : null;
     return {
       n,
       chunk_id: chunk.id,
       documento_id: chunk.documento_id,
       documento_nome: nomes.get(chunk.documento_id) ?? null,
       pagina: chunk.pagina,
-      item: itemDoTrecho(chunk.texto, foco),
-      trecho_limpo: trechoLimpo(chunk.texto, 300, foco),
+      item: itemNaPosicao(chunk.texto, c.apoio_inicio),
+      trecho_limpo: trechoLimpo(chunk.texto, 300, { inicio: c.apoio_inicio, texto: c.apoio }),
+      apoio: c.apoio,
     };
   });
   return { resposta: r.resposta, citacoes };

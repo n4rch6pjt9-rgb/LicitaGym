@@ -2,8 +2,8 @@
  * Citação legível de um trecho do edital (spec 0038, K-4): o item/cláusula ("8.4.2") e o trecho limpo (frases
  * inteiras, até ~300 caracteres), extraídos do texto do chunk no momento da resposta.
  *
- * Funções puras. Nada é inventado: sem numeração de item no início da frase (ou da linha) que contém o trecho, o item
- * é null. O trecho limpo só corta em fim de frase ou entre palavras; quando precisa cortar no meio de uma frase, marca
+ * Funções puras. Nada é inventado: o item é o último cabeçalho de item (numeração no início de uma frase ou linha)
+ * que aparece até a posição citada; sem nenhum, null. O trecho limpo só corta em fim de frase ou entre palavras; quando precisa cortar no meio de uma frase, marca
  * o corte com "…".
  */
 
@@ -68,18 +68,24 @@ function posicao(texto: string, trecho: string): number {
   return re.exec(texto)?.index ?? -1;
 }
 
-/** Item/cláusula no início da frase (ou linha) que contém a posição. null sem numeração reconhecida. */
+/**
+ * Item/cláusula vigente na posição: o último cabeçalho de item (numeração no início de uma frase ou linha) da frase
+ * que contém a posição ou de uma anterior. "8.1 … 8.2 … [posição]" → "8.2". Sem cabeçalho até ali: null.
+ */
 export function itemNaPosicao(texto: string, pos: number): string | null {
   if (pos < 0 || pos > texto.length) return null;
-  const lista = frases(texto);
-  const frase = lista.find((f) => pos < f.fim) ?? lista[lista.length - 1];
-  if (!frase) return null;
-  return RE_ITEM.exec(texto.slice(frase.inicio, frase.fim))?.[1] ?? null;
+  let item: string | null = null;
+  for (const f of frases(texto)) {
+    if (f.inicio > pos) break;
+    const cabecalho = RE_ITEM.exec(texto.slice(f.inicio, f.fim))?.[1];
+    if (cabecalho) item = cabecalho;
+  }
+  return item;
 }
 
 /**
- * Item/cláusula ("8.4.2") no início da frase ou linha do texto do chunk que contém o trecho. Sem trecho, a do início do
- * texto. Trecho que não está no texto, ou frase sem numeração: null (não se inventa).
+ * Item/cláusula ("8.4.2") vigente onde o trecho aparece no texto do chunk (itemNaPosicao). Sem trecho, o do início do
+ * texto. Trecho que não está no texto, ou nenhum cabeçalho até ali: null (não se inventa).
  */
 export function itemDoTrecho(texto: string, trecho?: string | null): string | null {
   if (typeof texto !== "string" || texto.length === 0) return null;
@@ -109,6 +115,12 @@ function semUltimaPalavra(s: string): string {
   return i <= 0 ? s : `${s.slice(0, i).replace(/[\s,;:]+$/, "")}…`;
 }
 
+/** Foco com posição exata no texto (o "apoio" do serviço, já conferido contra o texto do banco). */
+export interface FocoPosicionado {
+  inicio: number;
+  texto: string;
+}
+
 /** Corta uma frase longa entre palavras, mantendo o foco (se houver) dentro do recorte. */
 function cortarFrase(frase: string, max: number, foco: string | null): string {
   let ini = 0;
@@ -132,11 +144,11 @@ function cortarFrase(frase: string, max: number, foco: string | null): string {
 /**
  * Trecho legível: frases inteiras (até `max` caracteres), espaços colapsados, sem palavra cortada.
  *  - fragmento no início (começa em minúscula, como "nte o preenchimento") sai: o trecho começa na próxima frase ou linha;
- *  - com `foco` (o trecho citado), começa na frase que o contém;
+ *  - com `foco` (o trecho citado, ou o trecho com a posição exata), começa na frase que o contém;
  *  - última frase sem pontuação final (texto cortado na fonte) perde a última palavra e ganha "…";
  *  - frase sozinha maior que `max` é cortada entre palavras, com "…".
  */
-export function trechoLimpo(texto: string, max = MAX_PADRAO, foco?: string | null): string {
+export function trechoLimpo(texto: string, max = MAX_PADRAO, foco?: string | FocoPosicionado | null): string {
   if (typeof texto !== "string") return "";
   const lista = frases(texto);
   if (lista.length === 0) return "";
@@ -144,8 +156,9 @@ export function trechoLimpo(texto: string, max = MAX_PADRAO, foco?: string | nul
 
   const fragmento = comecaNoMeio(texto);
   let alvo = fragmento && lista.length > 1 ? 1 : 0;
+  const focoTexto = foco ? (typeof foco === "string" ? foco : foco.texto) : null;
   if (foco) {
-    const p = posicao(texto, foco);
+    const p = typeof foco === "string" ? posicao(texto, foco) : foco.inicio;
     if (p >= 0) alvo = Math.max(0, lista.findIndex((f) => p < f.fim));
   }
 
@@ -153,7 +166,7 @@ export function trechoLimpo(texto: string, max = MAX_PADRAO, foco?: string | nul
   let primeira = pedaco(lista[alvo]);
   if (alvo === 0 && fragmento) primeira = semPrimeiraPalavra(primeira);
   if (alvo === ultimaDoTexto && !terminada(primeira)) primeira = semUltimaPalavra(primeira);
-  if (primeira.length > max) return cortarFrase(primeira, max, foco ? colapsar(foco) : null);
+  if (primeira.length > max) return cortarFrase(primeira, max, focoTexto ? colapsar(focoTexto) : null);
 
   let saida = primeira;
   for (let j = alvo + 1; j < lista.length; j++) {

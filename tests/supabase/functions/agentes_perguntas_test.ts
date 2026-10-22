@@ -9,7 +9,7 @@ function pergunta(amb: ReturnType<typeof ambiente>, extra: Partial<PerguntaGrava
   const row: PerguntaGravada = {
     id: amb.perguntas.length + 1, tenant_id: 1, agente: "edital", licitacao_id: 101, pergunta: "Há amostra?",
     resposta: "Sim [1].", motivo_sem_resposta: null,
-    citacoes: [{ n: 1, chunk_id: 1, documento_id: 9, documento_nome: "Edital.pdf", pagina: 11, item: "8.4.2", trecho_limpo: "8.4.2 Amostra." }],
+    citacoes: [{ n: 1, chunk_id: 1, documento_id: 9, documento_nome: "Edital.pdf", pagina: 11, item: "8.4.2", trecho_limpo: "8.4.2 Amostra.", apoio: "Amostra" }],
     modelo: "m", versao_prompt: "v", uso: { tokens: 1 }, perguntado_por: "u-1",
     created_at: new Date(Date.UTC(2026, 9, 22, 12, 0, amb.perguntas.length)).toISOString(), favorita: false, enviada_em: null,
     enviada_por: null, ...extra,

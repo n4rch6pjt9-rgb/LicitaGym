@@ -1,6 +1,6 @@
 # 0038: Levar as rotas dos agentes ao desenho original: pergunta livre com resposta rastreável (edital, jurídico, preço)
 
-- **Status:** rascunho, com as perguntas respondidas pelo Marcelo em 22/10; falta o ok para "aprovada"
+- **Status:** aprovada (22/10, pelo Marcelo, depois das respostas às perguntas); fase 1 (print da tela) em andamento
 - **Alimenta:** spec-mãe 0032 (agentes) | é a "spec própria" que a 0035 deixou para depois ("Perguntar ao edital em texto
   livre", 0035 l.244) | módulo 3 "Agentes na tarefa" de `docs/produto/ESCOPO.md`
 - **Repositório:** os dois (backend vai ao ar antes do front)

@@ -24,8 +24,9 @@
 //
 // Links (spec 0031, decisão de 21/10): link_pncp = https://pncp.gov.br/app/editais/<cnpj>/<ano>/<sequencial>, do nº
 // de controle oficial; link_portal_oficial = o linkSistemaOrigem que o PNCP mostra ("pncp") ou, sem ele (dispensas),
-// o acompanhamento da compra no Compras.gov montado a partir do id_compra ("montado"). Sem a compra consultada no
-// PNCP, os dois são null e `motivo_sem_estimado` diz por quê.
+// o acompanhamento da compra no Compras.gov montado a partir do id_compra ("montado"). Sem a compra consultada ou
+// encontrada no PNCP, link_pncp é null e o portal vem montado do id_compra (o id é do próprio Compras.gov, não depende
+// do PNCP); `motivo_sem_estimado` diz por que não há estimado.
 // Diferença: diferenca_valor = homologado − estimado; diferenca_percentual = (homologado − estimado) / estimado × 100;
 // 2 casas, meio para longe do zero; só com estimado oficial > 0.
 //
@@ -297,9 +298,11 @@ function enriquecimentoDe(raw: Record<string, unknown>, homologado: number | nul
   const estimado = numeroOuAusente(raw.valor_unitario_estimado);
   // Estimado só de compra consultada e encontrada no PNCP (defesa em profundidade: o banco já anula o resto).
   const est = consultada && encontrada && estimado !== null && estimado > 0 ? estimado : null;
+  // Fora do PNCP (ou ainda não consultada) não há linkSistemaOrigem confiável, mas o id_compra é do Compras.gov:
+  // o acompanhamento montado continua levando à compra (origem "montado").
   const portal = consultada && encontrada
     ? linkPortalOficial(raw.link_sistema_origem, raw.id_compra)
-    : { link: null, origem: null };
+    : linkPortalOficial(null, raw.id_compra);
   const motivo = !consultada
     ? "Compra ainda não consultada no PNCP (fora do recorte de enriquecimento ou pendente)."
     : !encontrada

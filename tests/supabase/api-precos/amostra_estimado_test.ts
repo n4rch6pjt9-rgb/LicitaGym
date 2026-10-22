@@ -3,6 +3,8 @@ import { assertEquals } from "jsr:@std/assert@1";
 import { arred2, linkPncp, linkPortalOficial } from "../../../supabase/functions/api-precos/precos.ts";
 import { amostraBelem, chamar } from "./_fake.ts";
 
+const BASE_ACOMP = "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/acompanhamento-compra?compra=";
+
 Deno.test("CA-6: estimado 80800 e homologado 52000 dão diferença −28800 e −35,64%, com os dois links", async () => {
   const linha = amostraBelem({
     id_compra: "93099205000052026",
@@ -51,10 +53,26 @@ Deno.test("CA-6: caso de Belém −29,39%; sem estimado as três colunas vêm nu
     amostras: [amostraBelem({ compra_encontrada: false, valor_unitario_estimado: 3156.67 })],
   });
   assertEquals([sobra.body.itens[0].valor_estimado, sobra.body.itens[0].diferenca_percentual], [null, null]);
-  // compra não consultada ou fora do PNCP: sem links (não inventa)
-  for (const i of [naoConsultada, naoEncontrada]) {
-    assertEquals([i.link_pncp, i.link_portal_oficial, i.link_portal_oficial_origem], [null, null, null]);
-  }
+  // compra não consultada ou fora do PNCP: sem link do PNCP (não inventa), mas o portal vem montado do id_compra,
+  // que é do próprio Compras.gov
+  assertEquals(
+    [naoConsultada.link_pncp, naoConsultada.link_portal_oficial, naoConsultada.link_portal_oficial_origem],
+    [null, `${BASE_ACOMP}15316705900112026`, "montado"],
+  );
+  assertEquals(
+    [naoEncontrada.link_pncp, naoEncontrada.link_portal_oficial, naoEncontrada.link_portal_oficial_origem],
+    [null, `${BASE_ACOMP}15316705900112021`, "montado"],
+  );
+  // um linkSistemaOrigem que tenha sobrado numa compra fora do PNCP não é usado
+  const fora = await chamar("action=amostras&pdm=9634", {
+    amostras: [amostraBelem({ id_compra: "15316705900112021", compra_encontrada: false })],
+  });
+  assertEquals(fora.body.itens[0].link_portal_oficial_origem, "montado");
+  // id_compra fora do formato: sem link
+  const semId = await chamar("action=amostras&pdm=9634", {
+    amostras: [amostraBelem({ id_compra: "ZZTESTE", compra_consultada: false, compra_encontrada: null })],
+  });
+  assertEquals([semId.body.itens[0].link_portal_oficial, semId.body.itens[0].link_portal_oficial_origem], [null, null]);
 });
 
 Deno.test("CA-6b: link do portal é o do PNCP quando existe; sem ele, montado do id_compra", async () => {

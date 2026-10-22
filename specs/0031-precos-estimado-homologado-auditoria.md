@@ -135,7 +135,8 @@ A coleta de preços não roda desde 03/10 (18 dias em 21/10). A conferir pelo Ma
      (25% do recorte em 21/10, todas dispensas), **montado** a partir do `id_compra` no formato que o PNCP usa para as
      dispensas com link
      (`https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/acompanhamento-compra?compra=<id_compra>`),
-     com `link_portal_oficial_origem = "montado"` (decisão de 21/10);
+     com `link_portal_oficial_origem = "montado"` (decisão de 21/10). Compra ainda não consultada ou não encontrada no
+     PNCP também recebe o portal montado do `id_compra` (o id é do Compras.gov); `link_pncp` fica `null` (decisão de 22/10);
    - os campos já gravados e hoje descartados: município, esfera (F Federal, E Estadual, M Municipal), poder
      (E Executivo, L Legislativo), modalidade, forma (SISPP/SISRP), critério de julgamento e
      `percentual_maior_desconto`;
@@ -273,6 +274,7 @@ A coleta de preços não roda desde 03/10 (18 dias em 21/10). A conferir pelo Ma
 - 21/10: a faixa de 0,4× a 2,5× a mediana com mínimo de 5 preços vale como regra de produto (para o agente de preço).
 - 21/10: não existe orçamento sigiloso depois de homologado: a /precos não mostra campo nem selo de sigilo.
 - 21/10: o link do portal oficial é o que o PNCP mostra (`linkSistemaOrigem`); sem ele (dispensas), o link do Compras.gov é montado a partir do `id_compra`, com selo "montado".
+- 22/10: compra ainda não consultada ou fora do PNCP também ganha o link do portal montado a partir do `id_compra` (selo "montado"); o link do PNCP continua só com a compra encontrada no PNCP.
 - 21/10: "fora do perfil" não entra na /precos; o operador limpa o recorte pelos filtros.
 - 21/10: filtros: objeto da contratação, PDM, item, 12 e 24 meses, UF, cidade, UASG e busca livre por palavras. O HAR da pesquisa do Licitar Digital é referência de formato, não regra.
 - 21/10: navegação: a /precos leva ao BI.

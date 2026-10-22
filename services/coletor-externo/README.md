@@ -348,7 +348,7 @@ python3 -m coletor.buscar "Por que a Freedom Motors recorreu e qual foi a decis�
   fornecedores, decisão, motivos, fundamentos legais, valores, pontos-chave) e um trecho-resumo.
 - Embeddings: `text-multilingual-embedding-002` (lotes de até 30 trechos, 1 chamada a cada 12,5 s), 768 dimensões, `RETRIEVAL_DOCUMENT` (consulta usa `RETRIEVAL_QUERY`).
   Cada chunk grava o modelo em `licitacao_chunks.embedding_model` (padrão da coluna: o mesmo modelo).
-- `GEN_MODEL` (padrão `gemini-2.5-flash`) e `GOOGLE_CLOUD_LOCATION` (padrão `us-central1`) são configuráveis. O embedding do RAG permanece `text-multilingual-embedding-002` com 768 dimensões; trocar o modelo exige um plano de reindex aprovado. Não apontar `EMBED_MODEL` para outro modelo sem esse plano.
+- `GEN_MODEL` (padrão `gemini-3.8-flash`, desde 22/10/2026: o `gemini-2.5-flash` foi descontinuado), `GEN_LOCATION` (padrão `global`, endpoint do 3.8 Flash) e `GEN_THINKING` (padrão deduzido do modelo: `low` no Gemini 3+, `off` no 2.5-flash; aceita `off`, `low`, `medium`, `high` ou `padrao`) são configuráveis. O embedding usa `GOOGLE_CLOUD_LOCATION` (padrão `us-central1`), separado da geração. O embedding do RAG permanece `text-multilingual-embedding-002` com 768 dimensões; trocar o modelo exige um plano de reindex aprovado. Não apontar `EMBED_MODEL` para outro modelo sem esse plano.
 
 **Cota do Vertex (projeto novo):** o modelo de embeddings começa com **5 requisições/min**
 por região. O indexador já respeita isso (`EMBED_INTERVALO=12.5`). Para acelerar, peça aumento em

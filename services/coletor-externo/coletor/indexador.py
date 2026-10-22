@@ -154,7 +154,15 @@ def indexar_grupo(sb: Supabase, ia, docs: list[dict], lic: dict, com_extracao: b
     extracao = {}
     if com_extracao:
         log.info("    %s: %s caracteres -> ficha com Gemini", nome[:60], len(texto_total))
-        extracao = ia.extrair_campos(texto_total, nome, secao, processo, rotulo_fonte(lic))
+        try:
+            extracao = ia.extrair_campos(texto_total, nome, secao, processo, rotulo_fonte(lic))
+        except ia_mod.FichaIndisponivel as e:
+            # A ficha (tipo e resumo) é enriquecimento; os trechos são o que os agentes leem. Prazo estourado ou JSON
+            # inválido do modelo não podem impedir a indexação (licitação 3558, 19/10: 5 tentativas de 504 e o
+            # documento nunca foi indexado). Cota, 5xx e erro de configuração não chegam aqui: sobem, e o pedido
+            # volta para a fila (ou falha à vista, no caso de 4xx).
+            log.warning("    %s: ficha indisponível (%s); indexando só os trechos", nome[:60], e.categoria)
+            extracao = {"ficha": "indisponivel", "ficha_erro": e.categoria}
     tipo = extracao.get("tipo_documento") or secao
     fornecedor = f" — {doc['fornecedor_nome']}" if doc.get("fornecedor_nome") else ""
     cabecalho = f"{rotulo_fonte(lic)} {processo} — {tipo.replace('_', ' ').upper()}{fornecedor} — {nome}"
@@ -204,6 +212,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="reindexa também o que já foi indexado (ex.: após trocar EMBED_MODEL)")
     ap.add_argument("--reprocessar-ocr", action="store_true",
                     help="refaz também os 'ignorado' por OCR_DEGENERADO ou OCR_REQUIRED (ex.: após mudar OCR_MAX_TOKENS ou o limiar)")
+    ap.add_argument("--reprocessar-ficha", action="store_true",
+                    help="refaz também os 'indexado' com a ficha indisponível (prazo ou JSON inválido); regera os trechos")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     for ruidoso in ("httpx", "google_genai", "google_genai.models"):
@@ -222,6 +232,10 @@ def main(argv: list[str] | None = None) -> int:
         docs += sb.selecionar("licitacao_documentos", status_processamento="eq.ignorado",
                               sha256="not.is.null", storage_uri="not.is.null",
                               **{"or": f"(erro.like.{OCR_DEGENERADO}*,erro.like.{OCR_REQUIRED}*)"},
+                              order="id", select=campos)
+    if args.reprocessar_ficha and not args.refazer:   # --refazer já traz os indexados
+        docs += sb.selecionar("licitacao_documentos", status_processamento="eq.indexado", sha256="not.is.null",
+                              storage_uri="not.is.null", **{"extracao->>ficha": "eq.indisponivel"},
                               order="id", select=campos)
     lics = {l["id"]: l for l in sb.selecionar("licitacoes_externas", select="id,numero_processo,numero_edital,fonte,entidade,orgao_nome")}
 

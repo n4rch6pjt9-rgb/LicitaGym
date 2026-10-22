@@ -32,6 +32,7 @@ import sys
 from datetime import datetime, timezone
 
 from .destino import Armazenamento, Supabase, env, parece_html, sha256
+from .ia import erro_de_configuracao
 from .indexador import escolher_canonico, indexar_grupo
 from .pncp import (
     PNCP, _compra_slug, _data, _falha_definitiva, _marcar_documentos_removidos, amparo_legal_detalhe,
@@ -196,7 +197,9 @@ def _indexar(sb, ia_factory, lic: dict) -> int:
         try:
             r = indexar_grupo(sb, ia, grupo, lic, True)
         except Exception as e:
-            if transitoria(e):
+            # Gemini sem o modelo ou sem permissão (troca para o 3.8 no endpoint global, 22/10): falha a etapa, à vista
+            # no card, em vez de marcar todos os documentos como erro e concluir "sem documento".
+            if transitoria(e) or erro_de_configuracao(e):
                 raise
             log.warning("  ERRO na indexação | %s | %s", (d0.get("nome_original") or "")[:60], str(e)[:200])
             for d in grupo:

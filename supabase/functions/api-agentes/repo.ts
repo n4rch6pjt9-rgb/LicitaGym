@@ -12,6 +12,7 @@ import {
 } from "../_shared/agentes/preco.ts";
 import { lerTenantDoUsuario, type TenantResolvido } from "../_shared/tenant.ts";
 import { type PortalOficial, resolverPortalOficial } from "../_shared/portal-oficial.ts";
+import type { CitacaoPergunta, MotivoSemResposta } from "./perguntas.ts";
 
 export interface Dossie {
   licitacao: { id: number; payload_hash: string | null; data_abertura: string | null };
@@ -88,6 +89,52 @@ export interface Preparacao {
   atualizado_em: string | null;
 }
 
+/** Pergunta livre ao agente (spec 0038, K-5), como sai da api-agentes. `uso` (tokens) fica só no banco. */
+export interface Pergunta {
+  id: number;
+  agente: Agente;
+  /** null: pergunta sem licitação (jurídico avulso). */
+  licitacao_id: number | null;
+  pergunta: string;
+  resposta: string | null;
+  motivo_sem_resposta: MotivoSemResposta | null;
+  citacoes: CitacaoPergunta[];
+  modelo: string | null;
+  versao_prompt: string | null;
+  perguntado_por: string;
+  created_at: string;
+  favorita: boolean;
+  /** K-11: enviada para a oportunidade como nota (sem revisão, sem virar achado). */
+  enviada_em: string | null;
+  enviada_por: string | null;
+}
+
+export interface NovaPergunta {
+  agente: Agente;
+  licitacao_id: number | null;
+  pergunta: string;
+  resposta: string | null;
+  motivo_sem_resposta: MotivoSemResposta | null;
+  citacoes: CitacaoPergunta[];
+  modelo: string | null;
+  versao_prompt: string | null;
+  uso: Record<string, unknown> | null;
+}
+
+export interface FiltroPerguntas {
+  agente: Agente | null;
+  licitacao_id: number | null;
+  somente_enviadas: boolean;
+}
+
+/** Mesmos filtros da agente_chunks_licitacao (migration 20261022130000). */
+const NIVEIS_FORA = "(suspeito,bloqueado,parte_interessada)";
+const MODELO_EMBEDDING = "text-multilingual-embedding-002";
+
+/** Colunas que saem (lista fixa, sem `uso`). */
+const COLUNAS_PERGUNTA =
+  "id,agente,licitacao_id,pergunta,resposta,motivo_sem_resposta,citacoes,modelo,versao_prompt,perguntado_por,created_at,favorita,enviada_em,enviada_por";
+
 const STATUS_DOCUMENTO = new Set(["pendente", "baixado", "extraido", "indexado", "erro", "ignorado"]);
 
 /** R-3: categoria fixa do erro gravado pelo coletor/indexador. Texto sem padrão conhecido vira "outro". */
@@ -157,6 +204,28 @@ export interface AgentesRepo {
     nota: string | null,
     userId: string,
   ): Promise<Execucao | null>;
+  // --- Spec 0038: pergunta livre (K-1, K-5, K-11) -----------------------------------------------------------------
+  /** Reserva atômica de uma pergunta na cota do dia (agente_cota_reservar): usadas depois da reserva; null = cheia. */
+  reservarCota(tenant: number, dia: string, limite: number): Promise<number | null>;
+  /** Devolve a vaga (agente_cota_devolver), só quando o serviço nem foi chamado. */
+  devolverCota(tenant: number, dia: string): Promise<void>;
+  /** Perguntas que já gastaram a cota do dia (0 sem linha). */
+  cotaUsada(tenant: number, dia: string): Promise<number>;
+  /**
+   * Chunks que agente_chunks_licitacao pode devolver (mesmos filtros: seção 'processo', com vetor do modelo do
+   * indexador, fora suspeito/bloqueado/parte interessada). 0: "sem_documentos" (CA-3).
+   */
+  contarChunksIndexados(licitacaoId: number): Promise<number>;
+  /** Chunks citáveis da licitação (seção 'processo', mesma confiança da RPC) entre os ids pedidos; de outra licitação não volta. */
+  chunksDaLicitacao(licitacaoId: number, ids: number[]): Promise<ChunkEdital[]>;
+  gravarPergunta(tenant: number, userId: string, p: NovaPergunta): Promise<Pergunta>;
+  /** Mais recentes primeiro; com `somente_enviadas`, as notas enviadas para a oportunidade. */
+  listarPerguntas(tenant: number, filtro: FiltroPerguntas, limite: number, deslocamento: number): Promise<{ itens: Pergunta[]; total: number }>;
+  obterPergunta(tenant: number, id: number): Promise<Pergunta | null>;
+  /** null: a pergunta não é da empresa. */
+  favoritarPergunta(tenant: number, id: number, favorita: boolean): Promise<Pergunta | null>;
+  /** Marca o envio só se ainda não foi enviada; null se outra chamada enviou antes (409). */
+  enviarPergunta(tenant: number, id: number, userId: string): Promise<Pergunta | null>;
 }
 
 const AGENTES: Agente[] = ["edital", "preco", "juridico"];
@@ -182,6 +251,25 @@ function comoExecucao(row: Record<string, unknown>): Execucao {
     enviada_por: (row.enviada_por as string | null) ?? null,
     tarefa_id: row.tarefa_id == null ? null : Number(row.tarefa_id),
     revisoes_anteriores: Array.isArray(row.revisoes_anteriores) ? row.revisoes_anteriores as Execucao["revisoes_anteriores"] : [],
+  };
+}
+
+function comoPergunta(row: Record<string, unknown>): Pergunta {
+  return {
+    id: Number(row.id),
+    agente: row.agente as Agente,
+    licitacao_id: row.licitacao_id == null ? null : Number(row.licitacao_id),
+    pergunta: String(row.pergunta),
+    resposta: (row.resposta as string | null) ?? null,
+    motivo_sem_resposta: (row.motivo_sem_resposta as MotivoSemResposta | null) ?? null,
+    citacoes: Array.isArray(row.citacoes) ? row.citacoes as CitacaoPergunta[] : [],
+    modelo: (row.modelo as string | null) ?? null,
+    versao_prompt: (row.versao_prompt as string | null) ?? null,
+    perguntado_por: String(row.perguntado_por),
+    created_at: String(row.created_at),
+    favorita: row.favorita === true,
+    enviada_em: (row.enviada_em as string | null) ?? null,
+    enviada_por: (row.enviada_por as string | null) ?? null,
   };
 }
 
@@ -528,6 +616,105 @@ export function createSupabaseRepo(client: SupabaseClient): AgentesRepo {
         .maybeSingle();
       if (error) throw new Error(error.message);
       return data ? comoExecucao(data as Record<string, unknown>) : null;
+    },
+
+    async reservarCota(tenant, dia, limite) {
+      const { data, error } = await client.rpc("agente_cota_reservar", { p_tenant: tenant, p_dia: dia, p_limite: limite });
+      if (error) throw new Error(error.message);
+      return data == null ? null : Number(data);
+    },
+
+    async devolverCota(tenant, dia) {
+      const { error } = await client.rpc("agente_cota_devolver", { p_tenant: tenant, p_dia: dia });
+      if (error) throw new Error(error.message);
+    },
+
+    async cotaUsada(tenant, dia) {
+      const { data, error } = await client.from("agente_cota_dia").select("usadas")
+        .eq("tenant_id", tenant).eq("dia", dia).maybeSingle();
+      if (error) throw new Error(error.message);
+      return data ? Number((data as { usadas: unknown }).usadas) : 0;
+    },
+
+    async contarChunksIndexados(licitacaoId) {
+      const { count, error } = await client
+        .from("licitacao_chunks")
+        .select("id", { count: "exact", head: true })
+        .eq("licitacao_id", licitacaoId)
+        .eq("secao", "processo")
+        .not("embedding", "is", null)
+        .not("nivel_confianca", "in", NIVEIS_FORA)
+        .or(`embedding_model.is.null,embedding_model.eq.${MODELO_EMBEDDING}`);
+      if (error) throw new Error(error.message);
+      if (count === null) throw new Error("contagem de licitacao_chunks indisponível");
+      return count;
+    },
+
+    async chunksDaLicitacao(licitacaoId, ids) {
+      if (ids.length === 0) return [];
+      const { data, error } = await client
+        .from("licitacao_chunks")
+        .select("id,documento_id,pagina,texto")
+        .eq("licitacao_id", licitacaoId)
+        .eq("secao", "processo")
+        .not("nivel_confianca", "in", NIVEIS_FORA)
+        .in("id", ids);
+      if (error) throw new Error(error.message);
+      return ((data ?? []) as Array<Record<string, unknown>>).map((c) => ({
+        id: Number(c.id),
+        documento_id: Number(c.documento_id),
+        pagina: c.pagina == null ? null : Number(c.pagina),
+        texto: String(c.texto ?? ""),
+      }));
+    },
+
+    async gravarPergunta(tenant, userId, p) {
+      const { data, error } = await client
+        .from("agente_perguntas")
+        .insert({ tenant_id: tenant, perguntado_por: userId, ...p })
+        .select(COLUNAS_PERGUNTA)
+        .single();
+      if (error) throw new Error(error.message);
+      return comoPergunta(data as unknown as Record<string, unknown>);
+    },
+
+    async listarPerguntas(tenant, filtro, limite, deslocamento) {
+      let q = client.from("agente_perguntas").select(COLUNAS_PERGUNTA, { count: "exact" }).eq("tenant_id", tenant);
+      if (filtro.agente) q = q.eq("agente", filtro.agente);
+      if (filtro.licitacao_id !== null) q = q.eq("licitacao_id", filtro.licitacao_id);
+      if (filtro.somente_enviadas) q = q.not("enviada_em", "is", null).order("enviada_em", { ascending: false });
+      const { data, error, count } = await q
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
+        .range(deslocamento, deslocamento + limite - 1);
+      if (error) throw new Error(error.message);
+      return {
+        itens: ((data ?? []) as unknown as Array<Record<string, unknown>>).map(comoPergunta),
+        total: count ?? 0,
+      };
+    },
+
+    async obterPergunta(tenant, id) {
+      const { data, error } = await client.from("agente_perguntas").select(COLUNAS_PERGUNTA)
+        .eq("tenant_id", tenant).eq("id", id).maybeSingle();
+      if (error) throw new Error(error.message);
+      return data ? comoPergunta(data as unknown as Record<string, unknown>) : null;
+    },
+
+    async favoritarPergunta(tenant, id, favorita) {
+      const { data, error } = await client.from("agente_perguntas").update({ favorita })
+        .eq("tenant_id", tenant).eq("id", id).select(COLUNAS_PERGUNTA).maybeSingle();
+      if (error) throw new Error(error.message);
+      return data ? comoPergunta(data as unknown as Record<string, unknown>) : null;
+    },
+
+    async enviarPergunta(tenant, id, userId) {
+      const { data, error } = await client.from("agente_perguntas")
+        .update({ enviada_em: new Date().toISOString(), enviada_por: userId })
+        .eq("tenant_id", tenant).eq("id", id).is("enviada_em", null)
+        .select(COLUNAS_PERGUNTA).maybeSingle();
+      if (error) throw new Error(error.message);
+      return data ? comoPergunta(data as unknown as Record<string, unknown>) : null;
     },
   };
 }

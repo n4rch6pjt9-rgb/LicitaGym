@@ -64,9 +64,9 @@ https://claude.ai/artifact/SDP2jXTmBxKkPjdbWLpmHa, e o PDF do edital da 2430 (62
 | K-4 | `api-dashboard-oportunidades` `action=get`, nas três formas de busca (`id`, `codigo_externo` e órgão + processo; em `items[]`, campo por entrada) | a licitação | Campos novos e opcionais: `fonte_itens` com cinco valores: `compras_gov` (encontrada), `pncp` (portal não é o Compras.gov.br), `nao_consultada`, `nao_encontrada` e `indisponivel` (último erro ou falha de leitura). Também `itens_consultado_em` e `grupos`: `[{numero_grupo, itens_pncp: [numero_item_pncp], itens_sem_numero_pncp, valor_estimado_total, itens_sem_estimado, criterio_julgamento, tipo_beneficio}]`, ou `null` quando nenhum item tem grupo. Total do grupo = soma de `round(quantidade × unitário, 2)` (meio para cima, em centavos), `null` se algum item não tem estimado ou é sigiloso. Certame misto: itens sem grupo saem num grupo `numero_grupo: null`. O front casa os itens do `acompanhamento` (PNCP) por `numero_item_pncp` | falha de leitura vira `indisponivel`, nunca `grupos: []` | qualquer usuário autenticado, como o `get` de hoje (`requireUserAuth`) |
 | K-5 | `api-pipeline` `action=pipeline_adicionar` (novo campo opcional `escopos: [{licitacao_id, grupos?: int[], itens?: int[]}]`) e `action=pipeline_escopo_salvar` `{licitacao_id, grupos?, itens?}` | Validação contra K-1 (ou contra os itens do PNCP quando não há K-1). Lote atômico: um escopo inválido recusa a chamada inteira. Se a licitação já estiver no pipeline, `pipeline_adicionar` não muda o escopo; para mudar, `pipeline_escopo_salvar` | escopo em K-2 e evento em `pipeline_historico` com `escopo` | 400: grupo ou item inexistente, ou `grupos` em certame sem grupo. 404: `pipeline_escopo_salvar` em licitação fora do pipeline do tenant de quem chama (o escopo de outro tenant fica intacto). 403: conta sem vínculo, como hoje | membro do tenant |
 | K-6 | `api-agentes` `analise_executar` | escopo de K-2 do tenant (sem linha = todos os itens) | aderência, preço e `catmat.divergente` só sobre os itens do escopo; os achados de edital continuam do documento inteiro; achado de item traz `numero_item_pncp` e `numero_grupo` | — | admin e operação do tenant |
-| K-7 | Agente de Edital, regras novas (`REGRA_VERSAO` sobe) | trechos indexados, itens de K-1 (ou do PNCP) e `catmat_itens`. O código do item vem de K-1 (`cod_item_catalogo`), depois de `licitacao_itens.catalogo_codigo_item`. Sem nenhum dos dois, a regra lê o código na tabela do TR (natureza `inferencia`, com o trecho). O vocabulário de tipo de aparelho vai versionado no repositório, em `supabase/functions/_shared/agentes/vocabulario-aparelhos.ts`, derivado do `dicionario-aparelhos-v0.1` | Achados novos: `participacao.exclusiva_me_epp` (fato quando vem do `tipo_beneficio_nome` de K-1; inferência quando vem do texto), `exigencia.registro_conselho`, `exigencia.atestado_limite_tempo`, `exigencia.laudo_norma`, `exigencia.indices_contabeis`, `exigencia.garantia_pecas` e `catmat.divergente` (um por item). O `prazo.impugnacao` passa a usar a data da sessão lida no edital e continua `natureza: "analise"`, com o trecho como fonte. Ajuste: `exigencia.laudo_certificacao` deixa de casar com cláusula ambiental | sem data da sessão no texto: nenhum `prazo.impugnacao` | — |
+| K-7 | Agente de Edital, regras novas (`REGRA_VERSAO` sobe) | trechos indexados, itens de K-1 (ou do PNCP) e `catmat_itens`. O código do item vem de K-1 (`cod_item_catalogo`), depois de `licitacao_itens.catalogo_codigo_item`. Sem nenhum dos dois, a regra lê o código na tabela do TR (natureza `inferencia`, com o trecho). O vocabulário de tipo de aparelho vai versionado no repositório, em `supabase/functions/_shared/agentes/vocabulario-aparelhos.ts`, derivado do `dicionario-aparelhos-v0.1` | Achados novos: `participacao.exclusiva_me_epp` (fato quando vem do `tipo_beneficio_nome` de K-1; inferência quando vem do texto), `exigencia.registro_conselho`, `exigencia.atestado_limite_tempo`, `exigencia.laudo_norma`, `exigencia.indices_contabeis`, `exigencia.garantia_pecas`, `catmat.divergente` (um por item) e `julgamento.criterio_divergente` (critério do edital × `criterio_julgamento_nome` de K-1, com o trecho; o edital prevalece). O `prazo.impugnacao` passa a usar a data da sessão lida no edital e continua `natureza: "analise"`, com o trecho como fonte. Ajuste: `exigencia.laudo_certificacao` deixa de casar com cláusula ambiental | sem data da sessão no texto: nenhum `prazo.impugnacao` | — |
 | K-8 | Agente Jurídico, mapa novo em `MAPA_SINAL_DISPOSITIVO` | sinais de K-7 | `exigencia.atestado_limite_tempo` → art. 67, peça `impugnacao`; `exigencia.registro_conselho` → art. 67, `pedido_esclarecimento`; `exigencia.laudo_norma` → art. 42, `nenhuma`; `exigencia.indices_contabeis` → art. 69, `nenhuma`; `participacao.exclusiva_me_epp` → art. 4º, `nenhuma`; `catmat.divergente` → art. 164, `pedido_esclarecimento`. `exigencia.garantia_pecas` fica sem artigo (achado só informativo do edital). Como hoje, um achado jurídico por código, com as fontes de todos os itens divergentes | dispositivo ausente em `norma_dispositivos` sai em `dispositivos_ausentes`, como hoje | — |
-| K-9 | Dashboard: detalhe e "Enviar para pipeline" | K-4 e K-5 | itens agrupados por grupo, com subtotal (ou "total parcial" ou "sigiloso"), critério, benefício e a fonte ("Compras.gov.br" ou "PNCP, alternativa"). Estados explícitos para não consultada, não encontrada e indisponível. O envio pede o grupo (ou os itens, quando o julgamento é por item). Sem item: estado vazio, nunca item de demonstração | erro de K-4 mostra estado de erro | membro do tenant |
+| K-9 | Dashboard: detalhe e "Enviar para pipeline" | K-4 e K-5 | itens agrupados por grupo, com subtotal (ou "total parcial" ou "sigiloso"), critério, benefício e a fonte ("Compras.gov.br" ou "PNCP, alternativa"). Estados explícitos para não consultada, não encontrada e indisponível. O envio pede a unidade do julgamento do edital (decisão 1): grupo, item ou a licitação inteira. Sem item: estado vazio, nunca item de demonstração | erro de K-4 mostra estado de erro | membro do tenant |
 
 ## Critérios de aceite
 
@@ -83,6 +83,7 @@ Os textos públicos da 2430 usados nos testes ficam em `tests/supabase/fixtures/
 | CA-7 | K-7 | **Regressão:** **dado** a cláusula 4.1.5 da 2430 (Inmetro, sustentabilidade), **quando** o agente roda, **então** `exigencia.laudo_certificacao` não cita esse trecho. **Dado** a data da sessão na p. 1, **então** sai `prazo.impugnacao` (`natureza: "analise"`) com a data limite e o trecho. **Dado** um edital sem data da sessão, **então** não sai `prazo.impugnacao` | Deno `tests/supabase/functions/agentes_edital_test.ts` |
 | CA-8 | K-7, K-8 | **Dado** os itens da 2430 com os códigos 480144, 636444, 478756, 480143, 480139, 480248, 442720 e 473444 e as descrições de `catmat_itens`, **quando** a regra `catmat.divergente` roda, **então** marca os itens 3, 4 e 7 e não marca os itens 2 e 6. Cada achado traz o texto do TR, a descrição do código e o termo que diverge. O jurídico gera um único achado com as fontes dos três itens | Deno `tests/supabase/functions/agentes_edital_test.ts` |
 | CA-9 | K-9 | **Dado** a resposta de `get` da 2430 com grupos, **quando** o detalhe abre no modo `supabase`, **então** mostra os itens em 2 grupos com subtotal e a fonte, e o "Enviar para pipeline" oferece os grupos. Com `fonte_itens = indisponivel`, mostra o estado de erro. Com `items` vazio, mostra estado vazio e nenhum texto dos itens de demonstração | vitest `src/test/detalhe-grupos.test.tsx` + `src/test/detalhe-sem-mock.test.tsx` (Dashboard) |
+| CA-10 | K-5, K-7, K-9 | **Dado** um edital que diz "julgamento por item" e K-1 com `criterio_julgamento_nome` de grupo, **quando** o agente roda, **então** sai `julgamento.criterio_divergente` com o trecho e a página, e o "Enviar para pipeline" oferece itens. Com edital e K-1 dizendo grupo (a 2430), oferece grupos e não sai o achado | Deno `tests/supabase/functions/agentes_edital_test.ts` + vitest `src/test/detalhe-grupos.test.tsx` (Dashboard) |
 
 ## Skills e agentes por contrato
 
@@ -128,12 +129,27 @@ Os textos públicos da 2430 usados nos testes ficam em `tests/supabase/fixtures/
   vai participar. Quando o portal é o Compras.gov.br, o dado vem de lá.
 - 22/10/2026: a spec junta os grupos e as lacunas do agente de Edital achadas na leitura da 2430.
 
-## Perguntas em aberto
+- 22/10/2026, respostas às perguntas da spec:
+  1. A unidade da escolha no pipeline segue o que o edital diz sobre o julgamento: por grupo, escolhe grupo; por item,
+     escolhe item; global, a licitação inteira. O critério vem do `criterio_julgamento_nome` de K-1 e é conferido no
+     texto do edital (K-7). Se os dois divergem, prevalece o edital e sai o achado `julgamento.criterio_divergente`.
+     Sem nenhum dos dois, a tela não presume: oferece grupo quando há grupo, senão item, com "todos" como padrão.
+  2. O escopo pode mudar depois da entrada no pipeline, com evento no histórico (`pipeline_escopo_salvar`).
+  3. Os achados de edital continuam sobre o documento inteiro, sem filtro por grupo.
+  4. O formato da tela (K-9) é aprovado por print antes da implementação do front.
+  5. A fixture do CA-1 é gravada pelo Marcelo com o comando do runbook abaixo.
 
-1. Certame julgado por item, sem grupo: a escolha no pipeline é por item? Recomendo que sim, com "todos" como padrão.
-2. Trocar o escopo depois de entrar no pipeline: pode, com evento no histórico? Recomendo que sim.
-3. Achado de edital (documento inteiro) também deve ser filtrado por grupo quando o trecho cita o item? Recomendo que
-   não nesta spec: só aderência, preço e `catmat.divergente` seguem o escopo.
-4. Formato da tela (K-9): você aprova por print antes da implementação, como na 0035?
-5. Rede: o Job no Cloud Run já chama `dadosabertos.compras.gov.br` para preço. Este ambiente não alcança o host, então a
-   fixture do CA-1 precisa ser gravada por você ou pelo Job.
+## Fixture do CA-1 (resposta real da 2.1)
+
+Rodar na raiz do repositório, numa máquina que alcance `dadosabertos.compras.gov.br`:
+
+```bash
+mkdir -p services/coletor-externo/tests/fixtures
+curl -sS --fail --max-time 60 -G \
+  "https://dadosabertos.compras.gov.br/modulo-contratacoes/2.1_consultarItensContratacoes_PNCP_14133_Id" \
+  --data-urlencode "tipo=numeroControlePNCPCompra" \
+  --data-urlencode "codigo=46377800000127-1-004311/2026" \
+  -o services/coletor-externo/tests/fixtures/compras_2_1_compra_2430.json
+```
+
+Se voltar vazio, a alternativa é `tipo=idCompra` com `codigo=18017805000292026` (o `compra=` do link da 2430).

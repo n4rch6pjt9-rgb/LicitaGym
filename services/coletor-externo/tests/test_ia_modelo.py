@@ -83,6 +83,8 @@ def test_gen_thinking_invalido_falha_a_vista(monkeypatch):
     g = _gemini(monkeypatch, pensamento="minimal")   # o 3.8 Flash recusa minimal: melhor falhar aqui que no Vertex
     with pytest.raises(ValueError, match="GEN_THINKING"):
         g._config()
+    with pytest.raises(ValueError, match="GEN_THINKING"):
+        IA.Gemini(project="p")   # ao criar o cliente, antes de qualquer documento
 
 
 def test_resposta_do_rag_usa_o_pensamento_padrao_do_modelo(monkeypatch):

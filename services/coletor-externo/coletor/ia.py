@@ -70,6 +70,18 @@ def pensamento_padrao(modelo: str) -> str:
     return "padrao"        # 2.5-pro recusa thinking_budget=0
 
 
+NIVEIS_PENSAMENTO = ("off", "low", "medium", "high", "padrao")
+
+
+def nivel_pensamento() -> str:
+    """GEN_THINKING validado (ou o padrão do modelo). Valor inválido é erro de configuração do deploy: falha ao criar
+    o cliente, antes de tocar documento, para a etapa cair à vista em vez de marcar cada documento como erro."""
+    nivel = GEN_THINKING or pensamento_padrao(GEN_MODEL)
+    if nivel not in NIVEIS_PENSAMENTO:
+        raise ValueError(f"GEN_THINKING inválido: {nivel!r} (use {', '.join(NIVEIS_PENSAMENTO)})")
+    return nivel
+
+
 class FichaIndisponivel(Exception):
     """Falha definitiva da ficha do documento: o indexador segue só com os trechos. `categoria` é o que fica gravado
     em extracao.ficha_erro (sem a mensagem do SDK, que pode trazer texto do modelo)."""
@@ -127,6 +139,7 @@ class Gemini:
     def __init__(self, project: str | None = None, location: str | None = None, gen_location: str | None = None):
         from google import genai
         from google.genai import types
+        nivel_pensamento()   # GEN_THINKING inválido falha aqui, fora do laço dos documentos
         self.types = types
         projeto = project or os.environ.get("GOOGLE_CLOUD_PROJECT")
         local_embed = location or os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
@@ -152,15 +165,13 @@ class Gemini:
         """GenerateContentConfig com o pensamento de GEN_THINKING (OCR e ficha) ou o padrão do modelo (resposta do RAG),
         e sem temperature no Gemini 3+ (descontinuada no 3.8: o guia de migração manda remover temperature, top_p e
         top_k)."""
-        nivel = (GEN_THINKING or pensamento_padrao(GEN_MODEL)) if pensamento_minimo else "padrao"
+        nivel = nivel_pensamento() if pensamento_minimo else "padrao"
         if nivel == "off":
             pensamento = self.types.ThinkingConfig(thinking_budget=0)
-        elif nivel in ("low", "medium", "high"):
-            pensamento = self.types.ThinkingConfig(thinking_level=nivel.upper())
         elif nivel == "padrao":
             pensamento = None
         else:
-            raise ValueError(f"GEN_THINKING inválido: {nivel!r} (use off, low, medium, high ou padrao)")
+            pensamento = self.types.ThinkingConfig(thinking_level=nivel.upper())
         if temperatura is not None and not gemini_3_ou_mais(GEN_MODEL):
             kw["temperature"] = temperatura
         return self.types.GenerateContentConfig(thinking_config=pensamento, **kw)

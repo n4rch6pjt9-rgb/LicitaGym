@@ -406,3 +406,15 @@ def test_gemini_sem_modelo_ou_permissao_falha_a_etapa_sem_marcar_documentos(monk
     fim = concluiu(sb)
     assert fim["p_resultado"] is None and fim["p_erro"] == f"indexação: HTTP {codigo}"
     assert sb.t["licitacao_documentos"][0]["status_processamento"] == "baixado"
+
+
+def test_gen_thinking_invalido_falha_a_etapa_sem_marcar_documentos(monkeypatch):
+    from coletor import ia as IA
+    monkeypatch.setattr(IA, "GEN_THINKING", "minimal")
+    monkeypatch.setattr(PT, "indexar_grupo", lambda *a: pytest.fail("não devia indexar"))
+    sb = SbFalso([lic_pncp(fonte="sestsenat")], [_doc_baixado(1, "a")],
+                 rpc_respostas={"fila_preparacao_reivindicar": [PEDIDO]})
+    PT.consumir(PncpFalso(), sb, None, lambda: IA.Gemini(project="p"))
+    fim = concluiu(sb)
+    assert fim["p_resultado"] is None and fim["p_erro"].startswith("indexação:")
+    assert sb.t["licitacao_documentos"][0]["status_processamento"] == "baixado"

@@ -152,4 +152,11 @@ curl -sS --fail --max-time 60 -G \
   -o services/coletor-externo/tests/fixtures/compras_2_1_compra_2430.json
 ```
 
+No Windows (PowerShell):
+
+```powershell
+New-Item -ItemType Directory -Force services\coletor-externo\tests\fixtures | Out-Null
+curl.exe -sS --fail --max-time 60 -o services\coletor-externo\tests\fixtures\compras_2_1_compra_2430.json "https://dadosabertos.compras.gov.br/modulo-contratacoes/2.1_consultarItensContratacoes_PNCP_14133_Id?tipo=numeroControlePNCPCompra&codigo=46377800000127-1-004311%2F2026"
+```
+
 Se voltar vazio, a alternativa é `tipo=idCompra` com `codigo=18017805000292026` (o `compra=` do link da 2430).

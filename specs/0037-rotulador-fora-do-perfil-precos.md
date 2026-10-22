@@ -1,11 +1,12 @@
 # 0037: Rotular "fora do perfil" nos preços homologados com modelo de IA e conferência humana por amostra
 
-- **Status:** rascunho
+- **Status:** rascunho, com as perguntas respondidas pelo Marcelo em 22/10; falta o ok para "aprovada"
 - **Alimenta:** spec-mãe 0032, fase 3 (referência praticada do agente de preço usa a marcação "fora do perfil" da
   0031) | módulo 9 "Preços e BI" de `docs/produto/ESCOPO.md`
-- **Repositório:** LicitaGym (rótulo, tabela, `api-precos`); Dashboard só se a pergunta 1 for respondida com "sim"
+- **Repositório:** os dois (backend vai ao ar antes do front): LicitaGym (rótulo, tabela, `api-precos`) e Dashboard
+  (selo e botão "Ocultar fora do perfil" na /precos e no PDF)
 - **Issue:** nenhuma (conversa com o Marcelo de 22/10 sobre o HAR do Pregão 5/2026 da UASG 930992)
-- **Área:** coletor | migrations | edge-functions
+- **Área:** coletor | migrations | edge-functions | dashboard-contrato | dashboard-tela
 - **Depende do ok do Marcelo:** sim (migration nova, decisão de produto, custo de modelo, dado de produção)
 
 ## Leitura obrigatória antes de implementar
@@ -53,7 +54,8 @@ recorte avisa isso.
 transportadora de resíduos cadastrada como esteira ergométrica.
 
 **Não** é fora do perfil:
-- O mesmo produto comprado por comprador de outro ramo: hospital, fisioterapia, quartel, escola, presídio.
+- O mesmo produto comprado por comprador de outro ramo: hospital, fisioterapia, quartel, escola, presídio
+  (confirmado pelo Marcelo em 22/10: "pode acontecer").
 - O preço alto ou baixo sozinho. Isso é o "confira" da tela, que já existe.
 - Item de academia ao ar livre ou fora do escopo comercial. Isso é escopo, assunto do `coletor/escopo.py`.
 
@@ -65,7 +67,9 @@ transportadora de resíduos cadastrada como esteira ergométrica.
 | K-2 | Coletor `python -m coletor.main --coleta perfil-precos [--pdms ...] [--limite N] [--dry-run] [--refazer]` | pares compra × item sem rótulo, ou com `hash_entrada` diferente do atual, ou todos com `--refazer` | grava K-1; log com contagem por rótulo, tokens de entrada e saída e custo estimado; `--dry-run` não grava nada | resposta fora do JSON esperado depois de `FICHA_TENTATIVAS`: o par fica sem rótulo e conta como `erros` (nunca vira `incerto` inventado); erro de configuração do Vertex encerra com código ≠ 0 | desenvolvedor / Cloud Run Job |
 | K-3 | Prompt do rotulador (`coletor/perfil_precos.py`, `VERSAO_PROMPT`) | **uma chamada por compra**, com o `objeto_compra`, o nome da UASG e, por item: código e nome do PDM, código e `descricao_item` CATMAT, `descricao_detalhada_item`, marca, unidade, preço unitário e a mediana do mesmo PDM + unidade em 12 meses (só como sinal). **Sem** fornecedor, CNPJ ou CPF | JSON `{"itens":[{"numero_item_compra":int,"rotulo":...,"motivo":str,"sinais":[...]}]}`, validado contra schema; temperatura 0 | item da resposta que não existe na entrada é descartado e logado | rotulador |
 | K-4 | `api-precos` `action=amostras` (aditivo) | igual a hoje | por amostra: `perfil: {rotulo, motivo, revisao} \| null` (`null` = ainda não rotulado) | iguais aos de hoje | usuário autenticado |
-| K-5 | `api-precos` `action=resumo` (aditivo) | igual a hoje | `n_fora_do_perfil` e `n_perfil_incerto` no recorte. **Não** mudam média, mediana nem percentis (só a resposta à pergunta 1 muda isso) | iguais aos de hoje | usuário autenticado |
+| K-5 | `api-precos`, parâmetro novo `perfil` nas quatro ações (aditivo) | `perfil=todos` (padrão, igual a hoje) ou `perfil=sem_fora` | `resumo` traz sempre `n_fora_do_perfil` e `n_perfil_incerto` do recorte **com** todos. Com `sem_fora`, as linhas `fora_do_perfil` (pelo `rotulo_revisado` quando houver, senão pelo `rotulo`) saem de **todas** as contas do recorte: n, média, mediana, percentis, mín–máx, unidades, item com mais amostras, diferença estimado → homologado, amostras, itens e cidades. `incerto` e não rotulado continuam | 400 `perfil inválido: use todos ou sem_fora` | usuário autenticado |
+| K-7 | /precos (Dashboard) | rótulo por amostra (K-4) e `n_fora_do_perfil` (K-5) | selo "fora do perfil?" na linha e no cartão da amostra, com o motivo no `title` e por extenso no cartão; botão **"Ocultar fora do perfil (N)"** junto dos filtros, só quando N > 0, desligado por padrão; ligado grava `perfil=sem_fora` na URL, entra nos chips de filtros aplicados e refaz resumo, amostras, itens e cidades com as métricas recalculadas | o erro da API aparece como hoje | usuário autenticado |
+| K-8 | Relatório PDF da /precos | recorte com `perfil` | no quadro "Recorte": "Fora do perfil: N ocultados" ou "Fora do perfil: N mostrados (não ocultados)"; com `sem_fora`, as estatísticas do PDF são as recalculadas; a metodologia explica o rótulo (modelo, conferência por amostra) | — | usuário autenticado |
 | K-6 | Referência praticada do agente de preço (0032 fase 3) | amostras do item/PDM + unidade | exclui `fora_do_perfil` da referência e mostra no achado quantas saíram e o motivo de cada uma | — | agente de preço |
 
 Por que uma chamada por compra: o objeto e o comprador são da compra. São 6.659 chamadas para a base inteira, e as
@@ -93,7 +97,7 @@ próximas rodadas só rotulam o que é novo ou mudou (`hash_entrada` = SHA-256 d
 
 1. Sortear 30 pares: os 10 `fora_do_perfil` de maior preço, 10 `incerto` e 10 `no_perfil` aleatórios, e acrescentar
    os casos do gabarito (CA-6).
-2. O Marcelo confere cada um. A decisão dele é gravada em `revisao`/`rotulo_revisado`.
+2. O Marcelo confere cada um aqui na conversa. A decisão dele é gravada em `revisao`/`rotulo_revisado`.
 3. **Critério para seguir:** no máximo 1 erro entre os 10 `fora_do_perfil` (alarme falso), nenhum erro nos casos do
    gabarito e no máximo 3 erros nos 30.
 4. Se não passar, ajustar o prompt (`VERSAO_PROMPT` sobe), rodar `--refazer` e conferir uma amostra nova.
@@ -102,7 +106,10 @@ próximas rodadas só rotulam o que é novo ou mudou (`hash_entrada` = SHA-256 d
 
 1. Implementar K-4 e K-5 na `api-precos`.
 2. Implementar K-6 no agente de preço da 0032.
-3. A /precos só muda se a pergunta 1 for respondida com "sim". Pela decisão de 21/10, a tela não marca linha sozinha.
+
+### Fase 4: Dashboard (depois do backend no ar)
+
+K-7 e K-8. O padrão mostra tudo, como hoje: nada some sem o operador clicar em "Ocultar fora do perfil".
 
 ### Depois desta spec (não entra aqui)
 
@@ -122,7 +129,11 @@ K-means, que não aponta anomalia (decisão de 22/10).
 | CA-7 | K-3 | **Dado** uma amostra de fornecedor pessoa física, **quando** o prompt é montado, **então** não contém nome, CPF nem CNPJ do fornecedor. | pytest (mesmo arquivo) |
 | CA-8 | K-2 | **Dado** `--dry-run`, **quando** roda, **então** não grava nada e o log traz a contagem por rótulo, os tokens e o custo estimado. | pytest (mesmo arquivo) |
 | CA-9 | K-4 | **Dado** uma amostra com rótulo e outra sem, **quando** `action=amostras`, **então** a primeira traz `perfil.rotulo` e `perfil.motivo`, e a segunda `perfil: null`; o resto da resposta não muda. | Deno `tests/supabase/api-precos/perfil_test.ts` |
-| CA-10 | K-5 | **Dado** um recorte com 1 `fora_do_perfil` e 1 `incerto`, **quando** `action=resumo`, **então** vêm `n_fora_do_perfil=1` e `n_perfil_incerto=1`, e mediana, média e percentis são **iguais** aos de antes da spec. | Deno (mesmo arquivo) |
+| CA-10 | K-5 | **Dado** um recorte com 1 `fora_do_perfil` e 1 `incerto`, **quando** `action=resumo` sem `perfil`, **então** vêm `n_fora_do_perfil=1` e `n_perfil_incerto=1`, e mediana, média e percentis são **iguais** aos de antes da spec. | Deno (mesmo arquivo) |
+| CA-10b | K-5 | **Dado** o PDM 7115 com a compra-âncora rotulada `fora_do_perfil`, **quando** `action=resumo&perfil=sem_fora`, **então** `n` cai 2, a mediana e o p75 são os das linhas restantes, e `n_fora_do_perfil` continua 2; `action=amostras&perfil=sem_fora` não traz os itens 10 e 11; uma linha `fora_do_perfil` com `rotulo_revisado='no_perfil'` **continua** no cálculo. | Deno (mesmo arquivo) + SQL `supabase/tests/precos_rotulo_perfil_check.sql` |
+| CA-10c | K-5 | **Dado** `perfil=nada`, **quando** qualquer ação, **então** 400 com a mensagem do contrato. | Deno (mesmo arquivo) |
+| CA-12 | K-7 | **Dado** o resumo com `n_fora_do_perfil=2`, **quando** a /precos abre, **então** aparece o botão "Ocultar fora do perfil (2)" desligado e a amostra rotulada mostra o selo com o motivo; **quando** o botão é clicado, **então** a URL ganha `perfil=sem_fora`, surge o chip do filtro e o resumo e as amostras são pedidos de novo com `perfil: 'sem_fora'`; **dado** N=0, **então** o botão não aparece. | vitest `src/test/precos-perfil.test.tsx` (Dashboard) |
+| CA-13 | K-8 | **Dado** o recorte com `perfil=sem_fora` e 2 ocultados, **quando** o PDF é gerado, **então** o quadro "Recorte" traz "Fora do perfil: 2 ocultados" e as estatísticas são as recalculadas. | vitest `src/test/precos-pdf.test.ts` (Dashboard) |
 | CA-11 | K-6 | **Dado** a referência do PDM 7115 com a compra-âncora rotulada `fora_do_perfil`, **quando** o agente de preço calcula, **então** os dois preços saem da referência e o achado cita "2 preços fora do perfil" com o motivo. | Deno do agente de preço (arquivo definido na 0032 fase 3) |
 
 ## Skills e agentes por contrato
@@ -133,10 +144,12 @@ K-means, que não aponta anomalia (decisão de 22/10).
 | K-2, K-3 | `/spec` | `/implement` (TDD) | pytest + `--avaliar` | `revisor-codigo` | `verificar-producao` |
 | K-4, K-5 | `/spec` | `/implement` | Deno | `revisor-codigo` + `revisor-seguranca` | `verificar-producao` |
 | K-6 | 0032 fase 3 | `/implement` | Deno | `revisor-codigo` | `verificar-producao` |
+| K-7, K-8 | `/spec` | agente `frontend-dashboard` | vitest | `revisor-codigo` + `revisor-seguranca` + agente `ux-ui-licitagym` | `run-dashboard` (claro, escuro, celular) antes; `deploy-dashboard` depois |
 
 ## Fora de escopo
 
-- Excluir sozinho qualquer preço da /precos ou do PDF (decisão de 21/10). A pergunta 1 decide se a tela mostra o rótulo.
+- Ocultar por padrão: o padrão mostra tudo, e só o botão do operador oculta (decisão de 22/10, que mantém o espírito
+  da decisão de 21/10 de nada sair sozinho).
 - K-means, HDBSCAN e embeddings (ficam para os `incerto`, em spec própria).
 - Rotular propostas não homologadas ou coletar o portal de acompanhamento: os endpoints públicos exigem token de
   hCaptcha por chamada, e o captcha não é contornado.
@@ -149,13 +162,15 @@ K-means, que não aponta anomalia (decisão de 22/10).
 - **Tabelas/views/funções tocadas:**
   - `precos_rotulo_perfil` (nova): o coletor escreve; a `api-precos` lê.
   - `precos_praticados_itens`: só leitura, nada muda.
-  - As funções `precos_praticados_amostras`/`_resumo` ganham o join no rótulo para K-4 e K-5. São
-    `create or replace`, e o retorno é aditivo.
+  - As funções do recorte (`precos_praticados_recorte`, `_amostras`, `_resumo`, `_itens_pdm`, `_municipios`) ganham
+    o parâmetro `p_perfil` (padrão `'todos'`) e o join no rótulo. São `create or replace`, com retorno aditivo; as
+    assinaturas antigas continuam respondendo igual.
 - **ACL/RLS:** tabela nova só com `service_role`.
 - **Backfill/reprocessamento:** sim. Fase 0 em dry-run (50 compras, com custo projetado no PR); backfill das 6.659
   compras só com o ok do Marcelo.
 - **Edge Functions republicadas no merge:** `api-precos`, e todas as demais pelo workflow.
-- **Contrato com o Dashboard:** aditivo (`perfil` por amostra; contagens no resumo). Nada quebra no front atual.
+- **Contrato com o Dashboard:** aditivo (`perfil` por amostra, contagens no resumo, parâmetro `perfil`). Nada quebra no
+  front atual; o PR do Dashboard (K-7, K-8) vai depois do backend no ar.
 - **Dado oficial x derivado:** preço, item CATMAT, objeto, marca e UASG são oficiais. O rótulo, o motivo e os sinais
   são derivados por modelo, guardados com modelo, versão do prompt e data, e conferidos por amostra.
 
@@ -163,16 +178,14 @@ K-means, que não aponta anomalia (decisão de 22/10).
 
 - 22/10: o rótulo é gerado por modelo e conferido por amostra (cerca de 30 casos), em vez de rotular 100 à mão.
 - 22/10: K-means fica fora (não aponta anomalia). Agrupamento por densidade e embeddings ficam para os casos `incerto`.
-- 21/10 (0031, vale aqui): "fora do perfil" não exclui nem marca linha sozinho na /precos; o operador limpa o recorte
-  pelos filtros.
+- 22/10: a /precos e o PDF mostram o rótulo e têm o botão "Ocultar fora do perfil", que recalcula as métricas. Isso
+  revê a decisão de 21/10 (0031) de não marcar linha na /precos; continua valendo que nada some sem o operador.
+- 22/10: a conferência da amostra da fase 2 é feita na conversa (eu mostro os casos, o Marcelo responde), sem tela de
+  admin.
+- 22/10: comprador de saúde, fisioterapia, quartel ou presídio comprando o mesmo produto é no perfil.
+- 22/10: o modelo roda no Vertex AI do projeto GCP do LicitaGym, com os créditos do Marcelo (como o coletor já faz,
+  `coletor/ia.py`). Não há teto fixo em reais; a fase 0 mede o consumo e o PR mostra a projeção antes do backfill.
 
 ## Perguntas em aberto
 
-1. A /precos e o PDF devem **mostrar** o rótulo (selo "fora do perfil? confira", com o motivo) e oferecer o filtro
-   "ocultar fora do perfil", desligado por padrão? Isso revê a decisão de 21/10. Se "sim", entra uma fase 4 no
-   Dashboard.
-2. Por onde você confere a amostra da fase 2: uma consulta que eu te mostro aqui na conversa e você responde, ou uma
-   tela de admin? A tela é mais trabalho e só vale se a conferência for recorrente.
-3. Confirma que comprador de saúde, fisioterapia, quartel ou presídio comprando o mesmo produto é **no perfil**? A
-   definição acima assume que sim.
-4. Teto de custo para o backfill: um valor em reais acima do qual eu paro e te pergunto, depois de medir na fase 0.
+Nenhuma. As quatro perguntas do rascunho foram respondidas em 22/10 (ver Decisões).

@@ -104,10 +104,10 @@ def test_nucleo_basta_so_no_modo_nucleo():
 class _SBItens:
     """Fake do PostgREST: rpc/catmat_itens_mapa (codigo_item, codigo_pdm), catmat_itens (codigo_item,
     descricao_item) e catalogo_itens (codigo_catmat texto, descricao). `linhas`: {codigo_item, codigo_pdm, descricao};
-    `espelho`: códigos cujo texto só está em catalogo_itens."""
-    def __init__(self, linhas, erro=None, espelho=(), sem_texto=()):
+    `espelho`: códigos cujo texto só está em catalogo_itens; `so_mapa`: só em catmat_item_pdm (codigo_item, descricao)."""
+    def __init__(self, linhas, erro=None, espelho=(), sem_texto=(), so_mapa=()):
         self.linhas, self.erro, self.chamadas = linhas, erro, []
-        self.espelho, self.sem_texto = set(espelho), set(sem_texto)
+        self.espelho, self.sem_texto, self.so_mapa = set(espelho), set(sem_texto), set(so_mapa)
 
     @staticmethod
     def _em(v):
@@ -124,7 +124,11 @@ class _SBItens:
                    if ln[chave] in self._em(f[chave])]
         elif tabela == "catmat_itens":
             sel = [{"codigo_item": ln["codigo_item"], "descricao_item": ln["descricao"]} for ln in com_texto
-                   if ln["codigo_item"] in self._em(f["codigo_item"]) and ln["codigo_item"] not in self.espelho]
+                   if ln["codigo_item"] in self._em(f["codigo_item"])
+                   and ln["codigo_item"] not in self.espelho | self.so_mapa]
+        elif tabela == "catmat_item_pdm":
+            sel = [{"codigo_item": ln["codigo_item"], "descricao": ln["descricao"]} for ln in com_texto
+                   if ln["codigo_item"] in self._em(f["codigo_item"]) and ln["codigo_item"] in self.so_mapa]
         elif tabela == "catalogo_itens":
             sel = [{"codigo_catmat": str(ln["codigo_item"]), "descricao": ln["descricao"]} for ln in com_texto
                    if ln["codigo_item"] in self._em(f["codigo_catmat"]) and ln["codigo_item"] in self.espelho]
@@ -160,6 +164,27 @@ def test_texto_do_espelho_quando_falta_em_catmat_itens_e_avulsos_pela_rpc():
     assert [f["codigo_catmat"] for t, f in sb.chamadas if t == "catalogo_itens"] == ["in.(2)", "in.(2)"]
     anc = A.carregar_ancoras(sb, {4405, 1400}, {7})
     assert anc.casar("Corda de pular 3 m") and anc.casar("Piso de borracha sintética 20 mm")
+
+
+def test_pdm_incluido_pelo_dashboard_tem_texto_so_em_catmat_item_pdm():
+    """Regressão de 22/10/2026: PDMs incluídos pelo Dashboard depois da carga de catmat_itens (17469 ESTANTE HALTERES,
+    17468 ESTANTE ANILHAS) só tinham texto em catmat_item_pdm, e o coletor PNCP abortava os três modos."""
+    linhas = [{"codigo_item": 1, "codigo_pdm": 4405, "descricao": "CANELEIRA, PESO: 1 KG"},
+              {"codigo_item": 480100, "codigo_pdm": 17469,
+               "descricao": "ESTANTE HALTERES, MATERIAL: AÇO CARBONO , CAPACIDADE: 17 PARES , APLICAÇÃO: GUARDAR HALTERES"},
+              {"codigo_item": 2, "codigo_pdm": 1400, "descricao": "CORDA DE PULAR, MATERIAL: PVC"}]
+    sb = _SBItens(linhas, espelho={2}, so_mapa={480100})
+    out = {it["codigo_item"]: it for it in A.ler_itens_catalogo(sb, [4405, 1400, 17469])}
+    assert out[480100]["descricao"].startswith("ESTANTE HALTERES")
+    # ordem das fontes: catmat_item_pdm só é consultado para quem faltou nas duas primeiras
+    tabelas = [t for t, _ in sb.chamadas if t != "rpc/catmat_itens_mapa"]
+    assert tabelas.index("catmat_item_pdm") > tabelas.index("catalogo_itens") > tabelas.index("catmat_itens")
+    assert {f["codigo_item"] for t, f in sb.chamadas if t == "catmat_item_pdm"} == {"in.(480100)"}
+    anc = A.carregar_ancoras(sb, {4405, 1400, 17469})
+    assert anc.casar("Estante para halteres em aço carbono")
+    # sem texto em nenhuma das três fontes, continua falhando fechado
+    with pytest.raises(A.AncorasIndisponiveis, match="17469"):
+        A.carregar_ancoras(_SBItens(linhas, espelho={2}, so_mapa={480100}, sem_texto={480100}), {4405, 1400, 17469})
 
 
 def test_pagina_maior_que_100_ou_sem_fim_falha_fechado(monkeypatch):

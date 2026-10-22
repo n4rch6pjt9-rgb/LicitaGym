@@ -23,9 +23,23 @@ Deno.test("itemDoTrecho: numerações reais de edital", () => {
   assertEquals(itemDoTrecho("Texto anterior. 8.4.2. É obrigatória a visita técnica.", "visita"), "8.4.2");
 });
 
+Deno.test("itemNaPosicao: vale o último cabeçalho de item até a posição", () => {
+  // a frase seguinte continua dentro do item 8.4.2
+  assertEquals(itemDoTrecho(OCR, "agendada pelo telefone"), "8.4.2");
+  // antes do primeiro cabeçalho não há item
+  assertEquals(itemDoTrecho(OCR, "preenchimento do formulário"), null);
+  const texto = "8.1 Proposta pelo sistema. Validade de 60 dias.\n8.2 Amostra em 5 dias. Avaliação pela comissão.";
+  assertEquals(itemNaPosicao(texto, texto.indexOf("Validade")), "8.1");
+  assertEquals(itemNaPosicao(texto, texto.indexOf("Avaliação")), "8.2");
+});
+
+Deno.test("trechoLimpo: foco com posição exata começa na frase do apoio, mesmo com o texto repetido antes", () => {
+  const texto = "8.1 Amostra no prazo. Outra frase.\n8.2 Amostra no prazo de 5 dias. Fim.";
+  const inicio = texto.lastIndexOf("Amostra no prazo");
+  assertEquals(trechoLimpo(texto, 300, { inicio, texto: "Amostra no prazo" }), "8.2 Amostra no prazo de 5 dias. Fim.");
+});
+
 Deno.test("itemDoTrecho: não inventa item", () => {
-  // frase sem numeração no início
-  assertEquals(itemDoTrecho(OCR, "agendada pelo telefone"), null);
   // data, valor e número de lei não são item
   assertEquals(itemDoTrecho("21.10.2026 às 9h, sessão pública."), null);
   assertEquals(itemDoTrecho("1.500,00 é o valor estimado."), null);

@@ -83,6 +83,13 @@ def chamar(porta, metodo="POST", rota=S.ROTA_PERGUNTAR, corpo=None, segredo=SEGR
         return e.code, json.loads(e.read())
 
 
+def resp(resposta, **apoio):
+    """JSON do modelo: resposta e apoio por n (chaves a1, a2... -> "1", "2"...)."""
+    return json.dumps({"resposta": resposta, "apoio": {k[1:]: v for k, v in apoio.items()}}, ensure_ascii=False)
+
+
+PRAZO_OK = resp("O prazo é de 30 dias [2].", a2="O prazo de entrega é de 30 dias corridos")
+
 PERGUNTA = {"licitacao_id": 42, "pergunta": "Precisa de visita técnica?", "k": 5}
 
 
@@ -138,7 +145,7 @@ def test_sem_chunks_nao_encontrado_sem_chamar_o_modelo(servico):
     status, corpo = chamar(porta, corpo=PERGUNTA)
     assert status == 200
     assert corpo == {"resposta": None, "motivo_sem_resposta": "nao_encontrado", "citacoes": [],
-                     "modelo": "gemini-falso", "versao_prompt": "0038.1",
+                     "modelo": "gemini-falso", "versao_prompt": "0038.2",
                      "uso": {"entrada": 0, "saida": 0, "pensamento": 0}}
     assert modelo.chamadas == []
     funcao, params = deps.sb.chamadas[0]
@@ -154,17 +161,22 @@ def test_k_padrao_8(servico):
 
 
 def test_resposta_valida_devolve_so_os_trechos_citados(servico):
-    modelo = modelo_falso('{"resposta": "A garantia é de 12 meses [3]. A visita técnica é obrigatória [1]."}')
+    # apoio com espaços e maiúsculas diferentes do chunk: a citação devolve o trecho original, não o do modelo
+    modelo = modelo_falso(resp("A garantia é de 12 meses [3]. A visita técnica é obrigatória [1].",
+                               a1="é  OBRIGATÓRIA a realização de visita técnica",
+                               a3="A garantia mínima é de 12 meses"))
     porta, _ = servico(modelo=modelo)
     status, corpo = chamar(porta, corpo=PERGUNTA)
     assert status == 200
     assert corpo["resposta"] == "A garantia é de 12 meses [3]. A visita técnica é obrigatória [1]."
     assert corpo["motivo_sem_resposta"] is None
     assert corpo["citacoes"] == [
-        {"n": 1, "chunk_id": 101, "documento_id": 7, "pagina": 3, "texto": CHUNKS[0]["texto"]},
-        {"n": 3, "chunk_id": 103, "documento_id": 9, "pagina": None, "texto": CHUNKS[2]["texto"]},
+        {"n": 1, "chunk_id": 101, "documento_id": 7, "pagina": 3, "texto": CHUNKS[0]["texto"],
+         "apoio": "É obrigatória a realização de visita técnica", "apoio_inicio": 6},
+        {"n": 3, "chunk_id": 103, "documento_id": 9, "pagina": None, "texto": CHUNKS[2]["texto"],
+         "apoio": "A garantia mínima é de 12 meses", "apoio_inicio": 0},
     ]
-    assert corpo["modelo"] == "gemini-falso" and corpo["versao_prompt"] == "0038.1"
+    assert corpo["modelo"] == "gemini-falso" and corpo["versao_prompt"] == "0038.2"
     assert corpo["uso"] == {"entrada": 100, "saida": 20, "pensamento": 5}
     # trechos numerados no prompt, na ordem da RPC, e a pergunta delimitada
     prompt = modelo.chamadas[0]
@@ -200,7 +212,7 @@ def test_modelo_diz_null(servico):
 
 
 def test_json_invalido_repete_uma_vez_e_aproveita_a_segunda(servico):
-    modelo = modelo_falso("isto não é json", '{"resposta": "O prazo é de 30 dias [2]."}')
+    modelo = modelo_falso("isto não é json", PRAZO_OK)
     porta, _ = servico(modelo=modelo)
     corpo = chamar(porta, corpo=PERGUNTA)[1]
     assert len(modelo.chamadas) == 2
@@ -208,20 +220,68 @@ def test_json_invalido_repete_uma_vez_e_aproveita_a_segunda(servico):
     assert corpo["uso"] == {"entrada": 200, "saida": 40, "pensamento": 10}
 
 
-def test_json_invalido_duas_vezes_vira_nao_encontrado(servico):
-    modelo = modelo_falso("isto não é json", '{"outra": 1}', '{"resposta": "nunca [1]"}')
+def test_json_invalido_duas_vezes_502(servico):
+    modelo = modelo_falso("isto não é json", '{"outra": 1}', PRAZO_OK)
     porta, _ = servico(modelo=modelo)
     status, corpo = chamar(porta, corpo=PERGUNTA)
-    assert status == 200 and corpo["resposta"] is None and corpo["motivo_sem_resposta"] == "nao_encontrado"
+    assert status == 502 and corpo == {"error": "resposta do modelo fora do formato"}
     assert len(modelo.chamadas) == 2
 
 
-def test_resposta_cortada_nao_se_repete(servico):
+def test_apoio_em_formato_invalido_502(servico):
+    modelo = modelo_falso('{"resposta": "O prazo é de 30 dias [2].", "apoio": ["frase"]}')
+    porta, _ = servico(modelo=modelo)
+    assert chamar(porta, corpo=PERGUNTA) == (502, {"error": "resposta do modelo fora do formato"})
+    assert len(modelo.chamadas) == 2
+
+
+def test_resposta_cortada_502_sem_nova_tentativa(servico):
     modelo = modelo_falso('{"resposta": "O prazo é de 30 di', cortada=True)
     porta, _ = servico(modelo=modelo)
+    status, corpo = chamar(porta, corpo=PERGUNTA)
+    assert status == 502 and corpo == {"error": "resposta do modelo cortada no limite de tokens"}
+    assert len(modelo.chamadas) == 1
+
+
+@pytest.mark.parametrize("apoio", [
+    "O prazo de entrega é de 45 dias corridos",   # inventado: não está no trecho
+    "30 dias corridos",                            # está no trecho, mas tem 16 caracteres (< 20)
+    "",
+])
+def test_apoio_inventado_ou_curto_vira_nao_encontrado(servico, apoio):
+    porta, _ = servico(modelo=modelo_falso(resp("O prazo é de 30 dias [2].", a2=apoio)))
+    status, corpo = chamar(porta, corpo=PERGUNTA)
+    assert status == 200 and corpo["resposta"] is None and corpo["motivo_sem_resposta"] == "nao_encontrado"
+    assert corpo["citacoes"] == []
+
+
+def test_apoio_com_exatamente_20_caracteres_vale(servico):
+    apoio = "é de 30 dias corrido"
+    assert len(apoio) == 20
+    porta, _ = servico(modelo=modelo_falso(resp("O prazo é de 30 dias [2].", a2=apoio)))
+    cit = chamar(porta, corpo=PERGUNTA)[1]["citacoes"]
+    assert cit[0]["apoio"] == apoio and cit[0]["apoio_inicio"] == CHUNKS[1]["texto"].index(apoio)
+
+
+def test_apoio_de_outro_trecho_vira_nao_encontrado(servico):
+    """A frase existe, mas no trecho 1, não no 2 citado."""
+    porta, _ = servico(modelo=modelo_falso(resp("O prazo é de 30 dias [2].",
+                                                a2="É obrigatória a realização de visita técnica")))
+    assert chamar(porta, corpo=PERGUNTA)[1]["motivo_sem_resposta"] == "nao_encontrado"
+
+
+def test_uma_citacao_sem_apoio_derruba_a_resposta(servico):
+    porta, _ = servico(modelo=modelo_falso(resp("O prazo é de 30 dias [2]. A garantia é de 12 meses [3].",
+                                                a2="O prazo de entrega é de 30 dias corridos")))
     corpo = chamar(porta, corpo=PERGUNTA)[1]
     assert corpo["resposta"] is None and corpo["motivo_sem_resposta"] == "nao_encontrado"
-    assert len(modelo.chamadas) == 1
+
+
+def test_localizar_apoio_recupera_o_original():
+    texto = "Item 8.4.2:  É obrigatória\n a realização de VISITA técnica."
+    assert S.localizar_apoio("é obrigatória a realização de visita técnica.", texto) == (
+        13, "É obrigatória\n a realização de VISITA técnica.")
+    assert S.localizar_apoio("é obrigatória a realização", "sem nada") is None
 
 
 def test_falha_do_supabase_502_sem_vazar_detalhe(servico):
@@ -259,7 +319,7 @@ def test_rpc_em_formato_inesperado_502(servico):
 
 def test_log_sem_segredo_e_pergunta_truncada(servico, caplog):
     caplog.set_level("INFO", logger="coletor.perguntas_servico")
-    porta, _ = servico(modelo=modelo_falso('{"resposta": "O prazo é de 30 dias [2]."}'))
+    porta, _ = servico(modelo=modelo_falso(PRAZO_OK))
     chamar(porta, corpo={"licitacao_id": 42, "pergunta": "q" * 500})
     linhas = [r.getMessage() for r in caplog.records if "chunks" in r.getMessage()]
     assert len(linhas) == 1
@@ -281,7 +341,7 @@ class ErroVertex(Exception):
 def test_vertex_transitorio_repete_uma_vez_com_espera_curta(servico, monkeypatch):
     esperas = []
     monkeypatch.setattr(S, "_dormir", esperas.append)
-    respostas = [ErroVertex(503), ('{"resposta": "O prazo é de 30 dias [2]."}', {"entrada": 1})]
+    respostas = [ErroVertex(503), (PRAZO_OK, {"entrada": 1})]
 
     def modelo(prompt, t):
         r = respostas.pop(0)

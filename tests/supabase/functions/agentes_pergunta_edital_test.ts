@@ -14,12 +14,15 @@ const AMOSTRA =
   "nte o preenchimento da proposta. 8.4.2 A licitante classificada em primeiro lugar deverá apresentar amostra do " +
   "equipamento em até 5 dias úteis. A amostra será avaliada pela comissão.";
 const PERGUNTA = "Há exigência de amostra?";
+const PRAZO = "9.1 O prazo de entrega é de 30 dias.";
+/** Citação do serviço: o chunk inteiro em `texto` e o recorte que apoia a afirmação, com a posição. */
+const apoio = (texto: string, trecho: string) => ({ texto, apoio: trecho, apoio_inicio: texto.indexOf(trecho) });
 
 function respostaServico(extra: Record<string, unknown> = {}) {
   return {
     resposta: "Sim. O edital exige amostra do equipamento em até 5 dias úteis [1].",
     motivo_sem_resposta: null,
-    citacoes: [{ n: 1, chunk_id: 1, documento_id: 9, pagina: 11, texto: "deverá apresentar amostra do equipamento" }],
+    citacoes: [{ n: 1, chunk_id: 1, documento_id: 9, pagina: 11, ...apoio(AMOSTRA, "deverá apresentar amostra do equipamento") }],
     modelo: "gemini-2.5-flash",
     versao_prompt: "edital-2026-10-22.1",
     uso: { tokens_entrada: 1800, tokens_saida: 120 },
@@ -46,7 +49,7 @@ Deno.test("CA-1: resposta cita [n] só com chunks da licitação, com documento,
   const amb = comEdital();
   // o serviço erra documento e página: valem os do banco
   const { c, chamadas } = contexto(amb, respostaServico({
-    citacoes: [{ n: 1, chunk_id: 1, documento_id: 555, pagina: 3, texto: "deverá apresentar amostra do equipamento" }],
+    citacoes: [{ n: 1, chunk_id: 1, documento_id: 555, pagina: 3, ...apoio(AMOSTRA, "deverá apresentar amostra do equipamento") }],
   }));
   const r = await chamar(c, { action: "pergunta_edital", licitacao_id: 101, pergunta: `  ${PERGUNTA}  ` });
   assertEquals(r.status, 200);
@@ -63,6 +66,7 @@ Deno.test("CA-1: resposta cita [n] só com chunks da licitação, com documento,
     trecho_limpo:
       "8.4.2 A licitante classificada em primeiro lugar deverá apresentar amostra do equipamento em até 5 dias úteis. " +
       "A amostra será avaliada pela comissão.",
+    apoio: "deverá apresentar amostra do equipamento",
   }]);
   assertEquals(r.json.cota, { usadas: 1, limite: 50 });
   const [gravada] = amb.perguntas;
@@ -91,9 +95,9 @@ Deno.test("CA-2: [7] que não foi entregue ao modelo vira nao_encontrado, sem re
 
 Deno.test("K-1: citação de chunk de outra licitação, resposta sem [n] ou nao_encontrado do serviço: nao_encontrado", async () => {
   const casos: Array<Record<string, unknown>> = [
-    { citacoes: [{ n: 1, chunk_id: 999, documento_id: 9, pagina: 11, texto: "x" }] },
+    { citacoes: [{ n: 1, chunk_id: 999, documento_id: 9, pagina: 11, texto: "x", apoio: "x", apoio_inicio: 0 }] },
     // citação não marcada, mas de outra licitação: a resposta inteira cai
-    { citacoes: [respostaServico().citacoes[0], { n: 2, chunk_id: 999, documento_id: 9, pagina: 1, texto: "x" }] },
+    { citacoes: [respostaServico().citacoes[0], { n: 2, chunk_id: 999, documento_id: 9, pagina: 1, texto: "x", apoio: "x", apoio_inicio: 0 }] },
     { resposta: "Sim, o edital exige amostra." },
     { resposta: null, motivo_sem_resposta: "nao_encontrado", citacoes: [] },
   ];
@@ -108,13 +112,13 @@ Deno.test("K-1: citação de chunk de outra licitação, resposta sem [n] ou nao
 
 Deno.test("K-1: só as citações marcadas no texto saem, em ordem de n", async () => {
   const amb = comEdital();
-  amb.dossie.chunks.push({ id: 2, documento_id: 9, pagina: 15, texto: "9.1 O prazo de entrega é de 30 dias." });
+  amb.dossie.chunks.push({ id: 2, documento_id: 9, pagina: 15, texto: PRAZO });
   const { c } = contexto(amb, respostaServico({
     resposta: "Prazo de 30 dias [2] e amostra [1].",
     citacoes: [
-      { n: 2, chunk_id: 2, documento_id: 9, pagina: 15, texto: "prazo de entrega" },
-      { n: 1, chunk_id: 1, documento_id: 9, pagina: 11, texto: "amostra" },
-      { n: 3, chunk_id: 2, documento_id: 9, pagina: 15, texto: "não citado" },
+      { n: 2, chunk_id: 2, documento_id: 9, pagina: 15, ...apoio(PRAZO, "prazo de entrega") },
+      { n: 1, chunk_id: 1, documento_id: 9, pagina: 11, ...apoio(AMOSTRA, "amostra do") },
+      { n: 3, chunk_id: 2, documento_id: 9, pagina: 15, ...apoio(PRAZO, "30 dias") },
     ],
   }));
   const r = await chamar(c, { action: "pergunta_edital", licitacao_id: 101, pergunta: PERGUNTA });
@@ -208,7 +212,12 @@ Deno.test("K-1: serviço sem configuração, 503; serviço falhando ou fora do c
     respostaServico({ modelo: undefined }),
     respostaServico({ uso: null }),
     respostaServico({ citacoes: [respostaServico().citacoes[0], respostaServico().citacoes[0]] }), // n repetido
-    respostaServico({ citacoes: [{ n: 1, chunk_id: "1", documento_id: 9, pagina: 11, texto: "x" }] }),
+    respostaServico({ citacoes: [{ n: 1, chunk_id: "1", documento_id: 9, pagina: 11, texto: "x", apoio: "x", apoio_inicio: 0 }] }),
+    // apoio obrigatório: ausente, vazio, posição negativa ou não inteira
+    respostaServico({ citacoes: [{ n: 1, chunk_id: 1, documento_id: 9, pagina: 11, texto: AMOSTRA }] }),
+    respostaServico({ citacoes: [{ n: 1, chunk_id: 1, documento_id: 9, pagina: 11, texto: AMOSTRA, apoio: " ", apoio_inicio: 0 }] }),
+    respostaServico({ citacoes: [{ n: 1, chunk_id: 1, documento_id: 9, pagina: 11, texto: AMOSTRA, apoio: "nte", apoio_inicio: -1 }] }),
+    respostaServico({ citacoes: [{ n: 1, chunk_id: 1, documento_id: 9, pagina: 11, texto: AMOSTRA, apoio: "nte", apoio_inicio: 1.5 }] }),
     "texto solto",
   ];
   for (const corpo of ruins) {
@@ -309,8 +318,10 @@ Deno.test("K-1: marcadores como no serviço Python: '[2, 5]' vale; marcador malf
 
 Deno.test("K-1: '[2, 5]' com as duas citações entregues responde; '[1] e [7]' sem a 7 vira nao_encontrado", async () => {
   const amb = comEdital();
-  amb.dossie.chunks.push({ id: 2, documento_id: 9, pagina: 15, texto: "9.1 O prazo de entrega é de 30 dias." });
-  const cit = (n: number, chunk_id: number) => ({ n, chunk_id, documento_id: 9, pagina: 1, texto: "x" });
+  amb.dossie.chunks.push({ id: 2, documento_id: 9, pagina: 15, texto: PRAZO });
+  const cit = (n: number, chunk_id: number) => ({
+    n, chunk_id, documento_id: 9, pagina: 1, ...(chunk_id === 2 ? apoio(PRAZO, "prazo") : apoio(AMOSTRA, "amostra do")),
+  });
   const ok = contexto(amb, respostaServico({ resposta: "Prazo e amostra [2, 5].", citacoes: [cit(2, 2), cit(5, 1)] }));
   const r1 = await chamar(ok.c, { action: "pergunta_edital", licitacao_id: 101, pergunta: PERGUNTA });
   assertEquals(r1.json.citacoes.map((x: { n: number; chunk_id: number }) => [x.n, x.chunk_id]), [[2, 2], [5, 1]]);
@@ -320,4 +331,32 @@ Deno.test("K-1: '[2, 5]' com as duas citações entregues responde; '[1] e [7]' 
   const malformado = contexto(amb, respostaServico({ resposta: "Amostra [1] e prazo [1-2].", citacoes: [cit(1, 1)] }));
   const r3 = await chamar(malformado.c, { action: "pergunta_edital", licitacao_id: 101, pergunta: PERGUNTA });
   assertEquals(r3.json.motivo_sem_resposta, "nao_encontrado");
+});
+
+Deno.test("K-4: apoio na cláusula 8.2 de um chunk que começa na 8.1 → item 8.2 e trecho da 8.2", async () => {
+  const amb = comEdital();
+  const texto = "8.1 A proposta será enviada pelo sistema eletrônico. A proposta terá validade de 60 dias.\n" +
+    "8.2 A licitante deverá apresentar amostra do equipamento no prazo de 5 dias úteis. A comissão avaliará a amostra.";
+  amb.dossie.chunks = [{ id: 1, documento_id: 9, pagina: 11, texto }];
+  const { c } = contexto(amb, respostaServico({
+    citacoes: [{ n: 1, chunk_id: 1, documento_id: 9, pagina: 11, ...apoio(texto, "apresentar amostra do equipamento") }],
+  }));
+  const r = await chamar(c, { action: "pergunta_edital", licitacao_id: 101, pergunta: PERGUNTA });
+  assertEquals(r.status, 200);
+  const [cit] = r.json.citacoes;
+  assertEquals([cit.item, cit.apoio], ["8.2", "apresentar amostra do equipamento"]);
+  assertEquals(cit.trecho_limpo, "8.2 A licitante deverá apresentar amostra do equipamento no prazo de 5 dias úteis. A comissão avaliará a amostra.");
+});
+
+Deno.test("K-1: apoio que não bate com o texto do banco na posição informada vira nao_encontrado", async () => {
+  for (const errado of [
+    { texto: AMOSTRA, apoio: "deverá apresentar amostra", apoio_inicio: 0 }, // posição errada
+    { texto: AMOSTRA, apoio: "exige garantia contratual", apoio_inicio: 40 }, // texto que não está no chunk
+    { texto: AMOSTRA, apoio: "comissão.", apoio_inicio: AMOSTRA.length - 2 }, // passa do fim
+  ]) {
+    const amb = comEdital();
+    const { c } = contexto(amb, respostaServico({ citacoes: [{ n: 1, chunk_id: 1, documento_id: 9, pagina: 11, ...errado }] }));
+    const r = await chamar(c, { action: "pergunta_edital", licitacao_id: 101, pergunta: PERGUNTA });
+    assertEquals([r.status, r.json.resposta, r.json.motivo_sem_resposta, r.json.citacoes], [200, null, "nao_encontrado", []], JSON.stringify(errado));
+  }
 });

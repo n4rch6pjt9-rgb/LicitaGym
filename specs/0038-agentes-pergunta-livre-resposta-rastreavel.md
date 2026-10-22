@@ -1,6 +1,6 @@
 # 0038: Levar as rotas dos agentes ao desenho original: pergunta livre com resposta rastreável (edital, jurídico, preço)
 
-- **Status:** rascunho
+- **Status:** rascunho, com as perguntas respondidas pelo Marcelo em 22/10; falta o ok para "aprovada"
 - **Alimenta:** spec-mãe 0032 (agentes) | é a "spec própria" que a 0035 deixou para depois ("Perguntar ao edital em texto
   livre", 0035 l.244) | módulo 3 "Agentes na tarefa" de `docs/produto/ESCOPO.md`
 - **Repositório:** os dois (backend vai ao ar antes do front)
@@ -116,23 +116,25 @@ desenho original** dos protótipos:
 6. **Ler os documentos** (K-6): a mesma indexação do coletor, disparada para uma licitação do pipeline que ainda
    não tem chunks, com o estado "em leitura" na tela.
 
-**Onde roda o modelo:** a recomendação é um serviço no Cloud Run, em Python, reaproveitando `ia.py` e `buscar.py`
-com os créditos do GCP. Ele é chamado pela `api-agentes`, que continua fazendo autenticação, empresa e pipeline. A
-alternativa é chamar o Gemini direto da Edge Function, o que exige guardar uma chave do GCP nos segredos do Supabase
-(ver Perguntas em aberto).
+**Onde roda o modelo (decisão de 22/10):** num serviço no Cloud Run (`agente-perguntas`), em Python, reaproveitando
+`ia.py` e `buscar.py` com os créditos do GCP. Ele é chamado só pela `api-agentes`, que continua fazendo
+autenticação, empresa e pipeline e passa ao serviço só o necessário. O serviço não é público: aceita só chamadas
+autenticadas da `api-agentes` (token de identidade do Google ou segredo compartilhado; escolhido na implementação,
+com `revisor-seguranca`). Nenhuma chave do GCP vai para os segredos do Supabase.
 
 ## Contrato
 
 | ID | Contrato | Entrada | Saída | Erros | Quem |
 |---|---|---|---|---|---|
-| K-1 | `api-agentes` `pergunta_edital` | `licitacao_id`, `pergunta` (até 500 caracteres) | `resposta` (texto com `[n]`) \| `null`; `motivo_sem_resposta` (`sem_documentos` \| `nao_encontrado`); `citacoes[]`: `{n, documento_id, documento_nome, pagina, item, trecho_limpo}`; `pergunta_id` | 400 validação; 404 fora do pipeline; 409 documentos em leitura; 429 limite por empresa | membro da empresa ou admin |
+| K-1 | `api-agentes` `pergunta_edital` | `licitacao_id`, `pergunta` (até 500 caracteres) | `resposta` (texto com `[n]`) \| `null`; `motivo_sem_resposta` (`sem_documentos` \| `nao_encontrado`); `citacoes[]`: `{n, documento_id, documento_nome, pagina, item, trecho_limpo}`; `pergunta_id` | 400 validação; 404 fora do pipeline; 409 documentos em leitura; 429 depois de **50 perguntas por empresa por dia** (somando os três agentes; decisão de 22/10) | membro da empresa ou admin |
 | K-2 | `api-agentes` `pergunta_juridico` | `pergunta`; opcional `clausula {licitacao_id, documento_id, pagina, item, trecho}` | `resumo`, `fundamentacao` (com `[n]`), `dispositivos[]`: `{n, norma, artigo, texto, conferido_oficial, url_oficial}`, `pontos_revisao[]`, `nivel` (`conforme` \| `possivel_divergencia` \| `sem_base_suficiente`), `categoria` (rótulo), `pergunta_id` | idem | idem |
 | K-3 | `api-agentes` `pergunta_preco` | recorte da /precos (os mesmos filtros e `perfil`) + `pergunta` | `interpretacao` (só com números da entrada), `numeros_usados[]`, `alertas[]` da regra 0,4×–2,5×, `pergunta_id` | idem + 400 `pdm_fora_do_catalogo` | idem |
 | K-4 | `Fonte.chunk` (aditivo, também nos achados de `analise_*`) | — | `item` \| `null`, `trecho_limpo`, `documento_nome` | — | — |
 | K-5 | Tabela `agente_perguntas` + `api-agentes` `perguntas_listar`, `pergunta_favoritar` | tenant da sessão; filtro por agente/licitação | lista paginada, sem dados de outra empresa | 403 outra empresa | membro da empresa |
-| K-6 | `api-agentes` `documentos_ler` | `licitacao_id` | estado `em_leitura` \| `lidos` \| `sem_documentos` | 404; 409 já em leitura | admin e operação |
+| K-6 | `api-agentes` `documentos_ler` | `licitacao_id` | estado `em_leitura` \| `lidos` \| `sem_documentos` | 404; 409 já em leitura; 403 para quem não é admin nem operação | admin e operação (decisão de 22/10) |
 | K-7 | Passagem edital → jurídico | clique em "Fundamentar" num alerta ou numa citação | rota `/agentes/juridico?licitacao=…&documento=…&pagina=…&item=…` + trecho (no estado da navegação, não na URL) e pergunta pré-preenchida | — | — |
 | K-8 | "Abrir na página N" | `documento_id`, `pagina` | abre o PDF do Storage (URL assinada) em nova aba, já na página (`#page=N`) | documento sem PDF: o botão não aparece | membro da empresa |
+| K-11 | `api-agentes` `pergunta_enviar` | `pergunta_id` | nota na aba "Análise dos agentes" da oportunidade, com a pergunta, a resposta, as citações, quem enviou e quando; **sem** aprovar/rejeitar e sem virar achado | 404; 409 já enviada; 400 pergunta sem licitação (jurídico avulso) | membro da empresa |
 | K-9 | Telas `/agentes/editais`, `/agentes/juridico`, `/agentes/precos` (sem dado de demo no bundle) | contratos acima + `analise_*` de hoje | layout da tabela "Tela comum" com os 4 estados; **aprovado por print antes da implementação** (como a 0036) | — | membro da empresa |
 
 ## Critérios de aceite
@@ -148,6 +150,8 @@ alternativa é chamar o Gemini direto da Edge Function, o que exige guardar uma 
 | CA-7 | K-5 | **Dado** perguntas de duas empresas, **quando** cada uma lista, **então** só vê as suas; `anon` e outra empresa recebem 403/vazio. | SQL `supabase/tests/agente_perguntas_check.sql` + Deno |
 | CA-8 | K-7 | **Dado** um alerta "Amostra exigida", **quando** clica "Fundamentar no jurídico", **então** a rota tem `documento`, `pagina` e `item`, e a caixa do jurídico chega com a pergunta e o trecho da cláusula. | vitest `src/test/agentes-pergunta.test.tsx` (Dashboard) |
 | CA-9 | K-9 | **Dado** cada um dos 4 estados (carregando, sem documentos, não encontrado, erro), **então** a tela mostra o texto do estado e nunca uma resposta vazia ou inventada; abaixo de 1280px não há rolagem lateral nem "…". | vitest + `run-dashboard` (claro, escuro, celular) |
+| CA-11 | K-11 | **Dado** uma resposta do edital, **quando** "Enviar para a oportunidade", **então** a aba da oportunidade mostra a nota com pergunta, resposta e citações, sem botões de aprovar/rejeitar, e a contagem de achados não muda; enviar de novo dá 409. | Deno + vitest |
+| CA-12 | K-1 | **Dado** 50 perguntas da empresa no dia, **quando** faz a 51ª, **então** 429 com a mensagem "Limite de 50 perguntas por dia atingido"; no dia seguinte (horário de Brasília) volta a responder. | Deno |
 | CA-10 | K-9 | **Dado** o build de produção, **então** `check-bundle` passa: nada dos protótipos (`mockData`) entra no `dist/`. | `npm run build` |
 
 ## Skills e agentes por contrato
@@ -170,8 +174,8 @@ alternativa é chamar o Gemini direto da Edge Function, o que exige guardar uma 
 - Resposta que não cita fonte da base (edital, `norma_dispositivos`, `api-precos`).
 - Jurisprudência (TCU, tribunais) e base de normas além da Lei 14.133: spec própria quando houver base conferida.
 - Leitor de documento embutido com o trecho destacado (o K-8 abre o PDF na página em nova aba).
-- A pergunta virar achado automaticamente. A resposta fica no histórico; achado continua vindo da análise por regra
-  com Analisar → Enviar → revisar (0032/0035).
+- A pergunta virar achado. A resposta fica no histórico e pode ir para a oportunidade **como nota** (K-11); achado
+  continua vindo da análise por regra com Analisar → Enviar → revisar (0032/0035).
 - Peça jurídica (minuta), que continua na fase 4 da 0032.
 - Chat com várias rodadas: é uma pergunta e uma resposta por vez, com histórico.
 
@@ -191,15 +195,12 @@ alternativa é chamar o Gemini direto da Edge Function, o que exige guardar uma 
 
 - 22/10: as rotas dos agentes devem seguir a estrutura dos protótipos (3 colunas, pergunta no centro, citações
   verificáveis, passagem edital → jurídico com a cláusula), sem os dados de exemplo.
+- 22/10: o modelo roda num serviço no Cloud Run, com os créditos do GCP.
+- 22/10: a resposta pode ser enviada para a oportunidade como nota (sem aprovar/rejeitar, sem virar achado).
+- 22/10: "Ler os documentos" fica para admin e operação.
+- 22/10: limite de 50 perguntas por empresa por dia.
+- 22/10: o Agente de Preços na rota própria entra (fase 4), depois da 0037.
 
 ## Perguntas em aberto
 
-1. **Onde roda o modelo:** serviço no Cloud Run com os créditos do GCP, reaproveitando o RAG do coletor
-   (recomendado), ou Gemini direto da Edge Function com chave do GCP nos segredos do Supabase?
-2. **Pergunta livre e as decisões de 19/10 e 21/10:** a análise continua só pelo botão "Analisar" e os achados só
-   pela revisão na oportunidade. A pergunta livre fica como consulta (histórico), sem virar achado. Confirma? Ou quer
-   um "Enviar esta resposta para a oportunidade" (como nota, sem aprovar/rejeitar)?
-3. **Cobertura:** só 106 licitações têm documentos lidos. O botão "Ler os documentos" (K-6) fica para admin e
-   operação, ou qualquer membro pode disparar?
-4. **Limite de perguntas por empresa por dia:** valor inicial (ex.: 50)?
-5. **Agente de Preços na rota própria** estava fora da 0035. Entra agora na fase 4 desta spec, depois da 0037?
+Nenhuma. As cinco perguntas do rascunho foram respondidas em 22/10 (ver Decisões).

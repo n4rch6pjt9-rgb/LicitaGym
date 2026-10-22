@@ -1,5 +1,30 @@
 # Coletores LicitaGym (PNCP + SEST SENAT) → Supabase + RAG
 
+## Rótulo "fora do perfil" dos preços (spec 0037, fase 0)
+
+`--coleta perfil-precos --dry-run` lê `precos_praticados_itens` e rotula uma amostra estratificada por PDM com o
+Gemini do Vertex (`coletor/perfil_precos.py`), **sem gravar nada**. Faz uma chamada por compra. Para cada item, o log
+traz o rótulo (`no_perfil`, `fora_do_perfil` ou `incerto`) e o motivo; no fim vêm os tokens e a projeção para a base
+inteira. Os créditos são os do projeto GCP. A gravação (tabela `precos_rotulo_perfil`) é da fase 1.
+
+Roda no Job `coletor-precos`. O SA precisa de `roles/aiplatform.user` e o Job, de `GOOGLE_CLOUD_PROJECT`:
+
+```bash
+PROJECT=$(gcloud config get-value project)
+gcloud projects add-iam-policy-binding $PROJECT \
+  --member=serviceAccount:coletor-precos@$PROJECT.iam.gserviceaccount.com --role=roles/aiplatform.user
+# amostra de 50 compras (inclui PDMs variados):
+gcloud run jobs execute coletor-precos --region southamerica-east1 \
+  --update-env-vars GOOGLE_CLOUD_PROJECT=$PROJECT \
+  --args="--coleta,perfil-precos,--dry-run,--limite,50"
+# só a compra-âncora (esteira transportadora no PDM de esteira ergométrica):
+gcloud run jobs execute coletor-precos --region southamerica-east1 \
+  --args="--coleta,perfil-precos,--dry-run,--compras,93099205000052026"
+```
+
+O custo em dólar só aparece se o Job tiver `PRECO_ENTRADA_USD_MTOK` e `PRECO_SAIDA_USD_MTOK` (preço por milhão de
+tokens do `GEN_MODEL` vigente). Sem eles, o log traz só os tokens.
+
 ## Gate de marca e referências do edital (v16.3)
 - Colunas na ordem fornecedor → marca → modelo, e o gate do fornecedor calculado sobre **todas** as propostas dele:
   `perfil_comercial` = fabricante — marca própria | fabricante + revenda | revenda monomarca | revenda multimarca;

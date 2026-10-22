@@ -10,12 +10,19 @@ esse entrypoint.
 | Rota | Entrada | Saída |
 |---|---|---|
 | `GET /saude` | — | `200 {"ok": true}` |
-| `POST /edital/perguntar` | cabeçalho `X-Agente-Segredo`; corpo `{"licitacao_id": int > 0, "pergunta": 1..500 caracteres, "k": 1..20 (padrão 8)}` | `200 {resposta, motivo_sem_resposta, citacoes[{n, chunk_id, documento_id, pagina, texto}], modelo, versao_prompt, uso{entrada, saida, pensamento}}` |
+| `POST /edital/perguntar` | cabeçalho `X-Agente-Segredo`; corpo `{"licitacao_id": int > 0, "pergunta": 1..500 caracteres, "k": 1..20 (padrão 8)}` | `200 {resposta, motivo_sem_resposta, citacoes[{n, chunk_id, documento_id, pagina, texto, apoio, apoio_inicio}], modelo, versao_prompt ("0038.2"), uso{entrada, saida, pensamento}}` |
 
 Erros: `400` corpo inválido, `401` segredo errado ou ausente, `503` serviço sem `AGENTE_PERGUNTAS_SEGREDO`,
-`502` falha do Vertex ou do Supabase (sem detalhe do erro na resposta). Resposta sem marcador `[n]`, com marcador
-fora dos trechos entregues, JSON inválido duas vezes ou cortada no teto de tokens vira `resposta: null,
-motivo_sem_resposta: "nao_encontrado"`. Os trechos vêm da RPC `agente_chunks_licitacao` (migration da spec 0038).
+`502` falha do Vertex ou do Supabase, orçamento de tempo esgotado, resposta do modelo fora do formato nas duas
+tentativas ou cortada no teto de tokens (sem detalhe do erro na resposta; a `api-agentes` não grava nada).
+`resposta: null, motivo_sem_resposta: "nao_encontrado"` só em três casos: nenhum trecho, o modelo respondeu
+`{"resposta": null}`, ou a citação foi rejeitada (sem marcador `[n]`, marcador fora dos trechos entregues, ou algum
+`[n]` sem `apoio` válido).
+
+O modelo devolve `{"resposta": "...[n]...", "apoio": {"n": "<frase copiada do trecho n>"}}`. Cada `apoio` precisa
+estar no texto do trecho n (comparação com espaços colapsados e sem diferença de maiúsculas) e ter pelo menos 20
+caracteres. Na citação, `apoio` é a frase recortada do texto original do trecho (não o texto do modelo) e
+`apoio_inicio` é a posição dela, em caracteres, no `texto` do trecho. Os trechos vêm da RPC `agente_chunks_licitacao` (migration da spec 0038).
 
 Deploy (do Marcelo). Conta de serviço própria, com o mínimo:
 

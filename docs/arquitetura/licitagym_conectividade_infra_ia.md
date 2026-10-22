@@ -38,7 +38,7 @@ O material não traz um "bug" para corrigir como o de prompt injection trouxe. O
 
 | Conceito (seção da live) | Estado no LicitaGym (29/09/2026) | Lacuna | Ação |
 |---|---|---|---|
-| Região e latência (2, 4.4) | Supabase em `sa-east-1` (São Paulo). Vertex AI com `GOOGLE_CLOUD_LOCATION` padrão `us-central1` (`services/coletor-externo/coletor/ia.py`) | Hoje só lote, então tolerável. No assistente interativo, cada pergunta faz ida e volta aos EUA 2 vezes (embedding + geração) | Medir p50/p95/jitter por região antes de escolher (seção 4) |
+| Região e latência (2, 4.4) | Supabase em `sa-east-1` (São Paulo). Vertex AI: embedding com `GOOGLE_CLOUD_LOCATION` padrão `us-central1`, geração (`gemini-3.8-flash`) no endpoint `global` (`GEN_LOCATION`, `services/coletor-externo/coletor/ia.py`) | Hoje só lote, então tolerável. No assistente interativo, cada pergunta faz ida e volta aos EUA 2 vezes (embedding + geração) | Medir p50/p95/jitter por região antes de escolher (seção 4) |
 | Hops e topologia (3) | Não há agente em produção. Classificação de itens é determinística (dicionário de aparelhos v0.3) | Risco de desenhar o Agente de Edital como mesh | Pipeline sequencial com etapas determinísticas + LLM só onde precisa (seção 6) |
 | RAG × CAG (5) | 2 bases vetoriais (`licitacao_chunks` 403, `legislacao_embeddings` 257) | Modelos de embedding diferentes e não registrados | Seção 3. CAG faz sentido para remissões da Lei 14.133 (seção 7) |
 | Padrões de comunicação (6) | Coleta por cron (assíncrona); Dashboard via REST; `private.job_queue` existe | Nenhum padrão definido para análise de edital e chat | Fila para edital, streaming para chat (seção 5) |
@@ -114,7 +114,7 @@ alter table public.licitacao_chunks
 - **Hoje:** o banco está em São Paulo (`sa-east-1`) e as chamadas de IA vão para `us-central1` por padrão. Na coleta em lote isso não importa: o gargalo é a cota do Vertex (5 requisições/min por região nos modelos `text-*-embedding` em projetos novos, conforme o comentário do código), não a rede.
 - **Quando importa:** no assistente interativo. Uma pergunta faz pelo menos: Edge Function → Vertex (embedding) → Supabase (busca) → Vertex (geração) → usuário. São duas idas e voltas aos EUA dentro do prazo do usuário.
 - **Pergunta de arquitetura da live, aplicada:** antes de escolher a região, medir de onde a Edge Function roda até cada região candidata: número de saltos, latência média, **p95** e jitter.
-- **Candidatas:** `us-central1` (atual) e `southamerica-east1` (São Paulo). **Confirmar** se `text-multilingual-embedding-002` e `gemini-2.5-flash` estão disponíveis na região de São Paulo antes de trocar. Se o modelo de embedding não existir lá, a regra da seção 3.4 impede trocar só a região da pergunta.
+- **Candidatas:** `us-central1` (atual) e `southamerica-east1` (São Paulo). **Confirmar** se `text-multilingual-embedding-002` está disponível na região de São Paulo antes de trocar (a geração, `gemini-3.8-flash`, já usa o endpoint `global`). Se o modelo de embedding não existir lá, a regra da seção 3.4 impede trocar só a região da pergunta.
 - **Bônus de LGPD:** processar em São Paulo mantém propostas e dados de fornecedores no Brasil.
 
 **Script de medição sugerido:** 50 chamadas de embedding de uma frase curta por região, a partir de uma Edge Function (não do notebook do desenvolvedor), registrando p50, p95, máximo e desvio padrão.

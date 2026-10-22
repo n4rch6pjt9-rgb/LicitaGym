@@ -156,15 +156,13 @@ def indexar_grupo(sb: Supabase, ia, docs: list[dict], lic: dict, com_extracao: b
         log.info("    %s: %s caracteres -> ficha com Gemini", nome[:60], len(texto_total))
         try:
             extracao = ia.extrair_campos(texto_total, nome, secao, processo, rotulo_fonte(lic))
-        except Exception as e:
+        except ia_mod.FichaIndisponivel as e:
             # A ficha (tipo e resumo) é enriquecimento; os trechos são o que os agentes leem. Prazo estourado ou JSON
             # inválido do modelo não podem impedir a indexação (licitação 3558, 19/10: 5 tentativas de 504 e o
-            # documento nunca foi indexado). Cota (429) continua transitória: o pedido volta para a fila.
-            msg = f"{type(e).__name__} {e}"
-            if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
-                raise
-            log.warning("    %s: ficha indisponível (%s); indexando só os trechos", nome[:60], msg[:160])
-            extracao = {"ficha": "indisponivel", "ficha_erro": msg[:300]}
+            # documento nunca foi indexado). Cota, 5xx e erro de configuração não chegam aqui: sobem, e o pedido
+            # volta para a fila (ou falha à vista, no caso de 4xx).
+            log.warning("    %s: ficha indisponível (%s); indexando só os trechos", nome[:60], e.categoria)
+            extracao = {"ficha": "indisponivel", "ficha_erro": e.categoria}
     tipo = extracao.get("tipo_documento") or secao
     fornecedor = f" — {doc['fornecedor_nome']}" if doc.get("fornecedor_nome") else ""
     cabecalho = f"{rotulo_fonte(lic)} {processo} — {tipo.replace('_', ' ').upper()}{fornecedor} — {nome}"

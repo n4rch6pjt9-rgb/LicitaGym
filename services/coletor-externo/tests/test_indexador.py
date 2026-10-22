@@ -3,6 +3,8 @@ import io
 import zipfile
 from unittest.mock import MagicMock
 
+import pytest
+
 from coletor import indexador as IX
 from coletor.textos import Pagina, dividir, extrair
 
@@ -142,39 +144,43 @@ def _doc(arq):
              "arquivo_origem": "v.pdf", "fornecedor_nome": None, "sha256": "h", "storage_uri": str(arq)}]
 
 
+def _ia(erro):
+    ia = MagicMock()
+    ia.extrair_campos.side_effect = erro
+    ia.embed.side_effect = lambda ts, **k: [[0.1] * 768 for _ in ts]
+    return ia
+
+
 def test_ficha_com_prazo_estourado_nao_impede_os_trechos(tmp_path):
     arq = tmp_path / "v.pdf"; arq.write_bytes(_pdf([RECURSO]))
-    ia = MagicMock()
-    ia.extrair_campos.side_effect = RuntimeError("504 DEADLINE_EXCEEDED. Deadline expired before operation could complete.")
-    ia.embed.side_effect = lambda ts, **k: [[0.1] * 768 for _ in ts]
     sb = MagicMock()
-    r = IX.indexar_grupo(sb, ia, _doc(arq), {"numero_processo": "58/2026"}, True)
+    r = IX.indexar_grupo(sb, _ia(IX.ia_mod.FichaIndisponivel("prazo_estourado")), _doc(arq), {"numero_processo": "58/2026"}, True)
     assert r["status"] == "indexado"
     linhas = sb.upsert.call_args.args[1]
     assert linhas and all(l["metadados"]["chunk_kind"] == "trecho" for l in linhas)   # sem resumo inventado
     extracao = sb.atualizar.call_args.args[2]["extracao"]
     assert extracao["ficha"] == "indisponivel"
-    assert "DEADLINE_EXCEEDED" in extracao["ficha_erro"]
+    assert extracao["ficha_erro"] == "prazo_estourado"   # só a categoria, sem a mensagem do SDK
 
 
 def test_ficha_com_json_invalido_tambem_nao_impede_os_trechos(tmp_path):
     arq = tmp_path / "v.pdf"; arq.write_bytes(_pdf([RECURSO]))
-    ia = MagicMock()
-    ia.extrair_campos.side_effect = RuntimeError("Gemini retornou JSON inválido na extração: {")
-    ia.embed.side_effect = lambda ts, **k: [[0.1] * 768 for _ in ts]
     sb = MagicMock()
-    r = IX.indexar_grupo(sb, ia, _doc(arq), {"numero_processo": "58/2026"}, True)
+    r = IX.indexar_grupo(sb, _ia(IX.ia_mod.FichaIndisponivel("json_invalido")), _doc(arq), {"numero_processo": "58/2026"}, True)
     assert r["status"] == "indexado"
-    assert sb.atualizar.call_args.args[2]["extracao"]["ficha"] == "indisponivel"
+    assert sb.atualizar.call_args.args[2]["extracao"] == {"ficha": "indisponivel", "ficha_erro": "json_invalido"}
 
 
-def test_ficha_com_cota_esgotada_continua_transitoria(tmp_path):
-    """429 é cota: o pedido volta para a fila e a ficha é tentada de novo depois, sem gravar nada agora."""
-    import pytest
+@pytest.mark.parametrize("codigo,status", [(429, "RESOURCE_EXHAUSTED"), (503, "UNAVAILABLE"), (500, "INTERNAL"),
+                                           (404, "NOT_FOUND"), (403, "PERMISSION_DENIED")])
+def test_ficha_com_cota_5xx_ou_configuracao_errada_sobe(tmp_path, codigo, status):
+    """Cota e 5xx: o pedido volta para a fila e a ficha é tentada de novo depois. 4xx (modelo inexistente, sem
+    permissão): falha à vista em vez de indexar tudo sem ficha. Nos dois casos nada é gravado agora."""
+    from google.genai import errors
     arq = tmp_path / "v.pdf"; arq.write_bytes(_pdf([RECURSO]))
-    ia = MagicMock()
-    ia.extrair_campos.side_effect = RuntimeError("429 RESOURCE_EXHAUSTED")
+    erro = (errors.ServerError if codigo >= 500 else errors.ClientError)(codigo, {"error": {"code": codigo, "status": status, "message": "x"}})
     sb = MagicMock()
-    with pytest.raises(RuntimeError):
-        IX.indexar_grupo(sb, ia, _doc(arq), {"numero_processo": "58/2026"}, True)
+    with pytest.raises(errors.APIError):
+        IX.indexar_grupo(sb, _ia(erro), _doc(arq), {"numero_processo": "58/2026"}, True)
     sb.upsert.assert_not_called()
+    sb.atualizar.assert_not_called()

@@ -160,7 +160,7 @@ def test_main_grava_relatorio_de_ocr_no_ignorado(monkeypatch):
     assert campos == {"status_processamento": "ignorado", "erro": "OCR_DEGENERADO: páginas [1]", "extracao": rel}
 
 
-# --- chamada ao Gemini: limite de saída e pensamento desligado ---
+# --- chamada ao Gemini: limite de saída e pensamento no mínimo ---
 
 def test_ocr_pagina_usa_limite_de_saida(monkeypatch):
     from google.genai import types
@@ -171,8 +171,11 @@ def test_ocr_pagina_usa_limite_de_saida(monkeypatch):
     g.client.models.generate_content.return_value = resposta
     assert g.ocr_pagina(b"%PDF-1.4") == ("texto", "MAX_TOKENS")
     cfg = g.client.models.generate_content.call_args.kwargs["config"]
-    assert cfg.max_output_tokens == IA.OCR_MAX_TOKENS and cfg.temperature == 0
-    assert cfg.thinking_config.thinking_budget == 0
+    assert cfg.max_output_tokens == IA.OCR_MAX_TOKENS
+    if IA.gemini_3_ou_mais(IA.GEN_MODEL):
+        assert cfg.temperature is None and cfg.thinking_config.thinking_level == types.ThinkingLevel.LOW
+    else:
+        assert cfg.temperature == 0
 
 
 def test_motivo_fim_sem_candidato():

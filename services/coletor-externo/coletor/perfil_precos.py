@@ -154,19 +154,37 @@ def _ordem_estavel(chave: str) -> str:
 
 def amostra_estratificada(por_compra: dict[str, list[dict]], limite: int, fixas: list[str] | None = None) -> list[str]:
     """Compras para a fase 0: as `fixas` (âncoras) primeiro e depois uma por PDM em rodízio, em ordem estável (md5 do
-    id), para cobrir os PDMs em vez de concentrar nos que têm mais compras. Mesma entrada, mesma amostra."""
+    id), para cobrir os PDMs em vez de concentrar nos que têm mais compras. A compra entra na fila de TODOS os PDMs dos
+    seus itens (um PDM que só aparece no 2º item de alguma compra também é coberto); compra já escolhida não se repete
+    e o PDM que ela já cobre perde a vez. Mesma entrada, mesma amostra."""
     escolhidas = [c for c in (fixas or []) if c in por_compra]
+    usadas = set(escolhidas)
+    pdms_de = {c: {str(l.get("codigo_pdm")) for l in itens} for c, itens in por_compra.items()}
+    cobertos = set().union(*(pdms_de[c] for c in escolhidas)) if escolhidas else set()
     por_pdm: dict[str, list[str]] = defaultdict(list)
-    for c, itens in por_compra.items():
-        if c not in escolhidas:
-            por_pdm[str(itens[0].get("codigo_pdm"))].append(c)
-    filas = [sorted(v, key=_ordem_estavel) for _, v in sorted(por_pdm.items())]
-    i = 0
-    while len(escolhidas) < limite and any(filas):
-        fila = filas[i % len(filas)]
-        if fila:
-            escolhidas.append(fila.pop(0))
-        i += 1
+    for c, pdms in pdms_de.items():
+        for pdm in pdms:
+            por_pdm[pdm].append(c)
+    filas = {pdm: sorted(v, key=_ordem_estavel) for pdm, v in sorted(por_pdm.items())}
+    while len(escolhidas) < limite:
+        # primeiro os PDMs ainda sem nenhuma compra na amostra; depois rodízio entre todos
+        pendentes = [p for p in filas if p not in cobertos and filas[p]] or [p for p in filas if filas[p]]
+        if not pendentes:
+            break
+        avancou = False
+        for pdm in pendentes:
+            fila = filas[pdm]
+            while fila and fila[0] in usadas:
+                fila.pop(0)
+            if not fila or len(escolhidas) >= limite:
+                continue
+            c = fila.pop(0)
+            escolhidas.append(c)
+            usadas.add(c)
+            cobertos |= pdms_de[c]
+            avancou = True
+        if not avancou:
+            break
     return escolhidas[:limite] if limite else escolhidas
 
 
@@ -362,9 +380,15 @@ def executar(sb, modelo: Modelo, *, dry_run: bool = True, limite: int = 50, pdms
     resumo = Resumo()
     for c in alvo:
         entrada = montar_entrada(por_compra[c], meds)
+        gasto_antes = resumo.tokens_entrada + resumo.tokens_saida + resumo.tokens_pensamento
+        perdido_antes = resumo.tokens_perdidos
         try:
             rotulos = rotular_compra(modelo, entrada, resumo)
         except RespostaInvalida as e:
+            # Compra descartada inteira: TODOS os tokens dela (inclusive dos lotes que deram certo) ficam fora da
+            # projeção, para tokens e itens da projeção serem do mesmo conjunto.
+            resumo.tokens_perdidos = perdido_antes + (
+                resumo.tokens_entrada + resumo.tokens_saida + resumo.tokens_pensamento - gasto_antes)
             resumo.erros += 1
             log.error("perfil: compra %s sem rótulo depois de %s tentativas: %s", c, TENTATIVAS_JSON, e)
             continue

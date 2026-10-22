@@ -245,3 +245,31 @@ def test_main_argumentos_invalidos(monkeypatch, argv):
 def test_main_perfil_precos_sem_dry_run_falha_sem_tocar_no_banco(monkeypatch):
     monkeypatch.setattr(M, "Supabase", lambda *a, **k: pytest.fail("não devia conectar"))
     assert M.main(["--coleta", "perfil-precos"]) == 1
+
+
+def test_pdm_que_so_aparece_no_segundo_item_tambem_entra_na_amostra():
+    linhas = [linha(f"3000000000000{i:04d}", i, 1, 100.0, pdm="A") for i in range(100)]
+    linhas.append(linha("30000000000000001", 999, 2, 50.0, pdm="B"))   # compra 1 tem A no 1º item e B no 2º
+    por = P.agrupar_por_compra(linhas)
+    amostra = P.amostra_estratificada(por, 5)
+    pdms = set().union(*({str(l["codigo_pdm"]) for l in por[c]} for c in amostra))
+    assert pdms == {"A", "B"} and len(amostra) == len(set(amostra)) == 5
+
+
+def test_tokens_da_compra_descartada_saem_da_projecao(monkeypatch):
+    monkeypatch.setattr(P, "ITENS_POR_CHAMADA", 15)
+    monkeypatch.setattr(P, "TENTATIVAS_JSON", 1)
+    grande = [linha("40000000000000001", 100 + k, k, 100.0) for k in range(16)]   # 2 lotes: 15 + 1
+    pequena = [linha("40000000000000002", 500, 1, 100.0)]
+
+    def modelo(prompt):
+        entrada = json.loads(prompt.split("Compra:\n", 1)[1])
+        if entrada["id_compra"] == "40000000000000001" and len(entrada["itens"]) == 1:
+            return "quebrado", {"entrada": 100, "saida": 0, "pensamento": 0}   # 2º lote da compra grande falha
+        itens = [{"id": i["id"], "rotulo": "no_perfil", "motivo": "ok", "sinais": []} for i in entrada["itens"]]
+        return json.dumps({"itens": itens}), {"entrada": 100, "saida": 0, "pensamento": 0}
+
+    res = P.executar(sb_fake(grande + pequena), modelo, dry_run=True, limite=2, hoje=HOJE)
+    assert res["erros"] == 1 and res["itens"] == 1
+    assert res["tokens"]["perdidos"] == 200            # os 2 lotes da compra descartada
+    assert res["projecao_base"]["tokens_por_item"] == 100

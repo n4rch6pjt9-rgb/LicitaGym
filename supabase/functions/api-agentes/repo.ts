@@ -115,6 +115,12 @@ export interface AgentesRepo {
   preparacao(tenant: number, licitacaoId: number): Promise<Preparacao | null>;
   /** Pede o download e a indexação do edital (fila 'preparar_triagem'); nunca duplica o pedido aberto. Spec 0032 CA-1. */
   solicitarPreparacao(tenant: number, licitacaoId: number): Promise<"enfileirado" | "ja_na_fila">;
+  /**
+   * Documentos da licitação ainda sem texto (pendente ou baixado, fora os removidos do portal): a preparação lê esses.
+   * 'erro' fica de fora de propósito: o erro gravado pode ser determinístico (arquivo corrompido) e cada clique em
+   * "Analisar de novo" reenfileiraria sem fim; erro antigo de indexação se refaz pelo indexador.
+   */
+  documentosNaoLidos(licitacaoId: number): Promise<number>;
   buscarExecucao(tenant: number, licitacaoId: number, agente: Agente, contextoHash: string): Promise<Execucao | null>;
   gravarExecucao(
     tenant: number,
@@ -215,6 +221,17 @@ export function createSupabaseRepo(client: SupabaseClient): AgentesRepo {
       if (error) throw new Error(error.message);
       if (data !== "enfileirado" && data !== "ja_na_fila") throw new Error(`fila_preparacao_solicitar devolveu ${String(data)}`);
       return data;
+    },
+
+    async documentosNaoLidos(licitacaoId) {
+      const { count, error } = await client
+        .from("licitacao_documentos")
+        .select("id", { count: "exact", head: true })
+        .eq("licitacao_id", licitacaoId)
+        .in("status_processamento", ["pendente", "baixado"])
+        .is("removido_do_portal_em", null);
+      if (error) throw new Error(error.message);
+      return count ?? 0;
     },
 
     async carregarDossie(tenant, licitacaoId) {

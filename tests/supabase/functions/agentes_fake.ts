@@ -27,10 +27,18 @@ export function ambiente() {
     ],
   };
 
-  const estado: { preparacao: Preparacao | null | Error; solicitacoes: number; falhaSolicitar: Error | null } = {
+  const estado: {
+    preparacao: Preparacao | null | Error;
+    solicitacoes: number;
+    falhaSolicitar: Error | null;
+    naoLidos: number;
+    consultasNaoLidos: number;
+  } = {
     preparacao: null,
     solicitacoes: 0,
     falhaSolicitar: null,
+    naoLidos: 0,
+    consultasNaoLidos: 0,
   };
   // pipeline da empresa (R-1), busca (K-0), documentos (K-1) e a tarefa aberta do agente (R-8)
   const pipeline = new Set([101]);
@@ -50,6 +58,10 @@ export function ambiente() {
       if (atual && (atual.status === "pending" || atual.status === "processing")) return Promise.resolve("ja_na_fila" as const);
       estado.preparacao = { status: "pending", resultado: null, erro: null, atualizado_em: "agora" };
       return Promise.resolve("enfileirado" as const);
+    },
+    documentosNaoLidos: () => {
+      estado.consultasNaoLidos++;
+      return Promise.resolve(estado.naoLidos);
     },
     carregarDossie: (_t, id) => Promise.resolve(id === dossie.licitacao.id ? dossie : null),
     buscarExecucao: (_t, licitacaoId, agente, contextoHash) =>

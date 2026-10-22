@@ -3,6 +3,7 @@ import { assertEquals } from "jsr:@std/assert@1";
 import {
   criarServicoPerguntas,
   diaSaoPaulo,
+  inicioUtf16,
   marcadores,
   validarRespostaEdital,
 } from "../../../supabase/functions/api-agentes/perguntas.ts";
@@ -16,7 +17,8 @@ const AMOSTRA =
 const PERGUNTA = "Há exigência de amostra?";
 const PRAZO = "9.1 O prazo de entrega é de 30 dias.";
 /** Citação do serviço: o chunk inteiro em `texto` e o recorte que apoia a afirmação, com a posição. */
-const apoio = (texto: string, trecho: string) => ({ texto, apoio: trecho, apoio_inicio: texto.indexOf(trecho) });
+// apoio_inicio em pontos de código, como o Python (os textos de teste sem emoji coincidem com o índice UTF-16)
+const apoio = (texto: string, trecho: string) => ({ texto, apoio: trecho, apoio_inicio: Array.from(texto.slice(0, texto.indexOf(trecho))).length });
 
 function respostaServico(extra: Record<string, unknown> = {}) {
   return {
@@ -359,4 +361,28 @@ Deno.test("K-1: apoio que não bate com o texto do banco na posição informada 
     const r = await chamar(c, { action: "pergunta_edital", licitacao_id: 101, pergunta: PERGUNTA });
     assertEquals([r.status, r.json.resposta, r.json.motivo_sem_resposta, r.json.citacoes], [200, null, "nao_encontrado", []], JSON.stringify(errado));
   }
+});
+
+Deno.test("K-1: apoio_inicio em pontos de código (Python): emoji antes do apoio é aceito, item 8.2", async () => {
+  const amb = comEdital();
+  const texto = "📌 8.2 A amostra deverá ser entregue em cinco dias úteis.";
+  amb.dossie.chunks = [{ id: 1, documento_id: 9, pagina: 11, texto }];
+  const cit = { n: 1, chunk_id: 1, documento_id: 9, pagina: 11, texto, apoio: "A amostra deverá ser entregue", apoio_inicio: 6 };
+  const ok = contexto(amb, respostaServico({ citacoes: [cit] }));
+  const r = await chamar(ok.c, { action: "pergunta_edital", licitacao_id: 101, pergunta: PERGUNTA });
+  assertEquals([r.status, r.json.motivo_sem_resposta, r.json.citacoes[0]?.item, r.json.citacoes[0]?.apoio], [
+    200, null, "8.2", "A amostra deverá ser entregue",
+  ]);
+  // índice UTF-16 (7) não é o contrato; posição além do texto também não passa
+  for (const apoio_inicio of [7, Array.from(texto).length + 1]) {
+    const ruim = contexto(amb, respostaServico({ citacoes: [{ ...cit, apoio_inicio }] }));
+    const x = await chamar(ruim.c, { action: "pergunta_edital", licitacao_id: 101, pergunta: PERGUNTA });
+    assertEquals([x.status, x.json.motivo_sem_resposta], [200, "nao_encontrado"], String(apoio_inicio));
+  }
+});
+
+Deno.test("inicioUtf16: converte pontos de código para o índice do JavaScript", () => {
+  assertEquals(inicioUtf16("📌 8.2 A", 6), 7);
+  assertEquals(inicioUtf16("abc", 3), 3);
+  assertEquals(inicioUtf16("abc", 4), null);
 });

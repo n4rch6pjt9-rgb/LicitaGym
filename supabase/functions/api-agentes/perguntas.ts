@@ -27,7 +27,10 @@ export interface CitacaoServico {
   texto: string;
   /** Recorte do texto do chunk que apoia a afirmação (o Dashboard destaca). */
   apoio: string;
-  /** Posição do apoio no texto do chunk; a api-agentes confere contra o texto do banco. */
+  /**
+   * Posição do apoio no texto do chunk, em pontos de código (code points, como o índice de str do Python), não em
+   * unidades UTF-16. A api-agentes converte (inicioUtf16) e confere contra o texto do banco.
+   */
   apoio_inicio: number;
 }
 
@@ -160,6 +163,17 @@ export function validarRespostaEdital(bruto: unknown): RespostaServicoEdital | n
   };
 }
 
+/**
+ * Converte uma posição em pontos de código (contrato do serviço Python) para o índice UTF-16 do JavaScript.
+ * null se a posição passa do número de pontos de código do texto. Ex.: em "📌 8.2 A…", o "A" é 6 em pontos de código
+ * e 7 em UTF-16 (o emoji ocupa duas unidades).
+ */
+export function inicioUtf16(texto: string, inicioCodePoints: number): number | null {
+  const pontos = Array.from(texto);
+  if (inicioCodePoints > pontos.length) return null;
+  return pontos.slice(0, inicioCodePoints).join("").length;
+}
+
 /** Marcador de citação, igual ao do serviço Python: "[1]", "[2, 5]". */
 const RE_MARCADOR = /\[(\d{1,3}(?:\s*,\s*\d{1,3})*)\]/g;
 
@@ -179,7 +193,7 @@ export function marcadores(resposta: string): Set<number> | null {
 /**
  * Defesa em profundidade (K-1): a resposta só vale se tem ao menos um [n], todo [n] existe nas citações, toda citação
  * aponta para um chunk desta licitação (`chunks`, lidos do banco) e o apoio de cada uma está no texto do banco na
- * posição informada. Senão, "não encontrei no edital": a resposta não é exibida. As citações saem só as marcadas no
+ * posição informada (`apoio_inicio` em pontos de código, convertido para UTF-16 antes de conferir). Senão, "não encontrei no edital": a resposta não é exibida. As citações saem só as marcadas no
  * texto, em ordem de n, com documento, página e texto do banco; item e trecho limpo saem da posição do apoio.
  */
 export function conferirCitacoes(
@@ -192,10 +206,13 @@ export function conferirCitacoes(
   if (usados === null || usados.size === 0) return null;
   const porN = new Map(r.citacoes.map((c) => [c.n, c]));
   for (const n of usados) if (!porN.has(n)) return null;
+  const inicios = new Map<number, number>();
   for (const c of r.citacoes) {
     const chunk = chunks.get(c.chunk_id);
     if (!chunk) return null;
-    if (chunk.texto.slice(c.apoio_inicio, c.apoio_inicio + c.apoio.length) !== c.apoio) return null;
+    const inicio = inicioUtf16(chunk.texto, c.apoio_inicio);
+    if (inicio === null || chunk.texto.slice(inicio, inicio + c.apoio.length) !== c.apoio) return null;
+    inicios.set(c.n, inicio);
   }
   const citacoes = [...usados].sort((a, b) => a - b).map((n): CitacaoPergunta => {
     const c = porN.get(n)!;
@@ -206,8 +223,8 @@ export function conferirCitacoes(
       documento_id: chunk.documento_id,
       documento_nome: nomes.get(chunk.documento_id) ?? null,
       pagina: chunk.pagina,
-      item: itemNaPosicao(chunk.texto, c.apoio_inicio),
-      trecho_limpo: trechoLimpo(chunk.texto, 300, { inicio: c.apoio_inicio, texto: c.apoio }),
+      item: itemNaPosicao(chunk.texto, inicios.get(n)!),
+      trecho_limpo: trechoLimpo(chunk.texto, 300, { inicio: inicios.get(n)!, texto: c.apoio }),
       apoio: c.apoio,
     };
   });

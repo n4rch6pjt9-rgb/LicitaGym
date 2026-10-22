@@ -11,7 +11,8 @@
  * Numeração de item no início da frase/linha: "8.4.2 ", "6.7.1.", "5.1.2)", "5.1 -". Exige ao menos um ponto
  * ("8." sozinho não é item). Não aceita data ("21.10.2026"), valor ("1.500,00") nem lei ("14.133/2021").
  */
-const RE_ITEM = /^\s*(\d{1,2}(?:\.\d{1,3}){1,4})(?![\d,/])(?:[\s)\-–—]|\.(?!\d)|$)/;
+// Antes do número aceita marcador de lista ou símbolo ("• 8.2", "📌 8.2"); traço não (pode ser sinal de número).
+const RE_ITEM = /^[\s\p{So}•·▪►*]*(\d{1,2}(?:\.\d{1,3}){1,4})(?![\d,/])(?:[\s)\-–—]|\.(?!\d)|$)/u;
 /** Segmento que é só a numeração ("8.4.2.", "1."): a frase começa no segmento seguinte e vai junto com ele. */
 const RE_SO_ITEM = /^\s*\d{1,3}(?:\.\d{1,3}){0,4}\.?\s*$/;
 /** Fim de frase: . ! ? seguidos de espaço (ou fim do texto), e quebra de linha. */

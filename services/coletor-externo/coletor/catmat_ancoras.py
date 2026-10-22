@@ -6,8 +6,8 @@ promover a "forte" (no máximo "fraco"); piso, borracha e obra_piso seguem como 
 (TAXONOMIA-DRYRUN-RESULTADOS.md, 18:44-18:51 BRT): 529 das 632 compras leads/monitorar casam no modo núcleo.
 
 De onde vêm as âncoras: dos itens CATMAT do catálogo efetivo segundo catmat_itens_mapa() (catmat_item_pdm + espelho
-catalogo_itens + catmat_itens; nenhuma tabela nova), mais os itens incluídos avulsos; texto de catmat_itens ou do
-espelho (ler_itens_catalogo). A descrição do item é quebrada em nome (cabeça)
+catalogo_itens + catmat_itens; nenhuma tabela nova), mais os itens incluídos avulsos; texto de catmat_itens, do
+espelho ou, por último, de catmat_item_pdm (ler_itens_catalogo). A descrição do item é quebrada em nome (cabeça)
 e atributos ("ANILHA, MATERIAL: FERRO, COR: PRETA" -> ANILHA + MATERIAL=FERRO, COR=PRETA), e cada item gera:
   - cabeca: o nome do item (e as partes de "A / B" e "A - B"), ex.: "corda de pular", "caneleira";
   - atributo_tipo: o TIPO, quando a cabeça é genérica ("APARELHO / EQUIPAMENTO ..."), ex.: "cadeira extensora";
@@ -34,6 +34,7 @@ RPC_ITENS = "rpc/catmat_itens_mapa"   # quais itens (codigo_item, codigo_pdm); G
 # de onde vem a descrição (a RPC não traz): (tabela, coluna do código, coluna do texto), em ordem de preferência
 # Ordem de preferência do texto. catmat_item_pdm por último: é onde a inclusão de PDM pelo Dashboard grava o texto
 # oficial dos itens (API do Catálogo), e os PDMs incluídos depois da carga de catmat_itens (21/09) só existem lá (22/10).
+# Por último para não mudar o texto (e as âncoras) de item que já tinha texto nas duas primeiras.
 FONTES_DESCRICAO = (("catmat_itens", "codigo_item", "descricao_item"), ("catalogo_itens", "codigo_catmat", "descricao"),
                     ("catmat_item_pdm", "codigo_item", "descricao"))
 PAGINA = 100   # regra dos coletores Python: no máximo 100 linhas por página

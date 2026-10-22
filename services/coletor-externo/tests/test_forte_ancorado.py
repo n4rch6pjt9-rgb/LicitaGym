@@ -144,7 +144,7 @@ def test_le_itens_pela_rpc_100_por_pagina_e_pdms_em_blocos_de_50():
     out = A.ler_itens_catalogo(sb, range(1, 61))
     assert len(out) == 250 and all(it["descricao"] for it in out)
     assert all(f["limit"] == "100" for _, f in sb.chamadas)
-    assert "catmat_item_pdm" not in {t for t, _ in sb.chamadas}       # decisão de 03/10 19:41 BRT
+    assert "catmat_item_pdm" not in {t for t, _ in sb.chamadas}       # nada faltou nas duas primeiras fontes
     rpc = [f for t, f in sb.chamadas if t == "rpc/catmat_itens_mapa"]
     # 1º bloco (PDMs 1-50, 210 itens): 3 páginas + a vazia; 2º bloco (PDMs 51-60, 40 itens): 1 + a vazia
     assert [f["offset"] for f in rpc] == ["0", "100", "200", "210", "0", "40"]
@@ -180,6 +180,13 @@ def test_pdm_incluido_pelo_dashboard_tem_texto_so_em_catmat_item_pdm():
     tabelas = [t for t, _ in sb.chamadas if t != "rpc/catmat_itens_mapa"]
     assert tabelas.index("catmat_item_pdm") > tabelas.index("catalogo_itens") > tabelas.index("catmat_itens")
     assert {f["codigo_item"] for t, f in sb.chamadas if t == "catmat_item_pdm"} == {"in.(480100)"}
+    # decisão de 03/10: catmat_item_pdm só completa texto; item que só ele tem (fora da RPC) não entra na lista
+    class _ForaDaRpc(_SBItens):
+        def selecionar(self, tabela, **f):
+            sel = super().selecionar(tabela, **f)
+            return [ln for ln in sel if ln["codigo_item"] != 480100] if tabela == "rpc/catmat_itens_mapa" else sel
+    fora = _ForaDaRpc(linhas, espelho={2}, so_mapa={480100})
+    assert 480100 not in {it["codigo_item"] for it in A.ler_itens_catalogo(fora, [4405, 1400, 17469])}
     anc = A.carregar_ancoras(sb, {4405, 1400, 17469})
     assert anc.casar("Estante para halteres em aço carbono")
     # sem texto em nenhuma das três fontes, continua falhando fechado
@@ -390,6 +397,21 @@ def test_cliente_arquivos_so_le(tmp_path):
             getattr(cli, escrita)
     with pytest.raises(PermissionError):
         cli.rpc("drenar_licitacao_match", {})
+
+
+def test_cliente_arquivos_le_texto_de_catmat_item_pdm_e_arquivo_e_opcional(tmp_path):
+    """Dry-run offline com o export de catmat_item_pdm (22/10/2026): item 6 (ANILHA) só tem texto lá."""
+    d = _entrada(tmp_path)
+    _csv(d / "catmat_itens.csv", ["codigo_item", "descricao_item"],
+         [[it["codigo_item"], it["descricao"]] for it in ITENS if it["codigo_item"] not in (5, 6)])
+    _csv(d / "catmat_item_pdm.csv", ["codigo_item", "descricao"],
+         [[it["codigo_item"], it["descricao"]] for it in ITENS if it["codigo_item"] == 6])
+    cli = ClienteArquivos(str(d))
+    assert cli.selecionar("catmat_item_pdm", codigo_item="in.(6)")[0]["descricao"].startswith("ANILHA")
+    assert A.carregar_ancoras(cli, PDMS).casar("Anilha de ferro fundido 5 kg")
+    os.remove(d / "catmat_item_pdm.csv")                          # sem o arquivo: fonte vazia, PDM 7000 sem texto
+    with pytest.raises(A.AncorasIndisponiveis, match="7000"):
+        A.carregar_ancoras(ClienteArquivos(str(d)), PDMS)
 
 
 def test_reclassificador_dry_run_offline_gera_backup_e_mudancas(tmp_path, monkeypatch):

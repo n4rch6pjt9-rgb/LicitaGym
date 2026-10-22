@@ -380,6 +380,47 @@ Deno.test("api-agentes (0032 CA-1): pedido failed, Analisar pede de novo", async
   assertEquals(r.json.preparacao.erro, null);
 });
 
+// 3558 (21/10/2026): o pedido falhou no meio (504 do Gemini) com 4 documentos lidos e 4 sem texto. "Analisar de novo"
+// precisa refazer o pedido, e a tela fica "em preparação" até a leitura terminar.
+Deno.test("api-agentes (3558): com chunks, pedido failed e documento sem texto, Analisar pede de novo e fica em preparação", async () => {
+  const { repo, estado } = ambiente();
+  estado.preparacao = { status: "failed", resultado: null, erro: "indexação: HTTP 504", atualizado_em: "t" };
+  estado.naoLidos = 4;
+  const r = await chamar(ctx(repo), { action: "analise_executar", licitacao_id: 101, proposta: P });
+  assertEquals(estado.solicitacoes, 1);
+  assertEquals(r.json.preparacao_solicitada, true);
+  assertEquals(r.json.preparacao.status, "pending");
+  assertEquals(r.json.em_preparacao, true);
+  assertEquals("faltaLer" in r.json, false);
+  assertEquals(r.json.execucoes[0].situacao, "ok");
+});
+
+Deno.test("api-agentes (3558): com chunks e pedido failed, mas tudo lido, Analisar não pede de novo", async () => {
+  const { repo, estado } = ambiente();
+  estado.preparacao = { status: "failed", resultado: null, erro: "indexação: HTTP 504", atualizado_em: "t" };
+  estado.naoLidos = 0;
+  const r = await chamar(ctx(repo), { action: "analise_executar", licitacao_id: 101, proposta: P });
+  assertEquals(estado.solicitacoes, 0);
+  assertEquals(r.json.em_preparacao, false);
+  assertEquals(r.json.preparacao.status, "failed");
+});
+
+Deno.test("api-agentes (3558): analise_obter com chunks, pedido em andamento e documento sem texto fica em preparação", async () => {
+  const { repo, estado } = ambiente();
+  estado.preparacao = { status: "processing", resultado: null, erro: null, atualizado_em: "t" };
+  estado.naoLidos = 2;
+  const r = await chamar(ctx(repo), { action: "analise_obter", licitacao_id: 101 });
+  assertEquals(r.json.em_preparacao, true);
+  assertEquals(estado.solicitacoes, 0);
+});
+
+Deno.test("api-agentes (3558): com chunks e sem pedido, não consulta os documentos", async () => {
+  const { repo, estado } = ambiente();
+  const r = await chamar(ctx(repo), { action: "analise_executar", licitacao_id: 101, proposta: P });
+  assertEquals(estado.consultasNaoLidos, 0);
+  assertEquals(r.json.em_preparacao, false);
+});
+
 Deno.test("api-agentes (0032): analise_obter com chunks e pedido pending não está em preparação", async () => {
   const { repo, estado } = ambiente();
   estado.preparacao = { status: "pending", resultado: null, erro: null, atualizado_em: "t" };

@@ -80,6 +80,14 @@ begin
     insert into public.licitacoes_externas (fonte, regulamento) values ('pncp', 'RLC')       returning id into v_rlc;
     insert into public.licitacoes_externas (fonte, regulamento) values ('pncp', 'LEI_14133') returning id into v_fora;
     perform public.pipeline_mover(v_t, array[v_srp, v_nsrp, v_ssrp, v_nulo, v_rlc, v_rca, v_outro], v_nova, null, v_u);
+    -- Spec 0035 (R-18): na Nova nascem as 2 tarefas de agente, com qualquer regulamento (inclusive nulo, RLC e outro).
+    -- Elas são conferidas aqui e saem, porque o resto deste check conta só as tarefas do catálogo 14.133.
+    if (select count(*) from public.tarefas_equipe
+         where tenant_id = v_t and responsavel_tipo = 'agente'
+           and licitacao_id in (v_srp, v_nsrp, v_ssrp, v_nulo, v_rlc, v_rca, v_outro)) <> 14 then
+      raise exception 'CHECK FALHOU: tarefas de agente da Nova não nasceram para todos os regulamentos';
+    end if;
+    delete from public.tarefas_equipe where tenant_id = v_t and responsavel_tipo = 'agente';
 
     select md5(string_agg(t::text, '|' order by t.codigo)) into v_hash from public.tarefas_catalogo t;
 

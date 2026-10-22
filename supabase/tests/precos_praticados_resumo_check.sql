@@ -1,5 +1,6 @@
 -- =============================================================================
--- Checagem da migration 20261009180000_precos_praticados_resumo (spec 0009, CA-2).
+-- Checagem da migration 20261009180000_precos_praticados_resumo (spec 0009, CA-2), com a assinatura de 10
+-- parâmetros da 20261021150000_precos_itens_contratacao (spec 0031; os 4 filtros novos têm default).
 --
 -- 1. ACL: public.precos_praticados_resumo e public.precos_percentil_linear com EXECUTE só para service_role,
 --    security invoker e search_path fixo.
@@ -23,12 +24,12 @@ begin;
 
 do $$
 declare
-  v_fn regprocedure := to_regprocedure('public.precos_praticados_resumo(integer, date, date, integer, text, text)');
+  v_fn regprocedure := to_regprocedure('public.precos_praticados_resumo(integer, date, date, integer, text, text, text, text, text, text)');
   v_pct regprocedure := to_regprocedure('public.precos_percentil_linear(numeric[], numeric)');
   v_qtd bigint;
 begin
   if v_fn is null then
-    raise exception 'CHECK FALHOU: public.precos_praticados_resumo(integer, date, date, integer, text, text) não existe';
+    raise exception 'CHECK FALHOU: public.precos_praticados_resumo(integer, date, date, integer, text, text, text, text, text, text) não existe';
   end if;
   if v_pct is null then
     raise exception 'CHECK FALHOU: public.precos_percentil_linear(numeric[], numeric) não existe';

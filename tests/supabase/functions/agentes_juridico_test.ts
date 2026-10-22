@@ -31,7 +31,7 @@ Deno.test("jurídico: liga sinal ao artigo, marca não conferido e ausente", () 
   });
   assertEquals(a.fontes, [
     { tipo: "dispositivo", norma: "LEI_14133_2021", artigo: 59, conferido_oficial: false },
-    { tipo: "calculo", regra: "mapa_sinal_dispositivo", versao: "2026-10-19.1" },
+    { tipo: "calculo", regra: "mapa_sinal_dispositivo", versao: "2026-10-21.1" },
   ]);
   assertEquals(validarAchado(a), null);
 });
@@ -56,3 +56,14 @@ Deno.test("jurídico: peça 'nenhuma' é informativa", () =>
 
 Deno.test("jurídico: sem sinais devolve ok e lista vazia", () =>
   assertEquals(agenteJuridico({ sinais: [], dispositivos: [disp(59)] }).achados, []));
+
+Deno.test("jurídico (spec 0035, R-19): copia o trecho do edital do sinal, com página, antes do cálculo", () => {
+  const trecho = { tipo: "chunk" as const, chunk_id: 7, documento_id: 3, pagina: 12, trecho: "visita técnica obrigatória" };
+  const r = agenteJuridico({ sinais: [{ ...sinal("exigencia.visita_tecnica"), fontes: [trecho] }], dispositivos: [disp(63, true)] });
+  assertEquals(r.achados[0].fontes, [
+    { tipo: "dispositivo", norma: "LEI_14133_2021", artigo: 63, conferido_oficial: true },
+    trecho,
+    { tipo: "calculo", regra: "mapa_sinal_dispositivo", versao: "2026-10-21.1" },
+  ]);
+  assertEquals(validarAchado(r.achados[0]), null);
+});

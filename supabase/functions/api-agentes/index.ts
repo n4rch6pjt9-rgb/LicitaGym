@@ -11,6 +11,15 @@ import type { ChunkEdital } from "../_shared/agentes/edital.ts";
 import { createSupabaseRepo, ErroAgentes, type AgentesRepo, type Dossie, type Execucao, type Preparacao } from "./repo.ts";
 import { parseActionFromBody } from "./validation.ts";
 
+/**
+ * api-agentes: agentes de edital, preço e jurídico (spec 0032), com rota própria e envio para a oportunidade (spec 0035).
+ *   oportunidades_buscar (K-0) e documentos_listar (K-1): a rota do agente escolhe a oportunidade e mostra os documentos.
+ *   analise_executar (K-2: `agentes` opcional; jurídico roda edital e preço antes), analise_obter (K-5:
+ *   `somente_enviadas` para a aba), analise_enviar (K-4) e analise_revisar (K-6: só enviada).
+ *   Toda ação com licitacao_id exige a licitação no pipeline da empresa (R-1: 404 fora dele); envio e revisão conferem a
+ *   empresa pela execução. Qualquer membro da empresa (admin ou operação) e o admin da plataforma.
+ */
+
 export interface ApiAgentesContext {
   getRepo?: () => AgentesRepo;
   getUser?: (req: Request) => Promise<AuthenticatedUser | null>;
@@ -48,7 +57,7 @@ export async function contextos(d: Dossie, proposta: PropostaItem[] | null): Pro
     chunks: await impressaoChunks(d.chunks),
     portal: d.portal_oficial ?? null,
   });
-  const preco = await hashContexto({
+  const precoEntrada = {
     agente: "preco",
     regra: REGRA_VERSAO,
     natureza: d.natureza,
@@ -60,13 +69,14 @@ export async function contextos(d: Dossie, proposta: PropostaItem[] | null): Pro
       item.piso_centavos,
     ]),
     proposta,
-    referencia_em: new Date().toISOString().slice(0, 10),
-  });
+  };
+  const preco = await hashContexto({ ...precoEntrada, referencia_em: new Date().toISOString().slice(0, 10) });
+  // R-6: o jurídico leva o preço sem a data do dia, para a análise enviada num dia seguir atual no seguinte.
   const juridico = await hashContexto({
     agente: "juridico",
     regra: REGRA_VERSAO,
     edital,
-    preco,
+    preco: await hashContexto(precoEntrada),
     dispositivos: d.dispositivos.map((dispositivo) => [dispositivo.artigo, dispositivo.conferido_oficial]),
   });
   return { edital, preco, juridico };
@@ -98,13 +108,14 @@ async function executar(
   userId: string,
   licitacaoId: number,
   proposta: PropostaItem[] | null,
+  agentes: Agente[] | null,
 ): Promise<Execucao[]> {
-  const dossie = await repo.carregarDossie(tenant, licitacaoId);
-  if (!dossie) throw new ErroAgentes("Licitação não encontrada.", 404);
+  const dossie = await carregarNoPipeline(repo, tenant, licitacaoId);
   const hashes = await contextos(dossie, proposta);
   const sinais: Achado[] = [];
   const saida: Execucao[] = [];
-  for (const agente of ORDEM) {
+  // a validação já pôs edital e preço antes do jurídico (R-5); a ordem é sempre a de ORDEM
+  for (const agente of ORDEM.filter((a) => agentes === null || agentes.includes(a))) {
     const existente = await repo.buscarExecucao(tenant, licitacaoId, agente, hashes[agente]);
     if (existente) {
       saida.push(existente);
@@ -123,6 +134,22 @@ async function executar(
   return saida;
 }
 
+/** R-1: licitação fora do pipeline da empresa é 404, como se não existisse. */
+async function carregarNoPipeline(repo: AgentesRepo, tenant: number, licitacaoId: number): Promise<Dossie> {
+  if (!(await repo.estaNoPipeline(tenant, licitacaoId))) throw new ErroAgentes("Licitação não encontrada.", 404);
+  const dossie = await repo.carregarDossie(tenant, licitacaoId);
+  if (!dossie) throw new ErroAgentes("Licitação não encontrada.", 404);
+  return dossie;
+}
+
+/** Mesma regra do revisar e do enviar: o contexto da execução ainda é o atual. */
+async function atual(repo: AgentesRepo, tenant: number, execucao: Execucao): Promise<boolean> {
+  if (!ORDEM.includes(execucao.agente)) return false;
+  const dossie = await repo.carregarDossie(tenant, execucao.licitacao_id);
+  if (!dossie) return false;
+  return execucao.contexto_hash === (await contextos(dossie, execucao.entrada.proposta))[execucao.agente];
+}
+
 async function enriquecer(repo: AgentesRepo, tenant: number, execucoes: Execucao[]) {
   const saida = [];
   for (const execucao of execucoes) {
@@ -130,10 +157,18 @@ async function enriquecer(repo: AgentesRepo, tenant: number, execucoes: Execucao
     const hashes = dossie ? await contextos(dossie, execucao.entrada.proposta) : null;
     const desatualizada = hashes === null || execucao.contexto_hash !== hashes[execucao.agente];
     const aprovada = await repo.ultimaAprovada(tenant, execucao.licitacao_id, execucao.agente);
+    // aprovada e enviada com tarefa nova do agente (outra etapa, ou a oportunidade voltou ao pipeline): pode ir de novo
+    // para abrir a revisão da tarefa nova (mesma regra do agente_execucao_enviar)
+    let pode_reenviar = false;
+    if (execucao.enviada_em && execucao.revisao === "aprovada" && !desatualizada) {
+      const tarefa = await repo.tarefaAgenteAberta(tenant, execucao.licitacao_id, execucao.agente);
+      pode_reenviar = tarefa !== null && tarefa !== execucao.tarefa_id;
+    }
     saida.push({
       ...execucao,
       desatualizada,
       substitui_aprovada_id: aprovada && aprovada.id !== execucao.id ? aprovada.id : null,
+      pode_reenviar,
     });
   }
   return saida;
@@ -144,7 +179,18 @@ async function enriquecer(repo: AgentesRepo, tenant: number, execucoes: Execucao
  * da fila está pendente ou em andamento: a tarefa mostra "análise em preparação" em vez de "sem documento".
  * Falha ao ler o estado não derruba a análise: vira aviso.
  */
-async function estadoPreparacao(repo: AgentesRepo, tenant: number, licitacaoId: number, temChunks: boolean) {
+interface EstadoPreparacao {
+  preparacao?: Preparacao | null;
+  em_preparacao?: boolean;
+  avisos?: string[];
+}
+
+async function estadoPreparacao(
+  repo: AgentesRepo,
+  tenant: number,
+  licitacaoId: number,
+  temChunks: boolean,
+): Promise<EstadoPreparacao> {
   try {
     const preparacao: Preparacao | null = await repo.preparacao(tenant, licitacaoId);
     const em_preparacao = !temChunks && preparacao !== null &&
@@ -155,6 +201,16 @@ async function estadoPreparacao(repo: AgentesRepo, tenant: number, licitacaoId: 
     console.error("[api-agentes] preparação indisponível", { licitacao: licitacaoId, erro: e instanceof Error ? e.message : e });
     return { avisos: ["preparacao_indisponivel"] };
   }
+}
+
+/**
+ * Spec 0032, fase 1 (CA-1): no clique em "Analisar", edital sem chunks e sem pedido aberto na fila (nenhum, ou o último
+ * falhou) é pedido para download e indexação. Pedido concluído (ex.: sem_documento) não é repetido: a fonte não tem o
+ * documento. Estado ilegível (aviso) não pede: sem saber, não enfileira às cegas. analise_obter nunca pede.
+ */
+function precisaPreparar(prep: EstadoPreparacao, temChunks: boolean): boolean {
+  if (temChunks || prep.preparacao === undefined) return false;
+  return prep.preparacao === null || prep.preparacao.status === "failed";
 }
 
 export async function handleRequest(req: Request, ctx: ApiAgentesContext = {}): Promise<Response> {
@@ -183,34 +239,70 @@ export async function handleRequest(req: Request, ctx: ApiAgentesContext = {}): 
 
     switch (params.action) {
       case "analise_executar": {
-        const execucoes = await executar(repo, tenant, user.id, params.licitacao_id, params.proposta);
+        const execucoes = await executar(repo, tenant, user.id, params.licitacao_id, params.proposta, params.agentes);
         const edital = execucoes.find((e) => e.agente === "edital");
-        const prep = await estadoPreparacao(repo, tenant, params.licitacao_id, edital?.situacao !== "sem_documento");
+        const temChunks = edital?.situacao !== "sem_documento";
+        let prep = await estadoPreparacao(repo, tenant, params.licitacao_id, temChunks);
+        const extra: { preparacao_solicitada?: boolean } = {};
+        if (precisaPreparar(prep, temChunks)) {
+          try {
+            await repo.solicitarPreparacao(tenant, params.licitacao_id);
+            extra.preparacao_solicitada = true;
+            prep = await estadoPreparacao(repo, tenant, params.licitacao_id, temChunks);
+          } catch (e) {
+            console.error("[api-agentes] preparação não solicitada", {
+              licitacao: params.licitacao_id,
+              erro: e instanceof Error ? e.message : e,
+            });
+            prep = { ...prep, avisos: [...(prep.avisos ?? []), "preparacao_nao_solicitada"] };
+          }
+        }
         console.info("[api-agentes] analise_executar", { user: user.id, licitacao: params.licitacao_id, n: execucoes.length });
-        return jsonResponse({ action: params.action, execucoes, ...prep });
+        return jsonResponse({ action: params.action, execucoes, ...prep, ...extra });
       }
       case "analise_obter": {
-        const dossie = await repo.carregarDossie(tenant, params.licitacao_id);
-        if (!dossie) throw new ErroAgentes("Licitação não encontrada.", 404);
-        const execucoes = await enriquecer(repo, tenant, await repo.ultimasExecucoes(tenant, params.licitacao_id));
+        const dossie = await carregarNoPipeline(repo, tenant, params.licitacao_id);
+        const execucoes = await enriquecer(repo, tenant, await repo.ultimasExecucoes(tenant, params.licitacao_id, params.somente_enviadas));
         const prep = await estadoPreparacao(repo, tenant, params.licitacao_id, dossie.chunks.length > 0);
         console.info("[api-agentes] analise_obter", { user: user.id, licitacao: params.licitacao_id, n: execucoes.length });
         return jsonResponse({ action: params.action, execucoes, ...prep });
       }
       case "analise_revisar": {
-        const atual = await repo.obterExecucao(tenant, params.execucao_id);
-        if (!atual) return jsonResponse({ error: "Execução não encontrada." }, 404);
-        if (atual.revisao !== "aguardando") return jsonResponse({ error: "Esta análise já foi revisada." }, 409);
-        const dossie = await repo.carregarDossie(tenant, atual.licitacao_id);
-        if (!dossie) return jsonResponse({ error: "Licitação não encontrada." }, 404);
-        const hashes = await contextos(dossie, atual.entrada.proposta);
-        if (atual.contexto_hash !== hashes[atual.agente]) {
+        const exec = await repo.obterExecucao(tenant, params.execucao_id);
+        // R-1 também aqui: oportunidade que saiu do pipeline não é revisada
+        if (!exec || !(await repo.estaNoPipeline(tenant, exec.licitacao_id))) return jsonResponse({ error: "Execução não encontrada." }, 404);
+        // K-6: só se revisa o que foi enviado para a oportunidade
+        if (!exec.enviada_em) return jsonResponse({ error: "Envie a análise para a oportunidade antes de revisar." }, 409);
+        if (exec.revisao !== "aguardando") return jsonResponse({ error: "Esta análise já foi revisada." }, 409);
+        if (!(await atual(repo, tenant, exec))) {
           return jsonResponse({ error: "Análise desatualizada. Execute de novo antes de revisar." }, 409);
         }
         const execucao = await repo.revisar(tenant, params.execucao_id, params.decisao, params.nota, user.id);
         if (!execucao) return jsonResponse({ error: "Esta análise já foi revisada." }, 409);
         console.info("[api-agentes] analise_revisar", { user: user.id, execucao: params.execucao_id, decisao: params.decisao });
         return jsonResponse({ action: params.action, execucao });
+      }
+      case "analise_enviar": {
+        const exec = await repo.obterExecucao(tenant, params.execucao_id);
+        if (!exec || !(await repo.estaNoPipeline(tenant, exec.licitacao_id))) return jsonResponse({ error: "Execução não encontrada." }, 404);
+        // Confere fora da trava da RPC: um documento indexado entre esta leitura e o envio passa, e a revisão confere de
+        // novo antes de aprovar (achado aceito na revisão de segurança).
+        if (!(await atual(repo, tenant, exec))) {
+          return jsonResponse({ error: "Análise desatualizada. Execute de novo antes de enviar." }, 409);
+        }
+        const execucao = await repo.enviar(tenant, params.execucao_id, user.id);
+        console.info("[api-agentes] analise_enviar", { user: user.id, execucao: params.execucao_id, tarefa: execucao.tarefa_id });
+        return jsonResponse({ action: params.action, execucao });
+      }
+      case "oportunidades_buscar": {
+        const { itens, total } = await repo.buscarOportunidades(
+          tenant, params.agente, params.busca, params.por_pagina, (params.pagina - 1) * params.por_pagina,
+        );
+        return jsonResponse({ action: params.action, oportunidades: itens, total, pagina: params.pagina, por_pagina: params.por_pagina });
+      }
+      case "documentos_listar": {
+        if (!(await repo.estaNoPipeline(tenant, params.licitacao_id))) return jsonResponse({ error: "Licitação não encontrada." }, 404);
+        return jsonResponse({ action: params.action, licitacao_id: params.licitacao_id, documentos: await repo.listarDocumentos(tenant, params.licitacao_id) });
       }
       default: {
         const nunca: never = params;

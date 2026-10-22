@@ -1,5 +1,63 @@
 # Coletores LicitaGym (PNCP + SEST SENAT) → Supabase + RAG
 
+## Perguntar ao edital (spec 0038)
+
+Serviço HTTP do Cloud Run (`agente-perguntas`, `coletor/perguntas_servico.py`, só biblioteca padrão). Quem chama é
+só a Edge Function `api-agentes` (ela faz usuário, empresa, pipeline e o limite de 50 perguntas/dia). Mesma imagem
+dos Jobs: o `Dockerfile` tem `ENTRYPOINT ["python", "-m", "coletor.main"]`, e `--command`/`--args` do deploy trocam
+esse entrypoint.
+
+| Rota | Entrada | Saída |
+|---|---|---|
+| `GET /saude` | — | `200 {"ok": true}` |
+| `POST /edital/perguntar` | cabeçalho `X-Agente-Segredo`; corpo `{"licitacao_id": int > 0, "pergunta": 1..500 caracteres, "k": 1..20 (padrão 8)}` | `200 {resposta, motivo_sem_resposta, citacoes[{n, chunk_id, documento_id, pagina, texto}], modelo, versao_prompt, uso{entrada, saida, pensamento}}` |
+
+Erros: `400` corpo inválido, `401` segredo errado ou ausente, `503` serviço sem `AGENTE_PERGUNTAS_SEGREDO`,
+`502` falha do Vertex ou do Supabase (sem detalhe do erro na resposta). Resposta sem marcador `[n]`, com marcador
+fora dos trechos entregues, JSON inválido duas vezes ou cortada no teto de tokens vira `resposta: null,
+motivo_sem_resposta: "nao_encontrado"`. Os trechos vêm da RPC `agente_chunks_licitacao` (migration da spec 0038).
+
+Deploy (do Marcelo). Conta de serviço própria, com o mínimo:
+
+```bash
+PROJECT=$(gcloud config get-value project); REGION=southamerica-east1
+SA=agente-perguntas@$PROJECT.iam.gserviceaccount.com
+gcloud iam service-accounts create agente-perguntas
+gcloud projects add-iam-policy-binding $PROJECT --member=serviceAccount:$SA --role=roles/aiplatform.user
+
+# segredo compartilhado com a api-agentes (gerado uma vez; não fica em arquivo nem no histórico do shell)
+SEGREDO=$(openssl rand -hex 32)
+printf '%s' "$SEGREDO" | gcloud secrets create agente-perguntas-segredo --data-file=-
+for s in supabase-service-key agente-perguntas-segredo; do
+  gcloud secrets add-iam-policy-binding $s --member=serviceAccount:$SA --role=roles/secretmanager.secretAccessor
+done
+
+gcloud run deploy agente-perguntas --source services/coletor-externo --region $REGION --service-account $SA \
+  --command python --args=-m,coletor.perguntas_servico \
+  --set-secrets SUPABASE_SERVICE_ROLE_KEY=supabase-service-key:latest,AGENTE_PERGUNTAS_SEGREDO=agente-perguntas-segredo:latest \
+  --set-env-vars SUPABASE_URL=$SUPABASE_URL,GOOGLE_CLOUD_PROJECT=$PROJECT \
+  --allow-unauthenticated --max-instances 2 --concurrency 4 --timeout 60
+
+curl -s "$(gcloud run services describe agente-perguntas --region $REGION --format 'value(status.url)')/saude"
+```
+
+- `--allow-unauthenticated` porque a autenticação é o segredo compartilhado (comparado com `hmac.compare_digest`);
+  sem o cabeçalho certo a rota responde 401 antes de qualquer chamada ao Vertex ou ao Supabase.
+- Tempo: a `api-agentes` desiste em 60 s, então cada pergunta tem orçamento de 45 s (`PERGUNTAS_ORCAMENTO_S`), com
+  teto próprio por chamada (embedding 8 s, RPC 10 s, geração 25 s; `PERGUNTAS_*_TIMEOUT_S`) e no máximo uma nova
+  tentativa, depois de 2 s, em erro transitório do Vertex. Orçamento esgotado responde 502 sem tentar de novo. O
+  serviço não usa o intervalo `EMBED_INTERVALO` nem as 8 tentativas do `ia.py` (são da indexação em lote).
+- O mesmo valor do segredo vai para os segredos do Supabase, com a URL do serviço (nenhuma chave do GCP vai para lá):
+
+```bash
+supabase secrets set AGENTE_PERGUNTAS_SEGREDO="$SEGREDO" \
+  AGENTE_PERGUNTAS_URL="$(gcloud run services describe agente-perguntas --region $REGION --format 'value(status.url)')"
+unset SEGREDO
+```
+
+Trocar o segredo: nova versão em `agente-perguntas-segredo`, novo deploy (ou nova revisão) do serviço e o mesmo
+valor em `supabase secrets set`.
+
 ## Rótulo "fora do perfil" dos preços (spec 0037, fase 0)
 
 `--coleta perfil-precos --dry-run` lê `precos_praticados_itens` e rotula uma amostra estratificada por PDM com o

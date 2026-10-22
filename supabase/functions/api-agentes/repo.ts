@@ -115,7 +115,11 @@ export interface AgentesRepo {
   preparacao(tenant: number, licitacaoId: number): Promise<Preparacao | null>;
   /** Pede o download e a indexação do edital (fila 'preparar_triagem'); nunca duplica o pedido aberto. Spec 0032 CA-1. */
   solicitarPreparacao(tenant: number, licitacaoId: number): Promise<"enfileirado" | "ja_na_fila">;
-  /** Documentos da licitação ainda sem texto (pendente ou baixado, fora os removidos do portal): a preparação lê esses. */
+  /**
+   * Documentos da licitação ainda sem texto (pendente ou baixado, fora os removidos do portal): a preparação lê esses.
+   * 'erro' fica de fora de propósito: o erro gravado pode ser determinístico (arquivo corrompido) e cada clique em
+   * "Analisar de novo" reenfileiraria sem fim; erro antigo de indexação se refaz pelo indexador.
+   */
   documentosNaoLidos(licitacaoId: number): Promise<number>;
   buscarExecucao(tenant: number, licitacaoId: number, agente: Agente, contextoHash: string): Promise<Execucao | null>;
   gravarExecucao(

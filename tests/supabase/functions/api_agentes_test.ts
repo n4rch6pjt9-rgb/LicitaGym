@@ -414,6 +414,14 @@ Deno.test("api-agentes (3558): analise_obter com chunks, pedido em andamento e d
   assertEquals(estado.solicitacoes, 0);
 });
 
+Deno.test("api-agentes: na rota do Jurídico (sem o agente de edital), sem chunks, Analisar pede a preparação", async () => {
+  const { repo, dossie, estado } = ambiente();
+  dossie.chunks = [];
+  const r = await chamar(ctx(repo), { action: "analise_executar", licitacao_id: 101, agentes: ["juridico"] });
+  assertEquals(estado.solicitacoes, 1);
+  assertEquals(r.json.em_preparacao, true);
+});
+
 Deno.test("api-agentes (3558): com chunks e sem pedido, não consulta os documentos", async () => {
   const { repo, estado } = ambiente();
   const r = await chamar(ctx(repo), { action: "analise_executar", licitacao_id: 101, proposta: P });

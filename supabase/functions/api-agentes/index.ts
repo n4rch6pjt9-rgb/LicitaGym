@@ -109,7 +109,7 @@ async function executar(
   licitacaoId: number,
   proposta: PropostaItem[] | null,
   agentes: Agente[] | null,
-): Promise<Execucao[]> {
+): Promise<{ execucoes: Execucao[]; temChunks: boolean }> {
   const dossie = await carregarNoPipeline(repo, tenant, licitacaoId);
   const hashes = await contextos(dossie, proposta);
   const sinais: Achado[] = [];
@@ -131,7 +131,7 @@ async function executar(
     saida.push(gravada);
     if (agente !== "juridico") sinais.push(...resultado.achados);
   }
-  return saida;
+  return { execucoes: saida, temChunks: dossie.chunks.length > 0 };
 }
 
 /** R-1: licitação fora do pipeline da empresa é 404, como se não existisse. */
@@ -253,9 +253,8 @@ export async function handleRequest(req: Request, ctx: ApiAgentesContext = {}): 
 
     switch (params.action) {
       case "analise_executar": {
-        const execucoes = await executar(repo, tenant, user.id, params.licitacao_id, params.proposta, params.agentes);
-        const edital = execucoes.find((e) => e.agente === "edital");
-        const temChunks = edital?.situacao !== "sem_documento";
+        // temChunks vem do dossiê: na rota do Jurídico o agente de edital não roda e não serve de sinal
+        const { execucoes, temChunks } = await executar(repo, tenant, user.id, params.licitacao_id, params.proposta, params.agentes);
         let prep = await estadoPreparacao(repo, tenant, params.licitacao_id, temChunks);
         const extra: { preparacao_solicitada?: boolean } = {};
         if (precisaPreparar(prep, temChunks)) {

@@ -23,11 +23,12 @@ Fornecedor de equipamentos de musculação que disputa licitações públicas. C
 | 2 | Pipeline e tarefas | etapas por tenant, tarefas padrão por etapa e por certame | 0017–0019 | no ar |
 | 3 | **Agentes na tarefa** | edital (com aderência), preço, jurídico dentro do cartão da tarefa | **0032** (fases 1–4) | **agora** |
 | 4 | Proposta | marca, modelo e preço por item, guardados na etapa Proposta | (spec a criar) | próximo |
-| 5 | Alerta de disputa | aviso da convocação para lance fechado: push no celular, e-mail, navegador; extensão no operador | (spec a criar) | próximo |
-| 6 | Sessão do certame | chat da sessão do Compras.gov como aba do certame | (spec a criar) | próximo |
-| 7 | Inteligência de sessão | motivos recorrentes de desclassificação; chamadas de negociação; reavaliações; desconto médio estimado → homologado por item | (spec a criar) | depois |
+| 5 | Alerta de disputa | aviso da convocação para lance fechado: push no celular, e-mail, navegador; extensão no operador | 0039 (`parada`) | próximo |
+| 6 | Sessão do certame | chat da sessão do Compras.gov como aba do certame (fonte: Integra Compras, Serpro) | 0039 (`parada`) | próximo |
+| 7 | Inteligência de sessão | motivos recorrentes de desclassificação; chamadas de negociação; reavaliações; desconto médio estimado → homologado por item | 0039 (`parada`, fonte); análise a especificar | depois |
 | 8 | Base de treino dos agentes | licitações homologadas com Edital/TR/ETP + chat da sessão do portal oficial | (spec a criar) | depois |
 | 9 | Preços e BI | preço, marca e fornecedor de compra homologada | 0009, 0014, 0031 (citada na 0032; o arquivo ainda não está na `main`) | no ar; a 0031 alimenta a fase 3 da 0032 |
+| 10 | Robô de lances | extensão no navegador do operador logado; lance por regra determinística dentro do piso, com o valor final mínimo nativo como rede de segurança | 0039 (`parada`) | depois da fase 3 da 0032 |
 
 **Regra de foco:** enquanto a 0032 não terminar a fase 3, spec nova só entra se alimentar uma fase da 0032.
 As outras ficam com status `parada` e uma linha nesta tabela.

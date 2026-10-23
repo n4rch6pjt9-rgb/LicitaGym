@@ -1,6 +1,6 @@
 # 0037: Rotular "fora do perfil" nos preços homologados com modelo de IA e conferência humana por amostra
 
-- **Status:** aprovada (22/10, pelo Marcelo, depois das respostas às perguntas); fase 0 em implementação
+- **Status:** aprovada (22/10, pelo Marcelo, depois das respostas às perguntas); emenda do rótulo `pdm_divergente` aprovada em 23/10; fase 0 em implementação
 - **Alimenta:** spec-mãe 0032, fase 3 (referência praticada do agente de preço usa a marcação "fora do perfil" da
   0031) | módulo 9 "Preços e BI" de `docs/produto/ESCOPO.md`
 - **Repositório:** os dois (backend vai ao ar antes do front): LicitaGym (rótulo, tabela, `api-precos`) e Dashboard
@@ -59,16 +59,32 @@ transportadora de resíduos cadastrada como esteira ergométrica.
 - O preço alto ou baixo sozinho. Isso é o "confira" da tela, que já existe.
 - Item de academia ao ar livre ou fora do escopo comercial. Isso é escopo, assunto do `coletor/escopo.py`.
 
+### Emenda de 23/10: erro de classificação na fonte (`pdm_divergente`)
+
+O órgão erra o PDM/item CATMAT com frequência, e a **descrição detalhada do item (o texto copiado do termo de
+referência) desempata**. A fase 0 (execução pqfms, 160 itens) misturou duas perguntas: produto fora do mercado e
+produto do mercado cadastrado no PDM errado. Ficam três rótulos com efeito, mais `incerto`:
+
+| Rótulo | Quando | Nas métricas do PDM |
+|---|---|---|
+| `no_perfil` | a descrição detalhada descreve o produto do PDM, de qualquer comprador; variação do mesmo produto também (caneleira de peso no PDM de caneleira, ainda que o item CATMAT diga "proteção") | entra |
+| `pdm_divergente` | a descrição detalhada descreve **outro produto do mercado** (fitness, esporte, recreação). Grava `produto_real` (ex.: escada de agilidade no PDM de escada horizontal; kit de bandeirolas no PDM de acessório de condicionamento físico) | sai com "Ocultar" (contamina a mediana do PDM). Remanejar para o PDM certo fica para spec própria |
+| `fora_do_perfil` | o produto não é do mercado (esteira transportadora de resíduos, capacho de entrada, ferragem de construção) | sai com "Ocultar" |
+
+**Ordem de evidência** (a primeira clara decide): descrição detalhada > marca/fabricante/modelo > objeto da compra >
+descrição do item CATMAT > nome do PDM. Preço muito acima da mediana pode ser kit ou lote (erro de unidade): é o
+"confira" da tela, não muda o rótulo. Prompt `0037.2`.
+
 ## Contrato
 
 | ID | Contrato | Entrada | Saída | Erros | Quem |
 |---|---|---|---|---|---|
-| K-1 | Tabela `public.precos_rotulo_perfil` (migration nova, aditiva) | `id_compra`, `id_item_compra` (PK composta, a mesma de `precos_praticados_itens`; `numero_item_compra` vai junto só para leitura) | `rotulo` (`no_perfil` \| `fora_do_perfil` \| `incerto`), `motivo` (até 240 caracteres, cita o trecho que decidiu), `sinais` (`text[]` dentre `objeto`, `descricao`, `marca`, `comprador`, `preco`), `modelo`, `versao_prompt`, `hash_entrada`, `rotulado_em`, `revisao` (`null` \| `confirmado` \| `corrigido`), `rotulo_revisado`, `revisado_em` | CHECK nos valores de `rotulo`, `revisao` e `sinais`; FK lógica conferida no rotulador (linha sem preço correspondente não é gravada) | escrita: `service_role` (coletor); leitura: `service_role` (`api-precos` depois do `requireUserAuth`). RLS ligada, nenhum grant a `anon`/`authenticated` |
+| K-1 | Tabela `public.precos_rotulo_perfil` (migration nova, aditiva) | `id_compra`, `id_item_compra` (PK composta, a mesma de `precos_praticados_itens`; `numero_item_compra` vai junto só para leitura) | `rotulo` (`no_perfil` \| `pdm_divergente` \| `fora_do_perfil` \| `incerto`), `produto_real` (até 120 caracteres; só no `pdm_divergente`, obrigatório nele), `motivo` (até 240 caracteres, cita o trecho que decidiu), `sinais` (`text[]` dentre `objeto`, `descricao`, `marca`, `comprador`, `preco`), `modelo`, `versao_prompt`, `hash_entrada`, `rotulado_em`, `revisao` (`null` \| `confirmado` \| `corrigido`), `rotulo_revisado`, `revisado_em` | CHECK nos valores de `rotulo`, `revisao` e `sinais`; FK lógica conferida no rotulador (linha sem preço correspondente não é gravada) | escrita: `service_role` (coletor); leitura: `service_role` (`api-precos` depois do `requireUserAuth`). RLS ligada, nenhum grant a `anon`/`authenticated` |
 | K-2 | Coletor `python -m coletor.main --coleta perfil-precos [--pdms ...] [--limite N] [--dry-run] [--refazer]` | pares compra × item sem rótulo, ou com `hash_entrada` diferente do atual, ou todos com `--refazer` | grava K-1; log com contagem por rótulo, tokens de entrada e saída e custo estimado; `--dry-run` não grava nada | resposta fora do JSON esperado depois de `FICHA_TENTATIVAS`: o par fica sem rótulo e conta como `erros` (nunca vira `incerto` inventado); erro de configuração do Vertex encerra com código ≠ 0 | desenvolvedor / Cloud Run Job |
-| K-3 | Prompt do rotulador (`coletor/perfil_precos.py`, `VERSAO_PROMPT`) | **uma chamada por compra**, com o `objeto_compra`, o nome da UASG e, por item: código e nome do PDM, código e `descricao_item` CATMAT, `descricao_detalhada_item`, marca, unidade, preço unitário e a mediana do mesmo PDM + unidade em 12 meses (só como sinal). **Sem** fornecedor, CNPJ ou CPF | JSON `{"itens":[{"id":<id_item_compra>,"rotulo":...,"motivo":str,"sinais":[...]}]}`, validado contra schema; temperatura 0 | item da resposta que não existe na entrada é descartado e logado | rotulador |
+| K-3 | Prompt do rotulador (`coletor/perfil_precos.py`, `VERSAO_PROMPT`) | **uma chamada por compra**, com o `objeto_compra`, o nome da UASG e, por item: código e nome do PDM, código e `descricao_item` CATMAT, `descricao_detalhada_item`, marca, unidade, preço unitário e a mediana do mesmo PDM + unidade em 12 meses (só como sinal). **Sem** fornecedor, CNPJ ou CPF | JSON `{"itens":[{"id":<id_item_compra>,"rotulo":...,"produto_real":str\|null,"motivo":str,"sinais":[...]}]}` (`pdm_divergente` sem `produto_real` é resposta inválida), validado contra schema; temperatura 0 | item da resposta que não existe na entrada é descartado e logado | rotulador |
 | K-4 | `api-precos` `action=amostras` (aditivo) | igual a hoje | por amostra: `perfil: {rotulo, motivo, revisao} \| null` (`null` = ainda não rotulado) | iguais aos de hoje | usuário autenticado |
-| K-5 | `api-precos`, parâmetro novo `perfil` nas quatro ações (aditivo) | `perfil=todos` (padrão, igual a hoje) ou `perfil=sem_fora` | `resumo` traz sempre `n_fora_do_perfil` e `n_perfil_incerto` do recorte **com** todos. Com `sem_fora`, as linhas `fora_do_perfil` (pelo `rotulo_revisado` quando houver, senão pelo `rotulo`) saem de **todas** as contas do recorte: n, média, mediana, percentis, mín–máx, unidades, item com mais amostras, diferença estimado → homologado, amostras, itens e cidades. `incerto` e não rotulado continuam | 400 `perfil inválido: use todos ou sem_fora` | usuário autenticado |
-| K-7 | /precos (Dashboard) | rótulo por amostra (K-4) e `n_fora_do_perfil` (K-5) | selo "fora do perfil?" na linha e no cartão da amostra, com o motivo no `title` e por extenso no cartão; botão **"Ocultar fora do perfil (N)"** junto dos filtros, só quando N > 0, desligado por padrão; ligado grava `perfil=sem_fora` na URL, entra nos chips de filtros aplicados e refaz resumo, amostras, itens e cidades com as métricas recalculadas | o erro da API aparece como hoje | usuário autenticado |
+| K-5 | `api-precos`, parâmetro novo `perfil` nas quatro ações (aditivo) | `perfil=todos` (padrão, igual a hoje) ou `perfil=sem_fora` | `resumo` traz sempre `n_fora_do_perfil`, `n_pdm_divergente` e `n_perfil_incerto` do recorte **com** todos. Com `sem_fora`, as linhas `fora_do_perfil` e `pdm_divergente` (pelo `rotulo_revisado` quando houver, senão pelo `rotulo`) saem de **todas** as contas do recorte: n, média, mediana, percentis, mín–máx, unidades, item com mais amostras, diferença estimado → homologado, amostras, itens e cidades. `incerto` e não rotulado continuam | 400 `perfil inválido: use todos ou sem_fora` | usuário autenticado |
+| K-7 | /precos (Dashboard) | rótulo por amostra (K-4) e `n_fora_do_perfil` (K-5) | selo "fora do perfil?" na linha e no cartão da amostra, com o motivo no `title` e por extenso no cartão; botão **"Ocultar fora do perfil (N)"** junto dos filtros, com N = `n_fora_do_perfil` + `n_pdm_divergente`, só quando N > 0; o selo do `pdm_divergente` diz "PDM divergente: <produto_real>", desligado por padrão; ligado grava `perfil=sem_fora` na URL, entra nos chips de filtros aplicados e refaz resumo, amostras, itens e cidades com as métricas recalculadas | o erro da API aparece como hoje | usuário autenticado |
 | K-8 | Relatório PDF da /precos | recorte com `perfil` | no quadro "Recorte": "Fora do perfil: N ocultados" ou "Fora do perfil: N mostrados (não ocultados)"; com `sem_fora`, as estatísticas do PDF são as recalculadas; a metodologia explica o rótulo (modelo, conferência por amostra) | — | usuário autenticado |
 | K-6 | Referência praticada do agente de preço (0032 fase 3) | amostras do item/PDM + unidade | exclui `fora_do_perfil` da referência e mostra no achado quantas saíram e o motivo de cada uma | — | agente de preço |
 
@@ -186,6 +202,9 @@ K-means, que não aponta anomalia (decisão de 22/10).
 - 22/10: comprador de saúde, fisioterapia, quartel ou presídio comprando o mesmo produto é no perfil.
 - 22/10: o modelo roda no Vertex AI do projeto GCP do LicitaGym, com os créditos do Marcelo (como o coletor já faz,
   `coletor/ia.py`). Não há teto fixo em reais; a fase 0 mede o consumo e o PR mostra a projeção antes do backfill.
+- 23/10: o órgão erra a classificação na fonte e a descrição detalhada (TR) desempata. Entra o rótulo
+  `pdm_divergente` (produto do mercado no PDM errado, com `produto_real`), separado do `fora_do_perfil` (produto fora
+  do mercado); o botão "Ocultar" tira os dois das métricas (ver "Emenda de 23/10").
 
 ## Perguntas em aberto
 

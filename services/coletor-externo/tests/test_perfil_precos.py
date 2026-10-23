@@ -328,3 +328,40 @@ def test_pausa_minima_entre_chamadas():
     agora[0] += 10
     P._respeitar_pausa(ultima, 4, relogio=lambda: agora[0], dormir=dormir)   # já passou: não espera
     assert dormidas == [2.5]
+
+
+def test_emenda_pdm_divergente_exige_produto_real():
+    ok = json.dumps({"itens": [
+        {"id": 10, "rotulo": "pdm_divergente", "produto_real": "  escada de\nagilidade ", "motivo": "fita de solo",
+         "sinais": ["descricao"]},
+        {"id": 11, "rotulo": "no_perfil", "produto_real": "ignorado", "motivo": "ok", "sinais": []}]})
+    rotulos, _ = P.validar_resposta(ok, {10, 11})
+    assert rotulos[10]["produto_real"] == "escada de agilidade"
+    assert rotulos[11]["produto_real"] is None          # só o pdm_divergente grava o produto real
+    sem = json.dumps({"itens": [{"id": 10, "rotulo": "pdm_divergente", "produto_real": None, "motivo": "x",
+                                 "sinais": []}]})
+    with pytest.raises(P.RespostaInvalida):
+        P.validar_resposta(sem, {10})
+
+
+def test_emenda_prompt_traz_ordem_de_evidencia_e_os_quatro_rotulos():
+    prompt = P.montar_prompt({"id_compra": "1", "objeto": None, "comprador": None, "itens": []})
+    assert "descrição detalhada > marca/fabricante/modelo > objeto da\ncompra > descrição do item CATMAT > nome do PDM" in prompt
+    for r in P.ROTULOS:
+        assert f'"{r}"' in prompt
+    assert P.VERSAO_PROMPT == "0037.2"
+
+
+def test_emenda_resumo_conta_pdm_divergente():
+    modelo = modelo_fake({ANCORA: "pdm_divergente"})
+
+    def com_produto(prompt):
+        texto, uso = modelo(prompt)
+        dados = json.loads(texto)
+        for i in dados["itens"]:
+            if i["rotulo"] == "pdm_divergente":
+                i["produto_real"] = "esteira transportadora"
+        return json.dumps(dados), uso
+
+    res = P.executar(sb_fake(base_fake()), com_produto, dry_run=True, limite=3, hoje=HOJE)
+    assert res["rotulos"]["pdm_divergente"] == 2 and res["rotulos"]["fora_do_perfil"] == 0

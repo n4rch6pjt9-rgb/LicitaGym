@@ -50,8 +50,8 @@ curl -s "$(gcloud run services describe agente-perguntas --region $REGION --form
 
 - `--allow-unauthenticated` porque a autenticação é o segredo compartilhado (comparado com `hmac.compare_digest`);
   sem o cabeçalho certo a rota responde 401 antes de qualquer chamada ao Vertex ou ao Supabase.
-- Tempo: a `api-agentes` desiste em 60 s, então cada pergunta tem orçamento de 45 s (`PERGUNTAS_ORCAMENTO_S`), com
-  teto próprio por chamada (embedding 8 s, RPC 10 s, geração 25 s; `PERGUNTAS_*_TIMEOUT_S`) e no máximo uma nova
+- Tempo: a `api-agentes` desiste em 60 s, então cada pergunta tem orçamento de 55 s (`PERGUNTAS_ORCAMENTO_S`), com
+  teto próprio por chamada (embedding 8 s, RPC 10 s, geração 40 s; `PERGUNTAS_*_TIMEOUT_S`) e no máximo uma nova
   tentativa, depois de 2 s, em erro transitório do Vertex. Orçamento esgotado responde 502 sem tentar de novo. O
   serviço não usa o intervalo `EMBED_INTERVALO` nem as 8 tentativas do `ia.py` (são da indexação em lote).
 - O mesmo valor do segredo vai para os segredos do Supabase, com a URL do serviço (nenhuma chave do GCP vai para lá):
@@ -92,9 +92,10 @@ tokens do `GEN_MODEL` vigente). Sem eles, o log traz só os tokens.
 
 Ritmo do Vertex (o endpoint global do 3.8 Flash devolve 429 e 504 em rajada): `PERFIL_PAUSA_S` (pausa mínima entre
 chamadas, padrão 4), `PERFIL_ESPERAS_S` (espera entre tentativas, padrão `30,60`; a última se repete),
-`PERFIL_TIMEOUT_MS` (prazo de cada chamada, padrão 40000) e `PERFIL_TENTATIVAS_VERTEX` (padrão 3). Compra que esgota
-as tentativas fica sem rótulo e a rodada segue; o resumo final traz `erros_por_tipo` (cota, erro 5xx, prazo,
-resposta inválida).
+`PERFIL_TIMEOUT_MS` (prazo de cada chamada, padrão 90000; o prazo vai também ao servidor, que desiste uns 3 s antes),
+`PERFIL_ITENS_POR_CHAMADA` (padrão 6: lotes de 15 estouravam o prazo), `PERFIL_MAX_FALHAS_SEGUIDAS` (padrão 8) e
+`PERFIL_TENTATIVAS_VERTEX` (padrão 3). Compra que esgota as tentativas fica sem rótulo e a rodada segue; o resumo
+final traz `erros_por_tipo` (cota, erro 5xx, prazo, resposta inválida).
 
 ## Gate de marca e referências do edital (v16.3)
 - Colunas na ordem fornecedor → marca → modelo, e o gate do fornecedor calculado sobre **todas** as propostas dele:

@@ -90,6 +90,12 @@ gcloud run jobs execute coletor-precos --region southamerica-east1 \
 O custo em dólar só aparece se o Job tiver `PRECO_ENTRADA_USD_MTOK` e `PRECO_SAIDA_USD_MTOK` (preço por milhão de
 tokens do `GEN_MODEL` vigente). Sem eles, o log traz só os tokens.
 
+Ritmo do Vertex (o endpoint global do 3.8 Flash devolve 429 e 504 em rajada): `PERFIL_PAUSA_S` (pausa mínima entre
+chamadas, padrão 4), `PERFIL_ESPERAS_S` (espera entre tentativas, padrão `30,60`; a última se repete),
+`PERFIL_TIMEOUT_MS` (prazo de cada chamada, padrão 40000) e `PERFIL_TENTATIVAS_VERTEX` (padrão 3). Compra que esgota
+as tentativas fica sem rótulo e a rodada segue; o resumo final traz `erros_por_tipo` (cota, erro 5xx, prazo,
+resposta inválida).
+
 ## Gate de marca e referências do edital (v16.3)
 - Colunas na ordem fornecedor → marca → modelo, e o gate do fornecedor calculado sobre **todas** as propostas dele:
   `perfil_comercial` = fabricante — marca própria | fabricante + revenda | revenda monomarca | revenda multimarca;

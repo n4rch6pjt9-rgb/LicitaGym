@@ -118,6 +118,19 @@ def transitorio(e: BaseException) -> bool:
     return any(c in msg for c in ("RESOURCE_EXHAUSTED", "UNAVAILABLE", "imed out", "Timeout", "DEADLINE"))
 
 
+def tipo_falha(e: BaseException) -> str:
+    """Nome curto da falha transitória para o log e para o resumo: cota, erro do servidor ou prazo. Pelo código, nunca
+    pelo texto da mensagem (exceto o erro de rede sem código)."""
+    if prazo_estourado(e):
+        return "prazo do Vertex estourado (504/timeout)"
+    codigo = getattr(e, "code", None)
+    if codigo == 429:
+        return "cota do Vertex atingida (429)"
+    if isinstance(codigo, int) and 500 <= codigo <= 599:
+        return f"erro {codigo} do Vertex"
+    return f"falha de rede ({type(e).__name__})"
+
+
 def erro_de_configuracao(e: BaseException) -> bool:
     """401/403/404 do Vertex: modelo não habilitado, endpoint errado ou sem permissão. Vale para todos os documentos,
     então quem chama falha a etapa inteira em vez de marcar cada documento como erro."""
@@ -136,7 +149,8 @@ def motivo_fim(resposta) -> str | None:
 
 
 class Gemini:
-    def __init__(self, project: str | None = None, location: str | None = None, gen_location: str | None = None):
+    def __init__(self, project: str | None = None, location: str | None = None, gen_location: str | None = None,
+                 timeout_ms: int | None = None):
         from google import genai
         from google.genai import types
         nivel_pensamento()   # GEN_THINKING inválido falha aqui, fora do laço dos documentos
@@ -144,21 +158,23 @@ class Gemini:
         projeto = project or os.environ.get("GOOGLE_CLOUD_PROJECT")
         local_embed = location or os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
         local_gen = gen_location or GEN_LOCATION   # `location` é só do embedding: o global não serve o text-*-embedding
-        opcoes = types.HttpOptions(timeout=TIMEOUT_MS)
+        opcoes = types.HttpOptions(timeout=timeout_ms or TIMEOUT_MS)
         # Dois clientes: geração (self.client, GEN_LOCATION) e embedding (self.client_embed, regional).
         self.client_embed = genai.Client(vertexai=True, project=projeto, location=local_embed, http_options=opcoes)
         self.client = (self.client_embed if local_gen == local_embed
                        else genai.Client(vertexai=True, project=projeto, location=local_gen, http_options=opcoes))
 
-    def _retry(self, fn, tentativas: int = 8):
+    def _retry(self, fn, tentativas: int = 8, esperas: tuple[float, ...] | None = None):
+        """Nova tentativa em falha transitória. `esperas` (segundos por tentativa; a última se repete) troca o backoff
+        padrão de 5s dobrando até 90s."""
         for i in range(tentativas):
             try:
                 return fn()
             except Exception as e:
                 if i == tentativas - 1 or not transitorio(e):
                     raise
-                espera = min(90, 5 * 2 ** i)
-                log.info("    cota do Vertex atingida; aguardando %ss (tentativa %s/%s)", espera, i + 1, tentativas)
+                espera = esperas[min(i, len(esperas) - 1)] if esperas else min(90, 5 * 2 ** i)
+                log.info("    %s; aguardando %ss (tentativa %s/%s)", tipo_falha(e), espera, i + 1, tentativas)
                 time.sleep(espera)
 
     def _config(self, temperatura: float | None = None, pensamento_minimo: bool = True, **kw):

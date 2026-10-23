@@ -141,3 +141,49 @@ def test_ficha_com_erro_de_configuracao_falha_a_vista_sem_retry(monkeypatch, cod
     with pytest.raises(errors.ClientError):
         _ficha(g)
     assert g.client.models.generate_content.call_count == 1
+
+
+@pytest.mark.parametrize("erro,esperado", [
+    (lambda: _erro(429, "RESOURCE_EXHAUSTED"), "cota do Vertex atingida (429)"),
+    (lambda: _erro(500, "INTERNAL"), "erro 500 do Vertex"),
+    (lambda: _erro(504, "DEADLINE_EXCEEDED"), "prazo do Vertex estourado (504/timeout)"),
+    (lambda: httpx.ReadTimeout("lento"), "prazo do Vertex estourado (504/timeout)"),
+])
+def test_tipo_falha_pelo_codigo_nao_pela_mensagem(erro, esperado):
+    # a mensagem de todos traz "429 no meio": quem decide é o código
+    assert IA.tipo_falha(erro()) == esperado
+
+
+def test_retry_com_esperas_proprias(monkeypatch):
+    dormidas = []
+    monkeypatch.setattr(IA.time, "sleep", dormidas.append)
+    g = object.__new__(IA.Gemini)
+    falhas = [_erro(429, "RESOURCE_EXHAUSTED"), _erro(504, "DEADLINE_EXCEEDED"), _erro(500, "INTERNAL")]
+
+    def fn():
+        if falhas:
+            raise falhas.pop(0)
+        return "ok"
+
+    assert g._retry(fn, tentativas=4, esperas=(30, 60)) == "ok"
+    assert dormidas == [30, 60, 60]          # a última espera se repete
+
+
+def test_retry_sem_esperas_mantem_o_backoff_padrao(monkeypatch):
+    dormidas = []
+    monkeypatch.setattr(IA.time, "sleep", dormidas.append)
+    g = object.__new__(IA.Gemini)
+    with pytest.raises(errors.ServerError):
+        g._retry(lambda: (_ for _ in ()).throw(_erro(500, "INTERNAL")), tentativas=3)
+    assert dormidas == [5, 10]
+
+
+def test_prazo_proprio_por_cliente(monkeypatch):
+    criados = []
+    import google.genai as genai
+    monkeypatch.setattr(genai, "Client", lambda **kw: criados.append(kw) or SimpleNamespace(**kw))
+    IA.Gemini(project="p", timeout_ms=40000)
+    assert {c["http_options"].timeout for c in criados} == {40000}
+    criados.clear()
+    IA.Gemini(project="p")
+    assert {c["http_options"].timeout for c in criados} == {IA.TIMEOUT_MS}

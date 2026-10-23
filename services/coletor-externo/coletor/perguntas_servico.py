@@ -49,11 +49,12 @@ TENTATIVAS_JSON = 2
 MAX_SAIDA = int(os.environ.get("PERGUNTAS_MAX_TOKENS", "4096"))
 # Tempo: a api-agentes desiste em 60 s. A requisição inteira cabe em ORCAMENTO_S, e cada chamada externa tem o seu
 # teto (nunca maior que o que sobra do orçamento). Os padrões do ia.py (90 s, 8 tentativas, 12,5 s entre embeddings)
-# são da indexação em lote e não valem aqui.
-ORCAMENTO_S = float(os.environ.get("PERGUNTAS_ORCAMENTO_S", "45"))
+# são da indexação em lote e não valem aqui. Geração com 40 s e orçamento de 55 s desde 23/10/2026: com 25 s o
+# gemini-3.8-flash global estourou o prazo (504) nas duas tentativas da licitação 3558; com 40 s respondeu.
+ORCAMENTO_S = float(os.environ.get("PERGUNTAS_ORCAMENTO_S", "55"))
 EMBED_TIMEOUT_S = float(os.environ.get("PERGUNTAS_EMBED_TIMEOUT_S", "8"))
 RPC_TIMEOUT_S = float(os.environ.get("PERGUNTAS_RPC_TIMEOUT_S", "10"))
-GERACAO_TIMEOUT_S = float(os.environ.get("PERGUNTAS_GERACAO_TIMEOUT_S", "25"))
+GERACAO_TIMEOUT_S = float(os.environ.get("PERGUNTAS_GERACAO_TIMEOUT_S", "40"))
 ESPERA_TRANSITORIO_S = 2.0     # antes da única nova tentativa em erro transitório do Vertex (<= 3 s)
 TEMPO_MINIMO_S = 1.0           # com menos que isso no orçamento, não se começa outra chamada
 

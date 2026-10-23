@@ -50,15 +50,18 @@ TENTATIVAS_JSON = int(os.environ.get("PERFIL_TENTATIVAS_JSON", "3"))
 # Teto de saída por chamada (inclui o pensamento no Gemini 3) e itens por chamada: compra grande vai em lotes, cada
 # lote com o objeto e o comprador, para o JSON nunca ser cortado no meio.
 MAX_SAIDA = int(os.environ.get("PERFIL_MAX_TOKENS", "8192"))
-ITENS_POR_CHAMADA = int(os.environ.get("PERFIL_ITENS_POR_CHAMADA", "15"))
+# 6 itens desde 23/10/2026: lotes de 15 levavam mais de 37 s no 3.8 Flash global e estouravam o prazo (execução f4fx6);
+# com 6, as chamadas voltaram em 6 a 9 s (execução pqfms).
+ITENS_POR_CHAMADA = int(os.environ.get("PERFIL_ITENS_POR_CHAMADA", "6"))
 # Falha do Vertex (500, prazo) numa compra conta como erro dela e a rodada segue; muitas seguidas param a rodada.
 TENTATIVAS_VERTEX = int(os.environ.get("PERFIL_TENTATIVAS_VERTEX", "3"))
-MAX_FALHAS_SEGUIDAS = int(os.environ.get("PERFIL_MAX_FALHAS_SEGUIDAS", "5"))
+MAX_FALHAS_SEGUIDAS = int(os.environ.get("PERFIL_MAX_FALHAS_SEGUIDAS", "8"))
 # Ritmo do Vertex (23/10, execução qdh48: o endpoint global do 3.8 Flash devolveu 429 e 504 em rajada e cada 504
-# levava ~90s). Pausa mínima entre chamadas, espera longa entre tentativas e prazo curto por chamada.
+# levava ~90s). Pausa mínima entre chamadas, espera longa entre tentativas e prazo próprio por chamada.
 PAUSA_S = float(os.environ.get("PERFIL_PAUSA_S", "4"))
 ESPERAS_VERTEX = tuple(float(x) for x in os.environ.get("PERFIL_ESPERAS_S", "30,60").split(",") if x.strip())
-TIMEOUT_MS = int(os.environ.get("PERFIL_TIMEOUT_MS", "40000"))
+# 90 s: com 40 s o Vertex desistia em ~37 s e cortava chamadas que terminariam (o prazo vai ao servidor).
+TIMEOUT_MS = int(os.environ.get("PERFIL_TIMEOUT_MS", "90000"))
 TEXTO_MAX = 600   # por campo de texto no prompt (descrição detalhada pode ser longa)
 
 # (texto da resposta, uso de tokens) — o modelo real é Gemini (ia.py); nos testes, uma função falsa.

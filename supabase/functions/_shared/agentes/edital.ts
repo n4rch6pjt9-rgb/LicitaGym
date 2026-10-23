@@ -1,4 +1,5 @@
 import { normalizarComMapa } from "./achados.ts";
+import { itemNaPosicao, trechoLimpo } from "./citacao.ts";
 import type { PortalOficial } from "../portal-oficial.ts";
 import { REGRA_VERSAO, type Achado, type Fonte, type ResultadoAgente, type Severidade } from "./tipos.ts";
 
@@ -131,12 +132,33 @@ function trechoNoOriginal(original: string, normInicio: number, normFim: number,
   return original.slice(a, b);
 }
 
+/**
+ * Fonte de chunk com o trecho cru (como antes) e, da spec 0038 (K-4), o item/cláusula da frase onde a regra casou e o
+ * trecho limpo (frases inteiras em volta do que casou).
+ */
+function fonteChunk(chunk: ChunkEdital, normInicio: number, normFim: number, origem: number[]): Fonte {
+  const trecho = trechoNoOriginal(chunk.texto, normInicio, normFim, origem);
+  const i0 = origem[normInicio];
+  const i1 = origem[normFim - 1];
+  const casou = i0 === undefined || i1 === undefined ? null : chunk.texto.slice(i0, i1 + 1);
+  return {
+    tipo: "chunk",
+    chunk_id: chunk.id,
+    documento_id: chunk.documento_id,
+    pagina: chunk.pagina,
+    trecho,
+    item: i0 === undefined ? null : itemNaPosicao(chunk.texto, i0),
+    trecho_limpo: trechoLimpo(trecho, 300, casou),
+  };
+}
+
 export function detectarExigencias(chunks: ChunkEdital[]): Achado[] {
   type Grupo = { severidade: Severidade; afirmadas: Fonte[]; negadas: Fonte[]; vistos: Set<string> };
   const grupos = new Map<string, Grupo>();
   for (const chunk of chunks) {
     const { norm, origem } = normalizarComMapa(chunk.texto);
     for (const padrao of PADROES) {
+ fix/edital-dispensa
       padrao.re.lastIndex = 0;
       for (const casa of norm.matchAll(padrao.re)) {
         if (casa.index === undefined) continue;
@@ -159,6 +181,13 @@ export function detectarExigencias(chunks: ChunkEdital[]): Achado[] {
           pagina: chunk.pagina,
           trecho: trechoNoOriginal(chunk.texto, casa.index, fim, origem),
         });
+
+      const casa = padrao.re.exec(norm);
+      if (!casa || casa.index === undefined) continue;
+      const grupo = fontes.get(padrao.codigo) ?? { severidade: padrao.severidade, fontes: [] };
+      if (grupo.fontes.length < 3) {
+        grupo.fontes.push(fonteChunk(chunk, casa.index, casa.index + casa[0].length, origem));
+ main
       }
     }
   }
@@ -368,13 +397,7 @@ export function detectarPotencia(chunks: ChunkEdital[]): Achado[] {
   for (const chunk of chunks) {
     const { norm, origem } = normalizarComMapa(chunk.texto);
     const mencoes = mencoesPotencia(norm);
-    const fonte = (m: Mencao): Fonte => ({
-      tipo: "chunk",
-      chunk_id: chunk.id,
-      documento_id: chunk.documento_id,
-      pagina: chunk.pagina,
-      trecho: trechoNoOriginal(chunk.texto, m.inicio, m.fim, origem),
-    });
+    const fonte = (m: Mencao): Fonte => fonteChunk(chunk, m.inicio, m.fim, origem);
     for (let i = 0; i < mencoes.length; i++) {
       const m = mencoes[i];
       if (m.tipo !== "pico" && m.tipo !== "faixa") continue;
@@ -450,7 +473,8 @@ export function detectarPotencia(chunks: ChunkEdital[]): Achado[] {
  */
 export function achadoPortalOficial(licitacaoId: number, portal: PortalOficial): Achado {
   const fontes: Fonte[] = [{ tipo: "registro", tabela: "licitacoes_externas", id: String(licitacaoId) }];
-  if (portal.evidencia) fontes.push({ tipo: "chunk", ...portal.evidencia });
+  // Só o trecho limpo: a evidência do portal traz a janela do trecho, não o texto do chunk, e o item não é inferido dela.
+  if (portal.evidencia) fontes.push({ tipo: "chunk", ...portal.evidencia, trecho_limpo: trechoLimpo(portal.evidencia.trecho) });
   const dados = {
     nome: portal.nome,
     url: portal.url,

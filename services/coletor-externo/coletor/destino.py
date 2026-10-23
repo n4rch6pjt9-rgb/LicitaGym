@@ -220,8 +220,8 @@ class Supabase:
         if r.status_code >= 300:
             raise RuntimeError(f"Supabase chunks: {r.status_code} {r.text[:300]}")
 
-    def rpc(self, funcao: str, params: dict) -> list[dict]:
-        r = requests.post(f"{self.base}/rpc/{funcao}", json=params, headers=self.h, timeout=60)
+    def rpc(self, funcao: str, params: dict, timeout: float = 60) -> list[dict]:
+        r = requests.post(f"{self.base}/rpc/{funcao}", json=params, headers=self.h, timeout=timeout)
         if r.status_code >= 300:
             raise RuntimeError(f"Supabase rpc {funcao}: {r.status_code} {r.text[:300]}")
         return r.json()

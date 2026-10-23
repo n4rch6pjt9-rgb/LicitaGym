@@ -1,14 +1,34 @@
-// GET api-precos (spec specs/0009-precos-historicos-pesquisa-preco.md).
+// GET api-precos (specs 0009-precos-historicos-pesquisa-preco.md e 0031-precos-estimado-homologado-auditoria.md).
 // Preços homologados da Pesquisa de Preço do Compras.gov (public.precos_praticados_itens), por PDM do catálogo da
-// empresa, para a tela /precos e a aba "Inteligência de Preços" da oportunidade.
+// empresa, para a tela /precos, o BI e a aba "Inteligência de Preços" da oportunidade.
 //
-//   ?action=resumo&pdm=<int>[&item=<int>][&meses=12|24][&uf=XX][&unidade=SIGLA]
+// Recorte (o mesmo nas três actions, calculado no banco por public.precos_praticados_recorte):
+//   pdm=<int> obrigatório; item=<int>; meses=12|24; uf=XX; unidade=SIGLA; municipio=<nome> (exige uf);
+//   uasg=<código só de dígitos ou texto do nome da UASG/órgão>; objeto=<texto>; q=<busca livre>.
+//   Texto sem acento e sem diferenciar maiúsculas; várias palavras = todas presentes (decisão de 21/10, spec 0031).
+//
+//   ?action=resumo
 //       estatísticas do recorte calculadas no banco (public.precos_praticados_resumo): n, média, mín, p25, mediana,
-//       p75, máx, unidade de fornecimento predominante e todas as unidades do recorte (`unidades`). n < 3: média e
-//       quartis null, com motivo.
-//   ?action=amostras&pdm=<int>[&item][&meses][&uf][&unidade][&page=1][&limit=20, até 100]
-//       as linhas do mesmo recorte, por data_resultado desc (desempate pela chave id_compra, id_item_compra).
-//       Página além do total: 400 com codigo "page_alem_do_total" (o PostgREST responde 416/PGRST103).
+//       p75, máx, unidade de fornecimento predominante, todas as unidades do recorte (`unidades`), item com mais
+//       amostras (sem o filtro de item) e a mediana da diferença estimado → homologado (%), com n_com_estimado.
+//       n < 3: média e quartis null, com motivo. Nada é excluído do cálculo sozinho (spec 0031: o operador limpa o
+//       recorte pelos filtros).
+//   ?action=amostras[&page=1][&limit=20, até 100]
+//       as linhas do recorte (public.precos_praticados_amostras), por data_resultado desc (desempate pela chave
+//       id_compra, id_item_compra), com estimado, homologado, diferença, links do PNCP e do portal oficial, esfera e
+//       poder. Página além do total: 400 com codigo "page_alem_do_total".
+//   ?action=itens
+//       itens do PDM com N > 0 no recorte (sem o filtro de item), por n desc (dropdown da /precos).
+//   ?action=municipios
+//       cidades com preço no recorte (sem o filtro de cidade; com uf, só as da UF), com o n: lista do filtro Cidade.
+//
+// Links (spec 0031, decisão de 21/10): link_pncp = https://pncp.gov.br/app/editais/<cnpj>/<ano>/<sequencial>, do nº
+// de controle oficial; link_portal_oficial = o linkSistemaOrigem que o PNCP mostra ("pncp") ou, sem ele (dispensas),
+// o acompanhamento da compra no Compras.gov montado a partir do id_compra ("montado"). Sem a compra consultada ou
+// encontrada no PNCP, link_pncp é null e o portal vem montado do id_compra (o id é do próprio Compras.gov, não depende
+// do PNCP); `motivo_sem_estimado` diz por que não há estimado.
+// Diferença: diferenca_valor = homologado − estimado; diferenca_percentual = (homologado − estimado) / estimado × 100;
+// 2 casas, meio para longe do zero; só com estimado oficial > 0.
 //
 // Unidade (decisão 4 da spec): sem `unidade` o recorte pode misturar unidades de fornecimento (UN, PAR, M2...). Para
 // comparar com o valor estimado de um item da oportunidade, o front passa `unidade` = sigla de fornecimento do item;
@@ -29,6 +49,12 @@ import { numeroOuAusente } from "../_shared/pcaLeading.ts";
 export const FONTE = "compras.gov/pesquisa-preco";
 export const TABELA = "precos_praticados_itens";
 export const RPC_RESUMO = "precos_praticados_resumo";
+export const RPC_AMOSTRAS = "precos_praticados_amostras";
+export const RPC_ITENS = "precos_praticados_itens_pdm";
+export const RPC_MUNICIPIOS = "precos_praticados_municipios";
+export const LINK_PNCP_BASE = "https://pncp.gov.br/app/editais";
+export const LINK_COMPRAS_GOV_BASE =
+  "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/acompanhamento-compra?compra=";
 export const RPC_CATALOGO = "catalogo_catmat_pdms_efetivos";
 export const ARREDONDAMENTO =
   "Média e percentis (p25, mediana, p75) com 2 casas, meio para longe do zero; percentil por interpolação linear " +
@@ -39,34 +65,10 @@ const MESES_PADRAO = 12;
 const LIMIT_PADRAO = 20;
 const LIMIT_MAX = 100;
 const N_MINIMO = 3;
+const TEXTO_MAX = 120;
 
-const COLUNAS_AMOSTRA = [
-  "id_compra",
-  "id_item_compra",
-  "numero_item_compra",
-  "codigo_item_catalogo",
-  "codigo_pdm",
-  "data_resultado",
-  "data_compra",
-  "codigo_uasg",
-  "nome_uasg",
-  "codigo_orgao",
-  "nome_orgao",
-  "estado",
-  "municipio",
-  "quantidade",
-  "preco_unitario",
-  "sigla_unidade_fornecimento",
-  "nome_unidade_fornecimento",
-  "sigla_unidade_medida",
-  "nome_unidade_medida",
-  "marca",
-  "nome_fornecedor",
-  "ni_fornecedor",
-  "objeto_compra",
-  "descricao_item",
-  "descricao_detalhada_item",
-].join(", ");
+const ESFERAS: Record<string, string> = { F: "Federal", E: "Estadual", M: "Municipal", D: "Distrital" };
+const PODERES: Record<string, string> = { E: "Executivo", L: "Legislativo", J: "Judiciário" };
 
 type Resultado = { data: Record<string, unknown>[] | null; error: unknown; count?: number | null };
 
@@ -99,7 +101,7 @@ export class PrecosNaoVerificado extends Error {}
 /** Página pedida além do total de amostras: erro de chamada (400), não falha de banco. */
 class PaginaAlemDoTotal extends Error {}
 
-type Action = "resumo" | "amostras";
+type Action = "resumo" | "amostras" | "itens" | "municipios";
 
 interface PrecosParams {
   action: Action;
@@ -108,6 +110,10 @@ interface PrecosParams {
   meses: number;
   uf: string | null;
   unidade: string | null;
+  municipio: string | null;
+  uasg: string | null;
+  objeto: string | null;
+  q: string | null;
   page: number;
   limit: number;
 }
@@ -151,8 +157,8 @@ export function parsePrecosParams(url: URL): PrecosParams | { error: string } {
   const q = (k: string) => url.searchParams.get(k);
 
   const actionRaw = q("action");
-  if (vazio(actionRaw) || !["resumo", "amostras"].includes(actionRaw!.trim())) {
-    return { error: "action inválida: use resumo ou amostras" };
+  if (vazio(actionRaw) || !["resumo", "amostras", "itens", "municipios"].includes(actionRaw!.trim())) {
+    return { error: "action inválida: use resumo, amostras, itens ou municipios" };
   }
   const action = actionRaw!.trim() as Action;
 
@@ -180,6 +186,20 @@ export function parsePrecosParams(url: URL): PrecosParams | { error: string } {
     return { error: "unidade inválida: use a sigla da unidade de fornecimento (ex.: UN, PAR)" };
   }
 
+  const textos: Record<string, string | null> = {};
+  for (const k of ["municipio", "uasg", "objeto", "q"]) {
+    const v = q(k);
+    if (vazio(v)) {
+      textos[k] = null;
+      continue;
+    }
+    const t = v!.trim().replace(/\s+/g, " ");
+    if (t.length > TEXTO_MAX) return { error: `${k} inválido: use até ${TEXTO_MAX} caracteres` };
+    if ([...t].some((c) => c.charCodeAt(0) < 32)) return { error: `${k} inválido: caractere de controle` };
+    textos[k] = t;
+  }
+  if (textos.municipio !== null && vazio(ufRaw)) return { error: "municipio exige uf (a cidade depende da UF)" };
+
   const pageRaw = q("page");
   if (!vazio(pageRaw) && !/^[1-9]\d{0,5}$/.test(pageRaw!.trim())) return { error: "page inválida: use 1 ou mais" };
   const limitRaw = q("limit");
@@ -197,6 +217,10 @@ export function parsePrecosParams(url: URL): PrecosParams | { error: string } {
     meses: vazio(mesesRaw) ? MESES_PADRAO : Number(mesesRaw!.trim()),
     uf: vazio(ufRaw) ? null : ufRaw!.trim().toUpperCase(),
     unidade: vazio(unidadeRaw) ? null : unidadeRaw!.trim().toUpperCase(),
+    municipio: textos.municipio,
+    uasg: textos.uasg,
+    objeto: textos.objeto,
+    q: textos.q,
     page: vazio(pageRaw) ? 1 : Number(pageRaw!.trim()),
     limit: vazio(limitRaw) ? LIMIT_PADRAO : Number(limitRaw!.trim()),
   };
@@ -236,7 +260,73 @@ export function fornecedorDe(ni: unknown, nome: unknown): {
   return { ni_fornecedor: null, ni_tipo: null, nome_fornecedor: texto(nome) };
 }
 
+/** Arredonda a 2 casas, meio para longe do zero (a mesma regra do banco), sem o erro de float de Math.round. */
+export function arred2(n: number): number {
+  const s = Math.sign(n);
+  const a = Math.abs(n);
+  return s * Math.round(Number((a * 100).toPrecision(15))) / 100 + 0;
+}
+
+/** Link do PNCP a partir do nº de controle oficial da compra (<CNPJ>-<d>-<sequencial>/<ano>); fora do formato: null. */
+export function linkPncp(numero: unknown): string | null {
+  const s = texto(numero);
+  const m = s ? /^(\d{14})-\d-(\d{1,6})\/(\d{4})$/.exec(s.trim()) : null;
+  return m ? `${LINK_PNCP_BASE}/${m[1]}/${m[3]}/${Number(m[2])}` : null;
+}
+
+/**
+ * Link do portal oficial (decisão de 21/10): o linkSistemaOrigem do PNCP; sem ele, o acompanhamento da compra no
+ * Compras.gov montado a partir do id_compra (17 dígitos), no formato que o PNCP usa nas dispensas com link.
+ */
+export function linkPortalOficial(linkPncpOrigem: unknown, idCompra: unknown):
+  { link: string | null; origem: "pncp" | "montado" | null } {
+  const l = texto(linkPncpOrigem);
+  if (l && /^https:\/\//i.test(l)) return { link: l, origem: "pncp" };
+  const id = texto(idCompra);
+  if (id && /^\d{17}$/.test(id)) return { link: `${LINK_COMPRAS_GOV_BASE}${id}`, origem: "montado" };
+  return { link: null, origem: null };
+}
+
+function rotulo(mapa: Record<string, string>, v: unknown): { codigo: string | null; nome: string | null } {
+  const c = texto(v);
+  return { codigo: c, nome: c ? mapa[c.toUpperCase()] ?? null : null };
+}
+
+function enriquecimentoDe(raw: Record<string, unknown>, homologado: number | null) {
+  const consultada = raw.compra_consultada === true;
+  const encontrada = raw.compra_encontrada === true;
+  const estimado = numeroOuAusente(raw.valor_unitario_estimado);
+  // Estimado só de compra consultada e encontrada no PNCP (defesa em profundidade: o banco já anula o resto).
+  const est = consultada && encontrada && estimado !== null && estimado > 0 ? estimado : null;
+  // Fora do PNCP (ou ainda não consultada) não há linkSistemaOrigem confiável, mas o id_compra é do Compras.gov:
+  // o acompanhamento montado continua levando à compra (origem "montado").
+  const portal = consultada && encontrada
+    ? linkPortalOficial(raw.link_sistema_origem, raw.id_compra)
+    : linkPortalOficial(null, raw.id_compra);
+  const motivo = !consultada
+    ? "Compra ainda não consultada no PNCP (fora do recorte de enriquecimento ou pendente)."
+    : !encontrada
+    ? "Compra não encontrada no PNCP."
+    : est === null
+    ? "O PNCP não informa o valor estimado deste item."
+    : null;
+  return {
+    valor_estimado: est,
+    valor_homologado: homologado,
+    diferenca_valor: est !== null && homologado !== null ? arred2(homologado - est) : null,
+    diferenca_percentual: est !== null && homologado !== null ? arred2((homologado - est) / est * 100) : null,
+    motivo_sem_estimado: motivo,
+    numero_controle_pncp: consultada && encontrada ? texto(raw.numero_controle_pncp) : null,
+    link_pncp: consultada && encontrada ? linkPncp(raw.numero_controle_pncp) : null,
+    link_portal_oficial: portal.link,
+    link_portal_oficial_origem: portal.origem,
+  };
+}
+
 function amostraDe(raw: Record<string, unknown>): Record<string, unknown> {
+  const homologado = numeroOuAusente(raw.preco_unitario);
+  const esfera = rotulo(ESFERAS, raw.esfera);
+  const poder = rotulo(PODERES, raw.poder);
   return {
     data_resultado: dataIso(raw.data_resultado),
     data_compra: dataIso(raw.data_compra),
@@ -262,6 +352,15 @@ function amostraDe(raw: Record<string, unknown>): Record<string, unknown> {
     numero_item_compra: inteiro(raw.numero_item_compra),
     codigo_item_catalogo: inteiro(raw.codigo_item_catalogo),
     codigo_pdm: inteiro(raw.codigo_pdm),
+    esfera: esfera.nome,
+    esfera_codigo: esfera.codigo,
+    poder: poder.nome,
+    poder_codigo: poder.codigo,
+    modalidade: inteiro(raw.modalidade),
+    forma: texto(raw.forma),
+    criterio_julgamento: texto(raw.criterio_julgamento),
+    percentual_maior_desconto: numeroOuAusente(raw.percentual_maior_desconto),
+    ...enriquecimentoDe(raw, homologado),
     fonte: FONTE,
   };
 }
@@ -278,11 +377,6 @@ function unidadesDe(raw: unknown): Array<{ sigla: string | null; nome: string | 
   });
 }
 
-/** Erro de "faixa fora do total" do PostgREST (offset além das linhas). */
-function foraDoTotal(error: unknown): boolean {
-  return !!error && typeof error === "object" && (error as { code?: unknown }).code === "PGRST103";
-}
-
 async function pdmNoCatalogo(client: PrecosClient, pdm: number): Promise<boolean> {
   const { data, error } = await client.rpc(RPC_CATALOGO).select("codigo_pdm").eq("codigo_pdm", pdm);
   if (error) throw error;
@@ -290,15 +384,23 @@ async function pdmNoCatalogo(client: PrecosClient, pdm: number): Promise<boolean
   return data.length > 0;
 }
 
-async function resumo(client: PrecosClient, p: PrecosParams, periodo: { inicio: string; fim: string }) {
-  const { data, error } = await client.rpc(RPC_RESUMO, {
+/** Filtros do recorte comum (sem item, que cada action trata) no formato dos parâmetros das funções do banco. */
+function argsRecorte(p: PrecosParams, periodo: { inicio: string; fim: string }): Record<string, unknown> {
+  return {
     p_pdm: p.pdm,
     p_inicio: periodo.inicio,
     p_fim: periodo.fim,
-    p_item: p.item,
     p_uf: p.uf,
     p_unidade: p.unidade,
-  });
+    p_municipio: p.municipio,
+    p_uasg: p.uasg,
+    p_objeto: p.objeto,
+    p_q: p.q,
+  };
+}
+
+async function resumo(client: PrecosClient, p: PrecosParams, periodo: { inicio: string; fim: string }) {
+  const { data, error } = await client.rpc(RPC_RESUMO, { ...argsRecorte(p, periodo), p_item: p.item });
   if (error) throw error;
   if (!Array.isArray(data) || data.length !== 1) {
     throw new PrecosNaoVerificado("Não verificado: o resumo de preços não devolveu exatamente uma linha.");
@@ -316,6 +418,8 @@ async function resumo(client: PrecosClient, p: PrecosParams, periodo: { inicio: 
       ? "Menos de 3 preços no recorte: média e quartis não são calculados."
       : null);
   const unidadeN = inteiro(r.unidade_n);
+  const itemMaisN = inteiro(r.item_mais_n);
+  const nComEstimado = inteiro(r.n_com_estimado) ?? 0;
   return {
     n,
     media: quartil(r.media),
@@ -329,32 +433,81 @@ async function resumo(client: PrecosClient, p: PrecosParams, periodo: { inicio: 
       ? { sigla: texto(r.unidade_sigla), nome: texto(r.unidade_nome), n: unidadeN }
       : null,
     unidades: unidadesDe(r.unidades),
+    item_mais_amostras: itemMaisN !== null && itemMaisN > 0 && inteiro(r.item_mais_codigo) !== null
+      ? { codigo_item_catalogo: inteiro(r.item_mais_codigo), descricao: texto(r.item_mais_descricao), n: itemMaisN }
+      : null,
+    n_com_estimado: nComEstimado,
+    diferenca_mediana_percentual: nComEstimado >= N_MINIMO ? numeroOuAusente(r.diferenca_mediana_percentual) : null,
     ultima_data_resultado: dataIso(r.ultima_data_resultado),
     atualizado_em: typeof r.atualizado_em === "string" && r.atualizado_em !== "" ? r.atualizado_em : null,
     arredondamento: ARREDONDAMENTO,
   };
 }
 
-async function amostras(client: PrecosClient, p: PrecosParams, periodo: { inicio: string; fim: string }) {
-  let q = client.from(TABELA).select(COLUNAS_AMOSTRA, { count: "exact" })
-    .eq("codigo_pdm", String(p.pdm))
-    .gte("data_resultado", periodo.inicio)
-    .lte("data_resultado", periodo.fim)
-    .gt("preco_unitario", 0);
-  if (p.item !== null) q = q.eq("codigo_item_catalogo", p.item);
-  if (p.uf !== null) q = q.eq("estado", p.uf);
-  if (p.unidade !== null) q = q.eq("sigla_unidade_fornecimento", p.unidade);
-  const offset = (p.page - 1) * p.limit;
-  const { data, error, count } = await q
-    .order("data_resultado", { ascending: false, nullsFirst: false })
-    .order("id_compra", { ascending: true })
-    .order("id_item_compra", { ascending: true })
-    .range(offset, offset + p.limit - 1);
-  if (foraDoTotal(error)) throw new PaginaAlemDoTotal();
+async function lerAmostras(client: PrecosClient, p: PrecosParams, periodo: { inicio: string; fim: string },
+  offset: number, limit: number) {
+  const { data, error } = await client.rpc(RPC_AMOSTRAS, {
+    ...argsRecorte(p, periodo),
+    p_item: p.item,
+    p_offset: offset,
+    p_limit: limit,
+  });
   if (error) throw error;
-  if (typeof count !== "number") throw new PrecosNaoVerificado("Não verificado: contagem ausente na leitura dos preços.");
   if (!Array.isArray(data)) throw new PrecosNaoVerificado("Não verificado: leitura dos preços sem linhas.");
-  return { itens: data.map(amostraDe), total: count, page: p.page, limit: p.limit };
+  return data;
+}
+
+function totalDe(linhas: Record<string, unknown>[]): number {
+  const t = inteiro(linhas[0]?.total);
+  if (t === null || t < linhas.length) {
+    throw new PrecosNaoVerificado("Não verificado: contagem ausente na leitura dos preços.");
+  }
+  return t;
+}
+
+async function amostras(client: PrecosClient, p: PrecosParams, periodo: { inicio: string; fim: string }) {
+  const offset = (p.page - 1) * p.limit;
+  const data = await lerAmostras(client, p, periodo, offset, p.limit);
+  if (data.length === 0) {
+    if (p.page === 1) return { itens: [], total: 0, page: p.page, limit: p.limit };
+    // Página vazia além da primeira: conta o recorte para distinguir "página além do total" de recorte vazio.
+    const primeira = await lerAmostras(client, p, periodo, 0, 1);
+    if (primeira.length > 0) throw new PaginaAlemDoTotal();
+    return { itens: [], total: 0, page: p.page, limit: p.limit };
+  }
+  return { itens: data.map(amostraDe), total: totalDe(data), page: p.page, limit: p.limit };
+}
+
+async function itens(client: PrecosClient, p: PrecosParams, periodo: { inicio: string; fim: string }) {
+  const { data, error } = await client.rpc(RPC_ITENS, argsRecorte(p, periodo));
+  if (error) throw error;
+  if (!Array.isArray(data)) throw new PrecosNaoVerificado("Não verificado: lista de itens sem resposta.");
+  const lista = data.map((raw) => {
+    const codigo = inteiro(raw.codigo_item_catalogo);
+    const n = inteiro(raw.n);
+    if (codigo === null || n === null) throw new PrecosNaoVerificado("Não verificado: item sem código ou contagem.");
+    return { codigo_item_catalogo: codigo, descricao: texto(raw.descricao), n };
+  }).filter((i) => i.n > 0);
+  lista.sort((a, b) => b.n - a.n || a.codigo_item_catalogo - b.codigo_item_catalogo);
+  return { itens: lista, total: lista.length };
+}
+
+async function municipios(client: PrecosClient, p: PrecosParams, periodo: { inicio: string; fim: string }) {
+  const a = argsRecorte(p, periodo);
+  delete a.p_municipio;
+  const { data, error } = await client.rpc(RPC_MUNICIPIOS, { ...a, p_item: p.item });
+  if (error) throw error;
+  if (!Array.isArray(data)) throw new PrecosNaoVerificado("Não verificado: lista de cidades sem resposta.");
+  const lista = data.map((raw) => {
+    const uf = texto(raw.uf);
+    const nome = texto(raw.municipio);
+    const n = inteiro(raw.n);
+    if (uf === null || nome === null || n === null) {
+      throw new PrecosNaoVerificado("Não verificado: cidade sem UF, nome ou contagem.");
+    }
+    return { uf, municipio: nome, n };
+  }).filter((m) => m.n > 0);
+  return { municipios: lista, total: lista.length };
 }
 
 export async function responderPrecos(req: Request, url: URL, deps: PrecosDeps = {}): Promise<Response> {
@@ -375,11 +528,27 @@ export async function responderPrecos(req: Request, url: URL, deps: PrecosDeps =
     }
     const base = {
       fonte: FONTE,
-      filtro: { pdm: p.pdm, item: p.item, meses: p.meses, uf: p.uf, unidade: p.unidade },
+      filtro: {
+        pdm: p.pdm,
+        item: p.item,
+        meses: p.meses,
+        uf: p.uf,
+        unidade: p.unidade,
+        municipio: p.municipio,
+        uasg: p.uasg,
+        objeto: p.objeto,
+        q: p.q,
+      },
       periodo_inicio: periodo.inicio,
       periodo_fim: periodo.fim,
     };
-    const corpo = p.action === "resumo" ? await resumo(client, p, periodo) : await amostras(client, p, periodo);
+    const corpo = p.action === "resumo"
+      ? await resumo(client, p, periodo)
+      : p.action === "itens"
+      ? await itens(client, p, periodo)
+      : p.action === "municipios"
+      ? await municipios(client, p, periodo)
+      : await amostras(client, p, periodo);
     return jsonResponse({ ...base, ...corpo });
   } catch (error) {
     if (error instanceof PaginaAlemDoTotal) {

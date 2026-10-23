@@ -164,7 +164,8 @@ def test_200_vazio_retorna_vazio(monkeypatch, modulo, fabrica, chamar):
 @pytest.mark.parametrize("resposta", [
     _resp(200, {"mensagem": "sem lista"}),
     _resp(200, ValueError("corpo não é JSON"), texto="<html>"),
-    _resp(400, texto='{"message": "Erro ao efetuar a consulta"}'),
+    # 400 comum (parâmetro). O 400 "Erro ao efetuar a consulta" é instabilidade e tem retry: test_compras_instabilidade_400.
+    _resp(400, texto='{"message": "codigoPdm inválido"}'),
 ])
 def test_200_sem_resultado_e_400_sao_erro(monkeypatch, modulo, fabrica, chamar, resposta):
     cliente = fabrica()

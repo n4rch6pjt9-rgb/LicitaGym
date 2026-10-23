@@ -41,6 +41,9 @@ export interface Tarefa {
   status: Status;
   responsavel_papel: "admin" | "operacao";
   responsavel_user_id: string | null;
+  /** Spec 0035: tarefa de agente (Agente de Edital, Jurídico) só muda de status pela revisão da análise (R-11). */
+  responsavel_tipo: "papel" | "usuario" | "agente";
+  responsavel_agente: string | null;
   criada_em: string;
   atualizada_em: string;
   concluida_em: string | null;

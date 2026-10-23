@@ -5,7 +5,7 @@ import type { Bloqueio, Status, Tarefa, TarefaPrevia } from "./types.ts";
 const TAREFA_COLUMNS = [
   "id", "tenant_id", "licitacao_id", "origem", "tarefa_codigo", "titulo", "descricao", "liberada_por_fase",
   "liberada_por_evento", "condicao_verificada", "contexto", "prazo_situacao", "prazo_em", "prazo_informado_por", "prazo_informado_em", "status", "responsavel_papel",
-  "responsavel_user_id", "criada_em", "atualizada_em", "concluida_em",
+  "responsavel_user_id", "responsavel_tipo", "responsavel_agente", "criada_em", "atualizada_em", "concluida_em",
 ].join(",") +
   ",catalogo:tarefas_catalogo(titulo,descricao,fase_codigo,natureza,prazo_quantidade,prazo_unidade,prazo_sentido,prazo_evento)";
 

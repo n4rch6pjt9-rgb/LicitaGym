@@ -23,6 +23,9 @@ Deno.test("edital: detecta exigências com trecho literal", () => {
     documento_id: 9,
     pagina: 1,
     trecho: "8.1 A licitante deverá apresentar AMOSTRA da esteira em 5 dias úteis.",
+    // spec 0038 (K-4)
+    item: "8.1",
+    trecho_limpo: "8.1 A licitante deverá apresentar AMOSTRA da esteira em 5 dias úteis.",
   }]);
   assertEquals([amostra.natureza, amostra.metodo], ["fato", "regra"]);
   for (const a of achados) assertEquals(validarAchado(a), null);
@@ -48,7 +51,11 @@ Deno.test("edital: prazo avisa que não considerou feriados", () => {
   assertEquals(prazo.severidade, "atencao");
   assertEquals(prazo.natureza, "analise");
   assertEquals(prazo.dados, { data_limite: "2026-10-12", data_abertura: "2026-10-15", feriados_considerados: false });
+ fix/edital-dispensa
   assertEquals(prazo.fontes, [{ tipo: "calculo", regra: "lei_14133_art_164_3_dias_uteis", versao: "2026-10-20.1" }]);
+
+  assertEquals(prazo.fontes, [{ tipo: "calculo", regra: "lei_14133_art_164_3_dias_uteis", versao: "2026-10-21.1" }]);
+ main
 });
 
 Deno.test("edital: sem chunks é sem_documento, não 'nenhuma exigência'", () => {

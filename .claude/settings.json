@@ -1,5 +1,16 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "claudeMdExcludes": [
+    "**/docs/**/CLAUDE.md",
+    "**/memory/**/CLAUDE.md",
+    "**/scripts/**/CLAUDE.md",
+    "**/supabase/**/CLAUDE.md",
+    "**/services/**/CLAUDE.md",
+    "**/tests/**/CLAUDE.md",
+    "**/.claude/agents/CLAUDE.md",
+    "**/.claude/hooks/CLAUDE.md",
+    "**/.github/**/CLAUDE.md"
+  ],
   "permissions": {
     "deny": [
       "Bash(supabase db reset:*)",

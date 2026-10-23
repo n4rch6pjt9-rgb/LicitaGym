@@ -1,5 +1,103 @@
 # Coletores LicitaGym (PNCP + SEST SENAT) → Supabase + RAG
 
+## Perguntar ao edital (spec 0038)
+
+Serviço HTTP do Cloud Run (`agente-perguntas`, `coletor/perguntas_servico.py`, só biblioteca padrão). Quem chama é
+só a Edge Function `api-agentes` (ela faz usuário, empresa, pipeline e o limite de 50 perguntas/dia). Mesma imagem
+dos Jobs: o `Dockerfile` tem `ENTRYPOINT ["python", "-m", "coletor.main"]`, e `--command`/`--args` do deploy trocam
+esse entrypoint.
+
+| Rota | Entrada | Saída |
+|---|---|---|
+| `GET /saude` | — | `200 {"ok": true}` |
+| `POST /edital/perguntar` | cabeçalho `X-Agente-Segredo`; corpo `{"licitacao_id": int > 0, "pergunta": 1..500 caracteres, "k": 1..20 (padrão 8)}` | `200 {resposta, motivo_sem_resposta, citacoes[{n, chunk_id, documento_id, pagina, texto, apoio, apoio_inicio}], modelo, versao_prompt ("0038.2"), uso{entrada, saida, pensamento}}` |
+
+Erros: `400` corpo inválido, `401` segredo errado ou ausente, `503` serviço sem `AGENTE_PERGUNTAS_SEGREDO`,
+`502` falha do Vertex ou do Supabase, orçamento de tempo esgotado, resposta do modelo fora do formato nas duas
+tentativas ou cortada no teto de tokens (sem detalhe do erro na resposta; a `api-agentes` não grava nada).
+`resposta: null, motivo_sem_resposta: "nao_encontrado"` só em três casos: nenhum trecho, o modelo respondeu
+`{"resposta": null}`, ou a citação foi rejeitada (sem marcador `[n]`, marcador fora dos trechos entregues, ou algum
+`[n]` sem `apoio` válido).
+
+O modelo devolve `{"resposta": "...[n]...", "apoio": {"n": "<frase copiada do trecho n>"}}`. Cada `apoio` precisa
+estar no texto do trecho n (comparação com espaços colapsados e sem diferença de maiúsculas) e ter pelo menos 20
+caracteres. Na citação, `apoio` é a frase recortada do texto original do trecho (não o texto do modelo) e
+`apoio_inicio` é a posição dela, em caracteres, no `texto` do trecho. Os trechos vêm da RPC `agente_chunks_licitacao` (migration da spec 0038).
+
+Deploy (do Marcelo). Conta de serviço própria, com o mínimo:
+
+```bash
+PROJECT=$(gcloud config get-value project); REGION=southamerica-east1
+SA=agente-perguntas@$PROJECT.iam.gserviceaccount.com
+gcloud iam service-accounts create agente-perguntas
+gcloud projects add-iam-policy-binding $PROJECT --member=serviceAccount:$SA --role=roles/aiplatform.user
+
+# segredo compartilhado com a api-agentes (gerado uma vez; não fica em arquivo nem no histórico do shell)
+SEGREDO=$(openssl rand -hex 32)
+printf '%s' "$SEGREDO" | gcloud secrets create agente-perguntas-segredo --data-file=-
+for s in supabase-service-key agente-perguntas-segredo; do
+  gcloud secrets add-iam-policy-binding $s --member=serviceAccount:$SA --role=roles/secretmanager.secretAccessor
+done
+
+gcloud run deploy agente-perguntas --source services/coletor-externo --region $REGION --service-account $SA \
+  --command python --args=-m,coletor.perguntas_servico \
+  --set-secrets SUPABASE_SERVICE_ROLE_KEY=supabase-service-key:latest,AGENTE_PERGUNTAS_SEGREDO=agente-perguntas-segredo:latest \
+  --set-env-vars SUPABASE_URL=$SUPABASE_URL,GOOGLE_CLOUD_PROJECT=$PROJECT \
+  --allow-unauthenticated --max-instances 2 --concurrency 4 --timeout 60
+
+curl -s "$(gcloud run services describe agente-perguntas --region $REGION --format 'value(status.url)')/saude"
+```
+
+- `--allow-unauthenticated` porque a autenticação é o segredo compartilhado (comparado com `hmac.compare_digest`);
+  sem o cabeçalho certo a rota responde 401 antes de qualquer chamada ao Vertex ou ao Supabase.
+- Tempo: a `api-agentes` desiste em 60 s, então cada pergunta tem orçamento de 55 s (`PERGUNTAS_ORCAMENTO_S`), com
+  teto próprio por chamada (embedding 8 s, RPC 10 s, geração 40 s; `PERGUNTAS_*_TIMEOUT_S`) e no máximo uma nova
+  tentativa, depois de 2 s, em erro transitório do Vertex. Orçamento esgotado responde 502 sem tentar de novo. O
+  serviço não usa o intervalo `EMBED_INTERVALO` nem as 8 tentativas do `ia.py` (são da indexação em lote).
+- O mesmo valor do segredo vai para os segredos do Supabase, com a URL do serviço (nenhuma chave do GCP vai para lá):
+
+```bash
+supabase secrets set AGENTE_PERGUNTAS_SEGREDO="$SEGREDO" \
+  AGENTE_PERGUNTAS_URL="$(gcloud run services describe agente-perguntas --region $REGION --format 'value(status.url)')"
+unset SEGREDO
+```
+
+Trocar o segredo: nova versão em `agente-perguntas-segredo`, novo deploy (ou nova revisão) do serviço e o mesmo
+valor em `supabase secrets set`.
+
+## Rótulo "fora do perfil" dos preços (spec 0037, fase 0)
+
+`--coleta perfil-precos --dry-run` lê `precos_praticados_itens` e rotula uma amostra estratificada por PDM com o
+Gemini do Vertex (`coletor/perfil_precos.py`), **sem gravar nada**. Faz uma chamada por lote de itens da compra. Para
+cada item, o log traz o rótulo (`no_perfil`, `pdm_divergente` com o produto real, `fora_do_perfil` ou `incerto`) e o
+motivo; no fim vêm os tokens e a projeção para a base inteira. Os créditos são os do projeto GCP. A gravação (tabela
+`precos_rotulo_perfil`) é da fase 1. A descrição detalhada (texto do TR) desempata quando o órgão errou o PDM.
+
+Roda no Job `coletor-precos`. O SA precisa de `roles/aiplatform.user` e o Job, de `GOOGLE_CLOUD_PROJECT`:
+
+```bash
+PROJECT=$(gcloud config get-value project)
+gcloud projects add-iam-policy-binding $PROJECT \
+  --member=serviceAccount:coletor-precos@$PROJECT.iam.gserviceaccount.com --role=roles/aiplatform.user
+# amostra de 50 compras (inclui PDMs variados):
+gcloud run jobs execute coletor-precos --region southamerica-east1 \
+  --update-env-vars GOOGLE_CLOUD_PROJECT=$PROJECT \
+  --args="--coleta,perfil-precos,--dry-run,--limite,50"
+# só a compra-âncora (esteira transportadora no PDM de esteira ergométrica):
+gcloud run jobs execute coletor-precos --region southamerica-east1 \
+  --args="--coleta,perfil-precos,--dry-run,--compras,93099205000052026"
+```
+
+O custo em dólar só aparece se o Job tiver `PRECO_ENTRADA_USD_MTOK` e `PRECO_SAIDA_USD_MTOK` (preço por milhão de
+tokens do `GEN_MODEL` vigente). Sem eles, o log traz só os tokens.
+
+Ritmo do Vertex (o endpoint global do 3.8 Flash devolve 429 e 504 em rajada): `PERFIL_PAUSA_S` (pausa mínima entre
+chamadas, padrão 4), `PERFIL_ESPERAS_S` (espera entre tentativas, padrão `30,60`; a última se repete),
+`PERFIL_TIMEOUT_MS` (prazo de cada chamada, padrão 90000; o prazo vai também ao servidor, que desiste uns 3 s antes),
+`PERFIL_ITENS_POR_CHAMADA` (padrão 6: lotes de 15 estouravam o prazo), `PERFIL_MAX_FALHAS_SEGUIDAS` (padrão 8) e
+`PERFIL_TENTATIVAS_VERTEX` (padrão 3). Compra que esgota as tentativas fica sem rótulo e a rodada segue; o resumo
+final traz `erros_por_tipo` (cota, erro 5xx, prazo, resposta inválida).
+
 ## Gate de marca e referências do edital (v16.3)
 - Colunas na ordem fornecedor → marca → modelo, e o gate do fornecedor calculado sobre **todas** as propostas dele:
   `perfil_comercial` = fabricante — marca própria | fabricante + revenda | revenda monomarca | revenda multimarca;
@@ -236,7 +334,7 @@ O coletor usa `--escopo fitness` por padrão (`--escopo tudo` desliga o filtro).
 
 **Forte ancorado (03/10/2026, modo núcleo).** Com o banco configurado, `forte` só vem de item que casa uma âncora
 do catálogo CATMAT da empresa (`coletor/catmat_ancoras.py`: nome/TIPO/NOME dos itens dos PDMs efetivos e dos itens
-incluídos, segundo `catmat_itens_mapa()`, com o texto de `catmat_itens`/`catalogo_itens`; 100 linhas por página). As listas fixas acima só rebaixam: sem âncora o
+incluídos, segundo `catmat_itens_mapa()`, com o texto de `catmat_itens`/`catalogo_itens` e, por último, de `catmat_item_pdm`; 100 linhas por página). As listas fixas acima só rebaixam: sem âncora o
 `forte` delas vira `fraco`, e item ancorado que cai em `ITEM_FORA`, academia ao ar livre ou brinquedo infantil fica
 `fraco`. O objeto da compra não tem âncora (`forte` do objeto vira `fraco`). Piso, borracha, obra_piso e o código
 CATMAT (`catmat`) não mudam; as travas (serviço, obra, ATI, passagem sem core, predial) continuam. PDM efetivo sem
@@ -348,7 +446,7 @@ python3 -m coletor.buscar "Por que a Freedom Motors recorreu e qual foi a decis�
   fornecedores, decisão, motivos, fundamentos legais, valores, pontos-chave) e um trecho-resumo.
 - Embeddings: `text-multilingual-embedding-002` (lotes de até 30 trechos, 1 chamada a cada 12,5 s), 768 dimensões, `RETRIEVAL_DOCUMENT` (consulta usa `RETRIEVAL_QUERY`).
   Cada chunk grava o modelo em `licitacao_chunks.embedding_model` (padrão da coluna: o mesmo modelo).
-- `GEN_MODEL` (padrão `gemini-2.5-flash`) e `GOOGLE_CLOUD_LOCATION` (padrão `us-central1`) são configuráveis. O embedding do RAG permanece `text-multilingual-embedding-002` com 768 dimensões; trocar o modelo exige um plano de reindex aprovado. Não apontar `EMBED_MODEL` para outro modelo sem esse plano.
+- `GEN_MODEL` (padrão `gemini-3.8-flash`, desde 22/10/2026: o `gemini-2.5-flash` foi descontinuado), `GEN_LOCATION` (padrão `global`, endpoint do 3.8 Flash) e `GEN_THINKING` (padrão deduzido do modelo: `low` no Gemini 3+, `off` no 2.5-flash; aceita `off`, `low`, `medium`, `high` ou `padrao`) são configuráveis. O embedding usa `GOOGLE_CLOUD_LOCATION` (padrão `us-central1`), separado da geração. O embedding do RAG permanece `text-multilingual-embedding-002` com 768 dimensões; trocar o modelo exige um plano de reindex aprovado. Não apontar `EMBED_MODEL` para outro modelo sem esse plano.
 
 **Cota do Vertex (projeto novo):** o modelo de embeddings começa com **5 requisições/min**
 por região. O indexador já respeita isso (`EMBED_INTERVALO=12.5`). Para acelerar, peça aumento em

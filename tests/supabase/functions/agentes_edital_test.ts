@@ -23,6 +23,9 @@ Deno.test("edital: detecta exigências com trecho literal", () => {
     documento_id: 9,
     pagina: 1,
     trecho: "8.1 A licitante deverá apresentar AMOSTRA da esteira em 5 dias úteis.",
+    // spec 0038 (K-4)
+    item: "8.1",
+    trecho_limpo: "8.1 A licitante deverá apresentar AMOSTRA da esteira em 5 dias úteis.",
   }]);
   assertEquals([amostra.natureza, amostra.metodo], ["fato", "regra"]);
   for (const a of achados) assertEquals(validarAchado(a), null);

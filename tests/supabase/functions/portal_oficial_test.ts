@@ -325,6 +325,8 @@ Deno.test("agente edital: portal achado no edital cita o trecho como fonte", () 
     documento_id: 900,
     pagina: 3,
     trecho: chunks[0].texto,
+    // spec 0038 (K-4): trecho limpo; sem item, que não se infere da janela da evidência
+    trecho_limpo: chunks[0].texto,
   });
   assertEquals(validarAchado(a), null);
 });

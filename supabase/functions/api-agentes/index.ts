@@ -8,7 +8,16 @@ import { REGRA_VERSAO, type Achado, type Agente, type ResultadoAgente } from "..
 import { type AuthenticatedUser, authenticateUser, corsHeaders, isLicitagymAdmin, jsonResponse } from "../_shared/http.ts";
 import { ErroTenantAcesso } from "../_shared/tenant.ts";
 import type { ChunkEdital } from "../_shared/agentes/edital.ts";
-import { createSupabaseRepo, ErroAgentes, type AgentesRepo, type Dossie, type Execucao, type Preparacao } from "./repo.ts";
+import { createSupabaseRepo, ErroAgentes, type AgentesRepo, type Dossie, type Execucao, type Pergunta, type Preparacao } from "./repo.ts";
+import {
+  conferirCitacoes,
+  criarServicoPerguntas,
+  diaSaoPaulo,
+  K_CHUNKS,
+  LIMITE_PERGUNTAS_DIA,
+  type ServicoPerguntas,
+  validarRespostaEdital,
+} from "./perguntas.ts";
 import { parseActionFromBody } from "./validation.ts";
 
 /**
@@ -16,13 +25,20 @@ import { parseActionFromBody } from "./validation.ts";
  *   oportunidades_buscar (K-0) e documentos_listar (K-1): a rota do agente escolhe a oportunidade e mostra os documentos.
  *   analise_executar (K-2: `agentes` opcional; jurídico roda edital e preço antes), analise_obter (K-5:
  *   `somente_enviadas` para a aba), analise_enviar (K-4) e analise_revisar (K-6: só enviada).
+ *   Spec 0038 (fase 2, edital): pergunta_edital (K-1: pergunta livre com citações [n] conferidas; cota de 50 por
+ *   empresa por dia), perguntas_listar e pergunta_favoritar (K-5), pergunta_enviar (K-11: nota na oportunidade) e
+ *   documentos_ler (K-6: só admin e operação; enfileira a mesma preparação do "Analisar").
  *   Toda ação com licitacao_id exige a licitação no pipeline da empresa (R-1: 404 fora dele); envio e revisão conferem a
- *   empresa pela execução. Qualquer membro da empresa (admin ou operação) e o admin da plataforma.
+ *   empresa pela execução (ou pela pergunta). Qualquer membro da empresa (admin ou operação) e o admin da plataforma.
  */
 
 export interface ApiAgentesContext {
   getRepo?: () => AgentesRepo;
   getUser?: (req: Request) => Promise<AuthenticatedUser | null>;
+  /** Spec 0038: cliente do serviço agente-perguntas (padrão: AGENTE_PERGUNTAS_URL e AGENTE_PERGUNTAS_SEGREDO). */
+  getServicoPerguntas?: () => ServicoPerguntas;
+  /** Relógio da cota do dia (testes). */
+  agora?: () => Date;
 }
 
 const ORDEM: Agente[] = ["edital", "preco", "juridico"];
@@ -227,6 +243,133 @@ function precisaPreparar(prep: EstadoPreparacao, temChunks: boolean): boolean {
   return prep.preparacao?.status === "failed" && prep.faltaLer === true;
 }
 
+// --- Spec 0038: pergunta livre ao edital (K-1, K-5, K-6, K-11) ----------------------------------------------------
+
+interface Cota {
+  usadas: number;
+  limite: number;
+}
+
+const hoje = (ctx: ApiAgentesContext) => diaSaoPaulo((ctx.agora ?? (() => new Date()))());
+
+async function cotaDoDia(repo: AgentesRepo, tenant: number, ctx: ApiAgentesContext): Promise<Cota> {
+  return { usadas: await repo.cotaUsada(tenant, hoje(ctx)), limite: LIMITE_PERGUNTAS_DIA };
+}
+
+const emLeitura = (p: Preparacao | null) => p !== null && (p.status === "pending" || p.status === "processing");
+
+function respostaPergunta(p: Pergunta, cota: Cota) {
+  return {
+    action: "pergunta_edital",
+    pergunta_id: p.id,
+    resposta: p.resposta,
+    motivo_sem_resposta: p.motivo_sem_resposta,
+    citacoes: p.citacoes,
+    cota,
+  };
+}
+
+/**
+ * K-1. Ordem: pipeline (404) → sem chunks: em leitura (409) ou "sem_documentos" gravado sem chamar o modelo e sem
+ * gastar cota (CA-3) → reserva atômica da vaga do dia (429 cheia; agente_cota_reservar) → serviço (503 sem
+ * configuração, devolvendo a vaga; 502 em falha, timeout ou formato fora do contrato, sem gravar e sem devolver a
+ * vaga: o modelo pode ter cobrado) → conferência das citações (CA-2: [n] inexistente ou malformado, ou chunk de outra
+ * licitação, vira "nao_encontrado") → grava e devolve.
+ */
+async function perguntaEdital(
+  repo: AgentesRepo,
+  ctx: ApiAgentesContext,
+  tenant: number,
+  userId: string,
+  licitacaoId: number,
+  pergunta: string,
+): Promise<Response> {
+  if (!(await repo.estaNoPipeline(tenant, licitacaoId))) return jsonResponse({ error: "Licitação não encontrada." }, 404);
+  const base = { agente: "edital" as const, licitacao_id: licitacaoId, pergunta };
+
+  if ((await repo.contarChunksIndexados(licitacaoId)) === 0) {
+    if (emLeitura(await repo.preparacao(tenant, licitacaoId))) {
+      return jsonResponse({ error: "Os documentos desta licitação estão em leitura. Pergunte de novo quando terminar." }, 409);
+    }
+    const gravada = await repo.gravarPergunta(tenant, userId, {
+      ...base, resposta: null, motivo_sem_resposta: "sem_documentos", citacoes: [], modelo: null, versao_prompt: null, uso: null,
+    });
+    console.info("[api-agentes] pergunta_edital", { user: userId, licitacao: licitacaoId, motivo: "sem_documentos" });
+    // não chamou o modelo: não gasta cota
+    return jsonResponse(respostaPergunta(gravada, await cotaDoDia(repo, tenant, ctx)));
+  }
+
+  const dia = hoje(ctx);
+  const reservadas = await repo.reservarCota(tenant, dia, LIMITE_PERGUNTAS_DIA);
+  if (reservadas === null) {
+    const cota = { usadas: await repo.cotaUsada(tenant, dia), limite: LIMITE_PERGUNTAS_DIA };
+    return jsonResponse({ error: `Limite de ${LIMITE_PERGUNTAS_DIA} perguntas por dia atingido`, cota }, 429);
+  }
+  const depois = { usadas: reservadas, limite: LIMITE_PERGUNTAS_DIA };
+
+  let servico: ServicoPerguntas;
+  try {
+    servico = (ctx.getServicoPerguntas ?? (() => criarServicoPerguntas()))();
+  } catch (e) {
+    // o serviço nem foi chamado: a vaga volta
+    await repo.devolverCota(tenant, dia);
+    throw e;
+  }
+  const r = validarRespostaEdital(await servico.perguntarEdital({ licitacao_id: licitacaoId, pergunta, k: K_CHUNKS }));
+  if (!r) {
+    console.error("[api-agentes] agente-perguntas fora do contrato", { licitacao: licitacaoId });
+    throw new ErroAgentes("falha ao consultar o agente", 502);
+  }
+
+  let conferida: ReturnType<typeof conferirCitacoes> = null;
+  if (r.resposta !== null) {
+    const ids = [...new Set(r.citacoes.map((c) => c.chunk_id))];
+    const chunks = new Map((await repo.chunksDaLicitacao(licitacaoId, ids)).map((c) => [c.id, c]));
+    const nomes = new Map((await repo.listarDocumentos(tenant, licitacaoId)).map((d) => [d.id, d.nome]));
+    conferida = conferirCitacoes(r, chunks, nomes);
+    if (!conferida) {
+      // resposta sem citação válida não é exibida (spec 0038, Backend 1)
+      console.warn("[api-agentes] resposta do agente sem citação válida", { licitacao: licitacaoId, citacoes: r.citacoes.length });
+    }
+  }
+  const gravada = await repo.gravarPergunta(tenant, userId, {
+    ...base,
+    resposta: conferida?.resposta ?? null,
+    motivo_sem_resposta: conferida ? null : "nao_encontrado",
+    citacoes: conferida?.citacoes ?? [],
+    modelo: r.modelo,
+    versao_prompt: r.versao_prompt,
+    uso: r.uso,
+  });
+  console.info("[api-agentes] pergunta_edital", {
+    user: userId, licitacao: licitacaoId, pergunta: gravada.id, citacoes: gravada.citacoes.length, motivo: gravada.motivo_sem_resposta,
+  });
+  return jsonResponse(respostaPergunta(gravada, depois));
+}
+
+/**
+ * K-6: "Ler os documentos" enfileira o mesmo pedido 'preparar_triagem' do "Analisar" (fila_preparacao_solicitar, spec
+ * 0032 CA-1; consumidor coletor.preparar_triagem no Cloud Run a cada 15 min: download, indexação, tarefas).
+ * Já em leitura: 409. Tudo lido (chunks e nenhum documento pendente): "lidos". Último pedido concluído sem documento e
+ * nada pendente: "sem_documentos" (a fonte não tem o documento; não repete). Senão, enfileira: "em_leitura".
+ */
+async function documentosLer(repo: AgentesRepo, tenant: number, licitacaoId: number): Promise<Response> {
+  if (!(await repo.estaNoPipeline(tenant, licitacaoId))) return jsonResponse({ error: "Licitação não encontrada." }, 404);
+  const preparacao = await repo.preparacao(tenant, licitacaoId);
+  const jaEmLeitura = () => jsonResponse({ error: "Os documentos desta licitação já estão em leitura." }, 409);
+  if (emLeitura(preparacao)) return jaEmLeitura();
+  const chunks = await repo.contarChunksIndexados(licitacaoId);
+  const naoLidos = await repo.documentosNaoLidos(licitacaoId);
+  const estado = (e: "em_leitura" | "lidos" | "sem_documentos") =>
+    jsonResponse({ action: "documentos_ler", licitacao_id: licitacaoId, estado: e });
+  if (chunks > 0 && naoLidos === 0) return estado("lidos");
+  if (chunks === 0 && naoLidos === 0 && preparacao?.status === "completed" && preparacao.resultado === "sem_documento") {
+    return estado("sem_documentos");
+  }
+  if ((await repo.solicitarPreparacao(tenant, licitacaoId)) === "ja_na_fila") return jaEmLeitura();
+  return estado("em_leitura");
+}
+
 export async function handleRequest(req: Request, ctx: ApiAgentesContext = {}): Promise<Response> {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return jsonResponse({ error: "Método não permitido. Utilize POST." }, 405);
@@ -249,7 +392,7 @@ export async function handleRequest(req: Request, ctx: ApiAgentesContext = {}): 
 
   try {
     const repo = (ctx.getRepo ?? (() => createSupabaseRepo(getDefaultServiceClient())))();
-    const { tenant } = await repo.tenantDoUsuario(user.id, isLicitagymAdmin(user));
+    const { tenant, papel } = await repo.tenantDoUsuario(user.id, isLicitagymAdmin(user));
 
     switch (params.action) {
       case "analise_executar": {
@@ -316,6 +459,49 @@ export async function handleRequest(req: Request, ctx: ApiAgentesContext = {}): 
       case "documentos_listar": {
         if (!(await repo.estaNoPipeline(tenant, params.licitacao_id))) return jsonResponse({ error: "Licitação não encontrada." }, 404);
         return jsonResponse({ action: params.action, licitacao_id: params.licitacao_id, documentos: await repo.listarDocumentos(tenant, params.licitacao_id) });
+      }
+      case "pergunta_edital":
+        return await perguntaEdital(repo, ctx, tenant, user.id, params.licitacao_id, params.pergunta);
+      case "perguntas_listar": {
+        // R-1: com licitação, só a do pipeline da empresa
+        if (params.licitacao_id !== null && !(await repo.estaNoPipeline(tenant, params.licitacao_id))) {
+          return jsonResponse({ error: "Licitação não encontrada." }, 404);
+        }
+        const { itens, total } = await repo.listarPerguntas(
+          tenant,
+          { agente: params.agente, licitacao_id: params.licitacao_id, somente_enviadas: params.somente_enviadas },
+          params.por_pagina,
+          (params.pagina - 1) * params.por_pagina,
+        );
+        return jsonResponse({
+          action: params.action, perguntas: itens, total, pagina: params.pagina, por_pagina: params.por_pagina,
+          cota: await cotaDoDia(repo, tenant, ctx),
+        });
+      }
+      case "pergunta_favoritar": {
+        const pergunta = await repo.favoritarPergunta(tenant, params.pergunta_id, params.favorita);
+        if (!pergunta) return jsonResponse({ error: "Pergunta não encontrada." }, 404);
+        return jsonResponse({ action: params.action, pergunta });
+      }
+      case "pergunta_enviar": {
+        const atual = await repo.obterPergunta(tenant, params.pergunta_id);
+        if (!atual) return jsonResponse({ error: "Pergunta não encontrada." }, 404);
+        if (atual.licitacao_id === null) return jsonResponse({ error: "Pergunta sem licitação não vai para a oportunidade." }, 400);
+        if (!(await repo.estaNoPipeline(tenant, atual.licitacao_id))) return jsonResponse({ error: "Pergunta não encontrada." }, 404);
+        if (atual.enviada_em) return jsonResponse({ error: "Esta pergunta já foi enviada." }, 409);
+        const pergunta = await repo.enviarPergunta(tenant, params.pergunta_id, user.id);
+        if (!pergunta) return jsonResponse({ error: "Esta pergunta já foi enviada." }, 409);
+        console.info("[api-agentes] pergunta_enviar", { user: user.id, pergunta: pergunta.id, licitacao: pergunta.licitacao_id });
+        return jsonResponse({ action: params.action, pergunta });
+      }
+      case "documentos_ler": {
+        // decisão de 22/10: só admin e operação da empresa, e o admin da plataforma
+        if (!(isLicitagymAdmin(user) || papel === "admin" || papel === "operacao")) {
+          return jsonResponse({ error: "Só admin e operação pedem a leitura dos documentos." }, 403);
+        }
+        const res = await documentosLer(repo, tenant, params.licitacao_id);
+        console.info("[api-agentes] documentos_ler", { user: user.id, licitacao: params.licitacao_id, status: res.status });
+        return res;
       }
       default: {
         const nunca: never = params;

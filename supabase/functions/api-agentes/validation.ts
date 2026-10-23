@@ -11,6 +11,8 @@ export const AGENTES_COM_ROTA = ["edital", "juridico"] as const;
 export type AgenteComRota = typeof AGENTES_COM_ROTA[number];
 export const POR_PAGINA = 20;
 export const MAX_POR_PAGINA = 50;
+/** Spec 0038 (K-1): pergunta livre de até 500 caracteres. */
+export const MAX_PERGUNTA = 500;
 
 export type DecisaoRevisao = "aprovada" | "rejeitada";
 
@@ -20,7 +22,20 @@ export type Acao =
   | { action: "analise_revisar"; execucao_id: number; decisao: DecisaoRevisao; nota: string | null }
   | { action: "analise_enviar"; execucao_id: number }
   | { action: "oportunidades_buscar"; agente: AgenteComRota; busca: string | null; pagina: number; por_pagina: number }
-  | { action: "documentos_listar"; licitacao_id: number };
+  | { action: "documentos_listar"; licitacao_id: number }
+  // spec 0038: pergunta livre (K-1), histórico (K-5), nota na oportunidade (K-11) e "Ler os documentos" (K-6)
+  | { action: "pergunta_edital"; licitacao_id: number; pergunta: string }
+  | {
+    action: "perguntas_listar";
+    agente: Agente | null;
+    licitacao_id: number | null;
+    somente_enviadas: boolean;
+    pagina: number;
+    por_pagina: number;
+  }
+  | { action: "pergunta_favoritar"; pergunta_id: number; favorita: boolean }
+  | { action: "pergunta_enviar"; pergunta_id: number }
+  | { action: "documentos_ler"; licitacao_id: number };
 
 const idPositivo = (v: unknown): number | null =>
   typeof v === "number" && Number.isInteger(v) && v > 0 ? v : null;
@@ -127,6 +142,53 @@ export function parseActionFromBody(body: Record<string, unknown>): Acao | { err
       const licitacao_id = idPositivo(body.licitacao_id);
       if (!licitacao_id) return { error: "'licitacao_id' deve ser inteiro positivo." };
       return { action: "documentos_listar", licitacao_id };
+    }
+    case "pergunta_edital": {
+      const licitacao_id = idPositivo(body.licitacao_id);
+      if (!licitacao_id) return { error: "'licitacao_id' deve ser inteiro positivo." };
+      if (typeof body.pergunta !== "string") return { error: "'pergunta' deve ser texto." };
+      const pergunta = body.pergunta.trim();
+      if (pergunta.length === 0) return { error: "'pergunta' não pode ser vazia." };
+      if (pergunta.length > MAX_PERGUNTA) return { error: `'pergunta' aceita até ${MAX_PERGUNTA} caracteres.` };
+      return { action: "pergunta_edital", licitacao_id, pergunta };
+    }
+    case "perguntas_listar": {
+      let agente: Agente | null = null;
+      if (body.agente !== undefined && body.agente !== null) {
+        if (!(AGENTES_EXECUTAVEIS as readonly unknown[]).includes(body.agente)) {
+          return { error: `'agente' deve ser um de: ${AGENTES_EXECUTAVEIS.join(", ")}.` };
+        }
+        agente = body.agente as Agente;
+      }
+      let licitacao_id: number | null = null;
+      if (body.licitacao_id !== undefined && body.licitacao_id !== null) {
+        licitacao_id = idPositivo(body.licitacao_id);
+        if (!licitacao_id) return { error: "'licitacao_id' deve ser inteiro positivo." };
+      }
+      if (body.somente_enviadas !== undefined && typeof body.somente_enviadas !== "boolean") {
+        return { error: "'somente_enviadas' deve ser true ou false." };
+      }
+      const pag = pagina(body.pagina, 1, 10_000);
+      if (pag === null) return { error: "'pagina' deve ser inteiro positivo." };
+      const por = pagina(body.por_pagina, POR_PAGINA, MAX_POR_PAGINA);
+      if (por === null) return { error: `'por_pagina' deve ser inteiro de 1 a ${MAX_POR_PAGINA}.` };
+      return { action: "perguntas_listar", agente, licitacao_id, somente_enviadas: body.somente_enviadas === true, pagina: pag, por_pagina: por };
+    }
+    case "pergunta_favoritar": {
+      const pergunta_id = idPositivo(body.pergunta_id);
+      if (!pergunta_id) return { error: "'pergunta_id' deve ser inteiro positivo." };
+      if (typeof body.favorita !== "boolean") return { error: "'favorita' deve ser true ou false." };
+      return { action: "pergunta_favoritar", pergunta_id, favorita: body.favorita };
+    }
+    case "pergunta_enviar": {
+      const pergunta_id = idPositivo(body.pergunta_id);
+      if (!pergunta_id) return { error: "'pergunta_id' deve ser inteiro positivo." };
+      return { action: "pergunta_enviar", pergunta_id };
+    }
+    case "documentos_ler": {
+      const licitacao_id = idPositivo(body.licitacao_id);
+      if (!licitacao_id) return { error: "'licitacao_id' deve ser inteiro positivo." };
+      return { action: "documentos_ler", licitacao_id };
     }
     case "analise_revisar": {
       const execucao_id = idPositivo(body.execucao_id);

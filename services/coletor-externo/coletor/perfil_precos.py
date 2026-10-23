@@ -1,8 +1,15 @@
 """Rotulador de "fora do perfil" nos preços homologados (spec 0037).
 
-"Fora do perfil" = o produto comprado não é o produto do PDM/item CATMAT (ex.: esteira transportadora de resíduos
-cadastrada como esteira ergométrica, compra 93099205000052026). Comprador de outro ramo (hospital, fisioterapia,
-quartel) comprando o mesmo produto é "no perfil"; preço alto ou baixo sozinho também não decide.
+Três perguntas separadas (emenda de 23/10/2026, Marcelo): o órgão erra a classificação na fonte, e a descrição
+detalhada (o texto do termo de referência) desempata.
+- "no_perfil": a descrição detalhada descreve o produto do PDM. Comprador de outro ramo (hospital, fisioterapia,
+  quartel) comprando o mesmo produto é "no perfil"; preço alto ou baixo sozinho também não decide.
+- "pdm_divergente": a descrição detalhada descreve OUTRO produto do mercado (fitness, esporte, recreação) que o órgão
+  cadastrou no PDM errado (ex.: escada de agilidade no PDM de escada horizontal). Grava o `produto_real`.
+- "fora_do_perfil": o produto não é do mercado (ex.: esteira transportadora de resíduos cadastrada como esteira
+  ergométrica, compra 93099205000052026; capacho de entrada no PDM de tapete de borracha).
+Ordem de evidência: descrição detalhada > marca/fabricante/modelo > objeto da compra > descrição do item CATMAT > nome
+do PDM.
 
 Uma chamada ao modelo por compra (o objeto e o comprador são da compra), com os itens dela. Entram objeto, UASG/órgão,
 PDM, item CATMAT, descrição detalhada, marca/fabricante/modelo, unidade, preço e a mediana do mesmo PDM + unidade em
@@ -35,12 +42,13 @@ from coletor.ia import tipo_falha
 
 log = logging.getLogger("coletor.perfil_precos")
 
-VERSAO_PROMPT = "0037.1"
+VERSAO_PROMPT = "0037.2"
 # Compras que entram sempre na amostra da fase 0 (gabarito da spec 0037): esteira transportadora no PDM 7115.
 ANCORAS = ("93099205000052026",)
-ROTULOS = ("no_perfil", "fora_do_perfil", "incerto")
+ROTULOS = ("no_perfil", "pdm_divergente", "fora_do_perfil", "incerto")
 SINAIS = ("objeto", "descricao", "marca", "comprador", "preco")
 MOTIVO_MAX = 240
+PRODUTO_MAX = 120   # produto_real do pdm_divergente ("escada de agilidade")
 TABELA = "precos_praticados_itens"
 # Só o que o prompt usa. Fornecedor (nome, CNPJ/CPF) fica de fora de propósito (LGPD; e não decide o perfil).
 COLUNAS = ("id_compra,id_item_compra,numero_item_compra,codigo_pdm,nome_pdm,codigo_item_catalogo,descricao_item,"
@@ -245,27 +253,38 @@ def hash_entrada(entrada: dict) -> str:
 # ---------------------------------------------------------------------------------------------------- prompt
 
 PROMPT = """Você revisa preços homologados de compras públicas brasileiras usados como referência de preço de
-equipamentos de academia, ginástica, esporte e recreação. Para cada item da compra abaixo, decida se o PRODUTO
-comprado é de fato o produto do PDM/item CATMAT informado.
+equipamentos de academia, ginástica, esporte e recreação. O órgão comprador erra com frequência a classificação do item
+(PDM/item CATMAT); a descrição detalhada, copiada do termo de referência, é a fonte que desempata. Para cada item da
+compra abaixo, diga qual é o PRODUTO de fato comprado e se ele é o produto do PDM informado.
+
+Ordem de evidência (a primeira que for clara decide): descrição detalhada > marca/fabricante/modelo > objeto da
+compra > descrição do item CATMAT > nome do PDM. O item CATMAT e o PDM são o que o órgão escolheu; podem estar errados.
 
 Rótulos:
-- "no_perfil": o produto comprado é o do PDM/item CATMAT. Comprador de qualquer ramo (hospital, fisioterapia,
-  quartel, escola, presídio, prefeitura) comprando o mesmo produto é "no_perfil".
-- "fora_do_perfil": o produto comprado é outro, apesar do código CATMAT. Exemplo: "esteira elétrica" num consórcio de
-  resíduos sólidos, com marca/modelo de esteira transportadora industrial, cadastrada no PDM de esteira ergométrica.
+- "no_perfil": o produto comprado é o produto do PDM. Comprador de qualquer ramo (hospital, fisioterapia, quartel,
+  escola, presídio, prefeitura) comprando o mesmo produto é "no_perfil". Variação do mesmo produto também é
+  "no_perfil" (ex.: caneleira de peso no PDM de caneleira, mesmo que o item CATMAT diga caneleira de proteção).
+- "pdm_divergente": o produto comprado é OUTRO produto de academia, ginástica, esporte ou recreação, cadastrado no PDM
+  errado. Exemplos: escada de agilidade (fita de solo) no PDM de escada horizontal de ginástica; kit de bandeirolas de
+  campo no PDM de acessório de condicionamento físico. Informe "produto_real" (nome curto do produto, até
+  {produto_max} caracteres).
+- "fora_do_perfil": o produto não é de academia, ginástica, esporte ou recreação. Exemplos: esteira transportadora de
+  resíduos no PDM de esteira ergométrica; capacho de entrada no PDM de tapete de borracha; suporte de ferragem numa
+  compra de material de construção.
 - "incerto": os dados não bastam para decidir.
 
 Regras:
-- Decida pelo conjunto: objeto da compra, comprador, descrição do item, marca/fabricante/modelo. Preço muito diferente
-  da mediana é só um sinal; sozinho nunca decide "fora_do_perfil".
+- Preço muito diferente da mediana é só um sinal; sozinho nunca decide. Preço muito acima pode ser kit ou lote (erro
+  de unidade), o que não muda o produto.
 - "regra_escopo_objeto" e "regra_escopo_item" são saídas de regras automáticas de palavras-chave (null = a regra não
   reconheceu). São sinais fracos: objeto genérico ("aquisição de material permanente") é comum e não indica nada.
 - Não invente fatos. O motivo cita o trecho que decidiu (até {motivo_max} caracteres, em português).
 - "sinais": quais campos pesaram, dentre {sinais}.
 
-Responda SOMENTE com JSON neste formato, um elemento por item recebido (use o "id" do item):
-{{"itens": [{{"id": <id>, "rotulo": "no_perfil" | "fora_do_perfil" | "incerto", "motivo": "<texto>",
-"sinais": ["objeto", ...]}}]}}
+Responda SOMENTE com JSON neste formato, um elemento por item recebido (use o "id" do item); "produto_real" só no
+"pdm_divergente" (nos outros, null):
+{{"itens": [{{"id": <id>, "rotulo": "no_perfil" | "pdm_divergente" | "fora_do_perfil" | "incerto",
+"produto_real": "<texto>" | null, "motivo": "<texto>", "sinais": ["descricao", ...]}}]}}
 
 Compra:
 {entrada}
@@ -273,7 +292,7 @@ Compra:
 
 
 def montar_prompt(entrada: dict) -> str:
-    return PROMPT.format(motivo_max=MOTIVO_MAX, sinais=", ".join(SINAIS),
+    return PROMPT.format(motivo_max=MOTIVO_MAX, produto_max=PRODUTO_MAX, sinais=", ".join(SINAIS),
                          entrada=json.dumps(entrada, ensure_ascii=False, indent=1))
 
 
@@ -310,8 +329,14 @@ def validar_resposta(texto: str, ids: set[int]) -> tuple[dict[int, dict], list]:
             raise RespostaInvalida(f"motivo vazio no item {ident}")
         if not isinstance(sinais, list) or any(s not in SINAIS for s in sinais):
             raise RespostaInvalida(f"sinais inválidos no item {ident}: {sinais!r}")
+        produto = None
+        if rot == "pdm_divergente":
+            bruto = it.get("produto_real")
+            if not isinstance(bruto, str) or not bruto.strip():
+                raise RespostaInvalida(f"pdm_divergente sem produto_real no item {ident}")
+            produto = sem_documento(" ".join(bruto.split()))[:PRODUTO_MAX]
         rotulos[ident] = {"rotulo": rot, "motivo": sem_documento(" ".join(motivo.split()))[:MOTIVO_MAX],
-                          "sinais": list(dict.fromkeys(sinais))}
+                          "sinais": list(dict.fromkeys(sinais)), "produto_real": produto}
     faltando = ids - set(rotulos)
     if faltando:
         raise RespostaInvalida(f"itens sem resposta: {sorted(faltando)}")
@@ -420,8 +445,9 @@ def executar(sb, modelo: Modelo, *, dry_run: bool = True, limite: int = 50, pdms
             resumo.itens += 1
             resumo.rotulos[r["rotulo"]] += 1
             med = item["mediana_pdm_unidade_12m"]
-            log.info("perfil: [%s] compra %s item %s PDM %s %s | preço %s (mediana %s) | %s",
-                     r["rotulo"], c, item["numero_item"], item["pdm"]["codigo"], item["pdm"]["nome"] or "",
+            real = f" -> {r['produto_real']}" if r.get("produto_real") else ""
+            log.info("perfil: [%s%s] compra %s item %s PDM %s %s | preço %s (mediana %s) | %s",
+                     r["rotulo"], real, c, item["numero_item"], item["pdm"]["codigo"], item["pdm"]["nome"] or "",
                      _reais(item["preco_unitario"]), _reais(med["valor"]) if med else "—", r["motivo"])
     res = _fechar(resumo, recorte=recorte, total_itens=len(linhas), total_compras=len(por_compra))
     if faltam:

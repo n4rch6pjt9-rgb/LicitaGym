@@ -297,3 +297,34 @@ def test_muitas_falhas_seguidas_param_a_rodada(monkeypatch):
 
     res = P.executar(sb_fake(base_fake()), modelo, dry_run=True, limite=5, hoje=HOJE)
     assert res["erros"] == 2 and len(chamadas) == 2
+
+
+def test_compra_sem_rotulo_conta_pelo_tipo_da_falha():
+    from google.genai import errors
+
+    def modelo(prompt):
+        entrada = json.loads(prompt.split("Compra:\n", 1)[1])
+        if entrada["id_compra"] == ANCORA:
+            raise errors.ClientError(429, {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "message": "x"}})
+        itens = [{"id": i["id"], "rotulo": "no_perfil", "motivo": "ok", "sinais": []} for i in entrada["itens"]]
+        return json.dumps({"itens": itens}), {"entrada": 10, "saida": 1, "pensamento": 0}
+
+    res = P.executar(sb_fake(base_fake()), modelo, dry_run=True, limite=3, hoje=HOJE)
+    assert res["erros_por_tipo"] == {"cota do Vertex atingida (429)": 1}
+
+
+def test_pausa_minima_entre_chamadas():
+    agora = [100.0]
+    dormidas = []
+
+    def dormir(s):
+        dormidas.append(round(s, 2))
+        agora[0] += s
+
+    ultima = [0.0]
+    P._respeitar_pausa(ultima, 4, relogio=lambda: agora[0], dormir=dormir)   # primeira: não espera
+    agora[0] += 1.5
+    P._respeitar_pausa(ultima, 4, relogio=lambda: agora[0], dormir=dormir)   # 1,5s depois: completa os 4s
+    agora[0] += 10
+    P._respeitar_pausa(ultima, 4, relogio=lambda: agora[0], dormir=dormir)   # já passou: não espera
+    assert dormidas == [2.5]

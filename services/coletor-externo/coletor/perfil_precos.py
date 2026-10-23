@@ -24,12 +24,14 @@ import logging
 import os
 import re
 import statistics
+import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Callable
 
 from coletor import escopo
+from coletor.ia import tipo_falha
 
 log = logging.getLogger("coletor.perfil_precos")
 
@@ -52,6 +54,11 @@ ITENS_POR_CHAMADA = int(os.environ.get("PERFIL_ITENS_POR_CHAMADA", "15"))
 # Falha do Vertex (500, prazo) numa compra conta como erro dela e a rodada segue; muitas seguidas param a rodada.
 TENTATIVAS_VERTEX = int(os.environ.get("PERFIL_TENTATIVAS_VERTEX", "3"))
 MAX_FALHAS_SEGUIDAS = int(os.environ.get("PERFIL_MAX_FALHAS_SEGUIDAS", "5"))
+# Ritmo do Vertex (23/10, execução qdh48: o endpoint global do 3.8 Flash devolveu 429 e 504 em rajada e cada 504
+# levava ~90s). Pausa mínima entre chamadas, espera longa entre tentativas e prazo curto por chamada.
+PAUSA_S = float(os.environ.get("PERFIL_PAUSA_S", "4"))
+ESPERAS_VERTEX = tuple(float(x) for x in os.environ.get("PERFIL_ESPERAS_S", "30,60").split(",") if x.strip())
+TIMEOUT_MS = int(os.environ.get("PERFIL_TIMEOUT_MS", "40000"))
 TEXTO_MAX = 600   # por campo de texto no prompt (descrição detalhada pode ser longa)
 
 # (texto da resposta, uso de tokens) — o modelo real é Gemini (ia.py); nos testes, uma função falsa.
@@ -79,6 +86,7 @@ class Resumo:
     chamadas: int = 0
     chamadas_perdidas: int = 0      # respostas inválidas ou cortadas (os tokens delas ficam à parte na projeção)
     tokens_perdidos: int = 0
+    erros_por_tipo: dict = field(default_factory=dict)   # compras sem rótulo, pelo tipo da última falha
 
     def somar_uso(self, uso: dict) -> None:
         self.chamadas += 1
@@ -395,7 +403,8 @@ def executar(sb, modelo: Modelo, *, dry_run: bool = True, limite: int = 50, pdms
                 resumo.tokens_entrada + resumo.tokens_saida + resumo.tokens_pensamento - gasto_antes)
             resumo.erros += 1
             falhas_seguidas += 1
-            tipo = "resposta inválida" if isinstance(e, RespostaInvalida) else "falha do modelo"
+            tipo = "resposta inválida" if isinstance(e, RespostaInvalida) else tipo_falha(e)
+            resumo.erros_por_tipo[tipo] = resumo.erros_por_tipo.get(tipo, 0) + 1
             log.error("perfil: compra %s sem rótulo (%s): %s", c, tipo, str(e)[:300])
             if falhas_seguidas >= MAX_FALHAS_SEGUIDAS:
                 log.error("perfil: %s compras seguidas sem rótulo; parando a rodada", falhas_seguidas)
@@ -452,6 +461,7 @@ def _fechar(resumo: Resumo, *, recorte: str, total_itens: int, total_compras: in
         "itens": resumo.itens,
         "rotulos": resumo.rotulos,
         "erros": resumo.erros,
+        "erros_por_tipo": resumo.erros_por_tipo,
         "ids_descartados": resumo.descartados,
         "chamadas": resumo.chamadas,
         "chamadas_validas": validas,
@@ -463,17 +473,32 @@ def _fechar(resumo: Resumo, *, recorte: str, total_itens: int, total_compras: in
     }
 
 
+def _respeitar_pausa(ultima: list[float], pausa: float | None = None, *, relogio=time.monotonic,
+                     dormir=time.sleep) -> None:
+    """Garante PAUSA_S entre o início de duas chamadas ao Vertex (inclusive as novas tentativas). `ultima` guarda o
+    instante da chamada anterior."""
+    pausa = PAUSA_S if pausa is None else pausa
+    falta = ultima[0] + pausa - relogio() if ultima[0] else 0.0
+    if falta > 0:
+        dormir(falta)
+    ultima[0] = relogio()
+
+
 def modelo_gemini() -> Modelo:
     """Gemini do Vertex (ia.py: GEN_MODEL, projeto GOOGLE_CLOUD_PROJECT, créditos do projeto GCP), JSON na saída."""
     from coletor.ia import GEN_MODEL, Gemini, motivo_fim
 
-    g = Gemini()
+    g = Gemini(timeout_ms=TIMEOUT_MS)
     cfg = g._config(temperatura=0, response_mime_type="application/json", max_output_tokens=MAX_SAIDA)
+    ultima = [0.0]
+
+    def gerar(prompt: str):
+        _respeitar_pausa(ultima)
+        return g.client.models.generate_content(model=GEN_MODEL, contents=prompt, config=cfg)
 
     def chamar(prompt: str) -> tuple[str, dict]:
         # Poucas tentativas: com o padrão (8) um 500 do Vertex prendia a rodada por ~17 min (22/10, execução lx294).
-        r = g._retry(lambda: g.client.models.generate_content(model=GEN_MODEL, contents=prompt, config=cfg),
-                     tentativas=TENTATIVAS_VERTEX)
+        r = g._retry(lambda: gerar(prompt), tentativas=TENTATIVAS_VERTEX, esperas=ESPERAS_VERTEX)
         u = getattr(r, "usage_metadata", None)
         uso = {"entrada": getattr(u, "prompt_token_count", 0) or 0,
                "saida": getattr(u, "candidates_token_count", 0) or 0,

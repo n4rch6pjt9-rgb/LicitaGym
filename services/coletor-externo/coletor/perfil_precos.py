@@ -49,6 +49,9 @@ TENTATIVAS_JSON = int(os.environ.get("PERFIL_TENTATIVAS_JSON", "3"))
 # lote com o objeto e o comprador, para o JSON nunca ser cortado no meio.
 MAX_SAIDA = int(os.environ.get("PERFIL_MAX_TOKENS", "8192"))
 ITENS_POR_CHAMADA = int(os.environ.get("PERFIL_ITENS_POR_CHAMADA", "15"))
+# Falha do Vertex (500, prazo) numa compra conta como erro dela e a rodada segue; muitas seguidas param a rodada.
+TENTATIVAS_VERTEX = int(os.environ.get("PERFIL_TENTATIVAS_VERTEX", "3"))
+MAX_FALHAS_SEGUIDAS = int(os.environ.get("PERFIL_MAX_FALHAS_SEGUIDAS", "5"))
 TEXTO_MAX = 600   # por campo de texto no prompt (descrição detalhada pode ser longa)
 
 # (texto da resposta, uso de tokens) — o modelo real é Gemini (ia.py); nos testes, uma função falsa.
@@ -378,20 +381,27 @@ def executar(sb, modelo: Modelo, *, dry_run: bool = True, limite: int = 50, pdms
              len(linhas), len(por_compra), len(alvo), VERSAO_PROMPT)
 
     resumo = Resumo()
+    falhas_seguidas = 0
     for c in alvo:
         entrada = montar_entrada(por_compra[c], meds)
         gasto_antes = resumo.tokens_entrada + resumo.tokens_saida + resumo.tokens_pensamento
         perdido_antes = resumo.tokens_perdidos
         try:
             rotulos = rotular_compra(modelo, entrada, resumo)
-        except RespostaInvalida as e:
+        except Exception as e:  # noqa: BLE001 - resposta inválida OU falha do Vertex numa compra não derruba as outras
             # Compra descartada inteira: TODOS os tokens dela (inclusive dos lotes que deram certo) ficam fora da
             # projeção, para tokens e itens da projeção serem do mesmo conjunto.
             resumo.tokens_perdidos = perdido_antes + (
                 resumo.tokens_entrada + resumo.tokens_saida + resumo.tokens_pensamento - gasto_antes)
             resumo.erros += 1
-            log.error("perfil: compra %s sem rótulo depois de %s tentativas: %s", c, TENTATIVAS_JSON, e)
+            falhas_seguidas += 1
+            tipo = "resposta inválida" if isinstance(e, RespostaInvalida) else "falha do modelo"
+            log.error("perfil: compra %s sem rótulo (%s): %s", c, tipo, str(e)[:300])
+            if falhas_seguidas >= MAX_FALHAS_SEGUIDAS:
+                log.error("perfil: %s compras seguidas sem rótulo; parando a rodada", falhas_seguidas)
+                break
             continue
+        falhas_seguidas = 0
         resumo.compras += 1
         for item in entrada["itens"]:
             r = rotulos[item["id"]]
@@ -461,7 +471,9 @@ def modelo_gemini() -> Modelo:
     cfg = g._config(temperatura=0, response_mime_type="application/json", max_output_tokens=MAX_SAIDA)
 
     def chamar(prompt: str) -> tuple[str, dict]:
-        r = g._retry(lambda: g.client.models.generate_content(model=GEN_MODEL, contents=prompt, config=cfg))
+        # Poucas tentativas: com o padrão (8) um 500 do Vertex prendia a rodada por ~17 min (22/10, execução lx294).
+        r = g._retry(lambda: g.client.models.generate_content(model=GEN_MODEL, contents=prompt, config=cfg),
+                     tentativas=TENTATIVAS_VERTEX)
         u = getattr(r, "usage_metadata", None)
         uso = {"entrada": getattr(u, "prompt_token_count", 0) or 0,
                "saida": getattr(u, "candidates_token_count", 0) or 0,

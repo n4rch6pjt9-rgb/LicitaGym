@@ -273,3 +273,27 @@ def test_tokens_da_compra_descartada_saem_da_projecao(monkeypatch):
     assert res["erros"] == 1 and res["itens"] == 1
     assert res["tokens"]["perdidos"] == 200            # os 2 lotes da compra descartada
     assert res["projecao_base"]["tokens_por_item"] == 100
+
+
+def test_falha_do_vertex_numa_compra_nao_derruba_a_rodada():
+    def modelo(prompt):
+        entrada = json.loads(prompt.split("Compra:\n", 1)[1])
+        if entrada["id_compra"] == ANCORA:
+            raise RuntimeError("500 INTERNAL. Internal error encountered.")
+        itens = [{"id": i["id"], "rotulo": "no_perfil", "motivo": "ok", "sinais": []} for i in entrada["itens"]]
+        return json.dumps({"itens": itens}), {"entrada": 10, "saida": 1, "pensamento": 0}
+
+    res = P.executar(sb_fake(base_fake()), modelo, dry_run=True, limite=3, hoje=HOJE)
+    assert res["erros"] == 1 and res["compras_rotuladas"] == 2 and res["sucesso"] is False
+
+
+def test_muitas_falhas_seguidas_param_a_rodada(monkeypatch):
+    monkeypatch.setattr(P, "MAX_FALHAS_SEGUIDAS", 2)
+    chamadas = []
+
+    def modelo(prompt):
+        chamadas.append(1)
+        raise RuntimeError("500 INTERNAL")
+
+    res = P.executar(sb_fake(base_fake()), modelo, dry_run=True, limite=5, hoje=HOJE)
+    assert res["erros"] == 2 and len(chamadas) == 2

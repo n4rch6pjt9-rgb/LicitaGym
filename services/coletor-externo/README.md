@@ -68,9 +68,10 @@ valor em `supabase secrets set`.
 ## Rótulo "fora do perfil" dos preços (spec 0037, fase 0)
 
 `--coleta perfil-precos --dry-run` lê `precos_praticados_itens` e rotula uma amostra estratificada por PDM com o
-Gemini do Vertex (`coletor/perfil_precos.py`), **sem gravar nada**. Faz uma chamada por compra. Para cada item, o log
-traz o rótulo (`no_perfil`, `fora_do_perfil` ou `incerto`) e o motivo; no fim vêm os tokens e a projeção para a base
-inteira. Os créditos são os do projeto GCP. A gravação (tabela `precos_rotulo_perfil`) é da fase 1.
+Gemini do Vertex (`coletor/perfil_precos.py`), **sem gravar nada**. Faz uma chamada por lote de itens da compra. Para
+cada item, o log traz o rótulo (`no_perfil`, `pdm_divergente` com o produto real, `fora_do_perfil` ou `incerto`) e o
+motivo; no fim vêm os tokens e a projeção para a base inteira. Os créditos são os do projeto GCP. A gravação (tabela
+`precos_rotulo_perfil`) é da fase 1. A descrição detalhada (texto do TR) desempata quando o órgão errou o PDM.
 
 Roda no Job `coletor-precos`. O SA precisa de `roles/aiplatform.user` e o Job, de `GOOGLE_CLOUD_PROJECT`:
 

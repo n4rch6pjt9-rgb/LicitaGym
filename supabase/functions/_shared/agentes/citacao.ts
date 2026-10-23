@@ -94,7 +94,8 @@ export function itemDoTrecho(texto: string, trecho?: string | null): string | nu
   return pos < 0 ? null : itemNaPosicao(texto, pos);
 }
 
-const colapsar = (s: string) => s.replace(/\s+/g, " ").trim();
+/** Espaços em sequência viram um só, sem espaço nas pontas (a forma do texto no `trecho_limpo`). */
+export const colapsar = (s: string) => s.replace(/\s+/g, " ").trim();
 
 /** O texto começa no meio de uma frase: letra minúscula ou pontuação logo no início ("nte o preenchimento…"). */
 function comecaNoMeio(trecho: string): boolean {

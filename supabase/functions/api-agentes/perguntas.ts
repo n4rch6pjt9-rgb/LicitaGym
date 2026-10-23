@@ -1,4 +1,4 @@
-import { itemNaPosicao, trechoLimpo } from "../_shared/agentes/citacao.ts";
+import { colapsar, itemNaPosicao, trechoLimpo } from "../_shared/agentes/citacao.ts";
 import type { ChunkEdital } from "../_shared/agentes/edital.ts";
 import { ErroAgentes } from "./repo.ts";
 
@@ -56,6 +56,14 @@ export interface CitacaoPergunta {
   trecho_limpo: string;
   /** Recorte exato do texto do chunk que apoia a afirmação (conferido contra o banco). */
   apoio: string;
+  /**
+   * Onde o apoio está DENTRO do `trecho_limpo`, em unidades UTF-16 (índice de string do JS, o que o Dashboard usa para
+   * destacar), e o tamanho dele ali (com os espaços colapsados, como no trecho). null quando o trecho não traz o apoio
+   * inteiro (trecho cortado no teto de caracteres); aí o Dashboard procura pelo texto. Citações gravadas antes deste
+   * campo não o têm.
+   */
+  apoio_inicio?: number | null;
+  apoio_tamanho?: number | null;
 }
 
 export interface EntradaServicoEdital {
@@ -217,6 +225,9 @@ export function conferirCitacoes(
   const citacoes = [...usados].sort((a, b) => a - b).map((n): CitacaoPergunta => {
     const c = porN.get(n)!;
     const chunk = chunks.get(c.chunk_id)!;
+    const trecho = trechoLimpo(chunk.texto, 300, { inicio: inicios.get(n)!, texto: c.apoio });
+    const alvo = colapsar(c.apoio);
+    const pos = alvo ? trecho.indexOf(alvo) : -1;
     return {
       n,
       chunk_id: chunk.id,
@@ -224,8 +235,10 @@ export function conferirCitacoes(
       documento_nome: nomes.get(chunk.documento_id) ?? null,
       pagina: chunk.pagina,
       item: itemNaPosicao(chunk.texto, inicios.get(n)!),
-      trecho_limpo: trechoLimpo(chunk.texto, 300, { inicio: inicios.get(n)!, texto: c.apoio }),
+      trecho_limpo: trecho,
       apoio: c.apoio,
+      apoio_inicio: pos >= 0 ? pos : null,
+      apoio_tamanho: pos >= 0 ? alvo.length : null,
     };
   });
   return { resposta: r.resposta, citacoes };

@@ -69,6 +69,8 @@ Deno.test("CA-1: resposta cita [n] só com chunks da licitação, com documento,
       "8.4.2 A licitante classificada em primeiro lugar deverá apresentar amostra do equipamento em até 5 dias úteis. " +
       "A amostra será avaliada pela comissão.",
     apoio: "deverá apresentar amostra do equipamento",
+    apoio_inicio: 49,
+    apoio_tamanho: 40,
   }]);
   assertEquals(r.json.cota, { usadas: 1, limite: 50 });
   const [gravada] = amb.perguntas;
@@ -348,6 +350,20 @@ Deno.test("K-4: apoio na cláusula 8.2 de um chunk que começa na 8.1 → item 8
   const [cit] = r.json.citacoes;
   assertEquals([cit.item, cit.apoio], ["8.2", "apresentar amostra do equipamento"]);
   assertEquals(cit.trecho_limpo, "8.2 A licitante deverá apresentar amostra do equipamento no prazo de 5 dias úteis. A comissão avaliará a amostra.");
+  assertEquals(cit.trecho_limpo.slice(cit.apoio_inicio, cit.apoio_inicio + cit.apoio_tamanho), "apresentar amostra do equipamento");
+});
+
+Deno.test("K-4: posição do apoio no trecho limpo em UTF-16, com quebra de linha colapsada e emoji antes", async () => {
+  const amb = comEdital();
+  const texto = "📌 8.3 A licitante deverá apresentar\n  amostra   do equipamento em 5 dias úteis. A comissão avaliará.";
+  amb.dossie.chunks = [{ id: 1, documento_id: 9, pagina: 12, texto }];
+  const { c } = contexto(amb, respostaServico({
+    citacoes: [{ n: 1, chunk_id: 1, documento_id: 9, pagina: 12, ...apoio(texto, "apresentar\n  amostra   do equipamento") }],
+  }));
+  const r = await chamar(c, { action: "pergunta_edital", licitacao_id: 101, pergunta: PERGUNTA });
+  assertEquals(r.status, 200);
+  const [cit] = r.json.citacoes;
+  assertEquals(cit.trecho_limpo.slice(cit.apoio_inicio, cit.apoio_inicio + cit.apoio_tamanho), "apresentar amostra do equipamento");
 });
 
 Deno.test("K-1: apoio que não bate com o texto do banco na posição informada vira nao_encontrado", async () => {

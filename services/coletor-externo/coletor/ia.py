@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import time
+import random
 
 log = logging.getLogger("ia")
 
@@ -76,7 +77,8 @@ class Gemini:
                 msg = f"{type(e).__name__} {e}"
                 if i == tentativas - 1 or not any(c in msg for c in ("429", "503", "500", "504", "RESOURCE_EXHAUSTED", "UNAVAILABLE", "imed out", "Timeout", "DEADLINE")):
                     raise
-                espera = min(90, 5 * 2 ** i)
+                base_espera = min(90, 5 * 2 ** i)
+                espera = base_espera + random.uniform(0.5, min(5.0, base_espera * 0.2))
                 log.info("    cota do Vertex atingida; aguardando %ss (tentativa %s/%s)", espera, i + 1, tentativas)
                 time.sleep(espera)
 

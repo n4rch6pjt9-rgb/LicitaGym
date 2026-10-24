@@ -92,3 +92,11 @@ _*.tar
 
 # Pasta de agentes de trabalho (não commitar)
 Dashboard-agentes/
+
+# 🔒 Dados sensíveis de navegação e coleta (NUNCA commitar)
+*.har
+*.zip
+**/*.har
+**/*.zip
+**/html - sislog*.txt
+**/html lang=*.txt

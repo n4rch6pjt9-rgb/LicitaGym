@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(export PATHEXT=\".COM;.EXE;.BAT;.CMD\")",
+      "Bash(gh pr *)",
+      "Bash(gh issue comment 390 -R n4rch6pjt9-rgb/LicitaGym --body 'Corrigido no #389, mergeado em __CMDSUB_OUTPUT__. *)"
+    ]
+  },
+  "disabledMcpjsonServers": [
+    "supabase"
+  ]
+}

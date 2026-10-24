@@ -31,7 +31,11 @@ Deno.test("jurídico: liga sinal ao artigo, marca não conferido e ausente", () 
   });
   assertEquals(a.fontes, [
     { tipo: "dispositivo", norma: "LEI_14133_2021", artigo: 59, conferido_oficial: false },
+ chore/higiene-contexto-e-pipeline
+    { tipo: "calculo", regra: "mapa_sinal_dispositivo", versao: "2026-10-20.1" },
+
     { tipo: "calculo", regra: "mapa_sinal_dispositivo", versao: "2026-10-21.1" },
+ main
   ]);
   assertEquals(validarAchado(a), null);
 });

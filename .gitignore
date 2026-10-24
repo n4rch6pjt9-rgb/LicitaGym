@@ -78,7 +78,32 @@ scripts/.sync_state/
 var/
 supabase/.temp/
 
+ chore/higiene-contexto-e-pipeline
+# Backups e arquivos temporários
+_*.tgz
+_*.tar
+.playwright-mcp/
+
+# Logs locais de sessões de IA (manter apenas o /CLAUDE.md raiz)
+**/CLAUDE.md
+
+# Logs locais de sessões de IA (manter apenas o /CLAUDE.md na raiz, se existir)
+**/CLAUDE.md
+!/CLAUDE.md
+
+# Pasta de agentes de trabalho (não commitar)
+Dashboard-agentes/
+
+# 🔒 Dados sensíveis de navegação e coleta (NUNCA commitar)
+*.har
+*.zip
+**/*.har
+**/*.zip
+**/html - sislog*.txt
+**/html lang=*.txt
+
 # logs do plugin claude-mem (só o CLAUDE.md da raiz é instrução)
 **/CLAUDE.md
 !/CLAUDE.md
 CLAUDE.local.md
+ main

@@ -77,3 +77,18 @@ scripts/.sync_state/
 # saidas locais e pendencias (nao versionar)
 var/
 supabase/.temp/
+
+# Backups e arquivos temporários
+_*.tgz
+_*.tar
+.playwright-mcp/
+
+# Logs locais de sessões de IA (manter apenas o /CLAUDE.md raiz)
+**/CLAUDE.md
+
+# Logs locais de sessões de IA (manter apenas o /CLAUDE.md na raiz, se existir)
+**/CLAUDE.md
+!/CLAUDE.md
+
+# Pasta de agentes de trabalho (não commitar)
+Dashboard-agentes/

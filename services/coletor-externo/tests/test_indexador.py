@@ -3,6 +3,8 @@ import io
 import zipfile
 from unittest.mock import MagicMock
 
+import pytest
+
 from coletor import indexador as IX
 from coletor.textos import Pagina, dividir, extrair
 
@@ -132,3 +134,64 @@ def test_cabecalho_e_prompt_usam_a_fonte_real(tmp_path):
     assert not any("SEST SENAT" in l["texto"] for l in linhas)
     assert all(l["metadados"]["fonte"] == "pncp" for l in linhas)
     assert ia.extrair_campos.call_args.args[4] == "PNCP Prefeitura de Lages"
+
+
+# --- Ficha opcional (19/10: "VALORES MEDIA CNPJ E ÓRGÃO" da licitação 3558 estourou o prazo do Gemini em todas as
+# tentativas; a preparação inteira falhou e os trechos do documento nunca foram gravados) ---------------------------
+
+def _doc(arq):
+    return [{"id": 7, "licitacao_id": 3558, "secao": "processo", "nome_original": "VALORES_MEDIA.pdf",
+             "arquivo_origem": "v.pdf", "fornecedor_nome": None, "sha256": "h", "storage_uri": str(arq)}]
+
+
+def _ia(erro):
+    ia = MagicMock()
+    ia.extrair_campos.side_effect = erro
+    ia.embed.side_effect = lambda ts, **k: [[0.1] * 768 for _ in ts]
+    return ia
+
+
+def test_ficha_com_prazo_estourado_nao_impede_os_trechos(tmp_path):
+    arq = tmp_path / "v.pdf"; arq.write_bytes(_pdf([RECURSO]))
+    sb = MagicMock()
+    r = IX.indexar_grupo(sb, _ia(IX.ia_mod.FichaIndisponivel("prazo_estourado")), _doc(arq), {"numero_processo": "58/2026"}, True)
+    assert r["status"] == "indexado"
+    linhas = sb.upsert.call_args.args[1]
+    assert linhas and all(l["metadados"]["chunk_kind"] == "trecho" for l in linhas)   # sem resumo inventado
+    extracao = sb.atualizar.call_args.args[2]["extracao"]
+    assert extracao["ficha"] == "indisponivel"
+    assert extracao["ficha_erro"] == "prazo_estourado"   # só a categoria, sem a mensagem do SDK
+
+
+def test_ficha_com_json_invalido_tambem_nao_impede_os_trechos(tmp_path):
+    arq = tmp_path / "v.pdf"; arq.write_bytes(_pdf([RECURSO]))
+    sb = MagicMock()
+    r = IX.indexar_grupo(sb, _ia(IX.ia_mod.FichaIndisponivel("json_invalido")), _doc(arq), {"numero_processo": "58/2026"}, True)
+    assert r["status"] == "indexado"
+    assert sb.atualizar.call_args.args[2]["extracao"] == {"ficha": "indisponivel", "ficha_erro": "json_invalido"}
+
+
+@pytest.mark.parametrize("codigo,status", [(429, "RESOURCE_EXHAUSTED"), (503, "UNAVAILABLE"), (500, "INTERNAL"),
+                                           (404, "NOT_FOUND"), (403, "PERMISSION_DENIED")])
+def test_ficha_com_cota_5xx_ou_configuracao_errada_sobe(tmp_path, codigo, status):
+    """Cota e 5xx: o pedido volta para a fila e a ficha é tentada de novo depois. 4xx (modelo inexistente, sem
+    permissão): falha à vista em vez de indexar tudo sem ficha. Nos dois casos nada é gravado agora."""
+    from google.genai import errors
+    arq = tmp_path / "v.pdf"; arq.write_bytes(_pdf([RECURSO]))
+    erro = (errors.ServerError if codigo >= 500 else errors.ClientError)(codigo, {"error": {"code": codigo, "status": status, "message": "x"}})
+    sb = MagicMock()
+    with pytest.raises(errors.APIError):
+        IX.indexar_grupo(sb, _ia(erro), _doc(arq), {"numero_processo": "58/2026"}, True)
+    sb.upsert.assert_not_called()
+    sb.atualizar.assert_not_called()
+
+
+def test_reprocessar_ficha_seleciona_indexados_sem_ficha(monkeypatch):
+    sb = MagicMock()
+    sb.selecionar.side_effect = [[], [], []]
+    monkeypatch.setattr(IX, "Supabase", lambda *a: sb)
+    monkeypatch.setattr(IX, "env", lambda *a, **k: "x")
+    monkeypatch.setattr("coletor.ia.Gemini", lambda: MagicMock())
+    IX.main(["--reprocessar-ficha"])
+    filtros = sb.selecionar.call_args_list[1].kwargs
+    assert filtros["status_processamento"] == "eq.indexado" and filtros["extracao->>ficha"] == "eq.indisponivel"

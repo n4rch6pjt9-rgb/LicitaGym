@@ -15,6 +15,7 @@ Arquivos do diretório (cabeçalho na 1ª linha; vazio = NULL; booleanos t/f/tru
   regras_item.csv      -> catalogo_empresa_catmat (nivel item): codigo_item, codigo_pdm, incluido
   catmat_itens.csv     -> catmat_itens: codigo_item, descricao_item (texto dos itens do mapa)
   catalogo_itens.csv   -> catalogo_itens: codigo_catmat, descricao (espelho; texto de quem faltar em catmat_itens)
+  catmat_item_pdm.csv  -> catmat_item_pdm: codigo_item, descricao (texto de quem faltar nos dois anteriores; opcional)
 Outros arquivos do diretório (E0_*.csv, _q/, itens_catalogo.csv antigo) são ignorados.
 """
 from __future__ import annotations
@@ -31,12 +32,14 @@ ARQUIVOS = {
     "catalogo_empresa_catmat": "regras_item.csv",
     "catmat_itens": "catmat_itens.csv",
     "catalogo_itens": "catalogo_itens.csv",
+    "catmat_item_pdm": "catmat_item_pdm.csv",
 }
 _INTEIROS = {"id", "licitacao_id", "numero_item", "codigo_item", "codigo_pdm", "catalogo_id"}
 _BOOLEANOS = {"interesse_borracha", "tem_resultado", "incluido"}
 _VAZIO_OK = {"licitacao_documentos"}   # sem documentos no export: só escopo (--so-escopo)
-# espelho catalogo_itens: só texto de reserva (catmat_itens vem antes); se faltar, as âncoras abortam pelo PDM sem texto
-OPCIONAIS = frozenset({"catalogo_itens"})
+# catalogo_itens e catmat_item_pdm: só texto de reserva (catmat_itens vem antes); se faltar, as âncoras abortam pelo PDM
+# sem texto
+OPCIONAIS = frozenset({"catalogo_itens", "catmat_item_pdm"})
 
 
 def _valor(coluna: str, v: str | None):

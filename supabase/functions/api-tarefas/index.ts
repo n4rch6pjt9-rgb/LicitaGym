@@ -13,6 +13,8 @@ import { parseActionFromBody } from "./validation.ts";
  *   tarefas_listar:     admin vê todas da empresa; operação só as atribuídas a ela.
  *   tarefa_atualizar:   status (admin: qualquer; operação: só as dela) e prazo manual (só admin).
  *   tarefa_atribuir:    só admin; o responsável precisa ser membro ativo da mesma empresa; null volta à fila.
+ *   Tarefa de agente (spec 0035, R-11): status só pela revisão da análise (api-agentes), nunca à mão (409);
+ *   atribuir muda quem revisa, não o tipo.
  *   Tarefa de outra empresa responde 404 (toda leitura e escrita filtra tenant_id).
  * Só licitação no pipeline da empresa recebe tarefa. Regulamento nulo ou sem catálogo bloqueia a liberação (409).
  * Banco com service_role depois de conferir o usuário; empresa por _shared/tenant.ts.
@@ -109,6 +111,9 @@ export async function handleRequest(req: Request, ctx: ApiTarefasContext = {}): 
         if (params.prazo_em !== undefined && !admin) {
           return jsonResponse({ error: "Sem permissão: só o admin da empresa informa o prazo." }, 403);
         }
+        if (params.status !== undefined && params.status !== tarefa.status && tarefa.responsavel_tipo === "agente") {
+          return jsonResponse({ error: "Tarefa de agente: conclua ou reabra pela revisão da análise do agente." }, 409);
+        }
         const campos: Partial<Tarefa> = {};
         if (params.status !== undefined && params.status !== tarefa.status) {
           campos.status = params.status;
@@ -138,7 +143,12 @@ export async function handleRequest(req: Request, ctx: ApiTarefasContext = {}): 
           papelResp = p;
         }
         const atualizada = await repo.atualizar(
-          tenant, params.id, { responsavel_user_id: params.user_id, responsavel_papel: papelResp }, user.id,
+          tenant, params.id, {
+            responsavel_user_id: params.user_id,
+            responsavel_papel: papelResp,
+            // tarefa de agente segue de agente (R-11); as outras passam a usuário ou voltam à fila do papel
+            ...(tarefa.responsavel_tipo === "agente" ? {} : { responsavel_tipo: params.user_id !== null ? "usuario" as const : "papel" as const }),
+          }, user.id,
         );
         if (!atualizada) return jsonResponse({ error: "Tarefa não encontrada." }, 404);
         console.info("[api-tarefas] atribuir", { user: user.id, tarefa: params.id, para: params.user_id });

@@ -389,3 +389,32 @@ def test_upload_413_do_storage_e_definitivo(monkeypatch, indexa):
 def test_definitiva_storage(msg, esperado):
     assert PT.definitiva(RuntimeError(msg)) is esperado
     assert PT.transitoria(RuntimeError(msg)) is (not esperado)
+
+
+@pytest.mark.parametrize("codigo", [401, 403, 404])
+def test_gemini_sem_modelo_ou_permissao_falha_a_etapa_sem_marcar_documentos(monkeypatch, codigo):
+    """Troca para o 3.8 no endpoint global (22/10): modelo não habilitado vale para todos os documentos. A etapa falha
+    à vista no card em vez de marcar cada documento como erro e concluir 'sem documento'."""
+    from google.genai import errors
+
+    def indexar(sb, ia, grupo, lic, com_extracao):
+        raise errors.ClientError(codigo, {"error": {"code": codigo, "status": "NOT_FOUND", "message": "x"}})
+    monkeypatch.setattr(PT, "indexar_grupo", indexar)
+    sb = SbFalso([lic_pncp(fonte="sestsenat")], [_doc_baixado(1, "a")],
+                 rpc_respostas={"fila_preparacao_reivindicar": [PEDIDO]})
+    PT.consumir(PncpFalso(), sb, None, lambda: object())
+    fim = concluiu(sb)
+    assert fim["p_resultado"] is None and fim["p_erro"] == f"indexação: HTTP {codigo}"
+    assert sb.t["licitacao_documentos"][0]["status_processamento"] == "baixado"
+
+
+def test_gen_thinking_invalido_falha_a_etapa_sem_marcar_documentos(monkeypatch):
+    from coletor import ia as IA
+    monkeypatch.setattr(IA, "GEN_THINKING", "minimal")
+    monkeypatch.setattr(PT, "indexar_grupo", lambda *a: pytest.fail("não devia indexar"))
+    sb = SbFalso([lic_pncp(fonte="sestsenat")], [_doc_baixado(1, "a")],
+                 rpc_respostas={"fila_preparacao_reivindicar": [PEDIDO]})
+    PT.consumir(PncpFalso(), sb, None, lambda: IA.Gemini(project="p"))
+    fim = concluiu(sb)
+    assert fim["p_resultado"] is None and fim["p_erro"].startswith("indexação:")
+    assert sb.t["licitacao_documentos"][0]["status_processamento"] == "baixado"

@@ -78,6 +78,7 @@ scripts/.sync_state/
 var/
 supabase/.temp/
 
+ chore/higiene-contexto-e-pipeline
 # Backups e arquivos temporários
 _*.tgz
 _*.tar
@@ -100,3 +101,9 @@ Dashboard-agentes/
 **/*.zip
 **/html - sislog*.txt
 **/html lang=*.txt
+
+# logs do plugin claude-mem (só o CLAUDE.md da raiz é instrução)
+**/CLAUDE.md
+!/CLAUDE.md
+CLAUDE.local.md
+ main

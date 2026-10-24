@@ -6,8 +6,8 @@ promover a "forte" (no máximo "fraco"); piso, borracha e obra_piso seguem como 
 (TAXONOMIA-DRYRUN-RESULTADOS.md, 18:44-18:51 BRT): 529 das 632 compras leads/monitorar casam no modo núcleo.
 
 De onde vêm as âncoras: dos itens CATMAT do catálogo efetivo segundo catmat_itens_mapa() (catmat_item_pdm + espelho
-catalogo_itens + catmat_itens; nenhuma tabela nova), mais os itens incluídos avulsos; texto de catmat_itens ou do
-espelho (ler_itens_catalogo). A descrição do item é quebrada em nome (cabeça)
+catalogo_itens + catmat_itens; nenhuma tabela nova), mais os itens incluídos avulsos; texto de catmat_itens, do
+espelho ou, por último, de catmat_item_pdm (ler_itens_catalogo). A descrição do item é quebrada em nome (cabeça)
 e atributos ("ANILHA, MATERIAL: FERRO, COR: PRETA" -> ANILHA + MATERIAL=FERRO, COR=PRETA), e cada item gera:
   - cabeca: o nome do item (e as partes de "A / B" e "A - B"), ex.: "corda de pular", "caneleira";
   - atributo_tipo: o TIPO, quando a cabeça é genérica ("APARELHO / EQUIPAMENTO ..."), ex.: "cadeira extensora";
@@ -32,7 +32,11 @@ log = logging.getLogger("coletor.catmat_ancoras")
 
 RPC_ITENS = "rpc/catmat_itens_mapa"   # quais itens (codigo_item, codigo_pdm); GET na RPC, como o MapaCatmat
 # de onde vem a descrição (a RPC não traz): (tabela, coluna do código, coluna do texto), em ordem de preferência
-FONTES_DESCRICAO = (("catmat_itens", "codigo_item", "descricao_item"), ("catalogo_itens", "codigo_catmat", "descricao"))
+# Ordem de preferência do texto. catmat_item_pdm por último: é onde a inclusão de PDM pelo Dashboard grava o texto
+# oficial dos itens (API do Catálogo), e os PDMs incluídos depois da carga de catmat_itens (21/09) só existem lá (22/10).
+# Por último para não mudar o texto (e as âncoras) de item que já tinha texto nas duas primeiras.
+FONTES_DESCRICAO = (("catmat_itens", "codigo_item", "descricao_item"), ("catalogo_itens", "codigo_catmat", "descricao"),
+                    ("catmat_item_pdm", "codigo_item", "descricao"))
 PAGINA = 100   # regra dos coletores Python: no máximo 100 linhas por página
 MAX_PAGINAS = 200   # 20 mil itens por bloco de PDMs: muito acima dos ~660 do catálogo de hoje
 MODOS = ("nucleo", "estrito")
@@ -275,8 +279,10 @@ def ler_itens_catalogo(sb, pdms: Iterable[int], itens_avulsos: Iterable[int] = (
     Quais itens: RPC catmat_itens_mapa() (GET rpc/catmat_itens_mapa, filtrada por codigo_pdm/codigo_item; junta
     catmat_item_pdm, o espelho catalogo_itens e catmat_itens). A função só devolve (codigo_item, codigo_pdm), então a
     descrição vem de FONTES_DESCRICAO, na ordem: catmat_itens.descricao_item (texto oficial da API do Compras.gov.br),
-    depois catalogo_itens.descricao (espelho). Decisão de 03/10/2026 (19:41 BRT): catmat_item_pdm não é lido direto
-    (em prod faltavam 11 PDMs nele). Tudo em GET de 100 por página. descricao None = item sem texto em nenhuma fonte
+    depois catalogo_itens.descricao (espelho), depois catmat_item_pdm.descricao (texto que a inclusão de PDM pelo
+    Dashboard grava; 22/10/2026: 7 PDMs incluídos só tinham texto lá e o coletor abortava). Decisão de 03/10/2026
+    (19:41 BRT): a lista de itens não sai de catmat_item_pdm (em prod faltavam 11 PDMs nele); ele só completa o texto.
+    Tudo em GET de 100 por página. descricao None = item sem texto em nenhuma fonte
     (não gera âncora; carregar_ancoras aborta se um PDM inteiro ficar assim)."""
     pdms, avulsos = sorted(set(pdms)), sorted(set(itens_avulsos))
     brutos: list[dict] = []

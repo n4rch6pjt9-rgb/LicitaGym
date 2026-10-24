@@ -40,7 +40,11 @@ Deno.test("CA-4: Horizontina, profissional + AC + 180 kg com potência só de pi
   assertEquals((inc.dados.perfil as string[]).sort(), ["motor_ac", "peso_usuario_180kg", "profissional"]);
   assertEquals(inc.fontes[0].tipo, "chunk");
   if (inc.fontes[0].tipo === "chunk") assertEquals(inc.fontes[0].trecho.includes("3.0 HP PEAK POWER"), true);
+ fix/edital-dispensa
+  assertEquals(inc.fontes[1], { tipo: "calculo", regra: "pico_aprox_2x_continuo", versao: "2026-10-20.1" });
+
   assertEquals(inc.fontes[1], { tipo: "calculo", regra: "pico_aprox_2x_continuo", versao: "2026-10-21.1" });
+ main
 });
 
 Deno.test("Paranavaí: 'entre 3 a 5 HP' é faixa ambígua, sem perfil profissional não é inconsistente", () =>

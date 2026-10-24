@@ -181,3 +181,21 @@ Deno.test("edital: texto padrão que só cita o tema não é exigência (sançã
   assertEquals(codigos(["Exige-se apresentação de amostras ou documentação técnica para diversos itens."]), ["exigencia.amostra"]);
   assertEquals(codigos(["§ 6º perda da garantia de proposta. A regra do § 5º não se aplicará aos licitantes remanescentes."]), []);
 });
+
+Deno.test("detectarExigencias: negação em frase seguinte não anula exigência anterior", () => {
+  // Cenário exato do bug reportado: a negação do prazo não deve anular a exigência de amostra
+  // Usando a função auxiliar 'c' já definida no topo do arquivo para garantir consistência de tipos
+  const chunks = [
+    c(1, "A licitante deverá apresentar amostras. Não haverá prorrogação do prazo de entrega.")
+  ];
+
+  const achados = detectarExigencias(chunks);
+
+  // Deve encontrar a exigência de amostra
+  const temExigenciaAmostra = achados.some((a) => a.codigo === "exigencia.amostra" || a.codigo.includes("amostra"));
+  assertEquals(temExigenciaAmostra, true, "Deve identificar a exigência de amostra na primeira frase");
+
+  // NÃO deve marcar como dispensado por causa da segunda frase
+  const temDispensaAmostra = achados.some((a) => a.codigo === "dispensa.amostra");
+  assertEquals(temDispensaAmostra, false, "A negação do prazo na segunda frase não deve anular a amostra da primeira");
+});

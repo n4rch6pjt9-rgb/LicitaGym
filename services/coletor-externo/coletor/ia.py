@@ -174,8 +174,14 @@ class Gemini:
             except Exception as e:
                 if i == tentativas - 1 or not transitorio(e):
                     raise
+<<<<<<< HEAD
  chore/higiene-contexto-e-pipeline
                 base_espera = min(90, 5 * 2 ** i)
+=======
+                base_base_base_espera = min(90, 5 * 2 ** i)
+                espera = base_espera + random.uniform(0.5, min(5.0, base_espera * 0.2))
+                espera = base_espera + random.uniform(0.5, min(5.0, base_espera * 0.2))
+>>>>>>> 245663e (fix: corrige indentação em ia.py e isola escopo de negação em detectarExigencias com teste de regressão)
                 espera = base_espera + random.uniform(0.5, min(5.0, base_espera * 0.2))
                 log.info("    cota do Vertex atingida; aguardando %ss (tentativa %s/%s)", espera, i + 1, tentativas)
 

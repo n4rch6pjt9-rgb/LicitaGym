@@ -1,25 +1,23 @@
 # LicitaGym — Instruções do Projeto
 
 ## Projeto
+O LicitaGym é um SaaS para monitoramento e análise de oportunidades de licitações públicas, com foco principal no mercado de equipamentos fitness e pisos esportivos/borracha.
 
-O LicitaGym é um SaaS para monitoramento e análise de oportunidades de licitações públicas, com foco principal no mercado de equipamentos fitness.
+Este repositório (`n4rch6pjt9-rgb/LicitaGym`) compreende o backend: banco de dados PostgreSQL, Supabase Edge Functions, coletores de ingestão em Python e harness de administração desktop. O frontend reside no repositório separado `n4rch6pjt9-rgb/Dashboard---LicitaGym`.
 
 O sistema deve priorizar:
-
 - precisão;
 - rastreabilidade;
 - dados oficiais;
 - auditabilidade;
 - segurança.
 
+---
 ## Regra de Ouro: Zero Alucinação
-
-Precisão é um requisito do produto.
-
+Precisão é um requisito inegociável do produto.
 Nunca invente ou complete dados de licitações quando eles puderem ser obtidos ou verificados em uma fonte oficial.
 
 Isso é especialmente importante para:
-
 - valores de editais;
 - preços de itens;
 - quantidades;
@@ -28,206 +26,82 @@ Isso é especialmente importante para:
 - UASG;
 - número da compra;
 - datas;
+- BDI, impostos, cálculos de propostas, exequibilidade e margens.
 
+Quando uma informação não estiver disponível, represente-a explicitamente como ausente (`null`), desconhecida ou não verificada. Nunca fabrique um valor para preencher a interface.
+
+Em chamadas a Modelos de Linguagem (LLMs):
+- É mandatório o uso de saída estruturada com JSON Schema (`response_mime_type="application/json"`).
+- O texto extraído de editais de terceiros deve ser envelopado em blocos de confiança com isolamento anti-prompt injection.
+- A classificação de escopo de certames deve ser determinística via catálogo ancorado (`catmat_ancoras.py`), nunca baseada puramente na intuição estatística do modelo.
+
+---
 ## Regra de Ouro: Consultar Schemas Antes de Requisições
-
-**Antes de fazer qualquer requisição HTTP a APIs (PNCP, Compras.gov)**:
-
-1. Ler `/docs/pncp/schemas-consultas-pncp.md` (PNCP)
-2. Ler `/docs/compras-gov/schemas-consultas.md` (Compras.gov)
+**Antes de fazer qualquer requisição HTTP a APIs externas**:
+1. PNCP: Ler `/docs/pncp/schemas-consultas-pncp.md` e OpenAPI em `/docs/pncp/openapi/`
+2. Compras.gov: Ler `/docs/compras-gov/schemas-consultas.md`
 3. Validar:
    - Parâmetros obrigatórios vs opcionais
-   - Limites de `tamanhoPagina` (variam: 50 máx pra contratações, 500 pra outros)
-   - Nomes de parâmetros (`dataInical` vs `dataInicio`, etc.)
-   - Valores enumerados (ex: `codigoModalidadeContratacao`)
-
-**Razão:** Evita 400/404 errors e trial-and-error desnecessário.
-- BDI;
-- impostos;
-- cálculos de propostas;
-- cálculos de exequibilidade;
-- margens.
-
-Quando uma informação não estiver disponível, represente-a como ausente, desconhecida ou não verificada.
-
-Nunca fabrique um valor para preencher a interface.
-
-## Identificadores CATMAT
-
-Respeite a semântica dos identificadores oficiais.
-
-Em particular:
-
-- `codigoItem` e `codigoPdm` não são equivalentes;
-- diferentes itens CATMAT podem compartilhar um PDM;
-- características podem diferenciar itens pertencentes ao mesmo PDM;
-- preserve os identificadores originais da fonte durante a ingestão.
-
-## Identificação da licitação
-
-Sempre que disponíveis, preserve:
-
-- UASG;
-- número da compra;
-- modalidade;
-- órgão;
-- unidade compradora;
-- identificadores oficiais da fonte.
-
-Não substitua identificadores oficiais por identificadores internos.
-
-## Fontes de dados
-
-Priorize fontes oficiais.
-
-Fontes atualmente relevantes:
-
-- Compras.gov.br / Dados Abertos;
-- PNCP;
-- Compras RJ, quando aplicável.
-
-Dados mockados ou hardcoded não devem substituir dados oficiais nos fluxos de produção.
-
-Mocks podem ser utilizados apenas quando explicitamente destinados a desenvolvimento ou testes.
-
-## Escopo do catálogo
-
-O foco principal atual é equipamentos fitness.
-
-Classificação principal:
-
-- Musculação
-- Cárdio
-- Acessórios
-
-Exemplos de acessórios:
-
-- Halter
-- Dumbbells
-- Puxadores
-- Anilhas
-- Cordas
-- Piso
-- Colchonete
-- Outros
-
-A classificação deve ser determinística e idempotente sempre que possível.
-
-Deve existir possibilidade de edição manual da classificação.
-
-## Arquitetura
-
-Antes de implementar uma funcionalidade:
-
-1. Analise a implementação existente.
-2. Analise o schema e as migrations relevantes.
-3. Analise os serviços e clientes de API existentes.
-4. Reutilize abstrações existentes quando apropriado.
-5. Evite criar duas implementações para o mesmo conceito.
-
-## Supabase
-
-Supabase é a plataforma principal de backend do projeto.
-
-Utilize a arquitetura existente do Supabase para recursos aplicáveis, incluindo:
-
-- PostgreSQL;
-- autenticação;
-- autorização;
-- Row Level Security;
-- funções e recursos de backend já implementados no projeto.
-
-Não introduza:
-
-- AWS Cognito;
-- AWS RDS;
-- AWS S3;
-- Asaas;
-
-a menos que isso seja solicitado explicitamente.
-
-## Integridade dos dados
-
-Identificadores provenientes de fontes governamentais devem ser preservados separadamente das chaves internas do sistema.
-
-Não sobrescreva silenciosamente dados provenientes das fontes oficiais.
-
-Ao normalizar dados, preserve informações suficientes para:
-
-- rastrear a origem;
-- reproduzir a importação;
-- auditar o dado;
-- identificar o registro original.
-
-Alterações de schema devem utilizar migrations.
-
-## Schema & Migrations — Padrão CATMAT (E1-E7)
-
-**Staging tables** (`icatmat_*`) ingerem dados brutos de Compras.gov antes de reconciliação com `catmat_*`.
-
-### Estrutura obrigatória
-
-- **Identidade:** `BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY` (moderno, não BIGSERIAL)
-- **Integridade:** FKs cascata conectam hierarquicamente (E1 ← E2 ← E3 ← E4 ← E5/E6/E7)
-- **Rastreabilidade:** `payload_hash TEXT NOT NULL UNIQUE` (MD5 para dedup)
-- **Timestamp:** `data_hora_atualizacao` + `sync_timestamp` ambos `NOT NULL DEFAULT NOW()`
-- **Validação:** CHECKs replicam golden rule (apenas G72/7220, G78/7830)
-- **Índices:** apenas `sync_timestamp` (golden rule limita a 2 grupos = outros índices inúteis)
-- **Segurança:** `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` obrigatório
-
-### Tabelas existentes
-
-Só duas estão no schema: `icatmat_grupo_material` (E1) e `icatmat_pdm_completa`. As E2–E7
-(`icatmat_classe_material`, `icatmat_pdm_material`, `icatmat_item_material`, `icatmat_natureza_despesa`,
-`icatmat_unidade_fornecimento`, `icatmat_caracteristica_material`) nunca foram aplicadas e estão em
-`supabase/migrations_archive/`. O catálogo em uso é `catmat_*`. Recriar uma E2–E7 exige migration nova.
-
-Ver `supabase/migrations/SCHEMA_STANDARDS.md` para template e checklist.
-
-## Cálculos financeiros
-
-Cálculos financeiros, fiscais, BDI, margem e exequibilidade devem ser determinísticos.
-
-Nunca dependa de cálculos aproximados realizados pelo modelo de linguagem para valores críticos.
-
-Utilize código ou funções com entradas e saídas explícitas.
-
-Os cálculos devem ser:
-
-- reproduzíveis;
-- testáveis;
-- auditáveis.
-
-Quando houver arredondamento, a regra utilizada deve estar explicitamente definida.
-
-## Interface
-
-A interface deve apresentar informações de licitações de forma clara e profissional.
-
-Prefira:
-
-- hierarquia visual clara;
-- densidade de informação adequada;
-- componentes consistentes;
-- estados de carregamento explícitos;
-- estados vazios explícitos;
-- estados de erro explícitos.
-
-Nunca esconda ausência de dados utilizando valores inventados.
-
-## Critério de conclusão
-
-Uma tarefa não está concluída apenas porque o código foi escrito.
-
-Quando aplicável:
-
-1. Type checking deve passar.
-2. Lint deve passar.
-3. Testes relevantes devem passar.
-4. Build deve funcionar.
-5. Alterações de banco devem possuir migration.
-6. Nenhum secret deve ter sido introduzido.
-7. Não devem existir regressões óbvias.
-8. Dados reais devem ser utilizados em vez de dados hardcoded desnecessários.
-
-Se alguma validação não puder ser executada, informe isso explicitamente.
+   - Limites de `tamanhoPagina` (50 máx para contratações, 500 para outros)
+   - Nomes exatos de parâmetros (`dataInicial` vs `dataInicio`, etc.)
+   - Valores enumerados e códigos de modalidade
+
+---
+## Infraestrutura Cloud: Supabase & Google Cloud Platform (GCP)
+A arquitetura do LicitaGym é estritamente híbrida entre **Supabase** e **Google Cloud Platform (GCP)**.
+
+### 1. Supabase (Backend Primário & Dados)
+- Plataforma de banco relacional PostgreSQL, Autenticação, Row Level Security (RLS) e Edge Functions (Deno).
+- Ambiente único de produção.
+- Não introduza AWS (Cognito, RDS, S3), Asaas ou outras nuvens não autorizadas.
+- O PostgREST público não deve expor tabelas brutas: leituras do frontend passam pelas Edge Functions com projeção estrita de colunas seguras.
+
+### 2. Google Cloud Platform (Processamento Pesado & IA)
+- **Cloud Run Jobs:** Ambiente canônico para execução dos coletores longos em lote. Contêineres devem rodar com usuário não-root e `PYTHONUNBUFFERED=1`.
+- **Google Cloud Storage (GCS):** Armazenamento de arquivo bruto e imutável de banco e storage de anexos.
+- **Vertex AI:**
+  - **Embeddings:** Modelo canônico obrigatório `text-multilingual-embedding-002` (768 dimensões).
+  - **Modelos Generativos:** `gemini-2.5-flash` (ou versão vigente) para OCR e extração estruturada de editais.
+  - **Cotas e Latência:** Respeitar o teto de 5 RPM para embeddings em novos projetos. Retries devem obrigatoriamente incluir **backoff exponencial com jitter**.
+  - **Anti-padrão de Download:** Ao processar documentos já hospedados no Cloud Storage, use a URI direta (`Part.from_uri(file_uri="gs://...", mime_type="application/pdf")`) em vez de baixar bytes intermediários na RAM do contêiner.
+- **Autenticação GCP:** Apenas via **Application Default Credentials (ADC)** ou Workload Identity. É terminantemente proibido hardcodar ou commitar chaves de conta de serviço (`*.json`) ou API keys.
+
+---
+## Identificadores Oficiais e Fontes de Dados
+### Identificadores CATMAT
+- `codigoItem` e `codigoPdm` não são equivalentes.
+- Diferentes itens CATMAT podem compartilhar o mesmo PDM.
+- Preserve sempre os identificadores originais da fonte durante a ingestão.
+
+### Identificação da Licitação
+Preserve sempre:
+- Código de controle PNCP;
+- Para compras fora do PNCP: CNPJ do órgão + número do Processo Administrativo;
+- UASG, modalidade, órgão e unidade compradora.
+
+### Fontes Autorizadas em Produção
+1. **PNCP (Portal Nacional de Contratações Públicas)**
+2. **Compras.gov.br (Dados Abertos / SIASG)**
+3. **Sistema S (Sesc, Senac, Sesi, Senai, Sest Senat / Plataforma Paradigma)**
+4. **Portal de Compras Públicas / Compras RJ** (quando aplicável)
+
+Dados mockados são estritamente proibidos em fluxos de produção.
+
+---
+## Escopo do Catálogo e Classificação
+Foco: **Equipamentos Fitness e Pisos Esportivos/Borracha**.
+- Classificação: Musculação, Cárdio, Acessórios, Pisos, Borracha e Manutenção.
+- A classificação deve ser **determinística, ancorada no catálogo oficial CATMAT** e idempotente.
+- Deve existir possibilidade de edição manual com precedência sobre a regra automática.
+
+---
+## Schema, Migrations e Integridade
+- Alterações estruturais no banco de dados exigem **migrations numeradas** com timestamp.
+- Nunca execute `supabase db push` ou `supabase db reset` diretamente em produção.
+- Toda tabela exposta ao PostgREST deve ter **Row Level Security (RLS)** habilitado.
+
+---
+## Governança de Contexto de IA no Repositório
+- **Fonte Única:** Este arquivo (`AGENTS.md`) é a única fonte de regras gerais de negócio e arquitetura.
+- **Ferramental:** Arquivos como `.cursor/rules/licitagym.mdc` devem apenas referenciar este documento.
+- **Higiene:** Não comite logs de sessão de plugins de IA (`CLAUDE.md` de subdiretórios gerados por plugins de memória).

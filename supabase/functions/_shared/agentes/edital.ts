@@ -89,7 +89,7 @@ function lerMencao(norm: string, inicio: number, fim: number, codigo: string): L
   if (RE_NEGA_ANTES.test(antesBruto)) return "negada";
   // Só a primeira frase/cláusula depois do termo; a numeração ("7.1.", "7 . 3 . 1 .") não encerra a frase.
   const semNumeracao = depois.replace(/\b\d+(?:\s*\.\s*\d+)*\s*\.?(?=\s|$)/g, " ");
-  const clausula = semNumeracao.split(/[.;!?]/).slice(0, 2).join(" ");
+  const clausula = semNumeracao.split(/[.;!?]/)[0] ?? "";
   if (RE_NEGA_DEPOIS.test(clausula) && !/\b(sera|serao|deve|devera|deverao) (exigid|apresentad|obrigatori)/.test(clausula.replace(/nao sera\w*/g, ""))) {
     return "negada";
   }
@@ -158,7 +158,6 @@ export function detectarExigencias(chunks: ChunkEdital[]): Achado[] {
   for (const chunk of chunks) {
     const { norm, origem } = normalizarComMapa(chunk.texto);
     for (const padrao of PADROES) {
- chore/higiene-contexto-e-pipeline
       padrao.re.lastIndex = 0;
       for (const casa of norm.matchAll(padrao.re)) {
         if (casa.index === undefined) continue;
@@ -174,20 +173,7 @@ export function detectarExigencias(chunks: ChunkEdital[]): Achado[] {
         grupo.vistos.add(chave);
         const lista = leitura === "negada" ? grupo.negadas : grupo.afirmadas;
         if (lista.length >= 3) continue;
-        lista.push({
-          tipo: "chunk",
-          chunk_id: chunk.id,
-          documento_id: chunk.documento_id,
-          pagina: chunk.pagina,
-          trecho: trechoNoOriginal(chunk.texto, casa.index, fim, origem),
-        });
-
-      const casa = padrao.re.exec(norm);
-      if (!casa || casa.index === undefined) continue;
-      const grupo = fontes.get(padrao.codigo) ?? { severidade: padrao.severidade, fontes: [] };
-      if (grupo.fontes.length < 3) {
-        grupo.fontes.push(fonteChunk(chunk, casa.index, casa.index + casa[0].length, origem));
- main
+        lista.push(fonteChunk(chunk, casa.index, fim, origem));
       }
     }
   }

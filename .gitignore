@@ -107,3 +107,4 @@ Dashboard-agentes/
 !/CLAUDE.md
 CLAUDE.local.md
  main
+.claude/settings.local.json

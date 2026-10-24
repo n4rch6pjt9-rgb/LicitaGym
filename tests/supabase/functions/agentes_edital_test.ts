@@ -51,11 +51,7 @@ Deno.test("edital: prazo avisa que não considerou feriados", () => {
   assertEquals(prazo.severidade, "atencao");
   assertEquals(prazo.natureza, "analise");
   assertEquals(prazo.dados, { data_limite: "2026-10-12", data_abertura: "2026-10-15", feriados_considerados: false });
- chore/higiene-contexto-e-pipeline
-  assertEquals(prazo.fontes, [{ tipo: "calculo", regra: "lei_14133_art_164_3_dias_uteis", versao: "2026-10-20.1" }]);
-
   assertEquals(prazo.fontes, [{ tipo: "calculo", regra: "lei_14133_art_164_3_dias_uteis", versao: "2026-10-21.1" }]);
- main
 });
 
 Deno.test("edital: sem chunks é sem_documento, não 'nenhuma exigência'", () => {

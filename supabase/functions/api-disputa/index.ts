@@ -2,6 +2,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2";
 import {
   type AuthenticatedUser,
+  authenticateCron,
   authenticateUser,
   corsHeaders,
   isLicitagymAdmin,
@@ -18,6 +19,7 @@ import { pisoTenantCentavos } from "../_shared/agentes/preco.ts";
 export interface ApiDisputaContext {
   getSupabase?: () => SupabaseClient;
   getUser?: (req: Request) => Promise<AuthenticatedUser | null>;
+  isCron?: (req: Request) => boolean;
   consultarChat?: (chave: string) => Promise<MensagemSerpro[]>;
   consultarDiligencias?: (chave: string) => Promise<MensagemSerpro[]>;
 }
@@ -41,17 +43,41 @@ export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Prom
   const caminho = url.pathname.replace(/^\/api-disputa\/?/, "");
 
   try {
-    const user = ctx?.getUser ? await ctx.getUser(req) : await authenticateUser(req);
-    if (!user) {
-      return jsonResponse({ erro: "Não autenticado." }, 401);
+    let isCron = false;
+    if (ctx?.isCron) {
+      isCron = ctx.isCron(req);
+    } else {
+      try {
+        isCron = authenticateCron(req) === "CRON_AUTHENTICATED";
+      } catch {
+        isCron = false;
+      }
+    }
+
+    let user: AuthenticatedUser | null = null;
+    let tenantId = 0;
+
+    if (isCron) {
+      if (caminho !== "sync-chat") {
+        return jsonResponse({ erro: "Acesso por cron permitido apenas para /sync-chat." }, 403);
+      }
+    } else {
+      user = ctx?.getUser ? await ctx.getUser(req) : await authenticateUser(req);
+      if (!user) {
+        return jsonResponse({ erro: "Não autenticado." }, 401);
+      }
     }
 
     const supabase = ctx?.getSupabase ? ctx.getSupabase() : getDefaultServiceClient();
-    const { tenant: tenantId } = await lerTenantDoUsuario(
-      supabase,
-      user.id,
-      isLicitagymAdmin(user)
-    );
+
+    if (!isCron && user) {
+      const tenantRes = await lerTenantDoUsuario(
+        supabase,
+        user.id,
+        isLicitagymAdmin(user)
+      );
+      tenantId = tenantRes.tenant;
+    }
 
     // 1. GET /api-disputa/estrategia?licitacao_id=...
     if (req.method === "GET" && (caminho === "estrategia" || caminho === "")) {
@@ -237,13 +263,33 @@ export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Prom
       const body = await req.json();
       const { licitacao_id, chave_compra } = body;
 
-      if (!licitacao_id || !chave_compra) {
-        return jsonResponse({ erro: "licitacao_id e chave_compra são obrigatórios." }, 400);
+      if (!licitacao_id) {
+        return jsonResponse({ erro: "licitacao_id é obrigatório." }, 400);
       }
 
       const licitacaoId = parseInt(String(licitacao_id), 10);
       if (isNaN(licitacaoId)) {
         return jsonResponse({ erro: "licitacao_id inválido." }, 400);
+      }
+
+      // Se for acionado por cron, resolve o tenant_id pelo pipeline da licitação
+      if (isCron) {
+        const tenantParam = body.tenant_id ? parseInt(String(body.tenant_id), 10) : null;
+        if (tenantParam && !isNaN(tenantParam)) {
+          tenantId = tenantParam;
+        } else {
+          const { data: pipe, error: ePipe } = await supabase
+            .from("pipeline_oportunidades")
+            .select("tenant_id")
+            .eq("licitacao_id", licitacaoId)
+            .limit(1)
+            .maybeSingle();
+          if (ePipe) throw ePipe;
+          if (!pipe) {
+            return jsonResponse({ erro: "Licitação não vinculada a nenhum tenant ativo no pipeline." }, 404);
+          }
+          tenantId = pipe.tenant_id;
+        }
       }
 
       // Verifica se a licitação pertence ao pipeline do tenant antes de consultar Serpro
@@ -259,13 +305,44 @@ export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Prom
         return jsonResponse({ erro: "Oportunidade não encontrada no pipeline do tenant." }, 404);
       }
 
+      // Validação de segurança (K-3 / Anti-Proxy): amarra a chave_compra ao registro oficial
+      const { data: licitacao, error: erroLic } = await supabase
+        .from("licitacoes_externas")
+        .select("id, codigo_externo, raw")
+        .eq("id", licitacaoId)
+        .maybeSingle();
+
+      if (erroLic) throw erroLic;
+      if (!licitacao) {
+        return jsonResponse({ erro: "Licitação não encontrada." }, 404);
+      }
+
+      const rawObj = (licitacao.raw && typeof licitacao.raw === "object") ? (licitacao.raw as Record<string, unknown>) : {};
+      const chaveOficial = (typeof licitacao.codigo_externo === "string" && licitacao.codigo_externo)
+        || (typeof rawObj.chave_compra === "string" && rawObj.chave_compra)
+        || (typeof rawObj.numero_controle_pncp === "string" && rawObj.numero_controle_pncp)
+        || (typeof rawObj.chaveCompra === "string" && rawObj.chaveCompra);
+
+      const chaveFinal = (typeof chave_compra === "string" && chave_compra.trim())
+        ? chave_compra.trim()
+        : (typeof chaveOficial === "string" ? chaveOficial : null);
+
+      if (!chaveFinal) {
+        return jsonResponse({ erro: "Chave de compra não identificada para esta licitação." }, 400);
+      }
+
+      // Se o chamador informou chave diferente da oficial, rejeita tentativa de proxy não autorizada
+      if (typeof chaveOficial === "string" && typeof chave_compra === "string" && chave_compra.trim() !== chaveOficial) {
+        return jsonResponse({ erro: "Chave de compra não corresponde ao registro oficial da licitação." }, 400);
+      }
+
       // Consulta mensagens e diligências no Integra Compras
       const fnChat = ctx?.consultarChat ?? consultarChatSerpro;
       const fnDiligencias = ctx?.consultarDiligencias ?? consultarDiligenciasSerpro;
 
       const [mensagensChat, diligencias] = await Promise.all([
-        fnChat(chave_compra),
-        fnDiligencias(chave_compra),
+        fnChat(chaveFinal),
+        fnDiligencias(chaveFinal),
       ]);
 
       const todas: MensagemSerpro[] = [...mensagensChat, ...diligencias];
@@ -276,7 +353,7 @@ export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Prom
           {
             tenant_id: tenantId,
             licitacao_id: licitacaoId,
-            chave_compra: chave_compra,
+            chave_compra: chaveFinal,
             item_numero: m.item ?? null,
             categoria: m.categoria.toLowerCase(),
             remetente: m.remetente,

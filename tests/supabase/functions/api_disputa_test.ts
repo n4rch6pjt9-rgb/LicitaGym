@@ -35,6 +35,7 @@ interface MockDatabase {
   }>;
   mensagens: Array<Record<string, unknown>>;
   auditoria: Array<Record<string, unknown>>;
+  licitacoesExternas?: Array<{ id: number; codigo_externo?: string; raw?: Record<string, unknown> }>;
   failUpsert?: boolean;
 }
 
@@ -118,6 +119,11 @@ function createMockSupabase(db: MockDatabase) {
             rows = [...db.mensagens];
           } else if (table === "disputa_lances_auditoria") {
             rows = [...db.auditoria];
+          } else if (table === "licitacoes_externas") {
+            rows = db.licitacoesExternas ?? [
+              { id: 100, codigo_externo: "15300005000012026", raw: {} },
+              { id: 101, codigo_externo: "15300005000012026", raw: {} },
+            ];
           }
 
           const res = rows.filter((r) => filters.every((f) => f(r)));
@@ -418,4 +424,84 @@ Deno.test("api-disputa: POST /sync-chat - não mascara erro se upsert falhar e r
   assertEquals(res.status, 500);
   const json = await res.json();
   assertEquals(json.erro, "Erro interno no servidor.");
+});
+
+Deno.test("api-disputa: POST /sync-chat - rejeita proxy se chave_compra divergir da oficial", async () => {
+  const db: MockDatabase = {
+    pipeline: [{ tenant_id: 1, licitacao_id: 101 }],
+    itens: [],
+    dePara: [],
+    precos: [],
+    mensagens: [],
+    auditoria: [],
+    licitacoesExternas: [
+      { id: 101, codigo_externo: "15300005000012026", raw: {} },
+    ],
+  };
+
+  const req = new Request("http://localhost/api-disputa/sync-chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      licitacao_id: 101,
+      chave_compra: "CHAVE_INVASORA_ARBITRARIA",
+    }),
+  });
+
+  const res = await handleRequest(req, {
+    getUser: () => Promise.resolve(USUARIO_TESTE),
+    // deno-lint-ignore no-explicit-any
+    getSupabase: () => createMockSupabase(db) as any,
+  });
+
+  assertEquals(res.status, 400);
+  const json = await res.json();
+  assertEquals(json.erro, "Chave de compra não corresponde ao registro oficial da licitação.");
+});
+
+Deno.test("api-disputa: POST /sync-chat - autentica via cron secret e sincroniza com sucesso", async () => {
+  const db: MockDatabase = {
+    pipeline: [{ tenant_id: 1, licitacao_id: 101 }],
+    itens: [],
+    dePara: [],
+    precos: [],
+    mensagens: [],
+    auditoria: [],
+    licitacoesExternas: [
+      { id: 101, codigo_externo: "15300005000012026", raw: {} },
+    ],
+  };
+
+  const mockMensagens: MensagemSerpro[] = [
+    {
+      id: 99,
+      item: 1,
+      categoria: "AVISO",
+      remetente: "Sistema",
+      texto: "Aviso de cron automático",
+      dataHora: 1792900000000,
+    },
+  ];
+
+  const req = new Request("http://localhost/api-disputa/sync-chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      licitacao_id: 101,
+    }),
+  });
+
+  const res = await handleRequest(req, {
+    isCron: () => true,
+    // deno-lint-ignore no-explicit-any
+    getSupabase: () => createMockSupabase(db) as any,
+    consultarChat: () => Promise.resolve(mockMensagens),
+    consultarDiligencias: () => Promise.resolve([]),
+  });
+
+  assertEquals(res.status, 200);
+  const json = await res.json();
+  assertEquals(json.ok, true);
+  assertEquals(json.novas_inseridas, 1);
+  assertEquals(db.mensagens.length, 1);
 });

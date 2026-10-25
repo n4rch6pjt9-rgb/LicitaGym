@@ -548,6 +548,68 @@ Deno.test("api-disputa: POST /sync-chat - autentica via cron secret e sincroniza
   assertEquals(db.mensagens[1].tenant_id, 2);
 });
 
+Deno.test("api-disputa: POST /sync-chat - cron com tenant_id valida presença no pipeline", async () => {
+  const db: MockDatabase = {
+    pipeline: [
+      { tenant_id: 1, licitacao_id: 101 },
+    ],
+    itens: [],
+    dePara: [],
+    precos: [],
+    mensagens: [],
+    auditoria: [],
+    licitacoesExternas: [
+      { id: 101, codigo_externo: "15300005000012026", raw: {} },
+    ],
+  };
+
+  // 1. Cron enviando tenant_id válido que possui a licitação no pipeline
+  const reqValido = new Request("http://localhost/api-disputa/sync-chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      licitacao_id: 101,
+      tenant_id: 1,
+    }),
+  });
+
+  const resValido = await handleRequest(reqValido, {
+    isCron: () => true,
+    // deno-lint-ignore no-explicit-any
+    getSupabase: () => createMockSupabase(db) as any,
+    consultarChat: () => Promise.resolve([{ id: 10, item: 1, categoria: "AVISO", remetente: "Sis", texto: "Teste", dataHora: 1792900000000 }]),
+    consultarDiligencias: () => Promise.resolve([]),
+  });
+
+  assertEquals(resValido.status, 200);
+  const jsonValido = await resValido.json();
+  assertEquals(jsonValido.ok, true);
+  assertEquals(db.mensagens.length, 1);
+  assertEquals(db.mensagens[0].tenant_id, 1);
+
+  // 2. Cron enviando tenant_id que NÃO possui a licitação no pipeline -> 404
+  const reqInvalido = new Request("http://localhost/api-disputa/sync-chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      licitacao_id: 101,
+      tenant_id: 99,
+    }),
+  });
+
+  const resInvalido = await handleRequest(reqInvalido, {
+    isCron: () => true,
+    // deno-lint-ignore no-explicit-any
+    getSupabase: () => createMockSupabase(db) as any,
+    consultarChat: () => Promise.resolve([]),
+    consultarDiligencias: () => Promise.resolve([]),
+  });
+
+  assertEquals(resInvalido.status, 404);
+  const jsonInvalido = await resInvalido.json();
+  assertEquals(jsonInvalido.erro, "Licitação não vinculada ao tenant informado no pipeline.");
+});
+
 Deno.test("api-disputa: GET /estrategia - seleção determinística do menor id de catalogo_de_para compatível com api-agentes", async () => {
   const db: MockDatabase = {
     pipeline: [{ tenant_id: 1, licitacao_id: 101 }],

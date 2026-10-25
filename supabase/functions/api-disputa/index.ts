@@ -321,10 +321,20 @@ export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Prom
 
       let tenantsAlvo: number[] = [];
 
-      // Se for acionado por cron, resolve todos os tenants com essa licitação no pipeline
+      // Se for acionado por cron, resolve todos os tenants com essa licitação no pipeline (ou valida o tenant informado)
       if (isCron) {
         const tenantParam = body.tenant_id ? parseInt(String(body.tenant_id), 10) : null;
         if (tenantParam && !isNaN(tenantParam)) {
+          const { data: pipe, error: ePipe } = await supabase
+            .from("pipeline_oportunidades")
+            .select("tenant_id")
+            .eq("tenant_id", tenantParam)
+            .eq("licitacao_id", licitacaoId)
+            .maybeSingle();
+          if (ePipe) throw ePipe;
+          if (!pipe) {
+            return jsonResponse({ erro: "Licitação não vinculada ao tenant informado no pipeline." }, 404);
+          }
           tenantsAlvo = [tenantParam];
         } else {
           const { data: pipes, error: ePipe } = await supabase

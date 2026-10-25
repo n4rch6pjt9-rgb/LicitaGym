@@ -59,38 +59,22 @@ CREATE TABLE IF NOT EXISTS public.disputa_lances_auditoria (
 CREATE INDEX IF NOT EXISTS idx_disputa_lances_auditoria_busca 
     ON public.disputa_lances_auditoria(tenant_id, licitacao_id, enviado_em DESC);
 
--- Habilitação obrigatória de RLS
+-- Habilitação obrigatória de RLS (Spec 0039 / K-1 / CA-1: RLS ligada sem policy direta para authenticated;
+-- leitura e escrita ocorrem exclusivamente via Edge Function api-disputa com service_role).
 ALTER TABLE public.disputa_mensagens ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.disputa_sessoes_ativas ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.disputa_lances_auditoria ENABLE ROW LEVEL SECURITY;
 
--- Políticas de RLS por tenant
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_policies WHERE tablename = 'disputa_mensagens' AND policyname = 'disputa_mensagens_tenant_isolation'
-    ) THEN
-        CREATE POLICY disputa_mensagens_tenant_isolation ON public.disputa_mensagens
-            FOR ALL TO authenticated
-            USING (public.tenant_papel(tenant_id) IS NOT NULL OR (SELECT public.licitagym_desenvolvedor()))
-            WITH CHECK (public.tenant_papel(tenant_id) IS NOT NULL OR (SELECT public.licitagym_desenvolvedor()));
-    END IF;
+-- Remove quaisquer policies residuais caso existam
+DROP POLICY IF EXISTS disputa_mensagens_tenant_isolation ON public.disputa_mensagens;
+DROP POLICY IF EXISTS disputa_sessoes_ativas_tenant_isolation ON public.disputa_sessoes_ativas;
+DROP POLICY IF EXISTS disputa_lances_auditoria_tenant_isolation ON public.disputa_lances_auditoria;
 
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_policies WHERE tablename = 'disputa_sessoes_ativas' AND policyname = 'disputa_sessoes_ativas_tenant_isolation'
-    ) THEN
-        CREATE POLICY disputa_sessoes_ativas_tenant_isolation ON public.disputa_sessoes_ativas
-            FOR ALL TO authenticated
-            USING (public.tenant_papel(tenant_id) IS NOT NULL OR (SELECT public.licitagym_desenvolvedor()))
-            WITH CHECK (public.tenant_papel(tenant_id) IS NOT NULL OR (SELECT public.licitagym_desenvolvedor()));
-    END IF;
+-- Revoga todo acesso de público, anon e authenticated para blindar auditoria e mensagens oficiais contra adulteração
+REVOKE ALL ON TABLE public.disputa_mensagens, public.disputa_sessoes_ativas, public.disputa_lances_auditoria
+    FROM PUBLIC, anon, authenticated;
 
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_policies WHERE tablename = 'disputa_lances_auditoria' AND policyname = 'disputa_lances_auditoria_tenant_isolation'
-    ) THEN
-        CREATE POLICY disputa_lances_auditoria_tenant_isolation ON public.disputa_lances_auditoria
-            FOR ALL TO authenticated
-            USING (public.tenant_papel(tenant_id) IS NOT NULL OR (SELECT public.licitagym_desenvolvedor()))
-            WITH CHECK (public.tenant_papel(tenant_id) IS NOT NULL OR (SELECT public.licitagym_desenvolvedor()));
-    END IF;
-END $$;
+-- Concede privilégios estritamente a service_role (Edge Functions autenticadas)
+GRANT ALL ON TABLE public.disputa_mensagens, public.disputa_sessoes_ativas, public.disputa_lances_auditoria
+    TO service_role;
+

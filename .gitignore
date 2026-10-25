@@ -1,79 +1,74 @@
-# Dependencies
-node_modules/
+# Python
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
+*.so
 .Python
-venv/
 env/
-ENV/
-.venv/
-.env
-.env.local
-.env.*
-!docs/agente-juridico-ml/requirements.txt
-
-# Build and distribution artifacts
 build/
+develop-eggs/
 dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+MANIFEST
 
-# Logs
-*.log
+# Virtual environments
+venv/
+.venv/
+ENV/
+env.bak/
+venv.bak/
 
-# OS generated files
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
+# Environment variables
+.env
+.env.*
+!.env.example
 
-# IDE specific
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-*.tmp
 
-# Python specific
-*.py[cod]
-*$py.class
-*$pyc.class
-*.so
-.Python
-*.sqlite3
-*.sqlite3-journal
-
-# Coverage reports
+# Testing & Coverage
 .coverage
-coverage/
 htmlcov/
+.pytest_cache/
+.tox/
+.nox/
+coverage.xml
 
-# Environment variables (except the requirements.txt which is in the docs folder)
-.env
-.env.local
-.env.*
+# macOS
+.DS_Store
 
-# Package lock files
+# Coleta / dados temporários
+var/
+
+# Supabase
+supabase/.branches/
+
+# Node / npm
+node_modules/
 package-lock.json
 
-# Lab collector dumps and local test artifacts
-*_resultado.json
-scripts/*_resultado.json
-scripts/collector_*_resultado.json
-scripts/*_teste.json
-teste_catmat_consolidado.json
-comprasgov_resultado.json
+# Cache do indexador de editais (GCS -> banco)
+.cache_indexador/
 
-# Sync state checkpoint files
-.sync_state/
+# Estado da sincronização PNCP
 scripts/.sync_state/
-*.sync_state/
+
 # saidas locais e pendencias (nao versionar)
 var/
 supabase/.temp/
@@ -82,3 +77,22 @@ supabase/.temp/
 **/CLAUDE.md
 !/CLAUDE.md
 CLAUDE.local.md
+
+# Backups e arquivos temporários
+_*.tgz
+_*.tar
+.playwright-mcp/
+
+# Pasta de agentes e frontend local
+Dashboard-agentes/
+Dashboard/
+docs/ai-audits/
+
+# 🔒 Dados sensíveis de navegação e coleta (NUNCA commitar)
+*.har
+*.zip
+**/*.har
+**/*.zip
+**/html - sislog*.txt
+**/html lang=*.txt
+.claude/settings.local.json

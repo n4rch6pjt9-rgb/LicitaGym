@@ -112,22 +112,26 @@ export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Prom
 
       if (erroItens) throw erroItens;
 
-      // Busca mapeamento de-para confirmado no catálogo do tenant
+      // Busca mapeamento de-para confirmado no catálogo do tenant (determinístico: order by id asc, idêntico a api-agentes)
       const itemIds = (itens || []).map((it) => it.id);
       const deParaMap = new Map<number, number>(); // licitacao_item_id -> produto_id
       if (itemIds.length > 0) {
         const { data: deParaRows, error: erroDePara } = await supabase
           .from("catalogo_de_para")
-          .select("licitacao_item_id, produto_id")
+          .select("id, licitacao_item_id, produto_id")
           .eq("tenant_id", tenantId)
           .in("licitacao_item_id", itemIds)
-          .eq("status", "confirmado");
+          .eq("status", "confirmado")
+          .order("id", { ascending: true });
 
         if (erroDePara) throw erroDePara;
 
         for (const dp of deParaRows || []) {
           if (dp.licitacao_item_id && dp.produto_id) {
-            deParaMap.set(dp.licitacao_item_id, dp.produto_id);
+            // Mantém o primeiro produto confirmado ordenado por id (compatível com api-agentes repo.ts:398)
+            if (!deParaMap.has(dp.licitacao_item_id)) {
+              deParaMap.set(dp.licitacao_item_id, dp.produto_id);
+            }
           }
         }
       }

@@ -20,6 +20,7 @@ interface MockDatabase {
     valor_total_estimado: number | null;
   }>;
   dePara: Array<{
+    id?: number;
     tenant_id: number;
     licitacao_item_id: number;
     produto_id: number;
@@ -206,6 +207,7 @@ Deno.test("api-disputa: GET /estrategia - cálculo determinístico com catálogo
     ],
     dePara: [
       {
+        id: 1,
         tenant_id: 1,
         licitacao_item_id: 1,
         produto_id: 50,
@@ -504,4 +506,72 @@ Deno.test("api-disputa: POST /sync-chat - autentica via cron secret e sincroniza
   assertEquals(json.ok, true);
   assertEquals(json.novas_inseridas, 1);
   assertEquals(db.mensagens.length, 1);
+});
+
+Deno.test("api-disputa: GET /estrategia - seleção determinística do menor id de catalogo_de_para compatível com api-agentes", async () => {
+  const db: MockDatabase = {
+    pipeline: [{ tenant_id: 1, licitacao_id: 101 }],
+    itens: [
+      {
+        id: 1,
+        licitacao_id: 101,
+        numero_item: 1,
+        descricao: "Esteira Ergométrica",
+        valor_unitario_estimado: 25000.0,
+        valor_total_estimado: 25000.0,
+      },
+    ],
+    // Dois registros confirmados para o mesmo item: id 10 (produto 50) e id 20 (produto 60)
+    dePara: [
+      {
+        id: 20,
+        tenant_id: 1,
+        licitacao_item_id: 1,
+        produto_id: 60,
+        status: "confirmado",
+      },
+      {
+        id: 10,
+        tenant_id: 1,
+        licitacao_item_id: 1,
+        produto_id: 50,
+        status: "confirmado",
+      },
+    ],
+    precos: [
+      {
+        tenant_id: 1,
+        produto_id: 50,
+        preco_tabela: 20000.0,
+        desconto_max_pct: 10.0, // Piso = 18.000,00 (1.800.000 centavos)
+        vigencia_inicio: "2026-01-01",
+        vigencia_fim: null,
+      },
+      {
+        tenant_id: 1,
+        produto_id: 60,
+        preco_tabela: 15000.0,
+        desconto_max_pct: 20.0, // Piso = 12.000,00 (1.200.000 centavos)
+        vigencia_inicio: "2026-01-01",
+        vigencia_fim: null,
+      },
+    ],
+    mensagens: [],
+    auditoria: [],
+  };
+
+  const req = new Request("http://localhost/api-disputa/estrategia?licitacao_id=101", {
+    method: "GET",
+  });
+  const res = await handleRequest(req, {
+    getUser: () => Promise.resolve(USUARIO_TESTE),
+    // deno-lint-ignore no-explicit-any
+    getSupabase: () => createMockSupabase(db) as any,
+  });
+
+  assertEquals(res.status, 200);
+  const json = await res.json();
+  // Deve selecionar deterministicamente o produto 50 (menor id de de-para: 10), nunca o produto 60 (id 20)
+  const item1 = json.itens.find((i: { item_numero: number }) => i.item_numero === 1);
+  assertEquals(item1.piso_centavos, 1800000);
 });

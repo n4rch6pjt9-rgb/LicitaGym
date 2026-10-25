@@ -33,6 +33,49 @@ function getDefaultServiceClient(): SupabaseClient {
   return createClient(url, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } });
 }
 
+/** Extrai estritamente a chaveCompra oficial de 17 dígitos do Compras.gov.br. */
+export function extrairChaveCompra17Digitos(licitacao: {
+  codigo_externo?: string | null;
+  link_sistema_origem?: string | null;
+  raw?: Record<string, unknown> | null;
+}): string | null {
+  const COMPRAS_KEY_RE = /^\d{17}$/;
+  const rawObj = (licitacao.raw && typeof licitacao.raw === "object") ? licitacao.raw : {};
+
+  // 1. Campo explícito em raw (chaveCompra, chave_compra, idCompra, id_compra, compra)
+  const rawCands = [rawObj.chaveCompra, rawObj.chave_compra, rawObj.idCompra, rawObj.id_compra, rawObj.compra];
+  for (const c of rawCands) {
+    if (typeof c === "string" && COMPRAS_KEY_RE.test(c.trim())) {
+      return c.trim();
+    }
+  }
+
+  // 2. codigo_externo (ex: "COMPRASGOV-PP-15300005000012026" ou direto "15300005000012026")
+  if (typeof licitacao.codigo_externo === "string") {
+    const cod = licitacao.codigo_externo.trim();
+    if (COMPRAS_KEY_RE.test(cod)) return cod;
+    if (cod.startsWith("COMPRASGOV-PP-")) {
+      const semPrefixo = cod.slice("COMPRASGOV-PP-".length).trim();
+      if (COMPRAS_KEY_RE.test(semPrefixo)) return semPrefixo;
+    }
+  }
+
+  // 3. link_sistema_origem (ex: https://cnetmobile.estaleiro.serpro.gov.br/...compra=15300005000012026)
+  if (typeof licitacao.link_sistema_origem === "string") {
+    try {
+      const url = new URL(licitacao.link_sistema_origem);
+      const compraParam = url.searchParams.get("compra");
+      if (compraParam && COMPRAS_KEY_RE.test(compraParam.trim())) {
+        return compraParam.trim();
+      }
+    } catch {
+      // Ignora erro de parsing de URL
+    }
+  }
+
+  return null;
+}
+
 export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Promise<Response> {
   // CORS Preflight
   if (req.method === "OPTIONS") {
@@ -276,43 +319,44 @@ export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Prom
         return jsonResponse({ erro: "licitacao_id inválido." }, 400);
       }
 
-      // Se for acionado por cron, resolve o tenant_id pelo pipeline da licitação
+      let tenantsAlvo: number[] = [];
+
+      // Se for acionado por cron, resolve todos os tenants com essa licitação no pipeline
       if (isCron) {
         const tenantParam = body.tenant_id ? parseInt(String(body.tenant_id), 10) : null;
         if (tenantParam && !isNaN(tenantParam)) {
-          tenantId = tenantParam;
+          tenantsAlvo = [tenantParam];
         } else {
-          const { data: pipe, error: ePipe } = await supabase
+          const { data: pipes, error: ePipe } = await supabase
             .from("pipeline_oportunidades")
             .select("tenant_id")
-            .eq("licitacao_id", licitacaoId)
-            .limit(1)
-            .maybeSingle();
+            .eq("licitacao_id", licitacaoId);
           if (ePipe) throw ePipe;
-          if (!pipe) {
+          if (!pipes || pipes.length === 0) {
             return jsonResponse({ erro: "Licitação não vinculada a nenhum tenant ativo no pipeline." }, 404);
           }
-          tenantId = pipe.tenant_id;
+          tenantsAlvo = Array.from(new Set(pipes.map((p) => p.tenant_id)));
         }
+      } else {
+        // Para usuário autenticado, verifica se a licitação pertence ao seu tenant
+        const { data: pipelineRow, error: erroPipeline } = await supabase
+          .from("pipeline_oportunidades")
+          .select("licitacao_id")
+          .eq("tenant_id", tenantId)
+          .eq("licitacao_id", licitacaoId)
+          .maybeSingle();
+
+        if (erroPipeline) throw erroPipeline;
+        if (!pipelineRow) {
+          return jsonResponse({ erro: "Oportunidade não encontrada no pipeline do tenant." }, 404);
+        }
+        tenantsAlvo = [tenantId];
       }
 
-      // Verifica se a licitação pertence ao pipeline do tenant antes de consultar Serpro
-      const { data: pipelineRow, error: erroPipeline } = await supabase
-        .from("pipeline_oportunidades")
-        .select("licitacao_id")
-        .eq("tenant_id", tenantId)
-        .eq("licitacao_id", licitacaoId)
-        .maybeSingle();
-
-      if (erroPipeline) throw erroPipeline;
-      if (!pipelineRow) {
-        return jsonResponse({ erro: "Oportunidade não encontrada no pipeline do tenant." }, 404);
-      }
-
-      // Validação de segurança (K-3 / Anti-Proxy): amarra a chave_compra ao registro oficial
+      // Validação de segurança (K-3 / Anti-Proxy): amarra a chave_compra estritamente ao registro oficial
       const { data: licitacao, error: erroLic } = await supabase
         .from("licitacoes_externas")
-        .select("id, codigo_externo, raw")
+        .select("id, codigo_externo, link_sistema_origem, raw")
         .eq("id", licitacaoId)
         .maybeSingle();
 
@@ -321,24 +365,19 @@ export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Prom
         return jsonResponse({ erro: "Licitação não encontrada." }, 404);
       }
 
-      const rawObj = (licitacao.raw && typeof licitacao.raw === "object") ? (licitacao.raw as Record<string, unknown>) : {};
-      const chaveOficial = (typeof licitacao.codigo_externo === "string" && licitacao.codigo_externo)
-        || (typeof rawObj.chave_compra === "string" && rawObj.chave_compra)
-        || (typeof rawObj.numero_controle_pncp === "string" && rawObj.numero_controle_pncp)
-        || (typeof rawObj.chaveCompra === "string" && rawObj.chaveCompra);
-
-      const chaveFinal = (typeof chave_compra === "string" && chave_compra.trim())
-        ? chave_compra.trim()
-        : (typeof chaveOficial === "string" ? chaveOficial : null);
-
-      if (!chaveFinal) {
-        return jsonResponse({ erro: "Chave de compra não identificada para esta licitação." }, 400);
+      const chaveOficial = extrairChaveCompra17Digitos(licitacao);
+      if (!chaveOficial) {
+        return jsonResponse({
+          erro: "Esta licitação não possui chave oficial de compra do Compras.gov (17 dígitos) para consulta no Integra Compras."
+        }, 400);
       }
 
-      // Se o chamador informou chave diferente da oficial, rejeita tentativa de proxy não autorizada
-      if (typeof chaveOficial === "string" && typeof chave_compra === "string" && chave_compra.trim() !== chaveOficial) {
+      // Rejeita estritamente qualquer tentativa de proxy com chave alheia
+      if (typeof chave_compra === "string" && chave_compra.trim() && chave_compra.trim() !== chaveOficial) {
         return jsonResponse({ erro: "Chave de compra não corresponde ao registro oficial da licitação." }, 400);
       }
+
+      const chaveFinal = chaveOficial;
 
       // Consulta mensagens e diligências no Integra Compras
       const fnChat = ctx?.consultarChat ?? consultarChatSerpro;
@@ -352,26 +391,28 @@ export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Prom
       const todas: MensagemSerpro[] = [...mensagensChat, ...diligencias];
       let inseridas = 0;
 
-      for (const m of todas) {
-        const { error } = await supabase.from("disputa_mensagens").upsert(
-          {
-            tenant_id: tenantId,
-            licitacao_id: licitacaoId,
-            chave_compra: chaveFinal,
-            item_numero: m.item ?? null,
-            categoria: m.categoria.toLowerCase(),
-            remetente: m.remetente,
-            mensagem: m.texto,
-            data_hora_oficial: new Date(m.dataHora).toISOString(),
-          },
-          { onConflict: "tenant_id,chave_compra,data_hora_oficial,mensagem" }
-        );
+      for (const tId of tenantsAlvo) {
+        for (const m of todas) {
+          const { error: erroUpsert } = await supabase.from("disputa_mensagens").upsert(
+            {
+              tenant_id: tId,
+              licitacao_id: licitacaoId,
+              chave_compra: chaveFinal,
+              item_numero: m.item ?? null,
+              categoria: m.categoria.toLowerCase(),
+              remetente: m.remetente,
+              mensagem: m.texto,
+              data_hora_oficial: new Date(m.dataHora).toISOString(),
+            },
+            { onConflict: "tenant_id,chave_compra,data_hora_oficial,mensagem" }
+          );
 
-        if (error) {
-          console.error("[api-disputa] Falha ao persistir mensagem Serpro:", error);
-          throw error;
+          if (erroUpsert) {
+            console.error(`[api-disputa] Falha ao persistir mensagem Serpro para tenant ${tId}:`, erroUpsert);
+            throw erroUpsert;
+          }
+          inseridas++;
         }
-        inseridas++;
       }
 
       return jsonResponse({ ok: true, total_lidas: todas.length, novas_inseridas: inseridas });

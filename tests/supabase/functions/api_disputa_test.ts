@@ -461,9 +461,46 @@ Deno.test("api-disputa: POST /sync-chat - rejeita proxy se chave_compra divergir
   assertEquals(json.erro, "Chave de compra não corresponde ao registro oficial da licitação.");
 });
 
-Deno.test("api-disputa: POST /sync-chat - autentica via cron secret e sincroniza com sucesso", async () => {
+Deno.test("api-disputa: POST /sync-chat - rejeita sync se licitação não possui chave oficial de 17 dígitos", async () => {
   const db: MockDatabase = {
     pipeline: [{ tenant_id: 1, licitacao_id: 101 }],
+    itens: [],
+    dePara: [],
+    precos: [],
+    mensagens: [],
+    auditoria: [],
+    licitacoesExternas: [
+      // Licitação apenas com identificador PNCP, sem chave de 17 dígitos do Compras.gov
+      { id: 101, codigo_externo: "00394460000141-1-000001/2026", raw: {} },
+    ],
+  };
+
+  const req = new Request("http://localhost/api-disputa/sync-chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      licitacao_id: 101,
+      chave_compra: "15300005000012026",
+    }),
+  });
+
+  const res = await handleRequest(req, {
+    getUser: () => Promise.resolve(USUARIO_TESTE),
+    // deno-lint-ignore no-explicit-any
+    getSupabase: () => createMockSupabase(db) as any,
+  });
+
+  assertEquals(res.status, 400);
+  const json = await res.json();
+  assertEquals(json.erro, "Esta licitação não possui chave oficial de compra do Compras.gov (17 dígitos) para consulta no Integra Compras.");
+});
+
+Deno.test("api-disputa: POST /sync-chat - autentica via cron secret e sincroniza com sucesso para múltiplos tenants", async () => {
+  const db: MockDatabase = {
+    pipeline: [
+      { tenant_id: 1, licitacao_id: 101 },
+      { tenant_id: 2, licitacao_id: 101 },
+    ],
     itens: [],
     dePara: [],
     precos: [],
@@ -504,8 +541,11 @@ Deno.test("api-disputa: POST /sync-chat - autentica via cron secret e sincroniza
   assertEquals(res.status, 200);
   const json = await res.json();
   assertEquals(json.ok, true);
-  assertEquals(json.novas_inseridas, 1);
-  assertEquals(db.mensagens.length, 1);
+  // Deve inserir 1 mensagem para o tenant 1 e 1 mensagem para o tenant 2
+  assertEquals(json.novas_inseridas, 2);
+  assertEquals(db.mensagens.length, 2);
+  assertEquals(db.mensagens[0].tenant_id, 1);
+  assertEquals(db.mensagens[1].tenant_id, 2);
 });
 
 Deno.test("api-disputa: GET /estrategia - seleção determinística do menor id de catalogo_de_para compatível com api-agentes", async () => {

@@ -103,3 +103,44 @@ Deno.test("Serpro Client - consulta chat e faz parsing correto das mensagens", a
     invalidarTokenCache();
   }
 });
+
+Deno.test("Serpro Client - consulta diligências e formata como MensagemSerpro", async () => {
+  invalidarTokenCache();
+  const fetchOriginal = globalThis.fetch;
+
+  globalThis.fetch = ((input: RequestInfo | URL) => {
+    const urlStr = String(input);
+    if (urlStr.includes("/integra-compras/v1/diligencias/")) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            chaveCompra: "15300005000012026",
+            diligencias: [
+              {
+                id: 10,
+                item: 2,
+                remetente: "Pregoeiro",
+                texto: "Solicitamos comprovação de atestado técnico.",
+                dataHora: 1792900050000,
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
+      );
+    }
+    return Promise.resolve(new Response("Not Found", { status: 404 }));
+  }) as typeof fetch;
+
+  try {
+    const dils = await consultarDiligenciasSerpro("15300005000012026", "mock-token");
+    assertEquals(dils.length, 1);
+    assertEquals(dils[0].categoria, "DILIGENCIA");
+    assertEquals(dils[0].texto, "Solicitamos comprovação de atestado técnico.");
+    assertEquals(dils[0].item, 2);
+  } finally {
+    globalThis.fetch = fetchOriginal;
+    invalidarTokenCache();
+  }
+});
+

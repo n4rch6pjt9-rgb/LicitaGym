@@ -1,7 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2";
 import {
-  type AuthenticatedUser,
   authenticateUser,
   corsHeaders,
   errorDetail,

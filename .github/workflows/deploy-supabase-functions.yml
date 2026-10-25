@@ -82,6 +82,7 @@ jobs:
             api-catalogo-ficha
             api-fornecedores-homologados
             api-saude
+            api-disputa
             calculate-distance-webrouter
           )
 

@@ -276,7 +276,7 @@ class Supabase:
             headers = dict(self.h)
             if primeira:
                 headers["Prefer"] = "count=exact"
-            r = requests.get(f"{self.base}/{tabela}", params=params, headers=headers, timeout=60)
+            r = requests.get(f"{self.base}/{tabela}", params=params, headers={**headers, "Accept-Profile": "public", "Content-Profile": "public"}, timeout=60)
             if getattr(r, "status_code", None) == 404:
                 log.warning("Supabase %s: HTTP 404 ao selecionar; não é fim de coleta", tabela)
             r.raise_for_status()

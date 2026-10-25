@@ -139,6 +139,26 @@ async function chamarEndpointSerpro(
     throw new Error(`Erro ao consultar Integra Compras Serpro (${caminho}) [HTTP ${res.status}]: ${texto}`);
   }
 
-  const dados: RespostaChatSerpro = await res.json();
-  return Array.isArray(dados.mensagens) ? dados.mensagens : [];
+  const raw: Record<string, unknown> = await res.json();
+  if (Array.isArray(raw.mensagens)) {
+    return (raw.mensagens as Array<Record<string, unknown>>).map((m) => ({
+      id: Number(m.id),
+      item: m.item !== undefined && m.item !== null ? Number(m.item) : null,
+      categoria: (m.categoria as MensagemSerpro["categoria"]) || "CHAT",
+      remetente: String(m.remetente || ""),
+      texto: String(m.texto || ""),
+      dataHora: Number(m.dataHora),
+    }));
+  }
+  if (Array.isArray(raw.diligencias)) {
+    return (raw.diligencias as Array<Record<string, unknown>>).map((d) => ({
+      id: Number(d.id),
+      item: d.item !== undefined && d.item !== null ? Number(d.item) : null,
+      categoria: "DILIGENCIA",
+      remetente: String(d.remetente || "Pregoeiro"),
+      texto: String(d.texto || ""),
+      dataHora: Number(d.dataHora),
+    }));
+  }
+  return [];
 }

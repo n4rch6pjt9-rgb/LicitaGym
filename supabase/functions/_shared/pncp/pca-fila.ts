@@ -567,10 +567,11 @@ async function devolverReservados(client: SupabaseClient, linhas: Row[]) {
 async function adiarPlanoAposPausa(client: SupabaseClient, linha: Row, erro: unknown) {
   const minutos = erro instanceof RateLimitPauseError ? 30 : 20;
   const disponivelEm = new Date(Date.now() + minutos * 60_000).toISOString();
-  const { error } = await client.schema("private").from("pca_plano_fila")
+  const { data, error } = await client.schema("private").from("pca_plano_fila")
     .update({ status: "pendente", disponivel_em: disponivelEm, atualizado_em: new Date().toISOString() })
-    .eq("id", linha.id).eq("status", "processando");
+    .eq("id", linha.id).eq("status", "processando").select("id");
   if (error) throw error;
+  if (!Array.isArray(data) || data.length !== 1) throw new Error("adiamento não atualizou o plano reservado");
   console.warn(JSON.stringify({
     evento: "pca_fila_pausa",
     id_pca_pncp: String(linha.id_pca_pncp),
@@ -694,8 +695,25 @@ export async function processarFila(
       } catch (error) {
         if (ePausaDaCarga(error, opts.http?.budget)) {
           // pausa de cota ou fim do orçamento: não é falha do plano; volta para a fila sem gastar tentativa
-          await adiarPlanoAposPausa(client, linha, error);
-          await devolverReservados(client, reservados.slice(i + 1));
+          try {
+            await adiarPlanoAposPausa(client, linha, error);
+          } catch (eAdiar) {
+            console.warn(JSON.stringify({
+              evento: "pca_fila_adiamento_falhou",
+              id_pca_pncp: idPca,
+              erro: eAdiar instanceof Error ? eAdiar.message : String((eAdiar as { message?: string })?.message ?? eAdiar),
+            }));
+          }
+          // Tenta liberar o restante mesmo se o adiamento falhar; a causa original continua sendo a pausa.
+          try {
+            await devolverReservados(client, reservados.slice(i + 1));
+          } catch (eDevolver) {
+            console.warn(JSON.stringify({
+              evento: "pca_fila_devolucao_falhou",
+              linhas: reservados.length - i - 1,
+              erro: eDevolver instanceof Error ? eDevolver.message : String(eDevolver),
+            }));
+          }
           throw error;
         }
         // Timeout repetido com orçamento sobrando cai aqui: falha do plano (soma tentativa), segue para o próximo.
@@ -748,6 +766,6 @@ export async function situacaoFila(client: SupabaseClient, ano: number): Promise
     client.schema("private").from("pca_plano_fila").select("id, status, tentativas")
       .eq("ano", ano).in("status", ["pendente", "processando", "erro"]).order("id").range(de, ate)
   );
-  const esgotados = linhas.filter((r) => r.status !== "pendente" && Number(r.tentativas) >= 5).length;
+  const esgotados = linhas.filter((r) => Number(r.tentativas) >= 5).length;
   return { abertos: linhas.length - esgotados, esgotados };
 }

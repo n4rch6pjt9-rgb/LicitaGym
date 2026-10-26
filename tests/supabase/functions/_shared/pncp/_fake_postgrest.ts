@@ -136,7 +136,7 @@ export class FakePostgrest {
       const r = rejeita(alvo.map((x) => ({ ...x, ...(b.payload as Row) })));
       if (r) return r;
       for (const r of alvo) Object.assign(r, structuredClone(b.payload as Row));
-      return { data: null, error: null };
+      return b.colunas ? this.formato(b, alvo.map((r) => projetar(r, b.colunas))) : { data: null, error: null };
     }
     // upsert
     const rj = rejeita(b.payload as Row[]);
@@ -202,6 +202,7 @@ class Builder implements PromiseLike<Resp> {
   update(vals: Row) {
     this.op = "update";
     this.payload = vals;
+    this.colunas = "";
     return this;
   }
   upsert(rows: Row | Row[], opts?: { onConflict?: string }) {

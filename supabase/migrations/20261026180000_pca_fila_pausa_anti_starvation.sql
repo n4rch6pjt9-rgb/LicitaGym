@@ -1,4 +1,9 @@
 -- #289: pausa recuperável não deve monopolizar o início FIFO.
+-- Esta migration do PR ainda está em revisão. Mesma versão preserva erro, recuo e tentativas;
+-- só uma data oficial estritamente maior, fora de processamento vivo, inicia outro ciclo.
+begin;
+set local lock_timeout = '10s';
+
 alter table private.pca_plano_fila
   add column if not exists disponivel_em timestamptz;
 
@@ -18,6 +23,7 @@ as $function$
      select g.id
        from private.pca_plano_fila g
       where (p_ano is null or g.ano = p_ano)
+        and g.tentativas < p_max_tentativas
         and (g.disponivel_em is null or g.disponivel_em <= now())
         and (g.status = 'pendente'
          or (g.status = 'erro' and g.tentativas < p_max_tentativas
@@ -31,7 +37,8 @@ as $function$
   returning f.*;
 $function$;
 
--- Preserve error retry count on rediscovery; only a completed new cycle may reset it.
+-- Redescoberta não é tentativa e não renova o relógio de erro/abandono.
+-- Não promove a versão enquanto há worker vivo: ele ainda está carregando o cabeçalho anterior.
 create or replace function private.pca_fila_enfileirar(p_itens jsonb)
 returns integer
 language plpgsql
@@ -48,18 +55,34 @@ begin
       plano jsonb, classes text[], data_atualizacao_fonte timestamptz, chain_id uuid)
   on conflict (id_pca_pncp) where status in ('pendente', 'processando', 'erro')
   do update set
-    plano = coalesce(excluded.plano, f.plano),
+    plano = case
+      when f.status = 'processando' and f.atualizado_em >= now() - interval '15 minutes' then f.plano
+      when f.data_atualizacao_fonte is not null and
+           (excluded.data_atualizacao_fonte is null or excluded.data_atualizacao_fonte < f.data_atualizacao_fonte)
+        then f.plano
+      else coalesce(excluded.plano, f.plano) end,
     classes = (select array_agg(distinct c order by c) from unnest(f.classes || excluded.classes) c),
-    data_atualizacao_fonte = coalesce(excluded.data_atualizacao_fonte, f.data_atualizacao_fonte),
+    data_atualizacao_fonte = case
+      when f.status = 'processando' and f.atualizado_em >= now() - interval '15 minutes'
+        then f.data_atualizacao_fonte
+      else greatest(excluded.data_atualizacao_fonte, f.data_atualizacao_fonte) end,
     motivo = case when excluded.motivo = 'ausente' and f.plano is not null then f.motivo else excluded.motivo end,
     chain_id = excluded.chain_id,
-    status = case when f.status = 'processando' and f.atualizado_em >= now() - interval '15 minutes'
-                  then f.status else 'pendente' end,
-    tentativas = f.tentativas,
-    erro = case when f.status = 'processando' and f.atualizado_em >= now() - interval '15 minutes'
-                then f.erro else null end,
-    atualizado_em = now();
+    status = case when excluded.data_atualizacao_fonte > f.data_atualizacao_fonte
+                       and (f.status <> 'processando' or f.atualizado_em < now() - interval '15 minutes')
+                  then 'pendente' else f.status end,
+    tentativas = case when excluded.data_atualizacao_fonte > f.data_atualizacao_fonte
+                           and (f.status <> 'processando' or f.atualizado_em < now() - interval '15 minutes')
+                      then 0 else f.tentativas end,
+    erro = case when excluded.data_atualizacao_fonte > f.data_atualizacao_fonte
+                     and (f.status <> 'processando' or f.atualizado_em < now() - interval '15 minutes')
+                then null else f.erro end,
+    atualizado_em = case when excluded.data_atualizacao_fonte > f.data_atualizacao_fonte
+                               and (f.status <> 'processando' or f.atualizado_em < now() - interval '15 minutes')
+                          then now() else f.atualizado_em end;
   get diagnostics v_total = row_count;
   return v_total;
 end
 $function$;
+
+commit;

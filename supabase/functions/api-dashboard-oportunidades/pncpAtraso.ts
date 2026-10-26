@@ -170,7 +170,7 @@ export async function sincronizarPortalOficialEAtraso(
   const hostFinal = portalInfo.host ?? (urlFinal ? new URL(urlFinal).hostname.toLowerCase() : null);
 
   // 2. Consulta em paralelo mensagens da disputa e snapshot do portal oficial no banco
-  let mensagensPortal: MensagemDisputaDB[] = [];
+  const mensagensPortal: MensagemDisputaDB[] = [];
   let consultadoEm: string | null = portalSecao?.consultado_em ?? null;
   let situacaoPortal: string | null = portalSecao?.situacao ?? null;
 
@@ -187,33 +187,6 @@ export async function sincronizarPortalOficialEAtraso(
       consultadoEm = consultadoEm ?? (consultaResult.data.consultado_em as string | null);
       situacaoPortal = situacaoPortal ?? (consultaResult.data.situacao as string | null);
     }
-
-    const mensagensBuilder = client
-      .from("disputa_mensagens")
-      .select("categoria, remetente, mensagem, data_hora_oficial, item_numero")
-      .eq("licitacao_id", licitacaoId);
-
-    let queryObj = mensagensBuilder as unknown as Record<string, unknown>;
-    if (typeof queryObj.order === "function") {
-      queryObj = (queryObj.order as (col: string, opt: unknown) => Record<string, unknown>)(
-        "data_hora_oficial",
-        { ascending: false },
-      );
-    }
-    if (typeof queryObj.limit === "function") {
-      queryObj = (queryObj.limit as (n: number) => Record<string, unknown>)(50);
-    }
-
-    let mensagensResult = null;
-    if (typeof queryObj.then === "function") {
-      mensagensResult = await (queryObj as unknown as Promise<{ error: unknown; data: unknown }>);
-    } else if (typeof queryObj.maybeSingle === "function") {
-      mensagensResult = await (queryObj as unknown as { maybeSingle: () => Promise<{ error: unknown; data: unknown }> }).maybeSingle();
-    }
-
-    if (mensagensResult && !mensagensResult.error && Array.isArray(mensagensResult.data)) {
-      mensagensPortal = mensagensResult.data as MensagemDisputaDB[];
-    }
   } catch (e) {
     console.warn("[sincronizarPortalOficialEAtraso] Falha ao ler dados complementares do portal:", e);
   }
@@ -228,8 +201,10 @@ export async function sincronizarPortalOficialEAtraso(
     tMaisRecentePncpStr = eventosPncp[0]?.data ?? null;
   }
 
-  // 4. Obtém timestamp mais recente do Portal Oficial
-  let tMaisRecentePortalStr = consultadoEm;
+  // 4. Obtém timestamp mais recente de eventos oficiais do Portal Oficial
+  // Não utiliza consultadoEm (data de execução da consulta/robô) para evitar falsos positivos
+  // de atraso quando o conteúdo do certame no portal não sofreu alteração.
+  let tMaisRecentePortalStr: string | null = null;
   if (mensagensPortal.length > 0 && mensagensPortal[0]?.data_hora_oficial) {
     tMaisRecentePortalStr = mensagensPortal[0].data_hora_oficial;
   }

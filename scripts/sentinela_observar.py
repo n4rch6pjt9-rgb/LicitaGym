@@ -47,7 +47,7 @@ def github_execucao(payload, agora, max_minutos=90):
     if run.get("status") != "completed":
         return verificacao("monitor_github", "atencao", "Execução ainda não concluída; resultado não confirmado.", **evidence)
     if run.get("conclusion") != "success":
-        return verificacao("monitor_github", "critico", "Última execução agendada não concluiu com sucesso.", **evidence)
+        return verificacao("monitor_github", "atencao", "Execução recente sem sucesso: pode indicar alerta de saúde ou falha de execução; causa não verificada.", **evidence)
     return verificacao("monitor_github", "ok", "Execução agendada concluída; completude dos conectores é avaliada separadamente.", **evidence)
 
 

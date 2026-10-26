@@ -85,7 +85,7 @@ class ObservadorTest(unittest.TestCase):
 
     def test_github_sucesso_e_falha(self):
         self.assertEqual(observador.github_execucao(self.github(), AGORA)["status"], "ok")
-        self.assertEqual(observador.github_execucao(self.github(conclusion="failure"), AGORA)["status"], "critico")
+        self.assertEqual(observador.github_execucao(self.github(conclusion="failure"), AGORA)["status"], "atencao")
         self.assertEqual(observador.github_execucao(self.github(status="in_progress", conclusion=None), AGORA)["status"], "atencao")
 
     def test_monitor_ausente_e_atraso(self):

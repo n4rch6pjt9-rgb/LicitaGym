@@ -178,3 +178,63 @@ Deno.test("agentePreco: a referência guarda todas as amostras do cálculo, sem 
   assertEquals(ref.fontes.map((f) => f.tipo === "registro" ? f.id : ""), guardadas.map((a) => a.id));
   assertEquals(validarAchado(ref), null);
 });
+
+const samplesUnidade = (unit: string | null = "UN") =>
+  [10000, 20000, 30000, 40000, 50000].map((preco_centavos, i) => ({
+    id_compra_item: `fixture-${i}`,
+    preco_centavos,
+    unidade: unit,
+  }));
+
+Deno.test("referência: Unidade aceita UN nos dois sentidos e mantém a mediana", () => {
+  for (const [target, source] of [["Unidade", "UN"], ["UN", "Unidade"], [" unidade ", " un "]]) {
+    const result = referenciaPraticada(samplesUnidade(source), target);
+    assertEquals(result.situacao, "ok");
+    assertEquals(result.n, 5);
+    assertEquals(result.mediana_centavos, 30000);
+  }
+});
+
+Deno.test("referência: preserva rótulos e amostras originais", () => {
+  const input = samplesUnidade("Unidade");
+  const before = structuredClone(input);
+  assertEquals(referenciaPraticada(input, "UN").amostras, before);
+  assertEquals(input, before);
+});
+
+Deno.test("referência: não converte kit, caixa, capacidade ou rótulo não autorizado em UN", () => {
+  for (const source of ["KIT", "CAIXA", "UN 10", "Unidade 10 KG", "UNIDADE/CAIXA", "UND", "UN."]) {
+    const result = referenciaPraticada(samplesUnidade(source), "Unidade");
+    assertEquals(result.n, 0, source);
+    assertEquals(result.descartadas, 5);
+  }
+});
+
+Deno.test("referência: preserva comparação idêntica de outras unidades e rejeita unidades ausentes nas amostras", () => {
+  assertEquals(referenciaPraticada(samplesUnidade("KIT"), " kit ").situacao, "ok");
+  for (const target of [null, "", "   "]) {
+    assertEquals(referenciaPraticada(samplesUnidade(), target).situacao, "referencia_ausente");
+  }
+  assertEquals(referenciaPraticada(samplesUnidade(null), "UN").n, 0);
+});
+
+Deno.test("agentePreco: casos 14575/11 e 18667/17 geram referência com proposta de teste", () => {
+  for (const numero_item of [11, 17]) {
+    const result = agentePreco({
+      natureza: null,
+      itens: [{
+        numero_item,
+        unidade: "Unidade",
+        estimado_centavos: null,
+        amostras: samplesUnidade(),
+        piso_centavos: null,
+      }],
+      proposta: [{ numero_item, preco_unitario_centavos: 30000 }],
+    });
+    const finding = result.achados.find((a) => a.codigo === "preco.referencia_praticada");
+    assertEquals(finding?.dados.n, 5);
+    assertEquals(finding?.dados.mediana_centavos, 30000);
+    assertEquals(result.regra_versao, "2026-10-26.2");
+  }
+});
+

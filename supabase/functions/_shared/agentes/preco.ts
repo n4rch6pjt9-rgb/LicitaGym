@@ -59,6 +59,9 @@ export const MOTIVO_SEM_UNIDADE = "unidade do item não informada";
 function unidadeNorm(u: string | null): string | null {
   if (u === null) return null;
   const t = u.trim().toUpperCase();
+  // Equivalência explícita de rótulo, sem conversão de embalagem ou capacidade.
+  // Preserve o valor original na amostra e na evidência.
+  if (t === "UNIDADE") return "UN";
   return t.length === 0 ? null : t;
 }
 

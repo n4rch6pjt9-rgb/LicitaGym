@@ -70,8 +70,10 @@ interface MencaoAtributo {
 const RE_EQUIPAMENTO =
   /\b(esteira|bicicleta|bike|eliptico|transport|simulador|remo|esqui|escada|air\s*bike|spinning|supino|leg\s*press|puxador|remada|cross(?:over)?|hack|cadeira\s*extensora|mesa\s*flexora|extensora|flexora|adutor|abdutor|panturrilha|peck\s*deck|peitoral|desenvolvimento|gluteo|abdominal|smith|haltere?|anilhas?|dumbbel?l?)(?:es|s)?\b/gi;
 
+const RE_EQUIPAMENTO_UNICO = new RegExp(RE_EQUIPAMENTO.source, "i");
+
 const RE_ITEM_EXPLICITO =
-  /(?<!\b(?:conforme|vide|ver|subitem|acordo com)\s+)\b(?:item|lote)\s*(\d{1,3})\b/gi;
+  /(?<!\b(?:conforme|vide|ver|subitem|acordo com)(?:\s+(?:o|a|ao|no|do|os|as))?\s+)\b(?:item|lote)\s*(\d{1,3})\b(?!\s*[.,]\s*\d)/gi;
 
 function normalizarEquipamento(eq: string): string {
   const s = eq.toLowerCase().trim().replace(/\s+/g, "_");
@@ -100,13 +102,13 @@ function normalizarEquipamento(eq: string): string {
 
 function extrairEquipamento(norm: string, inicio: number, fim: number): string | null {
   const trechoAntes = norm.slice(Math.max(0, inicio - 350), inicio);
-  const matchesAntes = [...trechoAntes.matchAll(RE_EQUIPAMENTO)];
+  const matchesAntes = [...trechoAntes.matchAll(new RegExp(RE_EQUIPAMENTO.source, "gi"))];
   if (matchesAntes.length > 0) {
     const ultimo = matchesAntes[matchesAntes.length - 1][0];
     return normalizarEquipamento(ultimo);
   }
   const trechoDepois = norm.slice(fim, Math.min(norm.length, fim + 120));
-  const matchDepois = RE_EQUIPAMENTO.exec(trechoDepois);
+  const matchDepois = RE_EQUIPAMENTO_UNICO.exec(trechoDepois);
   if (matchDepois) {
     return normalizarEquipamento(matchDepois[0]);
   }
@@ -115,7 +117,7 @@ function extrairEquipamento(norm: string, inicio: number, fim: number): string |
 
 function extrairNumeroItem(norm: string, inicio: number): string | null {
   const trechoAntes = norm.slice(Math.max(0, inicio - 350), inicio);
-  const matchesAntes = [...trechoAntes.matchAll(RE_ITEM_EXPLICITO)];
+  const matchesAntes = [...trechoAntes.matchAll(new RegExp(RE_ITEM_EXPLICITO.source, "gi"))];
   if (matchesAntes.length > 0) {
     return matchesAntes[matchesAntes.length - 1][1];
   }
@@ -218,9 +220,9 @@ function fonteDaMencion(m: MencaoAtributo): Fonte {
 
 export function detectarDivergencias(chunks: ChunkEdital[]): Achado[] {
   const grupos = new Map<string, Achado>();
-  const juntar = (a: Achado) => {
-    const g = grupos.get(a.codigo);
-    if (!g) grupos.set(a.codigo, a);
+  const juntar = (chave: string, a: Achado) => {
+    const g = grupos.get(chave);
+    if (!g) grupos.set(chave, a);
     else if (g.fontes.filter((f) => f.tipo === "chunk").length < 4) {
       g.fontes = [...g.fontes.filter((f) => f.tipo === "chunk"), ...a.fontes.filter((f) => f.tipo === "chunk")];
     }
@@ -288,7 +290,8 @@ export function detectarDivergencias(chunks: ChunkEdital[]): Achado[] {
 
         const fontes: Fonte[] = cluster.map(fonteDaMencion);
         fontes.push({ tipo: "calculo", regra: "divergencia_numerica_v1", versao: REGRA_VERSAO });
-        juntar({
+        const chaveCluster = `${codigo}:${cluster[0].escopo.equipamento ?? ""}:${cluster[0].escopo.itemNumero ?? ""}`;
+        juntar(chaveCluster, {
           codigo: `especificacao.divergencia_${codigo}`,
           natureza: "fato",
           metodo: "regra",

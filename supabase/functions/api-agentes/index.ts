@@ -86,16 +86,30 @@ export async function contextos(d: Dossie, proposta: PropostaItem[] | null): Pro
     ]),
     proposta,
   };
+  const precoHash = await hashContexto(precoEntrada);
   const preco = await hashContexto({ ...precoEntrada, referencia_em: new Date().toISOString().slice(0, 10) });
   // R-6: o jurídico leva o preço sem a data do dia, para a análise enviada num dia seguir atual no seguinte.
   const juridico = await hashContexto({
     agente: "juridico",
     regra: REGRA_VERSAO,
     edital,
-    preco: await hashContexto(precoEntrada),
+    preco: precoHash,
     dispositivos: d.dispositivos.map((dispositivo) => [dispositivo.artigo, dispositivo.conferido_oficial]),
   });
-  return { edital, preco, juridico };
+  const concorrencia = await hashContexto({
+    agente: "concorrencia",
+    regra: REGRA_VERSAO,
+    preco: precoHash,
+  });
+  const recomendacao = await hashContexto({
+    agente: "recomendacao",
+    regra: REGRA_VERSAO,
+    edital,
+    preco: precoHash,
+    juridico,
+    concorrencia,
+  });
+  return { edital, preco, juridico, concorrencia, recomendacao };
 }
 
 function rodar(agente: Agente, dossie: Dossie, proposta: PropostaItem[] | null, sinais: Achado[]): ResultadoAgente {
@@ -111,6 +125,9 @@ function rodar(agente: Agente, dossie: Dossie, proposta: PropostaItem[] | null, 
       return agentePreco({ natureza: dossie.natureza, itens: dossie.itens, proposta });
     case "juridico":
       return agenteJuridico({ sinais, dispositivos: dossie.dispositivos });
+    case "concorrencia":
+    case "recomendacao":
+      throw new ErroAgentes(`Agente ${agente} não é executado por esta rota.`, 400);
     default: {
       const nunca: never = agente;
       throw new Error(`agente desconhecido: ${nunca}`);

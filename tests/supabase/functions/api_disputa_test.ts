@@ -295,6 +295,8 @@ Deno.test("api-disputa: POST /auditoria - grava log de lance supervisionado", as
   assertEquals(json.id, 1);
   assertEquals(db.auditoria.length, 1);
   assertEquals(db.auditoria[0].valor_lance_centavos, 1850000);
+  assertEquals((db.auditoria[0].detalhes as Record<string, unknown>).regra_version, "bot-guards.v1");
+  assertEquals((db.auditoria[0].detalhes as Record<string, unknown>).recomendacao_id, null);
 });
 
 Deno.test("api-disputa: POST /sync-chat - 404 se licitação não está no pipeline", async () => {

@@ -1,9 +1,62 @@
 export const REGRA_VERSAO = "2026-10-26.2";
 
-export type Agente = "edital" | "preco" | "juridico";
+export type Agente = "edital" | "preco" | "juridico" | "concorrencia" | "recomendacao";
 export type Severidade = "info" | "atencao" | "critico";
 export type Natureza = "fato" | "analise" | "inferencia";
 export type Metodo = "regra" | "modelo" | "cliente";
+
+// ============================================================
+// Spec 0039: contrato de recomendação v4
+// ============================================================
+export type Decisao = "disputar" | "aguardar_aprovacao" | "nao_disputar";
+
+export interface ScoreComponentes {
+  [componente: string]: number;
+}
+
+export interface Score {
+  score_total: number; // 0.00 a 1.00
+  componentes: ScoreComponentes;
+  peso: ScoreComponentes;
+  detalhes?: Record<string, unknown>;
+}
+
+export type ScoreAderencia = Score;
+export type ScoreRisco = Score;
+export type ScoreViabilidade = Score;
+export interface ScoreConcorrencia extends Score {
+  detalhes: {
+    num_concorrentes: number;
+    marcas: string[];
+    mediana_historica: number | null;
+    razao_preco: number | null;
+    tem_so_premium: boolean;
+  };
+}
+
+export interface RecomendacaoLanceV4 {
+  decisao: Decisao;
+  motivos: string[];
+  alertas: string[];
+  scores: {
+    aderencia: ScoreAderencia;
+    risco: ScoreRisco;
+    viabilidade: ScoreViabilidade;
+    concorrencia: ScoreConcorrencia;
+    final: number;
+  };
+  regra_versao: string;
+  gerado_em: string;
+}
+
+export const REGRA_VERSAO_RECOMENDACAO = "2026-10-26.1";
+
+export const THRESHOLDS = {
+  ADERENCIA_MIN: 0.60,
+  RISCO_MAX: 0.70,
+  VIABILIDADE_MIN: 0.50,
+  CONCORRENCIA_MIN: 0.40,
+} as const;
 
 export type Fonte =
   | {

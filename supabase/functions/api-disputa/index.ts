@@ -14,7 +14,8 @@ import {
   consultarDiligenciasSerpro,
   type MensagemSerpro,
 } from "../_shared/serpro.ts";
-import { pisoTenantCentavos } from "../_shared/agentes/preco.ts";
+import { pisoTenantCentavos, unidadeNorm } from "../_shared/agentes/preco.ts";
+import { recomendar, type RecomendacaoLance } from "../_shared/recomendacao.ts";
 
 export interface ApiDisputaContext {
   getSupabase?: () => SupabaseClient;
@@ -149,7 +150,7 @@ export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Prom
       // Busca dados dos itens da licitação
       const { data: itens, error: erroItens } = await supabase
         .from("licitacao_itens")
-        .select("id, numero_item, descricao, valor_unitario_estimado, valor_total_estimado")
+        .select("id, numero_item, descricao, valor_unitario_estimado, valor_total_estimado, catalogo_codigo_item, unidade_medida")
         .eq("licitacao_id", licitacaoId)
         .order("numero_item", { ascending: true });
 
@@ -208,6 +209,32 @@ export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Prom
         }
       }
 
+      // CONTRATO RECOMENDACAO v1: enriquece cada item com RecomendacaoLance
+      const recomendacoesPorItem = new Map<number, RecomendacaoLance>();
+      for (const item of itens || []) {
+        const produtoId = deParaMap.get(item.id);
+        if (produtoId === undefined) continue;
+
+        const preco = precosPorProduto.get(produtoId);
+        if (!preco) continue;
+
+        const tabelaCentavos = Math.round(preco.preco_tabela * 100);
+        const pisoCentavos = pisoTenantCentavos(tabelaCentavos, preco.desconto_max_pct);
+
+        const rec = await recomendar(
+          {
+            codigo_item: Number(item.catalogo_codigo_item ?? 0),
+            unidade: unidadeNorm(item.unidade_medida),
+            custo_proprio: pisoCentavos / 100,
+            margem_min: 0,
+            estimado_edital: Number(item.valor_unitario_estimado ?? 0),
+          },
+          supabase,
+        );
+
+        recomendacoesPorItem.set(item.id, rec);
+      }
+
       // Constrói estratégia determinística estrita (sem alucinar pisos inexistentes)
       const itensEstrategia = (itens || []).map((it) => {
         const itemNum = it.numero_item || 1;
@@ -224,6 +251,8 @@ export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Prom
           }
         }
 
+        const recomendacao = recomendacoesPorItem.get(it.id) || null;
+
         return {
           item_numero: itemNum,
           descricao: it.descricao,
@@ -232,6 +261,7 @@ export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Prom
           piso_centavos: pisoCentavos,
           habilitado,
           intervalo_minimo_reais: 10.0,
+          recomendacao,
         };
       });
 
@@ -263,7 +293,11 @@ export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Prom
         regra_aplicada: body.tipo || "lance_automatico",
         origem: "extensao_operador",
         resultado: body.tipo === "BLOQUEIO_PISO" ? "bloqueado_piso" : "sucesso",
-        detalhes: body,
+        detalhes: {
+          ...body,
+          recomendacao_id: body.recomendacao_id ?? null,
+          regra_version: body.regra_version ?? "bot-guards.v1",
+        },
       }).select("id").single();
 
       if (error) throw error;

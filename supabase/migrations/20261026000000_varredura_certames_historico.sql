@@ -39,7 +39,13 @@ select
   l.objeto,
   l.unidade_compradora,
   l.modalidade,
-  l.fase,
+  case
+    when e.encerramento is null
+     and j.prazo_encerrado
+     and l.fase = 'Recebendo propostas'
+      then 'Propostas encerradas, aguardando resultado'
+    else l.fase
+  end as fase,
   l.situacao,
   l.data_inicio,
   l.data_fim,
@@ -55,7 +61,7 @@ select
   case
     when e.encerramento is not null then 'historico'
     when j.prazo_historico then 'historico'
-    when j.prazo_encerrado then 'monitorar'
+    when j.prazo_encerrado or j.prazo_invalido then 'monitorar'
     else l.prioridade
   end as prioridade,
   l.termos_busca,
@@ -67,11 +73,15 @@ select
     when e.encerramento is not null then e.encerramento
     when j.prazo_historico then 'prazo_expirado_sessao'
     when j.prazo_encerrado then 'prazo_encerrado'
+    when j.prazo_invalido then 'prazo_invalido'
   end as prioridade_motivo,
   c.canonica_id,
   c.eh_canonica,
   l.objeto_categoria,
-  l.objeto_registro_preco
+  l.objeto_registro_preco,
+  l.payload_hash,
+  l.ingestao_origem,
+  l.ingestao_em
 from public.licitacoes_externas l
 join public.licitacoes_pncp_canonica c on c.id = l.id
 cross join lateral (
@@ -89,21 +99,29 @@ cross join lateral (
 ) e
 cross join lateral (
   select
+    private.pncp_instante_brt(l.normalizacoes #>> '{data_fim,normalizado}') as normalizado,
+    private.pncp_instante_brt(l.raw ->> 'data_fim_vigencia') as bruto
+) p
+cross join lateral (
+  select
     (
       l.prioridade = 'leads'
-      and coalesce(
-        private.pncp_instante_brt(l.normalizacoes #>> '{data_fim,normalizado}'),
-        private.pncp_instante_brt(l.raw ->> 'data_fim_vigencia'),
-        l.data_fim
-      ) <= now()
+      and (
+        (coalesce(p.normalizado, p.bruto) is not null and coalesce(p.normalizado, p.bruto) <= now())
+        or (coalesce(p.normalizado, p.bruto) is null and l.data_fim <= now())
+      )
     ) is true as prazo_encerrado,
     (
+      l.prioridade = 'leads'
+      and p.normalizado is null
+      and p.bruto > now() + interval '730 days'
+    ) is true as prazo_invalido,
+    (
       l.prioridade in ('leads', 'monitorar')
-      and coalesce(
-        private.pncp_instante_brt(l.normalizacoes #>> '{data_fim,normalizado}'),
-        private.pncp_instante_brt(l.raw ->> 'data_fim_vigencia'),
-        l.data_fim
-      ) <= (now() - interval '30 days')
+      and (
+        (coalesce(p.normalizado, p.bruto) is not null and coalesce(p.normalizado, p.bruto) <= (now() - interval '30 days'))
+        or (coalesce(p.normalizado, p.bruto) is null and l.data_fim <= (now() - interval '30 days'))
+      )
     ) is true as prazo_historico
 ) j;
 

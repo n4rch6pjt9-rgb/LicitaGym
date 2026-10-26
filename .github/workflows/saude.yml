@@ -28,7 +28,7 @@ jobs:
           git init -q .
           git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git fetch -q --depth 1 origin "${GITHUB_SHA}"
-          git checkout -q FETCH_HEAD -- scripts/saude-alerta.sh
+          git checkout -q FETCH_HEAD -- scripts/saude-alerta.sh scripts/saude_validar.py
         env:
           GH_TOKEN: ${{ github.token }}
 
@@ -38,6 +38,8 @@ jobs:
           GH_REPO: ${{ github.repository }}
           SAUDE_TOKEN: ${{ secrets.SAUDE_TOKEN }}
           SAUDE_APIKEY: ${{ secrets.SAUDE_APIKEY }}
+          # Cobertura atual contratada; incluir/remover verificações exige revisar este conjunto.
+          SAUDE_VERIFICACOES_ESPERADAS: cron_falhas_24h,cron_http_erros_24h,cron_sem_resposta,pncp_sync_heartbeat_parado,pncp_sync_falhas_24h,pncp_sync_dias_sem_sucesso,coleta_externa_dias_sem_sucesso,precos_dias_sem_coleta,licitacoes_horas_sem_novas,itens_sem_taxonomia_pct
         run: |
           if [ -z "${SAUDE_TOKEN}" ]; then
             echo "::error::Secret SAUDE_TOKEN ausente (use o valor de SYNC_CRON_SECRET)."

@@ -51,9 +51,9 @@ async function resumoDoBanco(): Promise<Verificacao[]> {
 
 export function consolidar(verificacoes: Verificacao[]) {
   const contagem = { ok: 0, atencao: 0, critico: 0 };
-  let geral: StatusSaude = "ok";
+  let geral: StatusSaude = verificacoes.length === 0 ? "atencao" : "ok";
   for (const v of verificacoes) {
-    const s = (v.status in ORDEM ? v.status : "atencao") as StatusSaude; // status desconhecido nunca vira "ok"
+    const s = (Object.hasOwn(ORDEM, v.status) ? v.status : "atencao") as StatusSaude;
     contagem[s]++;
     if (ORDEM[s] > ORDEM[geral]) geral = s;
   }
@@ -83,6 +83,8 @@ export async function handleRequest(req: Request, ctx: ApiSaudeContext = {}): Pr
 
   try {
     const verificacoes = await (ctx.getResumo ?? resumoDoBanco)();
+    // Ausência de observação não comprova saúde. Mantém o contrato de erro existente.
+    if (verificacoes.length === 0) throw new Error("Resumo sem verificações");
     const { status_geral, contagem } = consolidar(verificacoes);
     console.info("[api-saude] resumo", { origem: cron ? "cron" : "admin", status_geral, ...contagem });
     return jsonResponse({

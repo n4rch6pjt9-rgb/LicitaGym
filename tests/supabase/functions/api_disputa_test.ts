@@ -81,6 +81,8 @@ function createMockSupabase(db: MockDatabase) {
           filters.push((row) => row[col] > val);
           return builder;
         },
+        or: () => builder,
+        ilike: () => builder,
         order: (col: string, opts?: { ascending?: boolean }) => {
           sortField = col;
           sortAsc = opts?.ascending ?? true;

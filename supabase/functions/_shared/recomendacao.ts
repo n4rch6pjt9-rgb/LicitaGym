@@ -79,13 +79,18 @@ export async function recomendar(
   desde.setUTCMonth(desde.getUTCMonth() - JANELA_MESES);
   const desdeIso = desde.toISOString().slice(0, 10);
 
-  // Referência: precos_praticados_itens com filtro explícito de unidade normalizada (UNIDADE ↔ UN)
-  const { data: rows, error } = await supabase
+  // Referência: as LIMITE_AMOSTRAS homologações mais recentes da mesma unidade
+  // normalizada (UNIDADE ↔ UN). O limite vem depois do filtro: CX/KIT/PAR não ocupam a janela.
+  let consulta = supabase
     .from("precos_praticados_itens")
     .select("preco_unitario, sigla_unidade_fornecimento")
     .eq("codigo_item_catalogo", input.codigo_item)
     .gte("data_resultado", desdeIso)
-    .gt("preco_unitario", 0)
+    .gt("preco_unitario", 0);
+  consulta = unidadeAlvo === "UN"
+    ? consulta.or("sigla_unidade_fornecimento.ilike.UN,sigla_unidade_fornecimento.ilike.UNIDADE")
+    : consulta.ilike("sigla_unidade_fornecimento", unidadeAlvo);
+  const { data: rows, error } = await consulta
     .order("data_resultado", { ascending: false })
     .order("id_compra_item", { ascending: true })
     .limit(LIMITE_AMOSTRAS);

@@ -12,6 +12,7 @@ import {
   REGRA_VERSAO_RECOMENDACAO,
   type ResultadoAgente,
 } from "../../../supabase/functions/_shared/agentes/tipos.ts";
+import { LIMITE_AMOSTRAS } from "../../../supabase/functions/_shared/agentes/preco.ts";
 import { recomendar } from "../../../supabase/functions/_shared/recomendacao.ts";
 
 Deno.test("agenteConcorrencia: sem amostras válidas devolve sem_referencia", () => {
@@ -254,6 +255,8 @@ Deno.test("recomendar (v1): valida input, filtra por unidade normalizada, clampa
         eq: () => chain,
         gte: () => chain,
         gt: () => chain,
+        or: () => chain,
+        ilike: () => chain,
         order: () => chain,
         limit: () => Promise.resolve({ data: rows, error: null }),
       };
@@ -337,4 +340,98 @@ Deno.test("recomendar (v1): valida input, filtra por unidade normalizada, clampa
   assertEquals(inviavel.status, "EMPTY_VALID");
   assertEquals(inviavel.decisao, "nao_disputar");
   assertEquals(inviavel.motivos, ["faixa_inviavel"]);
+});
+
+Deno.test("recomendar (v1): o limite de amostras vale depois do filtro de unidade", async () => {
+  const entrada = {
+    codigo_item: 485224,
+    custo_proprio: 1000,
+    margem_min: 0,
+    estimado_edital: 8000,
+  };
+
+  // Outra unidade preenche a janela; as homologações da unidade alvo ficam depois dela.
+  const cliente = (
+    linhas: Array<{ preco_unitario: number; sigla_unidade_fornecimento: string }>,
+    aceita: (sigla: string) => boolean,
+  ) => {
+    let filtrou = false;
+    return {
+      client: {
+        from: (table: string) => {
+          assertEquals(table, "precos_praticados_itens");
+          // deno-lint-ignore no-explicit-any
+          const chain: any = {
+            select: () => chain,
+            eq: () => chain,
+            gte: () => chain,
+            gt: () => chain,
+            or: (expr: string) => {
+              filtrou = expr.includes("sigla_unidade_fornecimento.ilike.UN,") &&
+                expr.includes("sigla_unidade_fornecimento.ilike.UNIDADE");
+              return chain;
+            },
+            ilike: (col: string, val: string) => {
+              assertEquals(col, "sigla_unidade_fornecimento");
+              filtrou = val === "CX";
+              return chain;
+            },
+            order: () => chain,
+            limit: (n: number) => {
+              const base = filtrou ? linhas.filter((r) => aceita(r.sigla_unidade_fornecimento)) : linhas;
+              return Promise.resolve({ data: base.slice(0, n), error: null });
+            },
+          };
+          return chain;
+        },
+      },
+      filtrou: () => filtrou,
+    };
+  };
+
+  const outras = Array.from({ length: LIMITE_AMOSTRAS }, () => ({
+    preco_unitario: 99000,
+    sigla_unidade_fornecimento: "CX",
+  }));
+  const mesmaUn = cliente(
+    [
+      ...outras,
+      { preco_unitario: 5000, sigla_unidade_fornecimento: "UN" },
+      { preco_unitario: 6000, sigla_unidade_fornecimento: "Unidade" },
+      { preco_unitario: 7000, sigla_unidade_fornecimento: "UN" },
+    ],
+    (sigla) => sigla.toUpperCase() === "UN" || sigla.toUpperCase() === "UNIDADE",
+  );
+  const un = await recomendar(
+    { ...entrada, unidade: "Unidade" },
+    // deno-lint-ignore no-explicit-any
+    mesmaUn.client as any,
+  );
+  assertEquals(mesmaUn.filtrou(), true);
+  assertEquals(un.status, "SUCCESS_WITH_DATA");
+  assertEquals(un.referencia?.n, 3);
+  assertEquals(un.referencia?.mediana, 6000);
+
+  const unCheias = Array.from({ length: LIMITE_AMOSTRAS }, () => ({
+    preco_unitario: 1000,
+    sigla_unidade_fornecimento: "UN",
+  }));
+  const mesmaCx = cliente(
+    [
+      ...unCheias,
+      { preco_unitario: 5000, sigla_unidade_fornecimento: "cx" },
+      { preco_unitario: 6000, sigla_unidade_fornecimento: "cx" },
+      { preco_unitario: 7000, sigla_unidade_fornecimento: "cx" },
+    ],
+    (sigla) => sigla.toUpperCase() === "CX",
+  );
+  const cx = await recomendar(
+    { ...entrada, unidade: "CX" },
+    // deno-lint-ignore no-explicit-any
+    mesmaCx.client as any,
+  );
+  assertEquals(mesmaCx.filtrou(), true);
+  assertEquals(cx.status, "SUCCESS_WITH_DATA");
+  assertEquals(cx.referencia?.n, 3);
+  assertEquals(cx.referencia?.mediana, 6000);
 });

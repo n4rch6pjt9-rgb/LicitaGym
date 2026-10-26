@@ -185,6 +185,8 @@ export interface HistoricoEvento {
   item: number | null;
   documentoTitulo: string | null;
   justificativa: string | null;
+  /** 'pncp' ou 'portal_oficial' */
+  origem?: "pncp" | "portal_oficial";
 }
 
 export interface ArquivoAcompanhamento {
@@ -196,6 +198,8 @@ export interface ArquivoAcompanhamento {
   dataPublicacaoPncp?: string | null;
   /** statusAtivo do PNCP (false = arquivo inativado), quando vem. */
   statusAtivo?: boolean | null;
+  /** URL do portal oficial da disputa para contornar falhas de CDN/S3 do PNCP (como erro 422) */
+  url_portal_oficial?: string | null;
 }
 
 export interface AcompanhamentoSection<T> {
@@ -228,7 +232,18 @@ export type AcompanhamentoResponse =
     itens: AcompanhamentoSection<ItemAcompanhamento[]> & { total: number };
     atas: AcompanhamentoSection<AtaAcompanhamento[]> & { total: number };
     historico: AcompanhamentoSection<HistoricoEvento[]> & { total: number };
-    arquivos: AcompanhamentoSection<ArquivoAcompanhamento[]> & { total: number };
+    arquivos: AcompanhamentoSection<ArquivoAcompanhamento[]> & { total: number; url_portal_oficial?: string | null };
     portal: PortalSecao | null;
+    /** Indica se o portal oficial possui dados mais recentes ou se o PNCP está com atraso/indisponibilidade */
+    pncp_em_atraso?: boolean;
+    /** Metadados e estado do portal oficial da disputa identificado */
+    portal_oficial?: {
+      nome: string | null;
+      url: string | null;
+      host: string | null;
+      metodo: string;
+      consultado_em?: string | null;
+      situacao?: string | null;
+    } | null;
   };
 

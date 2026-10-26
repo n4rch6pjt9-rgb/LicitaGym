@@ -1,9 +1,10 @@
 import { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { errorDetail, jsonResponse } from "../_shared/http.ts";
-import { buildAcompanhamentoUrl, buildEditalUrl, buildPncpEditalUrl } from "../_shared/edital-url.ts";
+import { buildAcompanhamentoUrl, buildEditalUrl, buildOrigemUrl, buildPncpEditalUrl } from "../_shared/edital-url.ts";
 import { secaoPortal, type TenantDoUsuario } from "./portal.ts";
 import { anexarReferenciaPreco } from "./precoReferencia.ts";
 import { diaBrasilia } from "../_shared/portal-compras.ts";
+import { sincronizarPortalOficialEAtraso } from "./pncpAtraso.ts";
 import { UnifiedHttpClient } from "../_shared/http-client/index.ts";
 import type {
   AcompanhamentoActionParams,
@@ -756,7 +757,8 @@ export async function handleAcompanhamento(
     const rawLinkOrigem = (typeof row.link_sistema_origem === "string" ? row.link_sistema_origem : null) ??
       compraSection.dados?.linkSistemaOrigem ??
       linkSistemaOrigemFromRaw(row.raw);
-    const urlAcompanhamento = buildAcompanhamentoUrl(rawLinkOrigem);
+    const portalOrigem = buildOrigemUrl(rawLinkOrigem, row.fonte);
+    const urlAcompanhamento = portalOrigem?.url ?? buildAcompanhamentoUrl(rawLinkOrigem);
 
     payload = {
       disponivel: true,
@@ -796,10 +798,44 @@ export async function handleAcompanhamento(
       payload = { ...payload, itens: { ...payload.itens, dados: itensComPreco } };
     }
 
+    let pncpEmAtraso = false;
+    let portalOficialInfo = null;
+    if (payload.disponivel) {
+      const sincPortal = await sincronizarPortalOficialEAtraso(
+        client,
+        Number(row.id),
+        row,
+        payload.url_acompanhamento,
+        portal,
+        payload.compra,
+        payload.historico,
+        payload.arquivos,
+      );
+      payload = {
+        ...payload,
+        url_acompanhamento: sincPortal.urlAcompanhamento,
+        historico: sincPortal.historicoAtualizado,
+        arquivos: sincPortal.arquivosAtualizados,
+      };
+      pncpEmAtraso = sincPortal.pncpEmAtraso;
+      portalOficialInfo = sincPortal.portalOficial;
+    }
+
     const fase = typeof row.fase === "string" && row.fase.trim() !== "" ? row.fase : null;
-    return jsonResponse(payload.disponivel ? { ...enriquecerAcompanhamento(payload, fase, new Date()), portal } : payload, 200, {
-      "Cache-Control": "private, max-age=300",
-    });
+    return jsonResponse(
+      payload.disponivel
+        ? {
+          ...enriquecerAcompanhamento(payload, fase, new Date()),
+          portal,
+          pncp_em_atraso: pncpEmAtraso,
+          portal_oficial: portalOficialInfo,
+        }
+        : payload,
+      200,
+      {
+        "Cache-Control": "private, max-age=300",
+      },
+    );
   } catch (err: unknown) {
     console.error("[api-dashboard-oportunidades] Exceção em acompanhamento:", err);
     return jsonResponse({ error: "Erro interno no servidor" }, 500);

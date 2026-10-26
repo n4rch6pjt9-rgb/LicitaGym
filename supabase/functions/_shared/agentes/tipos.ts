@@ -1,4 +1,8 @@
+ fix/edital-dispensa
+export const REGRA_VERSAO = "2026-10-20.1";
+
 export const REGRA_VERSAO = "2026-10-21.1";
+ main
 
 export type Agente = "edital" | "preco" | "juridico";
 export type Severidade = "info" | "atencao" | "critico";

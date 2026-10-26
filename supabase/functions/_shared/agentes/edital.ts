@@ -12,15 +12,90 @@ export interface ChunkEdital {
 }
 
 const PADROES: { codigo: string; re: RegExp; severidade: Severidade }[] = [
-  { codigo: "exigencia.amostra", re: /\bamostras?\b/, severidade: "atencao" },
-  { codigo: "exigencia.visita_tecnica", re: /\b(visita|vistoria) tecnica\b/, severidade: "atencao" },
-  { codigo: "exigencia.atestado_capacidade", re: /\batestados? de capacidade tecnica\b/, severidade: "atencao" },
-  { codigo: "exigencia.garantia_proposta", re: /\bgarantia d[ae] proposta\b/, severidade: "atencao" },
-  { codigo: "exigencia.garantia_contratual", re: /\bgarantia (contratual|de execucao)\b/, severidade: "info" },
-  { codigo: "exigencia.laudo_certificacao", re: /\b(laudo|certificado|certificacao)\b[^.]{0,120}\b(inmetro|abnt|nbr)\b/, severidade: "atencao" },
-  { codigo: "exigencia.marca_modelo", re: /\bmarca\b[^.]{0,40}\b(modelo|referencia)\b/, severidade: "atencao" },
-  { codigo: "exigencia.prazo_entrega", re: /\bprazo (maximo )?(de|para) entrega\b/, severidade: "info" },
+  { codigo: "exigencia.amostra", re: /\bamostras?\b/g, severidade: "atencao" },
+  { codigo: "exigencia.visita_tecnica", re: /\b(visita|vistoria) tecnica\b/g, severidade: "atencao" },
+  { codigo: "exigencia.atestado_capacidade", re: /\batestados? de capacidade tecnica\b/g, severidade: "atencao" },
+  { codigo: "exigencia.garantia_proposta", re: /\bgarantia d[ae] proposta\b/g, severidade: "atencao" },
+  { codigo: "exigencia.garantia_contratual", re: /\bgarantia (contratual|de execucao)\b/g, severidade: "info" },
+  { codigo: "exigencia.laudo_certificacao", re: /\b(laudo|certificado|certificacao)\b[^.]{0,120}\b(inmetro|abnt|nbr)\b/g, severidade: "atencao" },
+  { codigo: "exigencia.marca_modelo", re: /\bmarca\b[^.]{0,40}\b(modelo|referencia)\b/g, severidade: "atencao" },
+  { codigo: "exigencia.prazo_entrega", re: /\bprazo (maximo )?(de|para) entrega\b/g, severidade: "info" },
 ];
+
+/** Temas que o edital costuma declarar dispensados ("Amostras ( X ) Não", "Garantia contratual: Não se aplica"). */
+const DISPENSAVEIS = new Set([
+  "exigencia.amostra",
+  "exigencia.visita_tecnica",
+  "exigencia.garantia_proposta",
+  "exigencia.garantia_contratual",
+]);
+
+// --- Leitura de negação (20/10/2026): o agente marcava "4.2. Amostras ( X) Não" como exigência (licitação 11374). ---
+/** Até onde olhar depois do termo (caracteres normalizados): o título e a primeira cláusula que o segue. */
+const JANELA_DEPOIS = 130;
+const JANELA_ANTES = 80;
+/** Caixa marcada: "( X ) Não", "(X) Sim", "[x] Vistoria obrigatória". */
+const RE_CAIXA_MARCADA = /[([]\s*x\s*[)\]]\s*([a-z][a-z ]{0,30})/;
+const RE_NEGA_DEPOIS =
+  /\bnao (se aplica\b|havera\b|ha (necessidade|exigencia)\b|sera (exigid|obrigatori|necessari|solicitad|requerid)|e (exigid|obrigatori|necessari))|\bdispensad[ao]s?\b|\b(isento|isenta) de\b/;
+/** Negação no fim do texto antes do termo, na mesma frase: "Não haverá exigência de garantia contratual". */
+const RE_NEGA_ANTES =
+  /\b(nao (havera|ha|sera|serao|se aplica|e|se exigira|sera exigid[ao]|sera obrigatori[ao])|dispensad[ao]s?|dispensa d[ae]|sem (a )?(necessidade|exigencia|obrigatoriedade))\b[^.;!?]{0,50}$/;
+const RE_CONDICIONAL = /^\s*,?\s*\(?\s*(quando (houver|for o caso)|se houver|caso (haja|seja exigid|exigid))/;
+/**
+ * Texto padrão que cita o tema sem exigir nada: "Caso o Termo de Referência exija a apresentação de amostra",
+ * "perda da garantia de proposta", "apresentar amostra falsificada", "execução da garantia contratual".
+ */
+const RE_GENERICO_ANTES =
+  /(\b(caso|quando|na hipotese de)\b[^.;:]{0,70}|\b(perda|execucao|devolucao|restituicao|liberacao|retencao|perdimento|avaliacao|verificacao|vigencia) d[aeo]s?(\(s\))?|\bdeixar de apresentar|\bhavendo (entrega|apresentacao) de|\b(proposta|prospecto) ou|\bse (a|o|as|os)(\(s\))?|\bpagamento e d[ao])\s*$/;
+/** "garantia contratual dos bens", "prazo de garantia contratual": é a garantia do produto, não a do art. 96. */
+const RE_GARANTIA_DO_PRODUTO_DEPOIS = /^\s*(dos bens|do bem|do produto|do equipamento|complementar|e (da )?assistencia)\b/;
+const RE_GARANTIA_DO_PRODUTO_ANTES = /\bprazo d[ae]\s*$/;
+const RE_GENERICO_DEPOIS = /^\s*(falsificad|deteriorad)/;
+
+/** "condicional": menção que não exige nem dispensa (condição, sanção padrão, garantia do produto); fica de fora. */
+type Leitura = "afirmada" | "negada" | "condicional";
+
+/** Corta a janela depois do termo onde começa outro tema da lista (a dispensa de um não vale para o outro). */
+function cortarNoProximoTema(depois: string, codigoAtual: string): string {
+  let corte = depois.length;
+  for (const p of PADROES) {
+    if (p.codigo === codigoAtual) continue;
+    const re = new RegExp(p.re.source);
+    const m = re.exec(depois);
+    if (m && m.index < corte) corte = m.index;
+  }
+  return depois.slice(0, corte);
+}
+
+function lerMencao(norm: string, inicio: number, fim: number, codigo: string): Leitura {
+  if (!DISPENSAVEIS.has(codigo)) return "afirmada";
+  const depoisBruto = norm.slice(fim, fim + JANELA_DEPOIS);
+  const antesBruto = norm.slice(Math.max(0, inicio - JANELA_ANTES), inicio);
+  if (RE_CONDICIONAL.test(depoisBruto) || RE_GENERICO_DEPOIS.test(depoisBruto)) return "condicional";
+  if (RE_GENERICO_ANTES.test(antesBruto)) return "condicional";
+  if (
+    codigo === "exigencia.garantia_contratual" &&
+    (RE_GARANTIA_DO_PRODUTO_DEPOIS.test(depoisBruto) || RE_GARANTIA_DO_PRODUTO_ANTES.test(antesBruto))
+  ) {
+    return "condicional";
+  }
+  const depois = cortarNoProximoTema(depoisBruto, codigo);
+  const caixa = RE_CAIXA_MARCADA.exec(depois);
+  if (caixa) {
+    const opcao = caixa[1];
+    if (/^nao\b/.test(opcao)) return "negada";
+    if (/^(sim|obrigatori)/.test(opcao)) return "afirmada";
+  }
+  if (RE_NEGA_ANTES.test(antesBruto)) return "negada";
+  // Só a primeira frase/cláusula depois do termo; a numeração ("7.1.", "7 . 3 . 1 .") não encerra a frase.
+  const semNumeracao = depois.replace(/\b\d+(?:\s*\.\s*\d+)*\s*\.?(?=\s|$)/g, " ");
+  const clausula = semNumeracao.split(/[.;!?]/).slice(0, 2).join(" ");
+  if (RE_NEGA_DEPOIS.test(clausula) && !/\b(sera|serao|deve|devera|deverao) (exigid|apresentad|obrigatori)/.test(clausula.replace(/nao sera\w*/g, ""))) {
+    return "negada";
+  }
+  return "afirmada";
+}
 
 function dataLocal(iso: string): { y: number; m: number; d: number } {
   const partes = new Intl.DateTimeFormat("en-CA", {
@@ -79,29 +154,76 @@ function fonteChunk(chunk: ChunkEdital, normInicio: number, normFim: number, ori
 }
 
 export function detectarExigencias(chunks: ChunkEdital[]): Achado[] {
-  const fontes = new Map<string, { severidade: Severidade; fontes: Fonte[] }>();
+  type Grupo = { severidade: Severidade; afirmadas: Fonte[]; negadas: Fonte[]; vistos: Set<string> };
+  const grupos = new Map<string, Grupo>();
   for (const chunk of chunks) {
     const { norm, origem } = normalizarComMapa(chunk.texto);
     for (const padrao of PADROES) {
+ fix/edital-dispensa
+      padrao.re.lastIndex = 0;
+      for (const casa of norm.matchAll(padrao.re)) {
+        if (casa.index === undefined) continue;
+        const fim = casa.index + casa[0].length;
+        const leitura = lerMencao(norm, casa.index, fim, padrao.codigo);
+        if (leitura === "condicional") continue;
+        const grupo = grupos.get(padrao.codigo) ??
+          { severidade: padrao.severidade, afirmadas: [], negadas: [], vistos: new Set<string>() };
+        grupos.set(padrao.codigo, grupo);
+        // Chunks se sobrepõem: o mesmo trecho da mesma página entra uma vez.
+        const chave = `${chunk.documento_id}|${chunk.pagina}|${norm.slice(casa.index, fim + 30)}`;
+        if (grupo.vistos.has(chave)) continue;
+        grupo.vistos.add(chave);
+        const lista = leitura === "negada" ? grupo.negadas : grupo.afirmadas;
+        if (lista.length >= 3) continue;
+        lista.push({
+          tipo: "chunk",
+          chunk_id: chunk.id,
+          documento_id: chunk.documento_id,
+          pagina: chunk.pagina,
+          trecho: trechoNoOriginal(chunk.texto, casa.index, fim, origem),
+        });
+
       const casa = padrao.re.exec(norm);
       if (!casa || casa.index === undefined) continue;
       const grupo = fontes.get(padrao.codigo) ?? { severidade: padrao.severidade, fontes: [] };
       if (grupo.fontes.length < 3) {
         grupo.fontes.push(fonteChunk(chunk, casa.index, casa.index + casa[0].length, origem));
+ main
       }
-      fontes.set(padrao.codigo, grupo);
     }
   }
-  return [...fontes.entries()].map(([codigo, grupo]) => ({
-    codigo,
-    natureza: "fato" as const,
-    metodo: "regra" as const,
-    severidade: grupo.severidade,
-    titulo: codigo,
-    detalhe: "Exigência localizada no edital.",
-    dados: {},
-    fontes: grupo.fontes,
-  }));
+  const achados: Achado[] = [];
+  for (const [codigo, g] of grupos) {
+    if (g.afirmadas.length > 0) {
+      const conflito = g.negadas.length > 0;
+      achados.push({
+        codigo,
+        natureza: "fato",
+        metodo: "regra",
+        severidade: g.severidade,
+        titulo: codigo,
+        detalhe: conflito
+          ? "Exigência localizada no edital; outro trecho diz que não exige: confira qual vale."
+          : "Exigência localizada no edital.",
+        dados: conflito ? { conflito_dispensa: true } : {},
+        // No conflito, o trecho que dispensa aparece junto para a pessoa comparar.
+        fontes: conflito ? [...g.afirmadas.slice(0, 2), g.negadas[0]] : g.afirmadas,
+      });
+    } else if (g.negadas.length > 0) {
+      const dispensa = codigo.replace(/^exigencia\./, "dispensa.");
+      achados.push({
+        codigo: dispensa,
+        natureza: "fato",
+        metodo: "regra",
+        severidade: "info",
+        titulo: dispensa,
+        detalhe: "O edital diz que não exige.",
+        dados: {},
+        fontes: g.negadas,
+      });
+    }
+  }
+  return achados;
 }
 
 // --- Potência do motor no termo de referência (spec 0032, fase 3, CA-4) -------------------------------------------

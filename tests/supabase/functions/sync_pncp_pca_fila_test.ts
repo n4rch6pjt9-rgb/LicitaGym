@@ -12,6 +12,7 @@ import {
   lerItensPlano,
   planoDaConsulta,
   processarFila,
+  situacaoFila,
   TAMANHO_PAGINA_INTEGRACAO,
   tratarAusentes,
 } from "../../../supabase/functions/_shared/pncp/pca-fila.ts";
@@ -19,6 +20,7 @@ import { gravarPaginaPcaEmLote } from "../../../supabase/functions/_shared/pncp/
 import { normalizePcaItem } from "../../../supabase/functions/_shared/pncp/normalize.ts";
 import { hashPayload } from "../../../supabase/functions/_shared/pncp/hash.ts";
 import { BudgetExhaustedError, createRequestBudget } from "../../../supabase/functions/_shared/pncp/retry.ts";
+import { RateLimitPauseError } from "../../../supabase/functions/_shared/http-client/index.ts";
 import { updateSyncHeartbeat } from "../../../supabase/functions/_shared/pncp/supabase-admin.ts";
 import { handleRotinaFila } from "../../../supabase/functions/sync-pncp-pca/rotina-fila.ts";
 
@@ -78,14 +80,28 @@ function banco(): FakePostgrest {
         f.id_pca_pncp === it.id_pca_pncp && ["pendente", "processando", "erro"].includes(String(f.status))
       );
       if (aberto) {
-        // processando recente (< 15 min) segue; abandonado recomeça como pendente e erro
+        // Mesmo contrato da migration: só versão oficial maior reabre um ciclo fora de worker vivo.
         const emProcessamento = aberto.status === "processando" &&
           Date.parse(String(aberto.atualizado_em ?? 0)) >= Date.now() - 15 * 60_000;
+        const anterior = Date.parse(String(aberto.data_atualizacao_fonte ?? ""));
+        const recebida = Date.parse(String(it.data_atualizacao_fonte ?? ""));
+        const novaVersao = recebida > anterior && !emProcessamento;
+        const manterCabecalho = emProcessamento ||
+          (Number.isFinite(anterior) && (!Number.isFinite(recebida) || recebida < anterior));
         // 'ausente' (sem cabeçalho) não troca o motivo de linha que já tem cabeçalho
         const motivo = it.motivo === "ausente" && aberto.plano != null ? aberto.motivo : it.motivo;
-        Object.assign(aberto, { ...it, motivo, plano: it.plano ?? aberto.plano });
-        if (!emProcessamento) Object.assign(aberto, { status: "pendente", tentativas: 0, erro: null });
-        aberto.atualizado_em = new Date().toISOString();
+        Object.assign(aberto, {
+          motivo,
+          chain_id: it.chain_id,
+          classes: [...new Set([...(aberto.classes as string[] ?? []), ...(it.classes as string[] ?? ["7830"])])].sort(),
+          plano: manterCabecalho ? aberto.plano : it.plano ?? aberto.plano,
+          data_atualizacao_fonte: emProcessamento || !Number.isFinite(recebida) || recebida < anterior
+            ? aberto.data_atualizacao_fonte
+            : it.data_atualizacao_fonte,
+        });
+        if (novaVersao) {
+          Object.assign(aberto, { status: "pendente", tentativas: 0, erro: null, atualizado_em: new Date().toISOString() });
+        }
       } else {
         fila.push({ id: ++seq, status: "pendente", tentativas: 0, atualizado_em: new Date().toISOString(), ...it });
       }
@@ -97,14 +113,24 @@ function banco(): FakePostgrest {
     const agora = Date.now();
     const fila = d.rows("pca_plano_fila")
       .filter((f) => args.p_ano == null || f.ano === args.p_ano)
+      .filter((f) => Number(f.tentativas) < Number(args.p_max_tentativas ?? 5))
+      .filter((f) => f.disponivel_em == null || Date.parse(String(f.disponivel_em)) <= agora)
       .filter((f) =>
         f.status === "pendente" ||
         (f.status === "erro" && Number(f.tentativas) < 5 &&
-          Date.parse(String(f.atualizado_em ?? 0)) < agora - 10 * 60_000)
+          Date.parse(String(f.atualizado_em ?? 0)) < agora - 10 * 60_000) ||
+        (f.status === "processando" && Date.parse(String(f.atualizado_em ?? 0)) < agora - 15 * 60_000)
       )
       .sort((a, b) => Number(a.id) - Number(b.id))
       .slice(0, Number(args.p_limite));
-    for (const f of fila) Object.assign(f, { status: "processando", atualizado_em: new Date().toISOString() });
+    for (const f of fila) {
+      Object.assign(f, {
+        tentativas: Number(f.tentativas) + (f.status === "processando" ? 1 : 0),
+        status: "processando",
+        disponivel_em: null,
+        atualizado_em: new Date().toISOString(),
+      });
+    }
     return fila.map((f) => ({ ...f }));
   };
   // private.pca_marcar_descoberta / pca_zerar_ausencia: um contador por escopo em descoberta_ausente (jsonb).
@@ -895,6 +921,135 @@ Deno.test("carga: BudgetExhaustedError com o orçamento no fim é pausa (devolve
     BudgetExhaustedError,
   );
   assertEquals(db.rows("pca_plano_fila").map((f) => `${f.status}|${f.tentativas}`), ["pendente|0", "pendente|0"]);
+  const [adiado, devolvido] = db.rows("pca_plano_fila");
+  const espera = Date.parse(String(adiado.disponivel_em)) - Date.now();
+  assert(espera > 19 * 60_000 && espera <= 20 * 60_000);
+  assertEquals(devolvido.disponivel_em, null);
+  const seguintes = await db.rpc("pca_fila_reservar", { p_limite: 5, p_max_tentativas: 5, p_ano: ANO });
+  assertEquals((seguintes.data as Row[]).map((f) => f.sequencial), [2]);
+});
+
+Deno.test("fila: redescoberta preserva erro, recuo e esgotamento; versão maior reabre sem apagar adiamento", async () => {
+  const db = banco();
+  enfileirarPlano(db, ID, 4, { data_atualizacao_fonte: "2026-09-21T11:31:57Z" });
+  const linha = db.rows("pca_plano_fila")[0];
+  const atualizado = new Date(Date.now() - 60_000).toISOString();
+  const adiado = new Date(Date.now() + 20 * 60_000).toISOString();
+  Object.assign(linha, { status: "erro", tentativas: 5, erro: "falha real", atualizado_em: atualizado, disponivel_em: adiado });
+  for (const data of ["2026-09-21T11:31:57Z", null, "2026-09-20T00:00:00Z"]) {
+    enfileirarPlano(db, ID, 4, { data_atualizacao_fonte: data });
+    assertEquals([linha.status, linha.tentativas, linha.erro, linha.atualizado_em, linha.disponivel_em],
+      ["erro", 5, "falha real", atualizado, adiado]);
+    assertEquals(linha.data_atualizacao_fonte, "2026-09-21T11:31:57Z");
+  }
+  assertEquals(await situacaoFila(db as never, ANO), { abertos: 0, esgotados: 1 });
+  enfileirarPlano(db, ID, 4, { data_atualizacao_fonte: "2026-09-22T00:00:00Z" });
+  assertEquals([linha.status, linha.tentativas, linha.erro, linha.disponivel_em], ["pendente", 0, null, adiado]);
+  assertEquals(await situacaoFila(db as never, ANO), { abertos: 1, esgotados: 0 });
+});
+
+Deno.test("fila: reserva e saúde respeitam cinco tentativas também em pendentes", async () => {
+  const db = banco();
+  for (const n of [4, 5, 6]) enfileirarPlano(db, `${CNPJ}-0-00000${n}/2026`, n);
+  db.rows("pca_plano_fila").forEach((f) => f.tentativas = f.sequencial);
+  assertEquals(await situacaoFila(db as never, ANO), { abertos: 1, esgotados: 2 });
+  const { data } = await db.rpc("pca_fila_reservar", { p_limite: 5, p_max_tentativas: 5, p_ano: ANO });
+  assertEquals((data as Row[]).map((f) => f.sequencial), [4]);
+});
+
+Deno.test("fila: data antes desconhecida não reinicia tentativas; versão maior reabre abandono", () => {
+  const db = banco();
+  enfileirarPlano(db);
+  const linha = db.rows("pca_plano_fila")[0];
+  Object.assign(linha, { status: "erro", tentativas: 5, erro: "sem data" });
+  enfileirarPlano(db, ID, 4, { data_atualizacao_fonte: "2026-09-21T00:00:00Z" });
+  assertEquals([linha.status, linha.tentativas, linha.erro], ["erro", 5, "sem data"]);
+  Object.assign(linha, { status: "processando", atualizado_em: new Date(Date.now() - 16 * 60_000).toISOString() });
+  enfileirarPlano(db, ID, 4, { data_atualizacao_fonte: "2026-09-22T00:00:00Z" });
+  assertEquals([linha.status, linha.tentativas, linha.erro], ["pendente", 0, null]);
+});
+
+Deno.test("fila: redescoberta não renova recuo nem abandono e reserva limpa adiamento vencido", async () => {
+  const db = banco();
+  enfileirarPlano(db);
+  const linha = db.rows("pca_plano_fila")[0];
+  const agora = Date.now();
+  Object.assign(linha, { status: "erro", tentativas: 4, erro: "falha", atualizado_em: new Date(agora - 60_000).toISOString() });
+  enfileirarPlano(db);
+  assertEquals((await db.rpc("pca_fila_reservar", { p_limite: 1, p_ano: ANO })).data, []);
+  linha.atualizado_em = new Date(agora - 11 * 60_000).toISOString();
+  linha.disponivel_em = new Date(agora - 1).toISOString();
+  enfileirarPlano(db);
+  const { data } = await db.rpc("pca_fila_reservar", { p_limite: 1, p_ano: ANO });
+  assertEquals((data as Row[]).map((f) => [f.status, f.tentativas, f.disponivel_em]), [["processando", 4, null]]);
+  linha.atualizado_em = new Date(agora - 16 * 60_000).toISOString();
+  enfileirarPlano(db);
+  const retomada = await db.rpc("pca_fila_reservar", { p_limite: 1, p_ano: ANO });
+  assertEquals((retomada.data as Row[]).map((f) => f.tentativas), [5]);
+});
+
+Deno.test("fila: versão nova não troca cabeçalho nem relógio de worker vivo", () => {
+  const db = banco();
+  enfileirarPlano(db, ID, 4, { data_atualizacao_fonte: "2026-09-21T11:31:57Z" });
+  const linha = db.rows("pca_plano_fila")[0];
+  Object.assign(linha, { status: "processando", tentativas: 4 });
+  const antes = structuredClone(linha);
+  enfileirarPlano(db, ID, 4, { data_atualizacao_fonte: "2026-09-22T00:00:00Z", plano: { novo: true } });
+  for (const campo of ["status", "tentativas", "atualizado_em", "plano", "data_atualizacao_fonte"]) {
+    assertEquals(linha[campo], antes[campo]);
+  }
+});
+
+Deno.test("carga: rate limit adia só o interrompido por 30 minutos e preserva tentativas", async () => {
+  const db = banco();
+  enfileirarPlano(db, `${CNPJ}-0-000001/2026`, 1);
+  enfileirarPlano(db, `${CNPJ}-0-000002/2026`, 2);
+  db.rows("pca_plano_fila")[0].tentativas = 4;
+  const pausa = new RateLimitPauseError("pncp.gov.br", 120_000);
+  const erro = await assertRejects(() => processarFila(db as never, integracaoQueLanca({}, 1, () => pausa), {
+    ano: ANO, limite: 5, prazoEsgotado: nunca, runId: RUN,
+  }), RateLimitPauseError);
+  assert(erro === pausa);
+  const [adiado, devolvido] = db.rows("pca_plano_fila");
+  assertEquals([adiado.status, adiado.tentativas, devolvido.status, devolvido.disponivel_em], ["pendente", 4, "pendente", null]);
+  const espera = Date.parse(String(adiado.disponivel_em)) - Date.now();
+  assert(espera > 29 * 60_000 && espera <= 30 * 60_000);
+});
+
+Deno.test("carga: falha no adiamento libera os demais e preserva a pausa original", async () => {
+  const db = banco();
+  enfileirarPlano(db, `${CNPJ}-0-000001/2026`, 1);
+  enfileirarPlano(db, `${CNPJ}-0-000002/2026`, 2);
+  db.falhaLinha = (t, row) => t === "pca_plano_fila" && row.disponivel_em != null;
+  const pausa = new BudgetExhaustedError();
+  const erro = await assertRejects(() => processarFila(db as never, integracaoQueLanca({}, 1, () => pausa), {
+    ano: ANO, limite: 5, prazoEsgotado: nunca, runId: RUN, http: { budget: createRequestBudget(5_000) },
+  }), BudgetExhaustedError);
+  assert(erro === pausa);
+  assertEquals(db.rows("pca_plano_fila").map((f) => [f.status, f.tentativas]), [["processando", 0], ["pendente", 0]]);
+  assertEquals(db.porOperacao["pca_plano_fila.update"], 2);
+});
+
+Deno.test("carga: adiamento sem linha afetada não registra sucesso e libera o restante", async () => {
+  const db = banco();
+  enfileirarPlano(db, `${CNPJ}-0-000001/2026`, 1);
+  enfileirarPlano(db, `${CNPJ}-0-000002/2026`, 2);
+  const logs: string[] = [];
+  const warn = console.warn;
+  console.warn = (v: unknown) => logs.push(String(v));
+  try {
+    const integ = integracaoQueLanca({}, 1, () => {
+      db.rows("pca_plano_fila")[0].status = "feito";
+      return new BudgetExhaustedError();
+    });
+    await assertRejects(() => processarFila(db as never, integ, {
+      ano: ANO, limite: 5, prazoEsgotado: nunca, runId: RUN, http: { budget: createRequestBudget(5_000) },
+    }), BudgetExhaustedError);
+    assertEquals(db.rows("pca_plano_fila").map((f) => f.status), ["feito", "pendente"]);
+    assertEquals(logs.map((v) => JSON.parse(v).evento), ["pca_fila_adiamento_falhou"]);
+  } finally {
+    console.warn = warn;
+  }
 });
 
 Deno.test("carga: erro na gravação com o reset do cabeçalho falhando conta o erro uma vez", async () => {

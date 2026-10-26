@@ -3,7 +3,7 @@
 --   ACL  private.pca_plano_fila ou as funções ficarem acessíveis a anon/authenticated, RLS desligada, ou service_role
 --        sem acesso;
 --   ENF  reenfileirar o mesmo plano duplicar a linha aberta, uma linha 'processando' recente voltar para 'pendente',
---        uma linha em erro ou 'processando' abandonada (>= 15 min) reenfileirada não recomeçar as tentativas, ou o
+--        redescoberta sem versão nova apagar erro/tentativas de linha em erro ou abandonada, ou o
 --        motivo 'ausente' trocar o motivo de linha aberta com cabeçalho;
 --   RES  pca_fila_reservar devolver mais que o limite, pegar plano 'feito', erro com tentativas esgotadas ou erro
 --        de menos de 10 minutos (recuo entre tentativas); ou se processando abandonado não contar tentativa;
@@ -129,23 +129,23 @@ begin
   if (select status from private.pca_plano_fila where id = v_id_proc) <> 'processando' then
     v_falhas := v_falhas || 'reenfileirar tirou o plano de processando'::text;
   end if;
-  -- linha em erro com tentativas esgotadas que recebe trabalho novo recomeça (status, tentativas e erro)
+  -- Redescoberta sem prova de versão nova preserva estado de erro e limite de tentativas.
   update private.pca_plano_fila set erro = 'falha antiga' where id_pca_pncp = 'CHK-FILA-ESGOTADO';
   perform private.pca_fila_enfileirar(jsonb_build_array(
     jsonb_build_object('id_pca_pncp', 'CHK-FILA-ESGOTADO', 'orgao_cnpj', '99000001000101', 'ano', 2099, 'sequencial', 4,
                        'motivo', 'alterado')));
   if (select status || '|' || tentativas || '|' || coalesce(erro, '-') from private.pca_plano_fila
-       where id_pca_pncp = 'CHK-FILA-ESGOTADO') <> 'pendente|0|-' then
-    v_falhas := v_falhas || 'reenfileirar linha em erro não zerou tentativas e erro'::text;
+       where id_pca_pncp = 'CHK-FILA-ESGOTADO') <> 'erro|5|falha antiga' then
+    v_falhas := v_falhas || 'redescoberta apagou erro ou tentativas esgotadas'::text;
   end if;
-  -- processando abandonado com tentativas esgotadas (a reserva não pega mais) que recebe trabalho novo recomeça
+  -- Abandono esgotado também não é reaberto apenas por redescoberta.
   update private.pca_plano_fila set erro = 'worker morreu' where id_pca_pncp = 'CHK-FILA-ABANDONADO-ESGOTADO';
   perform private.pca_fila_enfileirar(jsonb_build_array(
     jsonb_build_object('id_pca_pncp', 'CHK-FILA-ABANDONADO-ESGOTADO', 'orgao_cnpj', '99000001000101', 'ano', 2099,
                        'sequencial', 7, 'motivo', 'alterado')));
   if (select status || '|' || tentativas || '|' || coalesce(erro, '-') from private.pca_plano_fila
-       where id_pca_pncp = 'CHK-FILA-ABANDONADO-ESGOTADO') <> 'pendente|0|-' then
-    v_falhas := v_falhas || 'reenfileirar processando abandonado com tentativas esgotadas não voltou a pendente|0'::text;
+       where id_pca_pncp = 'CHK-FILA-ABANDONADO-ESGOTADO') <> 'processando|5|worker morreu' then
+    v_falhas := v_falhas || 'redescoberta reabriu abandono esgotado'::text;
   end if;
   -- motivo 'ausente' (sem cabeçalho) não troca o motivo de linha aberta com cabeçalho; sem cabeçalho, troca
   perform private.pca_fila_enfileirar(jsonb_build_array(

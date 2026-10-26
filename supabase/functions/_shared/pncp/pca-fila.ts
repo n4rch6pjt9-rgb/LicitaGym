@@ -563,6 +563,22 @@ async function devolverReservados(client: SupabaseClient, linhas: Row[]) {
   }
 }
 
+/** Adia apenas o plano interrompido; os demais reservados voltam à fila normalmente. */
+async function adiarPlanoAposPausa(client: SupabaseClient, linha: Row, erro: unknown) {
+  const minutos = erro instanceof RateLimitPauseError ? 30 : 20;
+  const disponivelEm = new Date(Date.now() + minutos * 60_000).toISOString();
+  const { error } = await client.schema("private").from("pca_plano_fila")
+    .update({ status: "pendente", disponivel_em: disponivelEm, atualizado_em: new Date().toISOString() })
+    .eq("id", linha.id).eq("status", "processando");
+  if (error) throw error;
+  console.warn(JSON.stringify({
+    evento: "pca_fila_pausa",
+    id_pca_pncp: String(linha.id_pca_pncp),
+    tipo: erro instanceof RateLimitPauseError ? "rate_limit" : "budget",
+    disponivel_em: disponivelEm,
+  }));
+}
+
 /**
  * Fase B: processa planos da fila do ano até `limite` ou até o prazo. Um plano por vez: 1 requisição de itens (mais
  * páginas só acima de 2.000 itens) e 1 de quantidade. Plano com erro não inativa nada.
@@ -678,7 +694,8 @@ export async function processarFila(
       } catch (error) {
         if (ePausaDaCarga(error, opts.http?.budget)) {
           // pausa de cota ou fim do orçamento: não é falha do plano; volta para a fila sem gastar tentativa
-          await devolverReservados(client, reservados.slice(i));
+          await adiarPlanoAposPausa(client, linha, error);
+          await devolverReservados(client, reservados.slice(i + 1));
           throw error;
         }
         // Timeout repetido com orçamento sobrando cai aqui: falha do plano (soma tentativa), segue para o próximo.

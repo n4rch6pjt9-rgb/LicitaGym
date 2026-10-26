@@ -20,22 +20,34 @@ ROTULO="alerta-operacional"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 CRIT="$TMP/criticos.tsv"; : > "$CRIT"          # verificacao<TAB>mensagem
 TAB="$TMP/tabela.md"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 if [ -n "${SAUDE_JSON:-}" ]; then
   cp "$SAUDE_JSON" "$TMP/saude.json"; HTTP_SAUDE=200; HTTP_READY="${HTTP_READY:-200}"; HTTP_DASH="${HTTP_DASH:-200}"
 else
   : "${SAUDE_TOKEN:?SAUDE_TOKEN (SYNC_CRON_SECRET) não configurado}"
   : "${SAUDE_APIKEY:?SAUDE_APIKEY (chave publishable, header apikey) não configurada}"
-  HTTP_SAUDE=$(curl -s -m 60 -o "$TMP/saude.json" -w '%{http_code}' -X POST "$FN/api-saude" \
-    -H "apikey: ${SAUDE_APIKEY}" -H "Authorization: Bearer ${SAUDE_TOKEN}" -H 'Content-Type: application/json' -d '{"action":"resumo"}' || echo 000)
-  HTTP_READY=$(curl -s -m 30 -o /dev/null -w '%{http_code}' \
-    -H "apikey: ${SAUDE_APIKEY}" "$FN/api-dashboard-oportunidades?action=readiness" || echo 000)
-  HTTP_DASH=$(curl -s -m 30 -o /dev/null -w '%{http_code}' "$DASH/" || echo 000)
+  if ! HTTP_SAUDE=$(curl -s -m 60 -o "$TMP/saude.json" -w '%{http_code}' -X POST "$FN/api-saude" \
+    -H "apikey: ${SAUDE_APIKEY}" -H "Authorization: Bearer ${SAUDE_TOKEN}" -H 'Content-Type: application/json' -d '{"action":"resumo"}'); then HTTP_SAUDE=000; fi
+  if ! HTTP_READY=$(curl -s -m 30 -o /dev/null -w '%{http_code}' \
+    -H "apikey: ${SAUDE_APIKEY}" "$FN/api-dashboard-oportunidades?action=readiness"); then HTTP_READY=000; fi
+  if ! HTTP_DASH=$(curl -s -m 30 -o /dev/null -w '%{http_code}' "$DASH/"); then HTTP_DASH=000; fi
 fi
 
 [ "$HTTP_SAUDE" = 200 ] || printf 'api_saude_http\tapi-saude respondeu HTTP %s\n' "$HTTP_SAUDE" >> "$CRIT"
 [ "$HTTP_READY" = 200 ] || printf 'readiness_api\tapi-dashboard-oportunidades readiness respondeu HTTP %s\n' "$HTTP_READY" >> "$CRIT"
 [ "$HTTP_DASH" = 200 ] || printf 'dashboard_http\tDashboard respondeu HTTP %s\n' "$HTTP_DASH" >> "$CRIT"
+
+if [ "$HTTP_SAUDE" = 200 ]; then
+  if "${PYTHON_BIN:-python3}" "$SCRIPT_DIR/saude_validar.py" "$TMP/saude.json" \
+    --max-minutos "${SAUDE_MAX_IDADE_MINUTOS:-90}" \
+    --esperadas "${SAUDE_VERIFICACOES_ESPERADAS:-}" > "$TMP/validado.json"; then
+    cp "$TMP/validado.json" "$TMP/saude.json"
+  else
+    printf 'api_saude_contrato\tResumo inválido, incompleto ou desatualizado; recuperação não confirmada.\n' >> "$CRIT"
+    HTTP_SAUDE=invalid
+  fi
+fi
 
 {
   echo "| Verificação | Status | Mensagem |"; echo "|---|---|---|"
@@ -55,10 +67,12 @@ echo "críticos: ${FP:-nenhum}"
 gh_() { if [ "${DRY_RUN:-}" = 1 ]; then echo "DRY_RUN gh $*"; else gh "$@"; fi; }
 ABERTA=""
 if [ "${DRY_RUN:-}" != 1 ]; then
-  ABERTA=$(gh issue list --label "$ROTULO" --state open --json number,body -q '.[0] | select(.) | "\(.number)\t\(.body)"' | head -c 100000 || true)
+  # Falha ao consultar incidentes não equivale a "nenhum incidente aberto".
+  ABERTA=$(gh issue list --label "$ROTULO" --state open --json number,body -q '.[0] | select(.) | "\(.number)\t\(.body)"')
 else
   ABERTA="${DRY_ISSUE:-}"
 fi
+
 NUM="$(cut -f1 <<<"$ABERTA" | head -1)"
 FP_ANTIGO="$(grep -o 'fp:[^ ]*' <<<"$ABERTA" | head -1 | cut -d: -f2 || true)"
 
@@ -81,3 +95,6 @@ if [ -n "$FP" ]; then
 elif [ -n "$NUM" ]; then
   gh_ issue close "$NUM" --comment "Normalizado em $(date -u +'%Y-%m-%d %H:%M UTC'): nenhuma verificação crítica."
 fi
+
+# Alerta entregue não equivale a sistema saudável.
+[ -z "$FP" ] || exit 1

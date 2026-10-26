@@ -511,3 +511,28 @@ Deno.test("api-agentes (0032 CA-4): edital com potência só de pico em perfil p
     true,
   );
 });
+
+Deno.test("api-agentes: alteração do texto jurídico refaz só o jurídico e devolve o texto atualizado", async () => {
+  const { repo, dossie } = ambiente();
+  const c = ctx(repo);
+  const primeira = await chamar(c, { action: "analise_executar", licitacao_id: 101, proposta: P });
+  dossie.dispositivos.find((d) => d.artigo === 164)!.texto = "Texto oficial atualizado para regressão";
+  const segunda = await chamar(c, { action: "analise_executar", licitacao_id: 101, proposta: P });
+  assertEquals(primeira.status, 200);
+  assertEquals(segunda.status, 200);
+  assertEquals(segunda.json.execucoes[0].id, primeira.json.execucoes[0].id);
+  assertEquals(segunda.json.execucoes[1].id, primeira.json.execucoes[1].id);
+  assertEquals(segunda.json.execucoes[2].id === primeira.json.execucoes[2].id, false);
+  assertEquals(segunda.json.execucoes[2].achados.some((a: Achado) => a.detalhe.includes("Texto oficial atualizado para regressão")), true);
+});
+
+Deno.test("contextos: norma jurídica altera o hash jurídico; mesma entrada permanece estável", async () => {
+  const { dossie } = ambiente();
+  const antes = await contextos(dossie, P);
+  assertEquals((await contextos(dossie, P)).juridico, antes.juridico);
+  dossie.dispositivos[0].norma = "NORMA_DE_TESTE";
+  const depois = await contextos(dossie, P);
+  assertEquals(depois.juridico === antes.juridico, false);
+  assertEquals(depois.edital, antes.edital);
+  assertEquals(depois.preco, antes.preco);
+});

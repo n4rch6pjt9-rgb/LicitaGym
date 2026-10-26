@@ -36,7 +36,14 @@ Deno.test("api-saude: status geral é o pior; status desconhecido conta como ate
   assertEquals(body.contagem, { ok: 1, atencao: 1, critico: 1 });
   assertEquals(body.gerado_em, "2026-10-01T06:00:00.000Z");
   assertEquals(consolidar([v("a", "ok"), v("b", "estranho")]).status_geral, "atencao");
-  assertEquals(consolidar([]).status_geral, "ok");
+  assertEquals(consolidar([]).status_geral, "atencao");
+  assertEquals(consolidar([v("a", "constructor")]).status_geral, "atencao");
+});
+
+Deno.test("api-saude: ausência de verificações não retorna sucesso", async () => {
+  const r = await handleRequest(post(), ctx({ getResumo: () => Promise.resolve([]) }));
+  assertEquals(r.status, 500);
+  assertEquals(await r.json(), { error: "Falha ao calcular a saúde operacional." });
 });
 
 Deno.test("api-saude: método, corpo e ação inválidos; falha do banco vira 500 sem detalhe interno", async () => {

@@ -93,8 +93,15 @@ export async function contextos(d: Dossie, proposta: PropostaItem[] | null): Pro
     agente: "juridico",
     regra: REGRA_VERSAO,
     edital,
+ feat/spec-0039-recomendacao-e-concorrencia
     preco: precoHash,
     dispositivos: d.dispositivos.map((dispositivo) => [dispositivo.artigo, dispositivo.conferido_oficial]),
+
+    preco: await hashContexto(precoEntrada),
+    dispositivos: d.dispositivos.map((dispositivo) => [
+      dispositivo.norma, dispositivo.artigo, dispositivo.texto, dispositivo.conferido_oficial,
+    ]),
+ main
   });
   const concorrencia = await hashContexto({
     agente: "concorrencia",

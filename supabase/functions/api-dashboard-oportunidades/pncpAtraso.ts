@@ -170,7 +170,7 @@ export async function sincronizarPortalOficialEAtraso(
   const hostFinal = portalInfo.host ?? (urlFinal ? new URL(urlFinal).hostname.toLowerCase() : null);
 
   // 2. Consulta em paralelo mensagens da disputa e snapshot do portal oficial no banco
-  let mensagensPortal: MensagemDisputaDB[] = [];
+  const mensagensPortal: MensagemDisputaDB[] = [];
   let consultadoEm: string | null = portalSecao?.consultado_em ?? null;
   let situacaoPortal: string | null = portalSecao?.situacao ?? null;
 

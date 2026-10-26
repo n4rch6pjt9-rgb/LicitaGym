@@ -83,13 +83,29 @@ Deno.test("portal oficial: link de origem fora da allowlist identifica o portal 
   const p = resolverPortalOficial({
     ...ERP,
     link_sistema_origem:
+      "https://portal-estranho.com.br/Process/ProcessView?param1=abc",
+    usuario_nome: "Portal Estranho ERP",
+  });
+  assertEquals([p.nome, p.url, p.host, p.metodo], [
+    "portal-estranho.com.br",
+    null,
+    null,
+    "link_origem",
+  ]);
+  assertEquals(p.sistema_pncp, "Portal Estranho ERP");
+});
+
+Deno.test("portal oficial: link de origem BLL Compras e regionais na allowlist gera link clicável", () => {
+  const p = resolverPortalOficial({
+    ...ERP,
+    link_sistema_origem:
       "https://bllcompras.com/Process/ProcessView?param1=abc",
     usuario_nome: "BLL Compras",
   });
   assertEquals([p.nome, p.url, p.host, p.metodo], [
     "bllcompras.com",
-    null,
-    null,
+    "https://bllcompras.com/Process/ProcessView?param1=abc",
+    "bllcompras.com",
     "link_origem",
   ]);
   assertEquals(p.sistema_pncp, "BLL Compras");

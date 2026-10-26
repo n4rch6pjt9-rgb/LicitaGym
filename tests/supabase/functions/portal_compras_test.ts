@@ -32,7 +32,7 @@ Deno.test("parsePortalProcessoUrl rejeita API, http, outro caminho e outros port
   assertEquals(parsePortalProcessoUrl("http://www.portaldecompraspublicas.com.br/processos/MG/orgao/PE-1-1"), null);
   assertEquals(parsePortalProcessoUrl("https://www.portaldecompraspublicas.com.br/"), null);
   assertEquals(parsePortalProcessoUrl("https://bllcompras.com/Process/ProcessView?param1=abc"), null);
-  assertEquals(buildOrigemUrl("https://bllcompras.com/Process/ProcessView?param1=abc"), null);
+  assertEquals(buildOrigemUrl("https://bllcompras.com/Process/ProcessView?param1=abc")?.host, "bllcompras.com");
   assertEquals(buildOrigemUrl("https://bnccompras.com/Process/ProcessView?param1=abc"), null);
   assertEquals(buildOrigemUrl("https://licitanet.com.br/sessao/179812"), null);
 });

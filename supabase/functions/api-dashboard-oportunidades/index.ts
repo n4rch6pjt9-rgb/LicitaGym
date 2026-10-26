@@ -11,7 +11,7 @@ export const corsHeaders = {
 import type { ActionParams, GetActionParams, LicitacaoFiltros, ListActionParams, SortField } from "./types.ts";
 import { parseActionFromBody, parseActionFromUrl } from "./validation.ts";
 import { applyLicitacaoFilters, applyOportunidadesScope, calculateRange } from "./query.ts";
-import { buildEditalUrl, buildPortalUrl } from "../_shared/edital-url.ts";
+import { buildEditalUrl, buildPortalUrl, ehFonteSistemaS } from "../_shared/edital-url.ts";
 import { handleAcompanhamento } from "./acompanhamento.ts";
 import { anexarAlertaPortal, type TenantDoUsuario } from "./portal.ts";
 import { ErroTenantAcesso, lerTenantDoUsuario } from "../_shared/tenant.ts";
@@ -604,6 +604,10 @@ export function ehStatementTimeout(err: unknown): boolean {
 }
 
 export function temRecorteCatmat(f: LicitacaoFiltros): boolean {
+  // O Sistema S adota regulamento próprio (RCA) e NÃO acompanha CATMAT federal.
+  if (ehFonteSistemaS(f.fonte)) {
+    return false;
+  }
   return !!(f.catmat_grupo || f.catmat_classe || f.catmat_pdm || f.catmat_item || f.catalogo === true);
 }
 

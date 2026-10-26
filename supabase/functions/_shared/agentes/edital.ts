@@ -2,6 +2,7 @@ import { normalizarComMapa } from "./achados.ts";
 import { itemNaPosicao, trechoLimpo } from "./citacao.ts";
 import type { PortalOficial } from "../portal-oficial.ts";
 import { REGRA_VERSAO, type Achado, type Fonte, type ResultadoAgente, type Severidade } from "./tipos.ts";
+import { detectarDivergencias } from "./divergencias.ts";
 
 export interface ChunkEdital {
   id: number;
@@ -406,7 +407,7 @@ export function agenteEdital(entrada: {
   licitacao_id?: number;
   portal_oficial?: PortalOficial | null;
 }): ResultadoAgente {
-  const achados = entrada.chunks.length === 0 ? [] : [...detectarExigencias(entrada.chunks), ...detectarPotencia(entrada.chunks)];
+  const achados = entrada.chunks.length === 0 ? [] : [...detectarExigencias(entrada.chunks), ...detectarPotencia(entrada.chunks), ...detectarDivergencias(entrada.chunks)];
   if (entrada.portal_oficial && entrada.licitacao_id !== undefined) {
     achados.push(achadoPortalOficial(entrada.licitacao_id, entrada.portal_oficial));
   }

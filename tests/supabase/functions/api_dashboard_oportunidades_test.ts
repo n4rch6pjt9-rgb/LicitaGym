@@ -1446,6 +1446,18 @@ Deno.test("list sem recorte CATMAT (ou catalogo=false) não chama a RPC nem anex
   }
 });
 
+Deno.test("list com fonte Sistema S ignora recorte CATMAT pois Sistema S não acompanha CATMAT", async () => {
+  for (const fonte of ["sestsenat", "sistema_s", "fiesc"]) {
+    const mockClient = createRecordingMockClient({ listResult: { data: [{ id: 10, fonte }], count: 1, error: null } });
+    const req = new Request(`http://localhost/api-dashboard-oportunidades?action=list&fonte=${fonte}&catalogo=true`, { method: "GET" });
+    // deno-lint-ignore no-explicit-any
+    const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
+    assertEquals(res.status, 200);
+    // Não pode ter chamado a RPC de CATMAT
+    assertEquals(mockClient.calls.some((c) => c.method === "rpc"), false, fonte);
+  }
+});
+
 Deno.test("list com recorte CATMAT e página além do fim: a contagem também filtra pelos ids", async () => {
   const mockClient = createRecordingMockClient({
     rpcResult: { data: [{ licitacao_id: 5, codigo_pdm: 7115, codigo_item: null, motivo: "texto_item" }], error: null },

@@ -69,11 +69,23 @@ export const PARADIGMA_SAAS_TENANTS: Readonly<Record<string, Readonly<Record<str
   "egov-br.paradigmabs.com.br": { sescdn: "sescdn" },
 };
 
+/**
+ * Portais de compras públicas homologados (BLL, Licitar Digital, BNC).
+ * Hosts aceitos quando informados em link_sistema_origem com protocolo https.
+ */
+export const PORTAIS_COMPRAS_REGIONAL_HOSTS = [
+  "bllcompras.com",
+  "bll.org.br",
+  "licitardigital.com.br",
+  "bnc.org.br",
+] as const;
+
 export const ALLOWED_ORIGEM_HOSTS = new Set([
   ...ALLOWED_STATIC_HOSTS,
   "gov.br",
   ...PARADIGMA_HOSTS,
   ...Object.keys(PARADIGMA_SAAS_TENANTS),
+  ...PORTAIS_COMPRAS_REGIONAL_HOSTS,
 ]);
 
 /**
@@ -97,6 +109,33 @@ export const PARADIGMA_MURAL: Readonly<Record<string, string>> = {
   // sescrj fora: em 11/10/2026 /SESCRJ/portal/Mural.aspx redireciona para Default.aspx (sem mural nesse caminho)
   sescba: "https://egov.paradigmabs.com.br/sescba/portal/Mural.aspx",
 };
+
+/** Slugs de fontes do Sistema S (Paradigma e compras próprias do Sistema S). */
+export const FONTES_SISTEMA_S = new Set([
+  "sestsenat",
+  "sest_senat",
+  "fiesc",
+  "firjan",
+  "fiergs",
+  "findes",
+  "fieb",
+  "fiems",
+  "fiemt",
+  "sfiec",
+  "fiemg",
+  "sescsp",
+  "sesc_senac_rs",
+  "sescdn",
+  "sescrj",
+  "sescba",
+]);
+
+/** Verifica se um slug de fonte pertence ao ecossistema do Sistema S. */
+export function ehFonteSistemaS(fonte?: string | null): boolean {
+  if (!fonte) return false;
+  const f = fonte.toLowerCase().trim();
+  return f === "sistema_s" || FONTES_SISTEMA_S.has(f);
+}
 
 /** Domínio dos hosts SaaS compartilhados do Paradigma. */
 const PARADIGMA_SAAS_DOMINIO = "paradigmabs.com.br";

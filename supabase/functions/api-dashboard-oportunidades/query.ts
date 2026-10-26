@@ -1,5 +1,6 @@
 import type { LicitacaoFiltros } from "./types.ts";
 import { getNextDayIso, isDateOnly } from "./validation.ts";
+import { FONTES_SISTEMA_S } from "../_shared/edital-url.ts";
 
 // Mesma regra para toda busca livre das Edge Functions (api-agentes também usa).
 export { sanitizeSearchTerm } from "../_shared/busca.ts";
@@ -81,7 +82,12 @@ export function applyLicitacaoFilters<T extends FilterableQuery>(
   }
 
   if (filtros.fonte) {
-    query.eq("fonte", filtros.fonte);
+    // Agrupador 'sistema_s': consulta simultaneamente todas as entidades cadastradas do Sistema S
+    if (filtros.fonte.toLowerCase() === "sistema_s") {
+      query.in("fonte", Array.from(FONTES_SISTEMA_S));
+    } else {
+      query.eq("fonte", filtros.fonte);
+    }
   }
 
   // Objeto canônico (objeto_categorias) e selo de registro de preço

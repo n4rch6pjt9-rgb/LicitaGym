@@ -93,7 +93,9 @@ export async function contextos(d: Dossie, proposta: PropostaItem[] | null): Pro
     regra: REGRA_VERSAO,
     edital,
     preco: await hashContexto(precoEntrada),
-    dispositivos: d.dispositivos.map((dispositivo) => [dispositivo.artigo, dispositivo.conferido_oficial]),
+    dispositivos: d.dispositivos.map((dispositivo) => [
+      dispositivo.norma, dispositivo.artigo, dispositivo.texto, dispositivo.conferido_oficial,
+    ]),
   });
   return { edital, preco, juridico };
 }

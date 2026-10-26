@@ -31,7 +31,7 @@ Deno.test("jurídico: liga sinal ao artigo, marca não conferido e ausente", () 
   });
   assertEquals(a.fontes, [
     { tipo: "dispositivo", norma: "LEI_14133_2021", artigo: 59, conferido_oficial: false },
-    { tipo: "calculo", regra: "mapa_sinal_dispositivo", versao: "2026-10-21.1" },
+    { tipo: "calculo", regra: "mapa_sinal_dispositivo", versao: "2026-10-26.2" },
   ]);
   assertEquals(validarAchado(a), null);
 });
@@ -63,7 +63,7 @@ Deno.test("jurídico (spec 0035, R-19): copia o trecho do edital do sinal, com p
   assertEquals(r.achados[0].fontes, [
     { tipo: "dispositivo", norma: "LEI_14133_2021", artigo: 63, conferido_oficial: true },
     trecho,
-    { tipo: "calculo", regra: "mapa_sinal_dispositivo", versao: "2026-10-21.1" },
+    { tipo: "calculo", regra: "mapa_sinal_dispositivo", versao: "2026-10-26.2" },
   ]);
   assertEquals(validarAchado(r.achados[0]), null);
 });

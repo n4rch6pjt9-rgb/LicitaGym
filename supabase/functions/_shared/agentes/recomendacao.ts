@@ -56,7 +56,7 @@ export async function recomendarV4(
 
   const scoreFinal = Math.round(
     ((scoreAderencia.score_total +
-      scoreRisco.score_total +
+      (1 - scoreRisco.score_total) +
       scoreViabilidade.score_total +
       scoreConcorrencia.score_total) / 4) * 1000,
   ) / 1000;

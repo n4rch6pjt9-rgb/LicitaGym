@@ -163,6 +163,7 @@ Deno.test("recomendarV4: persiste decisão em recomendacao_decisoes e aplica thr
   assertEquals(recomendacao.regra_versao, REGRA_VERSAO_RECOMENDACAO);
   assertEquals(inseridos.length, 1);
   assertEquals(inseridos[0].decisao, "disputar");
+  assertEquals(inseridos[0].score_final, 0.908);
   assertEquals(JSON.stringify(recomendacao).includes("987654"), false);
 });
 
@@ -223,7 +224,7 @@ Deno.test("recomendarV4: marca nao_disputar quando concorrência e aderência fi
   assertEquals(recomendacao.motivos.includes("concorrencia_desfavoravel"), true);
 });
 
-Deno.test("recomendar (v1): valida input, calcula faixa, detecta sobrepreço e faixa inviável", async () => {
+Deno.test("recomendar (v1): valida input, filtra por unidade normalizada, clampa alvo e detecta sobrepreço/inviável", async () => {
   const invalido = await recomendar({
     codigo_item: 0,
     unidade: "UN",
@@ -234,37 +235,50 @@ Deno.test("recomendar (v1): valida input, calcula faixa, detecta sobrepreço e f
   assertEquals(invalido.status, "EMPTY_VALID");
   assertEquals(invalido.motivos, ["input_invalido"]);
 
-  const criarCliente = (row: Record<string, unknown> | null) => ({
-    from: () => ({
-      select: () => ({
-        eq: () => ({
-          eq: () => ({
-            maybeSingle: () => Promise.resolve({ data: row, error: null }),
-          }),
-        }),
-      }),
-    }),
+  const unidadeAusente = await recomendar({
+    codigo_item: 485224,
+    unidade: "",
+    custo_proprio: 1000,
+    margem_min: 0,
+    estimado_edital: 1500,
+  });
+  assertEquals(unidadeAusente.status, "EMPTY_VALID");
+  assertEquals(unidadeAusente.motivos, ["input_invalido"]);
+
+  const criarCliente = (rows: Array<{ preco_unitario: number; sigla_unidade_fornecimento: string | null }>) => ({
+    from: (table: string) => {
+      assertEquals(table, "precos_praticados_itens");
+      // deno-lint-ignore no-explicit-any
+      const chain: any = {
+        select: () => chain,
+        eq: () => chain,
+        gte: () => chain,
+        gt: () => chain,
+        order: () => chain,
+        limit: () => Promise.resolve({ data: rows, error: null }),
+      };
+      return chain;
+    },
   });
 
-  // 1. Disputar normal
+  // 1. Disputar normal (normalizando "Unidade" -> "UN" e descartando "CX")
   const ok = await recomendar(
     {
       codigo_item: 485224,
-      unidade: "UN",
+      unidade: "Unidade",
       custo_proprio: 15000,
       margem_min: 0.10, // piso proprio = 16500
       estimado_edital: 25000, // 50% = 12500 -> piso = 16500
     },
     // deno-lint-ignore no-explicit-any
-    criarCliente({
-      codigo_item: 485224,
-      unidade: "UN",
-      preco_mediana: 20000,
-      preco_p25: 18000,
-      preco_p75: 22000,
-      n_cotacoes: 8,
-      outlier_tipo: null,
-    }) as any,
+    criarCliente([
+      { preco_unitario: 18000, sigla_unidade_fornecimento: "UN" },
+      { preco_unitario: 18000, sigla_unidade_fornecimento: "UN" },
+      { preco_unitario: 20000, sigla_unidade_fornecimento: "Unidade" },
+      { preco_unitario: 22000, sigla_unidade_fornecimento: "UN" },
+      { preco_unitario: 22000, sigla_unidade_fornecimento: "UN" },
+      { preco_unitario: 99000, sigla_unidade_fornecimento: "CX" }, // ignorado por unidade distinta
+    ]) as any,
   );
   assertEquals(ok.status, "SUCCESS_WITH_DATA");
   assertEquals(ok.decisao, "disputar");
@@ -275,29 +289,32 @@ Deno.test("recomendar (v1): valida input, calcula faixa, detecta sobrepreço e f
   });
   assertEquals(ok.recomendacao_id, "sha256:485224:UN:20000");
 
-  // 2. Sobrepreço (estimado >= 3x mediana) -> aguardar_aprovacao
+  // 2. Sobrepreço (estimado >= 3x mediana) -> aguardar_aprovacao e alvo clampado no piso (32500 > 20000)
   const sobrepreco = await recomendar(
     {
       codigo_item: 485224,
       unidade: "UN",
       custo_proprio: 15000,
       margem_min: 0.10,
-      estimado_edital: 65000, // 3.25x mediana (20000), 50% = 32500 > teto (22000)? Vamos usar custo/estimado que caiba no p75
+      estimado_edital: 65000, // 3.25x mediana (20000), 50% = 32500
     },
     // deno-lint-ignore no-explicit-any
-    criarCliente({
-      codigo_item: 485224,
-      unidade: "UN",
-      preco_mediana: 20000,
-      preco_p25: 18000,
-      preco_p75: 40000,
-      n_cotacoes: 5,
-      outlier_tipo: null,
-    }) as any,
+    criarCliente([
+      { preco_unitario: 18000, sigla_unidade_fornecimento: "UN" },
+      { preco_unitario: 18000, sigla_unidade_fornecimento: "UN" },
+      { preco_unitario: 20000, sigla_unidade_fornecimento: "UN" },
+      { preco_unitario: 40000, sigla_unidade_fornecimento: "UN" },
+      { preco_unitario: 40000, sigla_unidade_fornecimento: "UN" },
+    ]) as any,
   );
   assertEquals(sobrepreco.status, "SUCCESS_WITH_DATA");
   assertEquals(sobrepreco.decisao, "aguardar_aprovacao");
   assertEquals(sobrepreco.alertas.length, 1);
+  assertEquals(sobrepreco.parametros, {
+    teto_absoluto: 40000,
+    alvo: 32500,
+    piso_inexequibilidade: 32500,
+  });
 
   // 3. Faixa inviável (piso > teto)
   const inviavel = await recomendar(
@@ -309,15 +326,13 @@ Deno.test("recomendar (v1): valida input, calcula faixa, detecta sobrepreço e f
       estimado_edital: 25000,
     },
     // deno-lint-ignore no-explicit-any
-    criarCliente({
-      codigo_item: 485224,
-      unidade: "UN",
-      preco_mediana: 20000,
-      preco_p25: 18000,
-      preco_p75: 22000,
-      n_cotacoes: 5,
-      outlier_tipo: null,
-    }) as any,
+    criarCliente([
+      { preco_unitario: 18000, sigla_unidade_fornecimento: "UN" },
+      { preco_unitario: 18000, sigla_unidade_fornecimento: "UN" },
+      { preco_unitario: 20000, sigla_unidade_fornecimento: "UN" },
+      { preco_unitario: 22000, sigla_unidade_fornecimento: "UN" },
+      { preco_unitario: 22000, sigla_unidade_fornecimento: "UN" },
+    ]) as any,
   );
   assertEquals(inviavel.status, "EMPTY_VALID");
   assertEquals(inviavel.decisao, "nao_disputar");

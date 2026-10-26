@@ -56,8 +56,8 @@ export const LIMITE_AMOSTRAS = 200;
 export const JANELA_MESES = 24;
 export const MOTIVO_SEM_UNIDADE = "unidade do item não informada";
 
-function unidadeNorm(u: string | null): string | null {
-  if (u === null) return null;
+export function unidadeNorm(u: string | null | undefined): string | null {
+  if (u === null || u === undefined) return null;
   const t = u.trim().toUpperCase();
   // Equivalência explícita de rótulo, sem conversão de embalagem ou capacidade.
   // Preserve o valor original na amostra e na evidência.

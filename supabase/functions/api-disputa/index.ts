@@ -14,7 +14,7 @@ import {
   consultarDiligenciasSerpro,
   type MensagemSerpro,
 } from "../_shared/serpro.ts";
-import { pisoTenantCentavos } from "../_shared/agentes/preco.ts";
+import { pisoTenantCentavos, unidadeNorm } from "../_shared/agentes/preco.ts";
 import { recomendar, type RecomendacaoLance } from "../_shared/recomendacao.ts";
 
 export interface ApiDisputaContext {
@@ -218,12 +218,15 @@ export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Prom
         const preco = precosPorProduto.get(produtoId);
         if (!preco) continue;
 
+        const tabelaCentavos = Math.round(preco.preco_tabela * 100);
+        const pisoCentavos = pisoTenantCentavos(tabelaCentavos, preco.desconto_max_pct);
+
         const rec = await recomendar(
           {
             codigo_item: Number(item.catalogo_codigo_item ?? 0),
-            unidade: (item.unidade_medida ?? "UN").toUpperCase().slice(0, 5),
-            custo_proprio: preco.preco_tabela,
-            margem_min: (preco.desconto_max_pct ?? 15.0) / 100,
+            unidade: unidadeNorm(item.unidade_medida),
+            custo_proprio: pisoCentavos / 100,
+            margem_min: 0,
             estimado_edital: Number(item.valor_unitario_estimado ?? 0),
           },
           supabase,

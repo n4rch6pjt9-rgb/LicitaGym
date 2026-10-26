@@ -18,6 +18,8 @@ interface MockDatabase {
     descricao: string;
     valor_unitario_estimado: number | null;
     valor_total_estimado: number | null;
+    catalogo_codigo_item?: number | null;
+    unidade_medida?: string | null;
   }>;
   dePara: Array<{
     id?: number;
@@ -33,6 +35,12 @@ interface MockDatabase {
     desconto_max_pct: number;
     vigencia_inicio: string;
     vigencia_fim: string | null;
+  }>;
+  precosPraticadosItens?: Array<{
+    codigo_item_catalogo: number;
+    preco_unitario: number;
+    sigla_unidade_fornecimento: string | null;
+    data_resultado: string;
   }>;
   mensagens: Array<Record<string, unknown>>;
   auditoria: Array<Record<string, unknown>>;
@@ -63,6 +71,14 @@ function createMockSupabase(db: MockDatabase) {
         },
         lte: (col: string, val: any) => {
           filters.push((row) => row[col] <= val);
+          return builder;
+        },
+        gte: (col: string, val: any) => {
+          filters.push((row) => row[col] >= val);
+          return builder;
+        },
+        gt: (col: string, val: any) => {
+          filters.push((row) => row[col] > val);
           return builder;
         },
         order: (col: string, opts?: { ascending?: boolean }) => {
@@ -125,6 +141,8 @@ function createMockSupabase(db: MockDatabase) {
               { id: 100, codigo_externo: "15300005000012026", raw: {} },
               { id: 101, codigo_externo: "15300005000012026", raw: {} },
             ];
+          } else if (table === "precos_praticados_itens") {
+            rows = db.precosPraticadosItens ?? [];
           }
 
           const res = rows.filter((r) => filters.every((f) => f(r)));
@@ -678,4 +696,85 @@ Deno.test("api-disputa: GET /estrategia - seleção determinística do menor id 
   // Deve selecionar deterministicamente o produto 50 (menor id de de-para: 10), nunca o produto 60 (id 20)
   const item1 = json.itens.find((i: { item_numero: number }) => i.item_numero === 1);
   assertEquals(item1.piso_centavos, 1800000);
+});
+
+Deno.test("api-disputa: GET /estrategia - recomendação usa piso com desconto_max_pct, normaliza Unidade e não inventa UN quando ausente", async () => {
+  const hoje = new Date().toISOString().slice(0, 10);
+  const db: MockDatabase = {
+    pipeline: [{ tenant_id: 1, licitacao_id: 101 }],
+    itens: [
+      {
+        id: 1,
+        licitacao_id: 101,
+        numero_item: 1,
+        descricao: "Esteira Ergométrica",
+        valor_unitario_estimado: 20000.0,
+        valor_total_estimado: 20000.0,
+        catalogo_codigo_item: 485224,
+        unidade_medida: "Unidade",
+      },
+      {
+        id: 2,
+        licitacao_id: 101,
+        numero_item: 2,
+        descricao: "Bicicleta sem unidade informada",
+        valor_unitario_estimado: 15000.0,
+        valor_total_estimado: 15000.0,
+        catalogo_codigo_item: 485225,
+        unidade_medida: null,
+      },
+    ],
+    dePara: [
+      { id: 1, tenant_id: 1, licitacao_item_id: 1, produto_id: 50, status: "confirmado" },
+      { id: 2, tenant_id: 1, licitacao_item_id: 2, produto_id: 50, status: "confirmado" },
+    ],
+    precos: [
+      {
+        tenant_id: 1,
+        produto_id: 50,
+        preco_tabela: 20000.0,
+        desconto_max_pct: 20.0, // Piso = 16.000,00 (não deve virar 24.000,00!)
+        vigencia_inicio: "2026-01-01",
+        vigencia_fim: null,
+      },
+    ],
+    precosPraticadosItens: [
+      { codigo_item_catalogo: 485224, preco_unitario: 17000, sigla_unidade_fornecimento: "UN", data_resultado: hoje },
+      { codigo_item_catalogo: 485224, preco_unitario: 17500, sigla_unidade_fornecimento: "UN", data_resultado: hoje },
+      { codigo_item_catalogo: 485224, preco_unitario: 18000, sigla_unidade_fornecimento: "Unidade", data_resultado: hoje },
+      { codigo_item_catalogo: 485224, preco_unitario: 18500, sigla_unidade_fornecimento: "UN", data_resultado: hoje },
+      { codigo_item_catalogo: 485224, preco_unitario: 19000, sigla_unidade_fornecimento: "UN", data_resultado: hoje },
+      // Item 2 tem amostras "UN", mas o item 2 está com unidade_medida: null -> não pode casar com "UN" inventado
+      { codigo_item_catalogo: 485225, preco_unitario: 17000, sigla_unidade_fornecimento: "UN", data_resultado: hoje },
+      { codigo_item_catalogo: 485225, preco_unitario: 17500, sigla_unidade_fornecimento: "UN", data_resultado: hoje },
+      { codigo_item_catalogo: 485225, preco_unitario: 18000, sigla_unidade_fornecimento: "UN", data_resultado: hoje },
+      { codigo_item_catalogo: 485225, preco_unitario: 18500, sigla_unidade_fornecimento: "UN", data_resultado: hoje },
+      { codigo_item_catalogo: 485225, preco_unitario: 19000, sigla_unidade_fornecimento: "UN", data_resultado: hoje },
+    ],
+    mensagens: [],
+    auditoria: [],
+  };
+
+  const req = new Request("http://localhost/api-disputa/estrategia?licitacao_id=101", {
+    method: "GET",
+  });
+  const res = await handleRequest(req, {
+    getUser: () => Promise.resolve(USUARIO_TESTE),
+    // deno-lint-ignore no-explicit-any
+    getSupabase: () => createMockSupabase(db) as any,
+  });
+
+  assertEquals(res.status, 200);
+  const json = await res.json();
+  const item1 = json.itens.find((i: { item_numero: number }) => i.item_numero === 1);
+  // Piso de catálogo com 20% desconto = R$ 16.000,00 <= p75 (R$ 18.500,00) -> disputar!
+  assertEquals(item1.recomendacao.status, "SUCCESS_WITH_DATA");
+  assertEquals(item1.recomendacao.decisao, "disputar");
+  assertEquals(item1.recomendacao.parametros.piso_inexequibilidade, 16000);
+  assertEquals(item1.recomendacao.parametros.alvo, 18000);
+  assertEquals(item1.recomendacao.parametros.teto_absoluto, 18500);
+
+  const item2 = json.itens.find((i: { item_numero: number }) => i.item_numero === 2);
+  assertEquals(item2.recomendacao.status, "EMPTY_VALID");
+  assertEquals(item2.recomendacao.motivos, ["input_invalido"]);
 });

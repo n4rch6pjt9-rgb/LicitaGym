@@ -201,8 +201,10 @@ export async function sincronizarPortalOficialEAtraso(
     tMaisRecentePncpStr = eventosPncp[0]?.data ?? null;
   }
 
-  // 4. Obtém timestamp mais recente do Portal Oficial
-  let tMaisRecentePortalStr = consultadoEm;
+  // 4. Obtém timestamp mais recente de eventos oficiais do Portal Oficial
+  // Não utiliza consultadoEm (data de execução da consulta/robô) para evitar falsos positivos
+  // de atraso quando o conteúdo do certame no portal não sofreu alteração.
+  let tMaisRecentePortalStr: string | null = null;
   if (mensagensPortal.length > 0 && mensagensPortal[0]?.data_hora_oficial) {
     tMaisRecentePortalStr = mensagensPortal[0].data_hora_oficial;
   }

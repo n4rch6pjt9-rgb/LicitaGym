@@ -154,3 +154,68 @@ Deno.test("sincronizarPortalOficialEAtraso: identifica portal oficial e sinaliza
   assertEquals(resultado.portalOficial?.host, "cnetmobile.estaleiro.serpro.gov.br");
   assertEquals(resultado.arquivosAtualizados.url_portal_oficial, resultado.urlAcompanhamento);
 });
+
+Deno.test("sincronizarPortalOficialEAtraso: consulta ao portal sem novos eventos não marca atraso falso no PNCP", async () => {
+  const row = {
+    id: 999,
+    fonte: "comprasnet",
+    link_sistema_origem: "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/landing?destino=quadro-informativo&compra=16021805900022026",
+    numero_edital: "90002/2026",
+  };
+
+  const fakeClient = {
+    from: (_table: string) => ({
+      select: (_cols: string) => ({
+        eq: (_col: string, _val: unknown) => ({
+          maybeSingle: () =>
+            Promise.resolve({
+              data: {
+                consultado_em: "2026-10-25T15:00:00Z",
+                situacao: "Em andamento",
+                codigo_licitacao: "123",
+                erro: null,
+              },
+              error: null,
+            }),
+        }),
+      }),
+    }),
+  };
+
+  const compraSection = {
+    dados: {
+      situacao: "Divulgação",
+      modalidade: "Pregão Eletrônico",
+      objeto: "Aquisição de equipamentos",
+      valorEstimado: 10000,
+      valorHomologado: null,
+      datas: {
+        publicacao: "2026-10-25T10:00:00Z",
+        aberturaProposta: null,
+        encerramentoProposta: null,
+        inclusao: "2026-10-25T10:00:00Z",
+        atualizacao: "2026-10-25T10:00:00Z",
+      },
+      linkSistemaOrigem: null,
+    },
+    erro: null,
+  };
+
+  const historicoSection = { dados: [], total: 0, erro: null };
+  const arquivosSection = { dados: [], total: 0, erro: null };
+
+  const resultado = await sincronizarPortalOficialEAtraso(
+    fakeClient as any,
+    999,
+    row,
+    null,
+    null,
+    compraSection,
+    historicoSection,
+    arquivosSection,
+  );
+
+  // Embora consultado_em seja 15:00 e o PNCP seja 10:00, o robô ter consultado não significa evento novo oficial
+  assertEquals(resultado.pncpEmAtraso, false);
+  assertEquals(resultado.portalOficial?.consultado_em, "2026-10-25T15:00:00Z");
+});

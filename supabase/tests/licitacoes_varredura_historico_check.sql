@@ -45,11 +45,11 @@ begin
   returning id into v_id;
   insert into _p_varredura values ('2', v_id);
 
-  -- Caso 3: data_fim no passado há mais de 35 dias (> 30 dias) -> deve virar 'historico' via prazo_expirado_sessao
+  -- Caso 3: fase = 'Adjudicada' -> deve virar 'historico' via fase_terminal
   insert into public.licitacoes_externas
     (fonte, modulo, id_externo, codigo_externo, fase, situacao, data_fim, prioridade, raw)
   values
-    ('pncp', 1, 900203, '00000000000203-1-000203/2026', 'Recebendo propostas', 'Divulgada no PNCP',
+    ('pncp', 1, 900203, '00000000000203-1-000203/2026', 'Adjudicada', 'Divulgada no PNCP',
      now() - interval '35 days', 'monitorar', '{}'::jsonb)
   returning id into v_id;
   insert into _p_varredura values ('3', v_id);
@@ -81,8 +81,8 @@ begin
   -- Caso 3
   select prioridade, prioridade_motivo into v_prio, v_motivo
   from public.licitacoes_externas_prioridade_efetiva where id = (select id from _p_varredura where rotulo = '3');
-  if v_prio <> 'historico' or v_motivo <> 'prazo_expirado_sessao' then
-    falhas := array_append(falhas, format('Caso 3 esperado historico/prazo_expirado_sessao, obtido %s/%s', v_prio, v_motivo));
+  if v_prio <> 'historico' or v_motivo <> 'fase_terminal' then
+    falhas := array_append(falhas, format('Caso 3 esperado historico/fase_terminal, obtido %s/%s', v_prio, v_motivo));
   end if;
 
   -- Caso 4

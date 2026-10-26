@@ -60,7 +60,6 @@ select
   l.interesse_borracha,
   case
     when e.encerramento is not null then 'historico'
-    when j.prazo_historico then 'historico'
     when j.prazo_encerrado or j.prazo_invalido then 'monitorar'
     else l.prioridade
   end as prioridade,
@@ -71,7 +70,6 @@ select
   l.prioridade as prioridade_gravada,
   case
     when e.encerramento is not null then e.encerramento
-    when j.prazo_historico then 'prazo_expirado_sessao'
     when j.prazo_encerrado then 'prazo_encerrado'
     when j.prazo_invalido then 'prazo_invalido'
   end as prioridade_motivo,
@@ -115,14 +113,7 @@ cross join lateral (
       l.prioridade = 'leads'
       and p.normalizado is null
       and p.bruto > now() + interval '730 days'
-    ) is true as prazo_invalido,
-    (
-      l.prioridade in ('leads', 'monitorar')
-      and (
-        (coalesce(p.normalizado, p.bruto) is not null and coalesce(p.normalizado, p.bruto) <= (now() - interval '30 days'))
-        or (coalesce(p.normalizado, p.bruto) is null and l.data_fim <= (now() - interval '30 days'))
-      )
-    ) is true as prazo_historico
+    ) is true as prazo_invalido
 ) j;
 
 comment on view public.licitacoes_externas_prioridade_efetiva is
@@ -162,6 +153,9 @@ $$;
 
 comment on function private.varredura_transicao_historico() is
   'Varre certames cuja prioridade efetiva calculada é histórico e atualiza a coluna prioridade em licitacoes_externas.';
+
+revoke all on function private.varredura_transicao_historico() from PUBLIC, anon, authenticated;
+grant execute on function private.varredura_transicao_historico() to service_role;
 
 -- 3. Agendamento via pg_cron se o schema existir
 do $$

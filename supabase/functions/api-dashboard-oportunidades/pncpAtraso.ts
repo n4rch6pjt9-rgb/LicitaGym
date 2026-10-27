@@ -8,6 +8,7 @@ import type {
   CompraMetadata,
   HistoricoEvento,
 } from "./types.ts";
+import { idCompraDaUrl, lerImpugnacoesComprasnet, mensagensDeImpugnacoes, textoAvisoImpugnacao } from "./impugnacoes.ts";
 
 export interface PortalOficialDetalhes {
   nome: string | null;
@@ -24,6 +25,7 @@ export interface MensagemDisputaDB {
   mensagem: string;
   data_hora_oficial: string;
   item_numero?: number | null;
+  resposta?: string | null;
 }
 
 /**
@@ -93,6 +95,18 @@ export function mesclarHistoricoPortal(
   // Converte mensagens da disputa do portal oficial para HistoricoEvento
   const nomeExibicao = portalNome || "Portal Oficial";
   for (const msg of mensagensPortal) {
+    if (msg.categoria === "impugnacao") {
+      resultado.push({
+        data: msg.data_hora_oficial || null,
+        categoria: "Impugnação",
+        tipo: "Aviso",
+        item: msg.item_numero != null ? Number(msg.item_numero) : null,
+        documentoTitulo: null,
+        justificativa: textoAvisoImpugnacao(msg.mensagem, msg.resposta ?? null),
+        origem: "portal_oficial",
+      });
+      continue;
+    }
     let tipoNome = "Mensagem do Pregoeiro";
     if (msg.categoria === "diligencia") {
       tipoNome = "Diligência Oficial";
@@ -150,6 +164,7 @@ export async function sincronizarPortalOficialEAtraso(
     total: number;
     url_portal_oficial?: string | null;
   },
+  opcoes: { emPipeline?: boolean; captcha?: string; fetchImpl?: typeof fetch } = {},
 ): Promise<{
   urlAcompanhamento: string | null;
   pncpEmAtraso: boolean;
@@ -170,7 +185,7 @@ export async function sincronizarPortalOficialEAtraso(
   const hostFinal = portalInfo.host ?? (urlFinal ? new URL(urlFinal).hostname.toLowerCase() : null);
 
   // 2. Consulta em paralelo mensagens da disputa e snapshot do portal oficial no banco
-  const mensagensPortal: MensagemDisputaDB[] = [];
+  let mensagensPortal: MensagemDisputaDB[] = [];
   let consultadoEm: string | null = portalSecao?.consultado_em ?? null;
   let situacaoPortal: string | null = portalSecao?.situacao ?? null;
 
@@ -191,6 +206,30 @@ export async function sincronizarPortalOficialEAtraso(
     console.warn("[sincronizarPortalOficialEAtraso] Falha ao ler dados complementares do portal:", e);
   }
 
+  if (opcoes.emPipeline === true) {
+    const idCompra = idCompraDaUrl(urlAcompanhamentoAtual)
+      ?? idCompraDaUrl(typeof row.link_sistema_origem === "string" ? row.link_sistema_origem : null)
+      ?? idCompraDaUrl(urlFinal);
+    if (idCompra) {
+      try {
+        const leitura = await lerImpugnacoesComprasnet(idCompra, {
+          captcha: opcoes.captcha,
+          fetchImpl: opcoes.fetchImpl,
+        });
+        consultadoEm = new Date().toISOString();
+        if (!leitura.ok) {
+          situacaoPortal = leitura.motivo;
+        } else {
+          mensagensPortal = mensagensDeImpugnacoes(leitura.informativos);
+          situacaoPortal = mensagensPortal.length > 0 ? "impugnacao_registrada" : "sem_impugnacao";
+        }
+      } catch (e) {
+        console.warn("[sincronizarPortalOficialEAtraso] Falha ao ler impugnacoes do Compras.gov.br:", e);
+        situacaoPortal = "indisponivel";
+      }
+    }
+  }
+
   // 3. Obtém timestamp mais recente do PNCP
   const eventosPncp = Array.isArray(historicoSection.dados) ? historicoSection.dados : [];
   let tMaisRecentePncpStr = compraSection.dados?.datas?.atualizacao ??
@@ -205,19 +244,28 @@ export async function sincronizarPortalOficialEAtraso(
   // Não utiliza consultadoEm (data de execução da consulta/robô) para evitar falsos positivos
   // de atraso quando o conteúdo do certame no portal não sofreu alteração.
   let tMaisRecentePortalStr: string | null = null;
-  if (mensagensPortal.length > 0 && mensagensPortal[0]?.data_hora_oficial) {
-    tMaisRecentePortalStr = mensagensPortal[0].data_hora_oficial;
+  for (const msg of mensagensPortal) {
+    if (!msg.data_hora_oficial) continue;
+    if (!tMaisRecentePortalStr || msg.data_hora_oficial > tMaisRecentePortalStr) {
+      tMaisRecentePortalStr = msg.data_hora_oficial;
+    }
   }
 
   // 5. Avalia se o PNCP está com atraso de informações ou falha
   const temFalhaPncp = arquivosSection.erro !== null || historicoSection.erro !== null;
   const temEventosPortal = mensagensPortal.length > 0;
+  const pncpCobreImpugnacao = eventosPncp.some((evento) =>
+    /impugn/i.test([evento.categoria, evento.tipo, evento.documentoTitulo, evento.justificativa]
+      .filter((parte): parte is string => typeof parte === "string")
+      .join(" "))
+  );
+  const temImpugnacao = mensagensPortal.some((msg) => msg.categoria === "impugnacao");
   const pncpEmAtraso = compararAtrasoPncp(
     tMaisRecentePncpStr,
     tMaisRecentePortalStr,
     temFalhaPncp,
     temEventosPortal,
-  );
+  ) || (temImpugnacao && !pncpCobreImpugnacao);
 
   // 6. Atualiza Histórico mesclando avisos e chat do portal oficial
   const historicoMesclado = mesclarHistoricoPortal(eventosPncp, mensagensPortal, nomeFinal);

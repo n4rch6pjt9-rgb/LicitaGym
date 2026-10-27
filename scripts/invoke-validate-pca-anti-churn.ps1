@@ -37,13 +37,23 @@ function Invoke-PcaRodada {
     -TimeoutSec $TimeoutSec `
     -UseBasicParsing
   $json = $response.Content | ConvertFrom-Json
-  $json | ConvertTo-Json -Depth 8
+  Write-Host ($json | ConvertTo-Json -Depth 8)
   return $json
 }
 
 $run1 = Invoke-PcaRodada -Label "Rodada 1 (baseline)"
+if ($run1.status -eq "incompleta") {
+  Write-Host "Carga incompleta: conclua a cadeia antes de avaliar anti-churn." -ForegroundColor Yellow
+  exit 2
+}
+if ($run1.status -notin @("concluida", "ignorado") -or [int]$run1.erros -gt 0) { exit 1 }
 Start-Sleep -Seconds 5
 $run2 = Invoke-PcaRodada -Label "Rodada 2 (anti-churn)"
+if ($run2.status -eq "incompleta") {
+  Write-Host "Segunda carga incompleta: anti-churn nao verificado." -ForegroundColor Yellow
+  exit 2
+}
+if ($run2.status -notin @("concluida", "ignorado") -or [int]$run2.erros -gt 0) { exit 1 }
 
 Write-Host "`n--- Interpretacao ---" -ForegroundColor Yellow
 if ($run2.status -eq "ignorado") {
@@ -61,4 +71,4 @@ if ($novos2 -eq 0 -and $alterados2 -eq 0 -and $inalterados2 -gt 0) {
 }
 
 Write-Host "Revisar: novos=$novos2 alterados=$alterados2 inalterados=$inalterados2 (pode ser churn ou mudanca PNCP)." -ForegroundColor Yellow
-exit 0
+exit 1

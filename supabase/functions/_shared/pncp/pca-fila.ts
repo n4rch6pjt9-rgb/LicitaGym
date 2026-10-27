@@ -413,6 +413,7 @@ export async function lerItensPlano(
   const opcoes = { ...http, attemptTimeoutMs: TIMEOUT_TENTATIVA_INTEGRACAO_MS };
   const base = `/orgaos/${cnpj}/pca/${ano}/${sequencial}/itens`;
   const itens: Row[] = [];
+  const numeros = new Set<number>();
   let terminou = false;
   for (let pagina = 1; pagina <= MAX_PAGINAS_PLANO && !terminou; pagina++) {
     const { status, body } = await integracao.getPcaItensPagina(
@@ -433,9 +434,23 @@ export async function lerItensPlano(
       });
     }
     if (status >= 400 || !Array.isArray(body)) {
-      throw new Error(`integração ${cnpj}/${ano}/${sequencial} página ${pagina}: HTTP ${status} ou resposta não é lista`);
+      throw new Error(
+        `integração ${cnpj}/${ano}/${sequencial} página ${pagina}: HTTP ${status} ou resposta não é lista`,
+      );
     }
-    itens.push(...(body as Row[]));
+    for (const item of body) {
+      const numero = inteiroDaIntegracao(item?.numeroItem);
+      if (numero === null || numero <= 0) {
+        throw new Error(`integração ${cnpj}/${ano}/${sequencial} página ${pagina}: numeroItem inválido`);
+      }
+      if (numeros.has(numero)) {
+        throw new Error(
+          `integração ${cnpj}/${ano}/${sequencial} página ${pagina}: numeroItem repetido (${numero})`,
+        );
+      }
+      numeros.add(numero);
+      itens.push(item as Row);
+    }
     terminou = body.length < TAMANHO_PAGINA_INTEGRACAO;
   }
   const q = await integracao.getPcaItensQuantidade(cnpj, ano, sequencial, opcoes);
@@ -447,14 +462,23 @@ export async function lerItensPlano(
       body: q.body,
     });
   }
-  const quantidade = Number(q.body);
-  if (q.status !== 200 || !Number.isInteger(quantidade)) {
+  const quantidade = inteiroDaIntegracao(q.body);
+  if (q.status !== 200 || quantidade === null) {
     throw new Error(`integração ${cnpj}/${ano}/${sequencial}: quantidade inválida (HTTP ${q.status})`);
   }
   if (quantidade !== itens.length) {
-    throw new Error(`integração ${cnpj}/${ano}/${sequencial}: leitura incompleta (${itens.length} de ${quantidade})`);
+    throw new Error(
+      `integração ${cnpj}/${ano}/${sequencial}: leitura incompleta (${itens.length} de ${quantidade})`,
+    );
   }
   return itens;
+}
+
+/** Conserva inteiros decimais textuais já aceitos, sem converter ausência, booleanos ou coleções em zero. */
+function inteiroDaIntegracao(valor: unknown): number | null {
+  if (typeof valor !== "number" && (typeof valor !== "string" || !/^\d+$/.test(valor))) return null;
+  const numero = Number(valor);
+  return Number.isSafeInteger(numero) && numero >= 0 ? numero : null;
 }
 
 /**
@@ -528,6 +552,10 @@ export type FilaStats = LoteStats & {
   planos_inativados: number;
 };
 
+export class ReservaPcaPerdidaError extends Error {
+  constructor() { super("reserva PCA não pertence mais ao worker"); this.name = "ReservaPcaPerdidaError"; }
+}
+
 async function marcarFila(client: SupabaseClient, linha: Row, ok: boolean, erro: string | null) {
   const agora = new Date().toISOString();
   const patch: Row = ok
@@ -539,14 +567,16 @@ async function marcarFila(client: SupabaseClient, linha: Row, ok: boolean, erro:
       atualizado_em: agora,
     };
   // Sem chain_id no patch: um reenfileiramento durante o processamento pode ter gravado um chain_id mais novo.
-  const { error } = await client.schema("private").from("pca_plano_fila").update(patch).eq("id", linha.id);
-  if (error) throw error;
   if (ok) {
-    // Plano terminado: desliga a marca de reprocessar. Se falhar, o pior é o incremental reenfileirar uma vez a mais.
+    // Desliga reprocessar antes de concluir, enquanto o token ainda autoriza a escrita no plano.
     const { error: eMarca } = await client.from("pca_planos").update({ reprocessar: false })
       .eq("id_pca_pncp", String(linha.id_pca_pncp)).eq("reprocessar", true);
     if (eMarca) console.warn(`[pca-fila] marca reprocessar de ${linha.id_pca_pncp} não desligou: ${eMarca.message}`);
   }
+  const { data, error } = await client.schema("private").from("pca_plano_fila").update(patch)
+    .eq("id", linha.id).eq("status", "processando").eq("reserva_token", linha.reserva_token).select("id");
+  if (error) throw error;
+  if (!Array.isArray(data) || data.length !== 1) throw new ReservaPcaPerdidaError();
 }
 
 /**
@@ -555,11 +585,11 @@ async function marcarFila(client: SupabaseClient, linha: Row, ok: boolean, erro:
  */
 async function devolverReservados(client: SupabaseClient, linhas: Row[]) {
   if (linhas.length === 0) return;
-  const { error } = await client.schema("private").from("pca_plano_fila")
-    .update({ status: "pendente", atualizado_em: new Date().toISOString() })
-    .in("id", linhas.map((l) => l.id));
-  if (error) {
-    console.warn(JSON.stringify({ evento: "pca_fila_devolucao_falhou", linhas: linhas.length, erro: error.message }));
+  for (const linha of linhas) {
+    const { error } = await client.schema("private").from("pca_plano_fila")
+      .update({ status: "pendente", atualizado_em: new Date().toISOString() })
+      .eq("id", linha.id).eq("status", "processando").eq("reserva_token", linha.reserva_token);
+    if (error) console.warn(JSON.stringify({ evento: "pca_fila_devolucao_falhou", linhas: 1, erro: error.message }));
   }
 }
 
@@ -569,7 +599,7 @@ async function adiarPlanoAposPausa(client: SupabaseClient, linha: Row, erro: unk
   const disponivelEm = new Date(Date.now() + minutos * 60_000).toISOString();
   const { data, error } = await client.schema("private").from("pca_plano_fila")
     .update({ status: "pendente", disponivel_em: disponivelEm, atualizado_em: new Date().toISOString() })
-    .eq("id", linha.id).eq("status", "processando").select("id");
+    .eq("id", linha.id).eq("status", "processando").eq("reserva_token", linha.reserva_token).select("id");
   if (error) throw error;
   if (!Array.isArray(data) || data.length !== 1) throw new Error("adiamento não atualizou o plano reservado");
   console.warn(JSON.stringify({
@@ -594,6 +624,7 @@ export async function processarFila(
     runId: string;
     http?: OpcoesHttp;
     aoTerminarPlano?: () => Promise<void>;
+    clientDaReserva?: (token: string, runId: string) => SupabaseClient;
   },
 ): Promise<FilaStats> {
   const stats: FilaStats = {
@@ -621,6 +652,8 @@ export async function processarFila(
 
     for (let i = 0; i < reservados.length; i++) {
       const linha = reservados[i];
+      if (typeof linha.reserva_token !== "string" || !linha.reserva_token) throw new ReservaPcaPerdidaError();
+      const clientPlano = opts.clientDaReserva?.(linha.reserva_token, opts.runId) ?? client;
       if (opts.prazoEsgotado()) {
         await devolverReservados(client, reservados.slice(i));
         return stats;
@@ -640,6 +673,10 @@ export async function processarFila(
           { ...opts.http, syncRunId: opts.runId },
           arquivar,
         );
+        const { data: posse, error: ePosse } = await clientPlano.schema("private").from("pca_plano_fila")
+          .select("id").eq("id", linha.id).eq("status", "processando").eq("reserva_token", linha.reserva_token);
+        if (ePosse) throw ePosse;
+        if (!Array.isArray(posse) || posse.length !== 1) throw new ReservaPcaPerdidaError();
         const escopo = todos.filter((it) => doEscopo.has(String(it.classificacaoSuperiorCodigo ?? "")));
         const numeros = new Set(escopo.map((it) => Number(it.numeroItem)));
 
@@ -649,32 +686,32 @@ export async function processarFila(
           // Ausente em 2 descobertas seguidas. Sem item do escopo na integração: inativa os itens do escopo (e o plano,
           // se não sobrar item de outra classe). Com item: a consulta pulou o plano, então grava os itens no plano que
           // já existe e zera o contador.
-          planoId = await idDoPlano(client, idPca);
+          planoId = await idDoPlano(clientPlano, idPca);
           if (!planoId) {
-            await marcarFila(client, linha, true, null);
+            await marcarFila(clientPlano, linha, true, null);
             stats.planos_feitos++;
             continue;
           }
           if (escopo.length === 0) {
-            const r0 = await inativarAusenteNoEscopo(client, planoId, classes);
+            const r0 = await inativarAusenteNoEscopo(clientPlano, planoId, classes);
             stats.itens_inativados += r0.itens;
             if (r0.plano) stats.planos_inativados++;
-            await marcarFila(client, linha, true, null);
+            await marcarFila(clientPlano, linha, true, null);
             stats.planos_feitos++;
             continue;
           }
-          r = await gravarItensDePlanoExistente(client, planoId, escopo.map(itemIntegracaoParaConsulta), {
+          r = await gravarItensDePlanoExistente(clientPlano, planoId, escopo.map(itemIntegracaoParaConsulta), {
             runId: opts.runId,
           });
-          await zerarAusencia(client, planoId, classes);
+          await zerarAusencia(clientPlano, planoId, classes);
         } else {
           if (!linha.plano || typeof linha.plano !== "object") throw new Error("fila sem cabeçalho do plano");
           r = await gravarPaginaPcaEmLote(
-            client,
+            clientPlano,
             [{ ...(linha.plano as Row), itens: escopo.map(itemIntegracaoParaConsulta) }],
             { ano: Number(linha.ano), runId: opts.runId },
           );
-          planoId = await idDoPlano(client, idPca);
+          planoId = await idDoPlano(clientPlano, idPca);
         }
         stats.recebidos += r.recebidos;
         stats.novos += r.novos;
@@ -684,19 +721,23 @@ export async function processarFila(
         if (r.erros > 0 || !planoId) {
           stats.planos_erro++;
           falhaContada = true;
-          const eReset = await marcarCabecalhoParaReprocessar(client, idPca);
+          const eReset = await marcarCabecalhoParaReprocessar(clientPlano, idPca);
           if (eReset) throw new Error(`${r.erros} erro(s) na gravação em lote; reprocessar não gravou: ${eReset.message}`);
-          await marcarFila(client, linha, false, `${r.erros} erro(s) na gravação em lote`);
+          await marcarFila(clientPlano, linha, false, `${r.erros} erro(s) na gravação em lote`);
           continue;
         }
-        stats.itens_inativados += await inativarItensAusentes(client, planoId, numeros, classes);
-        await marcarFila(client, linha, true, null);
+        stats.itens_inativados += await inativarItensAusentes(clientPlano, planoId, numeros, classes);
+        await marcarFila(clientPlano, linha, true, null);
         stats.planos_feitos++;
       } catch (error) {
+        if (error instanceof ReservaPcaPerdidaError) {
+          await devolverReservados(client, reservados.slice(i + 1));
+          throw error;
+        }
         if (ePausaDaCarga(error, opts.http?.budget)) {
           // pausa de cota ou fim do orçamento: não é falha do plano; volta para a fila sem gastar tentativa
           try {
-            await adiarPlanoAposPausa(client, linha, error);
+            await adiarPlanoAposPausa(clientPlano, linha, error);
           } catch (eAdiar) {
             console.warn(JSON.stringify({
               evento: "pca_fila_adiamento_falhou",
@@ -706,7 +747,7 @@ export async function processarFila(
           }
           // Tenta liberar o restante mesmo se o adiamento falhar; a causa original continua sendo a pausa.
           try {
-            await devolverReservados(client, reservados.slice(i + 1));
+            await devolverReservados(clientPlano, reservados.slice(i + 1));
           } catch (eDevolver) {
             console.warn(JSON.stringify({
               evento: "pca_fila_devolucao_falhou",
@@ -723,13 +764,13 @@ export async function processarFila(
         }
         // A falha pode ter vindo depois de gravar o cabeçalho (inativação, contador de ausência): sem o reset, um plano
         // que esgota as tentativas ficaria com a data nova e o incremental não o reenfileiraria.
-        const eReset = await marcarCabecalhoParaReprocessar(client, idPca);
+        const eReset = await marcarCabecalhoParaReprocessar(clientPlano, idPca);
         if (eReset) console.warn(`[pca-fila] reset do cabeçalho ${idPca} falhou: ${eReset.message}`);
         const mensagem = error instanceof BudgetExhaustedError
           ? "timeout repetido na integração (orçamento ainda sobrava)"
           : (error instanceof Error ? error.message : String(error));
         try {
-          await marcarFila(client, linha, false, mensagem);
+          await marcarFila(clientPlano, linha, false, mensagem);
         } catch (eMarca) {
           // Sem gravar o erro, a linha fica 'processando' e a reserva a recupera depois de 15 min (contando
           // tentativa). O banco está falhando: devolve o resto e encerra a carga desta execução.
@@ -738,7 +779,7 @@ export async function processarFila(
             id_pca_pncp: idPca,
             erro: eMarca instanceof Error ? eMarca.message : String((eMarca as { message?: string })?.message ?? eMarca),
           }));
-          await devolverReservados(client, reservados.slice(i + 1));
+          await devolverReservados(clientPlano, reservados.slice(i + 1));
           return stats;
         }
       } finally {

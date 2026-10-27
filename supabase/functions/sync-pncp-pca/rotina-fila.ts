@@ -88,6 +88,7 @@ function marcarPendencia(c: ContinuacaoFila, filaAberta: boolean): ContinuacaoFi
  */
 export async function handleRotinaFila(params: {
   client: SupabaseClient;
+  clientDaReserva?: (token: string, runId: string) => SupabaseClient;
   consulta: ConsultaPca;
   integracao: IntegracaoPca;
   body: RotinaBody;
@@ -254,6 +255,7 @@ export async function handleRotinaFila(params: {
         runId,
         http: { budget },
         aoTerminarPlano: heartbeat,
+        clientDaReserva: params.clientDaReserva,
       });
       resumo.carga = carga;
       const fila = await situacaoFila(client, ano);

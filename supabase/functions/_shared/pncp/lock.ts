@@ -29,10 +29,12 @@ export async function acquireSyncLock(
   // mira `public` e falha com PGRST202. Por isso a chamada passa por schema("private").
   const privateClient = typeof client.schema === "function" ? client.schema("private") : null;
   if (privateClient && typeof privateClient.rpc === "function") {
-    const { data, error } = await privateClient.rpc("acquire_sync_lock", {
+    const anoPca = resourceType === "pca" ? /^pca-(?:fila|sync):(?:manual:)?(\d+)(?::|$)/.exec(lockKey)?.[1] : undefined;
+    const { data, error } = await privateClient.rpc(anoPca ? "pca_adquirir_execucao" : "acquire_sync_lock", {
       p_lock_key: lockKey,
       p_resource_type: resourceType,
       p_parametros: parametros,
+      ...(anoPca ? { p_ano: Number(anoPca) } : {}),
     });
     if (error) throw error;
     const res = data as {
@@ -144,7 +146,7 @@ export async function resolveIdempotency(
   client: SupabaseClient,
   key: string,
   rota: string,
-  parametrosHash: string,
+  _parametrosHash: string,
 ): Promise<{ hit: boolean; syncRunId?: string; resposta?: unknown }> {
   const { data } = await client.schema("private")
     .from("idempotency_key")

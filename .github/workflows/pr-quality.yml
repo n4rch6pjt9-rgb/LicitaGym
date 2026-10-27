@@ -68,6 +68,10 @@ jobs:
       - name: Deno tests (tests/supabase)
         run: deno test tests/supabase --allow-read --allow-write --allow-env --no-prompt --reporter=dot
 
+      - name: PowerShell PCA (HTTP simulado, sem rede)
+        shell: pwsh
+        run: ./tests/scripts/pca-legado-consumidores.ps1
+
   lint:
     name: Lint dos arquivos alterados
     runs-on: ubuntu-latest

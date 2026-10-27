@@ -1,6 +1,6 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import { mesclarHistoricoPortal } from "../../../supabase/functions/api-dashboard-oportunidades/pncpAtraso.ts";
-import { interpretarCorpoImpugnacoes } from "../../../supabase/functions/api-dashboard-oportunidades/impugnacoes.ts";
+import { interpretarCorpoImpugnacoes, lerImpugnacoesComprasnet } from "../../../supabase/functions/api-dashboard-oportunidades/impugnacoes.ts";
 
 Deno.test("204 com message-severity error nao e quadro vazio", () => {
   const leitura = interpretarCorpoImpugnacoes(
@@ -67,4 +67,33 @@ Deno.test("200 com informativos vazios continua sendo quadro vazio", () => {
   const leitura = interpretarCorpoImpugnacoes(200, new Headers(), '{"informativos":[]}');
   if (!leitura.ok) throw new Error("lista vazia legitima");
   assertEquals(leitura.informativos, []);
+});
+
+Deno.test("consulta travada do quadro vira indisponivel", async () => {
+  const leitura = await lerImpugnacoesComprasnet("18017405000472026", {
+    prazoMs: 40,
+    fetchImpl: (_url, init) => new Promise((_resolve, reject) => {
+      const sinal = init?.signal;
+      if (!sinal) {
+        reject(new Error("signal ausente"));
+        return;
+      }
+      sinal.addEventListener("abort", () => {
+        reject(sinal.reason ?? new DOMException("The operation was aborted", "AbortError"));
+      }, { once: true });
+    }),
+  });
+  if (leitura.ok) throw new Error("prazo esgotado nao pode virar lista");
+  assertEquals(leitura.motivo, "indisponivel");
+});
+
+Deno.test("corpo travado do quadro tambem vira indisponivel", async () => {
+  const leitura = await lerImpugnacoesComprasnet("18017405000472026", {
+    prazoMs: 40,
+    fetchImpl: () => Promise.resolve(new Response(new ReadableStream({
+      start() {},
+    }), { status: 200, headers: { "content-type": "application/json" } })),
+  });
+  if (leitura.ok) throw new Error("corpo travado nao pode virar lista");
+  assertEquals(leitura.motivo, "indisponivel");
 });

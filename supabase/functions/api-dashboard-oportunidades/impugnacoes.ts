@@ -86,11 +86,32 @@ export function mensagensDeImpugnacoes(informativos: readonly InformativoQuadro[
   return mensagens;
 }
 
+async function comPrazo<T>(trabalho: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    const motivo = signal.reason;
+    throw motivo instanceof Error ? motivo : new DOMException("The operation was aborted", "AbortError");
+  }
+  let aoAbortar: () => void = () => {};
+  const abortado = new Promise<never>((_, reject) => {
+    aoAbortar = () => {
+      const motivo = signal.reason;
+      reject(motivo instanceof Error ? motivo : new DOMException("The operation was aborted", "AbortError"));
+    };
+    signal.addEventListener("abort", aoAbortar, { once: true });
+  });
+  try {
+    return await Promise.race([trabalho, abortado]);
+  } finally {
+    signal.removeEventListener("abort", aoAbortar);
+  }
+}
+
 export async function lerImpugnacoesComprasnet(
   idCompra: string,
-  opcoes: { captcha?: string; fetchImpl?: typeof fetch } = {},
+  opcoes: { captcha?: string; fetchImpl?: typeof fetch; prazoMs?: number } = {},
 ): Promise<LeituraImpugnacoes> {
   const fetchImpl = opcoes.fetchImpl ?? fetch;
+  const signal = AbortSignal.timeout(opcoes.prazoMs ?? 8_000);
   const informativos: InformativoQuadro[] = [];
   let pagina = 0;
   let quantidade: number | null = null;
@@ -99,8 +120,24 @@ export async function lerImpugnacoesComprasnet(
     url.searchParams.set("tamanhoPagina", "10");
     url.searchParams.set("pagina", String(pagina));
     if (opcoes.captcha) url.searchParams.set("captcha", opcoes.captcha);
-    const res = await fetchImpl(url.toString(), { headers: { Accept: "application/json" } });
-    const texto = await res.text();
+    let res: Response;
+    let texto: string;
+    try {
+      res = await comPrazo(
+        fetchImpl(url.toString(), { headers: { Accept: "application/json" }, signal }),
+        signal,
+      );
+      texto = await comPrazo(res.text(), signal);
+    } catch (erro) {
+      if (signal.aborted) {
+        return {
+          ok: false,
+          motivo: "indisponivel",
+          detalhe: "Tempo esgotado ao ler o quadro de impugnações.",
+        };
+      }
+      throw erro;
+    }
     const leitura = interpretarCorpoImpugnacoes(res.status, res.headers, texto);
     if (!leitura.ok) return leitura;
     if (quantidade === null && texto.trim()) {

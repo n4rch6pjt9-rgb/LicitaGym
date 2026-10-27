@@ -216,10 +216,10 @@ export async function sincronizarPortalOficialEAtraso(
           captcha: opcoes.captcha,
           fetchImpl: opcoes.fetchImpl,
         });
-        consultadoEm = new Date().toISOString();
         if (!leitura.ok) {
           situacaoPortal = leitura.motivo;
         } else {
+          consultadoEm = new Date().toISOString();
           mensagensPortal = mensagensDeImpugnacoes(leitura.informativos);
           situacaoPortal = mensagensPortal.length > 0 ? "impugnacao_registrada" : "sem_impugnacao";
         }

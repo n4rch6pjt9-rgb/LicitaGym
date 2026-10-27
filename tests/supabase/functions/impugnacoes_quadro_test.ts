@@ -40,3 +40,31 @@ Deno.test("impugnacao do quadro vira aviso e preserva quebras de linha", () => {
   assertEquals(aviso?.tipo, "Aviso");
   assertEquals(aviso?.justificativa, "Linha 1\nLinha 2\n\nResposta:\nResposta 1\nResposta 2");
 });
+
+Deno.test("503 vazio nao vira quadro sem impugnacao", () => {
+  const leitura = interpretarCorpoImpugnacoes(503, new Headers(), "");
+  if (leitura.ok) throw new Error("503 nao pode virar lista vazia");
+  assertEquals(leitura.motivo, "indisponivel");
+});
+
+Deno.test("429 com JSON de erro nao vira quadro sem impugnacao", () => {
+  const leitura = interpretarCorpoImpugnacoes(
+    429,
+    new Headers({ "content-type": "application/json" }),
+    '{"message":"Too many requests"}',
+  );
+  if (leitura.ok) throw new Error("429 nao pode virar lista vazia");
+  assertEquals(leitura.motivo, "indisponivel");
+});
+
+Deno.test("200 sem lista de informativos nao vira quadro vazio", () => {
+  const leitura = interpretarCorpoImpugnacoes(200, new Headers(), '{"message":"erro"}');
+  if (leitura.ok) throw new Error("envelope invalido nao pode virar lista vazia");
+  assertEquals(leitura.motivo, "indisponivel");
+});
+
+Deno.test("200 com informativos vazios continua sendo quadro vazio", () => {
+  const leitura = interpretarCorpoImpugnacoes(200, new Headers(), '{"informativos":[]}');
+  if (!leitura.ok) throw new Error("lista vazia legitima");
+  assertEquals(leitura.informativos, []);
+});

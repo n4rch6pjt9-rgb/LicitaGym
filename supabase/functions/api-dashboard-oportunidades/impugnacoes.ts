@@ -39,6 +39,9 @@ export function interpretarCorpoImpugnacoes(status: number, headers: Headers, te
       detalhe: headerMensagem(headers, "message-detail"),
     };
   }
+  if (status < 200 || status >= 300) {
+    return { ok: false, motivo: "indisponivel", detalhe: `HTTP ${status}` };
+  }
   if (status === 204 || texto.trim() === "") return { ok: true, informativos: [] };
   let body: unknown;
   try {
@@ -50,7 +53,9 @@ export function interpretarCorpoImpugnacoes(status: number, headers: Headers, te
     return { ok: false, motivo: "indisponivel", detalhe: "Resposta do quadro sem objeto." };
   }
   const informativos = (body as { informativos?: unknown }).informativos;
-  if (!Array.isArray(informativos)) return { ok: true, informativos: [] };
+  if (!Array.isArray(informativos)) {
+    return { ok: false, motivo: "indisponivel", detalhe: "Resposta do quadro sem lista de informativos." };
+  }
   return {
     ok: true,
     informativos: informativos.filter((item): item is InformativoQuadro => !!item && typeof item === "object"),

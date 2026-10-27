@@ -97,3 +97,21 @@ Deno.test("corpo travado do quadro tambem vira indisponivel", async () => {
   if (leitura.ok) throw new Error("corpo travado nao pode virar lista");
   assertEquals(leitura.motivo, "indisponivel");
 });
+
+Deno.test("quadro alem do limite de paginas nao volta como leitura completa", async () => {
+  const leitura = await lerImpugnacoesComprasnet("18017405000472026", {
+    fetchImpl: (input) => {
+      const pagina = Number(new URL(String(input)).searchParams.get("pagina"));
+      const informativos = Array.from({ length: 10 }, (_, i) => ({
+        mensagem: `m${pagina}-${i}`,
+        dataHoraInclusao: "2026-10-26T11:21:11",
+      }));
+      return Promise.resolve(new Response(JSON.stringify({ quantidade: 201, informativos }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }));
+    },
+  });
+  if (leitura.ok) throw new Error("leitura truncada nao pode ser sucesso");
+  assertEquals(leitura.motivo, "indisponivel");
+});

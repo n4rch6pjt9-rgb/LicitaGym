@@ -153,5 +153,12 @@ export async function lerImpugnacoesComprasnet(
     if (quantidade !== null && informativos.length >= quantidade) break;
     pagina++;
   }
+  if (quantidade !== null && informativos.length < quantidade) {
+    return {
+      ok: false,
+      motivo: "indisponivel",
+      detalhe: `Quadro truncado em ${informativos.length} de ${quantidade}.`,
+    };
+  }
   return { ok: true, informativos };
 }

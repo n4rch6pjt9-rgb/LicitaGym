@@ -1,15 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import {
-  corsHeaders,
-  errorDetail,
-  jsonResponse,
-  validateCronAuth,
-} from "../_shared/http.ts";
-import {
-  clampConsultaPageSize,
-  createRequestBudget,
-  PncpConsultaClient,
-} from "../_shared/pncp/consulta-client.ts";
+import { corsHeaders, errorDetail, jsonResponse, validateCronAuth } from "../_shared/http.ts";
+import { clampConsultaPageSize, createRequestBudget, PncpConsultaClient } from "../_shared/pncp/consulta-client.ts";
 import { BudgetExhaustedError } from "../_shared/pncp/retry.ts";
 import { RateLimitPauseError, UnifiedHttpClient } from "../_shared/http-client/index.ts";
 import { resolvePcaClassificacoes } from "../_shared/pncp/licitagym-catmat.ts";
@@ -23,7 +14,7 @@ import {
   upsertPeriodProbe,
 } from "../_shared/pncp/period-anchor.ts";
 import { acquireSyncLock } from "../_shared/pncp/lock.ts";
-import { PncpSearchClient } from "../_shared/pncp/search-client.ts";
+import { type PcaSearchPeriodSummary, PncpSearchClient } from "../_shared/pncp/search-client.ts";
 import { hashPayload, sha256Hex } from "../_shared/pncp/hash.ts";
 import {
   createServiceClient,
@@ -35,7 +26,6 @@ import {
 import { gravarPaginaPcaEmLote } from "../_shared/pncp/pca-lote.ts";
 import { PncpIntegracaoClient } from "../_shared/pncp/integracao-client.ts";
 import { handleRotinaFila, type RotinaBody } from "./rotina-fila.ts";
-import { inactivateNotSeen } from "../_shared/pncp/upsert.ts";
 
 type SyncBody = {
   ano?: number;
@@ -55,6 +45,16 @@ type SyncBody = {
   /** Ignora verificação de período (carga anual forçada). */
   forcar?: boolean;
   async?: boolean;
+};
+
+type ConsultaLegada = Pick<
+  PncpConsultaClient,
+  "fetchPcaPage" | "extractList" | "extractPagination" | "probePncpHealth" | "probePcaClassificacao"
+>;
+type DependenciasSyncPca = {
+  createServiceClient?: typeof createServiceClient;
+  consulta?: ConsultaLegada;
+  search?: Pick<PncpSearchClient, "summarizePcaPeriod">;
 };
 
 type SyncStats = {
@@ -77,45 +77,95 @@ function mergeStats(into: SyncStats, from: SyncStats) {
   into.recebidos += from.recebidos;
 }
 
+type ContinuacaoLegada = {
+  formato: "pca-legado-v1";
+  pending: string[];
+  pending_codigos_classificacao: string[];
+  classes: string[];
+  pagina_por_codigo_pendente: Record<string, number>;
+  pagina_inicial: number;
+  tamanho_pagina: number;
+  chain_id: string;
+  inicio_completo: boolean;
+  periodo: PcaSearchPeriodSummary | null;
+  probe_metadata: Record<string, unknown>;
+};
+
+function restaurarLegado(value: unknown, classes: string[]): Partial<ContinuacaoLegada> | null {
+  if (value == null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) throw new Error("continuação PCA inválida");
+  const c = value as Record<string, unknown>;
+  if (
+    c.formato === "pca-legado-v1" && (!Array.isArray(c.classes) ||
+      typeof c.inicio_completo !== "boolean" || typeof c.chain_id !== "string" || !("periodo" in c) ||
+      !c.probe_metadata || typeof c.probe_metadata !== "object" || Array.isArray(c.probe_metadata))
+  ) {
+    throw new Error("continuação PCA sem contexto da cadeia");
+  }
+  if (c.formato !== undefined && c.formato !== "pca-legado-v1") {
+    throw new Error("formato de continuação PCA incompatível");
+  }
+  const pending = c.pending_codigos_classificacao ?? c.pending;
+  if (
+    !Array.isArray(pending) || pending.some((x) => typeof x !== "string" || !classes.includes(x)) ||
+    new Set(pending).size !== pending.length
+  ) throw new Error("classes pendentes da continuação PCA inválidas");
+  if (
+    c.classes !== undefined && (!Array.isArray(c.classes) ||
+      [...c.classes].sort().join(",") !== [...classes].sort().join(","))
+  ) throw new Error("escopo da continuação PCA incompatível");
+  const fallback = c.pagina_inicial ?? 1;
+  if (!Number.isSafeInteger(fallback) || Number(fallback) < 1) throw new Error("página da continuação PCA inválida");
+  const map = c.pagina_por_codigo_pendente;
+  if (map !== undefined && (!map || typeof map !== "object" || Array.isArray(map))) {
+    throw new Error("mapa da continuação PCA inválido");
+  }
+  const paginas: Record<string, number> = {};
+  for (const codigo of pending as string[]) {
+    const pagina = (map as Record<string, unknown> | undefined)?.[codigo] ?? fallback;
+    if (!Number.isSafeInteger(pagina) || Number(pagina) < 1) throw new Error("página da continuação PCA inválida");
+    paginas[codigo] = Number(pagina);
+  }
+  if (
+    c.tamanho_pagina !== undefined &&
+    (!Number.isSafeInteger(c.tamanho_pagina) || Number(c.tamanho_pagina) < 1 || Number(c.tamanho_pagina) > 500)
+  ) {
+    throw new Error("tamanho de página da continuação PCA inválido");
+  }
+  return {
+    pending: pending as string[],
+    pagina_por_codigo_pendente: paginas,
+    tamanho_pagina: c.tamanho_pagina as number | undefined,
+    inicio_completo: c.formato === "pca-legado-v1" && c.inicio_completo === true,
+    chain_id: typeof c.chain_id === "string" ? c.chain_id : undefined,
+    periodo: c.formato === "pca-legado-v1" ? c.periodo as PcaSearchPeriodSummary | null : null,
+    probe_metadata: c.probe_metadata && typeof c.probe_metadata === "object" && !Array.isArray(c.probe_metadata)
+      ? c.probe_metadata as Record<string, unknown>
+      : undefined,
+  };
+}
+
 async function syncClassificacao(params: {
   client: ReturnType<typeof createServiceClient>;
-  consulta: PncpConsultaClient;
+  consulta: ConsultaLegada;
   runId: string;
   ano: number;
   codigoClassificacao: string;
   paginaInicial: number;
   maxPaginas: number;
   tamanhoPagina: number;
-  onCheckpoint?: (nextPage: number) => Promise<void> | void;
-}): Promise<
-  { stats: SyncStats; ultimaPagina: number; paginasRestantes: number }
-> {
-  const {
-    client,
-    consulta,
-    runId,
-    ano,
-    codigoClassificacao,
-    paginaInicial,
-    maxPaginas,
-    tamanhoPagina,
-  } = params;
-
+  onCheckpoint: (nextPage: number | null) => Promise<void>;
+  onStats: (stats: SyncStats) => void;
+}): Promise<{ stats: SyncStats; ultimaPagina: number; paginasRestantes: number }> {
+  const { client, consulta, runId, ano, codigoClassificacao, paginaInicial, maxPaginas, tamanhoPagina } = params;
   const stats = emptyStats();
   let pagina = paginaInicial;
+  let ultimaPagina = paginaInicial - 1;
   let paginasRestantes = 1;
-
-  while (paginasRestantes >= 0 && pagina < paginaInicial + maxPaginas) {
-    const endpoint =
-      `/pca/?anoPca=${ano}&codigoClassificacaoSuperior=${codigoClassificacao}&pagina=${pagina}`;
-    const { status, body: responseBody, elapsedMs } = await consulta
-      .fetchPcaPage(
-        ano,
-        pagina,
-        codigoClassificacao,
-        tamanhoPagina,
-      );
-    const respostaHash = await sha256Hex(JSON.stringify(responseBody));
+  for (let lidas = 0; lidas < maxPaginas; lidas++, pagina++) {
+    const endpoint = `/pca/?anoPca=${ano}&codigoClassificacaoSuperior=${codigoClassificacao}&pagina=${pagina}`;
+    const { status, body, elapsedMs } = await consulta.fetchPcaPage(ano, pagina, codigoClassificacao, tamanhoPagina);
+    const respostaHash = await sha256Hex(JSON.stringify(body));
     await logSyncRequest(client, {
       syncRunId: runId,
       endpoint,
@@ -125,50 +175,46 @@ async function syncClassificacao(params: {
       tempoRespostaMs: elapsedMs,
       respostaHash,
     });
-
-    const requestHash = await hashPayload({
-      ano,
-      codigoClassificacao,
-      pagina,
-      tamanhoPagina,
-    });
     await storeSourceRecord(client, {
       syncRunId: runId,
       resourceType: "pca",
       endpoint,
-      requestHash,
+      requestHash: await hashPayload({ ano, codigoClassificacao, pagina, tamanhoPagina }),
       contentHash: respostaHash,
-      payload: responseBody,
+      payload: body,
     });
-
-    const list = consulta.extractList(responseBody);
-    const pagination = consulta.extractPagination(responseBody, pagina);
-    paginasRestantes = pagination.paginasRestantes;
-
-    // Gravação em lote por página (spec 0012, PR 1): ~10 chamadas ao banco por página em vez de ~7,5 por item.
-    const pageStats = await gravarPaginaPcaEmLote(
-      client,
-      list as Record<string, unknown>[],
-      { ano, runId },
-    );
-    stats.recebidos += pageStats.recebidos;
-    stats.novos += pageStats.novos;
-    stats.alterados += pageStats.alterados;
-    stats.inalterados += pageStats.inalterados;
-    stats.erros += pageStats.erros;
-
-    if (pagination.paginasRestantes <= 0) {
-      params.onCheckpoint?.(pagina + 1);
-      break;
+    ultimaPagina = pagina;
+    if (status === 204) {
+      await params.onCheckpoint(null);
+      return { stats, ultimaPagina, paginasRestantes: 0 };
     }
-    pagina++;
-    await params.onCheckpoint?.(pagina);
+    const obj = body && typeof body === "object" && !Array.isArray(body) ? body as Record<string, unknown> : null;
+    if (
+      status !== 200 || !obj || !Array.isArray(obj.data) ||
+      (obj.numeroPagina ?? obj.pagina) !== pagina ||
+      !Number.isSafeInteger(obj.paginasRestantes) || Number(obj.paginasRestantes) < 0 ||
+      !Number.isSafeInteger(obj.totalRegistros) || Number(obj.totalRegistros) < 0 ||
+      (obj.data.length === 0 && Number(obj.totalRegistros) > 0)
+    ) {
+      throw new Error(`consulta PCA classe ${codigoClassificacao} página ${pagina}: resposta ou paginação inválida`);
+    }
+    paginasRestantes = Number(obj.paginasRestantes);
+    const pageStats = await gravarPaginaPcaEmLote(client, obj.data as Record<string, unknown>[], { ano, runId });
+    mergeStats(stats, pageStats);
+    params.onStats(pageStats);
+    if (pageStats.erros > 0) {
+      // Repetir a página é idempotente. Não pular itens que falharam na gravação.
+      await params.onCheckpoint(pagina);
+      return { stats, ultimaPagina, paginasRestantes: Math.max(1, paginasRestantes) };
+    }
+    await params.onCheckpoint(paginasRestantes === 0 ? null : pagina + 1);
+    if (paginasRestantes === 0) break;
   }
-
-  return { stats, ultimaPagina: pagina, paginasRestantes };
+  return { stats, ultimaPagina, paginasRestantes };
 }
 
-Deno.serve(async (req) => {
+export async function handleRequest(req: Request, deps: DependenciasSyncPca = {}): Promise<Response> {
+  const criarClient = deps.createServiceClient ?? createServiceClient;
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
@@ -178,7 +224,11 @@ Deno.serve(async (req) => {
   }
 
   const url = new URL(req.url);
-  const body = (await req.json().catch(() => ({}))) as SyncBody;
+  const raw: unknown = await req.json().catch(() => null);
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return jsonResponse({ error: "JSON deve ser um objeto" }, 400);
+  }
+  const body = raw as SyncBody;
   const isAsync = url.searchParams.get("async") === "1" || body.async === true;
   const ano = body.ano ?? new Date().getUTCFullYear();
   const codigosClassificacao = resolvePcaClassificacoes(body);
@@ -186,20 +236,29 @@ Deno.serve(async (req) => {
   if (scopeErr) {
     return jsonResponse({ status: "blocked", reason: scopeErr }, 423);
   }
+  if ((body as RotinaBody).rotina === undefined && body.modo === "completo" && !body.somente_verificacao) {
+    return jsonResponse({
+      error: "modo completo legado desativado; use rotina: reconciliacao para inativação por plano",
+    }, 400);
+  }
   const paginaInicial = body.pagina_inicial ?? 1;
   const maxPaginas = body.max_paginas ?? 100;
+  if (
+    (body as RotinaBody).rotina === undefined &&
+    (!Number.isSafeInteger(paginaInicial) || paginaInicial < 1 || !Number.isSafeInteger(maxPaginas) || maxPaginas < 1)
+  ) {
+    return jsonResponse({ error: "pagina_inicial e max_paginas devem ser inteiros positivos" }, 400);
+  }
   const tamanhoPagina = clampConsultaPageSize("pca", body.tamanho_pagina);
   const verificarPeriodo = body.verificar_periodo ?? !body.forcar;
-  const isManual = Boolean(body.forcar) || Boolean(body.pagina_inicial) || (Boolean(body.ano) && body.ano !== new Date().getUTCFullYear());
+  // Disparos forçados também retomam; a chave não mistura o formato legado com a fila.
   const lockKey = body.somente_verificacao
     ? `pca-probe:${ano}`
-    : (isManual
-        ? `pca-sync:manual:${ano}:${codigosClassificacao.slice().sort().join(",")}`
-        : `pca-sync:${ano}:${codigosClassificacao.slice().sort().join(",")}`);
+    : `pca-sync:${ano}:${codigosClassificacao.slice().sort().join(",")}`;
 
-  let client;
+  let client: ReturnType<typeof createServiceClient>;
   try {
-    client = createServiceClient();
+    client = criarClient();
   } catch (error) {
     return jsonResponse(
       {
@@ -215,14 +274,15 @@ Deno.serve(async (req) => {
     telemetryLogger: (t) => logSyncRequest(client, t),
   });
   const requestBudget = createRequestBudget();
-  const consulta = new PncpConsultaClient(undefined, {}, httpClient).withBudget(requestBudget);
-  const search = new PncpSearchClient(undefined, httpClient).withBudget(requestBudget);
+  const consulta = deps.consulta ?? new PncpConsultaClient(undefined, {}, httpClient).withBudget(requestBudget);
+  const search = deps.search ?? new PncpSearchClient(undefined, httpClient).withBudget(requestBudget);
 
   // Spec 0012, PR 2: sync por fila de planos (descoberta pela consulta, itens pela integração por plano).
   // Sem `rotina`, segue o fluxo antigo abaixo; os crons novos nascem desligados.
   if ((body as RotinaBody).rotina !== undefined) {
     return await handleRotinaFila({
       client,
+      clientDaReserva: (token, runId) => criarClient({ "x-pca-reserva": token, "x-pca-run-id": runId }),
       consulta,
       integracao: new PncpIntegracaoClient(undefined, httpClient),
       body: body as RotinaBody,
@@ -346,8 +406,7 @@ Deno.serve(async (req) => {
       status: "PNCP_DEGRADADO",
       detalhe: health.detalhe,
       elapsed_ms: health.elapsedMs,
-      mensagem:
-        "PNCP lento ou falhando no probe /v1/atas — carga não iniciada.",
+      mensagem: "PNCP lento ou falhando no probe /v1/atas — carga não iniciada.",
     }, 503);
   }
 
@@ -436,7 +495,10 @@ Deno.serve(async (req) => {
       periodSummary,
       scopedProbes,
     );
-    if (decisao.skip) {
+    const { data: pendente, error: ePendente } = await client.schema("private").from("pncp_sync_run")
+      .select("id").eq("lock_key", lockKey).in("status", ["incompleta", "executando"]).limit(1).maybeSingle();
+    if (ePendente) return jsonResponse({ error: "Falha ao conferir retomada PCA" }, 500);
+    if (decisao.skip && !pendente) {
       return jsonResponse({
         status: "ignorado",
         ano,
@@ -445,8 +507,7 @@ Deno.serve(async (req) => {
         probe_segmentado: scopedProbes,
         search_indisponivel: searchProbeError,
         anchor: periodAnchor,
-        mensagem:
-          "Probe segmentado e Search inalterados desde a última carga. Use forcar:true para carga anual.",
+        mensagem: "Probe segmentado e Search inalterados desde a última carga. Use forcar:true para carga anual.",
       });
     }
   }
@@ -462,56 +523,76 @@ Deno.serve(async (req) => {
     return jsonResponse({ status: "already_running", sync_id: runId });
   }
 
+  client = criarClient({ "x-pca-run-id": runId });
+
   const executeSync = async (): Promise<Response> => {
     const stats = emptyStats();
-    const porCodigo: Record<
-      string,
-      SyncStats & { ultima_pagina: number; paginas_restantes: number }
-    > = {};
-    const paginaPendentePorCodigo: Record<string, number> = {};
-    let currentCodigoIndex = 0;
+    const porCodigo: Record<string, SyncStats & { ultima_pagina: number; paginas_restantes: number }> = {};
+    let paginas: Record<string, number> = Object.fromEntries(codigosClassificacao.map((c) => [c, paginaInicial]));
+    let inicioCompleto = paginaInicial === 1;
+    let chainId = runId;
+    let tamanhoEfetivo = tamanhoPagina;
+    let periodoDaCadeia = periodSummary;
+    let probeDaCadeia: Record<string, unknown> = probeMetadata;
+    const salvar = (): ContinuacaoLegada => {
+      const pending = codigosClassificacao.filter((c) => paginas[c] !== undefined);
+      return {
+        formato: "pca-legado-v1",
+        pending,
+        pending_codigos_classificacao: pending,
+        classes: codigosClassificacao,
+        pagina_por_codigo_pendente: { ...paginas },
+        pagina_inicial: pending.length ? paginas[pending[0]] : 1,
+        tamanho_pagina: tamanhoEfetivo,
+        chain_id: chainId,
+        inicio_completo: inicioCompleto,
+        periodo: periodoDaCadeia,
+        probe_metadata: probeDaCadeia,
+      };
+    };
+    const checkpoint = async () => {
+      const c = salvar();
+      const error = await updateSyncHeartbeat(client, runId, {
+        paginaAtual: c.pagina_inicial,
+        continuation: c,
+        baseParametros: { ...body, ano, codigos_classificacao: codigosClassificacao },
+      });
+      if (error) throw new Error(`checkpoint PCA não persistido: ${error.message}`);
+    };
 
     try {
-      // Run novo sem herança grava as fatias planejadas no primeiro heartbeat
-      if (!inheritedContinuation) {
-        await updateSyncHeartbeat(client, runId, {
-          paginaAtual: paginaInicial,
-          continuation: {
-            pending_codigos_classificacao: codigosClassificacao,
-            pagina_inicial: paginaInicial,
-            chain_id: runId,
-          },
-          baseParametros: body,
-        });
+      const herdada = restaurarLegado(inheritedContinuation, codigosClassificacao);
+      if (herdada?.pending?.length) {
+        paginas = herdada.pagina_por_codigo_pendente ?? {};
+        inicioCompleto = herdada.inicio_completo === true;
+        chainId = herdada.chain_id ?? runId;
+        tamanhoEfetivo = herdada.tamanho_pagina ?? tamanhoPagina;
+        periodoDaCadeia = herdada.periodo ?? null;
+        probeDaCadeia = herdada.probe_metadata ?? {};
       }
-
-      for (
-        currentCodigoIndex = 0;
-        currentCodigoIndex < codigosClassificacao.length;
-        currentCodigoIndex++
-      ) {
-        const codigoClassificacao = codigosClassificacao[currentCodigoIndex];
+      if (body.forcar || body.pagina_inicial || (body.ano && body.ano !== new Date().getUTCFullYear())) {
+        const { error } = await client.schema("private").from("pncp_sync_run")
+          .update({ modo: "manual" }).eq("id", runId).eq("status", "executando");
+        if (error) throw error;
+      }
+      // Persistir antes do primeiro HTTP torna uma morte precoce recuperável pela RPC de lock.
+      await checkpoint();
+      for (const codigoClassificacao of codigosClassificacao) {
+        if (paginas[codigoClassificacao] === undefined) continue;
         const result = await syncClassificacao({
           client,
           consulta,
           runId,
           ano,
           codigoClassificacao,
-          paginaInicial,
+          paginaInicial: paginas[codigoClassificacao],
           maxPaginas,
-          tamanhoPagina,
+          tamanhoPagina: tamanhoEfetivo,
+          onStats: (parcial) => mergeStats(stats, parcial),
           onCheckpoint: async (nextPage) => {
-            paginaPendentePorCodigo[codigoClassificacao] = nextPage;
-            await updateSyncHeartbeat(client, runId, {
-              paginaAtual: nextPage,
-              continuation: {
-                pending_codigos_classificacao: codigosClassificacao.slice(currentCodigoIndex),
-                pagina_inicial: nextPage,
-                pagina_por_codigo_pendente: paginaPendentePorCodigo,
-                chain_id: runId,
-              },
-              baseParametros: body,
-            });
+            if (nextPage === null) delete paginas[codigoClassificacao];
+            else paginas[codigoClassificacao] = nextPage;
+            await checkpoint();
           },
         });
         porCodigo[codigoClassificacao] = {
@@ -519,85 +600,50 @@ Deno.serve(async (req) => {
           ultima_pagina: result.ultimaPagina,
           paginas_restantes: result.paginasRestantes,
         };
-        mergeStats(stats, result.stats);
       }
-      currentCodigoIndex = codigosClassificacao.length;
-
-      if (
-        body.modo === "completo" &&
-        stats.erros === 0 &&
-        Object.values(porCodigo).every((codigo) => codigo.paginas_restantes <= 0)
-      ) {
-        await inactivateNotSeen(client, "pca_planos", runId, {
-          ano_exercicio: ano,
-        });
-        const { data: planosVistos } = await client
-          .from("pca_planos")
-          .select("id")
-          .eq("last_seen_sync_id", runId);
-        if (planosVistos?.length) {
-          for (const plano of planosVistos) {
-            await inactivateNotSeen(client, "pca_itens", runId, {
-              pca_plano_id: plano.id,
-            });
-          }
-        }
+      const continuation = salvar();
+      const status = continuation.pending.length > 0
+        ? "incompleta"
+        : stats.erros > 0
+        ? "concluida_com_erros"
+        : "concluida";
+      const cargaAnualCompleta = status === "concluida" && inicioCompleto;
+      if (cargaAnualCompleta) {
+        await markPeriodLoadComplete(client, periodoDaCadeia, { ...probeDaCadeia, chain_id: chainId }, ano);
       }
-
-      if (stats.erros === 0) {
-        await markPeriodLoadComplete(client, periodSummary, probeMetadata, ano);
-      }
-
       await finishSyncRun(client, runId, {
-        status: stats.erros > 0 ? "concluida_com_erros" : "concluida",
+        status,
         totalRecebidos: stats.recebidos,
         totalNovos: stats.novos,
         totalAtualizados: stats.alterados,
         totalInalterados: stats.inalterados,
         totalErros: stats.erros,
-        paginaAtual: Math.max(
-          ...Object.values(porCodigo).map((c) => c.ultima_pagina),
-          0,
-        ),
+        paginaAtual: Math.max(...Object.values(porCodigo).map((c) => c.ultima_pagina), 0),
+        parametros: {
+          ...body,
+          ano,
+          codigos_classificacao: codigosClassificacao,
+          carga_anual_completa: cargaAnualCompleta,
+          continuation,
+        },
       });
-
       return jsonResponse({
         sync_id: runId,
-        status: stats.erros > 0 ? "concluida_com_erros" : "concluida",
+        status,
         ano,
         codigos_classificacao: codigosClassificacao,
-        periodo: periodSummary,
+        periodo: periodoDaCadeia,
         por_codigo: porCodigo,
+        carga_anual_completa: cargaAnualCompleta,
+        continuation,
         ...stats,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const isBudget = error instanceof BudgetExhaustedError ||
-        error instanceof RateLimitPauseError ||
+      const isBudget = error instanceof BudgetExhaustedError || error instanceof RateLimitPauseError ||
         message.includes("BUDGET_EXHAUSTED");
-      const pendingCodigos =
-        isBudget && currentCodigoIndex < codigosClassificacao.length
-          ? codigosClassificacao.slice(currentCodigoIndex)
-          : [];
-      const paginaPorCodigoPendente = Object.fromEntries(
-        pendingCodigos.map((codigo, index) => [
-          codigo,
-          index === 0
-            ? (paginaPendentePorCodigo[codigo] ?? paginaInicial)
-            : paginaInicial,
-        ]),
-      );
-      const continuation = pendingCodigos.length > 0
-        ? {
-          pending_codigos_classificacao: pendingCodigos,
-          pagina_inicial: paginaPorCodigoPendente[pendingCodigos[0]] ??
-            paginaInicial,
-          pagina_por_codigo_pendente: paginaPorCodigoPendente,
-          max_paginas: maxPaginas,
-          tamanho_pagina: tamanhoPagina,
-        }
-        : undefined;
-      const runStatus = isManual ? "falhou" : (isBudget ? "incompleta" : "falhou");
+      const continuation = salvar();
+      const runStatus = isBudget && continuation.pending.length > 0 ? "incompleta" : "falhou";
       await finishSyncRun(client, runId, {
         status: runStatus,
         erroPrincipal: message,
@@ -606,19 +652,8 @@ Deno.serve(async (req) => {
         totalAtualizados: stats.alterados,
         totalInalterados: stats.inalterados,
         totalErros: stats.erros,
-        paginaAtual: Math.max(
-          ...Object.values(porCodigo).map((c) => c.ultima_pagina),
-          0,
-        ),
-        parametros: continuation
-          ? {
-            ...body,
-            codigos_classificacao: pendingCodigos,
-            pagina_inicial: paginaPorCodigoPendente[pendingCodigos[0]] ??
-              paginaInicial,
-            continuation,
-          }
-          : undefined,
+        paginaAtual: continuation.pagina_inicial,
+        parametros: { ...body, ano, codigos_classificacao: codigosClassificacao, continuation },
       });
       return jsonResponse({
         error: message,
@@ -631,14 +666,19 @@ Deno.serve(async (req) => {
   };
 
   if (isAsync) {
-    const edgeRuntime = (globalThis as unknown as { EdgeRuntime?: { waitUntil?: (promise: Promise<unknown>) => void } }).EdgeRuntime;
+    const edgeRuntime =
+      (globalThis as unknown as { EdgeRuntime?: { waitUntil?: (promise: Promise<unknown>) => void } }).EdgeRuntime;
     if (typeof edgeRuntime?.waitUntil === "function") {
       edgeRuntime.waitUntil(executeSync());
     } else {
-      executeSync().catch((err) => console.error(`[async pca ${runId}] Error:`, err));
+      return await executeSync();
     }
     return jsonResponse({ status: "accepted", sync_id: runId }, 202);
   }
 
   return await executeSync();
-});
+}
+
+if (import.meta.main) {
+  Deno.serve((req) => handleRequest(req));
+}

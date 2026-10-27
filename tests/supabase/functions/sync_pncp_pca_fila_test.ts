@@ -12,6 +12,7 @@ import {
   lerItensPlano,
   planoDaConsulta,
   processarFila,
+  ReservaPcaPerdidaError,
   situacaoFila,
   TAMANHO_PAGINA_INTEGRACAO,
   tratarAusentes,
@@ -127,6 +128,7 @@ function banco(): FakePostgrest {
       Object.assign(f, {
         tentativas: Number(f.tentativas) + (f.status === "processando" ? 1 : 0),
         status: "processando",
+        reserva_token: crypto.randomUUID(),
         disponivel_em: null,
         atualizado_em: new Date().toISOString(),
       });
@@ -183,6 +185,7 @@ function banco(): FakePostgrest {
     });
     return { already_running: false, run_id: id, continuation };
   };
+  db.rpcs.pca_adquirir_execucao = db.rpcs.acquire_sync_lock;
   return db;
 }
 
@@ -1199,4 +1202,195 @@ Deno.test("handler: worker morto logo depois de contar a ausência não faz a co
   assertEquals(r2.status, "concluida");
   assertEquals(consulta.chamadas, [1, 2]); // a continuação não refaz a descoberta
   assertEquals(contadorAusencia(db)["3"], 2); // e não conta a ausência de novo
+});
+
+Deno.test("completude: rejeita repetição entre páginas mesmo com total bruto correto", async () => {
+  const itens = Array.from({ length: TAMANHO_PAGINA_INTEGRACAO }, (_, i) => itemIntegracao(i + 1));
+  itens.push(itemIntegracao(1, "7830", 999));
+  await assertRejects(
+    () => lerItensPlano(integracaoFake({ [`${CNPJ}/2026/4`]: itens }), CNPJ, ANO, 4),
+    Error,
+    "numeroItem repetido",
+  );
+});
+
+Deno.test("completude: rejeita numeroItem inválido sem converter vazio ou booleano", async () => {
+  for (
+    const numeroItem of [
+      undefined,
+      null,
+      "",
+      " ",
+      true,
+      false,
+      {},
+      [],
+      0,
+      -1,
+      1.5,
+      Infinity,
+      Number.MAX_SAFE_INTEGER + 1,
+    ]
+  ) {
+    await assertRejects(
+      () =>
+        lerItensPlano(
+          integracaoFake({ [`${CNPJ}/2026/4`]: [{ ...itemIntegracao(1), numeroItem }] }),
+          CNPJ,
+          ANO,
+          4,
+        ),
+      Error,
+      "numeroItem inválido",
+    );
+  }
+});
+
+Deno.test("completude: quantidade ausente ou inválida nunca equivale a plano vazio", async () => {
+  for (
+    const body of [
+      null,
+      undefined,
+      "",
+      " ",
+      true,
+      false,
+      {},
+      [],
+      -1,
+      0.5,
+      Infinity,
+      Number.MAX_SAFE_INTEGER + 1,
+    ]
+  ) {
+    const integ = {
+      ...integracaoFake({ [`${CNPJ}/2026/4`]: [] }),
+      getPcaItensQuantidade: () => Promise.resolve({ status: 200, body }),
+    };
+    await assertRejects(() => lerItensPlano(integ, CNPJ, ANO, 4), Error, "quantidade inválida");
+  }
+});
+
+Deno.test("completude: preserva zero explícito e inteiros decimais textuais compatíveis", async () => {
+  for (const body of [0, "0"]) {
+    const integ = {
+      ...integracaoFake({ [`${CNPJ}/2026/4`]: [] }),
+      getPcaItensQuantidade: () => Promise.resolve({ status: 200, body }),
+    };
+    assertEquals(await lerItensPlano(integ, CNPJ, ANO, 4), []);
+  }
+  const itens = [{ ...itemIntegracao(1), numeroItem: "412" }, itemIntegracao(900)];
+  assertEquals(await lerItensPlano(integracaoFake({ [`${CNPJ}/2026/4`]: itens }), CNPJ, ANO, 4), itens);
+  await assertRejects(
+    () =>
+      lerItensPlano(
+        integracaoFake({
+          [`${CNPJ}/2026/4`]: [itemIntegracao(1), { ...itemIntegracao(1), numeroItem: "1" }],
+        }),
+        CNPJ,
+        ANO,
+        4,
+      ),
+    Error,
+    "numeroItem repetido",
+  );
+});
+
+Deno.test("completude: leitura inválida preserva itens ativos e dados já persistidos", async () => {
+  for (const motivo of ["novo", "ausente"]) {
+    for (const caso of ["duplicado", "quantidade nula"]) {
+      const db = banco();
+      await gravarPaginaPcaEmLote(db as never, [{
+        ...cabecalho(),
+        itens: [itemConsulta(412), itemConsulta(413)],
+      }], { ano: ANO, runId: "antes" });
+      const antes = structuredClone(db.rows("pca_itens"));
+      enfileirarPlano(db);
+      db.rows("pca_plano_fila")[0].motivo = motivo;
+      const integ = caso === "duplicado"
+        ? integracaoFake({ [`${CNPJ}/2026/4`]: [itemIntegracao(412, "7830", 999), itemIntegracao(412)] })
+        : {
+          ...integracaoFake({ [`${CNPJ}/2026/4`]: [] }),
+          getPcaItensQuantidade: () => Promise.resolve({ status: 200, body: null }),
+        };
+      const s = await processarFila(db as never, integ, {
+        ano: ANO,
+        limite: 10,
+        prazoEsgotado: nunca,
+        runId: RUN,
+      });
+      assertEquals(
+        [s.planos_feitos, s.planos_erro, s.itens_inativados, s.planos_inativados],
+        [0, 1, 0, 0],
+        caso,
+      );
+      assertEquals(db.rows("pca_itens"), antes, caso);
+      assertEquals(db.rows("pca_planos")[0].ativo, true);
+      assertEquals([db.rows("pca_plano_fila")[0].status, db.rows("pca_plano_fila")[0].tentativas], [
+        "erro",
+        1,
+      ]);
+    }
+  }
+});
+
+Deno.test("posse: worker recuperado durante HTTP não grava nem inativa itens", async () => {
+  const db = banco();
+  enfileirarPlano(db);
+  const integ = {
+    ...integracaoFake({ [`${CNPJ}/2026/4`]: [itemIntegracao(1)] }),
+    getPcaItensQuantidade: () => {
+      db.rows("pca_plano_fila")[0].reserva_token = crypto.randomUUID();
+      return Promise.resolve({ status: 200, body: 1 });
+    },
+  };
+  await assertRejects(() => processarFila(db as never, integ, {
+    ano: ANO, limite: 1, prazoEsgotado: nunca, runId: RUN,
+  }), ReservaPcaPerdidaError);
+  assertEquals(db.rows("pca_planos"), []);
+  assertEquals(db.rows("pca_itens"), []);
+  assertEquals([db.rows("pca_plano_fila")[0].status, db.rows("pca_plano_fila")[0].tentativas], ["processando", 0]);
+});
+
+Deno.test("posse: finalização atrasada não conclui a reserva de outro worker", async () => {
+  const db = banco();
+  enfileirarPlano(db);
+  const executar = db.executar.bind(db);
+  db.executar = (query) => {
+    if (query.table === "pca_plano_fila" && query.op === "update" && (query.payload as Row).status === "feito") {
+      db.rows("pca_plano_fila")[0].reserva_token = crypto.randomUUID();
+    }
+    return executar(query);
+  };
+  await assertRejects(() => processarFila(db as never, integracaoFake({ [`${CNPJ}/2026/4`]: [itemIntegracao(1)] }), {
+    ano: ANO, limite: 1, prazoEsgotado: nunca, runId: RUN,
+  }), ReservaPcaPerdidaError);
+  assertEquals([db.rows("pca_plano_fila")[0].status, db.rows("pca_plano_fila")[0].tentativas], ["processando", 0]);
+});
+
+Deno.test("posse: pausa não adia nem devolve reservas recuperadas por outro worker", async () => {
+  const db = banco();
+  enfileirarPlano(db, `${CNPJ}-0-000001/2026`, 1);
+  enfileirarPlano(db, `${CNPJ}-0-000002/2026`, 2);
+  const integ = integracaoQueLanca({}, 1, () => {
+    for (const linha of db.rows("pca_plano_fila")) linha.reserva_token = crypto.randomUUID();
+    return new BudgetExhaustedError();
+  });
+  await assertRejects(() => processarFila(db as never, integ, {
+    ano: ANO, limite: 5, prazoEsgotado: nunca, runId: RUN, http: { budget: createRequestBudget(5_000) },
+  }), BudgetExhaustedError);
+  assertEquals(db.rows("pca_plano_fila").map(f => [f.status, f.disponivel_em, f.tentativas]),
+    [["processando", null, 0], ["processando", null, 0]]);
+});
+
+Deno.test("posse: cliente do plano recebe o token da reserva e o run correto", async () => {
+  const db = banco();
+  enfileirarPlano(db);
+  const recebidos: string[][] = [];
+  await processarFila(db as never, integracaoFake({ [`${CNPJ}/2026/4`]: [itemIntegracao(1)] }), {
+    ano: ANO, limite: 1, prazoEsgotado: nunca, runId: RUN,
+    clientDaReserva: (token, runId) => { recebidos.push([token, runId]); return db as never; },
+  });
+  assertEquals(recebidos, [[db.rows("pca_plano_fila")[0].reserva_token, RUN]]);
+  assertEquals(db.rows("pca_plano_fila")[0].status, "feito");
 });

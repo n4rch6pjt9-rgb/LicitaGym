@@ -18,25 +18,29 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout sem Actions externas
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          git init .
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git fetch --depth=1 origin "$COMMIT_SHA"
+          git checkout --detach FETCH_HEAD
+          git remote set-url origin "https://github.com/${REPOSITORY}.git"
 
-      - name: Setup Deno
-        uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.x
+      - name: Instalar Deno
+        run: |
+          curl -fsSL https://deno.land/install.sh | sh
+          echo "$HOME/.deno/bin" >> "$GITHUB_PATH"
 
-      - name: PCA - fila
+      - name: Verificar Deno
+        run: deno --version
+
+      - name: PCA - fila, lote e historico
         run: |
           deno test --node-modules-dir=none --allow-env --allow-read \
-            tests/supabase/functions/sync_pncp_pca_fila_test.ts
-
-      - name: PCA - lote
-        run: |
-          deno test --node-modules-dir=none --allow-env --allow-read \
-            tests/supabase/functions/sync_pncp_pca_lote_test.ts
-
-      - name: PCA - historico
-        run: |
-          deno test --node-modules-dir=none --allow-env --allow-read \
+            tests/supabase/functions/sync_pncp_pca_fila_test.ts \
+            tests/supabase/functions/sync_pncp_pca_lote_test.ts \
             tests/supabase/functions/pca_historico_test.ts

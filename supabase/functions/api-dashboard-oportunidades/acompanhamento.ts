@@ -5,6 +5,7 @@ import { secaoPortal, type TenantDoUsuario } from "./portal.ts";
 import { anexarReferenciaPreco } from "./precoReferencia.ts";
 import { diaBrasilia } from "../_shared/portal-compras.ts";
 import { sincronizarPortalOficialEAtraso } from "./pncpAtraso.ts";
+import { estaNoPipeline } from "./portal.ts";
 import { UnifiedHttpClient } from "../_shared/http-client/index.ts";
 import type {
   AcompanhamentoActionParams,
@@ -810,6 +811,13 @@ export async function handleAcompanhamento(
         payload.compra,
         payload.historico,
         payload.arquivos,
+        {
+          emPipeline: await estaNoPipeline(
+            client,
+            Number(row.id),
+            await (ctx?.tenantDoUsuario ?? semTenant)(),
+          ),
+        },
       );
       payload = {
         ...payload,

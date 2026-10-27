@@ -1,0 +1,42 @@
+name: PCA Harness - Deno
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "supabase/functions/_shared/pncp/**"
+      - "supabase/functions/sync-pncp-pca/**"
+      - "tests/supabase/functions/**"
+      - ".github/workflows/pca-harness.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  pca-harness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: PCA - fila
+        run: |
+          deno test --node-modules-dir=none --allow-env --allow-read \
+            tests/supabase/functions/sync_pncp_pca_fila_test.ts
+
+      - name: PCA - lote
+        run: |
+          deno test --node-modules-dir=none --allow-env --allow-read \
+            tests/supabase/functions/sync_pncp_pca_lote_test.ts
+
+      - name: PCA - historico
+        run: |
+          deno test --node-modules-dir=none --allow-env --allow-read \
+            tests/supabase/functions/pca_historico_test.ts

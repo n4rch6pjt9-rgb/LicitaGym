@@ -30,13 +30,26 @@ jobs:
           git checkout --detach FETCH_HEAD
           git remote set-url origin "https://github.com/${REPOSITORY}.git"
 
-      - name: Instalar Deno
+      - name: Instalar Deno 2.9.8 com SHA-256
         run: |
-          curl -fsSL https://deno.land/install.sh | sh
-          echo "$HOME/.deno/bin" >> "$GITHUB_PATH"
+          set -euo pipefail
+          DENO_VERSION="2.9.8"
+          DENO_SHA256="e890975bc2549807bbcc0b584ffafda72cc7c93349dd99c80483dd784f6c4609"
+          DENO_ARCHIVE="deno-x86_64-unknown-linux-gnu.zip"
+          DENO_URL="https://github.com/denoland/deno/releases/download/v${DENO_VERSION}/${DENO_ARCHIVE}"
+
+          curl --fail --location --silent --show-error --retry 3 --output "$RUNNER_TEMP/$DENO_ARCHIVE" "$DENO_URL"
+
+          echo "$DENO_SHA256  $RUNNER_TEMP/$DENO_ARCHIVE" | sha256sum --check -
+
+          mkdir -p "$RUNNER_TEMP/deno-bin"
+          unzip -q "$RUNNER_TEMP/$DENO_ARCHIVE" -d "$RUNNER_TEMP/deno-bin"
+          echo "$RUNNER_TEMP/deno-bin" >> "$GITHUB_PATH"
 
       - name: Verificar Deno
-        run: deno --version
+        run: |
+          deno --version
+          test "$(deno --version | head -n 1)" = "deno 2.9.8 (stable, release, x86_64-unknown-linux-gnu)"
 
       - name: PCA - fila, lote e historico
         run: |

@@ -1,0 +1,101 @@
+name: Coletor Sistema S
+
+on:
+  schedule:
+    # Todo dia às 06:30 BRT (09:30 UTC), logo após o Coletor PNCP
+    - cron: "30 9 * * *"
+  workflow_dispatch:
+    inputs:
+      fonte:
+        description: "Fonte específica (ex.: sestsenat, fiesc, sescrj) ou 'todas'"
+        required: false
+        default: "todas"
+      paginas:
+        description: "Teto opcional de páginas por termo (vazio = até o fim)"
+        required: false
+        default: "2"
+      dry_run:
+        description: "Simulação sem gravar no banco (true/false)"
+        required: false
+        default: "false"
+      sem_documentos:
+        description: "Pular download de anexos para o Storage (true/false)"
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coletor-sistema-s
+  cancel-in-progress: false
+
+jobs:
+  definir-matriz:
+    name: Definir fontes
+    runs-on: ubuntu-latest
+    outputs:
+      fontes: ${{ steps.fontes.outputs.lista }}
+    steps:
+      - id: fontes
+        run: |
+          FONTE_INPUT="${{ inputs.fonte || 'todas' }}"
+          if [ "$FONTE_INPUT" = "todas" ] || [ -z "$FONTE_INPUT" ]; then
+            # 12 portais ativos que respondem ao WebService a partir do GitHub Actions
+            echo 'lista=["sestsenat","fiesc","firjan","fiergs","findes","fieb","sfiec","sescsp","sesc_senac_rs","sescdn","sescrj","sescba"]' >> "$GITHUB_OUTPUT"
+          else
+            echo "lista=[\"$FONTE_INPUT\"]" >> "$GITHUB_OUTPUT"
+          fi
+
+  coletar:
+    name: "Sistema S (${{ matrix.fonte }})"
+    needs: definir-matriz
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        fonte: ${{ fromJson(needs.definir-matriz.outputs.fontes) }}
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      SUPABASE_STORAGE_BUCKET: ${{ secrets.SUPABASE_STORAGE_BUCKET }}
+      DELAY_SEGUNDOS: "1.5"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Instalar dependências
+        run: |
+          if [ -f services/coletor-externo/requirements.txt ]; then
+            pip install -r services/coletor-externo/requirements.txt
+          else
+            pip install requests
+          fi
+
+      - name: Executar Coletor Paradigma (${{ matrix.fonte }})
+        working-directory: services/coletor-externo
+        run: |
+          ARGS=(--fonte "${{ matrix.fonte }}")
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            ARGS+=(--origem cron --paginas 3)
+          else
+            ARGS+=(--origem manual)
+            if [ -n "${{ inputs.paginas }}" ]; then
+              ARGS+=(--paginas "${{ inputs.paginas }}")
+            fi
+          fi
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            ARGS+=(--dry-run)
+          fi
+          if [ "${{ inputs.sem_documentos }}" = "true" ] || [ -z "${SUPABASE_STORAGE_BUCKET:-}" ]; then
+            ARGS+=(--sem-documentos)
+          fi
+          python -m coletor.paradigma "${ARGS[@]}"

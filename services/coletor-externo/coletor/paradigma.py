@@ -883,7 +883,7 @@ def coletar(portal: "PortalParadigma", sb, termos: list[str], paginas: int | Non
 
 
 def main(argv: list[str] | None = None) -> int:
-    from .destino import Supabase, drenar_licitacao_match, env
+    from .destino import Supabase, env
     from .fornecedores import CadastroFornecedores
 
     ap = argparse.ArgumentParser(description="Coletor Paradigma (Sistema S)")
@@ -912,8 +912,10 @@ def main(argv: list[str] | None = None) -> int:
     fonte = FONTES[args.fonte]
     portal = PortalParadigma(
         fonte, delay=float(env("DELAY_SEGUNDOS", "1.5")), autorizado=autorizado_para_coleta(fonte))
+    # O Sistema S adota regulamento próprio (RCA) e não acompanha CATMAT federal (drenar_catmat=False).
     sb = None if args.dry_run else Supabase(env("SUPABASE_URL", obrigatorio=True),
-                                            env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True))
+                                            env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True),
+                                            drenar_catmat=False)
     termos = [t.strip() for t in args.termos.split(";")] if args.termos else TERMOS_SISTEMA_S
     produtos = None
     if not args.sem_catalogo:
@@ -948,7 +950,6 @@ def main(argv: list[str] | None = None) -> int:
         docs = DocumentosParadigma(portal, sb, arm, visitante, int(float(env("MAX_MB", "50")) * 1048576), args.dry_run)
     r = coletar(portal, sb, termos, args.paginas, args.dry_run, not args.sem_resultados, produtos, forn, processos, anos,
                 docs, origem=args.origem)
-    drenar_licitacao_match(sb)  # recorte CATMAT por texto: zera a pendência de licitacao_match (sem efeito no dry-run)
     print(json.dumps(r, ensure_ascii=False))
     return 1 if r["erros"] and not r["no_escopo"] else 0
 

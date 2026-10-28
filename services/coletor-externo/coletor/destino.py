@@ -118,27 +118,27 @@ LICITACAO_MATCH_MAX_LOTES = 200
 class Supabase:
     """Cliente mínimo do PostgREST usando a service_role key (ignora RLS; só no backend!)."""
 
-def __init__(self, url: str, service_key: str, *, drenar_catmat: bool = True):
-    self.base = url.rstrip("/") + "/rest/v1"
-    # Schema explícito: sem estes cabeçalhos o PostgREST usa o primeiro schema exposto no painel. Em 09/10/2026 esse
-    # schema era `api` (vazio) e toda leitura/gravação dos coletores dava 404 PGRST205 ("api.<tabela>").
-    self.h = {
-        "apikey": service_key,
-        "Authorization": f"Bearer {service_key}",
-        "Content-Type": "application/json",
-        "Accept-Profile": "public",
-        "Content-Profile": "public",
-    }
-    self.drenar_catmat = drenar_catmat
-    self._textos_sem_drenar = 0
+    def __init__(self, url: str, service_key: str, *, drenar_catmat: bool = True):
+        self.base = url.rstrip("/") + "/rest/v1"
+        # Schema explícito: sem estes cabeçalhos o PostgREST usa o primeiro schema exposto no painel. Em 09/10/2026 esse
+        # schema era `api` (vazio) e toda leitura/gravação dos coletores dava 404 PGRST205 ("api.<tabela>").
+        self.h = {
+            "apikey": service_key,
+            "Authorization": f"Bearer {service_key}",
+            "Content-Type": "application/json",
+            "Accept-Profile": "public",
+            "Content-Profile": "public",
+        }
+        self.drenar_catmat = drenar_catmat
+        self._textos_sem_drenar = 0
 
-def _contar_textos(self, tabela: str, n: int) -> None:
-    """Conta linhas de texto CATMAT gravadas e drena licitacao_match ao passar de LICITACAO_MATCH_LOTE."""
-    if not self.drenar_catmat:
-        return
-    self._textos_sem_drenar += n
-    if self._textos_sem_drenar >= LICITACAO_MATCH_LOTE:
-        self.drenar_licitacao_match()
+    def _contar_textos(self, tabela: str, n: int) -> None:
+        """Conta linhas de texto CATMAT gravadas e drena licitacao_match ao passar de LICITACAO_MATCH_LOTE."""
+        if not self.drenar_catmat:
+            return
+        self._textos_sem_drenar += n
+        if self._textos_sem_drenar >= LICITACAO_MATCH_LOTE:
+            self.drenar_licitacao_match()
 
     def drenar_licitacao_match(self, limite: int | None = None, max_lotes: int = LICITACAO_MATCH_MAX_LOTES) -> int | None:
         """Chama public.licitacao_match_atualizar em lotes até não sobrar pendência (ou max_lotes).
@@ -288,7 +288,7 @@ def _contar_textos(self, tabela: str, n: int) -> None:
                 raise RuntimeError(f"Supabase {tabela}: resposta inesperada ao selecionar")
             if lote and anterior is not None and lote == anterior:
                 log.warning("Supabase %s: página repetida; não é fim de coleta", tabela)
-                raise RuntimeError(f"Supabase {tabela}: página repetida; não é fim de coleta")
+                raise RuntimeError(f"Supabase %s: página repetida; não é fim de coleta" % tabela)
             anterior = lote
             if primeira:
                 total, aviso_contagem = contagem_exata(getattr(r, "headers", None))

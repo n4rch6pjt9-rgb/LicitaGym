@@ -288,7 +288,7 @@ class Supabase:
                 raise RuntimeError(f"Supabase {tabela}: resposta inesperada ao selecionar")
             if lote and anterior is not None and lote == anterior:
                 log.warning("Supabase %s: página repetida; não é fim de coleta", tabela)
-                raise RuntimeError(f"Supabase %s: página repetida; não é fim de coleta" % tabela)
+                raise RuntimeError(f"Supabase {tabela}: página repetida; não é fim de coleta")
             anterior = lote
             if primeira:
                 total, aviso_contagem = contagem_exata(getattr(r, "headers", None))

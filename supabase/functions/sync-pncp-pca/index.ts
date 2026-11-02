@@ -24,6 +24,7 @@ import {
   updateSyncHeartbeat,
 } from "../_shared/pncp/supabase-admin.ts";
 import { gravarPaginaPcaEmLote } from "../_shared/pncp/pca-lote.ts";
+import { PcaPersistenciaError } from "../_shared/pncp/pca-atomico.ts";
 import { PncpIntegracaoClient } from "../_shared/pncp/integracao-client.ts";
 import { handleRotinaFila, type RotinaBody } from "./rotina-fila.ts";
 
@@ -199,7 +200,19 @@ async function syncClassificacao(params: {
       throw new Error(`consulta PCA classe ${codigoClassificacao} página ${pagina}: resposta ou paginação inválida`);
     }
     paginasRestantes = Number(obj.paginasRestantes);
-    const pageStats = await gravarPaginaPcaEmLote(client, obj.data as Record<string, unknown>[], { ano, runId });
+    let pageStats: SyncStats;
+    try {
+      pageStats = await gravarPaginaPcaEmLote(client, obj.data as Record<string, unknown>[], { ano, runId });
+    } catch (error) {
+      if (!(error instanceof PcaPersistenciaError) || !error.recuperavel) throw error;
+      // Blocos anteriores podem estar confirmados: repetir a pagina e idempotente.
+      // Nao avancar checkpoint nem promover o periodo com esta pagina incompleta.
+      const falha = { ...emptyStats(), erros: 1 };
+      mergeStats(stats, falha);
+      params.onStats(falha);
+      await params.onCheckpoint(pagina);
+      return { stats, ultimaPagina, paginasRestantes: Math.max(1, paginasRestantes) };
+    }
     mergeStats(stats, pageStats);
     params.onStats(pageStats);
     if (pageStats.erros > 0) {

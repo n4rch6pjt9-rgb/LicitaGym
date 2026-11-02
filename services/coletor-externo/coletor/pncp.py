@@ -191,7 +191,7 @@ class PNCP:
                     return []
                 if r.status_code in (429, 500, 502, 503, 504):
                     ultimo = requests.HTTPError(f"{r.status_code} do PNCP", response=r)
-                    espera = _retry_after_s(r) if r.status_code == 429 else None
+                    espera = _retry_after_s(r, maximo=float("inf")) if r.status_code == 429 else None
                     time.sleep(espera if espera is not None else min(60, 5 * 2 ** tentativa))
                     continue
                 r.raise_for_status()
@@ -331,7 +331,7 @@ class PNCP:
                 with self._abrir(url) as r:
                     if r.status_code == 429:
                         ultimo = requests.HTTPError(f"{r.status_code} do PNCP", response=r)
-                        espera = _retry_after_s(r)
+                        espera = _retry_after_s(r, maximo=float("inf"))
                         time.sleep(espera if espera is not None else min(60, 5 * 2 ** tentativa))
                         continue
                     if r.status_code in (500, 502, 503, 504):
@@ -2269,7 +2269,7 @@ def main(argv: list[str] | None = None) -> int:
         if not args.dry_run:
             drenar_licitacao_match(sb)
         log.info("RESUMO RECOLETA: %s", r)
-        return 0
+        return 1 if r.get("falha_detalhe", 0) or r.get("erros", 0) else 0
 
     if args.baixar_pendentes:
         sb = Supabase(env("SUPABASE_URL", obrigatorio=True), env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True))

@@ -1,5 +1,5 @@
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { FakePostgrest } from "./_shared/pncp/_fake_postgrest.ts";
+import { FakePcaPostgrest as FakePostgrest } from "./_shared/pncp/_fake_pca_atomico.ts";
 import { handleRequest } from "../../../supabase/functions/sync-pncp-pca/index.ts";
 import { PncpConsultaClient } from "../../../supabase/functions/_shared/pncp/consulta-client.ts";
 import { BudgetExhaustedError } from "../../../supabase/functions/_shared/pncp/retry.ts";
@@ -35,7 +35,7 @@ function ambiente() {
       : runs.filter((r) => r.lock_key === args.p_lock_key && r.status === "incompleta").pop();
     const continuation = (anterior?.parametros as Row | undefined)?.continuation ?? null;
     if (anterior) anterior.status = "retomada";
-    const id = `run-${++seq}`;
+    const id = "00000000-0000-4000-8000-" + String(++seq).padStart(12, "0");
     runs.push({
       id,
       status: "executando",
@@ -124,7 +124,7 @@ Deno.test("legado: segunda chamada retoma página 2 sem repetir página 1", asyn
 });
 Deno.test("legado: modo completo é bloqueado e preserva outras classes", async () => {
   const a = ambiente();
-  await gravarPaginaPcaEmLote(a.db as never, [plano(9, "7220")], { ano: ANO, runId: "antes" });
+  await gravarPaginaPcaEmLote(a.db as never, [plano(9, "7220")], { ano: ANO, runId: "00000000-0000-4000-8000-000000000101" });
   const antes = structuredClone(a.db.rows("pca_itens"));
   const r = await a.request({ modo: "completo", max_paginas: 10 });
   assertEquals(r.http, 400);
@@ -305,7 +305,7 @@ Deno.test("legado: página repetida ou paginação ausente não vira conclusão"
 });
 Deno.test("legado: 204 é fim válido e não inativa registros existentes", async () => {
   const a = ambiente();
-  await gravarPaginaPcaEmLote(a.db as never, [plano(7)], { ano: ANO, runId: "antes" });
+  await gravarPaginaPcaEmLote(a.db as never, [plano(7)], { ano: ANO, runId: "00000000-0000-4000-8000-000000000101" });
   a.setPage(() => ({ status: 204, body: null, elapsedMs: 1 }));
   assertEquals((await a.request()).body.status, "concluida");
   assertEquals(a.db.rows("pca_itens")[0].ativo, true);
@@ -334,4 +334,76 @@ Deno.test("B6 legado: default limita a 100 páginas mesmo começando depois de 2
   assertEquals(a.paginas.length, 100);
   assertEquals([a.paginas[0], a.paginas.at(-1)], [251, 350]);
   assertEquals((r.body.continuation as Row).pagina_por_codigo_pendente, { "7830": 351 });
+});
+
+
+Deno.test("legado: falha RPC transiente preserva pagina e contagens anteriores", async () => {
+  const a = ambiente();
+  const rpc = a.db.rpc.bind(a.db);
+  let falhar = true;
+  a.db.rpc = (nome, args) => {
+    if (nome === "pca_persistir_lote_atomico" && falhar &&
+      (args.p_unidades as Row[])[0].tabela === "pca_itens" && a.db.rows("pca_planos").length === 2) {
+      falhar = false;
+      return Promise.resolve({ data: null, error: { message: "conexao interrompida sintetica", code: "08006" } });
+    }
+    return rpc(nome, args);
+  };
+  const primeira = await a.request({ max_paginas: 10 });
+  assertEquals(primeira.body.status, "incompleta");
+  const run = a.db.rows("pncp_sync_run")[0];
+  assertEquals(run.total_novos, 2); // pagina 1 confirmada; sem inventar contagem da pagina que falhou
+  assertEquals(run.total_erros, 1);
+  assertEquals((primeira.body.continuation as Row).pagina_por_codigo_pendente, { "7830": 2 });
+  assertEquals(a.db.rows("pncp_period_anchor")[0].ultima_carga_completa ?? null, null);
+  const segunda = await a.request({ max_paginas: 10 });
+  assertEquals(segunda.body.status, "concluida");
+  assertEquals(a.paginas, [1, 2, 2]);
+  assertEquals(a.db.rows("pca_planos").length, 2);
+  assertEquals(a.db.rows("pca_itens").length, 2);
+  assertEquals(a.db.rows("pca_alteracoes").length, 4);
+});
+
+for (const code of ["40001", "42501", "23514", "PGRST202"]) {
+  Deno.test("legado: erro RPC " + code + " nao vira retomada recuperavel", async () => {
+    const a = ambiente();
+    const rpc = a.db.rpc.bind(a.db);
+    a.db.rpc = (nome, args) => nome === "pca_persistir_lote_atomico"
+      ? Promise.resolve({ data: null, error: { message: "falha sintetica " + code, code } })
+      : rpc(nome, args);
+    const r = await a.request({ max_paginas: 10 });
+    assertEquals(r.http, 500);
+    assertEquals(r.body.run_status, "falhou");
+    assertEquals(a.db.rows("pncp_sync_run")[0].status, "falhou");
+    assertEquals(a.db.rows("pca_planos").length, 0);
+    assertEquals(a.db.rows("pncp_period_anchor")[0].ultima_carga_completa ?? null, null);
+  });
+}
+Deno.test("legado: resposta RPC invalida continua fatal", async () => {
+  const a = ambiente();
+  const rpc = a.db.rpc.bind(a.db);
+  a.db.rpc = (nome, args) => nome === "pca_persistir_lote_atomico"
+    ? Promise.resolve({ data: [], error: null }) : rpc(nome, args);
+  const r = await a.request();
+  assertEquals(r.http, 500);
+  assertEquals(r.body.run_status, "falhou");
+  assertEquals(a.db.rows("pncp_period_anchor")[0].ultima_carga_completa ?? null, null);
+});
+Deno.test("legado: checkpoint que falha apos erro RPC impede retomada falsa", async () => {
+  const a = ambiente();
+  a.db.falhaLinha = (table) => table === "pca_itens";
+  const executar = a.db.executar.bind(a.db);
+  let checkpoints = 0;
+  a.db.executar = (query) => {
+    if (query.table === "pncp_sync_run" && query.op === "update" &&
+      (query.payload as Row).parametros != null && ++checkpoints === 2) {
+      return { data: null, error: { message: "checkpoint de retry rejeitado" } };
+    }
+    return executar(query);
+  };
+  const r = await a.request({ max_paginas: 10 });
+  assertEquals(r.http, 500);
+  assertEquals(r.body.run_status, "falhou");
+  assertEquals(a.paginas, [1]);
+  assertEquals(a.db.rows("pncp_period_anchor")[0].ultima_carga_completa ?? null, null);
 });

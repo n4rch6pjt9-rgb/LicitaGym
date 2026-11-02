@@ -441,3 +441,71 @@ Deno.test("RED-03: retry depois do rollback grava dados e historico uma unica ve
   assertEquals(db.rows("pca_alteracoes").length, 3);
   assertHistoricoRpc(db, antesReplay, runId);
 });
+/** Reproduz o schema real: catmat_pdms tem codigo_pdm, sem coluna id. */
+function bancoComSchemaPdm(): FakePostgrest {
+  const db = bancoInicial();
+  const executar = db.executar.bind(db);
+  db.executar = (query) => {
+    if (query.table === "catmat_pdms" && query.op === "select" &&
+      query.ordem !== "codigo_pdm") {
+      return { data: null, error: { message: `column catmat_pdms.${query.ordem} does not exist` } };
+    }
+    return executar(query);
+  };
+  return db;
+}
+
+Deno.test("REG-PDM-chave: vincula todos os PDMs sem coluna id com paginas truncadas e replay", async () => {
+  const db = bancoComSchemaPdm();
+  db.maxRows = 1;
+  db.tables.set("catmat_pdms", [{ codigo_pdm: 2642 }, { codigo_pdm: 2640 }, { codigo_pdm: 2641 }]);
+  const pagina = paginaSintetica(1, 3);
+  for (const [i, item] of (pagina[0].itens as Row[]).entries()) item.pdmCodigo = String(2640 + i);
+  const primeira = await gravarPaginaPcaEmLote(db as never, pagina, { ano: 2026, runId: RUN });
+  assertEquals([primeira.recebidos, primeira.novos, primeira.erros], [4, 4, 0]);
+  const vinculos = db.rows("pca_item_pdm");
+  assertEquals(vinculos.map((r) => r.codigo_pdm).sort(), [2640, 2641, 2642]);
+  for (const [i, item] of (pagina[0].itens as Row[]).entries()) {
+    const persistido = db.rows("pca_itens").find((r) => r.numero_item === item.numeroItem)!;
+    assertEquals(vinculos.find((r) => r.pca_item_id === persistido.id)?.codigo_pdm, 2640 + i);
+  }
+  const idsAntes = db.rows("pca_itens").map((r) => r.id);
+  const eventosAntes = structuredClone(db.rows("pca_alteracoes"));
+  const replay = await gravarPaginaPcaEmLote(db as never, pagina, { ano: 2026, runId: RUN });
+  assertEquals([replay.inalterados, replay.novos, replay.alterados, replay.erros], [4, 0, 0, 0]);
+  assertEquals(db.rows("pca_item_pdm").length, 3);
+  assertEquals(db.rows("pca_itens").map((r) => r.id), idsAntes);
+  assertEquals(db.rows("pca_alteracoes"), eventosAntes);
+});
+
+Deno.test("REG-PDM-chave: falha em pagina intermediaria nao vira ausencia nem vinculo parcial", async () => {
+  const db = bancoComSchemaPdm();
+  db.maxRows = 1;
+  db.tables.set("catmat_pdms", [{ codigo_pdm: 2640 }, { codigo_pdm: 2641 }]);
+  let segundaPaginaAtingida = false;
+  const executar = db.executar.bind(db);
+  db.executar = (query) => {
+    if (query.table === "catmat_pdms" && query.op === "select" && query.faixa?.[0] === 1) {
+      segundaPaginaAtingida = true;
+      return { data: null, error: { message: "falha injetada na segunda pagina PDM" } };
+    }
+    return executar(query);
+  };
+  const pagina = paginaSintetica(1, 2);
+  (pagina[0].itens as Row[])[1].pdmCodigo = "2641";
+  const stats = await gravarPaginaPcaEmLote(db as never, pagina, { ano: 2026, runId: RUN });
+  assert(segundaPaginaAtingida, "a falha deve ocorrer na segunda pagina, apos a primeira leitura valida");
+  assertEquals(stats.erros, 1);
+  assertEquals(db.rows("pca_itens").length, 2);
+  assertEquals(db.rows("pca_item_pdm"), []);
+});
+
+Deno.test("REG-PDM-chave: PDM ausente no catalogo nao cria vinculo nem erro de leitura", async () => {
+  const db = bancoComSchemaPdm();
+  const pagina = paginaSintetica(1, 2);
+  (pagina[0].itens as Row[])[1].pdmCodigo = "99999";
+  const stats = await gravarPaginaPcaEmLote(db as never, pagina, { ano: 2026, runId: RUN });
+  assertEquals(stats.erros, 0);
+  assertEquals(db.rows("pca_itens").length, 2);
+  assertEquals(db.rows("pca_item_pdm").map((r) => r.codigo_pdm), [2640]);
+});

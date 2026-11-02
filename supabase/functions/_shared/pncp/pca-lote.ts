@@ -46,7 +46,7 @@ function chunks<T>(values: T[], size = IN_CHUNK): T[][] {
 
 /**
  * `select columns from table where column in (values) [and extra.column in (extra.values)]`, em blocos e
- * paginado com ordem estável por `id`. Erro de leitura lança: não é "nada no banco".
+ * paginado por chave estável (`id` por padrão; o chamador informa outra chave quando necessário). Erro de leitura lança: não é "nada no banco".
  */
 export async function selectIn(
   client: SupabaseClient,
@@ -55,13 +55,14 @@ export async function selectIn(
   column: string,
   values: unknown[],
   extra?: { column: string; values: unknown[] },
+  orderColumn = "id",
 ): Promise<Row[]> {
   const rows: Row[] = [];
   for (const bloco of chunks([...new Set(values)])) {
     for (let from = 0;;) {
       let query = client.from(table).select(columns).in(column, bloco);
       if (extra) query = query.in(extra.column, [...new Set(extra.values)]);
-      const { data, error } = await query.order("id").range(from, from + PAGE_ROWS - 1);
+      const { data, error } = await query.order(orderColumn).range(from, from + PAGE_ROWS - 1);
       if (error) throw error;
       const page = (data ?? []) as unknown as Row[];
       if (page.length === 0) break;
@@ -262,7 +263,15 @@ async function vincularOrigemEmLote(
     let existentes: Set<number> | null = null;
     try {
       existentes = new Set(
-        (await selectIn(client, "catmat_pdms", "codigo_pdm", "codigo_pdm", comPdm.map((x) => x.pdm)))
+        (await selectIn(
+          client,
+          "catmat_pdms",
+          "codigo_pdm",
+          "codigo_pdm",
+          comPdm.map((x) => x.pdm),
+          undefined,
+          "codigo_pdm",
+        ))
           .map((r) => Number(r.codigo_pdm)),
       );
     } catch (error) {

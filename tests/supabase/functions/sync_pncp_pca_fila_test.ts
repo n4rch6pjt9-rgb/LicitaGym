@@ -2338,3 +2338,33 @@ Deno.test("handler: recuperacao explicita chama RPC somente com IDs selecionados
   assertEquals(calls[0].p_sync_run_id, r.sync_id);
   assertEquals(r.esgotados_reabertos, 1);
 });
+
+for (const tipo of [2, "2"]) {
+  Deno.test(`REG-PCA-misto: servico de tres digitos com tipo ${typeof tipo} permite material 7830`, async () => {
+    const db = banco();
+    enfileirarPlano(db);
+    const servico = { ...itemIntegracao(30, "546"), classificacaoCatalogoId: tipo, categoriaItemPcaNome: "Serviço" };
+    const stats = await processarFila(db as never, integracaoFake({
+      [`${CNPJ}/2026/4`]: [servico, itemIntegracao(52)],
+    }), { ano: ANO, limite: 1, prazoEsgotado: nunca, runId: RUN });
+    assertEquals([stats.planos_feitos, stats.planos_erro], [1, 0]);
+    assertEquals(db.rows("pca_itens").map((it) => it.numero_item), [52]);
+    assertEquals(db.rows("pca_plano_fila")[0].status, "feito");
+  });
+}
+
+for (const tipo of [1, undefined, null, 3, true]) {
+  Deno.test(`REG-PCA-misto: tres digitos sem tipo servico confirmado (${String(tipo)}) preserva dados`, async () => {
+    const db = banco();
+    await gravarPaginaPcaEmLote(db as never, [{ ...cabecalho(), itens: [itemConsulta(52)] }], { ano: ANO, runId: RUN });
+    const antes = structuredClone(db.rows("pca_itens"));
+    enfileirarPlano(db);
+    const invalido = { ...itemIntegracao(30, "546"), classificacaoCatalogoId: tipo };
+    const stats = await processarFila(db as never, integracaoFake({
+      [`${CNPJ}/2026/4`]: [invalido, itemIntegracao(52)],
+    }), { ano: ANO, limite: 1, prazoEsgotado: nunca, runId: RUN });
+    assertEquals([stats.planos_feitos, stats.planos_erro], [0, 1]);
+    assertEquals(db.rows("pca_itens"), antes);
+    assertEquals(db.rows("pca_plano_fila")[0].status, "erro");
+  });
+}

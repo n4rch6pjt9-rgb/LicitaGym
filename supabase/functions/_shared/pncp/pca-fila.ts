@@ -455,7 +455,12 @@ export async function lerItensPlano(
       }
       // Classificação desconhecida não comprova que o item saiu do escopo.
       const classe = item?.classificacaoSuperiorCodigo;
-      if ((typeof classe !== "string" && typeof classe !== "number") || !/^\d{4}$/.test(String(classe))) {
+      // Grupos de servico (tipo 2) podem ter tres digitos no payload oficial.
+      // Sem tipo confirmado, manter a validacao anterior para evitar falsa ausencia.
+      const servico = item?.classificacaoCatalogoId === 2 || item?.classificacaoCatalogoId === "2";
+      const codigoValido = /^\d{4}$/.test(String(classe)) ||
+        (servico && /^\d{3}$/.test(String(classe)));
+      if ((typeof classe !== "string" && typeof classe !== "number") || !codigoValido) {
         throw new Error(`integração ${cnpj}/${ano}/${sequencial} página ${pagina}: classificacaoSuperiorCodigo inválida`);
       }
       numeros.add(numero);

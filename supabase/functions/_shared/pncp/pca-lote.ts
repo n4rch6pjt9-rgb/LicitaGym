@@ -1,21 +1,20 @@
 import { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { hashPayload } from "./hash.ts";
 import { normalizePcaItem, normalizePcaPlano } from "./normalize.ts";
-import { upsertByHash } from "./upsert.ts";
+import { persistirLoteAtomico, type UnidadePcaAtomica } from "./pca-atomico.ts";
 
 /**
  * Gravação em lote de uma página do PCA (spec 0012, PR 1).
  *
- * Mesma semântica de `upsertByHash` + `linkPcaItemOrigemCodes` chamados item a item: mesmo `payload_hash`,
- * mesmas colunas, histórico em `pca_alteracoes` só para novo/alterado, inalterado só toca `last_synced_at`,
- * `last_seen_sync_id` e `ativo = true`. Muda o número de chamadas: de ~7,5 por item para algumas por página
- * (medição em specs/0012-pca-sync-cpu-pagina.md).
+ * Normaliza e calcula payload_hash no TypeScript; a RPC privada persiste registros e histórico
+ * atomicamente por bloco de até 100 unidades. Planos são persistidos antes dos itens.
+ * A vinculação com o catálogo ocorre depois, fora da transação da RPC.
  *
  * Diferenças conhecidas em relação ao caminho item a item:
  * - chave repetida na página (a paginação da consulta repete itens na fronteira) é gravada uma vez, com a última
  *   ocorrência. `recebidos` conta todas as ocorrências; o caminho antigo gravava duas vezes (novo + inalterado).
- * - falha na leitura do catálogo (`catmat_pdms`, `catalogo_itens`) conta em `erros` e não vincula; o caminho antigo
- *   ignorava o erro sem contar.
+ * - falha na leitura do catálogo (`catmat_pdms`, `catalogo_itens`) conta em `erros` e não vincula.
+ * - falha da RPC é propagada sem fallback; blocos anteriores podem já ter sido confirmados.
  */
 
 export type LoteStats = {
@@ -92,167 +91,42 @@ async function preparar(row: Row, key: string, runId: string, now: string): Prom
 }
 
 type Resultado = {
-  /**
-   * chave natural → id da linha no banco. Inclui linha existente cuja atualização falhou: no caminho item a item ela
-   * continua sendo achada pela busca seguinte, e os itens/vínculos dela seguem sendo processados.
-   */
   ids: Map<string, string>;
-  /** chaves cuja gravação falhou. */
-  falhas: Set<string>;
   novos: number;
   alterados: number;
   inalterados: number;
 };
 
-type Tabela = {
-  table: string;
-  onConflict: string;
-  idColumns: string;
-  keyOf: (row: Row) => string;
-  uniqueKeyOf: (p: Preparado) => Row;
-  historyFields: (id: string, p: Preparado) => Row;
-};
-
 /**
- * Lote que falhou (linha inválida, corrida com outra execução): refaz só aquele bloco linha a linha, com o
- * `upsertByHash` do caminho antigo, para que uma linha ruim não derrube as outras.
+ * A RPC persiste o registro e seu histórico na mesma transação.
+ * Cada posição da resposta corresponde à posição da unidade enviada.
+ * Qualquer falha interrompe o fluxo; não existe fallback não atômico.
  */
-async function gravarLinhaALinha(
+async function gravarAtomico(
   client: SupabaseClient,
-  t: Tabela,
-  bloco: Preparado[],
-  res: Resultado,
+  tabela: UnidadePcaAtomica["tabela"],
+  preparados: Preparado[],
+  chave: (p: Preparado) => Record<string, unknown>,
   runId: string,
-) {
-  for (const p of bloco) {
-    const r = await upsertByHash(client, t.table, t.uniqueKeyOf(p), p.row, {
-      historyTable: "pca_alteracoes",
-      historyFields: ({ rowId }) => t.historyFields(rowId, p),
-      syncRunId: runId,
-      lastSeenSyncId: runId,
-      reactivateOnUnchanged: true,
-    });
-    let query = client.from(t.table).select("id");
-    for (const [k, v] of Object.entries(t.uniqueKeyOf(p))) query = query.eq(k, v);
-    const { data, error } = await query.maybeSingle();
-    if (error) throw error;
-    if (data) res.ids.set(p.key, String((data as Row).id));
-    if (r === "novo") res.novos++;
-    else if (r === "alterado") res.alterados++;
-    else if (r === "inalterado") res.inalterados++;
-    else res.falhas.add(p.key);
-  }
-}
-
-/** Grava linhas já preparadas contra o estado atual (`existentes`, chave → linha completa). */
-async function gravar(
-  client: SupabaseClient,
-  t: Tabela,
-  itens: Preparado[],
-  existentes: Map<string, Row>,
-  runId: string,
-  now: string,
 ): Promise<Resultado> {
-  const res: Resultado = { ids: new Map(), falhas: new Set(), novos: 0, alterados: 0, inalterados: 0 };
-  const novos: Preparado[] = [];
-  const alterados: Preparado[] = [];
-  const inalterados: Preparado[] = [];
-  for (const p of itens) {
-    const atual = existentes.get(p.key);
-    if (!atual) novos.push(p);
-    else if (String(atual.payload_hash) === p.hash) inalterados.push(p);
-    else alterados.push(p);
+  const unidades: UnidadePcaAtomica[] = preparados.map((p) => ({
+    tabela,
+    chave: chave(p),
+    linha: p.fullRow,
+  }));
+  const resultados = await persistirLoteAtomico(client, unidades, runId);
+  const res: Resultado = {
+    ids: new Map(),
+    novos: 0,
+    alterados: 0,
+    inalterados: 0,
+  };
+  for (const [indice, resultado] of resultados.entries()) {
+    res.ids.set(preparados[indice].key, resultado.id);
+    if (resultado.resultado === "novo") res.novos++;
+    else if (resultado.resultado === "alterado") res.alterados++;
+    else res.inalterados++;
   }
-  const historico: Row[] = [];
-  const refazer: Preparado[] = [];
-
-  if (novos.length > 0) {
-    const { data, error } = await client.from(t.table).insert(novos.map((p) => p.fullRow)).select(t.idColumns);
-    avisarFalha(t.table, "insert", novos.length, runId, error);
-    if (error) {
-      refazer.push(...novos);
-    } else {
-      const porChave = new Map(((data ?? []) as unknown as Row[]).map((r) => [t.keyOf(r), String(r.id)]));
-      for (const p of novos) {
-        const id = porChave.get(p.key);
-        if (!id) {
-          refazer.push(p);
-          continue;
-        }
-        res.ids.set(p.key, id);
-        res.novos++;
-        historico.push({
-          ...t.historyFields(id, p),
-          tipo_operacao: "insert",
-          dados_novos: p.fullRow,
-          payload_hash_novo: p.hash,
-          sync_run_id: runId,
-        });
-      }
-    }
-  }
-
-  if (alterados.length > 0) {
-    const { error } = await client.from(t.table).upsert(alterados.map((p) => p.fullRow), {
-      onConflict: t.onConflict,
-    });
-    avisarFalha(t.table, "upsert", alterados.length, runId, error);
-    if (error) {
-      refazer.push(...alterados);
-    } else {
-      // Linha inativa que voltou na fonte com outro conteúdo: o upsert não mexe em `ativo`, então reativa aqui
-      // (inalterado já recebe ativo = true no toque). Histórico não muda: `ativo` não entra no payload_hash.
-      // Falha ao reativar conta como falha da linha (o plano vai para 'erro' e volta à fila); o histórico fica,
-      // porque o upsert do conteúdo gravou.
-      const inativas = alterados.filter((p) => existentes.get(p.key)!.ativo === false)
-        .map((p) => String(existentes.get(p.key)!.id));
-      const naoReativadas = new Set<string>();
-      for (const bloco of chunks(inativas)) {
-        const { error: e2 } = await client.from(t.table).update({ ativo: true }).in("id", bloco);
-        avisarFalha(t.table, "update", bloco.length, runId, e2);
-        if (e2) for (const id of bloco) naoReativadas.add(id);
-      }
-      for (const p of alterados) {
-        const atual = existentes.get(p.key)!;
-        const id = String(atual.id);
-        res.ids.set(p.key, id);
-        if (naoReativadas.has(id)) res.falhas.add(p.key);
-        else res.alterados++;
-        historico.push({
-          ...t.historyFields(id, p),
-          tipo_operacao: "update",
-          dados_anteriores: atual,
-          dados_novos: p.fullRow,
-          payload_hash_anterior: String(atual.payload_hash),
-          payload_hash_novo: p.hash,
-          sync_run_id: runId,
-        });
-      }
-    }
-  }
-
-  for (const bloco of chunks(inalterados)) {
-    const ids = bloco.map((p) => String(existentes.get(p.key)!.id));
-    const { error } = await client.from(t.table)
-      .update({ last_synced_at: now, last_seen_sync_id: runId, ativo: true })
-      .in("id", ids);
-    avisarFalha(t.table, "update", bloco.length, runId, error);
-    if (error) {
-      refazer.push(...bloco);
-      continue;
-    }
-    for (const p of bloco) {
-      res.ids.set(p.key, String(existentes.get(p.key)!.id));
-      res.inalterados++;
-    }
-  }
-
-  // Como no caminho item a item, falha ao gravar o histórico não desfaz a linha nem conta como erro.
-  if (historico.length > 0) {
-    const { error } = await client.from("pca_alteracoes").insert(historico);
-    avisarFalha("pca_alteracoes", "insert", historico.length, runId, error);
-  }
-  if (refazer.length > 0) await gravarLinhaALinha(client, t, refazer, res, runId);
   return res;
 }
 
@@ -285,25 +159,18 @@ export async function gravarPaginaPcaEmLote(
   const planosPrep = await Promise.all(
     [...planosPorChave.entries()].map(([k, v]) => preparar(v.row, k, runId, now)),
   );
-  const planosExistentes = new Map(
-    (await selectIn(client, "pca_planos", "*", "id_pca_pncp", [...planosPorChave.keys()]))
-      .map((r) => [planoKey(r), r]),
+  const rPlanos = await gravarAtomico(
+    client,
+    "pca_planos",
+    planosPrep,
+    (p) => ({ id_pca_pncp: p.row.id_pca_pncp }),
+    runId,
   );
-  const rPlanos = await gravar(client, {
-    table: "pca_planos",
-    onConflict: "id_pca_pncp",
-    idColumns: "id, id_pca_pncp",
-    keyOf: planoKey,
-    uniqueKeyOf: (p) => ({ id_pca_pncp: p.row.id_pca_pncp }),
-    historyFields: (id) => ({ pca_plano_id: id }),
-  }, planosPrep, planosExistentes, runId, now);
   stats.novos += rPlanos.novos;
   stats.alterados += rPlanos.alterados;
   stats.inalterados += rPlanos.inalterados;
-  stats.erros += rPlanos.falhas.size;
 
-  // Itens dos planos com id. Plano novo cuja inserção falhou não tem id: os itens são pulados, como no caminho
-  // item a item.
+  // Os IDs retornados pela RPC associam os itens ao plano persistido.
   const entradas: { planoId: string; raw: Row; itens: Row[] }[] = [];
   for (const [chave, { raw, itens }] of planosPorChave) {
     const planoId = rPlanos.ids.get(chave);
@@ -351,26 +218,19 @@ async function gravarItensEmLote(
   const itensPrep = await Promise.all(
     [...itensPorChave.entries()].map(([k, row]) => preparar(row, k, runId, now)),
   );
-  const valores = [...itensPorChave.values()];
-  // Só os itens desta página (superconjunto pequeno): plano grande espalhado em várias páginas não é relido inteiro.
-  const itensExistentes = new Map(
-    (await selectIn(client, "pca_itens", "*", "pca_plano_id", valores.map((r) => r.pca_plano_id), {
-      column: "numero_item",
-      values: valores.map((r) => r.numero_item),
-    })).filter((r) => itensPorChave.has(itemKey(r))).map((r) => [itemKey(r), r]),
+  const rItens = await gravarAtomico(
+    client,
+    "pca_itens",
+    itensPrep,
+    (p) => ({
+      pca_plano_id: p.row.pca_plano_id,
+      numero_item: p.row.numero_item,
+    }),
+    runId,
   );
-  const rItens = await gravar(client, {
-    table: "pca_itens",
-    onConflict: "pca_plano_id,numero_item",
-    idColumns: "id, pca_plano_id, numero_item",
-    keyOf: itemKey,
-    uniqueKeyOf: (p) => ({ pca_plano_id: p.row.pca_plano_id, numero_item: p.row.numero_item }),
-    historyFields: (id, p) => ({ pca_plano_id: p.row.pca_plano_id, pca_item_id: id }),
-  }, itensPrep, itensExistentes, runId, now);
   stats.novos += rItens.novos;
   stats.alterados += rItens.alterados;
   stats.inalterados += rItens.inalterados;
-  stats.erros += rItens.falhas.size;
 
   stats.erros += await vincularOrigemEmLote(client, itensPorChave, rItens.ids, now, runId);
 }

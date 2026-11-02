@@ -12,19 +12,38 @@ on:
 permissions:
   contents: read
 
+# Mesmo runtime e checksum usados em pr-quality.yml.
+env:
+  DENO_VERSION: "2.9.6"
+  DENO_SHA256: "394f07f4da2bebe6ce6f1e7ce0fa16429b29b08c35e3fac3fe25972676dff4b2"
+  NO_COLOR: "1"
+
 jobs:
   pca-harness:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout (git, sem actions de terceiros)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c http.extraheader="$auth" fetch -q --depth=1 origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
 
-      - name: Setup Deno
-        uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.x
+      - name: Instalar Deno (release oficial, SHA-256 conferido)
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/pca-deno.zip" "https://github.com/denoland/deno/releases/download/v${DENO_VERSION}/deno-x86_64-unknown-linux-gnu.zip"
+          echo "${DENO_SHA256}  $RUNNER_TEMP/pca-deno.zip" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/pca-deno"
+          unzip -q -o "$RUNNER_TEMP/pca-deno.zip" -d "$RUNNER_TEMP/pca-deno"
+          echo "$RUNNER_TEMP/pca-deno" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/pca-deno/deno" --version
 
       - name: PCA - fila
         run: |
@@ -40,3 +59,12 @@ jobs:
         run: |
           deno test --node-modules-dir=none --allow-env --allow-read \
             tests/supabase/functions/pca_historico_test.ts
+
+      - name: PCA - contratos atomicos e retomada
+        run: |
+          deno test --node-modules-dir=none --allow-env --allow-read \
+            tests/supabase/functions/pca_atomico_test.ts \
+            tests/supabase/functions/pca_rpc_atomico_integracao_test.ts \
+            tests/supabase/functions/fake_pca_atomico_test.ts \
+            tests/supabase/functions/_shared/pncp/pncp_upsert_historico_falha_test.ts \
+            tests/supabase/functions/sync_pncp_pca_legado_test.ts

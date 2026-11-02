@@ -10,6 +10,7 @@ import {
   type IntegracaoPca,
   type PosicaoDescoberta,
   processarFila,
+  planoDaConsulta,
   type Rotina,
   ROTINAS,
   situacaoFila,
@@ -39,6 +40,8 @@ function limitar(v: unknown, padrao: number, min: number, max: number): number {
 export type RotinaBody = {
   rotina?: string;
   somente_retomada?: boolean;
+  /** Ação manual: somente backfill, até 100 IDs do ano; nunca herdada automaticamente. */
+  recuperar_esgotados?: string[];
   orcamento_ms?: number;
   limite_planos?: number;
   async?: boolean;
@@ -102,6 +105,13 @@ export async function handleRotinaFila(params: {
     return jsonResponse({ error: `rotina inválida: use ${ROTINAS.join(", ")}` }, 400);
   }
   const somenteRetomada = body.somente_retomada === true;
+  if (body.recuperar_esgotados !== undefined && (
+    body.rotina !== "backfill" || somenteRetomada ||
+    !Array.isArray(body.recuperar_esgotados) || body.recuperar_esgotados.length < 1 ||
+    body.recuperar_esgotados.length > 100 || body.recuperar_esgotados.some((id) =>
+      typeof id !== "string" || planoDaConsulta({ idPcaPncp: id })?.ano !== ano
+    )
+  )) return jsonResponse({ error: "recuperar_esgotados exige backfill e de 1 a 100 IDs válidos do ano" }, 400);
   const orcamentoMs = limitar(
     body.orcamento_ms ?? Deno.env.get("PCA_FILA_ORCAMENTO_MS"),
     ORCAMENTO_PADRAO_MS,
@@ -189,6 +199,13 @@ export async function handleRotinaFila(params: {
       // Antes de qualquer requisição: grava a posição de onde esta execução parte. Sem isso, um worker morto no meio
       // da descoberta deixaria a continuation herdada (ou nenhuma) no lugar desta.
       await heartbeat();
+      if (body.recuperar_esgotados) {
+        const { data, error } = await client.schema("private").rpc("pca_fila_reabrir_esgotados", {
+          p_ids: [...new Set(body.recuperar_esgotados)], p_ano: ano, p_sync_run_id: runId,
+        });
+        if (error) throw error;
+        resumo.esgotados_reabertos = Number(data ?? 0);
+      }
       if (posicao) {
         const desc = await descobrirPlanos(consulta, {
           ano,

@@ -210,17 +210,19 @@ function github(
       return st === 201 ? Promise.resolve(new Response(null, { status: 201 })) : json({ message: "Cannot rerun" }, st);
     }
     if (url.includes("/actions/runs/") && url.includes("/jobs")) return json(JOBS_GH);
-    if (url.includes("/workflows/coletor-pncp.yml/runs") && url.includes("event=schedule")) {
+    const ehWorkflowRuns = url.includes("/workflows/coletor-pncp.yml/runs") ||
+      url.includes("/workflows/coletor-precos.yml/runs");
+    if (ehWorkflowRuns && url.includes("event=schedule")) {
       return json({ total_count: agendado ? 1 : 0, workflow_runs: agendado ? [agendado] : [] });
     }
-    if (opts.foraDoFormato && url.includes("/workflows/coletor-pncp.yml/runs")) return json({ total_count: 0 });
+    if (opts.foraDoFormato && ehWorkflowRuns) return json({ total_count: 0 });
     const filtro = /[?&]status=([a-z_]+)/.exec(url)?.[1];
-    if (url.includes("/workflows/coletor-pncp.yml/runs") && filtro) {
+    if (ehWorkflowRuns && filtro) {
       const todos = [...(opts.recentes ?? []), ...(opts.ativosAntigos ?? [])];
       const achados = todos.filter((r) => r.status === filtro);
       return json({ total_count: achados.length, workflow_runs: achados });
     }
-    if (url.includes("/workflows/coletor-pncp.yml/runs")) {
+    if (ehWorkflowRuns) {
       const recentes = opts.recentes ?? (agendado ? [agendado] : []);
       return json({ total_count: recentes.length, workflow_runs: recentes });
     }
@@ -443,4 +445,31 @@ Deno.test("CA-7: rodar coletor-pncp continua um workflow_dispatch rápido, sem r
   assertEquals(res.status, 200);
   assertEquals(url, "https://api.github.com/repos/dono/repo/actions/workflows/coletor-pncp.yml/dispatches");
   assertEquals(JSON.parse(enviado), { ref: "main", inputs: { modo: "leads", dry_run: "false", rapido: "true" } });
+});
+
+Deno.test("api-syncs: coletor-precos segue a mesma estrutura do coletor-pncp (listar, rodar e refazer)", async () => {
+  const gh = github({ agendado: runGh({ conclusion: "failure" }) });
+  const listRes = await (await handleRequest(post({ action: "listar" }), ctxGh(gh))).json();
+  const precos = listRes.syncs.find((s: { slug: string }) => s.slug === "coletor-precos");
+  assertEquals(precos.disparavel, true);
+  assertEquals(precos.github_workflow, "coletor-precos.yml");
+  assertEquals(precos.pode_refazer, true);
+
+  const refRes = await handleRequest(post({ action: "refazer", sync: "coletor-precos" }), ctxGh(gh));
+  assertEquals(refRes.status, 200);
+  assertEquals((await refRes.json()).resposta?.status, "refeito");
+
+  let url = "";
+  let enviado = "";
+  const cRodar = ctxGh(gh, {
+    fetchFn: (input, init) => {
+      url = String(input);
+      enviado = String(init?.body);
+      return Promise.resolve(new Response(null, { status: 204 }));
+    },
+  });
+  const rodRes = await handleRequest(post({ action: "rodar", sync: "coletor-precos" }), cRodar);
+  assertEquals(rodRes.status, 200);
+  assertEquals(url, "https://api.github.com/repos/dono/repo/actions/workflows/coletor-precos.yml/dispatches");
+  assertEquals(JSON.parse(enviado), { ref: "main", inputs: { modo: "todos", dry_run: "false" } });
 });

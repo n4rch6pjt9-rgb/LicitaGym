@@ -32,6 +32,19 @@ export const SYNCS: SyncCatalogo[] = [
     aviso: "Rodar agora dispara o workflow no GitHub só com os 12 termos principais (rápido). Acompanhe em Actions › Coletor PNCP.",
   },
   {
+    slug: "coletor-precos",
+    funcao: null,
+    github_workflow: "coletor-precos.yml",
+    refazer_cron: true,
+    titulo: "Coletor de preços (Compras.gov + PNCP)",
+    faz: "Grava preços praticados (Pesquisa de Preço), descrição detalhada e itens/links de contratação via API PNCP.",
+    cron: "Segunda e quinta às 07:00, no GitHub Actions (catálogo, detalhe e contratação PNCP).",
+    // inputs do workflow_dispatch são sempre texto
+    corpo: { modo: "todos", dry_run: "false" },
+    disparavel: true,
+    aviso: "Rodar agora dispara o workflow no GitHub com as 3 etapas em sequência. Acompanhe em Actions › Coletor de Preços.",
+  },
+  {
     slug: "sync-compras-catmat",
     funcao: "sync-compras-catmat",
     titulo: "CATMAT do catálogo",

@@ -6,10 +6,40 @@ import {
   createServiceClient,
   finishSyncRun,
   logSyncRequest,
+  updateSyncHeartbeat,
 } from "../_shared/pncp/supabase-admin.ts";
 
 const DEFAULT_INDEX =
   "https://www.gov.br/pncp/pt-br/pncp/legislacao";
+const ORCAMENTO_PADRAO_MS = 90_000;
+
+async function fetchComRetry(
+  url: string,
+  init: RequestInit = {},
+  tentativas = 3,
+  timeoutMs = 15_000,
+): Promise<Response> {
+  let ultimoErro: unknown;
+  for (let tentativa = 0; tentativa < tentativas; tentativa++) {
+    try {
+      const res = await fetch(url, {
+        ...init,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (res.status < 500 || tentativa === tentativas - 1) {
+        return res;
+      }
+      ultimoErro = new Error(`HTTP ${res.status} em ${url}`);
+    } catch (err) {
+      ultimoErro = err;
+      if (tentativa === tentativas - 1) break;
+    }
+    const baseMs = 600 * Math.pow(2, tentativa);
+    const jitterMs = Math.floor(Math.random() * 300);
+    await new Promise((r) => setTimeout(r, baseMs + jitterMs));
+  }
+  throw ultimoErro instanceof Error ? ultimoErro : new Error(String(ultimoErro));
+}
 
 function extractDocumentLinks(html: string, baseUrl: string): Array<{ titulo: string; url: string }> {
   const links: Array<{ titulo: string; url: string }> = [];
@@ -41,6 +71,7 @@ Deno.serve(async (req) => {
   }
 
   const stats = { detectados: 0, novos: 0, inalterados: 0, erros: 0 };
+  const inicioMs = Date.now();
 
   try {
     const { data: fonte } = await client.from("legislacao_fontes")
@@ -49,11 +80,35 @@ Deno.serve(async (req) => {
       .limit(1)
       .maybeSingle();
 
-    const indexUrl = fonte?.url ?? DEFAULT_INDEX;
-    const started = Date.now();
-    const response = await fetch(indexUrl, {
-      headers: { Accept: "text/html", "User-Agent": "licitagym-pncp-sync/1.0" },
-    });
+    let indexUrl = fonte?.url ?? DEFAULT_INDEX;
+    const headersIndex = { Accept: "text/html", "User-Agent": "licitagym-pncp-sync/1.0" };
+    let started = Date.now();
+    let response: Response;
+    try {
+      response = await fetchComRetry(indexUrl, { headers: headersIndex });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status} ao consultar ${indexUrl}`);
+      }
+    } catch (errIndex) {
+      await logSyncRequest(client, {
+        syncRunId: runId,
+        endpoint: indexUrl,
+        parametros: { fallback: indexUrl !== DEFAULT_INDEX },
+        tempoRespostaMs: Date.now() - started,
+        erro: errIndex instanceof Error ? errIndex.message : String(errIndex),
+      });
+      if (indexUrl !== DEFAULT_INDEX) {
+        stats.erros++;
+        indexUrl = DEFAULT_INDEX;
+        started = Date.now();
+        response = await fetchComRetry(indexUrl, { headers: headersIndex });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status} ao consultar ${indexUrl}`);
+        }
+      } else {
+        throw errIndex;
+      }
+    }
     const html = await response.text();
     const pageHash = await sha256Hex(html);
 
@@ -66,7 +121,7 @@ Deno.serve(async (req) => {
       respostaHash: pageHash,
     });
 
-    if (fonte?.id) {
+    if (fonte?.id && indexUrl === fonte.url) {
       await client.from("legislacao_fontes").update({
         ultima_verificacao: new Date().toISOString(),
         ultimo_hash_pagina: pageHash,
@@ -79,6 +134,10 @@ Deno.serve(async (req) => {
     stats.detectados = links.length;
 
     for (const link of links) {
+      if (Date.now() - inicioMs >= ORCAMENTO_PADRAO_MS) {
+        break;
+      }
+      await updateSyncHeartbeat(client, runId);
       try {
         const urlCanon = link.url.split("#")[0];
         const { data: doc } = await client.from("legislacao_documentos")
@@ -102,7 +161,7 @@ Deno.serve(async (req) => {
           stats.inalterados++;
         }
 
-        const head = await fetch(link.url, { method: "HEAD" });
+        const head = await fetchComRetry(link.url, { method: "HEAD" });
         const etag = head.headers.get("etag");
         const lastModified = head.headers.get("last-modified");
 
@@ -114,7 +173,10 @@ Deno.serve(async (req) => {
 
         if (versaoExistente) continue;
 
-        const fileRes = await fetch(link.url);
+        const fileRes = await fetchComRetry(link.url);
+        if (!fileRes.ok) {
+          throw new Error(`HTTP ${fileRes.status} ao baixar ${link.url}`);
+        }
         const bytes = new Uint8Array(await fileRes.arrayBuffer());
         const sha256 = await sha256Hex(bytes);
         const storagePath = `${documentoId}/${sha256.slice(0, 16)}/original.pdf`;

@@ -254,6 +254,7 @@ def _deduplicar(secao: str, itens: Iterable[dict]) -> list[Arquivo]:
 
 
 def processo_para_linha(d: dict, modulo: int) -> dict:
+    d = {**d, "linkSistemaOrigem": f"{BASE}/Mural.aspx?nCdModulo={modulo}&nCdProcesso={d['nCdProcesso']}&tmpTipoMuralProcesso=0&nNmTela=E"}  # portal oficial; PNCP não disponibiliza o link do mural
     return {
         "fonte": "sestsenat",
         "modulo": modulo,

@@ -480,3 +480,23 @@ def test_disputa_aberta_2025_sem_trofeu_vence_classificada():
     res = P.linhas_resultados(1, 1, lances, None, "Homologado", 2)
     assert len(res) == 1 and res[0]["vencedor"] and res[0]["fornecedor_cnpj"] == "19932867000103"
     assert res[0]["valor_total_homologado"] == 108
+
+
+def test_link_mural_portal_oficial():
+    # PNCP não disponibiliza o link do mural da origem; o coletor precisa gravá-lo em raw
+    # para o buildEditalUrl (api-dashboard-oportunidades) derivar url_edital.
+    li = P.linha_licitacao(P.FONTES["sfiec"], DETALHE_7752, "forte", False)
+    link = li["raw"]["linkSistemaOrigem"]
+    assert link.startswith("https://portaldecompras.sfiec.org.br/portal/Mural.aspx?")
+    assert "nCdProcesso=7752" in link and "nCdModulo=59" in link
+    # módulo do detalhe, não o padrão (ex.: FIEMS/SFIEC usam 18)
+    d18 = {**DETALHE_7752, "nCdModulo": 18}
+    assert "nCdModulo=18" in P.link_mural(P.FONTES["sfiec"], d18)
+    assert P.link_mural(P.FONTES["sfiec"], {}) == ""
+
+
+def test_processo_para_linha_sestsenat_link():
+    from coletor import portal as PT
+    linha = PT.processo_para_linha({"nCdProcesso": 123, "sNrProcesso": "X"}, 59)
+    assert linha["raw"]["linkSistemaOrigem"].startswith(
+        "https://compras.sestsenat.org.br/portal/Mural.aspx?nCdModulo=59&nCdProcesso=123")

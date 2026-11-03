@@ -15,6 +15,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 from scripts.lib.http_fetch import fetch_json, HttpFetchError
+from scripts.lib.paginacao import acao_pagina
 from scripts.lib.sync_state import SyncStateManager, is_sync_resume_enabled
 from scripts.lib.payload_hash import compute_payload_hash
 
@@ -44,7 +45,7 @@ def fetch_contratacoes(pagina: int, data_inicial: str, data_final: str) -> Dict[
 
     params = {
         "pagina": pagina,
-        "tamanhoPagina": 50,  # MÁXIMO: 50 (não 500)
+        "tamanhoPagina": 50,  # teto da API de contratações/publicacao (10–50), dentro do máximo 100
         "dataInicial": data_inicial,  # YYYYMMDD
         "dataFinal": data_final,      # YYYYMMDD
         "codigoModalidadeContratacao": 6,  # Licitações
@@ -68,7 +69,7 @@ def compute_hash(obj: Dict[str, Any]) -> str:
 def collect_contratacoes(
     data_inicio_str: str,
     data_fim_str: str,
-    max_pages: int = 5,
+    max_pages: Optional[int] = None,
     resume: Optional[bool] = None,
     sync_manager: Optional[SyncStateManager] = None,
 ) -> List[Dict]:
@@ -104,8 +105,14 @@ def collect_contratacoes(
         logger.info(f"Reconstituídos {len(precos_encontrados)} preço(s) de execuções anteriores")
 
     pagina = (state.last_page + 1) if (should_resume and state.last_page > 0) else 1
+    vistos: set[str] = set()
+    lidos = 0
+    tamanho = 50
 
-    while pagina <= max_pages:
+    while True:
+        if max_pages is not None and pagina > max_pages:
+            logger.warning("teto de %s páginas atingido sem o total confirmar o fim", max_pages)
+            break
         logger.info(f"[Página {pagina}]")
         try:
             resp = fetch_contratacoes(pagina, data_inicio_str, data_fim_str)
@@ -119,11 +126,18 @@ def collect_contratacoes(
             sync_manager.save_accumulated_data(precos_encontrados)
             raise
 
-        contratacoes = resp.get("data", [])
+        contratacoes = resp.get("data") if isinstance(resp, dict) else None
+        parar, incluir = acao_pagina(
+            contratacoes, resp if isinstance(resp, dict) else {},
+            tamanho=tamanho, pagina=pagina, vistos=vistos, logger=logger, ja_lidos=lidos,
+        )
+        if not incluir:
+            break
         if not contratacoes:
             logger.info("✓ Fim da paginação (vazio)")
             break
 
+        lidos += len(contratacoes)
         logger.info(f"  {len(contratacoes)} contratações")
         novos_precos = 0
 
@@ -168,7 +182,7 @@ def collect_contratacoes(
         )
         sync_manager.save_accumulated_data(precos_encontrados)
 
-        if resp.get("paginasRestantes") == 0:
+        if parar:
             break
 
         pagina += 1
@@ -194,7 +208,7 @@ def main():
     logger.info(f"TamanhoPagina: 50 (máximo)\n")
 
     try:
-        precos_encontrados = collect_contratacoes(data_inicio_str, data_fim_str, max_pages=5)
+        precos_encontrados = collect_contratacoes(data_inicio_str, data_fim_str)
 
         output = {
             "endpoint": "/v1/contratacoes/publicacao",

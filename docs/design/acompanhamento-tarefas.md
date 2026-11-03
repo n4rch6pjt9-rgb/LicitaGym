@@ -151,6 +151,15 @@ SELECT cron.schedule(
 
    Compra homologada sem `data_homologacao` conhecida só entra pelo critério da ata vigente.
 
+> **Atenção (29/09/2026, nova semântica de `prioridade`):** o coletor PNCP passou a derivar `prioridade` do
+> estado da compra — `leads` = recebendo proposta, `monitorar` = em julgamento, `historico` = encerrada/homologada/
+> com resultado (compra homologada **não** é mais lead; ver `prioridade_da_compra()` em
+> `services/coletor-externo/coletor/pncp.py`). Com isso, o filtro 1 (`prioridade IN ('leads','monitorar')`) já
+> exclui toda compra homologada, e os ramos "homologada nos últimos 30 dias" e "ata vigente" do filtro 3 deixam
+> de alcançar linhas PNCP. Se o acompanhamento pós-homologação continuar desejado, o filtro 1 precisa aceitar
+> também `prioridade = 'historico'` quando o filtro 3 casar por homologação recente ou ata vigente
+> (decisão pendente do owner; o SQL em `docs/design/sql/acompanhamento_tarefas.sql` ainda não foi ajustado).
+
 **Justificativa:**
 - A prioridade é o marcador de funil da equipe: só gera tarefa o que a equipe marcou como Lead ou Monitorar.
 - A janela de tempo limita o volume de consultas ao `/historico` do PNCP, mantendo o job dentro do limite de 1 req/s por host (§4.3).

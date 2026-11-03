@@ -101,6 +101,9 @@ verify_jwt = false
 [functions.api-pncp-pca]
 verify_jwt = false
 
+[functions.api-precos]
+verify_jwt = false
+
 [functions.api-pncp-legislacao]
 verify_jwt = false
 
@@ -117,4 +120,65 @@ verify_jwt = false
 verify_jwt = false
 
 [functions.api-dashboard-oportunidades]
+verify_jwt = false
+
+[functions.sync-pncp-orgaos]
+verify_jwt = false
+
+# api-catmat valida o JWT do usuário no código (auth.getUser) e o papel admin em app_metadata
+[functions.api-catmat]
+verify_jwt = false
+
+# api-pipeline valida o JWT do usuário no código (auth.getUser) e o papel admin em app_metadata (Dashboard #29)
+[functions.api-pipeline]
+verify_jwt = false
+
+# api-agentes valida o JWT no código (auth.getUser). service_role só no servidor.
+[functions.api-agentes]
+verify_jwt = false
+
+# api-tenant valida o JWT do usuário no código (auth.getUser); papel pelo vínculo em tenant_membros ou app_metadata (spec 0017)
+[functions.api-tenant]
+verify_jwt = false
+
+# api-tarefas valida o JWT do usuário no código (auth.getUser); papel pelo vínculo em tenant_membros (#252, spec 0019)
+[functions.api-tarefas]
+verify_jwt = false
+
+# api-saude: cron secret (workflow saude.yml) ou usuário admin, validados no código
+[functions.api-saude]
+verify_jwt = false
+
+# api-syncs: admin ou cron no código. Lista os syncs e dispara manualmente, sem depender do pg_cron.
+[functions.api-syncs]
+verify_jwt = false
+
+# discover-piso-pdm valida o JWT do usuário no código (authenticateUser): só usuário logado; anon key e cron → 401
+[functions.discover-piso-pdm]
+verify_jwt = false
+
+# --- Edge Functions que existiam só em produção (versionadas a partir do código deployado) ---
+
+# api-fornecedores-homologados (prod v4): valida o JWT do usuário no código (authUser); cron secret → 401
+[functions.api-fornecedores-homologados]
+verify_jwt = false
+
+# sync-pncp-contratacoes-itens (prod v7): Bearer SYNC_CRON_SECRET validado no código
+[functions.sync-pncp-contratacoes-itens]
+verify_jwt = false
+
+# link-pca-edital (prod v5): Bearer SYNC_CRON_SECRET validado no código
+[functions.link-pca-edital]
+verify_jwt = false
+
+# sync-portal-compras (issue #266): Bearer SYNC_CRON_SECRET validado no código. Uma vez por dia.
+[functions.sync-portal-compras]
+verify_jwt = false
+
+# sync-cnpj-verificacao (spec 0008): Bearer SYNC_CRON_SECRET validado no código. Uma vez por semana.
+[functions.sync-cnpj-verificacao]
+verify_jwt = false
+
+# api-catalogo-ficha valida o JWT no código (authenticateUser) e a empresa em _shared/tenant.ts
+[functions.api-catalogo-ficha]
 verify_jwt = false

@@ -5,7 +5,10 @@
  */
 import { assertEquals, assertRejects } from "jsr:@std/assert@1";
 import { withRetry } from "../../../../../supabase/functions/_shared/pncp/retry.ts";
-import { ComprasGovMaterialClient } from "../../../../../supabase/functions/_shared/compras-gov/material-client.ts";
+import {
+  ComprasGovMaterialClient,
+  EnvelopeComprasGovInvalidoError,
+} from "../../../../../supabase/functions/_shared/compras-gov/material-client.ts";
 
 Deno.test(
   "material-client numeric overload withRetry(fn, 6, delay) allows 6 timeouts",
@@ -84,3 +87,17 @@ Deno.test(
     }
   },
 );
+
+Deno.test("fetchAllPages recusa HTTP 200 sem resultado e paginasRestantes", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response("{}", { status: 200 })) as typeof fetch;
+  try {
+    const client = new ComprasGovMaterialClient();
+    await assertRejects(
+      () => client.fetchItens({ codigoPdm: 1 }, { maxPaginas: 1 }),
+      EnvelopeComprasGovInvalidoError,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

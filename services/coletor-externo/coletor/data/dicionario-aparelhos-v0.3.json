@@ -69,12 +69,17 @@
    "ar_livre": "\\bape\\b|ao ar livre|ar livre|intemperie|academia da terceira idade|\\bati\\b|academia popular|praca"
   },
   "dupla_funcao": "dupla funcao|\\bdual\\b|conjugad|combinad|2 em 1|duas funcoes|multifuncao",
-  "angulo": {
+  "posicao": {
    "reto": "\\breto\\b|horizontal|plano",
    "inclinado": "inclinad",
    "declinado": "declinad",
+   "*todas": "(supino|banco).{0,40}(\\b3 ?(x|em) ?1\\b|\\btres em um\\b|\\b(3|tres) posicoes\\b)|(\\b3 ?(x|em) ?1\\b|\\btres em um\\b|\\b(3|tres) posicoes\\b).{0,40}(supino|banco)"
+  },
+  "angulo": {
    "90": "\\b90 ?(o|graus|°)?",
-   "45": "\\b45 ?(o|graus|°)?",
+   "45": "\\b45 ?(o|graus|°)?"
+  },
+  "ajuste": {
    "regulavel": "regulave|ajustave|multi ?posic"
   },
   "resistencia_cardio": {
@@ -231,6 +236,12 @@
    "de": "ambiguo:escada",
    "se": ".",
    "para": "simulador_escada"
+  },
+  {
+   "de": "banco_livre",
+   "se": "\\bsupino\\b",
+   "para": "banco_supino",
+   "aplica_no_tipo": true
   }
  ],
  "catmat_item": {
@@ -244,6 +255,23 @@
   "356908": "plataforma_vibratoria",
   "390896": "cadeira_extensora",
   "450160": "roda_abdominal"
+ },
+ "tipo_mecanismo": {
+  "_doc": "Valores do campo TIPO do CATMAT que dizem como o aparelho funciona, não qual é. O aparelho vem das CARACTERÍSTICAS ADICIONAIS, do MODELO ou do texto; o catmat_tipo do valor só vale se o texto não disser o aparelho (spec 0030).",
+  "ARTICULADO": {
+   "cinematica": "articulada"
+  },
+  "CONJUGADO": {
+   "dupla_funcao": true
+  },
+  "ELÉTRICA": {
+   "fonte_carga": "motor"
+  },
+  "ELÉTRICO": {
+   "fonte_carga": "motor"
+  },
+  "MECÂNICA": {},
+  "MECÂNICO": {}
  },
  "nos": [
   {
@@ -284,9 +312,9 @@
    "escopo": "IN",
    "componentes": [],
    "atributos": [
-    "angulo"
+    "posicao"
    ],
-   "obs": "Reto/inclinado/declinado é o atributo 'angulo', não um nó. Sem 'maquina/articulado/sentado', 'supino' sozinho é ambíguo com banco_supino."
+   "obs": "Reto/inclinado/declinado é a característica 'posicao' (um ou mais valores), não um nó. Sem 'maquina/articulado/sentado', 'supino' sozinho é ambíguo com banco_supino."
   },
   {
    "slug": "voador_peck_deck",
@@ -2122,10 +2150,11 @@
    "escopo": "IN",
    "componentes": [],
    "atributos": [
+    "posicao",
     "angulo",
     "ajuste"
    ],
-   "obs": "Reto/inclinado/declinado/90°/regulável são atributos. Modalidade peso_livre, e não 'Acessórios'."
+   "obs": "Reto/inclinado/declinado é a característica 'posicao'; 90°/45° é 'angulo'; regulável é 'ajuste' e não diz quais posições. Modalidade peso_livre, e não 'Acessórios'. Com 'supino' no texto vira banco_supino."
   },
   {
    "slug": "banco_supino",
@@ -2158,9 +2187,9 @@
    "escopo": "IN",
    "componentes": [],
    "atributos": [
-    "angulo"
+    "posicao"
    ],
-   "obs": ""
+   "obs": "Reto/inclinado/declinado é a característica 'posicao' (um ou mais valores); 3x1 / 3 em 1 = as três."
   },
   {
    "slug": "banco_scott",

@@ -42,6 +42,10 @@ def singular(t: str) -> str:
 
 SUBORDINADOS = {"anilha", "barra_livre", "haltere", "pegador_polia", "suporte_armazenamento"}
 FALLBACK = {"aparelho_musculacao_indefinido", "cardio_indefinido", "leg_press_indefinido"}
+# Campos do CATMAT que nomeiam o aparelho quando o TIPO é mecanismo (valor até a vírgula ou o ponto e vírgula)
+_CAMPOS_APARELHO = re.compile(r"\b(CARACTER[IÍ]STICAS ADICIONAIS|MODELO|IDENTIFICA[CÇ][AÃ]O)\s*:\s*([^,;]+)", re.I)
+# Características que podem ter mais de um valor no mesmo produto (banco supino 3x1 = reto + inclinado + declinado)
+EIXOS_MULTIPLOS = {"posicao", "angulo"}
 
 
 class Classificador:
@@ -54,6 +58,8 @@ class Classificador:
         self.ambiguos = d["ambiguos"]
         self.refinos = d.get("refinos", [])
         self.catmat_item = {str(k): v for k, v in d.get("catmat_item", {}).items()}
+        # TIPO do CATMAT que é mecanismo (ARTICULADO, CONJUGADO, ELÉTRICA...): vira característica, não aparelho
+        self.tipo_mecanismo = {norm(k): v for k, v in d.get("tipo_mecanismo", {}).items() if not k.startswith("_")}
         self.tipo_catmat = {}
         for n in d["nos"]:
             for t in n["catmat_tipo"]:
@@ -71,9 +77,11 @@ class Classificador:
                 if re.search(regras, t):
                     out[eixo] = True
                 continue
-            achados = [v for v, rx in regras.items() if re.search(rx, t)]
+            achados = [v for v, rx in regras.items() if not v.startswith("*") and re.search(rx, t)]
+            if "*todas" in regras and re.search(regras["*todas"], t):  # "3x1", "3 em 1": todos os valores do eixo
+                achados = [v for v in regras if not v.startswith("*")]
             if achados:
-                out[eixo] = achados if eixo == "angulo" else achados[0]
+                out[eixo] = achados if eixo in EIXOS_MULTIPLOS else achados[0]
         return out
 
     def classificar(self, texto: str, tipo_catmat: str | None = None, codigo_pdm=None, codigo_item=None) -> dict:
@@ -85,9 +93,34 @@ class Classificador:
         if tipo_catmat:
             chave = next((k for k in ((str(codigo_pdm or ""), norm(tipo_catmat)), ("", norm(tipo_catmat)))
                           if k in self.tipo_catmat and k[0] in ("", str(codigo_pdm or ""))), None)
+            # Só com o PDM informado (descrição estruturada do CATMAT); sem ele vale o comportamento anterior
+            mecanismo = self.tipo_mecanismo.get(norm(tipo_catmat)) if codigo_pdm else None
+            if mecanismo is not None:
+                # O TIPO diz como funciona, não o que é (spec 0030): o aparelho vem das características adicionais,
+                # do modelo ou da identificação. O catmat_tipo do valor só vale se esses campos não disserem o aparelho.
+                for eixo, valor in mecanismo.items():
+                    attrs.setdefault(eixo, valor)
+                # Só os campos que nomeiam o aparelho: o resto da descrição traz componentes ("BANCO: ESTOFADO...")
+                campos = " ".join(m.group(2) for m in _CAMPOS_APARELHO.finditer(texto or ""))
+                r = self._por_texto(norm(campos), attrs, ctx=norm(f"{tipo_catmat} {campos}")) if campos else self._res(None, "baixa", [], None, attrs)
+                if r["slug"] and r["slug"] not in SUBORDINADOS | FALLBACK:
+                    return r
+                if chave:
+                    cands = self.tipo_catmat[chave]
+                    # Mapeamento curado só para este PDM (ex.: 2640:ELÉTRICA = esteira) mantém a confiança
+                    conf = "baixa" if cands[0] in FALLBACK else ("alta" if chave[0] and len(cands) == 1 else "media")
+                    return self._res(cands[0], conf, cands, f"TIPO:{tipo_catmat}", attrs)
+                return self._por_texto(t, attrs)  # sem mapeamento do TIPO: o texto inteiro decide, como antes
             if chave:
                 cands = self.tipo_catmat[chave]
+                novo = self._refinar(cands[0], t, so_tipo=True)
+                if novo:  # TIPO genérico que o texto especifica: BANCO REGULÁVEL + "SUPINO DECLINADO"
+                    return self._res(novo, "media", [novo] + cands, f"TIPO:{tipo_catmat} + refino", attrs)
                 return self._res(cands[0], "alta" if len(cands) == 1 else "media", cands, f"TIPO:{tipo_catmat}", attrs)
+        return self._por_texto(t, attrs)
+
+    def _por_texto(self, t: str, attrs: dict, ctx: str | None = None) -> dict:
+        """ctx: texto usado pelos refinos quando difere do texto casado (TIPO mecanismo + campos do aparelho)."""
         ts = singular(t)
         hits, ocupado = [], []
         for rx, s, slug in self.sinonimos:
@@ -106,21 +139,24 @@ class Classificador:
             outros = list(dict.fromkeys(x for _, x in hits[1:] if x != slug))
             relevantes = [x for x in outros if x not in SUBORDINADOS]
             conf = "alta" if len(s.split()) >= 2 and not relevantes and slug not in FALLBACK else "media"
-            novo = self._refinar(slug, t)
+            novo = self._refinar(slug, ctx or t)
             if novo:
                 return self._res(novo, "media", [novo, slug] + outros, f"{s} + refino", attrs)
             return self._res(slug, conf, [slug] + outros, s, attrs)
         for termo, cands in self.ambiguos.items():
             if re.search(rf"(?<![a-z0-9]){re.escape(singular(termo))}(?![a-z0-9])", ts):
-                novo = self._refinar(f"ambiguo:{termo}", t)
+                novo = self._refinar(f"ambiguo:{termo}", ctx or t)
                 if novo:
                     return self._res(novo, "media", [novo] + [x for x in cands if x != novo], f"{termo} + refino", attrs)
                 return self._res(None, "baixa", cands, termo, attrs)
         return self._res(None, "baixa", [], None, attrs)
 
-    def _refinar(self, slug: str, t: str) -> str | None:
+    def _refinar(self, slug: str, t: str, so_tipo: bool = False) -> str | None:
+        """so_tipo: no caminho do TIPO do CATMAT só valem os refinos marcados com "aplica_no_tipo" (spec 0030)."""
         mod = self.nos[slug]["modalidade"] if slug in self.nos else None
         for r in self.refinos:
+            if so_tipo and not r.get("aplica_no_tipo"):
+                continue
             alvo = r["de"]
             if (alvo == slug or (alvo.startswith("*") and alvo[1:] == mod)) and r["para"] != slug and re.search(r["se"], t):
                 return r["para"]

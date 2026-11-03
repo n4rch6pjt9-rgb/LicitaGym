@@ -9,6 +9,10 @@ Versão: **2026-09-19** | Análise completa em [../catalogo-perguntas.md](../cat
 - **bridges-consolidados.md** — 5 caminhos de integração: PCA → PNCP, PNCP → CATMAT, ARP → PNCP, subrogação, ORG-01/02
 - **fix-pca-bridge-v1.md** — correção normalizePcaItem: recuperar codigoPdm, codigoItem, numeroControlePncp
 - **escopo-materiais-academia.md** — filtrar Bridge 2 por piso, borracha, PVC (não 113 PDMs genéricos)
+- **pncp-integracao-v3-api-docs-2026-10-09.json**: OpenAPI da integração PNCP (`/pncp-api/v3/api-docs`, produção). O do treina é idêntico, exceto pelos `example` de data
+- **pncp-consulta-v3-api-docs-2026-10-09.json**: OpenAPI da consulta PNCP (`/api/consulta/v3/api-docs`)
+- **compras-dadosabertos-v3-api-docs-2026-10-09.json**: OpenAPI do Dados Abertos Compras.gov.br (`/v3/api-docs`)
+  Os três são de 09/10/2026; origem, SHA-256 e comparação em [../avaliacao-apis-pca-2026-10.md](../avaliacao-apis-pca-2026-10.md)
 - **schemas.json** — definiçõesJSON Schema (quando versionado)
 
 ## Propósito

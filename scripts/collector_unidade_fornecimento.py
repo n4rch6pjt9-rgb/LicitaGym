@@ -11,7 +11,9 @@ from pathlib import Path
 import time
 from typing import Any, Dict, List, Optional
 from scripts.lib.catmat_pdm_source import extract_resultado, resolve_pdms
+from scripts.lib.http_client import clamp_compras_gov_page_size
 from scripts.lib.http_fetch import fetch_json, HttpFetchError
+from scripts.lib.paginacao import acao_pagina
 from scripts.lib.sync_state import SyncStateManager, is_sync_resume_enabled
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -30,12 +32,13 @@ def fetch_unidades(
     codigo_item: Optional[int] = None,
     codigo_unidade: Optional[int] = None,
     pagina: int = 1,
-    tamanho_pagina: int = 500,
+    tamanho_pagina: int = 100,
     max_retries: int = 3
 ) -> Dict[str, Any]:
     """Consulta Unidades de Fornecimento com retry exponencial.
     Conforme schema Compras.gov (schemas-consultas.md §1.6), E6 aceita codigoPdm.
     """
+    tamanho_pagina = clamp_compras_gov_page_size(tamanho_pagina)
     url = f"{BASE_URL}{ENDPOINT}"
 
     params = {
@@ -94,13 +97,16 @@ def collect_unidades_por_pdm(
 
     pagina = (state.last_page + 1) if (should_resume and state.last_page > 0) else 1
     pages_coletadas = 0
+    tamanho = clamp_compras_gov_page_size(100)
+    vistos: set[str] = set()
+    lidos = 0
 
     while True:
         try:
             resp = fetch_unidades(
                 codigo_pdm=codigo_pdm,
                 pagina=pagina,
-                tamanho_pagina=500,
+                tamanho_pagina=tamanho,
             )
         except Exception as e:
             sync_manager.record_partial_failure(
@@ -113,22 +119,23 @@ def collect_unidades_por_pdm(
             raise
 
         unidades = extract_resultado(resp, f"E6 pdm={codigo_pdm} pagina={pagina}")
-        if not unidades:
-            break
-
-        todas_unidades.extend(unidades)
-        pages_coletadas += 1
-        sync_manager.record_page_success(
-            page=pagina,
-            records_in_page=len(unidades),
-            cursor={"unidades": todas_unidades},
+        parar, incluir = acao_pagina(
+            unidades, resp, tamanho=tamanho, pagina=pagina, vistos=vistos, logger=logger, ja_lidos=lidos,
         )
-        sync_manager.save_accumulated_data(todas_unidades)
-
-        if max_pages and pages_coletadas >= max_pages:
+        if incluir and unidades:
+            lidos += len(unidades)
+            todas_unidades.extend(unidades)
+            pages_coletadas += 1
+            sync_manager.record_page_success(
+                page=pagina,
+                records_in_page=len(unidades),
+                cursor={"unidades": todas_unidades},
+            )
+            sync_manager.save_accumulated_data(todas_unidades)
+        if not incluir or parar:
             break
-
-        if resp.get("paginasRestantes", 0) == 0:
+        if max_pages and pages_coletadas >= max_pages:
+            logger.warning("teto de %s páginas atingido sem o total confirmar o fim", max_pages)
             break
 
         pagina += 1
@@ -207,6 +214,9 @@ def collect_unidades_por_grupo_classe(
 
     pagina = (state.last_page + 1) if (should_resume and state.last_page > 0) else 1
     pages_coletadas = 0
+    tamanho = clamp_compras_gov_page_size(100)
+    vistos = set()
+    lidos = 0
 
     while True:
         try:
@@ -214,7 +224,7 @@ def collect_unidades_por_grupo_classe(
                 codigo_grupo=codigo_grupo,
                 codigo_classe=codigo_classe,
                 pagina=pagina,
-                tamanho_pagina=500
+                tamanho_pagina=tamanho
             )
         except Exception as e:
             sync_manager.record_partial_failure(
@@ -227,10 +237,15 @@ def collect_unidades_por_grupo_classe(
             raise
 
         unidades = extract_resultado(resp, f"E6 G{codigo_grupo}/C{codigo_classe} pagina={pagina}")
-
+        parar, incluir = acao_pagina(
+            unidades, resp, tamanho=tamanho, pagina=pagina, vistos=vistos, logger=logger, ja_lidos=lidos,
+        )
+        if not incluir:
+            break
         if not unidades:
             logger.info(f"  Página {pagina}: vazio")
             break
+        lidos += len(unidades)
 
         logger.info(f"  Página {pagina}: {len(unidades)} unidades")
         todas_unidades.extend(unidades)
@@ -242,10 +257,10 @@ def collect_unidades_por_grupo_classe(
         )
         sync_manager.save_accumulated_data(todas_unidades)
 
-        if max_pages and pages_coletadas >= max_pages:
+        if parar:
             break
-
-        if resp.get("paginasRestantes", 0) == 0:
+        if max_pages and pages_coletadas >= max_pages:
+            logger.warning("teto de %s páginas atingido sem o total confirmar o fim", max_pages)
             break
 
         pagina += 1

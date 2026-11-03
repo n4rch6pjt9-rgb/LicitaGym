@@ -3,6 +3,8 @@ import io
 import zipfile
 from unittest.mock import MagicMock
 
+import pytest
+
 from coletor import indexador as IX
 from coletor.textos import Pagina, dividir, extrair
 
@@ -57,11 +59,6 @@ def test_dividir_com_cabecalho_e_sobreposicao():
     assert all(len(t["texto"]) <= 1000 + 10 for t in tr)
 
 
-def test_ocr_paginado():
-    ps = IX.paginas_do_ocr("[[PÁGINA 1]] um [[PÁGINA 2]] dois", "s.pdf")
-    assert [(p.numero, p.texto.strip()) for p in ps] == [(1, "um"), (2, "dois")]
-
-
 def test_indexa_uma_vez_por_hash_e_marca_copias(tmp_path):
     arq = tmp_path / "r.pdf"; arq.write_bytes(_pdf([RECURSO]))
     docs = [
@@ -95,14 +92,13 @@ def test_arquivo_sem_texto_fica_ignorado(tmp_path):
     assert r["status"] == "ignorado"
 
 
-def test_mascara_cpf_mas_mantem_cnpj():
+def test_cpf_e_cnpj_ficam_sem_mascara():
     from coletor.textos import limpar_texto
     t = limpar_texto("Sócio João, CPF 123.456.789-01; CPF: 12345678901. Empresa CNPJ 07.486.108/0001-85")
-    assert "123.456.789-01" not in t and "12345678901" not in t
-    assert "07.486.108/0001-85" in t
+    assert "123.456.789-01" in t and "12345678901" in t and "07.486.108/0001-85" in t
 
 
-def test_extracao_recebe_texto_com_cpf_mascarado(tmp_path):
+def test_extracao_recebe_texto_com_cpf_sem_mascara(tmp_path):
     arq = tmp_path / "habilitacao.pdf"
     arq.write_bytes(_pdf(["CPF 123.456.789-01\nEmpresa CNPJ 07.486.108/0001-85\n" + RECURSO]))
     docs = [{"id": 1, "licitacao_id": 1, "secao": "habilitacao", "nome_original": "habilitacao.pdf",
@@ -110,6 +106,92 @@ def test_extracao_recebe_texto_com_cpf_mascarado(tmp_path):
     ia = MagicMock()
     ia.extrair_campos.return_value = {"tipo_documento": "habilitacao"}
     ia.embed.side_effect = lambda ts, **k: [[0.1] * 768 for _ in ts]
-    IX.indexar_grupo(MagicMock(), ia, docs, {"numero_processo": "1/2026", "numero_edital": None}, True)
+    IX.indexar_grupo(MagicMock(), ia, docs, {"numero_processo": "1/2026", "numero_edital": None, "fonte": "sestsenat"}, True)
     texto_enviado = ia.extrair_campos.call_args.args[0]
-    assert "123.456.789-01" not in texto_enviado and "07.486.108/0001-85" in texto_enviado
+    assert "123.456.789-01" in texto_enviado and "07.486.108/0001-85" in texto_enviado
+
+
+def test_rotulo_fonte():
+    assert IX.rotulo_fonte({"fonte": "pncp", "orgao_nome": "Prefeitura de Lages"}) == "PNCP Prefeitura de Lages"
+    assert IX.rotulo_fonte({"fonte": "pncp"}) == "PNCP"
+    assert IX.rotulo_fonte({"fonte": "sestsenat", "entidade": None}) == "SEST SENAT"
+    assert IX.rotulo_fonte({"fonte": "fiesc", "entidade": "FIESC (SESI/SC, SENAI/SC, IEL/SC)"}).startswith("FIESC")
+    assert IX.rotulo_fonte({"fonte": "firjan"}).startswith("Firjan")
+
+
+def test_cabecalho_e_prompt_usam_a_fonte_real(tmp_path):
+    arq = tmp_path / "edital.pdf"; arq.write_bytes(_pdf([RECURSO]))
+    docs = [{"id": 9, "licitacao_id": 7, "secao": "processo", "nome_original": "edital.pdf",
+             "arquivo_origem": "edital.pdf", "fornecedor_nome": None, "sha256": "h", "storage_uri": str(arq)}]
+    ia = MagicMock()
+    ia.extrair_campos.return_value = {"tipo_documento": "edital"}
+    ia.embed.side_effect = lambda ts, **k: [[0.1] * 768 for _ in ts]
+    sb = MagicMock()
+    lic = {"numero_processo": "90001/2026", "numero_edital": None, "fonte": "pncp", "orgao_nome": "Prefeitura de Lages"}
+    IX.indexar_grupo(sb, ia, docs, lic, True)
+    linhas = sb.upsert.call_args.args[1]
+    assert all(l["texto"].startswith("PNCP Prefeitura de Lages") for l in linhas)
+    assert not any("SEST SENAT" in l["texto"] for l in linhas)
+    assert all(l["metadados"]["fonte"] == "pncp" for l in linhas)
+    assert ia.extrair_campos.call_args.args[4] == "PNCP Prefeitura de Lages"
+
+
+# --- Ficha opcional (19/10: "VALORES MEDIA CNPJ E ÓRGÃO" da licitação 3558 estourou o prazo do Gemini em todas as
+# tentativas; a preparação inteira falhou e os trechos do documento nunca foram gravados) ---------------------------
+
+def _doc(arq):
+    return [{"id": 7, "licitacao_id": 3558, "secao": "processo", "nome_original": "VALORES_MEDIA.pdf",
+             "arquivo_origem": "v.pdf", "fornecedor_nome": None, "sha256": "h", "storage_uri": str(arq)}]
+
+
+def _ia(erro):
+    ia = MagicMock()
+    ia.extrair_campos.side_effect = erro
+    ia.embed.side_effect = lambda ts, **k: [[0.1] * 768 for _ in ts]
+    return ia
+
+
+def test_ficha_com_prazo_estourado_nao_impede_os_trechos(tmp_path):
+    arq = tmp_path / "v.pdf"; arq.write_bytes(_pdf([RECURSO]))
+    sb = MagicMock()
+    r = IX.indexar_grupo(sb, _ia(IX.ia_mod.FichaIndisponivel("prazo_estourado")), _doc(arq), {"numero_processo": "58/2026"}, True)
+    assert r["status"] == "indexado"
+    linhas = sb.upsert.call_args.args[1]
+    assert linhas and all(l["metadados"]["chunk_kind"] == "trecho" for l in linhas)   # sem resumo inventado
+    extracao = sb.atualizar.call_args.args[2]["extracao"]
+    assert extracao["ficha"] == "indisponivel"
+    assert extracao["ficha_erro"] == "prazo_estourado"   # só a categoria, sem a mensagem do SDK
+
+
+def test_ficha_com_json_invalido_tambem_nao_impede_os_trechos(tmp_path):
+    arq = tmp_path / "v.pdf"; arq.write_bytes(_pdf([RECURSO]))
+    sb = MagicMock()
+    r = IX.indexar_grupo(sb, _ia(IX.ia_mod.FichaIndisponivel("json_invalido")), _doc(arq), {"numero_processo": "58/2026"}, True)
+    assert r["status"] == "indexado"
+    assert sb.atualizar.call_args.args[2]["extracao"] == {"ficha": "indisponivel", "ficha_erro": "json_invalido"}
+
+
+@pytest.mark.parametrize("codigo,status", [(429, "RESOURCE_EXHAUSTED"), (503, "UNAVAILABLE"), (500, "INTERNAL"),
+                                           (404, "NOT_FOUND"), (403, "PERMISSION_DENIED")])
+def test_ficha_com_cota_5xx_ou_configuracao_errada_sobe(tmp_path, codigo, status):
+    """Cota e 5xx: o pedido volta para a fila e a ficha é tentada de novo depois. 4xx (modelo inexistente, sem
+    permissão): falha à vista em vez de indexar tudo sem ficha. Nos dois casos nada é gravado agora."""
+    from google.genai import errors
+    arq = tmp_path / "v.pdf"; arq.write_bytes(_pdf([RECURSO]))
+    erro = (errors.ServerError if codigo >= 500 else errors.ClientError)(codigo, {"error": {"code": codigo, "status": status, "message": "x"}})
+    sb = MagicMock()
+    with pytest.raises(errors.APIError):
+        IX.indexar_grupo(sb, _ia(erro), _doc(arq), {"numero_processo": "58/2026"}, True)
+    sb.upsert.assert_not_called()
+    sb.atualizar.assert_not_called()
+
+
+def test_reprocessar_ficha_seleciona_indexados_sem_ficha(monkeypatch):
+    sb = MagicMock()
+    sb.selecionar.side_effect = [[], [], []]
+    monkeypatch.setattr(IX, "Supabase", lambda *a: sb)
+    monkeypatch.setattr(IX, "env", lambda *a, **k: "x")
+    monkeypatch.setattr("coletor.ia.Gemini", lambda: MagicMock())
+    IX.main(["--reprocessar-ficha"])
+    filtros = sb.selecionar.call_args_list[1].kwargs
+    assert filtros["status_processamento"] == "eq.indexado" and filtros["extracao->>ficha"] == "eq.indisponivel"

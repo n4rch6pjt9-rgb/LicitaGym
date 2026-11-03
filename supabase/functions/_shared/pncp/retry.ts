@@ -169,12 +169,14 @@ export async function fetchWithTimeout(
       signal: controller.signal,
     });
     // Keep timer alive through body consumption (headers-ok / body-hang).
-    // Error statuses: cancel (don't buffer) so callers get headers promptly.
-    // Success / empty-anomaly paths: buffer under the same abort timer.
+    // 5xx and 429 (retried): cancel (don't buffer) so callers get headers promptly.
+    // Success, empty-anomaly and other 4xx (final; callers may archive the official body): buffer under the same
+    // abort timer.
     let bodyInit: BodyInit | null = null;
+    const retentavel = response.status === 429 || response.status >= 500;
     if (response.status === 204 || !response.body) {
       // nothing to read
-    } else if (!response.ok) {
+    } else if (retentavel) {
       await response.body.cancel().catch(() => {});
     } else {
       bodyInit = await response.arrayBuffer();

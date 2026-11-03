@@ -57,39 +57,53 @@ python3 -m coletor.processo_edital --dry-run    # completa processos curtos ("4"
 
 ## Coletor PNCP (fonte principal)
 
-Busca nacional no PNCP por frase exata (`TERMOS_PADRAO` em `coletor/pncp.py`), classifica cada compra
+Busca nacional no PNCP por frase exata (por padrão os 160 termos de `TERMOS_ESCOPO_COMPLETO`; `--termos-padrao` = 12 termos), classifica cada compra
 pelo objeto **e pelos itens** (`coletor/escopo.py`) e grava compra, itens, **vencedores** e arquivos.
 
-Três modos, em ordem de prioridade comercial:
+Três modos. O modo só escolhe o filtro `status` da busca no PNCP; não define sozinho a prioridade gravada.
 
-| Modo | O que pega | Uso |
+| Modo | Filtro PNCP | Prioridade |
 |---|---|---|
-| `leads` (padrão) | homologados nos últimos `--dias` (120), vencedor conhecido | oferecer raspa ao vencedor que ainda vai comprar |
-| `monitorar` | recebendo proposta + em julgamento | acompanhar até sair o vencedor |
-| `historico` | encerrados antigos | histórico de preço e RAG |
+| `leads` (padrão) | `recebendo_proposta` | recebendo proposta |
+| `monitorar` | `em_julgamento` | em julgamento, suspensa, adjudicação ou recurso |
+| `historico` | `encerradas` | encerrada ou homologada |
 
-O filtro de `leads` usa a **data de resultado de cada item** (`dataResultado` do PNCP). A paginação
-para quando os editais foram publicados há mais de `dias + margem_publicacao` (240) dias.
+**Prioridade** (owner, 02/10/2026): `leads` = recebendo proposta; `monitorar` = em julgamento, suspensa, adjudicação ou recurso; `historico` = encerrada ou homologada. Status desconhecido nunca vira lead. Falha de API ou documento ausente não pode gravar `encerradas`/`historico` nem promover a `leads`. Compra homologada não é lead.
+
+Preço por item CATMAT, marca e mapa de fornecedor (revenda ou fabricante) saem só de certames homologados, ficam só no BI e são rastreáveis pelo certame. Revogada, anulada, deserta ou fracassada não alimentam esse mapa.
 
 ```bash
 # schema: supabase/migrations/20260924100000_pncp_itens_resultados.sql (via supabase db push)
 python3 -m coletor.pncp --dry-run --termos "borracha granulada" --tam 20   # teste rápido
-python3 -m coletor.pncp                                   # leads: homologados nos últimos 120 dias
-python3 -m coletor.pncp --dias 60                         # só os últimos 60 dias
-python3 -m coletor.pncp --modo monitorar                  # abertos / em julgamento
-python3 -m coletor.pncp --modo historico --paginas 10 --baixar-arquivos
+python3 -m coletor.pncp                                   # leads: recebendo proposta
+python3 -m coletor.pncp --modo monitorar                  # em julgamento
+python3 -m coletor.pncp --modo historico --paginas 10 --baixar-arquivos   # encerradas
 python3 -m coletor.indexador                              # arquivos baixados -> RAG
 ```
 
-`oportunidades_borracha` lista primeiro os leads, do homologado mais recente para o mais antigo,
-com `dias_desde_homologacao`.
+Reclassificar as linhas PNCP já gravadas (as antigas `leads` homologadas viram `historico`) — dry-run por padrão:
+
+```bash
+export SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=...                       # do ambiente, nunca no código
+python3 -m coletor.backfill_prioridade_pncp                                 # DRY-RUN: contagem por transição + amostra
+python3 -m coletor.backfill_prioridade_pncp --consultar-pncp --limit 50     # DRY-RUN relendo o detalhe no PNCP (GET)
+python3 -m coletor.reclassificar_escopo_pncp                               # DRY-RUN (prioridade + fase)
+python3 -m coletor.reclassificar_escopo_pncp --apply                       # grava prioridade, fase e escopo
+```
+
+`backfill_prioridade_pncp --apply` está desativado (sai com código 2): ele decide só a prioridade, sem documentos
+nem fase, e sobrescreveria fases documentais como "Suspensa (documento)". O dry-run dele fica como diagnóstico legado.
+
+`oportunidades_borracha` lista primeiro os `leads` (certames abertos, ainda sem vencedor) e depois o resto, do
+homologado mais recente para o mais antigo, com `dias_desde_homologacao`. Para oferecer raspa ao vencedor,
+use as linhas `historico` com homologação recente (`dias_desde_homologacao`), não `prioridade = 'leads'`.
 
 Volume observado (24/09/2026, frase exata): grama sintética 3.263 (85 abertas), academia ao ar livre 1.563,
 equipamentos de academia 1.023, piso emborrachado 986, campo society 794, borracha granulada 122.
 A busca do PNCP também acha termos dentro dos itens — decoração natalina, arbitragem e grama natural são
 descartadas pelo classificador.
 
-**Leads de raspa de borracha:** a view `oportunidades_borracha` junta compra, item e vencedor
+**Raspa de borracha para o vencedor:** a view `oportunidades_borracha` junta compra, item e vencedor
 (ex.: Carapicuíba/SP, 50 t de borracha granulada G3 homologadas a R$ 2.779,46/t para HG Comércio).
 
 ---
@@ -119,12 +133,14 @@ Também entram:
 - **Grama sintética** (classe 7220, PDM 18481) e **piso sintético esportivo** (PDM 10779, só com texto
   esportivo/borracha — o PDM é majoritariamente piso vinílico comum);
 - **Borracha granulada** (classe 9320, PDM 9461, item CATMAT 150846) — raspa, granulado, SBR, EPDM;
-- **Obras de quadra/campo society/academia ao ar livre com grama sintética ou piso emborrachado**
-  (categoria `obra_piso`). A borracha do infill costuma vir na especificação técnica da obra.
+- Academia ao ar livre só conta junto com piso (o produto). Obra, credenciamento, locação, manutenção
+  (inclusive com fornecimento de peças) e oficineiros nunca viram lead.
 - Recreação infantil (parque infantil, playground).
 
 `interesse_borracha(objeto)` marca as licitações onde o vencedor vai precisar de raspa/granulado.
-Obras sem grama/piso (ex.: cobertura de quadra), serviços de evento, uniformes e troféus ficam fora.
+Serviço de evento, uniforme e troféu ficam fora. Um termo de busca sozinho não torna a linha `forte`.
+Polia e espaldar são `forte`. Pilates, "aparelho para condicionamento físico" genérico e colchonete são `fraco`.
+`Puxador` é positivo só na categoria acessórios.
 O coletor usa `--escopo fitness` por padrão (`--escopo tudo` desliga o filtro).
 
 ## 1. Criar as tabelas (uma vez)
@@ -198,9 +214,9 @@ de maior valor para o RAG. Ligue `proposta`/`negociacao` quando quiser preços.
   visitante antes de baixar anexos. O endpoint de download responde sem ele,
   mas o recomendado é fazer o cadastro com os dados da empresa responsável
   pelo LicitaGym para ficar em conformidade com o portal.
-- **LGPD:** só CNPJ é gravado; identificadores de pessoa física (CPF) são
-  descartados. Documentos de habilitação podem conter dados de sócios —
-  mascarar antes de indexar no RAG.
+- **LGPD:** nos cadastros estruturados só CNPJ é gravado. No RAG, CPF e CNPJ
+  que aparecem nos editais são dados públicos e são indexados sem máscara, nem descartados
+  (decisão de 01/10/2026).
 - **Limites de taxa:** mantenha `DELAY_SEGUNDOS` ≥ 1 e rode fora do horário comercial.
 
 ## 4. Indexar no RAG (texto → Gemini → embeddings)
@@ -214,12 +230,18 @@ python3 -m coletor.buscar "Por que a Freedom Motors recorreu e qual foi a decis�
 ```
 
 - Cada arquivo físico (sha256) é processado **uma vez**; cópias recebem o mesmo resultado.
-- PDF com texto → `pypdf`; PDF escaneado → OCR pelo Gemini; `.zip` é aberto (até 2 níveis);
-  `.docx` lido direto; `.rar` e imagens ficam listados em `extracao.arquivos_ignorados`.
+- O tipo do arquivo vem dos **bytes**, não da extensão (o PNCP entrega `.bin`/sem extensão):
+  `%PDF-` → PDF; `PK` → ZIP, ou DOCX se tiver `word/document.xml`, ou XLSX se tiver `xl/`.
+- PDF com texto → `pypdf`; PDF escaneado → OCR pelo Gemini; ZIP é aberto (até 2 níveis, nomes
+  internos em cp850/UTF-8 sem flag corrigidos); DOCX lido direto; XLSX vira texto simples
+  (uma linha por linha da planilha, células com " | ", sem datas formatadas, até 200 mil caracteres);
+  `.rar`, `.7z`, `.pptx`, `.doc`/`.xls` antigos e imagens ficam em `extracao.arquivos_ignorados`.
+  Arquivo com nome `.pdf` que não é PDF (ex.: página HTML de erro) é ignorado, não vai para o OCR.
 - Gemini gera um JSON por documento em `licitacao_documentos.extracao` (tipo, resumo,
   fornecedores, decisão, motivos, fundamentos legais, valores, pontos-chave) e um trecho-resumo.
 - Embeddings: `text-multilingual-embedding-002` (lotes de até 30 trechos, 1 chamada a cada 12,5 s), 768 dimensões, `RETRIEVAL_DOCUMENT` (consulta usa `RETRIEVAL_QUERY`).
-- Modelos configuráveis: `EMBED_MODEL`, `GEN_MODEL` (padrão `gemini-2.5-flash`), `GOOGLE_CLOUD_LOCATION` (padrão `us-central1`).
+  Cada chunk grava o modelo em `licitacao_chunks.embedding_model` (padrão da coluna: o mesmo modelo).
+- `GEN_MODEL` (padrão `gemini-3.8-flash`, desde 22/10/2026: o `gemini-2.5-flash` foi descontinuado), `GEN_LOCATION` (padrão `global`, endpoint do 3.8 Flash) e `GEN_THINKING` (padrão deduzido do modelo: `low` no Gemini 3+, `off` no 2.5-flash; aceita `off`, `low`, `medium`, `high` ou `padrao`) são configuráveis. O embedding usa `GOOGLE_CLOUD_LOCATION` (padrão `us-central1`), separado da geração. O embedding do RAG permanece `text-multilingual-embedding-002` com 768 dimensões; trocar o modelo exige um plano de reindex aprovado. Não apontar `EMBED_MODEL` para outro modelo sem esse plano.
 
 **Cota do Vertex (projeto novo):** o modelo de embeddings começa com **5 requisições/min**
 por região. O indexador já respeita isso (`EMBED_INTERVALO=12.5`). Para acelerar, peça aumento em

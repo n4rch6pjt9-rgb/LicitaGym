@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable
 
 import requests
+from .proveniencia import campos_proveniencia
 
 BASE = "https://compras.sestsenat.org.br/portal"
 WS = f"{BASE}/WebService/Servicos.asmx"
@@ -253,9 +254,14 @@ def _deduplicar(secao: str, itens: Iterable[dict]) -> list[Arquivo]:
     return list(por_arquivo.values())
 
 
+ fix/url-edital-hosts-paradigma
 def processo_para_linha(d: dict, modulo: int) -> dict:
     d = {**d, "linkSistemaOrigem": f"{BASE}/Mural.aspx?nCdModulo={modulo}&nCdProcesso={d['nCdProcesso']}&tmpTipoMuralProcesso=0&nNmTela=E"}  # portal oficial; PNCP não disponibiliza o link do mural
+
+def processo_para_linha(d: dict, modulo: int, origem: str = "manual", agora: datetime | None = None) -> dict:
+ main
     return {
+        **campos_proveniencia(d, origem, agora),  # spec 0023
         "fonte": "sestsenat",
         "modulo": modulo,
         "id_externo": d["nCdProcesso"],

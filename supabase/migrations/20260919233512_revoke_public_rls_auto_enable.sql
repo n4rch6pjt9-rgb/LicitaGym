@@ -1,8 +1,12 @@
--- A função pertence ao event trigger interno `ensure_rls` e não deve ser
--- exposta como RPC pela Data API. REVOKEs comentados — função não foi criada.
--- REVOKE EXECUTE ON FUNCTION public.rls_auto_enable() FROM PUBLIC;
--- REVOKE EXECUTE ON FUNCTION public.rls_auto_enable() FROM anon, authenticated;
-
+-- A função pode existir somente no ambiente de origem (event trigger ensure_rls).
+-- Revogar chamadas diretas quando presente; não criar stub em ambientes novos.
+do $compat$
+begin
+  if to_regprocedure('public.rls_auto_enable()') is not null then
+    revoke execute on function public.rls_auto_enable() from public, anon, authenticated;
+  end if;
+end;
+$compat$;
 -- As tabelas CATMAT/PCA criadas após a revisão RLS de 202609180009
 -- herdaram grants para `anon`. As policies permitem leitura somente para
 -- `authenticated`; remover os grants mantém a ACL alinhada ao modelo declarado.

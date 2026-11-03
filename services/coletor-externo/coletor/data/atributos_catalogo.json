@@ -1,0 +1,24 @@
+{
+  "versao": "2026-10-03",
+  "descricao": "Chaves de ficha do ProdutoColetado/1. O rótulo da página só casa por igualdade (depois de normalizar acento e caixa). Rótulo desconhecido fica com chave null. Chave de cardio não se aplica a produto de musculação, e o inverso também. 'comum' vale para qualquer família.",
+  "chaves": [
+    {"chave": "carga_maxima_por_anilheiro", "aplica_a": ["musculacao"], "rotulos": ["carga maxima por anilheiro"], "unidade": "kg"},
+    {"chave": "numero_anilheiros", "aplica_a": ["musculacao"], "rotulos": ["numero de anilheiros"], "unidade": null},
+    {"chave": "carga_inicial_kg", "aplica_a": ["musculacao"], "rotulos": ["carga inicial"], "unidade": "kg"},
+    {"chave": "carga_maxima_kg", "aplica_a": ["musculacao"], "rotulos": ["carga maxima total", "carga maxima", "carga da maquina", "carga de peso"], "unidade": "kg"},
+    {"chave": "peso_placa_kg", "aplica_a": ["musculacao"], "rotulos": ["peso unitario da placa", "peso da placa"], "unidade": "kg"},
+    {"chave": "peso_maximo_usuario_kg", "aplica_a": ["musculacao"], "rotulos": ["peso maximo do usuario", "peso usuario"], "unidade": "kg"},
+    {"chave": "velocidade_kmh", "aplica_a": ["cardio"], "rotulos": ["velocidade"], "unidade": "km/h"},
+    {"chave": "inclinacao_pct", "aplica_a": ["cardio"], "rotulos": ["inclinacao", "declinacao e inclinacao", "declinacao inclinacao"], "unidade": "%"},
+    {"chave": "motor", "aplica_a": ["cardio"], "rotulos": ["motor"], "unidade": null},
+    {"chave": "area_corrida", "aplica_a": ["cardio"], "rotulos": ["area de corrida", "area da lona"], "unidade": null},
+    {"chave": "capacidade_usuario_kg", "aplica_a": ["cardio"], "rotulos": ["capacidade de uso", "peso usuario"], "unidade": "kg"},
+    {"chave": "programas", "aplica_a": ["cardio"], "rotulos": ["programas de treino", "programacao"], "unidade": null},
+    {"chave": "tensao", "aplica_a": ["comum"], "rotulos": ["tensao", "voltagem"], "unidade": null},
+    {"chave": "comprimento_cm", "aplica_a": ["comum"], "rotulos": ["comprimento"], "unidade": "cm"},
+    {"chave": "largura_cm", "aplica_a": ["comum"], "rotulos": ["largura"], "unidade": "cm"},
+    {"chave": "altura_cm", "aplica_a": ["comum"], "rotulos": ["altura"], "unidade": "cm"},
+    {"chave": "peso_equipamento_kg", "aplica_a": ["comum"], "rotulos": ["peso do equipamento", "peso da maquina", "peso liquido", "peso total", "peso"], "unidade": "kg"},
+    {"chave": "garantia", "aplica_a": ["comum"], "rotulos": ["garantia"], "unidade": null}
+  ]
+}

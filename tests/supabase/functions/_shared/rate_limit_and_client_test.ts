@@ -5,6 +5,7 @@ import {
   createRequestBudget,
 } from "../../../../supabase/functions/_shared/pncp/retry.ts";
 import {
+  createSupabaseHostLease,
   RateLimitPauseError,
   UnifiedHttpClient,
   type HostLeaseRpc,
@@ -225,17 +226,28 @@ Deno.test("3. Queue Full: rejected queue throws RateLimitPauseError if budget is
 // 4. Lock already_running
 // ---------------------------------------------------------------------------
 Deno.test("4. Lock: acquireSyncLock returns alreadyRunning when lock is active", async () => {
+  const schemas: string[] = [];
   const fakeSupabase = {
-    rpc: (name: string, params: Record<string, unknown>) => {
-      assertEquals(name, "acquire_sync_lock");
-      assertEquals(params.p_lock_key, "contratacoes-editais:padrao");
-      return Promise.resolve({
-        data: {
-          already_running: true,
-          run_id: "active-run-uuid-999",
+    // RPC na raiz mira `public` (PGRST202 em produção) — não pode ser usado.
+    rpc: () => {
+      throw new Error("acquire_sync_lock deve ir via schema(\"private\").rpc, não client.rpc");
+    },
+    schema: (name: string) => {
+      schemas.push(name);
+      return {
+        rpc: (fn: string, params: Record<string, unknown>) => {
+          assertEquals(fn, "acquire_sync_lock");
+          assertEquals(params.p_lock_key, "contratacoes-editais:padrao");
+          assertEquals(params.p_resource_type, "contratacoes_editais");
+          return Promise.resolve({
+            data: {
+              already_running: true,
+              run_id: "active-run-uuid-999",
+            },
+            error: null,
+          });
         },
-        error: null,
-      });
+      };
     },
   };
 
@@ -248,25 +260,30 @@ Deno.test("4. Lock: acquireSyncLock returns alreadyRunning when lock is active",
 
   assertEquals(res.alreadyRunning, true);
   assertEquals(res.runId, "active-run-uuid-999");
+  assertEquals(schemas, ["private"]);
 });
 
 Deno.test("4. Lock: acquireSyncLock succeeds when lock is free and returns inherited continuation", async () => {
+  const rpcSchemas: string[] = [];
   const fakeSupabase = {
-    rpc: (name: string, _params: Record<string, unknown>) => {
-      assertEquals(name, "acquire_sync_lock");
-      return Promise.resolve({
-        data: {
-          already_running: false,
-          run_id: "new-run-uuid-111",
-          continuation: {
-            pending: [{ dataInicial: "20260920", dataFinal: "20260921", nextPage: 3 }],
-            chain_id: "chain-root-000",
+    schema: (name: string) => ({
+      rpc: (fn: string, _params: Record<string, unknown>) => {
+        rpcSchemas.push(name);
+        assertEquals(fn, "acquire_sync_lock");
+        return Promise.resolve({
+          data: {
+            already_running: false,
+            run_id: "new-run-uuid-111",
+            continuation: {
+              pending: [{ dataInicial: "20260920", dataFinal: "20260921", nextPage: 3 }],
+              chain_id: "chain-root-000",
+            },
+            retomada_de_id: "prior-incomplete-uuid",
           },
-          retomada_de_id: "prior-incomplete-uuid",
-        },
-        error: null,
-      });
-    },
+          error: null,
+        });
+      },
+    }),
   };
 
   const res = await acquireSyncLock(
@@ -279,12 +296,56 @@ Deno.test("4. Lock: acquireSyncLock succeeds when lock is free and returns inher
   assertEquals(res.alreadyRunning, false);
   assertEquals(res.runId, "new-run-uuid-111");
   assertEquals(res.retomadaDeId, "prior-incomplete-uuid");
+  assertEquals(rpcSchemas, ["private"]);
 
   // Load continuation directly from inherited continuation
   const continuation = await loadPendingSlices(fakeSupabase as any, "contratacoes-editais:padrao", res.runId, res.continuation);
   assertEquals(continuation?.chainId, "chain-root-000");
   assertEquals(continuation?.slices.length, 1);
   assertEquals(continuation?.slices[0].nextPage, 3);
+});
+
+Deno.test("4. Lock: acquireSyncLock propaga erro do RPC private (ex.: PGRST202)", async () => {
+  const fakeSupabase = {
+    schema: (name: string) => ({
+      rpc: (_fn: string, _params: Record<string, unknown>) => {
+        assertEquals(name, "private");
+        return Promise.resolve({
+          data: null,
+          error: { code: "PGRST202", message: "Could not find the function private.acquire_sync_lock" },
+        });
+      },
+    }),
+  };
+  await assertRejects(() =>
+    acquireSyncLock(fakeSupabase as any, "legislacao:padrao", "legislacao", {})
+  );
+});
+
+Deno.test("4. HostLease: createSupabaseHostLease chama acquire_http_slot/report_http_rate_limit via schema(\"private\")", async () => {
+  const calls: Array<{ schema: string; fn: string; params: Record<string, unknown> }> = [];
+  const fakeSupabase = {
+    rpc: () => {
+      throw new Error("host lease deve ir via schema(\"private\").rpc, não client.rpc");
+    },
+    schema: (name: string) => ({
+      rpc: (fn: string, params: Record<string, unknown>) => {
+        calls.push({ schema: name, fn, params });
+        if (fn === "acquire_http_slot") {
+          return Promise.resolve({ data: { allowed: true, wait_ms: 0 }, error: null });
+        }
+        return Promise.resolve({ data: null, error: null });
+      },
+    }),
+  };
+  const lease = createSupabaseHostLease(fakeSupabase as any);
+  const slot = await lease.acquireSlot("pncp.gov.br", 5_000);
+  await lease.reportRateLimit("pncp.gov.br", 30);
+  assertEquals(slot, { allowed: true, wait_ms: 0 });
+  assertEquals(calls, [
+    { schema: "private", fn: "acquire_http_slot", params: { p_host: "pncp.gov.br", p_max_wait_ms: 5_000 } },
+    { schema: "private", fn: "report_http_rate_limit", params: { p_host: "pncp.gov.br", p_cooldown_seconds: 30 } },
+  ]);
 });
 
 // ---------------------------------------------------------------------------

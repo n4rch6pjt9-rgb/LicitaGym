@@ -1,0 +1,78 @@
+name: Supabase - verificar autenticacao
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  verificar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Validar acesso de leitura ao projeto
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+          from urllib.error import HTTPError, URLError
+          from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+          # Destino fixo: nenhuma chave de banco e nenhuma chamada de escrita.
+          PROJECT_REF = "ifaiagegyicjzlpskafh"
+          URL = f"https://api.supabase.com/v1/projects/{PROJECT_REF}/functions"
+
+          class NoRedirect(HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+
+          def main():
+              token = os.environ.get("SUPABASE_ACCESS_TOKEN", "").strip()
+              if not token or any(char.isspace() for char in token):
+                  print("::error::SUPABASE_ACCESS_TOKEN ausente ou com formato invalido.")
+                  return 1
+              request = Request(URL, method="GET", headers={
+                  "Authorization": "Bearer " + token,
+                  "Accept": "application/json",
+              })
+              try:
+                  with build_opener(NoRedirect()).open(request, timeout=20) as response:
+                      status = response.status
+                      raw = response.read(2_000_001)
+              except HTTPError as error:
+                  status = error.code
+                  error.close()
+                  messages = {
+                      401: "Token rejeitado (401); conferir o secret do repositorio.",
+                      403: "Acesso negado (403); conferir acesso ao projeto e permissoes de leitura.",
+                      429: "API limitou a consulta (429); autenticacao ainda nao validada.",
+                  }
+                  print("::error::" + messages.get(status, f"Resposta HTTP {status}; autenticacao nao validada."))
+                  return 1
+              except (URLError, TimeoutError, OSError, ValueError):
+                  print("::error::Falha de transporte; autenticacao nao validada.")
+                  return 1
+              if status != 200 or len(raw) > 2_000_000:
+                  print("::error::Resposta inesperada; autenticacao nao validada.")
+                  return 1
+              try:
+                  functions = json.loads(raw)
+              except (ValueError, UnicodeError):
+                  print("::error::Resposta sem JSON valido; autenticacao nao validada.")
+                  return 1
+              if not isinstance(functions, list) or not all(isinstance(item, dict) for item in functions):
+                  print("::error::Envelope inesperado; autenticacao nao validada.")
+                  return 1
+              print(f"HTTP 200: acesso de leitura confirmado no projeto {PROJECT_REF}.")
+              print("Nenhum deploy, migration, secret ou dado foi alterado.")
+              print("Este check nao comprova permissoes de escrita/deploy.")
+              return 0
+
+          if __name__ == "__main__":
+              sys.exit(main())
+          PY

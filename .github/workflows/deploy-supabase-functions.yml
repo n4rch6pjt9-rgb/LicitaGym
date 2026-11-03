@@ -64,6 +64,7 @@ jobs:
             sync-pncp-catalogo
             sync-compras-catmat
             link-catmat-pca
+            link-pca-edital
             sync-pncp-irp
             sync-pncp-orgaos
             # PENDING (not production-ready — do not deploy yet):
@@ -74,6 +75,15 @@ jobs:
             api-pncp-contratacoes
             api-pncp-irp
             api-dashboard-oportunidades
+            api-catmat
+            api-pipeline
+            api-tenant
+            api-tarefas
+            api-catalogo-ficha
+            api-fornecedores-homologados
+            api-saude
+            api-disputa
+            api-agentes
             calculate-distance-webrouter
           )
 
@@ -91,6 +101,18 @@ jobs:
               if [ "${fn}" = "api-dashboard-oportunidades" ]; then
                 DASHBOARD_DEPLOYED=true
               fi
+              if [ "${fn}" = "api-catmat" ]; then
+                CATMAT_DEPLOYED=true
+              fi
+              if [ "${fn}" = "api-saude" ]; then
+                SAUDE_DEPLOYED=true
+              fi
+              if [ "${fn}" = "api-agentes" ]; then
+                AGENTES_DEPLOYED=true
+              fi
+              if [ "${fn}" = "api-catalogo-ficha" ]; then
+                FICHA_DEPLOYED=true
+              fi
             else
               echo "✗ ${fn} FALHOU no deploy"
               FAILED+=("${fn}")
@@ -100,6 +122,11 @@ jobs:
           echo "----------------------------------------"
           echo "Resumo do deploy:"
           echo "Sucesso (${#SUCCESS[@]}): ${SUCCESS[*]}"
+
+          echo "CATMAT_DEPLOYED=${CATMAT_DEPLOYED:-false}" >> "$GITHUB_ENV"
+          echo "SAUDE_DEPLOYED=${SAUDE_DEPLOYED:-false}" >> "$GITHUB_ENV"
+          echo "AGENTES_DEPLOYED=${AGENTES_DEPLOYED:-false}" >> "$GITHUB_ENV"
+          echo "FICHA_DEPLOYED=${FICHA_DEPLOYED:-false}" >> "$GITHUB_ENV"
 
           if [ "${DASHBOARD_DEPLOYED}" = "true" ]; then
             echo "DASHBOARD_DEPLOYED=true" >> "$GITHUB_ENV"
@@ -141,6 +168,49 @@ jobs:
 
           echo "Smoke tests passaram com sucesso."
 
+      - name: Smoke test api-catmat
+        if: env.CATMAT_DEPLOYED == 'true'
+        run: |
+          BASE_URL="https://${PROJECT_ID}.supabase.co/functions/v1/api-catmat"
+          echo "Validando catalogo_listar sem JWT de usuário (esperado HTTP 401)..."
+          CODE=$(curl -s -o /tmp/catmat_unauth.json -w "%{http_code}" -X POST -H "Content-Type: application/json" -d '{"action":"catalogo_listar"}' "${BASE_URL}")
+          echo "HTTP code recebido: ${CODE}"
+          cat /tmp/catmat_unauth.json
+          echo ""
+          if [ "${CODE}" -ne 401 ]; then
+            echo "Falha no smoke test: api-catmat sem autenticacao retornou ${CODE}, esperado 401"
+            exit 1
+          fi
+          echo "Smoke test api-catmat passou."
+
+      - name: Smoke test api-catalogo-ficha
+        if: env.FICHA_DEPLOYED == 'true'
+        run: |
+          BASE_URL="https://${PROJECT_ID}.supabase.co/functions/v1/api-catalogo-ficha"
+          echo "Validando gravar sem JWT de usuário (esperado HTTP 401)..."
+          CODE=$(curl -s -o /tmp/ficha_unauth.json -w "%{http_code}" -X POST -H "Content-Type: application/json" -d '{"action":"gravar"}' "${BASE_URL}")
+          echo "HTTP code recebido: ${CODE}"
+          cat /tmp/ficha_unauth.json
+          echo ""
+          if [ "${CODE}" -ne 401 ]; then
+            echo "Falha no smoke test: api-catalogo-ficha sem autenticacao retornou ${CODE}, esperado 401"
+            exit 1
+          fi
+          echo "Smoke test api-catalogo-ficha passou."
+
+      - name: Smoke test api-saude
+        if: env.SAUDE_DEPLOYED == 'true'
+        run: |
+          BASE_URL="https://${PROJECT_ID}.supabase.co/functions/v1/api-saude"
+          echo "Validando resumo sem credencial (esperado HTTP 401)..."
+          CODE=$(curl -s -o /tmp/saude_unauth.json -w "%{http_code}" -X POST -H "Content-Type: application/json" -d '{"action":"resumo"}' "${BASE_URL}")
+          echo "HTTP code recebido: ${CODE}"
+          if [ "${CODE}" -ne 401 ]; then
+            echo "Falha no smoke test: api-saude sem autenticacao retornou ${CODE}, esperado 401"
+            exit 1
+          fi
+          echo "Smoke test api-saude passou."
+
       - name: Report deployment status
         if: always()
         run: |
@@ -150,5 +220,9 @@ jobs:
           fi
           if [ "${DASHBOARD_DEPLOYED}" != "true" ]; then
             echo "::error::api-dashboard-oportunidades não foi publicada."
+            exit 1
+          fi
+          if [ "${AGENTES_DEPLOYED:-false}" != "true" ]; then
+            echo "::error::api-agentes não foi publicada."
             exit 1
           fi

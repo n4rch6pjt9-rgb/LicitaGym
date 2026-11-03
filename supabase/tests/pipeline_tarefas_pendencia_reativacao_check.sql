@@ -1,0 +1,110 @@
+-- Checagem da migration 20261011180000_pipeline_tarefas_pendencia_reativacao (revisão do PR #329, spec 0018).
+--   pendência limpa com bloqueio de regulamento e fora do pipeline; reativar empresa não recria etapa excluída e
+--   semeia o modelo nas etapas existentes. Tudo desfeito ao final.
+
+do $$
+declare
+  v_t    bigint;
+  v_t2   bigint;
+  v_r_txt text;
+  v_tri2 bigint;
+  v_l3   bigint;
+  v_t3   bigint;
+  v_u    uuid := '00000000-0000-0000-0000-0000000000f4';
+  v_tri  bigint;
+  v_ana  bigint;
+  v_l1   bigint;
+  v_l2   bigint;
+  v_r    record;
+begin
+  foreach v_r_txt in array array['anon', 'authenticated'] loop
+    if has_function_privilege(v_r_txt, 'public.pipeline_tarefas_reaplicar(bigint,bigint,uuid)'::regprocedure, 'EXECUTE')
+       or has_function_privilege(v_r_txt, 'public.licitacoes_externas_regulamento_reaplicar()'::regprocedure, 'EXECUTE')
+       or has_function_privilege(v_r_txt, 'public.tenants_reativada_semear()'::regprocedure, 'EXECUTE') then
+      raise exception 'CHECK FALHOU: % executa função da pendência/reativação', v_r_txt;
+    end if;
+  end loop;
+  if not has_function_privilege('service_role', 'public.pipeline_tarefas_reaplicar(bigint,bigint,uuid)'::regprocedure, 'EXECUTE') then
+    raise exception 'CHECK FALHOU: service_role não executa pipeline_tarefas_reaplicar';
+  end if;
+  if to_regclass('private.pipeline_tarefas_pendencias_licitacao_idx') is null then
+    raise exception 'CHECK FALHOU: índice pipeline_tarefas_pendencias_licitacao_idx ausente';
+  end if;
+
+  begin
+    insert into public.tenants (slug, nome) values ('check-pend-1', 'Check pendência 1') returning id into v_t;
+    select id into v_tri from public.pipeline_etapas where tenant_id = v_t and nome = 'Triagem';
+    select id into v_ana from public.pipeline_etapas where tenant_id = v_t and nome = 'Em análise';
+    insert into public.licitacoes_externas (fonte, regulamento) values ('sestsenat', 'OUTRO') returning id into v_l1;
+    insert into public.licitacoes_externas (fonte) values ('pncp') returning id into v_l2;
+
+    -- regulamento sem catálogo é estado final: reaplicar termina com bloqueio e limpa a pendência antiga
+    perform public.pipeline_mover(v_t, array[v_l1], v_tri, null, v_u);
+    insert into private.pipeline_tarefas_pendencias (tenant_id, licitacao_id, motivo, erro)
+    values (v_t, v_l1, 'reaplicar_falhou', 'teste');
+    select * into v_r from public.pipeline_tarefas_reaplicar(v_t, v_l1, null);
+    if v_r.bloqueio is distinct from 'regulamento_sem_catalogo' then
+      raise exception 'CHECK FALHOU: bloqueio esperado regulamento_sem_catalogo, veio %', v_r.bloqueio;
+    end if;
+    if exists (select 1 from private.pipeline_tarefas_pendencias where tenant_id = v_t and licitacao_id = v_l1) then
+      raise exception 'CHECK FALHOU: pendência ficou depois de reaplicar com bloqueio (alerta falso permanente)';
+    end if;
+
+    -- fora do pipeline: a pendência deixa de valer
+    insert into private.pipeline_tarefas_pendencias (tenant_id, licitacao_id, motivo) values (v_t, v_l2, 'reaplicar_falhou');
+    select * into v_r from public.pipeline_tarefas_reaplicar(v_t, v_l2, null);
+    if v_r.bloqueio <> 'fora_do_pipeline'
+       or exists (select 1 from private.pipeline_tarefas_pendencias where tenant_id = v_t and licitacao_id = v_l2) then
+      raise exception 'CHECK FALHOU: pendência de licitação fora do pipeline não foi limpa';
+    end if;
+
+    -- reativar a empresa não recria etapa excluída, mas semeia o modelo que falta nas etapas existentes
+    perform public.pipeline_mover(v_t, array[v_l1], v_ana, null, v_u);
+    perform public.pipeline_etapa_excluir(v_t, v_tri, null, v_u);
+    delete from public.pipeline_etapa_tarefas where tenant_id = v_t and etapa_id = v_ana;
+    update public.tenants set ativo = false where id = v_t;
+    update public.tenants set ativo = true where id = v_t;
+    if exists (select 1 from public.pipeline_etapas where tenant_id = v_t and nome = 'Triagem') then
+      raise exception 'CHECK FALHOU: reativar recriou a etapa Triagem excluída pelo admin';
+    end if;
+    if not exists (select 1 from public.pipeline_etapa_tarefas where tenant_id = v_t and etapa_id = v_ana) then
+      raise exception 'CHECK FALHOU: reativar não semeou o modelo de Em análise';
+    end if;
+
+    -- card em Triagem com a empresa inativa: reativar enfileira a preparação
+    insert into public.licitacoes_externas (fonte) values ('pncp') returning id into v_l3;
+    insert into public.tenants (slug, nome) values ('check-pend-3', 'Check pendência 3') returning id into v_t3;
+    select id into v_tri2 from public.pipeline_etapas where tenant_id = v_t3 and nome = 'Triagem';
+    update public.tenants set ativo = false where id = v_t3;
+    perform public.pipeline_mover(v_t3, array[v_l3], v_tri2, null, v_u);
+    if exists (select 1 from private.job_queue where job_type = 'preparar_triagem'
+                and payload ->> 'tenant_id' = v_t3::text and payload ->> 'licitacao_id' = v_l3::text) then
+      raise exception 'CHECK FALHOU: empresa inativa ganhou pedido ao mover';
+    end if;
+    update public.tenants set ativo = true where id = v_t3;
+    if not exists (select 1 from private.job_queue where job_type = 'preparar_triagem' and status = 'pending'
+                    and payload ->> 'tenant_id' = v_t3::text and payload ->> 'licitacao_id' = v_l3::text) then
+      raise exception 'CHECK FALHOU: card em Triagem não ganhou pedido ao reativar a empresa';
+    end if;
+
+    -- empresa sem nenhuma etapa (inativa quando as etapas foram semeadas): reativar dá as 13 padrão e o modelo
+    insert into public.tenants (slug, nome, ativo) values ('check-pend-2', 'Check pendência 2', false) returning id into v_t2;
+    delete from public.pipeline_etapa_tarefas where tenant_id = v_t2;
+    delete from public.pipeline_etapas where tenant_id = v_t2;
+    update public.tenants set ativo = true where id = v_t2;
+    if (select count(*) from public.pipeline_etapas where tenant_id = v_t2) <> 13 then
+      raise exception 'CHECK FALHOU: empresa sem etapas reativada não recebeu as 13 padrão';
+    end if;
+    if not exists (select 1 from public.pipeline_etapa_tarefas where tenant_id = v_t2) then
+      raise exception 'CHECK FALHOU: empresa sem etapas reativada não recebeu o modelo de tarefas';
+    end if;
+
+    raise exception 'ROLLBACK_PROPOSITAL';
+  exception when others then
+    if sqlerrm <> 'ROLLBACK_PROPOSITAL' then
+      raise;
+    end if;
+  end;
+  raise notice 'SUCESSO: pipeline_tarefas_pendencia_reativacao ok (desfeito)';
+end
+$$;

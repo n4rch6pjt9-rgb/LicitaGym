@@ -257,9 +257,9 @@ $$;
 REVOKE ALL ON FUNCTION public.refresh_catmat_item_completo() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.refresh_catmat_item_completo() TO service_role;
 
--- Matview não tem RLS: o acesso é controlado por GRANT.
-REVOKE ALL ON public.catmat_item_completo FROM anon;
-GRANT SELECT ON public.catmat_item_completo TO authenticated;
+-- MV fora da Data API: sem RLS; só service_role (advisor 0016).
+REVOKE ALL ON public.catmat_item_completo FROM PUBLIC, anon, authenticated;
+GRANT ALL ON public.catmat_item_completo TO service_role;
 
 
 -- -----------------------------------------------------------------------------

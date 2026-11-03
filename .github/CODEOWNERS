@@ -1,0 +1,6 @@
+# Revisão obrigatória do dono nas áreas que afetam produção (vale quando a proteção da main exigir code owners).
+*                         @n4rch6pjt9-rgb
+/supabase/migrations/     @n4rch6pjt9-rgb
+/supabase/functions/      @n4rch6pjt9-rgb
+/.github/                 @n4rch6pjt9-rgb
+/.claude/                 @n4rch6pjt9-rgb

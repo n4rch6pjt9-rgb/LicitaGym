@@ -1,6 +1,11 @@
 import { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { errorDetail, jsonResponse } from "../_shared/http.ts";
-import { buildEditalUrl, buildPncpEditalUrl } from "../_shared/edital-url.ts";
+import { buildAcompanhamentoUrl, buildEditalUrl, buildOrigemUrl, buildPncpEditalUrl } from "../_shared/edital-url.ts";
+import { secaoPortal, type TenantDoUsuario } from "./portal.ts";
+import { anexarReferenciaPreco } from "./precoReferencia.ts";
+import { diaBrasilia } from "../_shared/portal-compras.ts";
+import { sincronizarPortalOficialEAtraso } from "./pncpAtraso.ts";
+import { estaNoPipeline } from "./portal.ts";
 import { UnifiedHttpClient } from "../_shared/http-client/index.ts";
 import type {
   AcompanhamentoActionParams,
@@ -11,13 +16,14 @@ import type {
   CompraMetadata,
   HistoricoEvento,
   ItemAcompanhamento,
-  ItemResultado,
 } from "./types.ts";
 
 export interface DashboardOportunidadesClientContext {
   getClient?: () => SupabaseClient;
   requireAuth?: (req: Request) => Promise<Response | null> | Response | null;
   httpClient?: UnifiedHttpClient;
+  /** Empresa de quem chama (index.ts resolve pelo JWT). Ausente = nenhuma: nada conta como "no pipeline". */
+  tenantDoUsuario?: TenantDoUsuario;
 }
 
 export interface PncpKey {
@@ -106,30 +112,8 @@ export function resolvePncpKey(row: Record<string, unknown> | null | undefined):
   return null;
 }
 
-/**
- * Constrói a url_acompanhamento para o Comprasnet a partir de linkSistemaOrigem.
- * Revalida: protocolo https, host exato cnetmobile.estaleiro.serpro.gov.br e
- * parâmetro compra com exatamente 17 dígitos (UASG 6 + Mod 2 + Num 5 + Ano 4).
- */
-export function buildAcompanhamentoUrl(linkSistemaOrigem: unknown): string | null {
-  if (typeof linkSistemaOrigem !== "string") return null;
-  const trimmed = linkSistemaOrigem.trim();
-  if (!trimmed.toLowerCase().startsWith("https://")) return null;
-
-  try {
-    const parsed = new URL(trimmed);
-    if (parsed.protocol !== "https:") return null;
-    const hostname = parsed.hostname.toLowerCase();
-    if (hostname !== "cnetmobile.estaleiro.serpro.gov.br") return null;
-
-    const idCompra = parsed.searchParams.get("compra");
-    if (!idCompra || !/^\d{17}$/.test(idCompra.trim())) return null;
-
-    return `https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/landing?destino=acompanhamento-compra&compra=${idCompra.trim()}`;
-  } catch {
-    return null;
-  }
-}
+// buildAcompanhamentoUrl mora em _shared/edital-url.ts (também usada pela rota do fornecedor).
+export { buildAcompanhamentoUrl };
 
 // -----------------------------------------------------------------------------
 // Cache em memória (TTL de 5 minutos)
@@ -253,6 +237,54 @@ async function fetchCompraMetadata(
   }
 }
 
+// materialOuServico do PNCP: código ("M"/"S") vence o nome ("Material"/"Serviço"), sem caixa e sem acento
+// (mesma regra de coletor/pncp.py material_ou_servico).
+const MATERIAL_OU_SERVICO_NOMES: Record<string, "M" | "S"> = {
+  m: "M", material: "M", materiais: "M", s: "S", servico: "S", servicos: "S",
+};
+
+export function materialOuServicoDoItem(it: Record<string, unknown>): "M" | "S" | null {
+  for (const chave of ["materialOuServico", "materialOuServicoNome"]) {
+    const v = it[chave];
+    if (v === undefined || v === null) continue;
+    const norm = String(v).normalize("NFKD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
+    if (norm in MATERIAL_OU_SERVICO_NOMES) return MATERIAL_OU_SERVICO_NOMES[norm];
+  }
+  return null;
+}
+
+/**
+ * Item do /itens do PNCP para a aba Itens PNCP. Repassa o catálogo do item (catalogo.id/nome e catalogoCodigoItem)
+ * e material/serviço para o front decidir o que é CATMAT: só catalogoId = 1 (Catálogo do Compras.gov.br) em
+ * material. numeroItem NUNCA é código de catálogo (a LICITANET numera 7932110, 7932111...).
+ */
+export function mapItemAcompanhamento(it: Record<string, unknown>): ItemAcompanhamento {
+  const catalogo = (it.catalogo && typeof it.catalogo === "object") ? (it.catalogo as Record<string, unknown>) : null;
+  const catalogoIdNum = catalogo?.id === undefined || catalogo?.id === null || typeof catalogo?.id === "boolean"
+    ? NaN
+    : Number(catalogo.id);
+  const codigoBruto = it.catalogoCodigoItem;
+  const codigo = codigoBruto === undefined || codigoBruto === null || typeof codigoBruto === "boolean"
+    ? ""
+    : String(codigoBruto).trim();
+  return {
+    numeroItem: Number(it.numeroItem),
+    descricao: (it.descricao as string) ?? null,
+    quantidade: typeof it.quantidade === "number" ? it.quantidade : (it.quantidade ? Number(it.quantidade) : null),
+    unidade: (it.unidadeMedida as string) ?? (it.unidade as string) ?? null,
+    valorUnitarioEstimado: typeof it.valorUnitarioEstimado === "number"
+      ? it.valorUnitarioEstimado
+      : (it.valorUnitarioEstimado ? Number(it.valorUnitarioEstimado) : null),
+    situacaoCompraItemNome: (it.situacaoCompraItemNome as string) ?? null,
+    temResultado: Boolean(it.temResultado),
+    resultados: [],
+    catalogoCodigoItem: codigo || null,
+    catalogoId: Number.isInteger(catalogoIdNum) && catalogoIdNum > 0 ? catalogoIdNum : null,
+    catalogoNome: typeof catalogo?.nome === "string" && catalogo.nome.trim() ? catalogo.nome.trim() : null,
+    materialOuServico: materialOuServicoDoItem(it),
+  };
+}
+
 async function fetchItensComResultados(
   httpClient: UnifiedHttpClient,
   cnpj: string,
@@ -289,18 +321,7 @@ async function fetchItensComResultados(
       if (pageItems.length === 0) break;
 
       for (const it of pageItems) {
-        allItems.push({
-          numeroItem: Number(it.numeroItem),
-          descricao: (it.descricao as string) ?? null,
-          quantidade: typeof it.quantidade === "number" ? it.quantidade : (it.quantidade ? Number(it.quantidade) : null),
-          unidade: (it.unidadeMedida as string) ?? (it.unidade as string) ?? null,
-          valorUnitarioEstimado: typeof it.valorUnitarioEstimado === "number"
-            ? it.valorUnitarioEstimado
-            : (it.valorUnitarioEstimado ? Number(it.valorUnitarioEstimado) : null),
-          situacaoCompraItemNome: (it.situacaoCompraItemNome as string) ?? null,
-          temResultado: Boolean(it.temResultado),
-          resultados: [],
-        });
+        allItems.push(mapItemAcompanhamento(it));
       }
 
       if (pageItems.length < tamanhoPagina) break;
@@ -392,17 +413,7 @@ async function fetchAtas(
 
       if (pageAtas.length === 0) break;
 
-      for (const a of pageAtas) {
-        atasList.push({
-          numero: (a.numeroAtaRegistroPreco as string) ?? (a.numero as string) ?? null,
-          ano: typeof a.anoAta === "number" ? a.anoAta : (a.anoAta ? Number(a.anoAta) : null),
-          vigenciaInicio: (a.dataVigenciaInicio as string) ?? null,
-          vigenciaFim: (a.dataVigenciaFim as string) ?? null,
-          dataAssinatura: (a.dataAssinatura as string) ?? null,
-          cancelado: Boolean(a.cancelado),
-          objeto: (a.objetoCompra as string) ?? (a.objeto as string) ?? null,
-        });
-      }
+      for (const a of pageAtas) atasList.push(ataDoPncp(a));
 
       if (paginasRestantes === 0 && pageAtas.length < tamanhoPagina) break;
       pagina++;
@@ -513,12 +524,16 @@ async function fetchArquivos(
       const downloadUrl = (arq.url as string) ?? (arq.uri as string) ??
         (seqDoc ? `https://pncp.gov.br/pncp-api/v1/orgaos/${cnpj}/compras/${ano}/${seq}/arquivos/${seqDoc}` : null);
 
-      arquivosList.push({
+      const arquivo: ArquivoAcompanhamento = {
         titulo: (arq.titulo as string) ?? null,
         tipo: (arq.tipoDocumentoNome as string) ?? (arq.tipoDocumentoDescricao as string) ?? null,
         url: downloadUrl,
         sequencialDocumento: seqDoc,
-      });
+      };
+      // Repassados só quando vêm do PNCP (ausente != false/null inventado).
+      if (typeof arq.dataPublicacaoPncp === "string") arquivo.dataPublicacaoPncp = arq.dataPublicacaoPncp;
+      if (typeof arq.statusAtivo === "boolean") arquivo.statusAtivo = arq.statusAtivo;
+      arquivosList.push(arquivo);
     }
 
     return { dados: arquivosList, total: arquivosList.length, erro: null };
@@ -552,8 +567,90 @@ export const ACOMPANHAMENTO_LICITACAO_COLUMNS: readonly string[] = [
   "processo_norm",
   "numero_edital",
   "orgao_cnpj",
+  "link_sistema_origem",
+  "fase",
   "raw",
 ];
+
+// -----------------------------------------------------------------------------
+// Campos derivados (calculados a cada resposta, fora do cache: dependem da linha e do dia)
+// -----------------------------------------------------------------------------
+
+/**
+ * Ata da consulta do PNCP (AtaRegistroPrecoPeriodoDTO). Cancelada = `cancelado` verdadeiro OU `dataCancelamento`
+ * preenchida: o PNCP pode mandar a data com `cancelado: false`, e a ata não pode aparecer como vigente.
+ */
+export function ataDoPncp(a: Record<string, unknown>): AtaAcompanhamento {
+  const dataCancelamento = typeof a.dataCancelamento === "string" && a.dataCancelamento.trim() !== ""
+    ? a.dataCancelamento
+    : null;
+  return {
+    numero: (a.numeroAtaRegistroPreco as string) ?? (a.numero as string) ?? null,
+    ano: typeof a.anoAta === "number" ? a.anoAta : (a.anoAta ? Number(a.anoAta) : null),
+    vigenciaInicio: (a.dataVigenciaInicio as string) ?? null,
+    vigenciaFim: (a.dataVigenciaFim as string) ?? null,
+    dataAssinatura: (a.dataAssinatura as string) ?? null,
+    cancelado: Boolean(a.cancelado) || dataCancelamento != null,
+    dataCancelamento,
+    objeto: (a.objetoCompra as string) ?? (a.objeto as string) ?? null,
+  };
+}
+
+/**
+ * Ata vigente no dia `hoje` (YYYY-MM-DD, America/Sao_Paulo): cancelada => false; sem vigenciaFim => null (não dá
+ * para afirmar); vigenciaInicio no futuro => false; senão hoje <= vigenciaFim. Datas do PNCP comparadas pelo dia.
+ */
+export function ataVigente(ata: AtaAcompanhamento, hoje: string): boolean | null {
+  if (ata.cancelado) return false;
+  const fim = typeof ata.vigenciaFim === "string" ? ata.vigenciaFim.slice(0, 10) : "";
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fim)) return null;
+  const inicio = typeof ata.vigenciaInicio === "string" ? ata.vigenciaInicio.slice(0, 10) : "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(inicio) && inicio > hoje) return false;
+  return hoje <= fim;
+}
+
+function semAcento(v: string): string {
+  return v.normalize("NFKD").replace(/[̀-ͯ]/g, "").trim().toLowerCase();
+}
+
+/**
+ * Situação do item para exibir. Situação específica do PNCP diferente de "Em andamento" é mantida. Com
+ * "Em andamento": "Registro de Preço" se há ata não cancelada; "Homologado" se o item tem resultado ou a fase é
+ * homologada; "Suspensa" se a fase é suspensa; "Recebendo Propostas" se a fase é recebendo propostas; senão mantém.
+ */
+export function situacaoExibidaItem(
+  item: ItemAcompanhamento,
+  ctx: { fase: string | null; atas: AtaAcompanhamento[] },
+): string | null {
+  const bruto = item.situacaoCompraItemNome;
+  if (typeof bruto !== "string" || semAcento(bruto) !== "em andamento") return bruto ?? null;
+  const fase = typeof ctx.fase === "string" ? semAcento(ctx.fase) : "";
+  if (ctx.atas.some((a) => !a.cancelado)) return "Registro de Preço";
+  if (item.temResultado || item.resultados.length > 0 || fase.startsWith("homologad")) return "Homologado";
+  if (fase.includes("suspens")) return "Suspensa";
+  if (fase.includes("recebendo propostas")) return "Recebendo Propostas";
+  return bruto;
+}
+
+/** Acrescenta fase, atas[].vigente e itens[].situacaoExibida sem remover campos (não altera a entrada). */
+export function enriquecerAcompanhamento<
+  T extends {
+    itens: AcompanhamentoSection<ItemAcompanhamento[]>;
+    atas: AcompanhamentoSection<AtaAcompanhamento[]>;
+  },
+>(payload: T, fase: string | null, agora: Date): T & { fase: string | null } {
+  const hoje = diaBrasilia(agora);
+  const atas = (payload.atas.dados ?? []).map((a) => ({ ...a, vigente: ataVigente(a, hoje) }));
+  const itens = payload.itens.dados
+    ? payload.itens.dados.map((it) => ({ ...it, situacaoExibida: situacaoExibidaItem(it, { fase, atas }) }))
+    : payload.itens.dados;
+  return {
+    ...payload,
+    fase,
+    atas: { ...payload.atas, dados: payload.atas.dados ? atas : payload.atas.dados },
+    itens: { ...payload.itens, dados: itens },
+  };
+}
 
 /** Extrai `linkSistemaOrigem` do payload bruto (`raw`) da linha, se for string. */
 export function linkSistemaOrigemFromRaw(raw: unknown): string | null {
@@ -561,6 +658,8 @@ export function linkSistemaOrigemFromRaw(raw: unknown): string | null {
   const value = (raw as Record<string, unknown>).linkSistemaOrigem;
   return typeof value === "string" && value.trim() !== "" ? value : null;
 }
+
+const semTenant: TenantDoUsuario = () => Promise.resolve(null);
 
 export async function handleAcompanhamento(
   params: AcompanhamentoActionParams,
@@ -606,16 +705,16 @@ export async function handleAcompanhamento(
     // 3. Verifica Cache em memória (~5 minutos)
     const cacheKey = `${pncpKey.cnpj}/${pncpKey.ano}/${pncpKey.sequencial}`;
     const cached = getCachedAcompanhamento(cacheKey);
-    if (cached) {
-      return jsonResponse(cached, 200, {
-        "Cache-Control": "private, max-age=300",
-      });
-    }
 
-    // 4. Instancia cliente HTTP
+    let payload: AcompanhamentoResponse;
+    if (cached && cached.disponivel) {
+      payload = cached;
+    } else {
+    // Host lease usa private.acquire_http_slot via client.schema("private").rpc(...).
+    const hasPrivateRpc = typeof client.rpc === "function" && typeof client.schema === "function";
     const httpClient = ctx?.httpClient ?? new UnifiedHttpClient({
-      supabaseClient: typeof client.rpc === "function" ? client : null,
-      hostLease: typeof client.rpc === "function" ? undefined : null,
+      supabaseClient: hasPrivateRpc ? client : null,
+      hostLease: hasPrivateRpc ? undefined : null,
     });
 
     // 5. Executa requisições em paralelo com tratamento individual de erros
@@ -656,10 +755,13 @@ export async function handleAcompanhamento(
     const urlEdital = buildEditalUrl(row) ?? buildPncpEditalUrl(pncpKey.cnpj, pncpKey.ano, pncpKey.sequencial);
     // linkSistemaOrigem não é coluna de licitacoes_externas: vem do PNCP (compra)
     // ou do payload `raw`, lido apenas server-side (raw nunca é devolvido).
-    const rawLinkOrigem = compraSection.dados?.linkSistemaOrigem ?? linkSistemaOrigemFromRaw(row.raw);
-    const urlAcompanhamento = buildAcompanhamentoUrl(rawLinkOrigem);
+    const rawLinkOrigem = (typeof row.link_sistema_origem === "string" ? row.link_sistema_origem : null) ??
+      compraSection.dados?.linkSistemaOrigem ??
+      linkSistemaOrigemFromRaw(row.raw);
+    const portalOrigem = buildOrigemUrl(rawLinkOrigem, row.fonte);
+    const urlAcompanhamento = portalOrigem?.url ?? buildAcompanhamentoUrl(rawLinkOrigem);
 
-    const payload: AcompanhamentoResponse = {
+    payload = {
       disponivel: true,
       id: row.id as number | string,
       pncp: {
@@ -676,14 +778,72 @@ export async function handleAcompanhamento(
       atas: atasSection,
       historico: historicoSection,
       arquivos: arquivosSection,
+      portal: null,
     };
 
-    // 7. Salva no cache em memória
     setCachedAcompanhamento(cacheKey, payload);
+    }
 
-    return jsonResponse(payload, 200, {
-      "Cache-Control": "private, max-age=300",
-    });
+    const linkPortal = (typeof row.link_sistema_origem === "string" ? row.link_sistema_origem : null) ??
+      (payload.disponivel ? payload.compra.dados?.linkSistemaOrigem : null) ??
+      linkSistemaOrigemFromRaw(row.raw);
+    // PDM e unidade por item (CA-8 da spec 0009): lidos do banco a cada resposta, também quando o PNCP veio do cache.
+    const itensDoPayload = payload.disponivel && Array.isArray(payload.itens.dados) ? payload.itens.dados : [];
+    const [portal, itensComPreco] = await Promise.all([
+      payload.disponivel
+        ? secaoPortal(client, Number(row.id), linkPortal, params.atualizar === true, ctx?.tenantDoUsuario ?? semTenant)
+        : Promise.resolve(null),
+      anexarReferenciaPreco(client, Number(row.id), itensDoPayload),
+    ]);
+    if (payload.disponivel && itensDoPayload.length > 0) {
+      payload = { ...payload, itens: { ...payload.itens, dados: itensComPreco } };
+    }
+
+    let pncpEmAtraso = false;
+    let portalOficialInfo = null;
+    if (payload.disponivel) {
+      const sincPortal = await sincronizarPortalOficialEAtraso(
+        client,
+        Number(row.id),
+        row,
+        payload.url_acompanhamento,
+        portal,
+        payload.compra,
+        payload.historico,
+        payload.arquivos,
+        {
+          emPipeline: await estaNoPipeline(
+            client,
+            Number(row.id),
+            await (ctx?.tenantDoUsuario ?? semTenant)(),
+          ),
+        },
+      );
+      payload = {
+        ...payload,
+        url_acompanhamento: sincPortal.urlAcompanhamento,
+        historico: sincPortal.historicoAtualizado,
+        arquivos: sincPortal.arquivosAtualizados,
+      };
+      pncpEmAtraso = sincPortal.pncpEmAtraso;
+      portalOficialInfo = sincPortal.portalOficial;
+    }
+
+    const fase = typeof row.fase === "string" && row.fase.trim() !== "" ? row.fase : null;
+    return jsonResponse(
+      payload.disponivel
+        ? {
+          ...enriquecerAcompanhamento(payload, fase, new Date()),
+          portal,
+          pncp_em_atraso: pncpEmAtraso,
+          portal_oficial: portalOficialInfo,
+        }
+        : payload,
+      200,
+      {
+        "Cache-Control": "private, max-age=300",
+      },
+    );
   } catch (err: unknown) {
     console.error("[api-dashboard-oportunidades] Exceção em acompanhamento:", err);
     return jsonResponse({ error: "Erro interno no servidor" }, 500);

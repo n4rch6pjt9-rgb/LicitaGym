@@ -1,0 +1,40 @@
+{
+  "_fonte": "PNCP 08546103000163-1-000077/2026 (Baraúna/RN), dados públicos conferidos em produção (só leitura) em 09/10/2026. Só os campos usados pela fase. Horário do prazo de proposta não conferido: as datas de abertura/encerramento estão só com o dia.",
+  "busca": {
+    "numero_controle_pncp": "08546103000163-1-000077/2026",
+    "orgao_cnpj": "08546103000163",
+    "ano": "2026",
+    "numero_sequencial": "77",
+    "situacao_nome": "Divulgada no PNCP",
+    "tem_resultado": false,
+    "data_inicio_vigencia": "2026-10-01",
+    "data_fim_vigencia": "2026-10-14"
+  },
+  "detalhe": {
+    "situacaoCompraNome": "Divulgada no PNCP",
+    "existeResultado": false,
+    "dataAberturaProposta": "2026-10-01",
+    "dataEncerramentoProposta": "2026-10-14",
+    "dataAtualizacao": "2026-09-29T14:18:52"
+  },
+  "arquivos": [
+    {
+      "titulo": "EDITAL_DE_LICITA__O_-_PE_N016-2026_-_REPUBLICA__O__1___1___1_.doc",
+      "tipoDocumentoNome": "Edital",
+      "dataPublicacaoPncp": "2026-09-29T14:18:51",
+      "statusAtivo": true
+    },
+    {
+      "titulo": "ATA_RELATIVA_E_DECIS_O_ADM._DE_SUSPENS_O.pdf",
+      "tipoDocumentoNome": "Outros Documentos",
+      "dataPublicacaoPncp": "2026-09-29T14:18:52",
+      "statusAtivo": true
+    },
+    {
+      "titulo": "DECISAO_ADMINISTRATIVA_016-2026.pdf",
+      "tipoDocumentoNome": "Outros Documentos",
+      "dataPublicacaoPncp": "2026-09-29T14:18:52",
+      "statusAtivo": true
+    }
+  ]
+}

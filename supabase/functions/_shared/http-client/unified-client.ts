@@ -50,6 +50,8 @@ export type UnifiedFetchOptions = {
   maxAttempts?: number;
   maxTimeoutRetries?: number;
   attemptTimeoutMs?: number;
+  /** Devolve 4xx (exceto 429) a quem chama, com o corpo, em vez de lançar PermanentHttpError (para arquivar a resposta). */
+  devolver4xx?: boolean;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
   validateResponse?: (res: Response) => Promise<void> | void;
@@ -59,9 +61,13 @@ export type UnifiedFetchOptions = {
  * Creates default HostLeaseRpc implementation backed by Supabase private RPCs.
  */
 export function createSupabaseHostLease(client: SupabaseClient): HostLeaseRpc {
+  // acquire_http_slot / report_http_rate_limit existem só em `private`;
+  // `client.rpc` direto mira `public` (PGRST202) e desligava o lease silenciosamente.
+  // Resolvido por chamada (lazy) para não tocar no client/mocks no construtor.
+  const privateRpc = () => client.schema("private");
   return {
     async acquireSlot(host: string, maxWaitMs = 10_000): Promise<SlotAcquisitionResult> {
-      const { data, error } = await client.rpc("acquire_http_slot", {
+      const { data, error } = await privateRpc().rpc("acquire_http_slot", {
         p_host: host,
         p_max_wait_ms: maxWaitMs,
       });
@@ -72,7 +78,7 @@ export function createSupabaseHostLease(client: SupabaseClient): HostLeaseRpc {
       return data as SlotAcquisitionResult;
     },
     async reportRateLimit(host: string, cooldownSeconds: number): Promise<void> {
-      const { error } = await client.rpc("report_http_rate_limit", {
+      const { error } = await privateRpc().rpc("report_http_rate_limit", {
         p_host: host,
         p_cooldown_seconds: cooldownSeconds,
       });
@@ -226,7 +232,7 @@ export class UnifiedHttpClient {
           throw new RetryableHttpError(`HTTP ${response.status} on ${host}`, null);
         }
 
-        if (response.status >= 400) {
+        if (response.status >= 400 && !options.devolver4xx) {
           await response.body?.cancel().catch(() => {});
           throw new PermanentHttpError(`HTTP ${response.status} on ${host}`);
         }
@@ -354,7 +360,14 @@ export class UnifiedHttpClient {
       return { status: res.status, body: {} as T, elapsedMs: (options.now ?? Date.now)() - started };
     }
 
-    const body = JSON.parse(text) as T;
+    let body: T;
+    try {
+      body = JSON.parse(text) as T;
+    } catch (error) {
+      // 4xx devolvido (devolver4xx) pode vir em HTML ou texto: o corpo segue como texto para ser arquivado.
+      if (res.status < 400) throw error;
+      body = text as T;
+    }
     const elapsedMs = (options.now ?? Date.now)() - started;
     return { status: res.status, body, elapsedMs };
   }

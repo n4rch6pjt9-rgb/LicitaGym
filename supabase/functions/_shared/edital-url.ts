@@ -1,3 +1,4 @@
+import { parsePortalProcessoUrl } from "./portal-compras.ts";
 /**
  * Função pura e segura para derivação de url_edital a partir dos dados de licitacoes_externas.
  *
@@ -14,9 +15,10 @@
  *      (`https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/acompanhamento-compra?compra={idCompra}`, rota a confirmar).
  *    - `id_externo` não é usado: é `int` e guarda o `nCdProcesso` do SEST SENAT.
  *    - Fallback: se houver `linkSistemaOrigem` ou `url`: valida protocolo https.
- * 3. SEST SENAT (`sestsenat` / `sest_senat`):
- *    - Portal Paradigma em `https://compras.sestsenat.org.br/portal/`.
- *    - Se houver `linkSistemaOrigem` https válido, usa-o; sem ele retorna null (não há rota pública por `id_externo`).
+ * 3. Paradigma / Sistema S (slug de `FONTES` em `coletor/paradigma.py`):
+ *    - Se houver `linkSistemaOrigem` https e host autorizado, usa esse link.
+ *    - Senão, null: não há página estável do edital por `id_externo`, e o mural do portal não é o edital
+ *      (AGENTS.md: dado ausente aparece como ausente). O mural vai em `buildPortalUrl` (campo `url_portal`).
  * 4. Genérica / outras fontes:
  *    - Se houver `linkSistemaOrigem` (ou `url_edital`, `url` em colunas/raw): aceita se for https e host em `ALLOWED_ORIGEM_HOSTS`.
  *
@@ -25,6 +27,10 @@
  * - Hosts conhecidos autorizados para URLs construídas: `pncp.gov.br`, `compras.gov.br`, `cnetmobile.estaleiro.serpro.gov.br`.
  * - Para o domínio vindo de `linkSistemaOrigem` (dado coletado de terceiros), aceita somente https
  *   e host em `ALLOWED_ORIGEM_HOSTS`: qualquer `*.gov.br` e os portais Paradigma do Sistema S.
+ fix/url-edital-hosts-paradigma
+ * - Portal de Compras Públicas (issue #266): host exato `portaldecompraspublicas.com.br` ou `www`,
+ *   caminho `/processos/{UF}/{comprador}/{processo}`. Subdomínio da API e outros portais não entram.
+ main
  * - Retorna null quando não for possível construir URL válida ou segura.
  */
 
@@ -43,6 +49,7 @@ export const ALLOWED_STATIC_HOSTS = new Set([
  * services/coletor-externo/coletor/paradigma.py (teste garante que a lista acompanha o coletor).
  * Os hosts SaaS `*.paradigmabs.com.br` são compartilhados entre clientes do Paradigma: o cliente é o primeiro
  * segmento do caminho. Neles só vale o host exato + um tenant de `PARADIGMA_SAAS_TENANTS`.
+ fix/url-edital-hosts-paradigma
  */
 export const PARADIGMA_HOSTS = [
   "compras.sestsenat.org.br",
@@ -64,13 +71,102 @@ export const PARADIGMA_SAAS_TENANTS: Readonly<Record<string, Readonly<Record<str
   "egov-br.paradigmabs.com.br": { sescdn: "sescdn" },
 };
 
+
+ */
+export const PARADIGMA_HOSTS = [
+  "compras.sestsenat.org.br",
+  "portaldecompras.fiesc.com.br",
+  "portaldecompras.firjan.com.br",
+  "compras.sistemafiergs.org.br",
+  "portaldecompras.findes.org.br",
+  "compras.fieb.org.br",
+  "compras.fiems.com.br",
+  "compras.sfiemt.ind.br",
+  "portaldecompras.sfiec.org.br",
+  "compras.fiemg.com.br",
+] as const;
+
+/** Host SaaS -> tenant (1º segmento do caminho, minúsculo) -> `fonte` do coletor Paradigma. */
+export const PARADIGMA_SAAS_TENANTS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  "scr360.paradigmabs.com.br": { sescsp: "sescsp" },
+  "egov.paradigmabs.com.br": { sesc_senac_rs: "sesc_senac_rs", sescrj: "sescrj", sescba: "sescba" },
+  "egov-br.paradigmabs.com.br": { sescdn: "sescdn" },
+};
+
+/**
+ * Portais de compras públicas homologados (BLL, Licitar Digital, BNC).
+ * Hosts aceitos quando informados em link_sistema_origem com protocolo https.
+ */
+export const PORTAIS_COMPRAS_REGIONAL_HOSTS = [
+  "bllcompras.com",
+  "bll.org.br",
+  "licitardigital.com.br",
+  "bnc.org.br",
+] as const;
+
+ main
 export const ALLOWED_ORIGEM_HOSTS = new Set([
   ...ALLOWED_STATIC_HOSTS,
   "gov.br",
   ...PARADIGMA_HOSTS,
   ...Object.keys(PARADIGMA_SAAS_TENANTS),
+ fix/url-edital-hosts-paradigma
 ]);
 
+
+  ...PORTAIS_COMPRAS_REGIONAL_HOSTS,
+]);
+
+/**
+ * Mural público (página de busca) de cada fonte Paradigma. Não é o edital: vai em `url_portal`, com rótulo próprio.
+ */
+export const PARADIGMA_MURAL: Readonly<Record<string, string>> = {
+  sestsenat: "https://compras.sestsenat.org.br/portal/Mural.aspx",
+  sest_senat: "https://compras.sestsenat.org.br/portal/Mural.aspx",
+  fiesc: "https://portaldecompras.fiesc.com.br/portal/Mural.aspx",
+  firjan: "https://portaldecompras.firjan.com.br/portal/Mural.aspx",
+  fiergs: "https://compras.sistemafiergs.org.br/portal/Mural.aspx",
+  findes: "https://portaldecompras.findes.org.br/portal/Mural.aspx",
+  fieb: "https://compras.fieb.org.br/portal/Mural.aspx",
+  fiems: "https://compras.fiems.com.br/portal/Mural.aspx",
+  fiemt: "https://compras.sfiemt.ind.br/portal/Mural.aspx",
+  sfiec: "https://portaldecompras.sfiec.org.br/portal/Mural.aspx",
+  fiemg: "https://compras.fiemg.com.br/portal/Mural.aspx",
+  sescsp: "https://scr360.paradigmabs.com.br/sescsp/portal/Mural.aspx",
+  sesc_senac_rs: "https://egov.paradigmabs.com.br/sesc_senac_rs/portal/Mural.aspx",
+  sescdn: "https://egov-br.paradigmabs.com.br/sescdn/portal/Mural.aspx",
+  // sescrj fora: em 11/10/2026 /SESCRJ/portal/Mural.aspx redireciona para Default.aspx (sem mural nesse caminho)
+  sescba: "https://egov.paradigmabs.com.br/sescba/portal/Mural.aspx",
+};
+
+/** Slugs de fontes do Sistema S (Paradigma e compras próprias do Sistema S). */
+export const FONTES_SISTEMA_S = new Set([
+  "sestsenat",
+  "sest_senat",
+  "fiesc",
+  "firjan",
+  "fiergs",
+  "findes",
+  "fieb",
+  "fiems",
+  "fiemt",
+  "sfiec",
+  "fiemg",
+  "sescsp",
+  "sesc_senac_rs",
+  "sescdn",
+  "sescrj",
+  "sescba",
+]);
+
+/** Verifica se um slug de fonte pertence ao ecossistema do Sistema S. */
+export function ehFonteSistemaS(fonte?: string | null): boolean {
+  if (!fonte) return false;
+  const f = fonte.toLowerCase().trim();
+  return f === "sistema_s" || FONTES_SISTEMA_S.has(f);
+}
+
+ main
 /** Domínio dos hosts SaaS compartilhados do Paradigma. */
 const PARADIGMA_SAAS_DOMINIO = "paradigmabs.com.br";
 
@@ -169,6 +265,11 @@ function parseHttpsUrl(
  * Paradigma, tenant da própria `fonte` da linha (link do Sesc RJ não vale numa linha de outra fonte).
  */
 function validarLinkOrigem(rawUrl: unknown, fonte: string): string | null {
+ fix/url-edital-hosts-paradigma
+
+  const portal = parsePortalProcessoUrl(rawUrl);
+  if (portal) return portal.pagina;
+ main
   const parsed = parseHttpsUrl(rawUrl, true, ALLOWED_ORIGEM_HOSTS);
   if (!parsed) return null;
   const donoSaas = tenantParadigmaSaas(parsed);
@@ -176,6 +277,58 @@ function validarLinkOrigem(rawUrl: unknown, fonte: string): string | null {
   return parsed.toString();
 }
 
+ fix/url-edital-hosts-paradigma
+
+/** Host do Compras.gov.br (Comprasnet) usado no acompanhamento público da compra. */
+const COMPRASNET_HOST = "cnetmobile.estaleiro.serpro.gov.br";
+
+/**
+ * Constrói a url_acompanhamento para o Comprasnet a partir de linkSistemaOrigem.
+ * Revalida: protocolo https, host exato cnetmobile.estaleiro.serpro.gov.br e
+ * parâmetro compra com exatamente 17 dígitos (UASG 6 + Mod 2 + Num 5 + Ano 4).
+ */
+export function buildAcompanhamentoUrl(linkSistemaOrigem: unknown): string | null {
+  if (typeof linkSistemaOrigem !== "string") return null;
+  const trimmed = linkSistemaOrigem.trim();
+  if (!trimmed.toLowerCase().startsWith("https://")) return null;
+
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "https:") return null;
+    const hostname = parsed.hostname.toLowerCase();
+    if (hostname !== COMPRASNET_HOST) return null;
+
+    const idCompra = parsed.searchParams.get("compra");
+    if (!idCompra || !/^\d{17}$/.test(idCompra.trim())) return null;
+
+    return `https://${COMPRASNET_HOST}/comprasnet-web/public/landing?destino=acompanhamento-compra&compra=${idCompra.trim()}`;
+  } catch {
+    return null;
+  }
+}
+
+/** Link do portal onde a disputa acontece, já validado, e o host para rotular o botão. */
+export interface OrigemUrl {
+  url: string;
+  host: string;
+}
+
+/**
+ * Link do portal de origem da disputa (`licitacoes_externas.link_sistema_origem`, o linkSistemaOrigem que o
+ * órgão informou ao PNCP). O PNCP não monta esse link: só repassa. Aqui ele é dado de terceiros, então:
+ * - Comprasnet: reescrito para a página pública de acompanhamento (`buildAcompanhamentoUrl`);
+ * - Portal de Compras Públicas: só `/processos/` no host da página;
+ * - demais: aceito como veio, só se https e host em `ALLOWED_ORIGEM_HOSTS` (mesma regra de `buildEditalUrl`).
+ * Retorna null para link ausente, http sem TLS, sem esquema ou host fora da lista: a tela mostra só o PNCP.
+ */
+export function buildOrigemUrl(linkSistemaOrigem: unknown, fonte: unknown = "pncp"): OrigemUrl | null {
+  const url = buildAcompanhamentoUrl(linkSistemaOrigem) ??
+    validarLinkOrigem(linkSistemaOrigem, String(fonte ?? "").trim().toLowerCase());
+  if (!url) return null;
+  return { url, host: new URL(url).hostname.toLowerCase() };
+}
+
+ main
 /**
  * Normaliza CNPJ removendo caracteres não numéricos.
  */
@@ -248,6 +401,15 @@ function extractComprasGovIdCompra(row: LicitacaoRowForEdital, raw: Record<strin
  * Constrói a URL do edital para uma linha de licitação.
  * Retorna null se nenhuma URL segura/válida puder ser derivada.
  */
+/**
+ * Página pública do portal de compras da fonte (mural do Paradigma), para um link "Abrir portal" com rótulo próprio.
+ * Não é o edital. null quando a fonte não tem mural conhecido.
+ */
+export function buildPortalUrl(row: LicitacaoRowForEdital | null | undefined): string | null {
+  const fonte = String(row?.fonte ?? "").trim().toLowerCase();
+  return Object.hasOwn(PARADIGMA_MURAL, fonte) ? PARADIGMA_MURAL[fonte] : null;
+}
+
 export function buildEditalUrl(row: LicitacaoRowForEdital | null | undefined): string | null {
   if (!row || typeof row !== "object") return null;
 
@@ -313,14 +475,9 @@ export function buildEditalUrl(row: LicitacaoRowForEdital | null | undefined): s
     return null;
   }
 
-  if (fonte === "sestsenat" || fonte === "sest_senat") {
-    // SEST SENAT (Portal Paradigma)
-    // Se houver linkSistemaOrigem https
-    if (validOrigemUrl) {
-      return validOrigemUrl;
-    }
-
-    return null;
+  if (Object.hasOwn(PARADIGMA_MURAL, fonte)) {
+    // link da origem validado, ou null: o mural não é o edital (ver buildPortalUrl)
+    return validOrigemUrl ?? null;
   }
 
   // Outras fontes ou fonte não informada

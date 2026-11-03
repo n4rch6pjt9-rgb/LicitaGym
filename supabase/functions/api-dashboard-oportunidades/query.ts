@@ -1,25 +1,9 @@
 import type { LicitacaoFiltros } from "./types.ts";
 import { getNextDayIso, isDateOnly } from "./validation.ts";
+import { FONTES_SISTEMA_S } from "../_shared/edital-url.ts";
 
-/**
- * Sanitiza termo para busca literal.
- * Regras:
- * - Normaliza para Unicode NFC.
- * - Usa allowlist: caracteres que não sejam letras (\p{L}), números (\p{N}), espaços (\s) ou hífen (-) viram espaço.
- *   (remove curingas %, _, *, barras invertidas \, aspas, vírgulas, parênteses, etc).
- * - Colapsa espaços consecutivos.
- * - Trunca em no máximo 200 caracteres.
- * - Se ficar vazio, retorna undefined (ignora o filtro).
- */
-export function sanitizeSearchTerm(val: unknown): string | undefined {
-  if (typeof val !== "string") return undefined;
-  const nfc = val.normalize("NFC");
-  const filtered = nfc.replace(/[^\p{L}\p{N}\s-]/gu, " ");
-  const collapsed = filtered.replace(/\s+/g, " ").trim();
-  if (collapsed.length === 0) return undefined;
-  const truncated = collapsed.slice(0, 200).trim();
-  return truncated.length > 0 ? truncated : undefined;
-}
+// Mesma regra para toda busca livre das Edge Functions (api-agentes também usa).
+export { sanitizeSearchTerm } from "../_shared/busca.ts";
 
 /**
  * Interface abstrata do builder Supabase PostgREST para permitir testes unitários
@@ -98,7 +82,25 @@ export function applyLicitacaoFilters<T extends FilterableQuery>(
   }
 
   if (filtros.fonte) {
-    query.eq("fonte", filtros.fonte);
+    // Agrupador 'sistema_s': consulta simultaneamente todas as entidades cadastradas do Sistema S
+    if (filtros.fonte.toLowerCase() === "sistema_s") {
+      query.in("fonte", Array.from(FONTES_SISTEMA_S));
+    } else {
+      query.eq("fonte", filtros.fonte);
+    }
+  }
+
+  // Objeto canônico (objeto_categorias) e selo de registro de preço
+  if (filtros.objeto_categoria && filtros.objeto_categoria.length > 0) {
+    if (filtros.objeto_categoria.length === 1) {
+      query.eq("objeto_categoria", filtros.objeto_categoria[0]);
+    } else {
+      query.in("objeto_categoria", filtros.objeto_categoria);
+    }
+  }
+
+  if (filtros.registro_preco !== undefined) {
+    query.eq("objeto_registro_preco", filtros.registro_preco);
   }
 
   // Intervalo de data_publicacao (America/Sao_Paulo UTC-3 para só-data)
@@ -173,6 +175,11 @@ export function applyLicitacaoFilters<T extends FilterableQuery>(
     query.lte("valor_total", filtros.valor_max);
   }
 
+  // Recorte CATMAT já resolvido em ids (ver resolverCatmat em index.ts)
+  if (filtros.ids) {
+    query.in("id", filtros.ids);
+  }
+
   // Termo livre em objeto / numero_processo / numero_edital
   if (filtros.busca) {
     // No PostgREST .or(): coluna.ilike.*termo*
@@ -181,6 +188,39 @@ export function applyLicitacaoFilters<T extends FilterableQuery>(
     );
   }
 
+  return query;
+}
+
+/**
+ * Prioridades que aparecem em Oportunidades sem filtro explícito. NULL fica fora (02/10/2026): o
+ * reclassificador (reclassificar_escopo_pncp) grava prioridade NULL na compra que saiu do escopo, e eram
+ * essas 292 linhas (ex.: id 229, credenciamento de oficineiros) que ainda apareciam. SEST SENAT e
+ * Paradigma também já gravam prioridade, então NULL não é mais "fonte sem prioridade".
+ */
+export const PRIORIDADES_DE_OPORTUNIDADES = ["leads", "monitorar"] as const;
+export const ESCOPO_OPORTUNIDADES_FILTRO = `prioridade.in.(${PRIORIDADES_DE_OPORTUNIDADES.join(",")})`;
+
+/**
+ * Recorte de Oportunidades, aplicado na lista, na contagem e na redução do recorte CATMAT, sobre a view
+ * com a prioridade efetiva:
+ * - compra PNCP republicada (decisão 02/10/2026, migration 20261003170000_licitacoes_pncp_canonica):
+ *   só a publicação canônica do grupo (`eh_canonica`), com ou sem filtro de prioridade. As demais
+ *   continuam acessíveis no `get` (com `canonica_id` apontando para a canônica);
+ * - sem filtro de prioridade (decisão de produto 30/09/2026, revista em 02/10/2026): só leads e
+ *   monitorar. `historico` (homologada/encerrada) é só do BI e NULL é compra fora do escopo. Vai como
+ *   `or` de uma condição só para somar (AND) com o `or` da busca e não colidir com o `in("id", ...)` do
+ *   recorte CATMAT. Com filtro explícito (leads/monitorar), o eq de applyLicitacaoFilters já recorta.
+ */
+export function applyOportunidadesScope<T extends FilterableQuery>(
+  query: T,
+  filtros: LicitacaoFiltros,
+): T {
+  query.eq("eh_canonica", true);
+  // Fonte escolhida (SEST SENAT etc.) traz também o histórico: as compras homologadas
+  // sumiam da lista, que sem prioridade só devolve leads e monitorar.
+  if (!filtros.prioridade && !filtros.fonte) {
+    query.or(ESCOPO_OPORTUNIDADES_FILTRO);
+  }
   return query;
 }
 

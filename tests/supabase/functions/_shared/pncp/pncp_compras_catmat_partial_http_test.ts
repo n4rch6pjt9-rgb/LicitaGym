@@ -14,8 +14,10 @@ Deno.test("sync-compras-catmat returns non-200 when erros > 0", async () => {
     ),
     true,
   );
-  // Must not hardcode success status on the response body while ignoring erros.
-  const hardcodedSuccessOnBody =
-    /return jsonResponse\(\{[\s\S]*?status:\s*"concluida"[\s\S]*?\}\);/;
-  assertEquals(hardcodedSuccessOnBody.test(src), false);
+  // O corpo HTTP não pode cravar "concluida" e ignorar erros. O status do run
+  // no banco (finishSyncRun) pode ser "concluida" quando não houve trabalho.
+  for (const chunk of src.split("return jsonResponse(").slice(1)) {
+    const body = chunk.slice(0, Math.max(chunk.indexOf(");"), 0));
+    assertEquals(body.includes('status: "concluida"'), false);
+  }
 });

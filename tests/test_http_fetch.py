@@ -13,7 +13,7 @@ Covers:
 10. Transient 503 error -> retries and succeeds on next attempt
 11. Transient 502/503/504 error -> exhausts retries and raises HttpFetchError
 12. Non-transient 500 error -> does not retry (unless configured)
-13. Page size clamp helper -> respects Compras.gov limits (10 to 500)
+13. Page size clamp helper -> respects collector ceiling (10 to 100)
 14. Legacy rollback flag returns empty envelope when enabled
 """
 
@@ -280,11 +280,11 @@ def test_fetch_json_legacy_rollback_mode_when_env_enabled(monkeypatch):
 
 
 def test_clamp_compras_gov_page_size():
-    assert clamp_compras_gov_page_size(None) == 500
+    assert clamp_compras_gov_page_size(None) == 100
     assert clamp_compras_gov_page_size(5) == 10
     assert clamp_compras_gov_page_size(100) == 100
-    assert clamp_compras_gov_page_size(500) == 500
-    assert clamp_compras_gov_page_size(1000) == 500
+    assert clamp_compras_gov_page_size(500) == 100
+    assert clamp_compras_gov_page_size(1000) == 100
     assert clamp_compras_gov_page_size(-10) == 10
 
 

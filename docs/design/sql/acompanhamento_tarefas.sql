@@ -223,6 +223,10 @@ COMMENT ON TABLE public.tarefas IS
 --   a) prioridade IN ('leads', 'monitorar') — valores gravados pelo coletor PNCP
 --      (--modo leads|monitorar), exibidos no dashboard como "Lead"/"Monitorar".
 --      Sem prioridade (NULL, inclusive o modo historico) fica fora.
+--      ATENÇÃO (29/09/2026): prioridade agora vem do estado da compra (leads = recebendo
+--      proposta, monitorar = em julgamento, historico = encerrada/homologada). Compra
+--      homologada é historico, então os ramos "homologada <= 30 dias" e "ata vigente" de c)
+--      não alcançam linhas PNCP com este filtro. Ver nota em docs/design/acompanhamento-tarefas.md §4.2.
 --   b) compra viva: não revogada, anulada nem cancelada
 --      (status_normalizado <> 'cancelada' e situacao sem Revogada/Anulada/Cancelada).
 --   c) não homologada, OU homologada nos últimos 30 dias, OU com ata de registro

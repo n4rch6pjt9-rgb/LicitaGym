@@ -1,0 +1,47 @@
+# Observa o workflow de saúde por outra execução. Continua no GitHub: não cobre pane do próprio Actions.
+# Não envia mensagens nem executa/reprocessa conectores. Cloud Run requer identidade GCP em ambiente separado.
+name: Sentinela observador
+
+on:
+  schedule:
+    - cron: "17,47 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: sentinela-observador
+  cancel-in-progress: false
+
+jobs:
+  observar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout apenas do observador
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c http.extraheader="$auth" fetch -q --depth 1 origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD -- scripts/sentinela_observar.py
+      - name: Observar monitor e sonda de consulta PNCP
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          status=0
+          python3 scripts/sentinela_observar.py --github --pncp > "$RUNNER_TEMP/sentinela.json" || status=$?
+          {
+            echo '## Sentinela — observação'
+            echo 'Execução de jobs não comprova completude dos dados. Atenção inclui observação indisponível.'
+            echo '```json'
+            cat "$RUNNER_TEMP/sentinela.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"

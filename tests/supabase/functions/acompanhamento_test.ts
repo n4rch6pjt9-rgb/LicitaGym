@@ -5,6 +5,8 @@ import {
   clearAcompanhamentoCache,
   handleAcompanhamento,
   linkSistemaOrigemFromRaw,
+  mapItemAcompanhamento,
+  materialOuServicoDoItem,
   resolvePncpKey,
 } from "../../../supabase/functions/api-dashboard-oportunidades/acompanhamento.ts";
 import {
@@ -282,6 +284,8 @@ Deno.test("acompanhamento: fluxo completo com paginação, resultados, atas, his
           titulo: "Edital Pregão 90010/2026",
           tipoDocumentoNome: "Edital",
           url: "https://pncp.gov.br/pncp-api/v1/orgaos/45138070000149/compras/2026/559/arquivos/1",
+          dataPublicacaoPncp: "2026-09-29T14:18:51",
+          statusAtivo: true,
           sequencialDocumento: 1,
         },
       ]), { status: 200, headers: { "Content-Type": "application/json" } }));
@@ -361,6 +365,10 @@ Deno.test("acompanhamento: fluxo completo com paginação, resultados, atas, his
     assertEquals(body.arquivos.erro, null);
     assertEquals(body.arquivos.total, 1);
     assertEquals(body.arquivos.dados[0].url, "https://pncp.gov.br/pncp-api/v1/orgaos/45138070000149/compras/2026/559/arquivos/1");
+    assertEquals(body.arquivos.dados[0].dataPublicacaoPncp, "2026-09-29T14:18:51");
+    assertEquals(body.arquivos.dados[0].statusAtivo, true);
+    assertEquals(body.atas.dados[0].vigente === undefined, false);
+    assertEquals("fase" in body, true);
 
     // Testa cache em memória no segundo acesso
     const resCached = await handleAcompanhamento(
@@ -540,12 +548,16 @@ Deno.test("acompanhamento: url_acompanhamento vem de raw.linkSistemaOrigem quand
 Deno.test("validation acompanhamento: id válido (1 a 18 dígitos) via URL e body", () => {
   for (const id of ["1", "101", "000123", "123456789012345678"]) {
     const url = new URL(`http://localhost/api-dashboard-oportunidades?action=acompanhamento&id=${id}`);
-    assertEquals(parseActionFromUrl(url), { action: "acompanhamento", id });
-    assertEquals(parseActionFromBody({ action: "acompanhamento", id }), { action: "acompanhamento", id });
+    assertEquals(parseActionFromUrl(url), { action: "acompanhamento", id, atualizar: false });
+    assertEquals(parseActionFromBody({ action: "acompanhamento", id }), { action: "acompanhamento", id, atualizar: false });
   }
-  assertEquals(parseActionFromBody({ action: "acompanhamento", id: 42 }), { action: "acompanhamento", id: "42" });
+  assertEquals(parseActionFromBody({ action: "acompanhamento", id: 42 }), { action: "acompanhamento", id: "42", atualizar: false });
+  assertEquals(
+    parseActionFromBody({ action: "acompanhamento", id: "7", atualizar: true }),
+    { action: "acompanhamento", id: "7", atualizar: true },
+  );
   const padded = new URL("http://localhost/api-dashboard-oportunidades?action=acompanhamento&id=%2042%20");
-  assertEquals(parseActionFromUrl(padded), { action: "acompanhamento", id: "42" });
+  assertEquals(parseActionFromUrl(padded), { action: "acompanhamento", id: "42", atualizar: false });
 });
 
 Deno.test("validation acompanhamento: id inválido retorna erro", () => {
@@ -603,4 +615,79 @@ Deno.test("acompanhamento: id inválido retorna 400 via handleRequest sem consul
     await resPost.body?.cancel();
   }
   assertEquals(dbCalled, false);
+});
+
+// -----------------------------------------------------------------------------
+// Catálogo do item (aba Itens PNCP, coluna CATMAT do front; 03/10/2026)
+// -----------------------------------------------------------------------------
+
+Deno.test("mapItemAcompanhamento: repassa catálogo Compras.gov.br, código e material", () => {
+  const item = mapItemAcompanhamento({
+    numeroItem: 3,
+    descricao: "Esteira ergométrica",
+    quantidade: "2",
+    unidadeMedida: "UN",
+    valorUnitarioEstimado: 15000,
+    situacaoCompraItemNome: "Em andamento",
+    temResultado: false,
+    materialOuServico: "M",
+    materialOuServicoNome: "Material",
+    catalogo: { id: 1, nome: "Catálogo do Compras.gov.br" },
+    catalogoCodigoItem: 480144,
+  });
+  assertEquals(item.catalogoCodigoItem, "480144");
+  assertEquals(item.catalogoId, 1);
+  assertEquals(item.catalogoNome, "Catálogo do Compras.gov.br");
+  assertEquals(item.materialOuServico, "M");
+  assertEquals(item.quantidade, 2);
+  assertEquals(item.resultados, []);
+});
+
+Deno.test("mapItemAcompanhamento: catálogo Outros passa o código do órgão com catalogoId 2", () => {
+  const item = mapItemAcompanhamento({
+    numeroItem: 7,
+    descricao: "BOLAS DE BASQUETE INFANTIL PLAYOFF MIRIM",
+    materialOuServicoNome: "Material",
+    catalogo: { id: 2, nome: "Outros" },
+    catalogoCodigoItem: "230525",
+  });
+  assertEquals(item.catalogoCodigoItem, "230525");
+  assertEquals(item.catalogoId, 2);
+  assertEquals(item.catalogoNome, "Outros");
+  assertEquals(item.materialOuServico, "M");
+});
+
+Deno.test("mapItemAcompanhamento: sem catálogo (449/2026) não inventa código a partir do numeroItem", () => {
+  const item = mapItemAcompanhamento({
+    numeroItem: 7932239,
+    descricao: "MESA PING PONG",
+    materialOuServico: "M",
+    catalogo: null,
+    catalogoCodigoItem: null,
+  });
+  assertEquals(item.numeroItem, 7932239);
+  assertEquals(item.catalogoCodigoItem, null);
+  assertEquals(item.catalogoId, null);
+  assertEquals(item.catalogoNome, null);
+});
+
+Deno.test("mapItemAcompanhamento: valores inválidos de catálogo viram null", () => {
+  const item = mapItemAcompanhamento({
+    numeroItem: 1,
+    catalogo: { id: true, nome: "  " },
+    catalogoCodigoItem: "   ",
+    materialOuServico: "X",
+  });
+  assertEquals(item.catalogoId, null);
+  assertEquals(item.catalogoNome, null);
+  assertEquals(item.catalogoCodigoItem, null);
+  assertEquals(item.materialOuServico, null);
+  assertEquals(mapItemAcompanhamento({ numeroItem: 1, catalogo: { id: "abc" } }).catalogoId, null);
+});
+
+Deno.test("materialOuServicoDoItem: código vence o nome; nome sem acento e sem caixa", () => {
+  assertEquals(materialOuServicoDoItem({ materialOuServico: "S", materialOuServicoNome: "Material" }), "S");
+  assertEquals(materialOuServicoDoItem({ materialOuServicoNome: "Serviço" }), "S");
+  assertEquals(materialOuServicoDoItem({ materialOuServicoNome: "MATERIAL" }), "M");
+  assertEquals(materialOuServicoDoItem({}), null);
 });

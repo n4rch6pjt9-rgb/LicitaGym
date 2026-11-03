@@ -7,6 +7,8 @@
 --   3. service_role com SELECT e INSERT nas tabelas (coletores)
 --   4. match_catalogo_chunks: sem EXECUTE para anon/PUBLIC; com EXECUTE para authenticated
 --   5. portal_visitante: nenhum privilégio para anon nem authenticated (só service_role)
+--   6. fornecedores: nenhum privilégio para anon nem authenticated (só service_role), desde a
+--      20260929145232_l3_permissoes_fornecedores_pdm (ver supabase/tests/l3_permissoes_fornecedores_pdm_acl_check.sql)
 -- Falha com EXCEPTION na primeira regra violada.
 
 do $$
@@ -14,7 +16,6 @@ declare
   v_obj text;
   v_priv text;
   v_objs text[] := array[
-    'public.fornecedores',
     'public.catalogo_documentos', 'public.catalogo_produtos', 'public.catalogo_chunks',
     'public.fontes_externas', 'public.licitacao_escopo_decisao',
     'public.v_fornecedor_participacoes', 'public.v_oportunidades_externas',
@@ -99,6 +100,14 @@ begin
   if not has_table_privilege('service_role', 'public.portal_visitante', 'INSERT') then
     raise exception 'ACL CHECK FALHOU: service_role sem INSERT em public.portal_visitante';
   end if;
+
+  -- 6. fornecedores (dados de contato + payload Econodata): só service_role (20260929145232)
+  foreach v_priv in array array['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER'] loop
+    if has_table_privilege('anon', 'public.fornecedores', v_priv)
+       or has_table_privilege('authenticated', 'public.fornecedores', v_priv) then
+      raise exception 'ACL CHECK FALHOU: anon/authenticated possui % em public.fornecedores', v_priv;
+    end if;
+  end loop;
 
   raise notice 'SUCESSO: ACL dos objetos do Sistema S e dos catálogos conferida';
 end $$;

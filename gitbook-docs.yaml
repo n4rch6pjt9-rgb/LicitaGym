@@ -1,0 +1,32 @@
+$schema: https://api.gitbook.com/gitbook-docs.yaml
+site:
+  title: Licitagym Docs
+  structure:
+    - type: section
+      key: section-1
+      title: Licitagym Docs
+      path: licitagym-docs
+      description: Documentação de Onboarding e Produtos do Licitagym
+      default: true
+      children:
+        - type: space
+          key: space-1
+          title: Licitagym Docs
+          path: product-docs
+          default: true
+          content:
+            directory: ./product-docs
+    - type: section
+      key: section-2
+      title: Product Docs
+      path: product-docs
+      description: ""
+      children:
+        - type: space
+          key: space-2
+          title: Licitagym Docs
+          path: product-docs
+          default: true
+          draft: true
+          content:
+            directory: ./product-docs

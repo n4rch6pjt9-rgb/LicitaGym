@@ -3,9 +3,9 @@
 /**
  * Discover Piso PDM via API temporária
  *
- * Uso:
- *   deno run --allow-net scripts/discover-piso-api.ts
- *   deno run --allow-net scripts/discover-piso-api.ts --termo "borracha" --estado "sp"
+ * Uso (a função exige sessão de usuário: exporte o access_token de um login do Supabase Auth):
+ *   LICITAGYM_USER_JWT=<access_token> deno run --allow-net --allow-env scripts/discover-piso-api.ts
+ *   LICITAGYM_USER_JWT=<access_token> deno run --allow-net --allow-env scripts/discover-piso-api.ts --termo "borracha" --estado "sp"
  */
 
 import { parse } from "https://deno.land/std@0.208.0/flags/mod.ts";
@@ -56,9 +56,15 @@ try {
 
   console.log(`📡 Chamando: ${apiUrl.pathname}${apiUrl.search}\n`);
 
+  const userJwt = Deno.env.get("LICITAGYM_USER_JWT")?.trim();
+  if (!userJwt) {
+    console.error("❌ Defina LICITAGYM_USER_JWT (access_token de um usuário logado): a função responde 401 sem sessão.");
+    Deno.exit(1);
+  }
   const response = await fetch(apiUrl.toString(), {
     headers: {
       Accept: "application/json",
+      Authorization: `Bearer ${userJwt}`,
     },
   });
 

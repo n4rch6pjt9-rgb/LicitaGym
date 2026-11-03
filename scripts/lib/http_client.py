@@ -41,18 +41,19 @@ DEFAULT_ALLOWED_HOSTS: Set[str] = {
     "supabase.co",
 }
 
-# Aligned with Edge clampComprasGovPageSize (10 to 500, default 500)
+# Coletores Python (regra de 03/10/2026): no máximo 100 itens por página.
+# Mínimo 10 permanece o piso que a API do Compras.gov aceita.
 COMPRAS_GOV_PAGE_SIZE = {
     "min": 10,
-    "max": 500,
-    "default": 500,
+    "max": 100,
+    "default": 100,
 }
 
 DEFAULT_TRANSIENT_STATUS_CODES: Set[int] = {502, 503, 504}
 
 
 def clamp_compras_gov_page_size(page_size: Optional[int] = None) -> int:
-    """Clamp page size to Compras.gov allowed bounds (10-500, default 500)."""
+    """Clamp page size to the collector ceiling (10-100, default 100)."""
     min_size = COMPRAS_GOV_PAGE_SIZE["min"]
     max_size = COMPRAS_GOV_PAGE_SIZE["max"]
     default_size = COMPRAS_GOV_PAGE_SIZE["default"]

@@ -99,7 +99,7 @@ def test_carrega_schema_modulos_format(tmp_path):
 def test_monta_url_clamps_page_size(collector_with_sample_schema):
     ep = collector_with_sample_schema.catalogo["consultarPca"]
     url = collector_with_sample_schema._monta_url(ep, {"pageSize": 1000, "pagina": 2})
-    assert "pageSize=500" in url
+    assert "pageSize=100" in url
     assert "pagina=2" in url
 
     url_small = collector_with_sample_schema._monta_url(ep, {"tamanhoPagina": 2})
@@ -118,7 +118,8 @@ def test_consultar_endpoint_success_http_200(collector_with_sample_schema):
         "resultado": [
             {"id": 101, "objeto": "Equipamento A"},
             {"id": 102, "objeto": "Equipamento B"},
-        ]
+        ],
+        "totalRegistros": 2,
     }
     with patch("urllib.request.urlopen", return_value=DummyHttpResponse(payload)):
         res = asyncio.run(collector_with_sample_schema.consultar_endpoint("consultarPca"))
@@ -153,7 +154,7 @@ def test_consultar_endpoint_429_respects_retry_after(collector_with_sample_schem
         hdrs={"Retry-After": "3"},
         fp=io.BytesIO(b"Rate limit"),
     )
-    success_payload = {"resultado": [{"id": 1}]}
+    success_payload = {"resultado": [{"id": 1}], "totalRegistros": 1}
     responses = [http_429, DummyHttpResponse(success_payload)]
 
     with patch("urllib.request.urlopen", side_effect=responses):
@@ -183,7 +184,7 @@ def test_consultar_endpoint_legacy_rollback_mode(collector_with_sample_schema, m
 
 
 def test_relatorio_and_batch_methods(collector_with_sample_schema):
-    payload = {"resultado": [{"id": 1}]}
+    payload = {"resultado": [{"id": 1}], "totalRegistros": 1}
     with patch("urllib.request.urlopen", return_value=DummyHttpResponse(payload)):
         with patch("asyncio.sleep"):
             async def run_batch():
@@ -221,7 +222,7 @@ def test_consultar_multiplos_checkpoint_and_resume(collector_with_sample_schema,
     collector_with_sample_schema.catalogo["consultarPca2"] = ep2
 
     # In batch 1: consultarPca succeeds, consultarPca2 fails with 500
-    p1 = {"resultado": [{"id": 1}]}
+    p1 = {"resultado": [{"id": 1}], "totalRegistros": 1}
     http_500 = urllib.error.HTTPError(
         url="https://dadosabertos.compras.gov.br/test",
         code=500,
@@ -260,7 +261,7 @@ def test_consultar_multiplos_checkpoint_and_resume(collector_with_sample_schema,
     assert checkpoint.cursor["completed_endpoints"] == ["consultarPca"]
 
     # Now resume: only consultarPca2 is executed, and it succeeds
-    p2 = {"resultado": [{"id": 2}]}
+    p2 = {"resultado": [{"id": 2}], "totalRegistros": 1}
     with patch("urllib.request.urlopen", return_value=DummyHttpResponse(p2)):
         with patch("asyncio.sleep"):
             async def run_resuming_batch():

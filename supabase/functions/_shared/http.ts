@@ -92,25 +92,32 @@ export function requireCronAuth(req: Request): Response | null {
   return jsonResponse({ error: "Unauthorized" }, 401);
 }
 
+/** Usuário autenticado (subconjunto do User do Supabase usado pelas Edge Functions). */
+export type AuthenticatedUser = {
+  id: string;
+  email?: string | null;
+  app_metadata?: Record<string, unknown> | null;
+};
+
 /**
- * Validate Supabase Auth JWT (user session). Fail-closed on missing env/token/user.
+ * Validate Supabase Auth JWT (user session) and return the user. Fail-closed on missing env/token/user.
  * Does not treat cron secret as a user session.
  */
-export async function authenticateUserJwt(req: Request): Promise<AuthDecision> {
+export async function authenticateUser(req: Request): Promise<AuthenticatedUser | null> {
   const token = extractBearerToken(req);
-  if (!token) return "REJECTED";
+  if (!token) return null;
 
   const cronSecret = Deno.env.get("SYNC_CRON_SECRET")?.trim();
   if (cronSecret && token === cronSecret) {
     // Cron is not a user identity for signed-URL / user-scoped routes.
-    return "REJECTED";
+    return null;
   }
 
   const url = Deno.env.get("SUPABASE_URL")?.trim();
   const anonKey = Deno.env.get("SUPABASE_ANON_KEY")?.trim();
   const publishableKey = Deno.env.get("SUPABASE_PUBLISHABLE_KEY")?.trim();
   const anon = (anonKey && anonKey.length > 0) ? anonKey : ((publishableKey && publishableKey.length > 0) ? publishableKey : undefined);
-  if (!url || !anon) return "REJECTED";
+  if (!url || !anon) return null;
 
   try {
     const { createClient } = await import("npm:@supabase/supabase-js@2");
@@ -118,16 +125,45 @@ export async function authenticateUserJwt(req: Request): Promise<AuthDecision> {
       auth: { persistSession: false, autoRefreshToken: false },
     });
     const { data, error } = await client.auth.getUser(token);
-    if (error || !data.user) return "REJECTED";
-    return "USER_AUTHENTICATED";
+    if (error || !data.user) return null;
+    return {
+      id: data.user.id,
+      email: data.user.email ?? null,
+      app_metadata: (data.user.app_metadata ?? null) as Record<string, unknown> | null,
+    };
   } catch {
-    return "REJECTED";
+    return null;
   }
 }
 
-export async function requireUserAuth(req: Request): Promise<Response | null> {
-  if ((await authenticateUserJwt(req)) === "USER_AUTHENTICATED") return null;
-  return jsonResponse({ error: "Unauthorized" }, 401);
+/**
+ * Compatibilidade de merge: mantém o contrato legado de authenticateUserJwt para
+ * chamadas antigas, enquanto a nova api-catmat usa authenticateUser + isLicitagymAdmin.
+ */
+export async function authenticateUserJwt(req: Request): Promise<AuthDecision> {
+  return (await authenticateUser(req)) ? "USER_AUTHENTICATED" : "REJECTED";
+}
+
+/**
+ * Papel de administrador do LicitaGym. Lê só app_metadata (gravável apenas com service_role);
+ * nunca user_metadata, que o próprio usuário pode alterar.
+ */
+export function isLicitagymAdmin(user: AuthenticatedUser | null | undefined): boolean {
+  return user?.app_metadata?.["licitagym_role"] === "admin";
+}
+
+/**
+ * Exige sessão de usuário (JWT do Supabase Auth). Em sucesso anexa o usuário em `req.user` e devolve null;
+ * sem sessão válida devolve 401. `authenticate` só existe para teste (injeção); produção usa authenticateUser.
+ */
+export async function requireUserAuth(
+  req: Request,
+  authenticate: (req: Request) => Promise<AuthenticatedUser | null> = authenticateUser,
+): Promise<Response | null> {
+  const user = await authenticate(req);
+  if (!user) return jsonResponse({ error: "Unauthorized" }, 401);
+  (req as unknown as { user?: AuthenticatedUser }).user = user;
+  return null;
 }
 
 /**

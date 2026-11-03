@@ -20,6 +20,9 @@ Função Supabase Edge Function responsável por atender o frontend do Dashboard
 - **RLS em `public.licitacoes_externas`**: Todo acesso direto à tabela via PostgREST REST API está revogado para `authenticated`, `anon` e `PUBLIC` (conforme migrations `20260926110000_pncp_rls_policies.sql`, `20260928130000_licitacoes_externas_revoke_anon.sql` e `20260928140000_licitacoes_externas_revoke_authenticated.sql`). Nenhuma role não-privilegiada possui permissão de `SELECT`, impedindo a leitura direta de colunas sensíveis (`raw`, `notas`, `esclarecimentos`, etc.) no navegador ou REST API.
 - **Leitura Server-Side do Dashboard & Acesso Interno**: Leituras de usuários e do dashboard são realizadas exclusivamente através da Edge Function `api-dashboard-oportunidades` (que executa server-side utilizando `SUPABASE_SERVICE_ROLE_KEY` e projeta estritamente as colunas públicas seguras `PUBLIC_LICITACAO_COLUMNS`). Leituras e escritas internas permanecem restritas à role `service_role` (utilizada pela Edge Function e pelos coletores de backend). A chave de `service_role` **nunca** é devolvida nem exposta ao cliente. A ação `readiness` permanece pública para verificação de saúde e contagem sem expor dados de linhas.
 - **Projeção Estrita de Colunas Públicas**: As consultas **não** usam `select("*")`. Apenas um conjunto explícito de colunas seguras para consumo do dashboard é projetado (`PUBLIC_LICITACAO_COLUMNS`), incluindo identificadores de fonte não-secretos (`modulo`, `id_externo`) necessários para fontes como SEST SENAT (onde `codigo_externo` é nulo), e omitindo estritamente colunas internas, payloads brutos (`raw`), fóruns (`esclarecimentos`, `notas`) e anexos técnicos (`anexo_raiz_id`, `edital_id`).
+- **Prioridade efetiva (view `public.licitacoes_externas_prioridade_efetiva`)**: `list` e `get` leem a view criada em `20260930200000_licitacoes_prioridade_efetiva.sql`, com as mesmas colunas públicas e `prioridade` recalculada só para baixo: `historico` com qualquer sinal de encerramento (`data_homologacao`, resultado em `licitacao_resultados`, `raw.tem_resultado`, `raw.cancelado`, situação encerrada/homologada/revogada...), `leads` → `monitorar` com o prazo de proposta vencido (`raw.data_fim_vigencia` em BRT, senão `data_fim`), senão a prioridade gravada. A view é `security_invoker` e só `service_role` lê. `readiness` e `acompanhamento` continuam na tabela.
+- **Oportunidades sem `historico` (decisão de produto 30/09/2026)**: compra homologada ou encerrada é só do BI. Sem filtro de prioridade, `list` (itens e `total`, inclusive a contagem do PGRST103) exclui `historico` e mantém `leads`, `monitorar` e `NULL` (fonte que não grava prioridade e sem sinal de encerramento). `prioridade=historico` responde **200 com `items: []` e `total: 0`**, sem consultar o banco (não 400: o Dashboard ainda oferece "Histórico de Certames" no seletor e mostraria erro). `get` de uma compra `historico` responde normalmente, com `prioridade: "historico"`, para links do BI e links diretos continuarem funcionando.
+- **Compra PNCP republicada aparece uma vez (decisão 02/10/2026, migration `20261003170000_licitacoes_pncp_canonica.sql`)**: o mesmo pregão publicado duas vezes no PNCP (mesmo `fonte='pncp'`, `orgao_cnpj`, `processo_norm` e `numero_edital`, os três preenchidos) vira um grupo; a view `public.licitacoes_pncp_canonica` escolhe a publicação canônica (maior `data_fim` → mais itens com `valor_unitario_estimado > 0` → mais resultados → `valor_total` preenchido → `data_publicacao` mais recente → menor `id`). A view da prioridade efetiva expõe `canonica_id` (id da canônica; o próprio id quando não há republicação) e `eh_canonica`. `list` (itens, `total`, contagem do PGRST103 e a redução do recorte CATMAT) filtra `eh_canonica = true`, com ou sem `prioridade`. `get` (por `id`, `codigo_externo` ou órgão + processo) não filtra: devolve qualquer publicação, com `canonica_id`/`eh_canonica` para o Dashboard levar à canônica.
 - **Isolamento de Credenciais**: O header `Authorization` do usuário não é repassado ao cliente service_role interno.
 - **Mensagens de Erro Seguras**: Detalhes crus de erros do PostgREST não são expostos na resposta HTTP; falhas de banco retornam status HTTP 500 com mensagem limpa, e erros de parâmetro inválido retornam status HTTP 400.
 - **Prevenção de Injeção SQL & Sanitização**: Todas as consultas são parametrizadas e estruturadas usando o query builder do `supabase-js`. Termos de busca textual livre (`busca`, `q`, `municipio`, `orgao_nome`) são normalizados em Unicode NFC, filtrados via allowlist (`[^\p{L}\p{N}\s-]`), sem curingas `%`, `_`, `*`, `\\`, colapsados e limitados a 200 caracteres.
@@ -78,6 +81,8 @@ Verifica a conectividade e disponibilidade da base de licitações externas sem 
 ### 2. `get`
 Obtém certames ou compras específicas.
 
+Lê a view da prioridade efetiva. Uma compra `historico` é devolvida normalmente (com `prioridade: "historico"`), embora não apareça no `list`.
+
 #### Modos de Consulta:
 1. **Por ID único da tabela (`id`)**: Retorna `{ item: ... }` ou 404.
 2. **Por Código Externo único (`codigo_externo` + `fonte` obrigatório)**: Como a unicidade no banco é composta por `(fonte, codigo_externo)`, o parâmetro `fonte` é obrigatório quando `codigo_externo` for informado (retorna 400 se `fonte` for omitida). Retorna `{ item: ... }` ou 404.
@@ -125,10 +130,17 @@ Obtém certames ou compras específicas.
     "url_edital": "https://pncp.gov.br/app/editais/07486108000185/2026/1",
     "created_at": "2026-09-20T08:05:00Z",
     "updated_at": "2026-09-28T09:00:00Z",
-    "last_synced_at": "2026-09-28T09:00:00Z"
+    "last_synced_at": "2026-09-28T09:00:00Z",
+    "payload_hash": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+    "ingestao_origem": "cron",
+    "ingestao_em": "2026-10-14T09:00:00+00:00"
   }
 }
 ```
+
+`payload_hash`, `ingestao_origem` (`cron` | `manual`) e `ingestao_em` (UTC) são a proveniência da **última**
+ingestão da linha (spec 0023): sha256 do `raw` serializado de forma estável e quem/quando gravou. Nulos nas linhas
+anteriores à spec. `last_synced_at` continua sendo a data da primeira gravação (o coletor não o atualiza).
 
 #### Resposta de Sucesso por Processo Administrativo (HTTP 200)
 ```json
@@ -160,7 +172,7 @@ Obtém certames ou compras específicas.
 ---
 
 ### 3. `list`
-Lista oportunidades com suporte a paginação, ordenação configurável e múltiplos filtros.
+Lista oportunidades com suporte a paginação, ordenação configurável e múltiplos filtros. Lê a view da prioridade efetiva e, por padrão, **exclui `historico`** da lista e do `total` (compra homologada/encerrada é só do BI).
 
 #### Parâmetros de Paginação e Ordenação
 | Parâmetro | Tipo | Padrão | Descrição |
@@ -173,7 +185,7 @@ Lista oportunidades com suporte a paginação, ordenação configurável e múlt
 #### Parâmetros de Filtro
 | Filtro | Tipo | Descrição |
 |---|---|---|
-| `prioridade` | string | Prioridade do certame (`leads`, `monitorar`, `historico`) |
+| `prioridade` | string | Prioridade **efetiva** (view): `leads` = recebendo proposta, `monitorar` = em julgamento. Sem o filtro, o list traz `leads`, `monitorar` e `NULL`, nunca `historico`. `historico` (encerrado/homologado/com resultado) responde 200 com `items: []` e `total: 0`: não é Oportunidade, é do BI (desde 30/09/2026) |
 | `uf` | string | Sigla da UF com 2 letras (ex: `SP`, `RJ`) |
 | `municipio` | string | Busca parcial (`ilike`) no nome do município |
 | `orgao_cnpj` | string | CNPJ do órgão (apenas dígitos são considerados) |
@@ -195,6 +207,23 @@ Lista oportunidades com suporte a paginação, ordenação configurável e múlt
 | `valor_min` | number | `valor_total >= valor_min` |
 | `valor_max` | number | `valor_total <= valor_max` |
 | `busca` (ou `q`) | string | Busca textual livre em `objeto`, `numero_processo` e `numero_edital` |
+| `catmat_grupo`, `catmat_classe`, `catmat_pdm`, `catmat_item` | int[] (CSV ou array, até 50 cada) | Recorte CATMAT em cascata, resolvido por `public.licitacoes_ids_por_catmat_unica` (wrapper de `public.licitacoes_ids_por_catmat`): casa pelo código numérico do item (`licitacao_itens.catalogo_codigo_item`) ou, sem código, pelos padrões de texto do PDM (`catmat_pdm_palavras`) na descrição do item e no objeto |
+| `catalogo` | boolean | `true` restringe ao catálogo CATMAT da empresa (herança e exclusões de `catalogo_empresa_catmat`) |
+
+Com recorte CATMAT:
+- cada item da resposta ganha `catmat_match: [{codigo_pdm, nome_pdm, codigo_item, motivo}]`, com `motivo`:
+  - `codigo`: código numérico do item (`licitacao_itens.catalogo_codigo_item`), só do Catálogo do Compras.gov.br
+    (`catalogo_id = 1`) em item de material (`material_ou_servico = 'M'`): catálogo "Outros" (código do órgão) e CATSER
+    não casam (20261003180000);
+  - `texto_item` / `texto_objeto`: padrão do PDM (`catmat_pdm_palavras`) na descrição do item / no objeto;
+  - `taxonomia` / `taxonomia_objeto`: nó do dicionário de aparelhos (`no_taxonomia` do item / da licitação) mapeado para o PDM em `taxonomia_no_pdm` (a partir da migration `20260930110000_taxonomia_no_pdm`);
+  - `texto_item_aprox` / `taxonomia_aprox`: recorte por item (`catmat_item`) casado por texto ou taxonomia, que identificam o PDM, não o item;
+- com `catalogo=true`, item avulso do catálogo (registrado sem o PDM inteiro) casa só por código: não expande para o texto/taxonomia do PDM;
+- a resolução não trunca (sem `LIMIT` na função); o teto é o de licitações abaixo;
+- uma chamada só por requisição: `licitacoes_ids_por_catmat_unica` devolve uma linha `{ids: bigint[], matches: jsonb}` (ids distintos em ordem crescente e os casamentos), então o `max_rows` do PostgREST não pagina e o `statement_timeout` de 8 s (por chamada, do role `authenticator`) vale uma vez. O casamento por texto vem de `public.licitacao_match`, materializado, depois do backfill; até lá vem do caminho ao vivo, como antes (ver `docs/design/licitacao-match.md`);
+- sem nenhuma licitação: `200` com `items: []` e `total: 0`;
+- acima de 1.000 licitações: os ids são antes reduzidos ao escopo pedido na view da prioridade efetiva (sem filtro, sem `historico`; com `prioridade`, só ela), em lotes de 500; o `422` pedindo um recorte mais restrito só vale se ainda sobrarem mais de 1.000 oportunidades (se não sobrar nenhuma, 200 vazio).
+- statement_timeout do Postgres (`57014`) ao resolver o recorte: `503` com `{"error": "filtro de catálogo indisponível"}` (outros erros seguem `500`).
 
 #### Resposta de Sucesso (HTTP 200)
 *Nota: Lista vazia é retornada com HTTP 200 e `items: []`, sem gerar erro.*
@@ -225,12 +254,16 @@ Lista oportunidades com suporte a paginação, ordenação configurável e múlt
 ### 4. `acompanhamento`
 Obtém o painel de acompanhamento em tempo real para uma oportunidade, consultando em paralelo a API oficial do PNCP para carregar:
 - Metadados da compra (`situacao`, `modalidade`, `objeto`, `valorEstimado`, `valorHomologado`, `datas`, `linkSistemaOrigem`).
-- Lista completa de itens paginada (`numeroItem`, `descricao`, `quantidade`, `unidade`, `valorUnitarioEstimado`, `situacaoCompraItemNome`, `temResultado`).
+- Lista completa de itens paginada (`numeroItem`, `descricao`, `quantidade`, `unidade`, `valorUnitarioEstimado`, `situacaoCompraItemNome`, `temResultado`, `catalogoCodigoItem`, `catalogoId`, `catalogoNome`, `materialOuServico`). `numeroItem` é o número do item no PNCP, nunca código de catálogo; `catalogoCodigoItem` só é CATMAT/CATSER com `catalogoId = 1` (Catálogo do Compras.gov.br), com `catalogoId = 2` ("Outros") é código do órgão.
 - Vencedores e homologação de itens com resultado via `/itens/{n}/resultados` com concorrência limitada (~5). CNPJ/CPF retornados como dados públicos oficiais.
+- **PDM e unidade por item (spec 0009, CA-8)**, para a aba Inteligência de Preços cruzar o `valorUnitarioEstimado` com a `api-precos` (`precoReferencia.ts`, lidos do banco a cada resposta, também com o PNCP em cache):
+  - `codigoPdm`, `codigoPdmOrigem`, `codigoPdmMotivo`: `catalogo_pncp` quando o item tem código CATMAT oficial (`catalogoId = 1`, material) e `public.catmat_itens` dá o PDM; código oficial sem PDM na base local dá `null` (não cai no texto, que poderia contradizer o oficial). Sem código oficial, `casamento_texto` quando `public.licitacao_match` (origem `texto_item`) casou o texto do item com **um** PDM (derivado). Serviço, mais de um PDM, nenhum PDM, item ainda não carregado em `licitacao_itens`, item com texto em recálculo (`licitacao_match_pendente`, cujas linhas em `licitacao_match` ainda são as antigas), casamento nunca carregado (`licitacao_match_estado.carregado_em` nulo) ou consulta falha: `codigoPdm: null` com o motivo; consulta falha não cai na outra fonte e não derruba o acompanhamento. Leitura em lotes de 100; lote que volta com 1000 linhas (corte do PostgREST) conta como falha.
+  - `unidadeSigla`, `unidadeSiglaOrigem` (`normalizada_da_unidade_pncp`): sigla de fornecimento da Pesquisa de Preço (`UN`, `PAR`, `M2`, `RO`) tirada de `unidade` (texto livre do PNCP, que continua como veio) por dicionário fechado. Embalagem com quantidade (`CAIXA 1,00 PAR`), mistura ou forma desconhecida (`KIT`, `PR`) dá `null`: o Dashboard não compara.
+  - Medição em 19/10/2026 (`licitacao_itens`, 177.351 itens): 5.116 com código de catálogo, 288 com PDM pelo `catmat_itens`, 17.634 com PDM pelo texto (1.041 com mais de um), 17.752 com algum PDM, 16.442 com PDM e valor estimado > 0.
 - Atas de registro de preço associadas (`numero`, `ano`, `vigenciaInicio`, `vigenciaFim`, `cancelado`).
 - Histórico completo de eventos e retificações paginado (`data`, `categoria`, `tipo`, `item`, `documentoTitulo`, `justificativa`).
 - Arquivos e editais oficiais para download direto (`titulo`, `tipo`, `url`).
-- URLs seguras derivadas na leitura: `url_edital` e `url_acompanhamento` (redirecionamento Comprasnet `https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/landing?destino=acompanhamento-compra&compra={idCompra}` quando `idCompra` tem 17 dígitos válidos).
+- URLs seguras derivadas na leitura: `url_edital` (só link do edital; Sistema S/Paradigma sem link da origem = null), `url_portal` (mural público do portal Paradigma da fonte, não é o edital; null nas outras fontes) e `url_acompanhamento` (redirecionamento Comprasnet `https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/landing?destino=acompanhamento-compra&compra={idCompra}` quando `idCompra` tem 17 dígitos válidos).
 - Cache em memória de ~5 minutos (`Cache-Control: private, max-age=300`).
 - Isolamento de falhas parciais: falha em uma seção não inviabiliza as demais; cada seção possui seu campo `erro`.
 

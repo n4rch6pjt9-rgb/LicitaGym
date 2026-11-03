@@ -1,5 +1,103 @@
 # Coletores LicitaGym (PNCP + SEST SENAT) → Supabase + RAG
 
+## Perguntar ao edital (spec 0038)
+
+Serviço HTTP do Cloud Run (`agente-perguntas`, `coletor/perguntas_servico.py`, só biblioteca padrão). Quem chama é
+só a Edge Function `api-agentes` (ela faz usuário, empresa, pipeline e o limite de 50 perguntas/dia). Mesma imagem
+dos Jobs: o `Dockerfile` tem `ENTRYPOINT ["python", "-m", "coletor.main"]`, e `--command`/`--args` do deploy trocam
+esse entrypoint.
+
+| Rota | Entrada | Saída |
+|---|---|---|
+| `GET /saude` | — | `200 {"ok": true}` |
+| `POST /edital/perguntar` | cabeçalho `X-Agente-Segredo`; corpo `{"licitacao_id": int > 0, "pergunta": 1..500 caracteres, "k": 1..20 (padrão 8)}` | `200 {resposta, motivo_sem_resposta, citacoes[{n, chunk_id, documento_id, pagina, texto, apoio, apoio_inicio}], modelo, versao_prompt ("0038.2"), uso{entrada, saida, pensamento}}` |
+
+Erros: `400` corpo inválido, `401` segredo errado ou ausente, `503` serviço sem `AGENTE_PERGUNTAS_SEGREDO`,
+`502` falha do Vertex ou do Supabase, orçamento de tempo esgotado, resposta do modelo fora do formato nas duas
+tentativas ou cortada no teto de tokens (sem detalhe do erro na resposta; a `api-agentes` não grava nada).
+`resposta: null, motivo_sem_resposta: "nao_encontrado"` só em três casos: nenhum trecho, o modelo respondeu
+`{"resposta": null}`, ou a citação foi rejeitada (sem marcador `[n]`, marcador fora dos trechos entregues, ou algum
+`[n]` sem `apoio` válido).
+
+O modelo devolve `{"resposta": "...[n]...", "apoio": {"n": "<frase copiada do trecho n>"}}`. Cada `apoio` precisa
+estar no texto do trecho n (comparação com espaços colapsados e sem diferença de maiúsculas) e ter pelo menos 20
+caracteres. Na citação, `apoio` é a frase recortada do texto original do trecho (não o texto do modelo) e
+`apoio_inicio` é a posição dela, em caracteres, no `texto` do trecho. Os trechos vêm da RPC `agente_chunks_licitacao` (migration da spec 0038).
+
+Deploy (do Marcelo). Conta de serviço própria, com o mínimo:
+
+```bash
+PROJECT=$(gcloud config get-value project); REGION=southamerica-east1
+SA=agente-perguntas@$PROJECT.iam.gserviceaccount.com
+gcloud iam service-accounts create agente-perguntas
+gcloud projects add-iam-policy-binding $PROJECT --member=serviceAccount:$SA --role=roles/aiplatform.user
+
+# segredo compartilhado com a api-agentes (gerado uma vez; não fica em arquivo nem no histórico do shell)
+SEGREDO=$(openssl rand -hex 32)
+printf '%s' "$SEGREDO" | gcloud secrets create agente-perguntas-segredo --data-file=-
+for s in supabase-service-key agente-perguntas-segredo; do
+  gcloud secrets add-iam-policy-binding $s --member=serviceAccount:$SA --role=roles/secretmanager.secretAccessor
+done
+
+gcloud run deploy agente-perguntas --source services/coletor-externo --region $REGION --service-account $SA \
+  --command python --args=-m,coletor.perguntas_servico \
+  --set-secrets SUPABASE_SERVICE_ROLE_KEY=supabase-service-key:latest,AGENTE_PERGUNTAS_SEGREDO=agente-perguntas-segredo:latest \
+  --set-env-vars SUPABASE_URL=$SUPABASE_URL,GOOGLE_CLOUD_PROJECT=$PROJECT \
+  --allow-unauthenticated --max-instances 2 --concurrency 4 --timeout 60
+
+curl -s "$(gcloud run services describe agente-perguntas --region $REGION --format 'value(status.url)')/saude"
+```
+
+- `--allow-unauthenticated` porque a autenticação é o segredo compartilhado (comparado com `hmac.compare_digest`);
+  sem o cabeçalho certo a rota responde 401 antes de qualquer chamada ao Vertex ou ao Supabase.
+- Tempo: a `api-agentes` desiste em 60 s, então cada pergunta tem orçamento de 55 s (`PERGUNTAS_ORCAMENTO_S`), com
+  teto próprio por chamada (embedding 8 s, RPC 10 s, geração 40 s; `PERGUNTAS_*_TIMEOUT_S`) e no máximo uma nova
+  tentativa, depois de 2 s, em erro transitório do Vertex. Orçamento esgotado responde 502 sem tentar de novo. O
+  serviço não usa o intervalo `EMBED_INTERVALO` nem as 8 tentativas do `ia.py` (são da indexação em lote).
+- O mesmo valor do segredo vai para os segredos do Supabase, com a URL do serviço (nenhuma chave do GCP vai para lá):
+
+```bash
+supabase secrets set AGENTE_PERGUNTAS_SEGREDO="$SEGREDO" \
+  AGENTE_PERGUNTAS_URL="$(gcloud run services describe agente-perguntas --region $REGION --format 'value(status.url)')"
+unset SEGREDO
+```
+
+Trocar o segredo: nova versão em `agente-perguntas-segredo`, novo deploy (ou nova revisão) do serviço e o mesmo
+valor em `supabase secrets set`.
+
+## Rótulo "fora do perfil" dos preços (spec 0037, fase 0)
+
+`--coleta perfil-precos --dry-run` lê `precos_praticados_itens` e rotula uma amostra estratificada por PDM com o
+Gemini do Vertex (`coletor/perfil_precos.py`), **sem gravar nada**. Faz uma chamada por lote de itens da compra. Para
+cada item, o log traz o rótulo (`no_perfil`, `pdm_divergente` com o produto real, `fora_do_perfil` ou `incerto`) e o
+motivo; no fim vêm os tokens e a projeção para a base inteira. Os créditos são os do projeto GCP. A gravação (tabela
+`precos_rotulo_perfil`) é da fase 1. A descrição detalhada (texto do TR) desempata quando o órgão errou o PDM.
+
+Roda no Job `coletor-precos`. O SA precisa de `roles/aiplatform.user` e o Job, de `GOOGLE_CLOUD_PROJECT`:
+
+```bash
+PROJECT=$(gcloud config get-value project)
+gcloud projects add-iam-policy-binding $PROJECT \
+  --member=serviceAccount:coletor-precos@$PROJECT.iam.gserviceaccount.com --role=roles/aiplatform.user
+# amostra de 50 compras (inclui PDMs variados):
+gcloud run jobs execute coletor-precos --region southamerica-east1 \
+  --update-env-vars GOOGLE_CLOUD_PROJECT=$PROJECT \
+  --args="--coleta,perfil-precos,--dry-run,--limite,50"
+# só a compra-âncora (esteira transportadora no PDM de esteira ergométrica):
+gcloud run jobs execute coletor-precos --region southamerica-east1 \
+  --args="--coleta,perfil-precos,--dry-run,--compras,93099205000052026"
+```
+
+O custo em dólar só aparece se o Job tiver `PRECO_ENTRADA_USD_MTOK` e `PRECO_SAIDA_USD_MTOK` (preço por milhão de
+tokens do `GEN_MODEL` vigente). Sem eles, o log traz só os tokens.
+
+Ritmo do Vertex (o endpoint global do 3.8 Flash devolve 429 e 504 em rajada): `PERFIL_PAUSA_S` (pausa mínima entre
+chamadas, padrão 4), `PERFIL_ESPERAS_S` (espera entre tentativas, padrão `30,60`; a última se repete),
+`PERFIL_TIMEOUT_MS` (prazo de cada chamada, padrão 90000; o prazo vai também ao servidor, que desiste uns 3 s antes),
+`PERFIL_ITENS_POR_CHAMADA` (padrão 6: lotes de 15 estouravam o prazo), `PERFIL_MAX_FALHAS_SEGUIDAS` (padrão 8) e
+`PERFIL_TENTATIVAS_VERTEX` (padrão 3). Compra que esgota as tentativas fica sem rótulo e a rodada segue; o resumo
+final traz `erros_por_tipo` (cota, erro 5xx, prazo, resposta inválida).
+
 ## Gate de marca e referências do edital (v16.3)
 - Colunas na ordem fornecedor → marca → modelo, e o gate do fornecedor calculado sobre **todas** as propostas dele:
   `perfil_comercial` = fabricante — marca própria | fabricante + revenda | revenda monomarca | revenda multimarca;
@@ -82,45 +180,119 @@ python3 -m coletor.paradigma --fonte fiesc --dry-run --paginas 1        # só li
 python3 -m coletor.paradigma --fonte fiesc                                # grava licitação + itens + ranking
 python3 -m coletor.paradigma --fonte sestsenat --termos "academia;esporte e lazer"
 ```
-Sesc SP e Sesc/Senac RS (paradigmabs.com.br) são recusados: o robots.txt do host proíbe coleta automatizada.
+Decisão de 05/10/2026: quando o `robots.txt` bloqueia o portal, a coleta segue. Sesc SP (`sescsp`), Sesc/Senac RS (`sesc_senac_rs`), Sesc DN (`sescdn`), Sesc RJ (`sescrj`) e Sesc BA (`sescba`), em paradigmabs.com.br, entram pelo webservice público do mural, com o mesmo intervalo do adaptador. A decisão antiga (recusar e esperar aviso de fornecedor) não vale mais para esses hosts. Bloqueio de WAF continua fora: FIEMG responde 403 de desafio Cloudflare e não entra por esse caminho. O CLI passa `autorizado=True` só nessas cinco, e o próprio `PortalParadigma` recusa `autorizado=True` em qualquer outra fonte: `fiemg` continua em `PermissionError`. Decisão de 11/10/2026: nessas cinco, só anexos públicos; o cadastro de visitante (dados da empresa) não é usado, e documento que exige cadastro fica pendente. Resposta 401/403 de qualquer host para a coleta na hora, sem nova tentativa; 429 respeita `Retry-After`.
 
 ---
 
 ## Coletor PNCP (trilho secundário)
 
-Busca nacional no PNCP por frase exata (`TERMOS_PADRAO` em `coletor/pncp.py`), classifica cada compra
+Busca nacional no PNCP por frase exata (por padrão os 160 termos de `TERMOS_ESCOPO_COMPLETO` em `coletor/escopo.py`,
+que cobrem os 58 PDMs do escopo — decisão do owner em 30/09/2026; `--termos-padrao` volta aos 12 termos resumidos de
+`TERMOS_PADRAO` em `coletor/pncp.py`), classifica cada compra
 pelo objeto **e pelos itens** (`coletor/escopo.py`) e grava compra, itens, **vencedores** e arquivos.
 
-Três modos, em ordem de prioridade comercial:
+Três modos. O modo só escolhe o filtro `status` da busca no PNCP; não define sozinho a prioridade gravada.
 
-| Modo | O que pega | Uso |
+| Modo | Filtro PNCP | Prioridade |
 |---|---|---|
-| `leads` (padrão) | homologados nos últimos `--dias` (120), vencedor conhecido | oferecer raspa ao vencedor que ainda vai comprar |
-| `monitorar` | recebendo proposta + em julgamento | acompanhar até sair o vencedor |
-| `historico` | encerrados antigos | histórico de preço e RAG |
+| `leads` (padrão) | `recebendo_proposta` | recebendo proposta |
+| `monitorar` | `em_julgamento` | em julgamento, suspensa, adjudicação ou recurso |
+| `historico` | `encerradas` | encerrada ou homologada |
 
-O filtro de `leads` usa a **data de resultado de cada item** (`dataResultado` do PNCP). A paginação
-para quando os editais foram publicados há mais de `dias + margem_publicacao` (240) dias.
+**Prioridade** (owner, 02/10/2026): `leads` = recebendo proposta; `monitorar` = em julgamento, suspensa, adjudicação ou recurso; `historico` = encerrada ou homologada. Status desconhecido nunca vira lead. Falha de API ou documento ausente não pode gravar `encerradas`/`historico` nem promover a `leads`. Compra homologada não é lead.
+
+Preço por item CATMAT, marca e mapa de fornecedor (revenda ou fabricante) saem só de certames homologados, ficam só no BI e são rastreáveis pelo certame. Revogada, anulada, deserta ou fracassada não alimentam esse mapa.
+
+O detalhe da compra (`/api/consulta/v1/.../compras/{ano}/{seq}`), quando a chamada sucede, é a fonte do estado (`existeResultado`, `valorTotalHomologado`, `situacaoCompraNome`, `dataEncerramentoProposta`). Se o detalhe falha, não gravar prioridade por fallback da busca.
 
 ```bash
 # pré-requisito: supabase/migrations/20260924100000_pncp_itens_resultados.sql (já aplicada)
 python3 -m coletor.pncp --dry-run --termos "borracha granulada" --tam 20   # teste rápido
-python3 -m coletor.pncp                                   # leads: homologados nos últimos 120 dias
-python3 -m coletor.pncp --dias 60                         # só os últimos 60 dias
-python3 -m coletor.pncp --modo monitorar                  # abertos / em julgamento
-python3 -m coletor.pncp --modo historico --paginas 10 --baixar-arquivos
+python3 -m coletor.pncp                                   # leads: recebendo proposta
+python3 -m coletor.pncp --modo monitorar                  # em julgamento
+python3 -m coletor.pncp --modo historico --paginas 10 --baixar-arquivos   # encerradas
 python3 -m coletor.indexador                              # arquivos baixados -> RAG
 ```
 
-`oportunidades_borracha` lista primeiro os leads, do homologado mais recente para o mais antigo,
-com `dias_desde_homologacao`.
+Escopo completo (160 termos, o padrão; ~13x as chamadas dos 12 termos): pode rodar inteiro ou em 4 lotes, um por
+execução (`--lote K/N`). Com lista maior que a de 12 termos o coletor usa 1 worker e 1 s entre chamadas (~1 req/s, o ritmo de `private.http_host_lease` para
+`pncp.gov.br`), salvo `PNCP_WORKERS`/`DELAY_SEGUNDOS`. Busca que esgota as tentativas não derruba os outros termos:
+entra em `falha_busca`/`termos_com_falha` no resumo e o processo sai com código 1; repetir o mesmo lote retoma.
+
+```bash
+python3 -m coletor.pncp --lote 1/4 --dry-run --paginas 1   # confere a fatia
+python3 -m coletor.pncp --lote 1/4                         # depois 2/4, 3/4, 4/4
+python3 -m coletor.pncp --termos-padrao                    # execução rápida só com os 12 termos
+```
+
+Documentos PNCP pendentes (`licitacao_documentos.status_processamento = 'pendente'`): `--baixar-pendentes` baixa pela
+URL guardada, só das licitações nas categorias do escopo (padrão atual do CLI: `catmat,forte,borracha,piso,obra_piso`; `fraco` fica
+fora) e opcionalmente filtrando por prioridade efetiva (`--prioridades leads,monitorar`, valores aceitos: `leads`, `monitorar`,
+`historico`, lendo a view `licitacoes_externas_prioridade_efetiva`), grava pelo mesmo destino do coletor
+(`Armazenamento.do_ambiente()`: Supabase Storage com `SUPABASE_STORAGE_BUCKET`, senão GCS, senão local), respeita `MAX_MB`
+e `Retry-After`, e não baixa de novo o que já tem `sha256`. Em 30/09/2026 eram 141 pendentes do PNCP (108 borracha, 22 piso, 2 forte, 9 fraco).
+Obra não vira lead: a categoria `obra_piso` nesse filtro de download não promove contrato de obra a `leads`.
+
+```bash
+python3 -m coletor.pncp --baixar-pendentes --dry-run                         # lista os elegíveis e detalha por prioridade
+python3 -m coletor.pncp --baixar-pendentes --prioridades leads,monitorar     # baixa apenas leads e monitorar
+python3 -m coletor.pncp --baixar-pendentes --prioridades leads --limite-download 20  # lote pequeno de leads
+python3 -m coletor.pncp --baixar-pendentes --categorias catmat,forte,borracha,piso,obra_piso
+python3 scripts/gerar_relatorio_termos.py                                    # docs/coletor-pncp-termos.md (PDM x termo)
+```
+
+Anexo com `statusAtivo=false` no `/arquivos` do PNCP (substituído/retirado pelo órgão) não é gravado de novo.
+O que já existia recebe `removido_do_portal_em` (mesmo critério do #134). `--baixar-pendentes` só lê pendentes com
+`removido_do_portal_em is null`, para não baixar um anexo inativado depois de gravado. O RAG deve filtrar
+`removido_do_portal_em is null`.
+`licitacoes_externas.link_sistema_origem` guarda o `linkSistemaOrigem` do detalhe (portal da disputa).
+
+Recoleta por versão (migration `20261002230000_pncp_link_origem_atualizacao_anexos`): cada coleta completa grava
+`dataAtualizacao`/`dataAtualizacaoGlobal` do detalhe em `pncp_data_atualizacao[_global]`; `--recoletar-atualizadas`
+consulta o detalhe das compras gravadas (prioridade efetiva `leads,monitorar` por padrão) e recoleta metadados, itens,
+resultados e lista de arquivos só das que mudaram (ou ainda sem valor guardado). Nunca baixa arquivo.
+
+```bash
+python3 -m coletor.pncp --recoletar-atualizadas --dry-run                  # só conta (1 GET de detalhe por compra)
+python3 -m coletor.pncp --recoletar-atualizadas --limite-recoleta 50       # recoleta até 50 compras que mudaram
+python3 -m coletor.pncp --recoletar-atualizadas --prioridades leads
+```
+
+Reclassificar as linhas PNCP já gravadas (as antigas `leads` homologadas viram `historico`) — dry-run por padrão:
+
+```bash
+export SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=...                       # do ambiente, nunca no código
+python3 -m coletor.backfill_prioridade_pncp                                 # DRY-RUN: contagem por transição + amostra
+python3 -m coletor.backfill_prioridade_pncp --consultar-pncp --limit 50     # DRY-RUN relendo o detalhe no PNCP (GET)
+python3 -m coletor.reclassificar_escopo_pncp                               # DRY-RUN (prioridade + fase)
+python3 -m coletor.reclassificar_escopo_pncp --apply                       # grava prioridade, fase e escopo
+```
+
+`backfill_prioridade_pncp --apply` está desativado (sai com código 2): ele decide só a prioridade, sem documentos
+nem fase, e sobrescreveria fases documentais como "Suspensa (documento)". O dry-run dele fica como diagnóstico legado.
+
+`oportunidades_borracha` lista primeiro os `leads` (certames abertos, ainda sem vencedor) e depois o resto, do
+homologado mais recente para o mais antigo, com `dias_desde_homologacao`. Para oferecer raspa ao vencedor,
+use as linhas `historico` com homologação recente (`dias_desde_homologacao`), não `prioridade = 'leads'`.
+
+**`valor_total` da compra:** vem do detalhe (`valorTotalEstimado` de `/api/consulta/v1/orgaos/{cnpj}/compras/{ano}/{seq}`);
+`valor_global` da busca (vazio em editais) é só fallback. Sem valor (ou 0, orçamento sigiloso) a coluna não vai
+no upsert, então nunca apaga um valor já gravado. `valorTotalHomologado` não é usado (é o valor adjudicado, outra grandeza).
+Backfill das linhas PNCP gravadas antes da correção (`valor_total IS NULL`) — dry-run por padrão:
+
+```bash
+export SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=...        # do ambiente, nunca no código
+python3 -m coletor.backfill_valor_total_pncp --limit 20       # DRY-RUN: consulta o PNCP, mostra contagem/amostra, não grava
+python3 -m coletor.backfill_valor_total_pncp --apply          # grava só valor_total, só onde o detalhe traz valor
+```
+Usa o cliente PNCP do coletor (`DELAY_SEGUNDOS`, backoff em 429/5xx). Falha de consulta não grava; rodar de novo retoma.
 
 Volume observado (24/09/2026, frase exata): grama sintética 3.263 (85 abertas), academia ao ar livre 1.563,
 equipamentos de academia 1.023, piso emborrachado 986, campo society 794, borracha granulada 122.
 A busca do PNCP também acha termos dentro dos itens — decoração natalina, arbitragem e grama natural são
 descartadas pelo classificador.
 
-**Leads de raspa de borracha:** a view `oportunidades_borracha` junta compra, item e vencedor
+**Raspa de borracha para o vencedor:** a view `oportunidades_borracha` junta compra, item e vencedor
 (ex.: Carapicuíba/SP, 50 t de borracha granulada G3 homologadas a R$ 2.779,46/t para HG Comércio).
 
 ---
@@ -150,13 +322,24 @@ Também entram:
 - **Grama sintética** (classe 7220, PDM 18481) e **piso sintético esportivo** (PDM 10779, só com texto
   esportivo/borracha — o PDM é majoritariamente piso vinílico comum);
 - **Borracha granulada** (classe 9320, PDM 9461, item CATMAT 150846) — raspa, granulado, SBR, EPDM;
-- **Obras de quadra/campo society/academia ao ar livre com grama sintética ou piso emborrachado**
-  (categoria `obra_piso`). A borracha do infill costuma vir na especificação técnica da obra.
+- Academia ao ar livre só conta junto com piso (o produto). Obra, credenciamento, locação, manutenção
+  (inclusive com fornecimento de peças) e oficineiros nunca viram lead.
 - Recreação infantil (parque infantil, playground).
 
 `interesse_borracha(objeto)` marca as licitações onde o vencedor vai precisar de raspa/granulado.
-Obras sem grama/piso (ex.: cobertura de quadra), serviços de evento, uniformes e troféus ficam fora.
+Serviço de evento, uniforme e troféu ficam fora. Um termo de busca sozinho não torna a linha `forte`.
+Polia e espaldar são `forte`. Pilates, "aparelho para condicionamento físico" genérico e colchonete são `fraco`.
+`Puxador` é positivo só na categoria acessórios.
 O coletor usa `--escopo fitness` por padrão (`--escopo tudo` desliga o filtro).
+
+**Forte ancorado (03/10/2026, modo núcleo).** Com o banco configurado, `forte` só vem de item que casa uma âncora
+do catálogo CATMAT da empresa (`coletor/catmat_ancoras.py`: nome/TIPO/NOME dos itens dos PDMs efetivos e dos itens
+incluídos, segundo `catmat_itens_mapa()`, com o texto de `catmat_itens`/`catalogo_itens` e, por último, de `catmat_item_pdm`; 100 linhas por página). As listas fixas acima só rebaixam: sem âncora o
+`forte` delas vira `fraco`, e item ancorado que cai em `ITEM_FORA`, academia ao ar livre ou brinquedo infantil fica
+`fraco`. O objeto da compra não tem âncora (`forte` do objeto vira `fraco`). Piso, borracha, obra_piso e o código
+CATMAT (`catmat`) não mudam; as travas (serviço, obra, ATI, passagem sem core, predial) continuam. PDM efetivo sem
+itens com descrição aborta a coleta antes de gravar. `FORTE_ANCORADO` = `nucleo` (padrão), `estrito`
+(âncora inteira) ou `desligado` (regra antiga, só emergência).
 
 ## 1. Criar as tabelas (uma vez)
 
@@ -214,7 +397,14 @@ A coleta é idempotente (upsert + só baixa o que está `pendente`/`erro`).
 | `GCS_BUCKET` | — | Sem ela, salva em `./dados`. |
 
 Flags: `--ids`, `--de/--ate`, `--modulo` (59 = pregão eletrônico), `--todos`
-(inclui processos em andamento), `--dry-run`.
+(inclui processos em andamento), `--dry-run`, `--coleta`.
+
+**Pesquisa de Preço no mesmo Job (spec 0009).** `--coleta` escolhe o que roda: `sestsenat`, `precos` ou `todas`
+(padrão). Com `precos`, o Job roda `coletor.compras_precos` em modo catálogo (PDMs de
+`catalogo_catmat_pdms_efetivos()`; se a RPC falhar, a coleta falha, sem lista fixa) e depois o
+`2_consultarMaterialDetalhe` só para as linhas sem descrição detalhada, gravando `detalhe_sincronizado_em`. Falha de
+qualquer parte (inclusive de uma linha do detalhe) faz o Job sair com código 1. Para um agendamento só de preços:
+`--args="--coleta,precos"`. A saúde operacional (`precos_dias_sem_coleta`) fica crítica com 8 dias sem gravar preço.
 
 ## Volume observado (piloto)
 
@@ -229,9 +419,9 @@ de maior valor para o RAG. Ligue `proposta`/`negociacao` quando quiser preços.
   visitante antes de baixar anexos. O endpoint de download responde sem ele,
   mas o recomendado é fazer o cadastro com os dados da empresa responsável
   pelo LicitaGym para ficar em conformidade com o portal.
-- **LGPD:** só CNPJ é gravado; identificadores de pessoa física (CPF) são
-  descartados. Documentos de habilitação podem conter dados de sócios —
-  mascarar antes de indexar no RAG.
+- **LGPD:** nos cadastros estruturados só CNPJ é gravado. No RAG, CPF e CNPJ
+  que aparecem nos editais são dados públicos e são indexados sem máscara
+  (decisão de 01/10/2026).
 - **Limites de taxa:** mantenha `DELAY_SEGUNDOS` ≥ 1 e rode fora do horário comercial.
 
 ## 4. Indexar no RAG (texto → Gemini → embeddings)
@@ -245,19 +435,83 @@ python3 -m coletor.buscar "Por que a Freedom Motors recorreu e qual foi a decis�
 ```
 
 - Cada arquivo físico (sha256) é processado **uma vez**; cópias recebem o mesmo resultado.
-- PDF com texto → `pypdf`; PDF escaneado → OCR pelo Gemini; `.zip` é aberto (até 2 níveis);
-  `.docx` lido direto; `.rar` e imagens ficam listados em `extracao.arquivos_ignorados`.
+- O tipo do arquivo vem dos **bytes**, não da extensão (o PNCP entrega `.bin`/sem extensão):
+  `%PDF-` → PDF; `PK` → ZIP, ou DOCX se tiver `word/document.xml`, ou XLSX se tiver `xl/`.
+- PDF com texto → `pypdf`; PDF escaneado → OCR pelo Gemini; ZIP é aberto (até 2 níveis, nomes
+  internos em cp850/UTF-8 sem flag corrigidos); DOCX lido direto; XLSX vira texto simples
+  (uma linha por linha da planilha, células com " | ", sem datas formatadas, até 200 mil caracteres);
+  `.rar`, `.7z`, `.pptx`, `.doc`/`.xls` antigos e imagens ficam em `extracao.arquivos_ignorados`.
+  Arquivo com nome `.pdf` que não é PDF (ex.: página HTML de erro) é ignorado, não vai para o OCR.
 - Gemini gera um JSON por documento em `licitacao_documentos.extracao` (tipo, resumo,
   fornecedores, decisão, motivos, fundamentos legais, valores, pontos-chave) e um trecho-resumo.
 - Embeddings: `text-multilingual-embedding-002` (lotes de até 30 trechos, 1 chamada a cada 12,5 s), 768 dimensões, `RETRIEVAL_DOCUMENT` (consulta usa `RETRIEVAL_QUERY`).
-- Modelos configuráveis: `EMBED_MODEL`, `GEN_MODEL` (padrão `gemini-2.5-flash`), `GOOGLE_CLOUD_LOCATION` (padrão `us-central1`).
+  Cada chunk grava o modelo em `licitacao_chunks.embedding_model` (padrão da coluna: o mesmo modelo).
+- `GEN_MODEL` (padrão `gemini-3.8-flash`, desde 22/10/2026: o `gemini-2.5-flash` foi descontinuado), `GEN_LOCATION` (padrão `global`, endpoint do 3.8 Flash) e `GEN_THINKING` (padrão deduzido do modelo: `low` no Gemini 3+, `off` no 2.5-flash; aceita `off`, `low`, `medium`, `high` ou `padrao`) são configuráveis. O embedding usa `GOOGLE_CLOUD_LOCATION` (padrão `us-central1`), separado da geração. O embedding do RAG permanece `text-multilingual-embedding-002` com 768 dimensões; trocar o modelo exige um plano de reindex aprovado. Não apontar `EMBED_MODEL` para outro modelo sem esse plano.
 
 **Cota do Vertex (projeto novo):** o modelo de embeddings começa com **5 requisições/min**
 por região. O indexador já respeita isso (`EMBED_INTERVALO=12.5`). Para acelerar, peça aumento em
 IAM e administrador → Cotas → "online prediction requests per base model … textembedding-gecko"
-(us-central1) e reduza `EMBED_INTERVALO`. PDFs escaneados passam por OCR em partes de
-`OCR_PAGINAS=8` páginas.
+(us-central1) e reduza `EMBED_INTERVALO`.
+
+**OCR (PDF escaneado):** uma chamada ao Gemini **por página** (`ia.ocr_pagina`), com `temperature 0`,
+`max_output_tokens=OCR_MAX_TOKENS` (padrão 4096) e pensamento desligado. Cada página passa pelo detector de
+degeneração (`coletor/ocr.py`): repetição seguida da mesma unidade (caractere, padrão curto ou linha) com ao menos
+`OCR_DEGENERADO_MIN_REP` repetições (padrão 20) cobrindo ao menos `OCR_DEGENERADO_MIN_CHARS` caracteres (padrão 300).
+A repetição precisa terminar a página (até `OCR_DEGENERADO_MAX_CAUDA`=80 caracteres depois) ou cobrir
+`OCR_DEGENERADO_MIN_CHARS_MEIO`=3000 caracteres: formulário ou tabela em branco no meio da página não conta.
+Estados por página, gravados sem texto em `licitacao_documentos.extracao.ocr_paginas`:
+`extraido` (vira chunk), `OCR_DEGENERADO` (repetição ou `MAX_TOKENS`; não vira chunk) e `OCR_REQUIRED` (OCR sem texto).
+Documento com alguma página não aceita fica com `extracao.ocr_incompleto = true`; se nenhuma página for aceita,
+fica `ignorado` com `erro` começando por `OCR_DEGENERADO` (o estado próprio em `status_processamento` é migration
+separada, issue #299). `--reprocessar-ocr` refaz esses documentos. Medição que motivou: spec 0016, seção 5 (Baraúna, 09/10/2026).
 
 **Importante para o app:** a pergunta do usuário precisa ser convertida em vetor com o
 **mesmo modelo** (`text-multilingual-embedding-002`, 768d, `RETRIEVAL_QUERY`) antes de chamar
 `match_licitacao_chunks`. Veja `coletor/buscar.py` como referência.
+
+## 5. Fila de preparação da Triagem (spec 0018, decisão 12)
+
+Quando uma licitação entra na etapa "Triagem" do pipeline de uma empresa, o banco grava um pedido em
+`private.job_queue` (migration `20261011160000`). O `coletor.preparar_triagem` consome esses pedidos:
+detalhe PNCP com `amparo_legal` (o banco deriva o regulamento), download, indexação e
+`pipeline_tarefas_reaplicar`. Os agentes **não** rodam aqui: rodam quando alguém abre a análise.
+
+```bash
+python3 -m coletor.preparar_triagem --limite 5
+```
+
+- Desfechos: `ok`, `sem_documento`, `regulamento_nao_informado_pela_fonte` (aparecem no card do pipeline).
+- Falha técnica volta para a fila com espera crescente (5, 10, 20, 40 min) até 5 tentativas; depois, `failed`.
+  O erro gravado é curto (`download: HTTP 504`); o detalhe fica só no log do job.
+- Fonte que não é PNCP (ou fonte nula): usa os documentos que já existem, sem chamar o PNCP.
+- Pedido em `processing` há mais de 1 h volta para a fila: o timeout do job precisa ficar abaixo disso.
+
+Cloud Run Job a cada 15 min (o deploy é do Marcelo). Contas de serviço dedicadas, com o mínimo:
+
+```bash
+SA_JOB=preparar-triagem@$PROJECT.iam.gserviceaccount.com
+SA_SCHED=preparar-triagem-sched@$PROJECT.iam.gserviceaccount.com
+gcloud iam service-accounts create preparar-triagem
+gcloud iam service-accounts create preparar-triagem-sched
+gcloud secrets add-iam-policy-binding supabase-service-key --member=serviceAccount:$SA_JOB \
+  --role=roles/secretmanager.secretAccessor
+gcloud projects add-iam-policy-binding $PROJECT --member=serviceAccount:$SA_JOB --role=roles/aiplatform.user
+
+gcloud run jobs deploy preparar-triagem --source . --region $REGION --service-account $SA_JOB \
+  --set-env-vars SUPABASE_URL=$SUPABASE_URL,SUPABASE_STORAGE_BUCKET=<bucket>,DELAY_SEGUNDOS=1.5,GOOGLE_CLOUD_PROJECT=$PROJECT \
+  --set-secrets SUPABASE_SERVICE_ROLE_KEY=supabase-service-key:latest \
+  --command python --args="-m,coletor.preparar_triagem,--limite,5" --task-timeout=50m --max-retries=0
+
+# o scheduler só invoca este job
+gcloud run jobs add-iam-policy-binding preparar-triagem --region $REGION \
+  --member=serviceAccount:$SA_SCHED --role=roles/run.invoker
+gcloud scheduler jobs create http preparar-triagem-15min --location $REGION --schedule "*/15 * * * *" \
+  --uri "https://run.googleapis.com/v2/projects/$PROJECT/locations/$REGION/jobs/preparar-triagem:run" \
+  --http-method POST --oauth-service-account-email $SA_SCHED
+```
+
+- `--source .` gera uma build nova (não reaproveita a imagem do `coletor-sestsenat`).
+- Sem `SUPABASE_STORAGE_BUCKET` (ou `GCS_BUCKET`) o job para: no Cloud Run o disco local se perde.
+- `--max-retries=0`: quem tenta de novo é a fila (com espera), não o Cloud Run. Duas execuções ao mesmo tempo não
+  pegam o mesmo pedido (`FOR UPDATE SKIP LOCKED`); duas empresas com a mesma licitação podem baixar e indexar em
+  paralelo (resultado idempotente, só custo).

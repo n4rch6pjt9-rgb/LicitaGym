@@ -1,3 +1,5 @@
+from unittest.mock import patch
+from coletor.destino import sha256
 """Documentos Paradigma -> Supabase Storage (offline). Fluxo do HAR SFIEC PE000652022, sem dados pessoais."""
 from unittest.mock import MagicMock
 
@@ -52,17 +54,62 @@ def portal_fake(exige=1, body=PDF, ctype="application/pdf"):
 
 def sb_fake(existentes=()):
     sb = MagicMock()
-    sb.selecionar.side_effect = lambda tabela, **k: list(existentes) if tabela == "licitacao_documentos" else []
-    sb.upsert.side_effect = lambda tabela, linhas, conflito: [linhas] if tabela != "licitacao_documentos" else [
-        {**l, "id": i + 1, "status_processamento": next((e["status_processamento"] for e in existentes
-                                                         if e["arquivo_origem"] == l["arquivo_origem"]), "pendente"),
-         "sha256": next((e.get("sha256") for e in existentes if e["arquivo_origem"] == l["arquivo_origem"]), None)}
-        for i, l in enumerate(linhas if isinstance(linhas, list) else [linhas])]
+    sb.selecionar.side_effect = (
+        lambda tabela, **k:
+        list(existentes) if tabela == "licitacao_documentos" else []
+    )
+
+    def upsert(tabela, linhas, conflito):
+        if tabela != "licitacao_documentos":
+            return [linhas]
+
+        return [
+            {
+                **linha,
+                "id": 1000 + i,
+                "status_processamento": "pendente",
+                "sha256": None,
+            }
+            for i, linha in enumerate(
+                linhas if isinstance(linhas, list) else [linhas]
+            )
+        ]
+
+    sb.upsert.side_effect = upsert
     return sb
 
 
 def atualizacoes(sb):
     return {c.args[1]: c.args[2] for c in sb.atualizar.call_args_list}
+
+
+
+def processar_versao_fake(
+    sb, arm, documento_id, caminho_base, secao, conteudo, mime_type
+):
+    digest = sha256(conteudo)
+    return {
+        "id": documento_id,
+        "documento_id": documento_id,
+        "sha256": digest,
+        "storage_uri": f"supabase://licitacao-documentos/{documento_id}/{digest}",
+        "tamanho_bytes": len(conteudo),
+        "mime_type": mime_type,
+    }, True
+
+
+
+
+
+
+@pytest.fixture(autouse=True)
+def mock_versionamento():
+    with patch(
+        "coletor.versionamento.processar_versao",
+        side_effect=processar_versao_fake,
+    ):
+        yield
+
 
 
 def test_baixa_com_visitante_institucional_e_guarda_no_storage():
@@ -76,10 +123,14 @@ def test_baixa_com_visitante_institucional_e_guarda_no_storage():
     assert dto["sDsTipoDocumento"] == "CNPJ" and dto["sDsCnpj"] == "24608949000137" and dto["sDsCpf"] == ""
     assert dto["bFlConsentimentoLGPD"] == 1
     assert salvar[1][1]["dtoVisitante"]["nCdVisitante"] == 5209          # reaproveita o visitante
-    up = atualizacoes(sb)[1]
+    up = atualizacoes(sb)[1000]
     assert up["status_processamento"] == "baixado" and up["storage_uri"].startswith("supabase://licitacao-documentos/")
     assert up["sha256"] == D.sha256(PDF) and up["tamanho_bytes"] == len(PDF)
-    assert arm.salvar.call_args_list[0].args[0] == "paradigma/sfiec/18/32/processo/wbc202208011907117200.pdf"
+    assert not arm.salvar.called
+    assert up["storage_uri"].startswith(
+        "supabase://licitacao-documentos/"
+    )
+    assert up["sha256"] in up["storage_uri"]
     linhas = sb.upsert.call_args_list[0].args[1]
     assert linhas[1]["nome_original"].startswith("Relatorio de Justificativa") and linhas[1]["origem_portal"] == "Processo"
     assert all("sDsParametroCriptografado" not in l["raw"] for l in linhas)
@@ -103,7 +154,7 @@ def test_portal_sem_exigencia_baixa_sem_cadastro():
     assert r["baixados"] == 2 and not any(c[0] == "SalvarVisitante" for c in chamadas)
 
 
-def test_historico_nao_rebaixa_e_marca_removido_do_portal():
+def test_historico_nao_rebaixa_nem_presume_remocao_do_portal():
     existentes = [
         {"id": 90, "arquivo_origem": "wbc202208011907117200.pdf", "status_processamento": "baixado", "sha256": "abc",
          "removido_do_portal_em": None},
@@ -113,8 +164,8 @@ def test_historico_nao_rebaixa_e_marca_removido_do_portal():
     p, _ = portal_fake()
     sb, arm = sb_fake(existentes), MagicMock(salvar=MagicMock(return_value="supabase://b/x"))
     r = DP.DocumentosParadigma(p, sb, arm, VIS).sincronizar(10, DET, "x")
-    assert r["novos"] == 1 and r["baixados"] == 1 and r["removidos_do_portal"] == 1
-    assert atualizacoes(sb)[91].keys() == {"removido_do_portal_em"}  # marca, não apaga
+    assert r["novos"] == 1 and r["baixados"] == 2 and r["removidos_do_portal"] == 0
+    assert 91 not in atualizacoes(sb)  # ausência na coleta não comprova remoção
     sb.remover_pendentes_exceto.assert_not_called()
 
 

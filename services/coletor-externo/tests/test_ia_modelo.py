@@ -172,10 +172,11 @@ def test_retry_com_esperas_proprias(monkeypatch):
 def test_retry_sem_esperas_mantem_o_backoff_padrao(monkeypatch):
     dormidas = []
     monkeypatch.setattr(IA.time, "sleep", dormidas.append)
+    monkeypatch.setattr(IA.random, "uniform", lambda minimo, maximo: 0.75)
     g = object.__new__(IA.Gemini)
     with pytest.raises(errors.ServerError):
         g._retry(lambda: (_ for _ in ()).throw(_erro(500, "INTERNAL")), tentativas=3)
-    assert dormidas == [5, 10]
+    assert dormidas == [5.75, 10.75]
 
 
 def test_prazo_proprio_por_cliente(monkeypatch):

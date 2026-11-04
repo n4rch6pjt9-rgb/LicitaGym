@@ -23,6 +23,8 @@ BEGIN
   RAISE EXCEPTION 'Histórico documental imutável: UPDATE/DELETE proibido';
 END;
 $$;
+REVOKE ALL ON FUNCTION public.bloquear_mutacao_licitacao_documento_versoes()
+FROM PUBLIC, anon, authenticated;
 DROP TRIGGER IF EXISTS trg_bloquear_mutacao_licitacao_documento_versoes ON public.licitacao_documento_versoes;
 CREATE TRIGGER trg_bloquear_mutacao_licitacao_documento_versoes
 BEFORE UPDATE OR DELETE ON public.licitacao_documento_versoes

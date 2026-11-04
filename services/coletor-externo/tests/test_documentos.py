@@ -100,7 +100,6 @@ def processar_versao_fake(
 
 
 
-import pytest
 
 
 @pytest.fixture(autouse=True)

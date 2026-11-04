@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import time
+import random
 
 log = logging.getLogger("ia")
 
@@ -173,8 +174,18 @@ class Gemini:
             except Exception as e:
                 if i == tentativas - 1 or not transitorio(e):
                     raise
-                espera = esperas[min(i, len(esperas) - 1)] if esperas else min(90, 5 * 2 ** i)
-                log.info("    %s; aguardando %ss (tentativa %s/%s)", tipo_falha(e), espera, i + 1, tentativas)
+                base_espera = min(90, 5 * 2 ** i)
+                espera = (
+                    esperas[min(i, len(esperas) - 1)]
+                    if esperas
+                    else base_espera + random.uniform(
+                        0.5, min(5.0, base_espera * 0.2)
+                    )
+                )
+                log.info(
+                    "    %s; aguardando %ss (tentativa %s/%s)",
+                    tipo_falha(e), espera, i + 1, tentativas
+                )
                 time.sleep(espera)
 
     def _config(self, temperatura: float | None = None, pensamento_minimo: bool = True, **kw):

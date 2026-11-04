@@ -64,3 +64,68 @@ def test_supabase_sem_upsert():
     )
 
     assert chamadas[0][1]["headers"]["x-upsert"] == "false"
+
+
+def test_supabase_key_already_exists_http_400():
+    class Sessao:
+        def post(self, url, **kwargs):
+            assert kwargs["headers"]["x-upsert"] == "false"
+            return SimpleNamespace(
+                status_code=400,
+                json=lambda: {
+                    "code": "KeyAlreadyExists",
+                    "message": "The resource already exists",
+                },
+            )
+
+    sb = SimpleNamespace(
+        s=Sessao(),
+        base="https://exemplo.invalid/storage/v1",
+        bucket="documentos",
+        h={"apikey": "TESTE"},
+    )
+
+    arm = SimpleNamespace(supabase=sb)
+
+    try:
+        salvar_imutavel(
+            arm, "teste/arquivo", b"segundo", "application/pdf"
+        )
+    except FileExistsError:
+        pass
+    else:
+        raise AssertionError(
+            "KeyAlreadyExists não foi reconhecido"
+        )
+
+
+def test_supabase_http_400_nao_conflito_continua_erro():
+    class Sessao:
+        def post(self, url, **kwargs):
+            return SimpleNamespace(
+                status_code=400,
+                json=lambda: {
+                    "code": "InvalidRequest",
+                    "message": "Invalid request",
+                },
+            )
+
+    sb = SimpleNamespace(
+        s=Sessao(),
+        base="https://exemplo.invalid/storage/v1",
+        bucket="documentos",
+        h={"apikey": "TESTE"},
+    )
+
+    arm = SimpleNamespace(supabase=sb)
+
+    try:
+        salvar_imutavel(
+            arm, "teste/arquivo", b"conteudo", "application/pdf"
+        )
+    except RuntimeError as exc:
+        assert "HTTP 400" in str(exc)
+    else:
+        raise AssertionError(
+            "HTTP 400 não relacionado a conflito foi aceito"
+        )

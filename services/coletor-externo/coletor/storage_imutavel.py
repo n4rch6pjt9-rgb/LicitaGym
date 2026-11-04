@@ -48,7 +48,7 @@ def salvar_imutavel(
         if resposta.status_code >= 300:
             # Conflito de objeto existente: recuperar somente após
             # verificar os bytes na camada de versionamento.
-            if resposta.status_code == 409:
+            if resposta.status_code in (400, 409):
                 try:
                     erro = resposta.json()
                 except (ValueError, TypeError):
@@ -58,7 +58,11 @@ def salvar_imutavel(
                     erro.get("code", "")
                 ) if isinstance(erro, dict) else ""
 
-                if codigo_erro in ("409", "ResourceAlreadyExists"):
+                if codigo_erro in (
+                    "409",
+                    "ResourceAlreadyExists",
+                    "KeyAlreadyExists",
+                ):
                     raise FileExistsError(
                         "Objeto já existe no Supabase Storage"
                     )

@@ -615,6 +615,26 @@ def test_disputa_aberta_2025_sem_trofeu_vence_classificada():
     assert res[0]["valor_total_homologado"] == 108
 
 
+ fix/url-edital-hosts-paradigma
+def test_link_mural_portal_oficial():
+    # PNCP não disponibiliza o link do mural da origem; o coletor precisa gravá-lo em raw
+    # para o buildEditalUrl (api-dashboard-oportunidades) derivar url_edital.
+    li = P.linha_licitacao(P.FONTES["sfiec"], DETALHE_7752, "forte", False)
+    link = li["raw"]["linkSistemaOrigem"]
+    assert link.startswith("https://portaldecompras.sfiec.org.br/portal/Mural.aspx?")
+    assert "nCdProcesso=7752" in link and "nCdModulo=59" in link
+    # módulo do detalhe, não o padrão (ex.: FIEMS/SFIEC usam 18)
+    d18 = {**DETALHE_7752, "nCdModulo": 18}
+    assert "nCdModulo=18" in P.link_mural(P.FONTES["sfiec"], d18)
+    assert P.link_mural(P.FONTES["sfiec"], {}) == ""
+
+
+def test_processo_para_linha_sestsenat_link():
+    from coletor import portal as PT
+    linha = PT.processo_para_linha({"nCdProcesso": 123, "sNrProcesso": "X"}, 59)
+    assert linha["raw"]["linkSistemaOrigem"].startswith(
+        "https://compras.sestsenat.org.br/portal/Mural.aspx?nCdModulo=59&nCdProcesso=123")
+
 # ---------------- paginação (regra de 03/10/2026) e CPF sem máscara ----------------
 
 @pytest.mark.parametrize("resp,trecho", [
@@ -940,3 +960,4 @@ def test_fiemg_nao_libera_nem_com_autorizado():
     """Revisão #304: WAF (FIEMG) não se libera pelo construtor, só as fontes da decisão de 05/10."""
     with pytest.raises(PermissionError):
         P.PortalParadigma(P.FONTES["fiemg"], autorizado=True, sessao=MagicMock())
+ main

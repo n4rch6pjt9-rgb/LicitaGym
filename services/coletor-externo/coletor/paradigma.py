@@ -533,6 +533,21 @@ class PortalParadigma:
 
 
 # ---------------- mapeamento para o schema (licitacoes_externas / licitacao_itens / licitacao_resultados) ----------------
+def link_mural(fonte: Fonte, d: dict) -> str:
+    """Link do portal oficial (mural da origem) para a linha de um processo Paradigma.
+
+    O PNCP não publica o mural dos portais SaaS do Sistema S; sem este link o dashboard
+    fica sem url_edital (buildEditalUrl só conhece pncp/comprasgov e links em raw).
+    Formato igual ao que o navegador usa no Mural.aspx (ex.: e-lic.sc.gov.br), validado
+    no HAR SFIEC de 26/09/2026. `nCdModulo` é o do detalhe (nem todo tenant usa 59).
+    """
+    mod = modulo_de(d)
+    pid = d.get("nCdProcesso")
+    if not pid:
+        return ""
+    return f"{fonte.base}/Mural.aspx?nCdModulo={mod}&nCdProcesso={pid}&tmpTipoMuralProcesso=0&nNmTela=E"
+
+
 def linha_licitacao(fonte: Fonte, d: dict, categoria: str | None, borracha: bool, agora: datetime | None = None,
                     listagem: dict | None = None, origem: str = "manual") -> dict:
     d = limpar(d)
@@ -544,7 +559,15 @@ def linha_licitacao(fonte: Fonte, d: dict, categoria: str | None, borracha: bool
     fim = parse_data(d.get("tDtFinal"))
     prio, _ = prioridade_da_compra(st, fim, agora)
     modalidade = (d.get("sNmModalidadeTipo") or d.get("sNmModalidade") or "").strip() or None
+ fix/url-edital-hosts-paradigma
+    # Portal oficial: o PNCP não disponibiliza o link do mural da origem (ex.: https://e-lic.sc.gov.br/portal/Mural.aspx).
+    # Guardamos em raw.linkSistemaOrigem para o buildEditalUrl do api-dashboard-oportunidades montar url_edital;
+    # é chave nova em `raw` (coluna jsonb) — a coluna de mesmo nome não existe em licitacoes_externas.
+    d = {**d, "linkSistemaOrigem": link_mural(fonte, d)}
+    return {
+
     row = {
+ main
         "fonte": fonte.slug,
         "modulo": d.get("nCdModulo") or 59,
         "id_externo": d["nCdProcesso"],

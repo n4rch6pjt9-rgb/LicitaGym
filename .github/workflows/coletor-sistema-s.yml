@@ -79,9 +79,8 @@ jobs:
       FONTE: ${{ matrix.fonte }}
       PAGINAS: ${{ github.event.inputs.paginas || '3' }}
       DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
-      DOCUMENTOS_HABILITADOS: ${{ github.event_name == 'workflow_dispatch' && inputs.documentos == true }}
-      ORIGEM: ${{ github.event_name == 'schedule' && 'cron' || 'manual' }}
-    steps:
+      DOCUMENTOS_HABILITADOS: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.documentos == true) }}
+      ORIGEM: ${{ github.event_name == 'schedule' && 'cron' || 'manual' }}    steps:
       - name: Checkout (git, sem actions de terceiros)
         run: |
           git init -q .

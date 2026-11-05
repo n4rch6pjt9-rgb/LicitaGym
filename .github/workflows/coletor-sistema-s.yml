@@ -20,6 +20,11 @@ on:
         description: "Teto opcional de páginas de até 100 itens por termo (padrão: 3)"
         default: "3"
         required: false
+      documentos:
+        description: "Habilitar coleta documental manual"
+        type: boolean
+        default: false
+        required: false
       dry_run:
         description: "true = só consulta, não grava"
         default: "false"
@@ -74,6 +79,7 @@ jobs:
       FONTE: ${{ matrix.fonte }}
       PAGINAS: ${{ github.event.inputs.paginas || '3' }}
       DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+      DOCUMENTOS_HABILITADOS: ${{ github.event_name == 'workflow_dispatch' && inputs.documentos == true }}
       ORIGEM: ${{ github.event_name == 'schedule' && 'cron' || 'manual' }}
     steps:
       - name: Checkout (git, sem actions de terceiros)
@@ -106,12 +112,19 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_STORAGE_BUCKET: ${{ secrets.SUPABASE_STORAGE_BUCKET }}
         run: |
-          ARGS=(--fonte "${FONTE}" --origem "${ORIGEM}" --sem-documentos)
+          ARGS=(--fonte "${FONTE}" --origem "${ORIGEM}")
+          if [ "${DOCUMENTOS_HABILITADOS}" != "true" ]; then
+            ARGS+=(--sem-documentos)
+          fi
           if [ -n "${PAGINAS}" ]; then
             ARGS+=(--paginas "${PAGINAS}")
           fi
           if [ "${DRY_RUN}" = "true" ]; then
             ARGS+=(--dry-run)
+          fi
+          if [ "${DOCUMENTOS_HABILITADOS}" = "true" ] && [ -z "${SUPABASE_STORAGE_BUCKET:-}" ]; then
+            echo "SUPABASE_STORAGE_BUCKET ausente."; exit 1
           fi
           python3 -m coletor.paradigma "${ARGS[@]}"

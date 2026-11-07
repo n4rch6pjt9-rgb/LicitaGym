@@ -6,6 +6,11 @@
 //
 // Uso:
 //   deno run --allow-read scripts/import-spec.ts [specs/nexor_spec.xlsx]
+//   (com um package.json acima do repositório, prefixe DENO_NO_PACKAGE_JSON=1)
+//
+// Dependência: npm:xlsx@0.18.5 é a última versão do SheetJS no npm e tem CVE-2023-30533 e CVE-2024-22363. Risco aceito
+// enquanto a entrada for só a planilha versionada no repositório (revisada em PR); nunca importar este arquivo em
+// supabase/functions/**.
 //
 // Fase 0 (PR 1): feriados nacionais (Documentacao_Edital, M34:O52) e regimes (Padrao_Lei, seção 3).
 // Etapas, modelos de tarefa e blocos legais entram no PR seguinte, depois das decisões listadas em
@@ -31,7 +36,18 @@ function texto(v: unknown): string {
   return typeof v === "string" ? v.trim() : v === null || v === undefined ? "" : String(v).trim();
 }
 
-function dataIso(v: unknown): string {
+function semVazioNemRepetido<T>(lista: T[], chave: (x: T) => string, nome: string): T[] {
+  if (lista.length === 0) throw new Error(`nenhum registro de ${nome} na planilha`);
+  const vistas = new Set<string>();
+  for (const x of lista) {
+    const k = chave(x);
+    if (vistas.has(k)) throw new Error(`${nome}: chave repetida "${k}"`);
+    vistas.add(k);
+  }
+  return lista;
+}
+
+export function dataIso(v: unknown): string {
   // Serial do Excel (sistema 1900, válido a partir de 01/03/1900): dias desde 30/12/1899. Data sem hora.
   if (typeof v !== "number" || !Number.isInteger(v) || v < 61) {
     throw new Error(`data inválida na planilha: ${JSON.stringify(v)}`);
@@ -41,6 +57,7 @@ function dataIso(v: unknown): string {
 
 /** Tabela "Feriados nacionais (lei federal)" da aba Documentacao_Edital, colunas M:O. */
 export function lerFeriados(wb: XLSX.WorkBook): Feriado[] {
+  if (wb.Workbook?.WBProps?.date1904) throw new Error("planilha no sistema de datas 1904: converta para 1900");
   const ls = linhas(wb, "Documentacao_Edital");
   const col = 12; // M
   const titulo = ls.findIndex((l) => texto(l[col]).startsWith("Feriados nacionais"));
@@ -58,7 +75,7 @@ export function lerFeriados(wb: XLSX.WorkBook): Feriado[] {
     if (!nome || !fundamento) throw new Error(`feriado sem nome ou base legal na linha ${i + 1}`);
     out.push({ data: dataIso(l[col]), nome, fundamento });
   }
-  return out;
+  return semVazioNemRepetido(out, (x) => x.data, "feriados");
 }
 
 /** Seção "3. REGIMES" da aba Padrao_Lei. */
@@ -67,7 +84,7 @@ export function lerRegimes(wb: XLSX.WorkBook): Regime[] {
   const titulo = ls.findIndex((l) => texto(l[0]).startsWith("3. REGIMES"));
   if (titulo < 0) throw new Error('seção "3. REGIMES" não encontrada em Padrao_Lei');
   const cab = ls[titulo + 1] ?? [];
-  if (texto(cab[0]) !== "id" || texto(cab[1]) !== "norma") {
+  if (texto(cab[0]) !== "id" || texto(cab[1]) !== "norma" || texto(cab[2]) !== "situação da pesquisa") {
     throw new Error("cabeçalho de regimes mudou (esperado: id | norma | situação da pesquisa)");
   }
   const out: Regime[] = [];
@@ -75,9 +92,11 @@ export function lerRegimes(wb: XLSX.WorkBook): Regime[] {
     const id = texto(ls[i][0]);
     if (!id) break;
     if (!/^[a-z0-9_]+$/.test(id)) throw new Error(`id de regime inválido: "${id}"`);
-    out.push({ id, norma: texto(ls[i][1]), situacao_pesquisa: texto(ls[i][2]) });
+    const norma = texto(ls[i][1]);
+    if (!norma) throw new Error(`regime "${id}" sem norma na linha ${i + 1}`);
+    out.push({ id, norma, situacao_pesquisa: texto(ls[i][2]) });
   }
-  return out;
+  return semVazioNemRepetido(out, (x) => x.id, "regimes");
 }
 
 function lit(s: string): string {
@@ -100,7 +119,7 @@ export function gerarSeedSql(feriados: Feriado[], regimes: Regime[]): string {
   ].join("\n");
 }
 
-export function lerPlanilha(caminho: string): XLSX.WorkBook {
+export function lerPlanilha(caminho: string | URL): XLSX.WorkBook {
   return XLSX.read(Deno.readFileSync(caminho), { type: "array" });
 }
 

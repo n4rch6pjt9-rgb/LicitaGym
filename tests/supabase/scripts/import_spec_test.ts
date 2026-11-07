@@ -1,5 +1,7 @@
 import { assert, assertEquals, assertThrows } from "jsr:@std/assert@1";
+import * as XLSX from "npm:xlsx@0.18.5";
 import {
+  dataIso,
   gerarSeedSql,
   lerFeriados,
   lerPlanilha,
@@ -8,8 +10,11 @@ import {
   MARCA_INICIO,
 } from "../../../scripts/import-spec.ts";
 
-const PLANILHA = "./specs/nexor_spec.xlsx";
-const MIGRATION = "./supabase/migrations/20261107180000_nexor_feriados_regimes.sql";
+const PLANILHA = new URL("../../../specs/nexor_spec.xlsx", import.meta.url);
+const MIGRATION = new URL(
+  "../../../supabase/migrations/20261107180000_nexor_feriados_regimes.sql",
+  import.meta.url,
+);
 
 const wb = lerPlanilha(PLANILHA);
 
@@ -61,4 +66,44 @@ Deno.test("import-spec: aba ausente dá erro, nunca lista vazia", () => {
   const vazio = { SheetNames: [], Sheets: {} } as unknown as Parameters<typeof lerFeriados>[0];
   assertThrows(() => lerFeriados(vazio), Error, "Documentacao_Edital");
   assertThrows(() => lerRegimes(vazio), Error, "Padrao_Lei");
+});
+
+function planilhaFeriados(linhas: unknown[][]): XLSX.WorkBook {
+  const wb = XLSX.utils.book_new();
+  const aoa: unknown[][] = [[], ...linhas.map((l) => [...Array(12).fill(null), ...l])];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), "Documentacao_Edital");
+  return wb;
+}
+const CAB = ["Feriados nacionais (lei federal)", null, null];
+const COLS = ["data", "feriado", "base legal"];
+
+Deno.test("import-spec: data como texto ou serial fracionado dá erro", () => {
+  assertThrows(() => dataIso("01/01/2026"), Error, "data inválida");
+  assertThrows(() => dataIso(46023.5), Error, "data inválida");
+  assertEquals(dataIso(46023), "2026-01-01");
+});
+
+Deno.test("import-spec: cabeçalho de feriados mudado dá erro", () => {
+  const wb = planilhaFeriados([CAB, ["dia", "feriado", "base legal"], [46023, "Ano Novo", "Lei 662/1949"]]);
+  assertThrows(() => lerFeriados(wb), Error, "cabeçalho");
+});
+
+Deno.test("import-spec: feriado sem base legal dá erro", () => {
+  const wb = planilhaFeriados([CAB, COLS, [46023, "Ano Novo", null]]);
+  assertThrows(() => lerFeriados(wb), Error, "sem nome ou base legal");
+});
+
+Deno.test("import-spec: tabela de feriados vazia dá erro, nunca seed vazio", () => {
+  assertThrows(() => lerFeriados(planilhaFeriados([CAB, COLS])), Error, "nenhum registro");
+});
+
+Deno.test("import-spec: data repetida dá erro antes do banco", () => {
+  const wb = planilhaFeriados([CAB, COLS, [46023, "A", "Lei 1/2000"], [46023, "B", "Lei 2/2000"]]);
+  assertThrows(() => lerFeriados(wb), Error, "repetida");
+});
+
+Deno.test("import-spec: planilha no sistema 1904 dá erro", () => {
+  const wb = planilhaFeriados([CAB, COLS, [46023, "A", "Lei 1/2000"]]);
+  wb.Workbook = { WBProps: { date1904: true } };
+  assertThrows(() => lerFeriados(wb), Error, "1904");
 });

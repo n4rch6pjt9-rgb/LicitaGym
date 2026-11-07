@@ -9,7 +9,8 @@
 --   public.regimes             regimes jurídicos citados pela planilha (id, norma, situação da pesquisa).
 --
 -- Quem lê e escreve: escrita só por migration (bloco gerado por scripts/import-spec.ts a partir de
--- specs/nexor_spec.xlsx). Leitura só service_role (Edge Functions). Cliente não lê direto.
+-- specs/nexor_spec.xlsx). Leitura só service_role (Edge Functions), sem escrita. Cliente não lê direto.
+-- Cobertura: só 2026 e 2027. O ano seguinte entra por nova migration antes de 01/2028 (spec 0041).
 --
 -- Verificar: supabase/tests/nexor_feriados_regimes_check.sql; tests/supabase/scripts/import_spec_test.ts confere que o
 -- bloco gerado abaixo é igual ao que o script produz hoje.
@@ -38,10 +39,11 @@ comment on table public.regimes is
 alter table public.feriados_nacionais enable row level security;
 alter table public.regimes            enable row level security;
 
-revoke all on table public.feriados_nacionais from anon, authenticated, public;
-revoke all on table public.regimes            from anon, authenticated, public;
-grant select, insert, update, delete on table public.feriados_nacionais to service_role;
-grant select, insert, update, delete on table public.regimes            to service_role;
+-- Escrita só por migration (dono da tabela). service_role só lê: um bug numa Edge Function não pode apagar feriado.
+revoke all on table public.feriados_nacionais from anon, authenticated, service_role, public;
+revoke all on table public.regimes            from anon, authenticated, service_role, public;
+grant select on table public.feriados_nacionais to service_role;
+grant select on table public.regimes            to service_role;
 
 -- >>> gerado por scripts/import-spec.ts: não editar à mão
 insert into public.feriados_nacionais (data, nome, fundamento) values

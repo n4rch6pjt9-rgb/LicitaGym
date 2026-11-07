@@ -52,7 +52,7 @@ Itens 1 a 10 do template. Arquivos desta spec:
 
 | ID | Contrato | Dado / Quando / Então | Teste que prova |
 |---|---|---|---|
-| CA-1 | K-1 | **Dado** a migration aplicada, **quando** se consulta 2026, **então** existem as datas nacionais com fundamento legal, entre elas 12/10/2026, 25/12/2026 e 01/01/2027, e `anon`/`authenticated` não leem a tabela | SQL `supabase/tests/feriados_nacionais_check.sql` |
+| CA-1 | K-1 | **Dado** a migration aplicada, **quando** se consulta 2026, **então** existem as datas nacionais com fundamento legal, entre elas 12/10/2026, 25/12/2026 e 01/01/2027, e `anon`/`authenticated` não leem a tabela | SQL `supabase/tests/nexor_feriados_regimes_check.sql` + Deno `tests/supabase/scripts/import_spec_test.ts` (PR #465) |
 | CA-2 | K-2 | **Dado** abertura 14/10/2026 08:30, **quando** se somam 3 dias úteis antes, **então** o resultado é 08/10/2026; com lista de feriados vazia para 2026 o teste espera erro, não 09/10 | Deno `tests/supabase/functions/prazos_dias_uteis_test.ts` |
 | CA-3 | K-3 | **Regressão:** **dado** abertura 15/10/2026, **quando** o agente de edital roda, **então** `data_limite = 2026-10-09` (não `2026-10-12`) e `feriados_considerados = true` | Deno `agentes_edital_test.ts` (troca a asserção atual) |
 | CA-4 | K-5 | **Dado** entrega 01/12/2026, definitivo 7 du, liquidação 10 du e pagamento 10 du, **quando** se simula, **então** definitivo 10/12/2026, fim da liquidação 24/12/2026, limite de pagamento 11/01/2027 e 27 dias úteis; com prorrogações máximas, 44 dias úteis | Deno `tests/supabase/functions/prazos_fluxo_pagamento_test.ts` |
@@ -80,7 +80,7 @@ Itens 1 a 10 do template. Arquivos desta spec:
 
 ## Impacto em dados
 
-- **Migration:** sim, `supabase/migrations/<timestamp>_feriados_nacionais.sql` (aditiva, idempotente, `revoke all` + grant mínimo, RLS ligada). Talvez outra para K-4.
+- **Migration:** sim, `supabase/migrations/20261107180000_nexor_feriados_regimes.sql` (PR #465: aditiva, idempotente, RLS ligada, `service_role` só lê; leva também a tabela `regimes`, ver `specs/nexor-fase0-mapa.md`). Cobertura 2026–2027: o ano seguinte entra por nova migration antes de 01/2028. Talvez outra para K-4.
 - **Tabelas/views/funções tocadas:** `feriados_nacionais` (nova; escrita só por migration, leitura pelas Edge Functions); `tarefas_equipe.prazo_em`/`prazo_situacao` (K-4); `agente_execucoes` (achados novos).
 - **ACL/RLS:** tabela nova sem acesso a `anon`/`authenticated`.
 - **Backfill/reprocessamento:** a decidir (pergunta 5). Se houver, contagem antes/depois no PR.
@@ -90,7 +90,12 @@ Itens 1 a 10 do template. Arquivos desta spec:
 
 ## Decisões do Marcelo
 
-- (nenhuma ainda)
+- 07/11/2026 (prompt Nexor v0.2, "Já decidido"):
+  - feriados = os 9 nacionais de lei federal; sem calendário do ano → erro (pergunta 3 respondida);
+  - `hora_limite` só quando o edital fixar (pergunta 2 respondida);
+  - recálculo só de oportunidades com abertura futura, mantendo a versão antiga (pergunta 5 respondida);
+  - pós-vitória = módulo "Execução e contrato" (pergunta 6 respondida).
+- 07/11/2026: LG-T05 = `14133-F01-T04` (pergunta 1, em parte; demais LG-T em `specs/nexor-de-para-tarefas.md`).
 
 ## Perguntas em aberto
 

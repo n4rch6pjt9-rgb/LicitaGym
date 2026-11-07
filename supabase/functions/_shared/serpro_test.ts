@@ -199,3 +199,39 @@ Deno.test("Serpro: converterDataHoraFonte", () => {
   assertEquals(converterDataHoraFonte("ontem"), null);
   assertEquals(converterDataHoraFonte(null), null);
 });
+
+Deno.test("Serpro: timeout ou falha de rede vira ErroIntegraCompras sem status", async () => {
+  const f = comFetch(() => {
+    throw new DOMException("tempo esgotado", "TimeoutError");
+  });
+  try {
+    const e = await assertRejects(() => consultarChatSerpro(CHAVE), ErroIntegraCompras, "TimeoutError");
+    assertEquals(e.status, null);
+  } finally {
+    f.restaurar();
+  }
+});
+
+Deno.test("Serpro: chaveMensagem fora do formato uuid é erro", async () => {
+  const ruim = JSON.stringify([{ chaveMensagem: "abc", texto: "x", dataHora: "2026-02-05 16:15:00.144" }]);
+  const f = comFetch(() => new Response(ruim, { status: 200 }));
+  try {
+    await assertRejects(() => consultarChatSerpro(CHAVE), ErroIntegraCompras, "fora do formato documentado");
+  } finally {
+    f.restaurar();
+  }
+});
+
+Deno.test("Serpro: categoria e tipoRemetente ausentes ficam nulos, não viram texto vazio", async () => {
+  const semCodigos = JSON.stringify([
+    { chaveMensagem: "3e6a53fa-6470-4626-ab8a-dfc29c221328", texto: "x", dataHora: "2026-02-05 16:15:00.144" },
+  ]);
+  const f = comFetch(() => new Response(semCodigos, { status: 200 }));
+  try {
+    const r = await consultarChatSerpro(CHAVE);
+    assertEquals(r.mensagens[0].categoria, null);
+    assertEquals(r.mensagens[0].tipoRemetente, null);
+  } finally {
+    f.restaurar();
+  }
+});

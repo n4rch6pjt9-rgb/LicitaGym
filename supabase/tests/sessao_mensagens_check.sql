@@ -3,7 +3,9 @@
 --   CA-1  anon ou authenticated (inclui PUBLIC) tiverem qualquer privilégio em public.sessao_mensagens ou em
 --         private.integra_compras_run, se a RLS estiver desligada, se houver policy, ou se service_role perder acesso;
 --   K-1   public.disputa_mensagens ainda existir, ou chave_mensagem repetida entrar duas vezes;
---   K-1   chave_compra fora de 17 dígitos ou tipo fora de ('mensagem','diligencia') entrar.
+--   K-1   chave_compra fora de 17 dígitos, tipo fora de ('mensagem','diligencia') ou fonte desconhecida entrar,
+--         ou categoria/tipo_remetente nulos (ausentes na fonte) forem recusados;
+--   K-2   origem fora de ('cron','usuario') entrar.
 -- Fixtures com a compra de demonstração do Serpro (99998803000012026); tudo termina em rollback.
 
 begin;
@@ -41,8 +43,9 @@ begin
       v_falhas := v_falhas || format('%s tem %s em %s', v_r.papel, v_r.priv, v_tab);
     end loop;
     if not has_table_privilege('service_role', v_tab, 'SELECT')
-       or not has_table_privilege('service_role', v_tab, 'INSERT') then
-      v_falhas := v_falhas || format('service_role sem SELECT/INSERT em %s', v_tab);
+       or not has_table_privilege('service_role', v_tab, 'INSERT')
+       or not has_table_privilege('service_role', v_tab, 'UPDATE') then
+      v_falhas := v_falhas || format('service_role sem SELECT/INSERT/UPDATE em %s', v_tab);
     end if;
   end loop;
 
@@ -77,6 +80,25 @@ begin
       (chave_compra, chave_mensagem, tipo, categoria, tipo_remetente, texto, data_hora, data_hora_fonte)
     values ('99998803000012026', gen_random_uuid(), 'aviso', '2', '0', 'x', now(), 'x');
     v_falhas := v_falhas || 'tipo fora de mensagem/diligencia entrou'::text;
+  exception when check_violation then null;
+  end;
+
+  begin
+    insert into public.sessao_mensagens
+      (chave_compra, chave_mensagem, tipo, categoria, tipo_remetente, texto, data_hora, data_hora_fonte, fonte)
+    values ('99998803000012026', gen_random_uuid(), 'mensagem', '2', '0', 'x', now(), 'x', 'outra');
+    v_falhas := v_falhas || 'fonte fora de integra_compras/extensao entrou'::text;
+  exception when check_violation then null;
+  end;
+
+  -- Ausência na fonte fica nula (não vira '').
+  insert into public.sessao_mensagens
+    (chave_compra, chave_mensagem, tipo, categoria, tipo_remetente, texto, data_hora, data_hora_fonte)
+  values ('99998803000012026', gen_random_uuid(), 'mensagem', null, null, 'x', now(), 'x');
+
+  begin
+    insert into private.integra_compras_run (chave_compra, origem) values ('99998803000012026', 'manual');
+    v_falhas := v_falhas || 'origem fora de cron/usuario entrou'::text;
   exception when check_violation then null;
   end;
 

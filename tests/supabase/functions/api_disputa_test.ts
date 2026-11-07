@@ -495,6 +495,51 @@ Deno.test("CA-5: 502 registra erro, não apaga nem inventa mensagem e responde 5
   assertEquals(typeof db.runs![0].terminado_em, "string");
 });
 
+Deno.test("api-disputa: POST /sync-chat - falha sem status (timeout) fecha o registro com erro", async () => {
+  const db = dbDemo();
+  const res = await handleRequest(reqSync(), {
+    getUser: () => Promise.resolve(USUARIO_TESTE),
+    // deno-lint-ignore no-explicit-any
+    getSupabase: () => createMockSupabase(db) as any,
+    consultarChat: () => Promise.reject(new ErroIntegraCompras("Falha ao consultar o Integra Compras (TimeoutError).", null)),
+    consultarDiligencias: vazio404,
+  });
+  assertEquals(res.status, 502);
+  assertEquals(db.runs![0].chamadas, { "sem_resposta": 1 });
+  assertEquals(typeof db.runs![0].erro, "string");
+  assertEquals(typeof db.runs![0].terminado_em, "string");
+});
+
+Deno.test("api-disputa: POST /sync-chat - consulta manual repetida em menos de 5 min recebe 429 e não chama a API", async () => {
+  const db = dbDemo({ runs: [{ id: 1, chave_compra: CHAVE_DEMO, origem: "usuario", iniciado_em: new Date().toISOString() }] });
+  let chamou = false;
+  const res = await handleRequest(reqSync(), {
+    getUser: () => Promise.resolve(USUARIO_TESTE),
+    // deno-lint-ignore no-explicit-any
+    getSupabase: () => createMockSupabase(db) as any,
+    consultarChat: () => {
+      chamou = true;
+      return vazio404();
+    },
+    consultarDiligencias: vazio404,
+  });
+  assertEquals(res.status, 429);
+  assertEquals(chamou, false);
+  assertEquals(db.runs!.length, 1);
+});
+
+Deno.test("api-disputa: POST /sync-chat - corpo que não é JSON recebe 400", async () => {
+  const res = await handleRequest(
+    new Request("http://localhost/api-disputa/sync-chat", { method: "POST", body: "{" }),
+    {
+      getUser: () => Promise.resolve(USUARIO_TESTE),
+      // deno-lint-ignore no-explicit-any
+      getSupabase: () => createMockSupabase(dbDemo()) as any,
+    },
+  );
+  assertEquals(res.status, 400);
+});
+
 Deno.test("api-disputa: POST /sync-chat - não mascara erro se upsert falhar e retorna 500 higienizado", async () => {
   const db = dbDemo({ failUpsert: true });
   const res = await handleRequest(reqSync(), {

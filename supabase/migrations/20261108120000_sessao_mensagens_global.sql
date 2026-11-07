@@ -42,8 +42,8 @@ create table if not exists public.sessao_mensagens (
   identificador_item text,
   chave_mensagem uuid not null,
   tipo text not null,
-  categoria text not null,
-  tipo_remetente text not null,
+  categoria text,
+  tipo_remetente text,
   texto text,
   data_hora timestamptz not null,
   data_hora_fonte text not null,
@@ -58,14 +58,15 @@ create table if not exists public.sessao_mensagens (
 
 comment on table public.sessao_mensagens is
   'Spec 0039 K-1. Chat e diligências da sessão do Compras.gov.br, como o Integra Compras entrega. Dado global '
-  '(sem tenant). categoria e tipo_remetente guardam o código da fonte, sem tradução. texto nulo = apagado pela retenção.';
+  '(sem tenant). categoria e tipo_remetente guardam o código da fonte, sem tradução (nulo = a fonte não informou). '
+  'texto nulo = apagado pela retenção.';
 
 create index if not exists sessao_mensagens_compra_idx
   on public.sessao_mensagens (chave_compra, data_hora);
 
 alter table public.sessao_mensagens enable row level security;
 revoke all on table public.sessao_mensagens from PUBLIC, anon, authenticated;
-grant select, insert, update, delete on table public.sessao_mensagens to service_role;
+grant select, insert, update on table public.sessao_mensagens to service_role;
 
 create table if not exists private.integra_compras_run (
   id bigint generated always as identity primary key,

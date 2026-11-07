@@ -19,6 +19,9 @@ import {
 import { pisoTenantCentavos, unidadeNorm } from "../_shared/agentes/preco.ts";
 import { recomendar, type RecomendacaoLance } from "../_shared/recomendacao.ts";
 
+/** Intervalo mínimo entre consultas manuais da mesma compra (cada chamada ao Integra Compras é cobrada). */
+const INTERVALO_MINIMO_USUARIO_MS = 5 * 60_000;
+
 export interface ApiDisputaContext {
   getSupabase?: () => SupabaseClient;
   getUser?: (req: Request) => Promise<AuthenticatedUser | null>;
@@ -356,7 +359,8 @@ export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Prom
           "chave_mensagem, tipo, identificador_item, categoria, tipo_remetente, texto, data_hora, data_hora_fonte, fonte, coletado_em",
         )
         .eq("chave_compra", chaveCompra)
-        .order("data_hora", { ascending: true });
+        .order("data_hora", { ascending: true })
+        .order("id", { ascending: true });
       if (error) throw error;
 
       const { data: ultimaRun, error: erroRun } = await supabase
@@ -383,7 +387,12 @@ export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Prom
 
     // 4. POST /api-disputa/sync-chat (consulta o Integra Compras sob demanda ou por cron)
     if (req.method === "POST" && caminho === "sync-chat") {
-      const body = await req.json();
+      let body: Record<string, unknown>;
+      try {
+        body = await req.json();
+      } catch {
+        return jsonResponse({ erro: "Corpo JSON inválido." }, 400);
+      }
       const { licitacao_id, chave_compra } = body;
 
       if (!licitacao_id) {
@@ -454,6 +463,26 @@ export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Prom
 
       if (typeof chave_compra === "string" && chave_compra.trim() && chave_compra.trim() !== chaveOficial) {
         return jsonResponse({ erro: "Chave de compra não corresponde ao registro oficial da licitação." }, 400);
+      }
+
+      // Cada consulta é cobrada: pedido manual repetido na mesma compra espera o intervalo mínimo.
+      if (!isCron) {
+        const { data: recente, error: erroRecente } = await supabase
+          .schema("private")
+          .from("integra_compras_run")
+          .select("iniciado_em")
+          .eq("chave_compra", chaveOficial)
+          .order("iniciado_em", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (erroRecente) throw erroRecente;
+        const ultima = recente?.iniciado_em ? new Date(String(recente.iniciado_em)).getTime() : NaN;
+        if (Number.isFinite(ultima) && Date.now() - ultima < INTERVALO_MINIMO_USUARIO_MS) {
+          return jsonResponse({
+            erro: "Esta compra foi consultada há pouco. Aguarde alguns minutos para consultar de novo.",
+            ultima_consulta: recente!.iniciado_em,
+          }, 429);
+        }
       }
 
       // K-2: registro da execução (chamadas por código HTTP; 200, 206 e 404 são cobrados).

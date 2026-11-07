@@ -18,10 +18,10 @@ export interface MensagemIntegra {
   /** null = mensagem da compra (sem item). */
   identificadorItem: string | null;
   texto: string;
-  /** Código da fonte (ex.: "2", "11"), sem tradução. */
-  categoria: string;
-  /** Código da fonte (ex.: "0"), sem tradução. */
-  tipoRemetente: string;
+  /** Código da fonte (ex.: "2", "11"), sem tradução; null = a fonte não informou. */
+  categoria: string | null;
+  /** Código da fonte (ex.: "0"), sem tradução; null = a fonte não informou. */
+  tipoRemetente: string | null;
   /** Instante em ISO 8601 (UTC). */
   dataHora: string;
   /** dataHora exatamente como veio da fonte. */
@@ -139,6 +139,21 @@ async function consultar(
   chaveCompra: string,
   tipo: MensagemIntegra["tipo"],
 ): Promise<ResultadoConsultaIntegra> {
+  try {
+    return await consultarSemEmbrulho(chaveCompra, tipo);
+  } catch (e) {
+    if (e instanceof ErroIntegraCompras) throw e;
+    // Timeout, rede, JSON inválido ou credencial ausente: o chamador sempre recebe ErroIntegraCompras,
+    // para fechar o registro da execução com erro (nunca deixar a consulta como se tivesse dado certo).
+    const nome = e instanceof Error ? e.name : "Erro";
+    throw new ErroIntegraCompras(`Falha ao consultar o Integra Compras (${nome}).`, null);
+  }
+}
+
+async function consultarSemEmbrulho(
+  chaveCompra: string,
+  tipo: MensagemIntegra["tipo"],
+): Promise<ResultadoConsultaIntegra> {
   if (!CHAVE_COMPRA_RE.test(chaveCompra)) {
     throw new ErroIntegraCompras("chaveCompra deve ter 17 dígitos.", null);
   }
@@ -181,7 +196,7 @@ async function consultar(
 
   if (res.status !== 200 && res.status !== 206) {
     await res.body?.cancel();
-    throw new ErroIntegraCompras(`Integra Compras respondeu HTTP ${res.status} em ${caminho}.`, res.status);
+    throw new ErroIntegraCompras(`Integra Compras respondeu HTTP ${res.status}.`, res.status);
   }
 
   const corpo: unknown = await res.json();
@@ -197,6 +212,7 @@ function esperaMs(retryAfter: string | null, tentativa: number): number {
   return Math.min(2 ** tentativa, RETRY_AFTER_MAX_S) * 1000;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DATA_HORA_FONTE_RE = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$/;
 
 /**
@@ -241,9 +257,9 @@ function normalizarMensagem(bruto: unknown, tipo: MensagemIntegra["tipo"], indic
   const m = bruto as Record<string, unknown>;
   const chaveMensagem = textoOuNull(m.chaveMensagem);
   const dataHora = converterDataHoraFonte(m.dataHora);
-  if (!chaveMensagem || !dataHora || typeof m.texto !== "string") {
+  if (!chaveMensagem || !UUID_RE.test(chaveMensagem) || !dataHora || typeof m.texto !== "string") {
     throw new ErroIntegraCompras(
-      `Mensagem ${indice} do Integra Compras fora do formato documentado (chaveMensagem, texto e dataHora são obrigatórios).`,
+      `Mensagem ${indice} do Integra Compras fora do formato documentado (chaveMensagem uuid, texto e dataHora são obrigatórios).`,
       null,
     );
   }
@@ -253,8 +269,8 @@ function normalizarMensagem(bruto: unknown, tipo: MensagemIntegra["tipo"], indic
     chaveMensagem,
     identificadorItem: textoOuNull(m.identificadorItem),
     texto: m.texto,
-    categoria: textoOuNull(m.categoria) ?? "",
-    tipoRemetente: textoOuNull(m.tipoRemetente) ?? "",
+    categoria: textoOuNull(m.categoria),
+    tipoRemetente: textoOuNull(m.tipoRemetente),
     dataHora,
     dataHoraFonte: String(m.dataHora),
     chaveCompra: ck

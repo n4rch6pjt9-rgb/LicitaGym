@@ -23,7 +23,7 @@ create table if not exists public.feriados_nacionais (
   nome        text not null check (btrim(nome) <> ''),
   fundamento  text not null check (btrim(fundamento) <> ''),
   abrangencia text not null default 'nacional' check (abrangencia = 'nacional'),
-  fonte       text not null default 'specs/nexor_spec.xlsx#Documentacao_Edital!M34:O52'
+  fonte       text not null default 'specs/nexor_spec.xlsx#Documentacao_Edital'
 );
 comment on table public.feriados_nacionais is
   'Feriados nacionais de lei federal (fundamento = lei). Base da contagem de dias úteis; ano ausente = erro, nunca contagem sem feriado.';
@@ -31,8 +31,11 @@ comment on table public.feriados_nacionais is
 create table if not exists public.regimes (
   id                text primary key check (id ~ '^[a-z0-9_]+$'),
   norma             text not null check (btrim(norma) <> ''),
-  situacao_pesquisa text not null
+  situacao_pesquisa text not null check (btrim(situacao_pesquisa) <> '')
 );
+comment on column public.feriados_nacionais.fundamento is
+  'Lei federal que institui o feriado (Lei 662/1949 na redação da Lei 10.607/2002; Lei 6.802/1980; Lei 14.759/2023).';
+comment on column public.feriados_nacionais.fonte is 'Planilha e aba de onde o seed foi gerado (scripts/import-spec.ts).';
 comment on table public.regimes is
   'Regimes jurídicos do certame (Padrao_Lei, seção 3). situacao_pesquisa registra o que não foi confirmado na fonte.';
 

@@ -12,9 +12,11 @@ begin
     if not (select relrowsecurity from pg_class where oid = ('public.' || t)::regclass) then
       raise exception 'CHECK FALHOU: RLS desligada em public.%', t;
     end if;
-    foreach r in array array['anon', 'authenticated'] loop
-      if has_table_privilege(r, 'public.' || t, 'SELECT') or has_table_privilege(r, 'public.' || t, 'INSERT')
-         or has_table_privilege(r, 'public.' || t, 'UPDATE') or has_table_privilege(r, 'public.' || t, 'DELETE') then
+    if exists (select 1 from pg_policies where schemaname = 'public' and tablename = t) then
+      raise exception 'CHECK FALHOU: public.% tem policy (esperado: nenhuma, leitura só via service_role)', t;
+    end if;
+    foreach r in array array['anon', 'authenticated', 'public'] loop
+      if has_table_privilege(r, 'public.' || t, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER') then
         raise exception 'CHECK FALHOU: % tem privilégio em public.%', r, t;
       end if;
     end loop;
@@ -32,6 +34,9 @@ begin
 
   select count(*) into n from public.feriados_nacionais where extract(year from data) = 2026;
   if n <> 9 then raise exception 'CHECK FALHOU: esperados 9 feriados em 2026, achei %', n; end if;
+
+  select count(*) into n from public.feriados_nacionais where extract(year from data) = 2027;
+  if n <> 9 then raise exception 'CHECK FALHOU: esperados 9 feriados em 2027, achei %', n; end if;
 
   if exists (select 1 from public.feriados_nacionais where fundamento !~ '^Lei ') then
     raise exception 'CHECK FALHOU: feriado sem lei no fundamento';

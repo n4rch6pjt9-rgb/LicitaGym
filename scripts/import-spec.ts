@@ -93,8 +93,9 @@ export function lerRegimes(wb: XLSX.WorkBook): Regime[] {
     if (!id) break;
     if (!/^[a-z0-9_]+$/.test(id)) throw new Error(`id de regime inválido: "${id}"`);
     const norma = texto(ls[i][1]);
-    if (!norma) throw new Error(`regime "${id}" sem norma na linha ${i + 1}`);
-    out.push({ id, norma, situacao_pesquisa: texto(ls[i][2]) });
+    const situacao_pesquisa = texto(ls[i][2]);
+    if (!norma || !situacao_pesquisa) throw new Error(`regime "${id}" sem norma ou situação na linha ${i + 1}`);
+    out.push({ id, norma, situacao_pesquisa });
   }
   return semVazioNemRepetido(out, (x) => x.id, "regimes");
 }
@@ -103,6 +104,8 @@ function lit(s: string): string {
   return `'${s.replaceAll("'", "''")}'`;
 }
 
+// on conflict ... do update: a planilha versionada é a fonte. Feriado que sair da planilha não é apagado aqui;
+// remoção exige migration própria, com justificativa.
 export function gerarSeedSql(feriados: Feriado[], regimes: Regime[]): string {
   const f = feriados.map((x) => `  (date ${lit(x.data)}, ${lit(x.nome)}, ${lit(x.fundamento)})`).join(",\n");
   const r = regimes.map((x) => `  (${lit(x.id)}, ${lit(x.norma)}, ${lit(x.situacao_pesquisa)})`).join(",\n");

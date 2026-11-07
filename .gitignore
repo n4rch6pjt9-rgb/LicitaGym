@@ -96,3 +96,6 @@ docs/ai-audits/
 **/html - sislog*.txt
 **/html lang=*.txt
 .claude/settings.local.json
+
+# Arquivo temporario do Excel/Word enquanto o documento esta aberto
+~$*

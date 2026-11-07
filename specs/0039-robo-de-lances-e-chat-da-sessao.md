@@ -1,7 +1,7 @@
 # 0039: Criar o robô de lances e o chat da sessão do Compras.gov.br
 
-- **Status:** parada. Decisão do Marcelo em 23/10/2026: o código espera a fase 3 da 0032 terminar (regra de foco do
-  `docs/produto/ESCOPO.md`). A spec fica escrita para ser revisada e aprovada nesse intervalo.
+- **Status:** etapa 1 em implementação (retomada a pedido do Marcelo em 07/11/2026). As
+  etapas 2 a 4 continuam paradas. Decisão de 23/10/2026: o código esperaria a fase 3 da 0032.
 - **Alimenta:** módulos 5 (Alerta de disputa), 6 (Sessão do certame) e 7 (Inteligência de sessão) do
   `docs/produto/ESCOPO.md`, e um módulo novo, o 10 (Robô de lances). Não alimenta a 0032.
 - **Repositório:** os dois, mais uma extensão de navegador (pasta nova, ver "Perguntas em aberto"). O backend vai ao
@@ -72,6 +72,29 @@ Os itens 1 a 4 e 10 do template valem como estão. Arquivos específicos desta s
 Cada etapa é um PR (ou um par backend + front). A etapa 1 mede o atraso das mensagens num pregão real. Esse número
 decide se o alerta de convocação pode depender só da API ou precisa da extensão (SLA do contrato: faixa de 90% a 94%
 de disponibilidade, paradas programadas excluídas, manutenção de fim de semana).
+
+## Implementação da etapa 1 (07/11/2026)
+
+O backend desta spec já tinha entrado em 25/10 pelo Cursor (`api-disputa`, `_shared/serpro.ts`, migration
+`20261025000000`). Conferido contra o exemplo oficial (`docs/compras-gov/integra-compras.md`), não funcionava com a API
+real: esperava objeto em vez de lista, campos com outros nomes e caminho de diligências errado, e guardava o chat por
+tenant. A etapa 1 corrige esse código em vez de criar outro:
+
+- K-1 e K-2: migration `20261108120000_sessao_mensagens_global.sql` (tira `disputa_mensagens`, vazia em produção).
+- K-3 e K-4: rotas `POST /api-disputa/sync-chat` e `GET /api-disputa/chat` (em vez de `sync-integra-compras` e
+  `api-sessao`). Secrets: `SERPRO_CONSUMER_KEY` e `SERPRO_CONSUMER_SECRET` (nome já usado no código).
+- Ficam para o próximo PR: o cron que chama o `sync-chat` (K-3), o alerta (K-5, CA-7), a retenção (K-7, CA-8, prazo
+  ainda em aberto) e a aba Sessão no Dashboard (CA-9).
+
+| CA | Teste |
+|---|---|
+| CA-1 | `supabase/tests/sessao_mensagens_check.sql` |
+| CA-2 | `serpro_test.ts` e `api_disputa_test.ts` ("CA-2: ...") |
+| CA-3 | `serpro_test.ts` e `api_disputa_test.ts` ("CA-3: ...") |
+| CA-4 | `serpro_test.ts` ("CA-4: ...") |
+| CA-5 | `serpro_test.ts` e `api_disputa_test.ts` ("CA-5: ...") |
+| CA-6 | coberto por `lerTenantDoUsuario` (`_shared/tenant.ts`), sem teste novo |
+| CA-7 a CA-9 | próximo PR |
 
 ## Contrato
 

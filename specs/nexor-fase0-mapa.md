@@ -27,14 +27,29 @@ os PRs da Fase 0. Fonte: `specs/nexor_spec.xlsx` (aba indicada) e schema de prod
 - `scripts/import-spec.ts` gera o bloco de seed a partir da planilha. Nada vai direto ao banco.
 - Teste Deno compara o bloco da migration com o que o script gera (drift planilha × banco).
 
-## Decisões para o PR 2 (modelos de tarefa e etapas)
-1. **Onde mora o modelo NX.** `tarefas_catalogo.fase_codigo` aponta para `processo_fases` (F01–F12 da 14.133), e
-   `natureza` e `ator` são obrigatórios. Proposta: as 14 etapas A01–R14 entram em `processo_fases` com
-   `norma = 'NX'`, e os modelos NX novos em `tarefas_catalogo` com `norma = 'NX'`. `natureza` e `ator` dos 18 novos não
-   estão na planilha: vão como `TODO(spec)` para você preencher, ou a planilha ganha as duas colunas.
-2. **Apelidos.** O LG-T18 corresponde a dois modelos (F05-T01 e F05-T02), então o apelido não cabe numa coluna única
-   do catálogo. Proposta: tabela `tarefas_catalogo_apelidos (tarefa_codigo, sistema in ('nx','lg_t'), apelido)`.
-3. **Etapas por tenant.** `pipeline_etapas` é por tenant e a Konnen já tem as suas. As 14 colunas novas entram como
-   padrão de tenant novo; migrar a Konnen exige dry-run (contagem por etapa antes/depois) e o seu ok.
-4. **Regime: dois vocabulários na planilha.** RAG_Schema usa `lei_14133 | lei_14981 | sistema_s | estatal_13303 |
-   outro`; Padrao_Lei usa os 5 ids carregados neste PR. O PR 1 segue a Padrao_Lei. Qual vale?
+## Decisões do Marcelo (07/11/2026)
+
+### Valem para o PR 1 (este)
+- **Regime canônico = Padrao_Lei.** Os 5 ids deste PR (`lei_14133`, `lei_13303`, `sistema_s_sesc_senac`,
+  `sistema_s_sesi_senai`, `lei_14981`) são os únicos. O vocabulário da RAG_Schema (`sistema_s`, `estatal_13303`,
+  `outro`) não entra no banco: documento de regime não identificado fica com regime `null` (desconhecido), nunca
+  `outro`. A aba RAG_Schema da planilha deve passar a citar esses ids.
+- **`npm:xlsx@0.18.5`: risco aceito.** CVE-2023-30533 e CVE-2024-22363 afetam leitura de arquivo malicioso; a entrada
+  é só a planilha versionada (revisada em PR) e o script nunca é importado em `supabase/functions/**`.
+- **Nome de vencedor na aba Orgao_SSP_SP ("MANOEL GOMES", I6 e I11): mantido.** Dado público de homologação, sem CPF.
+  A regra de LGPD do Nexor (não guardar CPF, RG, e-mail pessoal) continua valendo para qualquer tabela.
+
+### Valem para o PR 2 (modelos de tarefa e etapas)
+1. **Modelo NX em `processo_fases` + `tarefas_catalogo`.** As 14 etapas A01–R14 entram em `processo_fases` com
+   `norma = 'NX'`; os 23 modelos NX novos (18 novos + 5 dos parciais) entram em `tarefas_catalogo` com `norma = 'NX'`.
+   `natureza` e `ator` vêm da planilha: a aba Tarefas_Default ganha as duas colunas, preenchidas pelo Marcelo, e o
+   gerador lê de lá (nada de valor inventado). Valores aceitos pelo banco (lidos em 07/11):
+   - `natureza` (enum `tarefa_natureza`): `obrigacao`, `faculdade`, `direito`, `acompanhamento`, `preparacao`;
+   - `ator` (check): `licitante`, `contratado`, `licitante_ou_contratado`.
+   O gerador falha se a coluna estiver vazia ou com valor fora da lista.
+2. **Apelidos em tabela própria:** `tarefas_catalogo_apelidos (tarefa_codigo, sistema in ('nx','lg_t'), apelido)`,
+   unique `(sistema, apelido, tarefa_codigo)`. Aceita o LG-T18 apontando para F05-T01 e F05-T02.
+3. **Etapas Nexor só para tenant novo.** As 14 etapas viram o padrão de tenant novo. A Konnen fica como está; migrá-la
+   é PR próprio, com dry-run (contagem por etapa antes/depois) e ok do Marcelo.
+4. **Parciais do de-para aprovados:** 3 apelidos (T16, T19, T22) e 5 NX novas (T09, T11, T20, T21, T32). Ver
+   `specs/nexor-de-para-tarefas.md`.

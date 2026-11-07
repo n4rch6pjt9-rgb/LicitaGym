@@ -1,7 +1,8 @@
 # De-para LG-T (planilha `specs/nexor_spec.xlsx`, aba Tarefas_Default) × `tarefas_catalogo` (84 modelos)
 
-**Proposta para decisão**, montada em 07/11/2026 comparando os títulos e os critérios de conclusão. Só o LG-T05 está
-confirmado. Os modelos do banco foram lidos por consulta somente leitura.
+**Aprovado pelo Marcelo em 07/11/2026** (7 iguais, 8 parciais, 18 novos; LG-T34 fundida na LG-T09 e reservada).
+Montado comparando os títulos e os critérios de conclusão; os modelos do banco foram lidos por consulta somente
+leitura.
 
 Legenda: **igual** = mesma tarefa; **parcial** = o modelo do banco cobre parte (o LG-T é mais amplo ou mais estreito);
 **novo** = nenhum modelo cobre, vira modelo NX novo.
@@ -43,10 +44,10 @@ Legenda: **igual** = mesma tarefa; **parcial** = o modelo do banco cobre parte (
 | T33 | Preparar minuta de contrato/ARP | — | novo |
 | T34 | Checklist de habilitação com validades | F04-T02 Regularidade fiscal (e sobrepõe o LG-T09) | parcial |
 
-**Resumo:** 7 iguais (T02, T05, T13, T14, T17, T18, T24), 9 parciais e 18 novos. Os LG-T usam 18 dos 84
+**Resumo:** 7 iguais (T02, T05, T13, T14, T17, T18, T24), 9 parciais (8 depois da fusão da T34 na T09) e 18 novos. Os LG-T usam 18 dos 84
 modelos; ficam 66 sem LG-T, a maioria das fases F08 a F11 (execução, alteração, extinção, sanções).
 
-## Parciais lado a lado (para decisão antes de virarem apelido)
+## Parciais lado a lado (proposta aprovada em 07/11/2026)
 
 Com a LG-T34 fundida na LG-T09 (decisão de 07/11), sobram **8 parciais**. A LG-T34 fica reservada, sem modelo NX.
 "Planilha" vem da aba Tarefas_Default; "Banco" vem de `tarefas_catalogo` (consulta de 07/11).
@@ -62,9 +63,11 @@ Com a LG-T34 fundida na LG-T09 (decisão de 07/11), sobram **8 parciais**. A LG-
 | T22 | Ata e execução · operação · 48 h · cronograma por OF com entrega e faturamento | F08-T01 Executar conforme contrato · "Entregas no cronograma" | Banco é a execução em si; planilha é o planejamento antes da primeira OF | apelido F08-T01 |
 | T32 | Proposta de preços · agente:precos · 24 h · prazos de recebimento, liquidação e pagamento | F08-T08 Recebimento + F08-T09 Faturar e acompanhar pagamento (execução) | Planilha **projeta** antes da proposta (caixa); banco **acompanha** na execução | NX nova (projeção); F08-T08/T09 ficam |
 
-**Resultado se aprovado:** 3 apelidos (T16, T19, T22) e 5 NX novas (T09, T11, T20, T21, T32). Total NX novas: 18 + 5 = 23.
+**Resultado aprovado:** 3 apelidos (T16, T19, T22) e 5 NX novas (T09, T11, T20, T21, T32). Total NX novas: 18 + 5 = 23.
+Os apelidos vão para `tarefas_catalogo_apelidos` (decisão 2 de `specs/nexor-fase0-mapa.md`).
 
-## Achados na planilha
-- **LG-T09 × LG-T34:** os dois são checklist de habilitação com validade, um na etapa Habilitação e outro também.
-- **LG-T21 e LG-T25:** a coluna `ref_SESC_126135` virou data (`2036-02-05 06:56:55`), porque o Excel converteu o texto.
-  O valor original se perdeu na planilha.
+## Achados na planilha (resolvidos em 07/11/2026)
+- **LG-T09 × LG-T34:** os dois eram checklist de habilitação com validade. LG-T34 descontinuada e fundida na LG-T09;
+  as referências em Documentacao_Edital (I24:I27) e Proposta_Nexor (M75) apontam para LG-T09.
+- **LG-T21 e LG-T25:** a coluna `ref_SESC_126135` tinha virado data por conversão do Excel. Corrigidas para
+  "29 (sanções)" e "32 (LGPD)".

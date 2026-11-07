@@ -59,8 +59,9 @@ Como cada campo obrigatório foi preenchido sem inventar dado:
 Fica para o PR 3: etapas por tenant (`pipeline_etapas`), blocos legais, marca do tenant e cálculo de prazo (0041 K-4).
 
 ### Achado na planilha
-- A aba PRD (C32) dá o exemplo `NX.GEN.A02.IMP.005-8`, mas 8 é o DV com origem `LG`. Com `NX` o DV é 4
-  (`NX.GEN.A02.IMP.005-4`), como o Glossario calcula. Corrigir o exemplo na planilha.
+- A aba PRD (C32) dava o exemplo `NX.GEN.A02.IMP.005-8`, mas 8 é o DV com origem `LG`. Corrigido em 07/11 para
+  `NX.GEN.A02.IMP.005-4`. O Glossario continua com origem `LG` (D5:D12 e fórmula de F44:F77); o script confere contra
+  esse `LG`. Se o Glossario passar para `NX`, trocar a origem da conferência em `lerModelosNx` no mesmo commit.
 
 ## Decisões do Marcelo (07/11/2026)
 

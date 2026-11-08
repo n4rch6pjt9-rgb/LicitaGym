@@ -60,6 +60,14 @@ const TIMEOUT_MS = 20_000;
 const MAX_TENTATIVAS_RETRY = 3;
 const RETRY_AFTER_MAX_S = 30;
 const CHAVE_COMPRA_RE = /^\d{17}$/;
+/**
+ * Parâmetro `ordem`: obrigatório na API (HTTP 400 "Required parameter 'ordem' is not present", 08/11/2026), mas o guia
+ * só o mostra no exemplo de curl, sem descrever. A hipótese é número de página, porque o guia define o 206 como
+ * "retorno paginado, há registros fora da página selecionada". Começa em 1, como as páginas do Compras.gov.br e do
+ * PNCP. Ainda não confirmado na documentação: o status da primeira resposta fica em integra_compras_run.chamadas, e
+ * um 206 ali quer dizer que há mais páginas a ler.
+ */
+export const ORDEM_INICIAL = 1;
 
 let cacheToken: TokenCache | null = null;
 
@@ -157,7 +165,8 @@ async function consultarSemEmbrulho(
   if (!CHAVE_COMPRA_RE.test(chaveCompra)) {
     throw new ErroIntegraCompras("chaveCompra deve ter 17 dígitos.", null);
   }
-  const caminho = `/integra-compras/v1/chat/${chaveCompra}${tipo === "diligencia" ? "/diligencias" : ""}`;
+  const caminho = `/integra-compras/v1/chat/${chaveCompra}${tipo === "diligencia" ? "/diligencias" : ""}` +
+    `?ordem=${ORDEM_INICIAL}`;
 
   let token = await obterTokenSerpro();
   let renovouToken = false;

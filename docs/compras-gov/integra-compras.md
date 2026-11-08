@@ -16,8 +16,12 @@ Cliente: `supabase/functions/_shared/serpro.ts`. Leia este arquivo antes de muda
 | GET | `/integra-compras/v1/chat/{chaveCompra}/diligencias` | mensagens do chat de diligências |
 
 `chaveCompra`: 17 dígitos = UASG (6) + modalidade (2) + número (5) + ano (4). Exemplo de demonstração:
-`99998803000012026`. O guia mostra também `&ordem={ordem}` no exemplo de `curl`, sem descrever o parâmetro; o
-cliente não usa até a OAS confirmar.
+`99998803000012026`.
+
+`ordem` é **obrigatório**: sem ele a API responde 400 "Required parameter 'ordem' is not present" (consulta real de
+08/11/2026). O guia só o mostra no exemplo de `curl` (`&ordem={ordem}`, que deveria ser `?ordem=`), sem descrever.
+O cliente manda `?ordem=1`, na hipótese de ser o número da página (o guia define o 206 como retorno paginado).
+Hipótese ainda não confirmada na OAS.
 
 ## Códigos HTTP
 - 200 e 206: lista de mensagens. **Cobrados.**
@@ -42,4 +46,4 @@ Uma **lista** (não um objeto). Cada item:
 ## Em aberto
 - Tabela de códigos de `categoria` e `tipoRemetente` (pedir na OAS ou ao Serpro). Até lá, o alerta de convocação
   (K-5) usa o texto da mensagem.
-- Significado de `ordem` e de 206 (paginação?).
+- Confirmar que `ordem` é o número da página e se começa em 0 ou 1. Se vier 206, ler as páginas seguintes.

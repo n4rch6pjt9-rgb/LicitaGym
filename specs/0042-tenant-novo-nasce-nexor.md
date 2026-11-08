@@ -76,9 +76,12 @@
 
 - **Tenant novo:** todo tenant novo nasce NX (14 etapas e tarefas da planilha). A Konnen não muda.
 - **Seletor do catálogo:** no tenant NX abre filtrado nas tarefas da própria etapa, com "ver outras etapas".
-- **Responsável agente:** a tarefa NX nasce com `responsavel_tipo = 'agente'` e o agente mapeado
-  (`juridico`, `edital`, `precos` → `preco`). NX-T29 e NX-T33, com dois agentes, ficam com o primeiro; o segundo vai
-  na descrição.
+- **Responsável agente (revista em 08/11, depois da revisão):** a primeira decisão era nascer com o agente como
+  responsável, mas a tarefa de catálogo com agente trava (api-tarefas recusa mudar o status; o envio da análise liga uma
+  tarefa só; a tela do agente não a encontra). Por ora o agente é **sugestão**: a tarefa NX nasce na fila do papel da
+  planilha (`papel:operacao` → operação; `agente:*` → admin) e a tela mostra "agente sugerido". O fluxo do agente por
+  tarefa, como a planilha define (ficha por tarefa, critério de conclusão), fica para a spec 0043; ver
+  `docs/produto/nexor-agentes-edital-juridico.md`.
 - **Regulamento:** os modelos NX nascem em qualquer regulamento informado; os 10 apelidos 14.133 seguem a regra de hoje
   (só 14.133 e 14.981). Regulamento não informado continua bloqueando.
 - **Nomes das etapas:** os da planilha.

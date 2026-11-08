@@ -61,13 +61,11 @@ const MAX_TENTATIVAS_RETRY = 3;
 const RETRY_AFTER_MAX_S = 30;
 const CHAVE_COMPRA_RE = /^\d{17}$/;
 /**
- * Parâmetro `ordem`: obrigatório na API (HTTP 400 "Required parameter 'ordem' is not present", 08/11/2026), mas o guia
- * só o mostra no exemplo de curl, sem descrever. A hipótese é número de página, porque o guia define o 206 como
- * "retorno paginado, há registros fora da página selecionada". Começa em 1, como as páginas do Compras.gov.br e do
- * PNCP. Ainda não confirmado na documentação: o status da primeira resposta fica em integra_compras_run.chamadas, e
- * um 206 ali quer dizer que há mais páginas a ler.
+ * Parâmetro `ordem`: obrigatório (sem ele, HTTP 400 "Required parameter 'ordem' is not present"). É a ordenação das
+ * mensagens: a API aceita ASC e DESC e recusa 0 e 1 com HTTP 400 (teste do Marcelo em 08/11/2026, compra
+ * 18017805000292026). ASC traz da mais antiga para a mais recente, a ordem em que a sessão aconteceu.
  */
-export const ORDEM_INICIAL = 1;
+export const ORDEM = "ASC";
 
 let cacheToken: TokenCache | null = null;
 
@@ -166,7 +164,7 @@ async function consultarSemEmbrulho(
     throw new ErroIntegraCompras("chaveCompra deve ter 17 dígitos.", null);
   }
   const caminho = `/integra-compras/v1/chat/${chaveCompra}${tipo === "diligencia" ? "/diligencias" : ""}` +
-    `?ordem=${ORDEM_INICIAL}`;
+    `?ordem=${ORDEM}`;
 
   let token = await obterTokenSerpro();
   let renovouToken = false;

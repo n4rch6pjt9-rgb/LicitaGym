@@ -20,8 +20,8 @@ Cliente: `supabase/functions/_shared/serpro.ts`. Leia este arquivo antes de muda
 
 `ordem` é **obrigatório**: sem ele a API responde 400 "Required parameter 'ordem' is not present" (consulta real de
 08/11/2026). O guia só o mostra no exemplo de `curl` (`&ordem={ordem}`, que deveria ser `?ordem=`), sem descrever.
-O cliente manda `?ordem=1`, na hipótese de ser o número da página (o guia define o 206 como retorno paginado).
-Hipótese ainda não confirmada na OAS.
+É a **ordenação** das mensagens: aceita `ASC` e `DESC` (maiúsculo ou minúsculo) e recusa `0` e `1` com 400
+(teste do Marcelo, 08/11/2026). O cliente manda `?ordem=ASC`, da mais antiga para a mais recente.
 
 ## Códigos HTTP
 - 200 e 206: lista de mensagens. **Cobrados.**
@@ -46,4 +46,5 @@ Uma **lista** (não um objeto). Cada item:
 ## Em aberto
 - Tabela de códigos de `categoria` e `tipoRemetente` (pedir na OAS ou ao Serpro). Até lá, o alerta de convocação
   (K-5) usa o texto da mensagem.
-- Confirmar que `ordem` é o número da página e se começa em 0 ou 1. Se vier 206, ler as páginas seguintes.
+- Paginação: o guia define o 206 como "há registros fora da página selecionada", mas não diz qual parâmetro escolhe a
+  página. Se aparecer 206 em `integra_compras_run.chamadas`, investigar.

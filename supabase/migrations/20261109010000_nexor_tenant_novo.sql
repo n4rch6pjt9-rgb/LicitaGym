@@ -241,11 +241,16 @@ begin
   elsif v_regulamento not in ('LEI_14133', 'LEI_14981') then
     -- Spec 0042: modelo NX é genérico e nasce em qualquer regulamento informado; o da 14.133 não.
     v_so_nx := true;
-    -- O aviso só cabe se a etapa tem modelo da 14.133 que deixou de nascer; etapa só com NX não está bloqueada.
+    -- O aviso continua como antes (estado final da pendência), salvo na etapa que só tem modelo NX: ali nada
+    -- deixou de nascer.
     if exists (select 1 from public.pipeline_etapa_tarefas m
                  join public.tarefas_catalogo c on c.codigo = m.tarefa_codigo
                 where m.tenant_id = p_tenant and m.etapa_id = p_etapa and m.origem = 'catalogo' and m.ativo
-                  and c.norma <> 'NX') then
+                  and c.norma <> 'NX')
+       or not exists (select 1 from public.pipeline_etapa_tarefas m
+                        join public.tarefas_catalogo c on c.codigo = m.tarefa_codigo
+                       where m.tenant_id = p_tenant and m.etapa_id = p_etapa and m.origem = 'catalogo' and m.ativo
+                         and c.norma = 'NX') then
       v_bloqueio := 'regulamento_sem_catalogo';
     end if;
   end if;

@@ -179,6 +179,10 @@ verify_jwt = false
 [functions.sync-cnpj-verificacao]
 verify_jwt = false
 
+# sync-sessao-chat (spec 0039, K-3): Bearer SYNC_CRON_SECRET validado no código. A cada 30 min em horário comercial.
+[functions.sync-sessao-chat]
+verify_jwt = false
+
 # api-catalogo-ficha valida o JWT no código (authenticateUser) e a empresa em _shared/tenant.ts
 [functions.api-catalogo-ficha]
 verify_jwt = false

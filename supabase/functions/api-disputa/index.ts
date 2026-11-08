@@ -9,13 +9,8 @@ import {
   jsonResponse,
 } from "../_shared/http.ts";
 import { ErroTenantAcesso, lerTenantDoUsuario } from "../_shared/tenant.ts";
-import {
-  consultarChatSerpro,
-  consultarDiligenciasSerpro,
-  ErroIntegraCompras,
-  type MensagemIntegra,
-  type ResultadoConsultaIntegra,
-} from "../_shared/serpro.ts";
+import type { ResultadoConsultaIntegra } from "../_shared/serpro.ts";
+import { extrairChaveCompra17Digitos, sincronizarCompra } from "../_shared/sessao_chat.ts";
 import { pisoTenantCentavos, unidadeNorm } from "../_shared/agentes/preco.ts";
 import { recomendar, type RecomendacaoLance } from "../_shared/recomendacao.ts";
 
@@ -39,48 +34,7 @@ function getDefaultServiceClient(): SupabaseClient {
   return createClient(url, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } });
 }
 
-/** Extrai estritamente a chaveCompra oficial de 17 dígitos do Compras.gov.br. */
-export function extrairChaveCompra17Digitos(licitacao: {
-  codigo_externo?: string | null;
-  link_sistema_origem?: string | null;
-  raw?: Record<string, unknown> | null;
-}): string | null {
-  const COMPRAS_KEY_RE = /^\d{17}$/;
-  const rawObj = (licitacao.raw && typeof licitacao.raw === "object") ? licitacao.raw : {};
-
-  // 1. Campo explícito em raw (chaveCompra, chave_compra, idCompra, id_compra, compra)
-  const rawCands = [rawObj.chaveCompra, rawObj.chave_compra, rawObj.idCompra, rawObj.id_compra, rawObj.compra];
-  for (const c of rawCands) {
-    if (typeof c === "string" && COMPRAS_KEY_RE.test(c.trim())) {
-      return c.trim();
-    }
-  }
-
-  // 2. codigo_externo (ex: "COMPRASGOV-PP-15300005000012026" ou direto "15300005000012026")
-  if (typeof licitacao.codigo_externo === "string") {
-    const cod = licitacao.codigo_externo.trim();
-    if (COMPRAS_KEY_RE.test(cod)) return cod;
-    if (cod.startsWith("COMPRASGOV-PP-")) {
-      const semPrefixo = cod.slice("COMPRASGOV-PP-".length).trim();
-      if (COMPRAS_KEY_RE.test(semPrefixo)) return semPrefixo;
-    }
-  }
-
-  // 3. link_sistema_origem (ex: https://cnetmobile.estaleiro.serpro.gov.br/...compra=15300005000012026)
-  if (typeof licitacao.link_sistema_origem === "string") {
-    try {
-      const url = new URL(licitacao.link_sistema_origem);
-      const compraParam = url.searchParams.get("compra");
-      if (compraParam && COMPRAS_KEY_RE.test(compraParam.trim())) {
-        return compraParam.trim();
-      }
-    } catch {
-      // Ignora erro de parsing de URL
-    }
-  }
-
-  return null;
-}
+export { extrairChaveCompra17Digitos };
 
 export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Promise<Response> {
   // CORS Preflight
@@ -485,96 +439,23 @@ export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Prom
         }
       }
 
-      // K-2: registro da execução (chamadas por código HTTP; 200, 206 e 404 são cobrados).
-      const { data: run, error: erroRun } = await supabase
-        .schema("private")
-        .from("integra_compras_run")
-        .insert({ chave_compra: chaveOficial, origem: isCron ? "cron" : "usuario" })
-        .select("id")
-        .single();
-      if (erroRun) throw erroRun;
+      const r = await sincronizarCompra(
+        supabase,
+        { chaveCompra: chaveOficial, licitacaoId, origem: isCron ? "cron" : "usuario" },
+        { consultarChat: ctx?.consultarChat, consultarDiligencias: ctx?.consultarDiligencias },
+      );
 
-      const chamadas: Record<string, number> = {};
-      const contar = (status: number | null) => {
-        const k = status === null ? "sem_resposta" : String(status);
-        chamadas[k] = (chamadas[k] ?? 0) + 1;
-      };
-
-      const fnChat = ctx?.consultarChat ?? consultarChatSerpro;
-      const fnDiligencias = ctx?.consultarDiligencias ?? consultarDiligenciasSerpro;
-
-      const lidas: MensagemIntegra[] = [];
-      let erroFonte: ErroIntegraCompras | null = null;
-      for (const fn of [fnChat, fnDiligencias]) {
-        try {
-          const r = await fn(chaveOficial);
-          contar(r.status);
-          lidas.push(...r.mensagens);
-        } catch (e) {
-          if (!(e instanceof ErroIntegraCompras)) throw e;
-          contar(e.status);
-          erroFonte = e;
-          break; // 403/502: registra e para a compra (K-3)
-        }
-      }
-
-      // Grava sem duplicar: chave_mensagem já gravada é ignorada (nada é apagado nem sobrescrito).
-      let novas = 0;
-      if (lidas.length > 0) {
-        const linhas = lidas.map((m) => ({
-          chave_compra: chaveOficial,
-          id_uasg: m.chaveCompra?.idUasgIdentificacao ?? null,
-          id_modalidade: m.chaveCompra?.idModalidade ?? null,
-          numero: m.chaveCompra?.numero ?? null,
-          ano: m.chaveCompra?.ano ?? null,
-          numero_uasg: m.chaveCompra?.numeroUasg ?? null,
-          identificador_item: m.identificadorItem,
-          chave_mensagem: m.chaveMensagem,
-          tipo: m.tipo,
-          categoria: m.categoria,
-          tipo_remetente: m.tipoRemetente,
-          texto: m.texto,
-          data_hora: m.dataHora,
-          data_hora_fonte: m.dataHoraFonte,
-          fonte: "integra_compras",
-        }));
-        const { data: inseridas, error: erroUpsert } = await supabase
-          .from("sessao_mensagens")
-          .upsert(linhas, { onConflict: "chave_mensagem", ignoreDuplicates: true })
-          .select("chave_mensagem");
-        if (erroUpsert) {
-          await supabase.schema("private").from("integra_compras_run")
-            .update({ terminado_em: new Date().toISOString(), chamadas, mensagens_lidas: lidas.length, erro: "falha ao gravar mensagens" })
-            .eq("id", run.id);
-          throw erroUpsert;
-        }
-        novas = (inseridas ?? []).length;
-      }
-
-      const { error: erroFim } = await supabase
-        .schema("private")
-        .from("integra_compras_run")
-        .update({
-          terminado_em: new Date().toISOString(),
-          chamadas,
-          mensagens_lidas: lidas.length,
-          mensagens_novas: novas,
-          erro: erroFonte ? erroFonte.message : null,
-        })
-        .eq("id", run.id);
-      if (erroFim) throw erroFim;
-
-      if (erroFonte) {
+      if (!r.ok) {
         return jsonResponse({
           ok: false,
-          erro: `Integra Compras indisponível (HTTP ${erroFonte.status ?? "sem resposta"}). Nada foi apagado.`,
-          total_lidas: lidas.length,
-          novas_inseridas: novas,
-          chamadas,
+          erro: `Integra Compras indisponível (HTTP ${r.status_erro ?? "sem resposta"}). Nada foi apagado.`,
+          total_lidas: r.total_lidas,
+          novas_inseridas: r.novas_inseridas,
+          chamadas: r.chamadas,
         }, 502);
       }
 
-      return jsonResponse({ ok: true, total_lidas: lidas.length, novas_inseridas: novas, chamadas });
+      return jsonResponse({ ok: true, total_lidas: r.total_lidas, novas_inseridas: r.novas_inseridas, chamadas: r.chamadas });
     }
 
     return jsonResponse({ erro: "Rota não encontrada." }, 404);

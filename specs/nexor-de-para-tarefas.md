@@ -1,5 +1,8 @@
 # De-para LG-T (planilha `specs/nexor_spec.xlsx`, aba Tarefas_Default) × `tarefas_catalogo` (84 modelos)
 
+> **Renomeação (07/11/2026):** na planilha os códigos `LG-Txx` passaram a `NX-Txx`, com o mesmo número e o mesmo
+> conteúdo. Este documento mantém a grafia `LG-T` da aprovação; no banco o apelido é `NX-Txx` (`sistema = 'nx_t'`).
+
 **Aprovado pelo Marcelo em 07/11/2026** (7 iguais, 8 parciais, 18 novos; LG-T34 fundida na LG-T09 e reservada).
 Montado comparando os títulos e os critérios de conclusão; os modelos do banco foram lidos por consulta somente
 leitura.

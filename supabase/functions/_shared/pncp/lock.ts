@@ -29,6 +29,22 @@ export async function acquireSyncLock(
   // mira `public` e falha com PGRST202. Por isso a chamada passa por schema("private").
   const privateClient = typeof client.schema === "function" ? client.schema("private") : null;
   if (privateClient && typeof privateClient.rpc === "function") {
+    if (typeof privateClient.from === "function") {
+      const limiteIso = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+      try {
+        await privateClient
+          .from("pncp_sync_run")
+          .update({
+            status: "falhou",
+            erro_principal: "execução órfã encerrada (sem heartbeat > 30 min)",
+            finalizada_em: new Date().toISOString(),
+          })
+          .eq("status", "executando")
+          .lt("last_heartbeat_at", limiteIso);
+      } catch {
+        // Best-effort: não impede a aquisição do lock principal em mocks de teste
+      }
+    }
     const anoPca = resourceType === "pca" ? /^pca-(?:fila|sync):(?:manual:)?(\d+)(?::|$)/.exec(lockKey)?.[1] : undefined;
     const { data, error } = await privateClient.rpc(anoPca ? "pca_adquirir_execucao" : "acquire_sync_lock", {
       p_lock_key: lockKey,

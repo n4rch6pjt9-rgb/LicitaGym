@@ -7,6 +7,7 @@ import {
   finishSyncRun,
   logSyncRequest,
   storeSourceRecord,
+  updateSyncHeartbeat,
 } from "../_shared/pncp/supabase-admin.ts";
 import { orgSyncClasses } from "../_shared/pncp/catmat-scope-resolver.ts";
 import { hashPayload, sha256Hex } from "../_shared/pncp/hash.ts";
@@ -84,8 +85,44 @@ Deno.serve(async (req) => {
       }
     }
 
-    const cnpjs = Array.from(cnpjsSet);
+    const { rows: orgaosExistentes } = await fetchAllByRange<{ cnpj: string }>(
+      (from, to) =>
+        client
+          .from("orgaos")
+          .select("cnpj")
+          .order("id")
+          .range(from, to),
+      { orderBy: "id" },
+    );
+    const cnpjsJaGravados = new Set(
+      orgaosExistentes
+        .map((row) => String(row.cnpj ?? "").trim())
+        .filter((c) => c.length > 0),
+    );
+
+    // Prioriza CNPJs que ainda não estão em public.orgaos e respeita orçamento de tempo (90s)
+    // para nunca estourar o limite de 150s da Edge Function nem deixar sync_execucoes presa em 'executando'.
+    const cnpjs = Array.from(cnpjsSet).sort((a, b) => {
+      const aExiste = cnpjsJaGravados.has(a) ? 1 : 0;
+      const bExiste = cnpjsJaGravados.has(b) ? 1 : 0;
+      if (aExiste !== bExiste) return aExiste - bExiste;
+      return a.localeCompare(b);
+    });
+
+    const ORCAMENTO_PADRAO_MS = 90_000;
+    const inicioMs = Date.now();
+    let processados = 0;
+    let interrompidoPorOrcamento = false;
+
     for (const cnpj of cnpjs) {
+      if (Date.now() - inicioMs >= ORCAMENTO_PADRAO_MS) {
+        interrompidoPorOrcamento = true;
+        break;
+      }
+      if (processados > 0 && processados % 10 === 0) {
+        await updateSyncHeartbeat(client, runId);
+      }
+      processados++;
       try {
         const orgaoData = await integracao.getOrgao(cnpj);
         const payload = orgaoData as Record<string, unknown>;
@@ -175,18 +212,23 @@ Deno.serve(async (req) => {
 
     await finishSyncRun(client, runId, {
       status: stats.erros > 0 ? "concluida_com_erros" : "concluida",
-      totalRecebidos: cnpjs.length,
+      totalRecebidos: processados,
       totalErros: stats.erros,
       parametros: {
         ...stats,
         pca_itens_pages: itemPages,
         plan_id_count: planIds.length,
+        cnpjs_total: cnpjs.length,
+        cnpjs_processados: processados,
+        interrompido_por_orcamento: interrompidoPorOrcamento,
       },
     });
     return jsonResponse({
       status: stats.erros > 0 ? "concluida_com_erros" : "ok",
       stats,
-      cnpjs_processados: cnpjs.length,
+      cnpjs_processados: processados,
+      cnpjs_total: cnpjs.length,
+      interrompido_por_orcamento: interrompidoPorOrcamento,
     }, stats.erros > 0 ? 500 : 200);
   } catch (error) {
     await finishSyncRun(client, runId, {

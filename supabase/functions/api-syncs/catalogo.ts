@@ -32,6 +32,19 @@ export const SYNCS: SyncCatalogo[] = [
     aviso: "Rodar agora dispara o workflow no GitHub só com os 12 termos principais (rápido). Acompanhe em Actions › Coletor PNCP.",
   },
   {
+    slug: "coletor-precos",
+    funcao: null,
+    github_workflow: "coletor-precos.yml",
+    refazer_cron: true,
+    titulo: "Coletor de preços (Compras.gov + PNCP)",
+    faz: "Grava preços praticados (Pesquisa de Preço), descrição detalhada e itens/links de contratação via API PNCP.",
+    cron: "Segunda e quinta às 07:00, no GitHub Actions (catálogo, detalhe e contratação PNCP).",
+    // inputs do workflow_dispatch são sempre texto
+    corpo: { modo: "todos", dry_run: "false" },
+    disparavel: true,
+    aviso: "Rodar agora dispara o workflow no GitHub com as 3 etapas em sequência. Acompanhe em Actions › Coletor de Preços.",
+  },
+  {
     slug: "sync-compras-catmat",
     funcao: "sync-compras-catmat",
     titulo: "CATMAT do catálogo",
@@ -110,6 +123,16 @@ export const SYNCS: SyncCatalogo[] = [
     corpo: {},
     disparavel: true,
     aviso: null,
+  },
+  {
+    slug: "sync-sessao-chat",
+    funcao: "sync-sessao-chat",
+    titulo: "Chat da sessão (Integra Compras)",
+    faz: "Lê o chat e as diligências das compras do pipeline com sessão prevista ou aberta. Cada compra são 2 chamadas cobradas pelo Serpro.",
+    cron: "A cada 30 minutos, das 08:00 às 19:30, de segunda a sexta.",
+    corpo: { limite: 10, max_chamadas_dia: 300 },
+    disparavel: true,
+    aviso: "Compra consultada há menos de 55 minutos fica de fora. O teto diário vale só para esta coleta, mas desconta também as consultas manuais feitas pela tela.",
   },
   {
     slug: "sync-portal-compras",

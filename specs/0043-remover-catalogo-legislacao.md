@@ -1,6 +1,6 @@
 # 0043: Remover o catálogo de legislação (`api-pncp-legislacao`, tabelas `legislacao_*` e bucket `pncp-legislation`)
 
-- **Status:** rascunho
+- **Status:** aprovada (Marcelo, 08/11/2026)
 - **Alimenta:** spec-mãe 0032, fase 4, como limpeza da 0042 (que alimenta a fase 4). Tira do caminho um catálogo
   que ninguém lê e que confunde com a base usada pelo agente jurídico (`norma_dispositivos`) (decisão P-6).
 - **Repositório:** LicitaGym (o Dashboard não muda; ver "Impacto em dados")
@@ -147,6 +147,7 @@ Não há CA de outro tenant: as tabelas são catálogo global, sem `tenant_id`, 
 - 08/11: **dois PRs**: função primeiro, migration depois do 404 em produção (P-2).
 - 08/11: bucket esvaziado e apagado **pelo painel** (P-5).
 - 08/11: a spec é **limpeza da 0042**, insumo da fase 4 da 0032 (P-6).
+- 08/11: spec **aprovada**.
 - 08/11 (verificado, não decisão): as telas `/juridico/legislacao` do Dashboard usam fixtures; nenhuma tabela daqui
   é lida pelo front (P-7).
 

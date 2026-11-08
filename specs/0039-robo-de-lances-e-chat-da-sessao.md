@@ -176,12 +176,13 @@ Só a etapa 1 tem CAs completos. As etapas 2 a 4 ganham CAs na revisão desta sp
 - 07/11/2026: retomada da etapa 1.
 - 07/11/2026: mudança de layout do portal é detectada pela própria extensão (K-11), com alerta para a equipe;
   correção sugerida por modelo só entra por PR revisado.
+- 08/11/2026: retenção do texto bruto do chat (K-7) = 90 dias depois da homologação; a avaliação fica, sem dado pessoal.
 
 ## Perguntas em aberto
 
 1. Serpro: guardar o texto do chat para avaliação e por quanto tempo está coberto pela cláusula 3.1.5? A cobrança é
    por chamada (documentação) ou por contratação monitorada (anexo do contrato, 3.1.5.7)?
-2. Prazo de retenção do texto bruto (K-7). Proposta: 90 dias depois da homologação.
+2. ~~Prazo de retenção do texto bruto (K-7).~~ Decidido em 08/11/2026: 90 dias depois da homologação.
 3. Atraso das mensagens na API durante a sessão ao vivo (medir na etapa 1).
 4. Onde mora o código da extensão: pasta nova no repositório Dashboard ou repositório próprio.
 5. Mudanças de regra a registrar no `ESCOPO.md` ao aprovar: módulo 10 (Robô de lances); "coleta que exige captcha"

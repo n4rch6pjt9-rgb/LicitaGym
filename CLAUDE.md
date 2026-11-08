@@ -38,12 +38,20 @@ scripts/validar-migrations.sh        # Postgres 17 descartável (Docker)
 - Quem toca um arquivo resolve o lint dele inteiro. Não acrescente regra de lint sem limpar a base.
 - Workflow novo do GitHub Actions não usa `uses:` (marketplace bloqueado): siga `pr-quality.yml`.
 
-## Produção (não há staging)
-- Supabase `ifaiagegyicjzlpskafh` é o único ambiente.
+## Produção e branches de preview
+- Produção: Supabase `ifaiagegyicjzlpskafh`.
+- **Branch de preview por PR:** a integração Supabase ↔ GitHub cria uma branch Supabase para o PR e aplica nela as
+  migrations do PR (check **Supabase Preview**). É a validação em banco real antes do merge.
+  - PR com migration ou Edge Function só vai para merge com o Supabase Preview verde. Se o check vier "ignored ...
+    limit of concurrent preview branches", avise o Marcelo: liberar vaga ou subir o limite é decisão dele.
+  - Não apague branch de preview sem pedido explícito.
+  - Renomear a migration de um PR que já tem preview quebra o preview ("Remote migration versions not found in local
+    migrations directory"): avise antes.
 - **Merge na `main` = produção:** aplica as migrations (~30 s) e republica **todas** as Edge Functions.
   PR em `supabase/functions/**` ou `supabase/migrations/**` é alto risco.
+- Antes do merge, confira de novo a `main`: migration com versão repetida ou anterior à última aplicada é recusada
+  (`scripts/ci/guard-migrations.sh` acusa).
 - Depois do merge: skill `verificar-producao` e `get_advisors` (security). Achado novo vira issue.
-- Branch Supabase só sob demanda, criada pelo Marcelo (DDL destrutivo, backfill grande, RLS de tenant, extensão).
 - PR empilhado: merge commit, não squash (skill `merge-pilha`).
 
 ## Banco

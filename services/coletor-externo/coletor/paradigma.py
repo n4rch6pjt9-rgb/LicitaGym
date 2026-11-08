@@ -42,6 +42,7 @@ import argparse
 import json
 import logging
 import re
+import signal
 import sys
 import time
 from dataclasses import dataclass
@@ -882,6 +883,72 @@ def coletar(portal: "PortalParadigma", sb, termos: list[str], paginas: int | Non
     return resumo
 
 
+def modo_registro(anos: list[int] | None, processos: list[tuple[int, int]] | None) -> str:
+    """Modo gravado em private.coleta_externa_run (vocabulário da constraint da tabela)."""
+    if anos:
+        return "historico"
+    if processos:
+        return "monitorar"
+    return "leads"
+
+
+def status_final(resumo: dict) -> str:
+    """Status gravado em coleta_externa_run; 'falhou' é também o critério do código de saída 1.
+
+    Erro sem nada no escopo é falha. Aviso de paginação (teto de segurança ou página repetida) não é fim confirmado
+    da listagem: a coleta conta como concluída com erros, nunca como concluída limpa."""
+    if resumo.get("erros") and not resumo.get("no_escopo"):
+        return "falhou"
+    if resumo.get("erros") or resumo.get("paginacao_avisos"):
+        return "concluida_com_erros"
+    return "concluida"
+
+
+_SEGREDOS = re.compile(r"(?i)(bearer\s+)\S+|eyJ[\w-]+\.[\w-]+\.[\w-]*|((?:apikey|api_key|token|key)=)[^&\s]+")
+
+
+def mascarar_segredos(texto: str) -> str:
+    """Mascara token Bearer, JWT e chave em query string antes de gravar mensagem de erro no banco."""
+    return _SEGREDOS.sub(lambda m: (m.group(1) or m.group(2) or "") + "***", texto)
+
+
+class RegistroColeta:
+    """Registra a execução em private.coleta_externa_run pelas RPCs coleta_externa_iniciar/finalizar.
+
+    É o dado que a saúde operacional (coleta_externa_dias_sem_sucesso) lê. Falha ao registrar não derruba a
+    coleta: vira aviso no log. Sem cliente (dry-run), não registra nada."""
+
+    def __init__(self, sb, fonte: str, modo: str, termos: list[str] | None):
+        self.sb = sb
+        self.id: int | None = None
+        if sb is None:
+            return
+        try:
+            self.id = int(sb.rpc("coleta_externa_iniciar", {"p_fonte": fonte, "p_modo": modo, "p_termos": termos}))
+        except Exception as e:  # noqa: BLE001 - registro é observabilidade, não pode parar a coleta
+            log.warning("coleta_externa_run: não abriu o registro da execução (%s)", e)
+
+    def finalizar(self, status: str, resumo: dict | None = None, erro: str | None = None) -> None:
+        if self.sb is None or self.id is None:
+            return
+        r = resumo or {}
+        detalhe: dict[str, Any] = {}
+        if erro:
+            detalhe["erro"] = mascarar_segredos(erro)[:500]
+        if r.get("paginacao_avisos"):
+            detalhe["paginacao_avisos"] = [str(a)[:200] for a in r["paginacao_avisos"][:20]]
+        try:
+            self.sb.rpc("coleta_externa_finalizar", {
+                "p_id": self.id, "p_status": status,
+                "p_listados": int(r.get("listados", 0)), "p_processos": int(r.get("processos", 0)),
+                "p_no_escopo": int(r.get("no_escopo", 0)), "p_itens_escopo": int(r.get("itens_escopo", 0)),
+                "p_erros": int(r.get("erros", 0) or (1 if erro else 0)),
+                "p_detalhe_erros": detalhe or None,
+            })
+        except Exception as e:  # noqa: BLE001
+            log.warning("coleta_externa_run: não fechou o registro %s (%s)", self.id, e)
+
+
 def main(argv: list[str] | None = None) -> int:
     from .destino import Supabase, env
     from .fornecedores import CadastroFornecedores
@@ -917,6 +984,36 @@ def main(argv: list[str] | None = None) -> int:
                                             env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True),
                                             drenar_catmat=False)
     termos = [t.strip() for t in args.termos.split(";")] if args.termos else TERMOS_SISTEMA_S
+    processos = None
+    if args.processo:
+        processos = [(int(p.split("/")[0]), int(p.split("/")[1]) if "/" in p else MODULO_PADRAO) for p in args.processo]
+    anos = [int(a) for a in args.anos.split(",")] if args.anos else None
+    # Só a coleta agendada (origem cron) entra em coleta_externa_run: é ela que a saúde acompanha
+    # (coleta_externa_dias_sem_sucesso, pior fonte). Disparo manual de uma fonte fora do lote agendado deixaria a
+    # métrica crítica para sempre. Fonte bloqueada no construtor do portal (ex.: fiemg) nem chega aqui.
+    registro = RegistroColeta(sb if args.origem == "cron" else None, fonte.slug, modo_registro(anos, processos), termos)
+    # Timeout do runner manda SIGTERM: vira SystemExit para fechar o registro como falha em vez de deixá-lo aberto.
+    sigterm_anterior = signal.signal(signal.SIGTERM, lambda _sig, _frame: sys.exit(143))
+    try:
+        r = _executar(args, fonte, portal, sb, termos, processos, anos, CadastroFornecedores)
+    except KeyboardInterrupt:
+        registro.finalizar("cancelada", erro="interrompida (KeyboardInterrupt)")
+        raise
+    except BaseException as e:
+        registro.finalizar("falhou", erro=f"{type(e).__name__}: {e}")
+        raise
+    finally:
+        signal.signal(signal.SIGTERM, sigterm_anterior)
+    status = status_final(r)
+    registro.finalizar(status, r)
+    print(json.dumps(r, ensure_ascii=False))
+    return 1 if status == "falhou" else 0
+
+
+def _executar(args, fonte: Fonte, portal: "PortalParadigma", sb, termos: list[str],
+              processos: list[tuple[int, int]] | None, anos: list[int] | None, cadastro_fornecedores) -> dict:
+    from .destino import env
+
     produtos = None
     if not args.sem_catalogo:
         cats = [c.strip() for c in args.categorias.split(";")] if args.categorias else None
@@ -926,11 +1023,7 @@ def main(argv: list[str] | None = None) -> int:
                      cats or CATEGORIAS_MAPEADAS)
         except requests.RequestException as e:  # tenant sem catálogo público: segue só com regras de texto
             log.warning("catálogo %s indisponível: %s", args.fonte, e)
-    processos = None
-    if args.processo:
-        processos = [(int(p.split("/")[0]), int(p.split("/")[1]) if "/" in p else MODULO_PADRAO) for p in args.processo]
-    forn = None if args.sem_fornecedores or args.sem_resultados else CadastroFornecedores(sb, dry_run=args.dry_run)
-    anos = [int(a) for a in args.anos.split(",")] if args.anos else None
+    forn = None if args.sem_fornecedores or args.sem_resultados else cadastro_fornecedores(sb, dry_run=args.dry_run)
     docs = None
     if not args.sem_documentos:
         from .destino import Armazenamento
@@ -948,10 +1041,8 @@ def main(argv: list[str] | None = None) -> int:
         if visitante is None and fonte.slug not in FONTES_MURAL_AUTORIZADO:
             log.warning("VISITANTE_* não configurado: documentos que exigem cadastro ficam registrados como pendentes")
         docs = DocumentosParadigma(portal, sb, arm, visitante, int(float(env("MAX_MB", "50")) * 1048576), args.dry_run)
-    r = coletar(portal, sb, termos, args.paginas, args.dry_run, not args.sem_resultados, produtos, forn, processos, anos,
-                docs, origem=args.origem)
-    print(json.dumps(r, ensure_ascii=False))
-    return 1 if r["erros"] and not r["no_escopo"] else 0
+    return coletar(portal, sb, termos, args.paginas, args.dry_run, not args.sem_resultados, produtos, forn, processos,
+                   anos, docs, origem=args.origem)
 
 
 if __name__ == "__main__":

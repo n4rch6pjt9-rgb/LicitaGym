@@ -3,6 +3,7 @@ import { itemNaPosicao, trechoLimpo } from "./citacao.ts";
 import type { PortalOficial } from "../portal-oficial.ts";
 import { REGRA_VERSAO, type Achado, type Fonte, type ResultadoAgente, type Severidade } from "./tipos.ts";
 import { detectarDivergencias } from "./divergencias.ts";
+import { type CalendarioFeriados, diaLocal, somarDiasUteis } from "../prazos/dias-uteis.ts";
 
 export interface ChunkEdital {
   id: number;
@@ -22,31 +23,52 @@ const PADROES: { codigo: string; re: RegExp; severidade: Severidade }[] = [
   { codigo: "exigencia.prazo_entrega", re: /\bprazo (maximo )?(de|para) entrega\b/, severidade: "info" },
 ];
 
-function dataLocal(iso: string): { y: number; m: number; d: number } {
-  const partes = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Sao_Paulo",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(new Date(iso));
-  const ler = (tipo: Intl.DateTimeFormatPartTypes) => Number(partes.find((p) => p.type === tipo)?.value);
-  return { y: ler("year"), m: ler("month"), d: ler("day") };
+/**
+ * Limite de impugnação (art. 164 da Lei 14.133: até 3 dias úteis antes da abertura), com feriados nacionais
+ * (spec 0041, K-3). Sem calendário que cubra o período: `RangeError`, nunca uma data que ignora feriado.
+ */
+export function limiteImpugnacao(
+  dataAberturaIso: string,
+  feriados: CalendarioFeriados,
+): { data_limite: string; feriados_pulados: string[] } {
+  const r = somarDiasUteis(dataAberturaIso, 3, "antes_de", feriados);
+  return { data_limite: r.data, feriados_pulados: r.feriados_considerados };
 }
 
-function isoData(y: number, m: number, d: number): string {
-  return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-}
+const AVISO_FERIADOS_LOCAIS = "Feriados estaduais e municipais e pontos facultativos não verificados.";
 
-export function limiteImpugnacao(dataAberturaIso: string): string {
-  const { y, m, d } = dataLocal(dataAberturaIso);
-  const cursor = new Date(Date.UTC(y, m - 1, d));
-  let restantes = 3;
-  while (restantes > 0) {
-    cursor.setUTCDate(cursor.getUTCDate() - 1);
-    const dia = cursor.getUTCDay();
-    if (dia !== 0 && dia !== 6) restantes--;
+function achadoImpugnacao(dataAberturaIso: string, feriados: CalendarioFeriados | null): Achado {
+  const data_abertura = diaLocal(dataAberturaIso);
+  const fontes: Fonte[] = [{ tipo: "calculo", regra: "lei_14133_art_164_3_dias_uteis", versao: REGRA_VERSAO }];
+  const base = { codigo: "prazo.impugnacao", natureza: "analise", metodo: "regra", severidade: "atencao", titulo: "prazo.impugnacao" } as const;
+  let motivo = "Calendário de feriados nacionais não carregado.";
+  if (feriados) {
+    try {
+      const { data_limite, feriados_pulados } = limiteImpugnacao(dataAberturaIso, feriados);
+      return {
+        ...base,
+        detalhe: `Limite de impugnação: 3 dias úteis antes da abertura, com feriados nacionais. ${AVISO_FERIADOS_LOCAIS}`,
+        dados: {
+          situacao: "calculado",
+          data_limite,
+          data_abertura,
+          feriados_considerados: true,
+          abrangencia: "nacional",
+          feriados_pulados,
+        },
+        fontes,
+      };
+    } catch (e) {
+      if (!(e instanceof RangeError)) throw e;
+      motivo = e.message;
+    }
   }
-  return isoData(cursor.getUTCFullYear(), cursor.getUTCMonth() + 1, cursor.getUTCDate());
+  return {
+    ...base,
+    detalhe: `Limite de impugnação não calculado: ${motivo}`,
+    dados: { situacao: "nao_calculado", data_limite: null, data_abertura, feriados_considerados: false, motivo },
+    fontes,
+  };
 }
 
 function trechoNoOriginal(original: string, normInicio: number, normFim: number, origem: number[]): string {
@@ -406,27 +428,15 @@ export function agenteEdital(entrada: {
   data_abertura: string | null;
   licitacao_id?: number;
   portal_oficial?: PortalOficial | null;
+  /** Feriados nacionais (spec 0041). Ausente ou sem o ano da abertura: prazo `nao_calculado`, nunca sem feriado. */
+  feriados?: CalendarioFeriados | null;
 }): ResultadoAgente {
   const achados = entrada.chunks.length === 0 ? [] : [...detectarExigencias(entrada.chunks), ...detectarPotencia(entrada.chunks), ...detectarDivergencias(entrada.chunks)];
   if (entrada.portal_oficial && entrada.licitacao_id !== undefined) {
     achados.push(achadoPortalOficial(entrada.licitacao_id, entrada.portal_oficial));
   }
   if (entrada.data_abertura) {
-    const local = dataLocal(entrada.data_abertura);
-    achados.push({
-      codigo: "prazo.impugnacao",
-      natureza: "analise",
-      metodo: "regra",
-      severidade: "atencao",
-      titulo: "prazo.impugnacao",
-      detalhe: "Limite de impugnação: 3 dias úteis antes da abertura, sem calendário de feriados.",
-      dados: {
-        data_limite: limiteImpugnacao(entrada.data_abertura),
-        data_abertura: isoData(local.y, local.m, local.d),
-        feriados_considerados: false,
-      },
-      fontes: [{ tipo: "calculo", regra: "lei_14133_art_164_3_dias_uteis", versao: REGRA_VERSAO }],
-    });
+    achados.push(achadoImpugnacao(entrada.data_abertura, entrada.feriados ?? null));
   }
   return {
     agente: "edital",

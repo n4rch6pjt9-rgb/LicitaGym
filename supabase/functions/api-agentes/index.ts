@@ -2,6 +2,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { hashContexto, validarAchado } from "../_shared/agentes/achados.ts";
 import { agenteEdital } from "../_shared/agentes/edital.ts";
+import { calendarioNacional } from "../_shared/prazos/dias-uteis.ts";
 import { agenteJuridico } from "../_shared/agentes/juridico.ts";
 import { agentePreco, type PropostaItem } from "../_shared/agentes/preco.ts";
 import { REGRA_VERSAO, type Achado, type Agente, type ResultadoAgente } from "../_shared/agentes/tipos.ts";
@@ -72,6 +73,7 @@ export async function contextos(d: Dossie, proposta: PropostaItem[] | null): Pro
     documentos: d.documentos_sha256,
     chunks: await impressaoChunks(d.chunks),
     portal: d.portal_oficial ?? null,
+    feriados: d.feriados ?? null,
   });
   const precoEntrada = {
     agente: "preco",
@@ -122,6 +124,7 @@ function rodar(agente: Agente, dossie: Dossie, proposta: PropostaItem[] | null, 
         data_abertura: dossie.licitacao.data_abertura,
         licitacao_id: dossie.licitacao.id,
         portal_oficial: dossie.portal_oficial ?? null,
+        feriados: dossie.feriados ? calendarioNacional(dossie.feriados) : null,
       });
     case "preco":
       return agentePreco({ natureza: dossie.natureza, itens: dossie.itens, proposta });

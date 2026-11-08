@@ -536,3 +536,40 @@ Deno.test("contextos: norma jurídica altera o hash jurídico; mesma entrada per
   assertEquals(depois.edital, antes.edital);
   assertEquals(depois.preco, antes.preco);
 });
+// Spec 0041 K-3: o dossiê leva os feriados nacionais ao agente de edital e ao hash do contexto.
+Deno.test("api-agentes (0041 K-3): impugnação usa os feriados do dossiê; sem calendário fica nao_calculado", async () => {
+  const { repo, dossie } = ambiente();
+  dossie.licitacao.data_abertura = "2026-10-15T09:00:00-03:00";
+  dossie.feriados = ["2026-01-01", "2026-10-12", "2026-12-25"];
+  const r = await chamar(ctx(repo), { action: "analise_executar", licitacao_id: 101, proposta: P, agentes: ["edital"] });
+  assertEquals(r.status, 200);
+  const prazo = r.json.execucoes[0].achados.find((a: Achado) => a.codigo === "prazo.impugnacao");
+  assertEquals([prazo.dados.situacao, prazo.dados.data_limite], ["calculado", "2026-10-09"]);
+
+  const semCal = ambiente();
+  semCal.dossie.licitacao.data_abertura = "2026-10-15T09:00:00-03:00";
+  const s = await chamar(ctx(semCal.repo), { action: "analise_executar", licitacao_id: 101, proposta: P, agentes: ["edital"] });
+  const p2 = s.json.execucoes[0].achados.find((a: Achado) => a.codigo === "prazo.impugnacao");
+  assertEquals([p2.dados.situacao, p2.dados.data_limite], ["nao_calculado", null]);
+});
+
+Deno.test("api-agentes (0041 K-3): feriado novo muda o contexto do edital", async () => {
+  const { dossie } = ambiente();
+  const a = await contextos({ ...dossie, feriados: ["2026-10-12"] }, P);
+  const b = await contextos({ ...dossie, feriados: ["2026-10-12", "2026-12-25"] }, P);
+  assertEquals(a.edital === b.edital, false);
+  assertEquals(a.preco, b.preco);
+});
+
+Deno.test("repo (0041 K-3): o dossiê traz as datas de feriados_nacionais, ordenadas", async () => {
+  const { client, chamadas } = clienteFalso({
+    licitacoes_externas: [{ id: 101 }],
+    feriados_nacionais: [{ data: "2026-01-01" }, { data: "2026-10-12" }],
+  });
+  const d = await createSupabaseRepo(client).carregarDossie(1, 101);
+  assertEquals(d?.feriados, ["2026-01-01", "2026-10-12"]);
+  assertEquals(
+    chamadas.filter((x) => x.tabela === "feriados_nacionais").map((x) => [x.metodo, ...x.args]),
+    [["order", "data", { ascending: true }]],
+  );
+});

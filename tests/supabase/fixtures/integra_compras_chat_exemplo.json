@@ -1,0 +1,28 @@
+[
+  {
+    "chaveCompra": { "idUasgIdentificacao": 999988, "idModalidade": 3, "numero": 1, "ano": 2026, "numeroUasg": 999988 },
+    "chaveMensagem": "3e6a53fa-6470-4626-ab8a-dfc29c221328",
+    "texto": "A sessão pública está aberta. Até 20 itens poderão estar em disputa simultaneamente e o período de abertura para disputa será entre 08:00 e 18:00. Mantenham-se conectados.",
+    "categoria": "11",
+    "dataHora": "2026-02-05 16:15:00.144",
+    "tipoRemetente": "0"
+  },
+  {
+    "chaveCompra": { "idUasgIdentificacao": 999988, "idModalidade": 3, "numero": 1, "ano": 2026, "numeroUasg": 999988 },
+    "identificadorItem": "1",
+    "chaveMensagem": "a15915db-8e1d-42fb-9320-fa8e20b38ad8",
+    "texto": "A abertura do item 1 para lances está agendada para daqui a 10 minutos. Mantenham-se conectados.",
+    "categoria": "2",
+    "dataHora": "2026-02-05 16:15:00.466",
+    "tipoRemetente": "0"
+  },
+  {
+    "chaveCompra": { "idUasgIdentificacao": 999988, "idModalidade": 3, "numero": 1, "ano": 2026, "numeroUasg": 999988 },
+    "identificadorItem": "1",
+    "chaveMensagem": "c9d79875-d716-4b2f-814f-6c3c4f92f553",
+    "texto": "O item 1 foi aberto. Solicitamos o envio de lances.",
+    "categoria": "2",
+    "dataHora": "2026-02-05 16:25:00.379",
+    "tipoRemetente": "0"
+  }
+]

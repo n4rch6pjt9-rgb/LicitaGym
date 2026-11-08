@@ -76,7 +76,7 @@ Deno.test("CA-2 (cliente): exemplo oficial vira 3 mensagens, item nulo na primei
     assertEquals(r.mensagens[0].dataHora, "2026-02-05T19:15:00.144Z");
     assertEquals(r.mensagens[0].dataHoraFonte, "2026-02-05 16:15:00.144");
     assertEquals(r.mensagens[0].chaveCompra?.numeroUasg, 999988);
-    assertEquals(f.chamadas.api, [`https://gateway.apiserpro.serpro.gov.br/integra-compras/v1/chat/${CHAVE}`]);
+    assertEquals(f.chamadas.api, [`https://gateway.apiserpro.serpro.gov.br/integra-compras/v1/chat/${CHAVE}?ordem=1`]);
   } finally {
     f.restaurar();
   }
@@ -88,7 +88,7 @@ Deno.test("Serpro: diligências usam /chat/{chave}/diligencias e marcam tipo dil
     const r = await consultarDiligenciasSerpro(CHAVE);
     assertEquals(r.mensagens.every((m) => m.tipo === "diligencia"), true);
     assertEquals(f.chamadas.api, [
-      `https://gateway.apiserpro.serpro.gov.br/integra-compras/v1/chat/${CHAVE}/diligencias`,
+      `https://gateway.apiserpro.serpro.gov.br/integra-compras/v1/chat/${CHAVE}/diligencias?ordem=1`,
     ]);
   } finally {
     f.restaurar();

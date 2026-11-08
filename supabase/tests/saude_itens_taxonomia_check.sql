@@ -26,7 +26,8 @@ begin
     raise exception 'SAUDE TAXONOMIA CHECK FALHOU: voltou o count(*) filter que varre licitacao_itens inteira';
   end if;
 
-  -- Os dois caminhos do total: sem estatística (conta exato) e depois do analyze (estimativa).
+  -- Volta 1: estado em que o banco estiver (sem estatística, conta exato; se o autovacuum já analisou, estimativa).
+  -- Volta 2: depois do analyze, sempre estimativa (conferido abaixo por total_estimado).
   for i in 1..2 loop
     if i = 2 then
       analyze public.licitacao_itens;

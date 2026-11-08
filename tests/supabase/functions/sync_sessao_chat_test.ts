@@ -6,6 +6,7 @@ import {
   inicioDoDiaBrasilia,
 } from "../../../supabase/functions/sync-sessao-chat/index.ts";
 import { sincronizarCompra } from "../../../supabase/functions/_shared/sessao_chat.ts";
+import { ErroIntegraCompras } from "../../../supabase/functions/_shared/serpro.ts";
 import type { ResultadoSincronizacao } from "../../../supabase/functions/_shared/sessao_chat.ts";
 
 Deno.env.set("SYNC_CRON_SECRET", "segredo-de-teste");
@@ -292,6 +293,36 @@ Deno.test("K-3 (fim a fim com a fixture oficial): cron grava as mensagens e o re
   assertEquals(db.runs[0].origem, "cron");
   assertEquals(db.runs[0].licitacao_id, 1);
   assertEquals(db.runs[0].chamadas, { "200": 1, "404": 1 });
+});
+
+Deno.test("Paginação: cada página conta como uma chamada; falha no meio grava o que já veio", async () => {
+  const msg = (n: number) => ({
+    tipo: "mensagem" as const,
+    chaveMensagem: `00000000-0000-4000-8000-00000000000${n}`,
+    identificadorItem: null,
+    texto: `m${n}`,
+    categoria: null,
+    tipoRemetente: null,
+    dataHora: `2026-11-08T12:00:0${n}.000Z`,
+    dataHoraFonte: "x",
+    chaveCompra: null,
+  });
+  const db: Db = { alvos: [lic(1, "99998803000012026", "2026-11-10T12:00:00Z")], runs: [] };
+  const consultas = {
+    consultarChat: () => Promise.resolve({ status: 206, mensagens: [msg(1), msg(2)], statusPaginas: [206, 206] }),
+    consultarDiligencias: () =>
+      Promise.reject(new ErroIntegraCompras("Integra Compras respondeu HTTP 502.", 502, [206], [{ ...msg(3), tipo: "diligencia" as const }])),
+  };
+  const res = await handleRequest(post(), {
+    getSupabase: () => mock(db),
+    agora: () => AGORA,
+    sincronizar: (s, a) =>
+      sincronizarCompra(s, { chaveCompra: a.chaveCompra, licitacaoId: a.licitacaoId, origem: "cron" }, consultas),
+  });
+  const json = await res.json();
+  assertEquals(json.resultados[0].ok, false);
+  assertEquals(db.runs[0].chamadas, { "206": 3, "502": 1 });
+  assertEquals(db.mensagens!.length, 3);
 });
 
 Deno.test("inicioDoDiaBrasilia: meia-noite de Brasília em UTC", () => {

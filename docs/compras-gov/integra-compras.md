@@ -23,6 +23,13 @@ Cliente: `supabase/functions/_shared/serpro.ts`. Leia este arquivo antes de muda
 É a **ordenação** das mensagens: aceita `ASC` e `DESC` (maiúsculo ou minúsculo) e recusa `0` e `1` com 400
 (teste do Marcelo, 08/11/2026). O cliente manda `?ordem=ASC`, da mais antiga para a mais recente.
 
+## Paginação
+Página de 20 mensagens. O 206 traz os cabeçalhos `Page` (começa em 0), `Page-Size`, `Pages-Count` e
+`Register-Count`; a página seguinte se pede com `page=N` (`pagina` é ignorado). Teste do Marcelo em 08/11/2026: compra
+18017805000292026 com 76 mensagens em 4 páginas. O cliente lê de `page=0` até `Pages-Count - 1` (teto de 50 páginas) e
+conta **cada página** como uma chamada cobrada em `integra_compras_run.chamadas`. Falha numa página do meio grava o que
+já veio das anteriores; 206 sem `Pages-Count` para e registra aviso.
+
 ## Códigos HTTP
 - 200 e 206: lista de mensagens. **Cobrados.**
 - 404: compra sem mensagens. **Cobrado.** Não é erro.
@@ -46,5 +53,4 @@ Uma **lista** (não um objeto). Cada item:
 ## Em aberto
 - Tabela de códigos de `categoria` e `tipoRemetente` (pedir na OAS ou ao Serpro). Até lá, o alerta de convocação
   (K-5) usa o texto da mensagem.
-- Paginação: o guia define o 206 como "há registros fora da página selecionada", mas não diz qual parâmetro escolhe a
-  página. Se aparecer 206 em `integra_compras_run.chamadas`, investigar.
+- Nada sobre paginação em aberto (ver "Paginação" acima).

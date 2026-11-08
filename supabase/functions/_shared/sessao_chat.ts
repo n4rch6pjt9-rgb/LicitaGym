@@ -3,7 +3,7 @@
  * Usado pela rota manual `POST /api-disputa/sync-chat` e pela coleta agendada `sync-sessao-chat`.
  *
  * - K-1: grava em public.sessao_mensagens sem duplicar (chave_mensagem); nada é apagado nem sobrescrito.
- * - K-2: uma linha em private.integra_compras_run por consulta, com as chamadas por código HTTP
+ * - K-2: uma linha em private.integra_compras_run por consulta, com as chamadas por código HTTP, uma por página
  *   (200, 206 e 404 são cobrados) e a licitação de onde veio a chave (base da retenção, K-7).
  * - 403/502/timeout: registra o erro e para a compra (não consulta as diligências depois de uma falha).
  * Erro de banco sobe para o chamador, com o registro da execução fechado como erro.
@@ -28,7 +28,7 @@ export interface ResultadoSincronizacao {
   novas_inseridas: number;
   /** {"200": n, "404": n, "sem_resposta": n, ...} */
   chamadas: Record<string, number>;
-  /** Mensagem do erro da fonte (nunca o corpo da resposta). */
+  /** Mensagem do erro da fonte, ou aviso de leitura incompleta (nunca o corpo da resposta). */
   erro: string | null;
   /** Status HTTP do erro da fonte; null = sem resposta (timeout, rede). */
   status_erro: number | null;
@@ -122,13 +122,18 @@ export async function sincronizarCompra(
 
   const lidas: MensagemIntegra[] = [];
   let erroFonte: ErroIntegraCompras | null = null;
+  let aviso: string | null = null;
   for (const fn of [fnChat, fnDiligencias]) {
     try {
       const r = await fn(alvo.chaveCompra);
-      contar(r.status);
+      for (const st of r.statusPaginas ?? [r.status]) contar(st);
       lidas.push(...r.mensagens);
+      if (r.aviso) aviso = r.aviso;
     } catch (e) {
       if (!(e instanceof ErroIntegraCompras)) throw e;
+      // Páginas lidas antes da falha foram cobradas: conta e grava o que veio delas.
+      for (const st of e.statusPaginasAnteriores) contar(st);
+      lidas.push(...e.mensagensAnteriores);
       contar(e.status);
       erroFonte = e;
       break; // 403/502: registra e para a compra (K-3)
@@ -166,7 +171,7 @@ export async function sincronizarCompra(
       chamadas,
       mensagens_lidas: lidas.length,
       mensagens_novas: novas,
-      erro: erroFonte ? erroFonte.message : null,
+      erro: erroFonte ? erroFonte.message : aviso,
     })
     .eq("id", run.id);
   if (erroFim) throw erroFim;
@@ -176,7 +181,7 @@ export async function sincronizarCompra(
     total_lidas: lidas.length,
     novas_inseridas: novas,
     chamadas,
-    erro: erroFonte ? erroFonte.message : null,
+    erro: erroFonte ? erroFonte.message : aviso,
     status_erro: erroFonte ? erroFonte.status : null,
   };
 }

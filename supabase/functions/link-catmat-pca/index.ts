@@ -62,9 +62,34 @@ type Stats = {
 export const BLOCO_GRAVACAO = 100;
 
 /**
+ * Upsert do bloco numa operação; se o banco recusar (ex.: FK de pca_item_pdm.codigo_pdm para um PDM que não existe
+ * em catmat_pdms), refaz linha a linha só aquele bloco, para uma linha ruim não derrubar as boas.
+ * Devolve, por linha, se ela foi gravada.
+ */
+async function upsertComRecuo(
+  client: LinkClient,
+  tabela: string,
+  linhas: Record<string, unknown>[],
+  onConflict: string,
+): Promise<boolean[]> {
+  const { error } = await client.from(tabela).upsert(linhas, { onConflict });
+  if (!error) return linhas.map(() => true);
+  const gravou: boolean[] = [];
+  for (const linha of linhas) {
+    const { error: erroLinha } = await client.from(tabela).upsert([linha], {
+      onConflict,
+    });
+    gravou.push(!erroLinha);
+  }
+  return gravou;
+}
+
+/**
  * Grava os vínculos do lote com 3 operações por bloco de BLOCO_GRAVACAO itens (leitura das pontes que já existem,
  * upsert da ponte, upsert do PDM), em vez de 3 por item. Mesmas linhas e mesmas contagens da versão item a item:
- * vínculo existente conta como atualizado; falha no upsert da ponte conta erro por item e não grava o PDM do bloco.
+ * vínculo existente conta como atualizado; ponte que falha conta erro e não grava o PDM daquele item; bloco que o
+ * banco recusa é refeito linha a linha. Se a leitura das pontes existentes falhar, os vínculos contam como novos
+ * (como na versão item a item, que ignorava esse erro) e a gravação segue.
  */
 export async function gravarVinculos(
   client: LinkClient,
@@ -78,17 +103,15 @@ export async function gravarVinculos(
       .select("catalogo_item_id, entidade_id")
       .eq("entidade_tipo", "pca_item")
       .in("entidade_id", bloco.map((v) => v.pcaItemId));
-    if (lerErro) {
-      stats.erros += bloco.length;
-      continue;
-    }
     const jaExiste = new Set(
-      (existentes ?? []).map((
+      (lerErro ? [] : existentes ?? []).map((
         e: { catalogo_item_id: string; entidade_id: string },
       ) => `${e.catalogo_item_id}|${e.entidade_id}`),
     );
 
-    const { error: ponteErro } = await client.from("catalogo_ponte").upsert(
+    const ponteGravada = await upsertComRecuo(
+      client,
+      "catalogo_ponte",
       bloco.map((v) => ({
         catalogo_item_id: v.catalogoItemId,
         entidade_tipo: "pca_item",
@@ -96,20 +119,18 @@ export async function gravarVinculos(
         tipo_correspondencia: v.tipo,
         evidencia: v.evidencia,
       })),
-      { onConflict: "catalogo_item_id,entidade_tipo,entidade_id" },
+      "catalogo_item_id,entidade_tipo,entidade_id",
     );
-    if (ponteErro) {
-      stats.erros += bloco.length;
-      continue;
-    }
-    for (const v of bloco) {
+    const comPonte = bloco.filter((_v, idx) => ponteGravada[idx]);
+    stats.erros += bloco.length - comPonte.length;
+    for (const v of comPonte) {
       if (jaExiste.has(`${v.catalogoItemId}|${v.pcaItemId}`)) {
         stats.vinculos_atualizados++;
       } else stats.vinculos_novos++;
     }
 
     const agora = new Date().toISOString();
-    const pdms = bloco.flatMap((v) => {
+    const pdms = comPonte.flatMap((v) => {
       const codigoPdm = v.codigoPdm ? Number(v.codigoPdm) : NaN;
       if (!Number.isFinite(codigoPdm)) return [];
       return [{
@@ -123,11 +144,16 @@ export async function gravarVinculos(
       }];
     });
     if (pdms.length === 0) continue;
-    const { error: pdmErro } = await client.from("pca_item_pdm").upsert(pdms, {
-      onConflict: "pca_item_id,codigo_pdm",
-    });
-    if (pdmErro) stats.erros += pdms.length;
-    else stats.pdm_vinculos += pdms.length;
+    const pdmGravado = await upsertComRecuo(
+      client,
+      "pca_item_pdm",
+      pdms,
+      "pca_item_id,codigo_pdm",
+    );
+    for (const ok of pdmGravado) {
+      if (ok) stats.pdm_vinculos++;
+      else stats.erros++;
+    }
   }
 }
 

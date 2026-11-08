@@ -10,7 +10,8 @@
 --   * a rodada N processa a fatia offset = N * limite, com limite = total / 30 (mínimo 200, máximo 1000, o teto da
 --     função), contado na hora sobre a maior classe atendida (7830 ou 7220, ativos);
 --   * rodada sem fatia (offset além do total) não chama nada. Capacidade: 30 x 1000 = 30 mil itens por classe.
---   Se o total mudar dentro da janela (sync do PCA às 06:43), uma fatia pode repetir ou pular itens nesse dia; o
+--   A rodada vem do minuto de now(): se o total mudar dentro da janela (sync do PCA às 06:43) ou o pg_cron atrasar
+--   um disparo para o minuto seguinte, uma fatia pode repetir ou pular itens nesse dia; o
 --   vínculo é idempotente (upsert) e o dia seguinte cobre o que faltou.
 --
 -- pg_cron só existe no Supabase: no Postgres descartável da validação o bloco não agenda nada (mesmo padrão de
@@ -23,6 +24,7 @@ begin;
 do $do$
 declare
   v_existente bigint;
+  v_total bigint;
   v_agenda constant text := '*/2 7 * * *';
   v_comando constant text := $cmd$select private.cron_chamar_edge('licitagym-link-catmat-pca', 'link-catmat-pca',
          jsonb_build_object('limite', p.limite, 'offset', p.rodada * p.limite), 120000)
@@ -42,7 +44,16 @@ begin
   if v_existente is not null then
     perform cron.alter_job(v_existente, schedule := v_agenda, command := v_comando);
   else
+    raise notice 'licitagym-link-catmat-pca não existia: job recriado com a agenda escalonada.';
     perform cron.schedule('licitagym-link-catmat-pca', v_agenda, v_comando);
+  end if;
+  -- Capacidade da janela: 30 rodadas x 1000 itens. Acima disso, o excedente fica sem vínculo diário.
+  select greatest(
+           (select count(*) from public.pca_itens where ativo and classe_material_servico = '7830'),
+           (select count(*) from public.pca_itens where ativo and classe_material_servico = '7220'))
+    into v_total;
+  if v_total > 30000 then
+    raise warning 'link-catmat-pca: % itens ativos na maior classe passam da capacidade de 30 mil da janela', v_total;
   end if;
 end
 $do$;

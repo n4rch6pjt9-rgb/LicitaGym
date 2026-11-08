@@ -17,6 +17,9 @@ function clienteFalso(opts: {
   existentes?: { catalogo_item_id: string; entidade_id: string }[];
   falharPonte?: boolean;
   falharPdm?: boolean;
+  /** codigo_pdm sem linha em catmat_pdms: a FK recusa qualquer upsert que contenha esse código. */
+  pdmInexistente?: number;
+  falharLeitura?: boolean;
 } = {}) {
   const chamadas: Chamada[] = [];
   const client = {
@@ -34,7 +37,9 @@ function clienteFalso(opts: {
                 data: (opts.existentes ?? []).filter((e) =>
                   ids.has(e.entidade_id)
                 ),
-                error: null,
+                error: opts.falharLeitura
+                  ? { message: "leitura falhou" }
+                  : null,
               });
             },
           };
@@ -42,8 +47,13 @@ function clienteFalso(opts: {
         },
         upsert(linhas: unknown[], _o: unknown) {
           chamadas.push({ tabela, op: "upsert", linhas });
+          const fkPdm = tabela === "pca_item_pdm" &&
+            opts.pdmInexistente !== undefined &&
+            (linhas as { codigo_pdm: number }[]).some((l) =>
+              l.codigo_pdm === opts.pdmInexistente
+            );
           const falha = (tabela === "catalogo_ponte" && opts.falharPonte) ||
-            (tabela === "pca_item_pdm" && opts.falharPdm);
+            (tabela === "pca_item_pdm" && opts.falharPdm) || fkPdm;
           return Promise.resolve({
             error: falha ? { message: "falhou" } : null,
           });
@@ -134,4 +144,37 @@ Deno.test("gravarVinculos: falha no PDM conta erro por linha", async () => {
   await gravarVinculos(client as any, vinculos(3), stats);
   assertEquals(stats.erros, 3);
   assertEquals(stats.vinculos_novos, 3);
+});
+
+Deno.test("gravarVinculos: um PDM inexistente não derruba os PDMs válidos do bloco", async () => {
+  const { client, chamadas } = clienteFalso({ pdmInexistente: 1002 });
+  const stats = zero();
+  // deno-lint-ignore no-explicit-any
+  await gravarVinculos(client as any, vinculos(5), stats);
+  assertEquals(stats.pdm_vinculos, 4);
+  assertEquals(stats.erros, 1);
+  assertEquals(stats.vinculos_novos, 5);
+  // 1 upsert em massa recusado + 5 refeitos linha a linha, só no PDM
+  assertEquals(chamadas.filter((c) => c.tabela === "pca_item_pdm").length, 6);
+  assertEquals(
+    chamadas.filter((c) => c.tabela === "catalogo_ponte" && c.op === "upsert")
+      .length,
+    1,
+  );
+});
+
+Deno.test("gravarVinculos: falha ao ler pontes existentes conta como novo e grava", async () => {
+  const { client } = clienteFalso({
+    falharLeitura: true,
+    existentes: [{ catalogo_item_id: "cat-1", entidade_id: "pca-1" }],
+  });
+  const stats = zero();
+  // deno-lint-ignore no-explicit-any
+  await gravarVinculos(client as any, vinculos(3), stats);
+  assertEquals(stats, {
+    vinculos_novos: 3,
+    vinculos_atualizados: 0,
+    pdm_vinculos: 3,
+    erros: 0,
+  });
 });

@@ -83,8 +83,24 @@ tenant. A etapa 1 corrige esse código em vez de criar outro:
 - K-1 e K-2: migration `20261108120000_sessao_mensagens_global.sql` (tira `disputa_mensagens`, vazia em produção).
 - K-3 e K-4: rotas `POST /api-disputa/sync-chat` e `GET /api-disputa/chat` (em vez de `sync-integra-compras` e
   `api-sessao`). Secrets: `SERPRO_CONSUMER_KEY` e `SERPRO_CONSUMER_SECRET` (nome já usado no código).
-- Ficam para o próximo PR: o cron que chama o `sync-chat` (K-3), o alerta (K-5, CA-7), a retenção (K-7, CA-8, prazo
-  ainda em aberto) e a aba Sessão no Dashboard (CA-9).
+- PR #466 (mergeado em 08/11/2026): K-1, K-2, `sync-chat` e `chat`.
+- Segundo PR (08/11/2026): coleta agendada e retenção.
+  - K-3 agendado: Edge Function `sync-sessao-chat` (o `cron_chamar_edge` só chama a raiz de uma função, não
+    `api-disputa/sync-chat`). A lógica de consulta e gravação foi para `_shared/sessao_chat.ts`, usada pelas duas.
+    Alvos (`private.sessao_chat_alvos`): compras do pipeline de empresa ativa, fora das etapas perdida e descartada,
+    com chave oficial, sem homologação e com `data_fim` entre 30 dias atrás e 2 h à frente.
+    Custo: rodízio (quem foi consultado há mais tempo vem primeiro), compra consultada há menos de 55 min fica de fora
+    (cerca de uma leitura por hora), teto de 300 chamadas por dia (Brasília, inclui as manuais; execução interrompida
+    conta pelo pior caso), 10 compras por rodada e nenhuma compra nova depois de 90 s. Agenda: a cada 30 min, das 8h
+    às 19h30, de segunda a sexta. Disparável pela tela de Syncs. A rota manual não tem teto diário, só o intervalo
+    de 5 min por compra.
+    A "amostra de homologados" fica para o módulo 7.
+  - K-7: `private.sessao_mensagens_retencao()`, diária. `expira_em` = menor homologação das licitações consultadas
+    com a chave + 90 dias; texto vencido vira nulo e a linha fica. A ligação com a licitação vem da coluna nova
+    `integra_compras_run.licitacao_id`. Homologação desfeita na fonte tira o prazo de quem ainda tem texto.
+    Limitação: compra que nunca homologa (deserta, fracassada, revogada) não expira. Ver pergunta 7.
+- Ficam para depois: o alerta (K-5, CA-7), que precisa de um sino de notificações que ainda não existe, e a aba
+  Sessão no Dashboard (CA-9).
 
 | CA | Teste |
 |---|---|
@@ -94,7 +110,10 @@ tenant. A etapa 1 corrige esse código em vez de criar outro:
 | CA-4 | `serpro_test.ts` ("CA-4: ...") |
 | CA-5 | `serpro_test.ts` e `api_disputa_test.ts` ("CA-5: ...") |
 | CA-6 | coberto por `lerTenantDoUsuario` (`_shared/tenant.ts`), sem teste novo |
-| CA-7 a CA-9 | próximo PR |
+| CA-7 | pendente (sino de notificações) |
+| CA-8 | `supabase/tests/sessao_chat_cron_retencao_check.sql` |
+| CA-9 | pendente (aba Sessão) |
+| K-3 agendado | `tests/supabase/functions/sync_sessao_chat_test.ts` |
 
 ## Contrato
 
@@ -189,3 +208,5 @@ Só a etapa 1 tem CAs completos. As etapas 2 a 4 ganham CAs na revisão desta sp
    continua fora, e a fonte do chat passa a ser o Integra Compras; a linha 436 da matriz de segurança ganha a nota
    "lance só por código determinístico autorizado pelo operador, nunca pelo modelo".
 6. O contrato está no CNPJ da Vectra Hub. Quando a LicitaGym tiver CNPJ próprio, precisa de contrato novo.
+7. Prazo do texto bruto de compra que nunca homologa (deserta, fracassada, revogada, anulada). Proposta: 180 dias
+   depois do fim do recebimento de propostas. Até a decisão, o texto dessas compras fica.

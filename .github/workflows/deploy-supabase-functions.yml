@@ -83,6 +83,7 @@ jobs:
             api-fornecedores-homologados
             api-saude
             api-disputa
+            sync-sessao-chat
             api-agentes
             calculate-distance-webrouter
           )

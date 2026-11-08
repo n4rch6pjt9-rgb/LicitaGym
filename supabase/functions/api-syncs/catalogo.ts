@@ -125,6 +125,16 @@ export const SYNCS: SyncCatalogo[] = [
     aviso: null,
   },
   {
+    slug: "sync-sessao-chat",
+    funcao: "sync-sessao-chat",
+    titulo: "Chat da sessão (Integra Compras)",
+    faz: "Lê o chat e as diligências das compras do pipeline com sessão prevista ou aberta. Cada compra são 2 chamadas cobradas pelo Serpro.",
+    cron: "A cada 30 minutos, das 08:00 às 19:30, de segunda a sexta.",
+    corpo: { limite: 10, max_chamadas_dia: 300 },
+    disparavel: true,
+    aviso: "Compra consultada há menos de 55 minutos fica de fora. O teto diário vale só para esta coleta, mas desconta também as consultas manuais feitas pela tela.",
+  },
+  {
     slug: "sync-portal-compras",
     funcao: "sync-portal-compras",
     titulo: "Portal de Compras Públicas",

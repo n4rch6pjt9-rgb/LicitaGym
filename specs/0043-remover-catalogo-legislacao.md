@@ -67,7 +67,7 @@ repositório e `gh search code` no Dashboard.
 1. A 0042 vai ao ar: K-1 (cron desagendado), K-6 (`sync-pncp-legislation` responde 410 sem tocar nas tabelas) e
    K-3 (lixo e arquivos do lixo apagados). Depois dela, o bucket deve ter só os objetos dos documentos do seed
    (contar de novo; a 0042 não mediu quantos são).
-2. Exportação, se o Marcelo pedir (P-1).
+2. Sem exportação (decisão P-1 de 08/11).
 3. **PR A (K-1):** sai a `api-pncp-legislacao` do repositório. Depois do merge, o Marcelo apaga a função em produção
    e confere 404 (K-2). Assim nenhuma versão viva da função lê tabela já apagada.
 4. **PR B (K-3):** migration que apaga as tabelas e as policies do bucket. Com preview verde e K-2 confirmado.
@@ -81,9 +81,8 @@ Os passos 3 e 4 podem ser um PR só se o Marcelo apagar a função logo antes do
 |---|---|---|---|---|---|
 | K-1 | Remoção da `api-pncp-legislacao` do repositório: apaga `supabase/functions/api-pncp-legislacao/`; tira a entrada de `supabase/config.toml`, de `.github/workflows/deploy-supabase-functions.yml` e de `scripts/deploy-functions.ps1`; em `tests/supabase/functions/_shared/api_pncp_auth_order_sec_edge_test.ts` apaga o teste SEC-EDGE-004 e tira `api-pncp-legislacao/index.ts` da lista do SEC-EDGE-002 (que segue cobrindo `api-pncp-pca` e `api-pncp-contratacoes`); atualiza os quatro `docs/pncp/*.md` da leitura obrigatória | — | nenhum arquivo em `supabase/functions/`, `scripts/`, `.github/` ou `tests/` cita `api-pncp-legislacao` | CI (`deno-check-funcoes.sh`, Deno) falha se sobrar import ou entrada | desenvolvedor (PR) |
 | K-2 | Aposentadoria em produção (memória "Aposentar Edge Function"): o merge republica as funções presentes no repositório mas **não apaga** a que saiu. O Marcelo apaga no painel ou com `supabase functions delete api-pncp-legislacao --project-ref ifaiagegyicjzlpskafh` (o hook bloqueia o agente). Prova: `POST https://ifaiagegyicjzlpskafh.supabase.co/functions/v1/api-pncp-legislacao` sem token responde **404** `NOT_FOUND`; **401** = ainda viva. Conferir também `list_edge_functions` | `POST` sem token | `404` | `401` → função viva, repetir o delete | Marcelo apaga; agente verifica (somente leitura) |
-| K-3 | Migration `<timestamp>_legislacao_remove_catalogo.sql` (timestamp depois das migrations da 0042), destrutiva e idempotente: (a) **guarda**: `raise exception` se ainda existir `cron.job` com `jobname = 'licitagym-sync-pncp-legislation'` (prova de que a 0042 foi aplicada antes); (b) `drop policy if exists legislacao_storage_read` e `legislacao_storage_service_write` em `storage.objects`; (c) um único `drop table if exists ... restrict` com `legislacao_alertas`, `legislacao_relacoes`, `legislacao_versoes`, `legislacao_documentos`, `legislacao_fontes` e, conforme P-3, `compras_api_secao_legislacao` (e `compras_api_secoes`). **Sem `cascade`**: dependente não previsto faz a migration falhar em vez de sumir em silêncio. Junto: `tabelas_acl_check.sql` e `supabase/sql/inventario_dados.sql` sem as tabelas removidas | — | tabelas e policies ausentes; segunda execução não falha | guarda dispara se a 0042 não está aplicada; `drop` falha se aparecer dependente novo | migration (deploy) |
+| K-3 | Migration `<timestamp>_legislacao_remove_catalogo.sql` (timestamp depois das migrations da 0042), destrutiva e idempotente: (a) **guarda**: `raise exception` se ainda existir `cron.job` com `jobname = 'licitagym-sync-pncp-legislation'` (prova de que a 0042 foi aplicada antes); (b) `drop policy if exists legislacao_storage_read` e `legislacao_storage_service_write` em `storage.objects`; (c) um único `drop table if exists ... restrict` com `legislacao_alertas`, `legislacao_relacoes`, `legislacao_versoes`, `legislacao_documentos`, `legislacao_fontes`, `compras_api_secao_legislacao` e `compras_api_secoes` (decisões P-3 e P-4). **Sem `cascade`**: dependente não previsto faz a migration falhar em vez de sumir em silêncio. Junto: `tabelas_acl_check.sql` e `supabase/sql/inventario_dados.sql` sem as tabelas removidas | — | tabelas e policies ausentes; segunda execução não falha | guarda dispara se a 0042 não está aplicada; `drop` falha se aparecer dependente novo | migration (deploy) |
 | K-4 | Bucket `pncp-legislation`: esvaziado e apagado pela API de Storage (o Supabase não deixa apagar `storage.objects`/`storage.buckets` por SQL), pelo painel ou por script de operação conforme P-5. Nunca outro bucket | id do bucket fixo `pncp-legislation` | `storage.buckets` sem o id; `storage.objects` sem linha com esse `bucket_id` | bucket não vazio → API recusa o delete; esvaziar antes | Marcelo (painel ou script); agente verifica (somente leitura) |
-| K-5 | Exportação antes do drop (só se P-1 = sim): JSON das tabelas removidas e cópia dos objetos do bucket, guardados **fora do repositório** (a higiene barra dump de coleta) | — | arquivo com contagem por tabela igual à medida no dia | — | Marcelo |
 
 ## Critérios de aceite
 
@@ -107,7 +106,6 @@ Não há CA de outro tenant: as tabelas são catálogo global, sem `tenant_id`, 
 | K-2 | `/spec` | Marcelo (painel ou CLI) | curl sem token (CA-6) | — | skill `verificar-producao` + `list_edge_functions` |
 | K-3 | `/spec` | skill `nova-migration`, `/implement` | SQL `_check` (CA-1 a CA-3); skill `validar-migrations`; contagem antes/depois no PR | `revisor-migration` + `revisor-seguranca` (drop de policy de Storage e de tabelas com ACL) + `revisor-codigo` | skill `verificar-producao` + `get_advisors` (security) |
 | K-4 | `/spec` | Marcelo (painel) ou script (P-5) | consulta antes/depois (CA-7) | `revisor-seguranca` se virar script (credencial e id fixo do bucket) | skill `verificar-producao` |
-| K-5 | `/spec` | Marcelo | contagem do export = contagem medida | — | — |
 
 ## Fora de escopo
 
@@ -125,13 +123,13 @@ Não há CA de outro tenant: as tabelas são catálogo global, sem `tenant_id`, 
   (`drop ... if exists`), com guarda de ordem e sem `cascade`.
 - **Tabelas/views/funções tocadas:**
   - apagadas: `legislacao_fontes`, `legislacao_documentos`, `legislacao_versoes`, `legislacao_alertas`,
-    `legislacao_relacoes` e, conforme P-3, `compras_api_secao_legislacao` (e `compras_api_secoes`);
+    `legislacao_relacoes`, `compras_api_secao_legislacao` e `compras_api_secoes`;
   - leitor: `api-pncp-legislacao` (removida); escritor: `sync-pncp-legislation` (já 410 pela 0042);
   - nenhuma view nem função SQL depende delas (08/11).
 - **ACL/RLS:** somem as ACLs e policies das tabelas apagadas e as duas policies do bucket em `storage.objects`.
   Nenhum grant novo.
 - **Storage:** bucket `pncp-legislation` apagado (27 objetos, 3.832.414 bytes em 08/11; recontar depois da 0042).
-- **Backfill/reprocessamento:** não. Contagem antes/depois no PR B (tabelas e bucket).
+- **Backfill/reprocessamento:** não. Contagem antes/depois no PR B (tabelas e bucket). Sem backup (P-1).
 - **Edge Functions republicadas no merge:** todas (regra do deploy); `api-pncp-legislacao` sai do repositório e é
   apagada à mão (K-2).
 - **Contrato com o Dashboard:** inalterado (o Dashboard não chama a função; P-7 confirma as telas jurídicas).
@@ -142,19 +140,15 @@ Não há CA de outro tenant: as tabelas são catálogo global, sem `tenant_id`, 
 ## Decisões do Marcelo
 
 - 08/11: `api-pncp-legislacao`, tabelas `legislacao_*` e bucket saem numa spec de remoção própria (P-4 da 0042).
+- 08/11: **sem backup** antes do drop (P-1). O lixo não tem valor e as 13 normas do seed são reproduzíveis pela
+  migration `20260920142857`.
+- 08/11: `compras_api_secao_legislacao` **e** `compras_api_secoes` são apagadas junto (P-3).
+- 08/11: `legislacao_relacoes` entra na remoção (P-4).
 
 ## Perguntas em aberto
 
-- **P-1 (backup):** exportar antes do drop (K-5, JSON das tabelas + cópia dos 27 objetos, fora do repositório) ou
-  apagar sem backup? Argumento para não exportar: o lixo não tem valor e as 13 normas do seed são reproduzíveis pela
-  migration `20260920142857`.
 - **P-2 (ordem):** dois PRs (função primeiro, migration depois do 404) ou um PR só com a função apagada logo antes do
   merge?
-- **P-3 (`compras_api_secao_legislacao` e `compras_api_secoes`):** a primeira (6 linhas) tem FK para
-  `legislacao_documentos` e não pode ficar órfã. Apagar as duas (nenhum leitor no código), apagar só a de cruzamento
-  e manter `compras_api_secoes` (14 seções da API Compras), ou outra saída?
-- **P-4 (`legislacao_relacoes`):** vazia, mas com FK para `legislacao_documentos`; não estava na lista de 08/11.
-  Entra na remoção?
 - **P-5 (bucket):** esvaziar e apagar pelo painel (27 objetos ou menos) ou por script de operação com `--dry-run`
   (aproveitando o `scripts/operacao/legislacao_apagar_arquivos.py` da 0042)?
 - **P-6 (Alimenta):** fica como limpeza da 0042, insumo da fase 4 da 0032, ou `parada` com uma linha no `ESCOPO.md`?

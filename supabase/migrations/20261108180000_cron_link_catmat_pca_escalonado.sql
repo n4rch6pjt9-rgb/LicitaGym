@@ -10,12 +10,14 @@
 --   * a rodada N processa a fatia offset = N * limite, com limite = total / 30 (mínimo 200, máximo 1000, o teto da
 --     função), contado na hora sobre a maior classe atendida (7830 ou 7220, ativos);
 --   * rodada sem fatia (offset além do total) não chama nada. Capacidade: 30 x 1000 = 30 mil itens por classe.
---   A rodada vem do minuto de now(): se o total mudar dentro da janela (sync do PCA às 06:43) ou o pg_cron atrasar
---   um disparo para o minuto seguinte, uma fatia pode repetir ou pular itens nesse dia; o
---   vínculo é idempotente (upsert) e o dia seguinte cobre o que faltou.
+--   A rodada vem do minuto de now() / 2: atraso de 1 minuto cai na mesma rodada; se o pg_cron atrasar 2 minutos ou
+--   mais, ou o total mudar dentro da janela (sync do PCA às 06:43), uma fatia pode repetir ou pular itens nesse dia;
+--   o vínculo é idempotente (upsert) e o dia seguinte cobre o que faltou.
 --
 -- pg_cron só existe no Supabase: no Postgres descartável da validação o bloco não agenda nada (mesmo padrão de
--- 20261108130000). Reaplicar não religa um job desligado à mão: só troca agenda e comando.
+-- 20261108130000), mas antes faz EXPLAIN do comando, para erro de sintaxe, coluna ou assinatura quebrar a validação
+-- e não o job em produção. Reaplicar só troca agenda e comando: job com active = false continua desligado; job
+-- removido com cron.unschedule é recriado (ativo), com aviso.
 -- Verificação em produção: select schedule, command from cron.job where jobname = 'licitagym-link-catmat-pca';
 -- e, no dia seguinte, private.cron_edge_chamadas sem HTTP 546 para esse job.
 
@@ -36,6 +38,8 @@ declare
                   (select count(*) from public.pca_itens where ativo and classe_material_servico = '7220')) as total) c) p
  where p.rodada * p.limite < p.total$cmd$;
 begin
+  -- Só planeja (não chama a Edge Function nem precisa de pg_net).
+  execute 'explain ' || v_comando;
   if not exists (select 1 from pg_extension where extname = 'pg_cron') then
     raise notice 'pg_cron indisponível: licitagym-link-catmat-pca não reagendado neste Postgres.';
     return;

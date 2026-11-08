@@ -3,8 +3,12 @@
 # Grava em licitacoes_externas, licitacao_itens e licitacao_resultados com proveniência `ingestao_origem = cron|manual` (spec 0023).
 # Pré-requisitos (secrets do repositório): SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY.
 # Roda com `--sem-documentos` no runner (mesmo padrão do Coletor PNCP).
-# Fontes ativas no runner: 12 portais que respondem ao WebService público (fiemg fica de fora por WAF 403;
-# fiems e fiemt ficam de fora do lote padrão por timeout de TLS em IPs de datacenter).
+# Fontes ativas no runner: 11 portais que respondem ao WebService público (fiemg fica de fora por WAF 403;
+# fiems e fiemt ficam de fora do lote padrão por timeout de TLS em IPs de datacenter; fiergs saiu do lote padrão em
+# 08/11/2026 porque o host passou a responder HTTP 403 ao runner, e bloqueio não se contorna: segue disponível só
+# por disparo manual, para conferir se voltou).
+# Cada execução fica registrada em private.coleta_externa_run (RPCs coleta_externa_iniciar/finalizar), que a saúde
+# operacional lê (coleta_externa_dias_sem_sucesso).
 name: Coletor Sistema S
 
 on:
@@ -13,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       fonte:
-        description: "todas | sestsenat | fiesc | firjan | fiergs | findes | fieb | sfiec | sescsp | sesc_senac_rs | sescdn | sescrj | sescba"
+        description: "todas (sem fiergs) | sestsenat | fiesc | firjan | fiergs | findes | fieb | sfiec | sescsp | sesc_senac_rs | sescdn | sescrj | sescba"
         default: "todas"
         required: false
       paginas:
@@ -51,7 +55,7 @@ jobs:
         run: |
           case "${FONTE}" in
             todas|"")
-              FONTES='["sestsenat","fiesc","firjan","fiergs","findes","fieb","sfiec","sescsp","sesc_senac_rs","sescdn","sescrj","sescba"]'
+              FONTES='["sestsenat","fiesc","firjan","findes","fieb","sfiec","sescsp","sesc_senac_rs","sescdn","sescrj","sescba"]'
               ;;
             sestsenat|fiesc|firjan|fiergs|findes|fieb|fiems|fiemt|sfiec|sescsp|sesc_senac_rs|sescdn|sescrj|sescba)
               FONTES="[\"${FONTE}\"]"

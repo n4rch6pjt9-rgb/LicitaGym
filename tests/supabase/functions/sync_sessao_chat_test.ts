@@ -23,8 +23,8 @@ function post(body: unknown = {}, auth: string | null = "Bearer segredo-de-teste
 }
 
 interface Db {
-  pipeline: Array<{ tenant_id: number; licitacao_id: number }>;
-  licitacoes: Array<Record<string, unknown>>;
+  /** Linhas que private.sessao_chat_alvos devolve (o filtro SQL é testado no _check.sql). */
+  alvos: Array<Record<string, unknown>>;
   runs: Array<Record<string, unknown>>;
   mensagens?: Array<Record<string, unknown>>;
 }
@@ -34,18 +34,17 @@ function mock(db: Db) {
   db.mensagens ??= [];
   // deno-lint-ignore no-explicit-any
   const m: any = {
-    schema: (s: string) => ({ from: (t: string) => m.from(`${s}.${t}`) }),
+    schema: (s: string) => ({
+      from: (t: string) => m.from(`${s}.${t}`),
+      rpc: (nome: string) =>
+        Promise.resolve(
+          nome === "sessao_chat_alvos" ? { data: db.alvos, error: null } : { data: null, error: new Error(nome) },
+        ),
+    }),
     from: (tabela: string) => {
       // deno-lint-ignore no-explicit-any
       const filtros: Array<(r: any) => boolean> = [];
-      const fonte = () =>
-        tabela === "pipeline_oportunidades"
-          ? db.pipeline
-          : tabela === "licitacoes_externas"
-          ? db.licitacoes
-          : tabela === "private.integra_compras_run"
-          ? db.runs
-          : db.mensagens!;
+      const fonte = () => tabela === "private.integra_compras_run" ? db.runs : db.mensagens!;
       // deno-lint-ignore no-explicit-any
       const b: any = {
         select: () => b,
@@ -89,14 +88,13 @@ function mock(db: Db) {
 
 function lic(id: number, chave: string | null, dataFim: string | null, extra: Record<string, unknown> = {}) {
   return {
-    id,
+    licitacao_id: id,
     codigo_externo: `pncp-${id}`,
     link_sistema_origem: chave
       ? `https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/acompanhamento-compra?compra=${chave}`
       : null,
     raw: {},
     data_fim: dataFim,
-    data_homologacao: null,
     ...extra,
   };
 }
@@ -127,7 +125,7 @@ Deno.test("sync-sessao-chat: sem o segredo do cron responde 401 e não consulta 
   for (const auth of [null, "Bearer errado"]) {
     let n = 0;
     const res = await handleRequest(post({}, auth), {
-      getSupabase: () => mock({ pipeline: [], licitacoes: [], runs: [] }),
+      getSupabase: () => mock({ alvos: [], runs: [] }),
       sincronizar: () => (n++, Promise.resolve(OK)),
     });
     assertEquals(res.status, 401);
@@ -138,54 +136,59 @@ Deno.test("sync-sessao-chat: sem o segredo do cron responde 401 e não consulta 
 Deno.test("sync-sessao-chat: GET responde 405; corpo inválido ou limite fora da faixa responde 400", async () => {
   const get = await handleRequest(new Request("https://x/sync-sessao-chat", { method: "GET" }));
   assertEquals(get.status, 405);
-  const db = { pipeline: [], licitacoes: [], runs: [] };
+  const db = { alvos: [], runs: [] };
   assertEquals((await rodar(db, "não é json")).res.status, 400);
   assertEquals((await rodar(db, { limite: 0 })).res.status, 400);
   assertEquals((await rodar(db, { limite: 1000 })).res.status, 400);
   assertEquals((await rodar(db, { max_chamadas_dia: -1 })).res.status, 400);
 });
 
-Deno.test("K-3: só compras do pipeline, com chave oficial, sem homologação e com sessão prevista ou aberta", async () => {
+Deno.test("K-3: só alvos com chave oficial do Compras.gov.br, uma consulta por compra, sessão mais recente primeiro", async () => {
   const db: Db = {
-    pipeline: [
-      { tenant_id: 1, licitacao_id: 1 },
-      { tenant_id: 1, licitacao_id: 2 },
-      { tenant_id: 1, licitacao_id: 3 },
-      { tenant_id: 1, licitacao_id: 4 },
-      { tenant_id: 1, licitacao_id: 5 },
-      { tenant_id: 1, licitacao_id: 6 },
-      { tenant_id: 2, licitacao_id: 6 }, // mesma compra em dois tenants: uma consulta
-    ],
-    licitacoes: [
-      lic(1, "18017805000292026", "2026-11-10T12:00:00Z"), // sessão aberta hoje
-      lic(2, "18016005003122026", "2026-11-10T16:30:00Z"), // abre em 1h30 (prevista)
-      lic(3, "18017405000472026", "2026-11-12T12:00:00Z"), // daqui a 2 dias: ainda não
-      lic(4, "45102305000112026", "2026-09-01T12:00:00Z"), // mais de 30 dias: fora
+    alvos: [
+      lic(1, "18017805000292026", "2026-11-10T12:00:00Z"),
+      lic(2, "18016005003122026", "2026-11-10T16:30:00Z"),
       lic(5, null, "2026-11-10T12:00:00Z"), // sem chave do Compras.gov.br
       lic(6, "11111111111112026", "2026-11-09T12:00:00Z"),
-      lic(7, "22222222222222026", "2026-11-10T12:00:00Z"), // fora do pipeline
-      lic(8, "33333333333332026", "2026-11-10T12:00:00Z", { data_homologacao: "2026-11-10T13:00:00Z" }),
+      lic(9, "11111111111112026", "2026-11-09T12:00:00Z"), // mesma compra em outra licitação: uma consulta
+      lic(10, "22222222222222026", null), // sem data_fim
     ],
     runs: [],
   };
-  db.pipeline.push({ tenant_id: 1, licitacao_id: 8 });
   const { res, json, consultados } = await rodar(db);
   assertEquals(res.status, 200);
-  assertEquals(consultados.map((a) => a.licitacaoId), [2, 1, 6]); // sessão mais recente primeiro
+  assertEquals(consultados.map((a) => a.licitacaoId), [2, 1, 6]);
   assertEquals(json.alvos, 3);
   assertEquals(json.consultadas, 3);
 });
 
-Deno.test("K-3: compra consultada há menos de 25 min (cron ou usuário) fica para a próxima rodada", async () => {
+Deno.test("K-3: rodízio, compras além do limite entram na rodada seguinte e quem foi consultado vai para o fim", async () => {
   const db: Db = {
-    pipeline: [{ tenant_id: 1, licitacao_id: 1 }, { tenant_id: 1, licitacao_id: 2 }],
-    licitacoes: [
+    alvos: [1, 2, 3, 4].map((i) => lic(i, `1801780500029202${i}`.slice(0, 17), `2026-11-10T1${i}:00:00Z`)),
+    runs: [],
+  };
+  // rodada 1: as 2 sessões mais recentes (4 e 3)
+  const r1 = await rodar(db, { limite: 2 });
+  assertEquals(r1.consultados.map((a) => a.licitacaoId), [4, 3]);
+  // registra as consultas como se a rodada tivesse gravado, há 60 min
+  for (const a of r1.consultados) {
+    db.runs.push({ chave_compra: a.chaveCompra, iniciado_em: "2026-11-10T14:00:00.000Z", terminado_em: "x", chamadas: { "404": 2 } });
+  }
+  // rodada 2: nunca consultadas primeiro (2 e 1)
+  const r2 = await rodar(db, { limite: 2 });
+  assertEquals(r2.consultados.map((a) => a.licitacaoId), [2, 1]);
+  assertEquals(r2.json.parada, "limite");
+});
+
+Deno.test("K-3: compra consultada há menos de 55 min (cron ou usuário) fica para a próxima rodada", async () => {
+  const db: Db = {
+    alvos: [
       lic(1, "18017805000292026", "2026-11-10T12:00:00Z"),
       lic(2, "18016005003122026", "2026-11-10T12:00:00Z"),
     ],
     runs: [
-      { chave_compra: "18017805000292026", iniciado_em: "2026-11-10T14:50:00.000Z", chamadas: { "200": 2 } },
-      { chave_compra: "18016005003122026", iniciado_em: "2026-11-10T14:00:00.000Z", chamadas: { "200": 2 } },
+      { chave_compra: "18017805000292026", iniciado_em: "2026-11-10T14:10:00+00:00", terminado_em: "x", chamadas: { "200": 2 } },
+      { chave_compra: "18016005003122026", iniciado_em: "2026-11-10T13:59:00+00:00", terminado_em: "x", chamadas: { "200": 2 } },
     ],
   };
   const { json, consultados } = await rodar(db);
@@ -195,17 +198,18 @@ Deno.test("K-3: compra consultada há menos de 25 min (cron ou usuário) fica pa
 
 Deno.test("K-3: teto diário de chamadas conta o que já foi gasto hoje (Brasília) e para antes de passar", async () => {
   const db: Db = {
-    pipeline: [1, 2, 3].map((id) => ({ tenant_id: 1, licitacao_id: id })),
-    licitacoes: [
+    alvos: [
       lic(1, "18017805000292026", "2026-11-10T12:00:00Z"),
       lic(2, "18016005003122026", "2026-11-10T11:00:00Z"),
       lic(3, "18017405000472026", "2026-11-10T10:00:00Z"),
     ],
     runs: [
       // ontem em Brasília (02:59Z = 23:59 de 09/11): não conta
-      { chave_compra: "99999999999992026", iniciado_em: "2026-11-10T02:59:00.000Z", chamadas: { "200": 50 } },
-      // hoje: 6 chamadas
-      { chave_compra: "99999999999992026", iniciado_em: "2026-11-10T03:01:00.000Z", chamadas: { "200": 4, "404": 2 } },
+      { chave_compra: "99999999999992026", iniciado_em: "2026-11-10T02:59:00.000Z", terminado_em: "x", chamadas: { "200": 50 } },
+      // hoje: 4 chamadas fechadas
+      { chave_compra: "99999999999992026", iniciado_em: "2026-11-10T03:01:00.000Z", terminado_em: "x", chamadas: { "200": 2, "404": 2 } },
+      // hoje: execução morta por timeout, sem contagem: conta 2 (pior caso)
+      { chave_compra: "88888888888882026", iniciado_em: "2026-11-10T09:00:00.000Z", terminado_em: null, chamadas: {} },
     ],
   };
   const { json, consultados } = await rodar(db, { max_chamadas_dia: 10 });
@@ -216,8 +220,7 @@ Deno.test("K-3: teto diário de chamadas conta o que já foi gasto hoje (Brasíl
 
 Deno.test("K-3: limite de compras por rodada", async () => {
   const db: Db = {
-    pipeline: [1, 2, 3].map((id) => ({ tenant_id: 1, licitacao_id: id })),
-    licitacoes: [
+    alvos: [
       lic(1, "18017805000292026", "2026-11-10T12:00:00Z"),
       lic(2, "18016005003122026", "2026-11-10T11:00:00Z"),
       lic(3, "18017405000472026", "2026-11-10T10:00:00Z"),
@@ -231,8 +234,7 @@ Deno.test("K-3: limite de compras por rodada", async () => {
 
 Deno.test("K-3: falha numa compra não impede as outras e não expõe detalhe interno", async () => {
   const db: Db = {
-    pipeline: [1, 2].map((id) => ({ tenant_id: 1, licitacao_id: id })),
-    licitacoes: [
+    alvos: [
       lic(1, "18017805000292026", "2026-11-10T12:00:00Z"),
       lic(2, "18016005003122026", "2026-11-10T11:00:00Z"),
     ],
@@ -253,10 +255,8 @@ Deno.test("K-3 (fim a fim com a fixture oficial): cron grava as mensagens e o re
   const exemplo = JSON.parse(
     await Deno.readTextFile(new URL("../fixtures/integra_compras_chat_exemplo.json", import.meta.url)),
   );
-  const { ErroIntegraCompras } = await import("../../../supabase/functions/_shared/serpro.ts");
   const db: Db = {
-    pipeline: [{ tenant_id: 1, licitacao_id: 1 }],
-    licitacoes: [lic(1, "99998803000012026", "2026-11-10T12:00:00Z")],
+    alvos: [lic(1, "99998803000012026", "2026-11-10T12:00:00Z")],
     runs: [],
   };
   const consultas = {
@@ -276,7 +276,8 @@ Deno.test("K-3 (fim a fim com a fixture oficial): cron grava as mensagens e o re
           chaveCompra: null,
         })),
       }),
-    consultarDiligencias: () => Promise.reject(new ErroIntegraCompras("Integra Compras respondeu HTTP 404.", 404)),
+    // O cliente real devolve 404 como "sem mensagens", sem erro.
+    consultarDiligencias: () => Promise.resolve({ status: 404, mensagens: [] }),
   };
   const res = await handleRequest(post(), {
     getSupabase: () => mock(db),
@@ -285,6 +286,7 @@ Deno.test("K-3 (fim a fim com a fixture oficial): cron grava as mensagens e o re
       sincronizarCompra(s, { chaveCompra: a.chaveCompra, licitacaoId: a.licitacaoId, origem: "cron" }, consultas),
   });
   const json = await res.json();
+  assertEquals(json.resultados[0].ok, true);
   assertEquals(json.resultados[0].novas_inseridas, 3);
   assertEquals(db.mensagens!.length, 3);
   assertEquals(db.runs[0].origem, "cron");
@@ -295,4 +297,29 @@ Deno.test("K-3 (fim a fim com a fixture oficial): cron grava as mensagens e o re
 Deno.test("inicioDoDiaBrasilia: meia-noite de Brasília em UTC", () => {
   assertEquals(inicioDoDiaBrasilia(new Date("2026-11-10T15:00:00Z")), "2026-11-10T03:00:00.000Z");
   assertEquals(inicioDoDiaBrasilia(new Date("2026-11-10T02:00:00Z")), "2026-11-09T03:00:00.000Z");
+});
+
+Deno.test("K-3: orçamento de tempo, nenhuma compra nova depois de 90 s", async () => {
+  const db: Db = {
+    alvos: [
+      lic(1, "18017805000292026", "2026-11-10T12:00:00Z"),
+      lic(2, "18016005003122026", "2026-11-10T11:00:00Z"),
+    ],
+    runs: [],
+  };
+  let t = 0;
+  const consultados: number[] = [];
+  const res = await handleRequest(post(), {
+    getSupabase: () => mock(db),
+    agora: () => AGORA,
+    relogioMs: () => t,
+    sincronizar: (_s, a) => {
+      consultados.push(a.licitacaoId);
+      t += 95_000;
+      return Promise.resolve(OK);
+    },
+  });
+  const json = await res.json();
+  assertEquals(consultados, [1]);
+  assertEquals(json.parada, "tempo");
 });

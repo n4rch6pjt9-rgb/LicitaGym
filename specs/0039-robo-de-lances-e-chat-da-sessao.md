@@ -87,13 +87,18 @@ tenant. A etapa 1 corrige esse código em vez de criar outro:
 - Segundo PR (08/11/2026): coleta agendada e retenção.
   - K-3 agendado: Edge Function `sync-sessao-chat` (o `cron_chamar_edge` só chama a raiz de uma função, não
     `api-disputa/sync-chat`). A lógica de consulta e gravação foi para `_shared/sessao_chat.ts`, usada pelas duas.
-    Alvos: compras do pipeline com chave oficial, sem homologação e com `data_fim` entre 30 dias atrás e 2 h à frente.
-    Custo: compra consultada há menos de 25 min fica de fora, teto de 300 chamadas por dia (Brasília) e 10 compras
-    por rodada. Agenda: a cada 30 min, das 8h às 19h30, de segunda a sexta. Disparável pela tela de Syncs.
+    Alvos (`private.sessao_chat_alvos`): compras do pipeline de empresa ativa, fora das etapas perdida e descartada,
+    com chave oficial, sem homologação e com `data_fim` entre 30 dias atrás e 2 h à frente.
+    Custo: rodízio (quem foi consultado há mais tempo vem primeiro), compra consultada há menos de 55 min fica de fora
+    (cerca de uma leitura por hora), teto de 300 chamadas por dia (Brasília, inclui as manuais; execução interrompida
+    conta pelo pior caso), 10 compras por rodada e nenhuma compra nova depois de 90 s. Agenda: a cada 30 min, das 8h
+    às 19h30, de segunda a sexta. Disparável pela tela de Syncs. A rota manual não tem teto diário, só o intervalo
+    de 5 min por compra.
     A "amostra de homologados" fica para o módulo 7.
   - K-7: `private.sessao_mensagens_retencao()`, diária. `expira_em` = menor homologação das licitações consultadas
     com a chave + 90 dias; texto vencido vira nulo e a linha fica. A ligação com a licitação vem da coluna nova
-    `integra_compras_run.licitacao_id`. Compra sem `data_homologacao` não expira.
+    `integra_compras_run.licitacao_id`. Homologação desfeita na fonte tira o prazo de quem ainda tem texto.
+    Limitação: compra que nunca homologa (deserta, fracassada, revogada) não expira. Ver pergunta 7.
 - Ficam para depois: o alerta (K-5, CA-7), que precisa de um sino de notificações que ainda não existe, e a aba
   Sessão no Dashboard (CA-9).
 
@@ -203,3 +208,5 @@ Só a etapa 1 tem CAs completos. As etapas 2 a 4 ganham CAs na revisão desta sp
    continua fora, e a fonte do chat passa a ser o Integra Compras; a linha 436 da matriz de segurança ganha a nota
    "lance só por código determinístico autorizado pelo operador, nunca pelo modelo".
 6. O contrato está no CNPJ da Vectra Hub. Quando a LicitaGym tiver CNPJ próprio, precisa de contrato novo.
+7. Prazo do texto bruto de compra que nunca homologa (deserta, fracassada, revogada, anulada). Proposta: 90 dias
+   depois do fim do recebimento de propostas mais 180 dias. Até a decisão, o texto dessas compras fica.

@@ -474,6 +474,9 @@ Deno.test("CA-3: 404 grava zero mensagens e o registro conta os 404 (cobrados), 
   assertEquals(db.mensagens.length, 0);
   assertEquals(db.runs![0].chamadas, { "404": 2 });
   assertEquals(db.runs![0].erro, null);
+  // K-7: a execução guarda a licitação de onde veio a chave (base da retenção).
+  assertEquals(db.runs![0].licitacao_id, 101);
+  assertEquals(db.runs![0].origem, "usuario");
 });
 
 Deno.test("CA-5: 502 registra erro, não apaga nem inventa mensagem e responde 502", async () => {

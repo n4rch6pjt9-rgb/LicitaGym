@@ -235,3 +235,32 @@ Deno.test("Serpro: categoria e tipoRemetente ausentes ficam nulos, não viram te
     f.restaurar();
   }
 });
+
+Deno.test("Serpro: 400 guarda o motivo do corpo, curto e sem token", async () => {
+  const corpo = JSON.stringify({
+    mensagem: "Parâmetro ordem é obrigatório",
+    eco: "Bearer abc.def.ghi",
+    hash: "a".repeat(40),
+  }) + " ".repeat(10) + "x".repeat(400);
+  const f = comFetch(() => new Response(corpo, { status: 400 }));
+  try {
+    const e = await assertRejects(() => consultarChatSerpro(CHAVE), ErroIntegraCompras);
+    assertEquals(e.status, 400);
+    assertEquals(e.message.startsWith('Integra Compras respondeu HTTP 400: {"mensagem":"Parâmetro ordem é obrigatório"'), true);
+    assertEquals(e.message.includes("abc.def.ghi"), false);
+    assertEquals(e.message.includes("a".repeat(40)), false);
+    assertEquals(e.message.length <= "Integra Compras respondeu HTTP 400: ".length + 301, true);
+  } finally {
+    f.restaurar();
+  }
+});
+
+Deno.test("Serpro: 502 não lê o corpo (página de manutenção)", async () => {
+  const f = comFetch(() => new Response("<html>manutenção</html>", { status: 502 }));
+  try {
+    const e = await assertRejects(() => consultarChatSerpro(CHAVE), ErroIntegraCompras);
+    assertEquals(e.message, "Integra Compras respondeu HTTP 502.");
+  } finally {
+    f.restaurar();
+  }
+});

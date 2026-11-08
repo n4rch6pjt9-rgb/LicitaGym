@@ -13,6 +13,7 @@ import type { ResultadoConsultaIntegra } from "../_shared/serpro.ts";
 import { extrairChaveCompra17Digitos, sincronizarCompra } from "../_shared/sessao_chat.ts";
 import { pisoTenantCentavos, unidadeNorm } from "../_shared/agentes/preco.ts";
 import { recomendar, type RecomendacaoLance } from "../_shared/recomendacao.ts";
+import { listarSessoes } from "./sessoes.ts";
 
 /** Intervalo mínimo entre consultas manuais da mesma compra (cada chamada ao Integra Compras é cobrada). */
 const INTERVALO_MINIMO_USUARIO_MS = 5 * 60_000;
@@ -23,6 +24,7 @@ export interface ApiDisputaContext {
   isCron?: (req: Request) => boolean;
   consultarChat?: (chave: string) => Promise<ResultadoConsultaIntegra>;
   consultarDiligencias?: (chave: string) => Promise<ResultadoConsultaIntegra>;
+  agora?: () => number;
 }
 
 function getDefaultServiceClient(): SupabaseClient {
@@ -80,6 +82,12 @@ export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Prom
         isLicitagymAdmin(user)
       );
       tenantId = tenantRes.tenant;
+    }
+
+    // 0. GET /api-disputa/sessoes: compras do pipeline com o estado do chat da sessão (tela "Sessão").
+    if (req.method === "GET" && caminho === "sessoes") {
+      const sessoes = await listarSessoes(supabase, tenantId, ctx?.agora ? ctx.agora() : Date.now());
+      return jsonResponse({ ok: true, fonte: "integra_compras", sessoes });
     }
 
     // 1. GET /api-disputa/estrategia?licitacao_id=...

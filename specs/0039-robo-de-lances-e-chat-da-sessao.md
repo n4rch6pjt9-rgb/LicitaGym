@@ -1,7 +1,7 @@
 # 0039: Criar o robô de lances e o chat da sessão do Compras.gov.br
 
-- **Status:** parada. Decisão do Marcelo em 23/10/2026: o código espera a fase 3 da 0032 terminar (regra de foco do
-  `docs/produto/ESCOPO.md`). A spec fica escrita para ser revisada e aprovada nesse intervalo.
+- **Status:** etapa 1 em implementação (retomada a pedido do Marcelo em 07/11/2026). As
+  etapas 2 a 4 continuam paradas. Decisão de 23/10/2026: o código esperaria a fase 3 da 0032.
 - **Alimenta:** módulos 5 (Alerta de disputa), 6 (Sessão do certame) e 7 (Inteligência de sessão) do
   `docs/produto/ESCOPO.md`, e um módulo novo, o 10 (Robô de lances). Não alimenta a 0032.
 - **Repositório:** os dois, mais uma extensão de navegador (pasta nova, ver "Perguntas em aberto"). O backend vai ao
@@ -65,13 +65,36 @@ Os itens 1 a 4 e 10 do template valem como estão. Arquivos específicos desta s
 | Etapa | Entrega | Contratos | Risco |
 |---|---|---|---|
 | 1 | Chat oficial: tabela, coletor do Integra Compras, aba Sessão, alerta de convocação | K-1 a K-5 | baixo: só leitura de fonte oficial |
-| 2 | Extensão só de leitura: lê a sala, mostra piso e próximo lance válido, grava a disputa | K-6, K-8 | baixo: não envia nada |
+| 2 | Extensão só de leitura: lê a sala, mostra piso e próximo lance válido, grava a disputa, confere o layout a cada sessão | K-6, K-8, K-11 | baixo: não envia nada |
 | 3 | Lance com confirmação: a extensão preenche o lance e o operador confirma com um clique | K-9 | médio |
 | 4 | Lance automático dentro do piso, com autorização por certame | K-9, K-10 | alto: só depois de a etapa 3 rodar em pregões reais |
 
 Cada etapa é um PR (ou um par backend + front). A etapa 1 mede o atraso das mensagens num pregão real. Esse número
 decide se o alerta de convocação pode depender só da API ou precisa da extensão (SLA do contrato: faixa de 90% a 94%
 de disponibilidade, paradas programadas excluídas, manutenção de fim de semana).
+
+## Implementação da etapa 1 (07/11/2026)
+
+O backend desta spec já tinha entrado em 25/10 pelo Cursor (`api-disputa`, `_shared/serpro.ts`, migration
+`20261025000000`). Conferido contra o exemplo oficial (`docs/compras-gov/integra-compras.md`), não funcionava com a API
+real: esperava objeto em vez de lista, campos com outros nomes e caminho de diligências errado, e guardava o chat por
+tenant. A etapa 1 corrige esse código em vez de criar outro:
+
+- K-1 e K-2: migration `20261108120000_sessao_mensagens_global.sql` (tira `disputa_mensagens`, vazia em produção).
+- K-3 e K-4: rotas `POST /api-disputa/sync-chat` e `GET /api-disputa/chat` (em vez de `sync-integra-compras` e
+  `api-sessao`). Secrets: `SERPRO_CONSUMER_KEY` e `SERPRO_CONSUMER_SECRET` (nome já usado no código).
+- Ficam para o próximo PR: o cron que chama o `sync-chat` (K-3), o alerta (K-5, CA-7), a retenção (K-7, CA-8, prazo
+  ainda em aberto) e a aba Sessão no Dashboard (CA-9).
+
+| CA | Teste |
+|---|---|
+| CA-1 | `supabase/tests/sessao_mensagens_check.sql` |
+| CA-2 | `serpro_test.ts` e `api_disputa_test.ts` ("CA-2: ...") |
+| CA-3 | `serpro_test.ts` e `api_disputa_test.ts` ("CA-3: ...") |
+| CA-4 | `serpro_test.ts` ("CA-4: ...") |
+| CA-5 | `serpro_test.ts` e `api_disputa_test.ts` ("CA-5: ...") |
+| CA-6 | coberto por `lerTenantDoUsuario` (`_shared/tenant.ts`), sem teste novo |
+| CA-7 a CA-9 | próximo PR |
 
 ## Contrato
 
@@ -87,6 +110,7 @@ de disponibilidade, paradas programadas excluídas, manutenção de fim de seman
 | K-8 | Estratégia por certame (etapa Proposta) | piso por item e por grupo (`pisoTenantCentavos`; regra de agregação do grupo escrita na spec da 0036), intervalo mínimo de diferença de valores lido do edital, modo de disputa, tipo de lance (ataque \| intermediário), janela de atuação | registro por certame e item, com versão | piso ausente = robô não atua no item | admin do tenant |
 | K-9 | Envio de lance pela extensão, etapas 3 e 4 | estratégia K-8 + estado lido da sala | lance calculado em centavos, nunca abaixo do piso, respeitando o intervalo do edital; etapa 3 pede clique; etapa 4 envia sozinho só com K-10 | qualquer leitura incerta da tela: não envia | operador |
 | K-10 | Autorização do robô por certame | aceite do admin do tenant: termo de responsabilidade (IN 73, art. 13, III), piso assinado, botão de desligar | trilha de auditoria por lance: valor, hora, regra aplicada, quem autorizou | sem aceite: só etapa 3 | admin do tenant |
+| K-11 | Autoverificação de layout da extensão, etapa 2 | ao abrir a sala e a cada item aberto | confere os elementos de que o robô depende (botão de lance, melhor lance, posição, tempo, item) contra um contrato versionado de seletores; resultado `ok` ou `divergente` com a impressão da estrutura (sem dado do operador) vai para o backend como evento; divergência vira alerta para a equipe LicitaGym | divergência: a extensão para de atuar no certame e avisa o operador; o valor final mínimo nativo (art. 19) continua valendo | extensão do operador; alerta para admin da plataforma |
 
 ## Critérios de aceite
 
@@ -103,6 +127,8 @@ Só a etapa 1 tem CAs completos. As etapas 2 a 4 ganham CAs na revisão desta sp
 | CA-7 | K-5 | **Dado** uma mensagem nova "convoca o fornecedor ... para envio de anexo" num certame do pipeline, **quando** o coletor grava, **então** nasce uma notificação para o tenant com link para a aba Sessão. | Deno |
 | CA-8 | K-7 | **Dado** mensagens com `expira_em` no passado, **quando** a rotina de retenção roda, **então** o texto bruto é apagado e a contagem de K-2 continua igual. | SQL ou Deno |
 | CA-9 | aba Sessão | **Dado** um certame sem mensagens, **quando** o operador abre a aba, **então** vê o estado vazio com a fonte e o horário da última consulta, nunca mensagem fictícia. | vitest `src/test/...` |
+| CA-10 | K-11 | **Dado** uma sala em que o botão de lance mudou de seletor, **quando** a extensão abre o item, **então** ela marca `divergente`, não envia nem sugere lance, avisa o operador e grava o evento no backend. | etapa 2 (a definir) |
+| CA-11 | K-11 | **Dado** um evento `divergente`, **quando** chega ao backend, **então** nasce um alerta para o admin da plataforma com a versão do contrato de seletores e a tela afetada. | etapa 2 (a definir) |
 
 ## Skills e agentes por contrato
 
@@ -111,11 +137,15 @@ Só a etapa 1 tem CAs completos. As etapas 2 a 4 ganham CAs na revisão desta sp
 | K-1, K-2, K-7 | `/spec` | skill `nova-migration` | `supabase/tests/sessao_mensagens_check.sql` | `revisor-migration` + `revisor-seguranca` | `validar-migrations` antes; `verificar-producao` + `get_advisors` depois |
 | K-3, K-4, K-5 | `/spec` | `/implement` (TDD) | Deno / pytest | `revisor-codigo` + `revisor-seguranca` | `verificar-producao` |
 | aba Sessão, sino | `/spec` | agente `frontend-dashboard` | vitest | `revisor-codigo` + `revisor-seguranca` + `ux-ui-licitagym` | `deploy-dashboard` |
-| K-6, K-8 a K-10 | revisão desta spec depois da etapa 1 | a definir | a definir | `revisor-codigo` + `revisor-seguranca` | a definir |
+| K-6, K-8 a K-11 | revisão desta spec depois da etapa 1 | a definir | a definir | `revisor-codigo` + `revisor-seguranca` | a definir |
 
 ## Fora de escopo
 
 - Tudo da lista "Fica fora, por decisão de 23/10" em "Desenho".
+- Monitorar o layout por cron na nuvem ou no computador logado no portal (exige guardar credencial e enfrentar
+  captcha; a sala só existe com sessão aberta). A detecção é a K-11, dentro da sessão real do operador.
+- Correção automática de seletor: o modelo (Gemini) pode sugerir o seletor novo a partir do evento K-11, mas a
+  correção entra só por PR revisado e testado. Nada gerado por modelo vai para o código de lance sem revisão humana.
 - Outros portais (Portal de Compras Públicas, BLL, Licitanet, Sistema S). O Portal de Compras Públicas tem plano
   próprio de leitura do chat público (`docs/superpowers/plans/2026-10-12-acompanhamento-portal-compras-publicas.md`).
 - Responder ao pregoeiro pelo chat ou enviar documento. O robô só dá lance.
@@ -143,12 +173,16 @@ Só a etapa 1 tem CAs completos. As etapas 2 a 4 ganham CAs na revisão desta sp
 - 23/10/2026: o chat é dado global da plataforma, não do tenant. O MVP tem uma empresa só.
 - 23/10/2026: a finalidade principal do chat é a avaliação dos certames.
 - 23/10/2026: o código espera a fase 3 da 0032.
+- 07/11/2026: retomada da etapa 1.
+- 07/11/2026: mudança de layout do portal é detectada pela própria extensão (K-11), com alerta para a equipe;
+  correção sugerida por modelo só entra por PR revisado.
+- 08/11/2026: retenção do texto bruto do chat (K-7) = 90 dias depois da homologação; a avaliação fica, sem dado pessoal.
 
 ## Perguntas em aberto
 
 1. Serpro: guardar o texto do chat para avaliação e por quanto tempo está coberto pela cláusula 3.1.5? A cobrança é
    por chamada (documentação) ou por contratação monitorada (anexo do contrato, 3.1.5.7)?
-2. Prazo de retenção do texto bruto (K-7). Proposta: 90 dias depois da homologação.
+2. ~~Prazo de retenção do texto bruto (K-7).~~ Decidido em 08/11/2026: 90 dias depois da homologação.
 3. Atraso das mensagens na API durante a sessão ao vivo (medir na etapa 1).
 4. Onde mora o código da extensão: pasta nova no repositório Dashboard ou repositório próprio.
 5. Mudanças de regra a registrar no `ESCOPO.md` ao aprovar: módulo 10 (Robô de lances); "coleta que exige captcha"

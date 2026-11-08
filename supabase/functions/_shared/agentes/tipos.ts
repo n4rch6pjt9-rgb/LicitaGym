@@ -1,4 +1,4 @@
-export const REGRA_VERSAO = "2026-10-26.2";
+export const REGRA_VERSAO = "2026-11-08.1";
 
 export type Agente = "edital" | "preco" | "juridico" | "concorrencia" | "recomendacao";
 export type Severidade = "info" | "atencao" | "critico";

@@ -1,6 +1,6 @@
 # 0041: Contar prazos em dias úteis com calendário de feriados e extrair os gates do TR
 
-- **Status:** rascunho
+- **Status:** em execução (K-1 entregue no PR #465; K-2 e K-3 no PR 3a)
 - **Alimenta:** spec-mãe 0032, fase 2 (o limite de impugnação vira o prazo sugerido de "Ler o edital") e fase 3 (regras
   novas no agente de edital). A parte pós-vitória (minuta do art. 92, fluxo de pagamento, ARP) **não** alimenta fase
   da 0032 e fica `parada` (ver "Fora de escopo"), salvo decisão do Marcelo.
@@ -96,6 +96,23 @@ Itens 1 a 10 do template. Arquivos desta spec:
   - recálculo só de oportunidades com abertura futura, mantendo a versão antiga (pergunta 5 respondida);
   - pós-vitória = módulo "Execução e contrato" (pergunta 6 respondida).
 - 07/11/2026: LG-T05 = `14133-F01-T04` (pergunta 1, em parte; demais LG-T em `specs/nexor-de-para-tarefas.md`).
+
+## Decisões do Marcelo (08/11/2026)
+
+- **Pergunta 1 (LG-T):** resolvida no de-para (`specs/nexor-de-para-tarefas.md`, PR #467); a planilha está em
+  `specs/nexor_spec.xlsx` e os códigos curtos agora são `NX-Txx`.
+- **Pergunta 2 (hora-limite):** só a data. O achado não traz hora; a hora fica "conforme edital" até o agente
+  extraí-la do texto.
+- **Pergunta 3 (lista de feriados):** a do PR #465 (`public.feriados_nacionais`, só lei federal).
+- **Pergunta 5 (achados antigos):** só as próximas análises. `REGRA_VERSAO` sobe para `2026-11-08.1`; achado antigo
+  fica como está, com a versão antiga visível.
+- **Ordem:** K-2 e K-3 primeiro (PR 3a da Fase 0 Nexor, sem migration). K-4, K-5 e K-6 depois.
+
+### Achado ao implementar K-3 (08/11/2026)
+`api-agentes/repo.ts` grava `data_abertura: null` no dossiê de propósito: `licitacoes_externas` não tem data
+inequívoca da sessão pública. Por isso, em produção, o achado `prazo.impugnacao` não é gerado hoje, com ou sem
+feriados. K-3 deixa o cálculo pronto (feriados carregados no dossiê e no hash do contexto); passar a gerar o achado
+depende de uma fonte oficial para a data de abertura, que fica para outra spec.
 
 ## Perguntas em aberto
 

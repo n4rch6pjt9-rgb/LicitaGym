@@ -236,3 +236,22 @@ def test_interrupcao_fecha_cancelada(sb, monkeypatch):
 )
 def test_modo_registro(anos, processos, esperado):
     assert P.modo_registro(anos, processos) == esperado
+
+
+@pytest.mark.parametrize(
+    ("texto", "esperado"),
+    [
+        (
+            "Authorization: Bearer abc.def-123 falhou",
+            "Authorization: Bearer *** falhou",
+        ),
+        ("chave eyJhbGciOi.eyJzdWIi.assinatura no erro", "chave *** no erro"),
+        (
+            "GET https://x.invalid/a?apikey=segredo&b=1",
+            "GET https://x.invalid/a?apikey=***&b=1",
+        ),
+        ("fiergs: HTTP 403", "fiergs: HTTP 403"),
+    ],
+)
+def test_mascarar_segredos(texto, esperado):
+    assert P.mascarar_segredos(texto) == esperado

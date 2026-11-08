@@ -904,6 +904,14 @@ def status_final(resumo: dict) -> str:
     return "concluida"
 
 
+_SEGREDOS = re.compile(r"(?i)(bearer\s+)\S+|eyJ[\w-]+\.[\w-]+\.[\w-]*|((?:apikey|api_key|token|key)=)[^&\s]+")
+
+
+def mascarar_segredos(texto: str) -> str:
+    """Mascara token Bearer, JWT e chave em query string antes de gravar mensagem de erro no banco."""
+    return _SEGREDOS.sub(lambda m: (m.group(1) or m.group(2) or "") + "***", texto)
+
+
 class RegistroColeta:
     """Registra a execução em private.coleta_externa_run pelas RPCs coleta_externa_iniciar/finalizar.
 
@@ -926,7 +934,7 @@ class RegistroColeta:
         r = resumo or {}
         detalhe: dict[str, Any] = {}
         if erro:
-            detalhe["erro"] = erro[:500]
+            detalhe["erro"] = mascarar_segredos(erro)[:500]
         if r.get("paginacao_avisos"):
             detalhe["paginacao_avisos"] = [str(a)[:200] for a in r["paginacao_avisos"][:20]]
         try:

@@ -3,7 +3,8 @@
 --   2. iniciar abre 'executando'; finalizar fecha com status e contagens e devolve true;
 --   3. finalizar de novo a mesma execução devolve false e não sobrescreve;
 --   4. status final inválido é recusado;
---   5. a saúde (coleta_externa_dias_sem_sucesso) passa a ter dado depois de uma execução concluída.
+--   5. modo/fonte inválidos recusados; contagem negativa vira 0; execução órfã vira incompleta;
+--   6. a saúde (coleta_externa_dias_sem_sucesso) passa a ter dado depois de uma execução concluída.
 -- Fixtures revertidas ao final.
 begin;
 
@@ -61,6 +62,41 @@ begin
   end;
   if not rejeitou then
     raise exception 'COLETA RUN CHECK FALHOU: status final inválido aceito';
+  end if;
+
+  -- modo e fonte inválidos: recusados pela CHECK e pela FK da tabela
+  rejeitou := false;
+  begin
+    perform public.coleta_externa_iniciar('fiesc', 'qualquer', null);
+  exception when check_violation then
+    rejeitou := true;
+  end;
+  if not rejeitou then
+    raise exception 'COLETA RUN CHECK FALHOU: modo inválido aceito';
+  end if;
+  rejeitou := false;
+  begin
+    perform public.coleta_externa_iniciar('fonte_que_nao_existe', 'leads', null);
+  exception when foreign_key_violation then
+    rejeitou := true;
+  end;
+  if not rejeitou then
+    raise exception 'COLETA RUN CHECK FALHOU: fonte inexistente aceita';
+  end if;
+
+  -- contagem negativa vira 0; execução órfã (> 6 h em executando) vira incompleta ao abrir outra da mesma fonte
+  v_id := public.coleta_externa_iniciar('fiesc', 'leads', null);
+  perform public.coleta_externa_finalizar(v_id, 'concluida_com_erros', -5, 1, 0, 0, -1, null);
+  select * into r from private.coleta_externa_run where id = v_id;
+  if r.listados <> 0 or r.erros <> 0 then
+    raise exception 'COLETA RUN CHECK FALHOU: contagem negativa gravada: %', row_to_json(r);
+  end if;
+  v_id := public.coleta_externa_iniciar('fiesc', 'leads', null);
+  update private.coleta_externa_run set started_at = now() - interval '7 hours' where id = v_id;
+  perform public.coleta_externa_iniciar('fiesc', 'leads', null);
+  select * into r from private.coleta_externa_run where id = v_id;
+  if r.status <> 'incompleta' or r.finished_at is null then
+    raise exception 'COLETA RUN CHECK FALHOU: execução órfã não foi encerrada: %', row_to_json(r);
   end if;
 
   select s.valor into v_valor from private.saude_operacional_resumo() s

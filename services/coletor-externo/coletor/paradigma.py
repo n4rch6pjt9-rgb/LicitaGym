@@ -42,6 +42,7 @@ import argparse
 import json
 import logging
 import re
+import signal
 import sys
 import time
 from dataclasses import dataclass
@@ -892,10 +893,15 @@ def modo_registro(anos: list[int] | None, processos: list[tuple[int, int]] | Non
 
 
 def status_final(resumo: dict) -> str:
-    """Mesmo critério do código de saída: erro sem nada no escopo é falha."""
+    """Status gravado em coleta_externa_run; 'falhou' é também o critério do código de saída 1.
+
+    Erro sem nada no escopo é falha. Aviso de paginação (teto de segurança ou página repetida) não é fim confirmado
+    da listagem: a coleta conta como concluída com erros, nunca como concluída limpa."""
     if resumo.get("erros") and not resumo.get("no_escopo"):
         return "falhou"
-    return "concluida_com_erros" if resumo.get("erros") else "concluida"
+    if resumo.get("erros") or resumo.get("paginacao_avisos"):
+        return "concluida_com_erros"
+    return "concluida"
 
 
 class RegistroColeta:
@@ -974,15 +980,26 @@ def main(argv: list[str] | None = None) -> int:
     if args.processo:
         processos = [(int(p.split("/")[0]), int(p.split("/")[1]) if "/" in p else MODULO_PADRAO) for p in args.processo]
     anos = [int(a) for a in args.anos.split(",")] if args.anos else None
-    registro = RegistroColeta(sb, fonte.slug, modo_registro(anos, processos), termos)
+    # Só a coleta agendada (origem cron) entra em coleta_externa_run: é ela que a saúde acompanha
+    # (coleta_externa_dias_sem_sucesso, pior fonte). Disparo manual de uma fonte fora do lote agendado deixaria a
+    # métrica crítica para sempre. Fonte bloqueada no construtor do portal (ex.: fiemg) nem chega aqui.
+    registro = RegistroColeta(sb if args.origem == "cron" else None, fonte.slug, modo_registro(anos, processos), termos)
+    # Timeout do runner manda SIGTERM: vira SystemExit para fechar o registro como falha em vez de deixá-lo aberto.
+    sigterm_anterior = signal.signal(signal.SIGTERM, lambda _sig, _frame: sys.exit(143))
     try:
         r = _executar(args, fonte, portal, sb, termos, processos, anos, CadastroFornecedores)
+    except KeyboardInterrupt:
+        registro.finalizar("cancelada", erro="interrompida (KeyboardInterrupt)")
+        raise
     except BaseException as e:
         registro.finalizar("falhou", erro=f"{type(e).__name__}: {e}")
         raise
-    registro.finalizar(status_final(r), r)
+    finally:
+        signal.signal(signal.SIGTERM, sigterm_anterior)
+    status = status_final(r)
+    registro.finalizar(status, r)
     print(json.dumps(r, ensure_ascii=False))
-    return 1 if r["erros"] and not r["no_escopo"] else 0
+    return 1 if status == "falhou" else 0
 
 
 def _executar(args, fonte: Fonte, portal: "PortalParadigma", sb, termos: list[str],

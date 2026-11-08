@@ -10,7 +10,12 @@
 --   * public.coleta_externa_iniciar(fonte, modo, termos) -> id: abre a execução com status 'executando';
 --   * public.coleta_externa_finalizar(id, status, contagens, detalhe) -> boolean: fecha a execução que ainda está
 --     'executando' (devolve false se não achar, sem sobrescrever execução já fechada).
---   Vocabulário de modo e status é o das constraints da tabela (20260925120000).
+--   Vocabulário de modo e status é o das constraints da tabela (20260925120000): a CHECK de modo e a FK de fonte
+--   (fontes_externas.slug) da própria tabela recusam valor inválido; a RPC valida só o status final.
+--   * ao abrir, execuções da mesma fonte presas em 'executando' há mais de 6 h (processo morto pelo runner) viram
+--     'incompleta', para não ficar linha órfã;
+--   * contagens negativas viram 0.
+--   Só a coleta agendada (origem cron) registra: é ela que a saúde acompanha.
 --
 -- ACL: security definer com search_path fixo; EXECUTE só service_role (o coletor usa a service role key).
 -- Verificação: supabase/tests/coleta_externa_run_rpc_check.sql. Idempotente.
@@ -30,6 +35,11 @@ begin
   if p_fonte is null or p_modo is null then
     raise exception 'coleta_externa_iniciar: fonte e modo são obrigatórios' using errcode = '22004';
   end if;
+  update private.coleta_externa_run r
+     set status = 'incompleta', finished_at = now(),
+         detalhe_erros = coalesce(r.detalhe_erros, '{}'::jsonb)
+                         || jsonb_build_object('erro', 'execução não fechada em 6 h (processo interrompido)')
+   where r.fonte = p_fonte and r.status = 'executando' and r.started_at < now() - interval '6 hours';
   insert into private.coleta_externa_run (fonte, modo, status, termos)
   values (p_fonte, p_modo, 'executando', p_termos)
   returning id into v_id;
@@ -59,11 +69,11 @@ begin
   end if;
   update private.coleta_externa_run r
      set status = p_status,
-         listados = coalesce(p_listados, 0),
-         processos = coalesce(p_processos, 0),
-         no_escopo = coalesce(p_no_escopo, 0),
-         itens_escopo = coalesce(p_itens_escopo, 0),
-         erros = coalesce(p_erros, 0),
+         listados = greatest(coalesce(p_listados, 0), 0),
+         processos = greatest(coalesce(p_processos, 0), 0),
+         no_escopo = greatest(coalesce(p_no_escopo, 0), 0),
+         itens_escopo = greatest(coalesce(p_itens_escopo, 0), 0),
+         erros = greatest(coalesce(p_erros, 0), 0),
          detalhe_erros = p_detalhe_erros,
          finished_at = now()
    where r.id = p_id and r.status = 'executando';

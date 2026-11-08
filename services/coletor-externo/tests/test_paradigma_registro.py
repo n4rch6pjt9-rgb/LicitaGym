@@ -30,6 +30,8 @@ class SupabaseFalso:
 ARGS_BASE = [
     "--fonte",
     "fiesc",
+    "--origem",
+    "cron",
     "--sem-catalogo",
     "--sem-documentos",
     "--sem-resultados",
@@ -166,6 +168,62 @@ def test_dry_run_nao_registra(monkeypatch):
     assert (
         registros and registros[0][0] is None
     )  # cliente nulo: RegistroColeta não grava
+
+
+def test_registro_sem_cliente_nao_chama_nada():
+    reg = P.RegistroColeta(None, "fiesc", "leads", ["academia"])
+    reg.finalizar("concluida", {"erros": 0})
+    assert reg.id is None
+
+
+def test_disparo_manual_nao_registra(sb, monkeypatch):
+    """Só a coleta agendada entra na saúde: fonte fora do lote rodada à mão não pode virar alerta eterno."""
+    monkeypatch.setattr(
+        P, "coletar", lambda *a, **k: {"erros": 0, "no_escopo": 1, "listados": 1}
+    )
+    argv = [a for a in ARGS_BASE if a not in ("--origem", "cron")]
+    assert P.main([*argv, "--origem", "manual"]) == 0
+    assert sb.rpcs == []
+
+
+def test_paginacao_cortada_sem_erro_fecha_concluida_com_erros(sb, monkeypatch):
+    monkeypatch.setattr(
+        P,
+        "coletar",
+        lambda *a, **k: {
+            "listados": 300,
+            "processos": 3,
+            "no_escopo": 1,
+            "itens_escopo": 1,
+            "erros": 0,
+            "paginacao_avisos": ["teto de segurança atingido"],
+        },
+    )
+    assert P.main(ARGS_BASE) == 0
+    assert _finalizacao(sb)["p_status"] == "concluida_com_erros"
+
+
+def test_bucket_ausente_fecha_falhou_e_propaga_system_exit(sb, monkeypatch):
+    import coletor.destino as destino
+
+    arm = MagicMock(dentro_do_saas=False)
+    monkeypatch.setattr(destino.Armazenamento, "do_ambiente", staticmethod(lambda: arm))
+    argv = [a for a in ARGS_BASE if a != "--sem-documentos"]
+    with pytest.raises(SystemExit):
+        P.main(argv)
+    fim = _finalizacao(sb)
+    assert fim["p_status"] == "falhou" and fim["p_erros"] == 1
+    assert "SUPABASE_STORAGE_BUCKET" in fim["p_detalhe_erros"]["erro"]
+
+
+def test_interrupcao_fecha_cancelada(sb, monkeypatch):
+    def interrompe(*a, **k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(P, "coletar", interrompe)
+    with pytest.raises(KeyboardInterrupt):
+        P.main(ARGS_BASE)
+    assert _finalizacao(sb)["p_status"] == "cancelada"
 
 
 @pytest.mark.parametrize(

@@ -15,6 +15,8 @@ const ETAPA_COLUMNS = "id,nome,fase,ordem,desfecho,exige_motivo,padrao";
 export const LIMITE_LISTA = 1000;
 /** Norma do catálogo de tarefas (tarefas_catalogo.norma; seed 20260927100100). Outro regulamento terá o seu. */
 export const NORMA_CATALOGO = "LEI_14133_2021";
+/** Modelos Nexor (spec 0042): só para o tenant que tem etapa NX. */
+export const NORMA_NX = "NX";
 
 /** Erro de regra vindo do banco (pipeline_mover / pipeline_etapa_excluir), já com status HTTP. `codigo` vai na
  * resposta quando o cliente precisa distinguir o caso (lista_invalida, versao_desatualizada). */
@@ -42,8 +44,11 @@ export interface PipelineRepo {
   criarEtapa(tenant: number, e: { nome: string; fase: Fase; desfecho: Desfecho | null; exige_motivo: boolean }, userId: string): Promise<Etapa>;
   atualizarEtapa(tenant: number, id: number, campos: Partial<Omit<Etapa, "id" | "padrao">>, userId: string): Promise<Etapa | null>;
   excluirEtapa(tenant: number, id: number, moverPara: number | null, userId: string): Promise<number>;
-  /** Tarefas ativas do catálogo 14.133 (para o modelo da etapa), com fase e base legal. */
-  listarCatalogo(): Promise<TarefaCatalogo[]>;
+  /** Tarefas ativas do catálogo 14.133 (para o modelo da etapa), com fase e base legal. Tenant com etapa NX
+   * (spec 0042) recebe também os modelos NX. */
+  listarCatalogo(tenant: number): Promise<TarefaCatalogo[]>;
+  /** Etapa NX (processo_fases) que a etapa do tenant representa; null fora do NX ou etapa de outra empresa. */
+  faseDaEtapa(tenant: number, etapaId: number): Promise<string | null>;
   /** Modelo de tarefas da etapa (ativas e desligadas), com o resumo do catálogo. null se a etapa não é da empresa.
    * Sem as tarefas de agente (spec 0035): o front anterior as trataria como da empresa e as gravaria de volta. */
   listarModelo(tenant: number, etapaId: number): Promise<ModeloTarefa[] | null>;
@@ -204,11 +209,18 @@ export function createSupabaseRepo(client: SupabaseClient): PipelineRepo {
       return (data as unknown as Etapa) ?? null;
     },
 
-    async listarCatalogo() {
+    async listarCatalogo(tenant) {
+      // Spec 0042: o tenant que tem etapa NX também escolhe modelos NX; a Konnen continua só com a 14.133.
+      const nx = await client.from("pipeline_etapas").select("id", { count: "exact", head: true })
+        .eq("tenant_id", tenant).not("fase_codigo", "is", null);
+      if (nx.error) throw new Error(nx.error.message);
+      const comNx = (nx.count ?? 0) > 0;
       // Base legal embutida (FK tarefa_codigo): uma consulta só, sem o corte silencioso do max_rows numa segunda.
-      const { data, error } = await client.from("tarefas_catalogo")
+      const consulta = client.from("tarefas_catalogo")
         .select("codigo,fase_codigo,parent_codigo,ordem,titulo,natureza,ator,prazo_unidade,fase:processo_fases(nome,ordem),base:tarefas_catalogo_base_legal(artigo,dispositivo)")
-        .eq("ativo", true).eq("norma", NORMA_CATALOGO).order("fase_codigo").order("ordem");
+        .eq("ativo", true);
+      const { data, error } = await (comNx ? consulta.in("norma", [NORMA_CATALOGO, NORMA_NX]) : consulta.eq("norma", NORMA_CATALOGO))
+        .order("fase_codigo").order("ordem");
       if (error) throw new Error(error.message);
       const linhas = (data ?? []) as Array<Record<string, unknown>>;
       // max_rows do PostgREST é 1000: lista cheia pode estar cortada; erro em vez de catálogo incompleto.
@@ -228,6 +240,14 @@ export function createSupabaseRepo(client: SupabaseClient): PipelineRepo {
       });
     },
 
+    async faseDaEtapa(tenant, etapaId) {
+      const { data, error } = await client.from("pipeline_etapas").select("fase_codigo")
+        .eq("tenant_id", tenant).eq("id", etapaId).maybeSingle();
+      if (error) throw new Error(error.message);
+      const f = (data as { fase_codigo?: string | null } | null)?.fase_codigo;
+      return typeof f === "string" ? f : null;
+    },
+
     async listarModelo(tenant, etapaId) {
       const { data: etapa, error: e1 } = await client.from("pipeline_etapas").select("id").eq("tenant_id", tenant).eq("id", etapaId).maybeSingle();
       if (e1) throw new Error(e1.message);
@@ -236,7 +256,7 @@ export function createSupabaseRepo(client: SupabaseClient): PipelineRepo {
         .from("pipeline_etapa_tarefas")
         .select(
           "id,etapa_id,origem,tarefa_codigo,chave,titulo,descricao,prazo_horas,ordem,ativo,responsavel_tipo,responsavel_papel,responsavel_user_id," +
-            "catalogo:tarefas_catalogo(titulo,fase_codigo,natureza,prazo_unidade,ativo)",
+            "catalogo:tarefas_catalogo(titulo,fase_codigo,natureza,prazo_unidade,ativo,responsavel_padrao,prazo_horas_apos_etapa)",
         )
         .eq("tenant_id", tenant).eq("etapa_id", etapaId).in("origem", ["catalogo", "empresa"])
         .order("ativo", { ascending: false }).order("ordem").order("id");

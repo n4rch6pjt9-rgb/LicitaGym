@@ -86,7 +86,17 @@ export interface ModeloTarefa {
   ordem: number;
   ativo: boolean;
   /** Resumo do catálogo (só origem = catalogo). */
-  catalogo: { titulo: string; fase_codigo: string; natureza: string; prazo_unidade: string; ativo: boolean } | null;
+  catalogo: {
+    titulo: string;
+    fase_codigo: string;
+    natureza: string;
+    prazo_unidade: string;
+    ativo: boolean;
+    /** Spec 0042: só modelos NX ('papel:operacao', 'agente:juridico', ...); a tarefa nasce com esse responsável. */
+    responsavel_padrao: string | null;
+    /** Spec 0042: SLA interno do modelo NX, em horas a partir da entrada na etapa. */
+    prazo_horas_apos_etapa: number | null;
+  } | null;
   /** Spec 0035: papel (fila admin/operação; null = admin) ou usuário da empresa. Agente vem em ModeloAgente. */
   responsavel_tipo: "papel" | "usuario";
   responsavel_papel: "admin" | "operacao" | null;

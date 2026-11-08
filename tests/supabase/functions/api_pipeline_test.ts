@@ -180,6 +180,7 @@ function repoMemoria() {
     salvarAgentes: (_t, etapaId, itens) => Promise.resolve().then(() => salvarAgentes(etapaId, itens)),
     reaplicarTarefas: (_t, licitacaoId) =>
       Promise.resolve(ops.has(licitacaoId) ? { criadas: 2, existentes: 1, bloqueio: null } : { criadas: 0, existentes: 0, bloqueio: "fora_do_pipeline" }),
+    faseDaEtapa: (_t, etapaId) => Promise.resolve(etapaId === 2 ? "A01" : null),
     listarCatalogo: () =>
       Promise.resolve([{
         codigo: "14133-F01-T01", fase_codigo: "F01", fase_nome: "Edital publicado", fase_ordem: 1, parent_codigo: null, ordem: 10,
@@ -628,6 +629,8 @@ function clienteCatalogo(resultado: { data: unknown; error: unknown }, filtros: 
   q.select = () => q;
   q.order = () => q;
   q.eq = (c: string, v: unknown) => (filtros.push(`${c}=${v}`), q);
+  q.in = (c: string, v: unknown[]) => (filtros.push(`${c} in ${v.join(",")}`), q);
+  q.not = (c: string, op: string, v: unknown) => (filtros.push(`${c} not ${op} ${v}`), q);
   q.then = (ok: (v: unknown) => unknown, falha?: (e: unknown) => unknown) => Promise.resolve(resultado).then(ok, falha);
   return { from: () => q } as unknown as Parameters<typeof createSupabaseRepo>[0];
 }
@@ -648,21 +651,22 @@ Deno.test("catalogo_listar (repo real): base legal ordenada e unida como no banc
     ],
     error: null,
   }, filtros));
-  const cat = await repo.listarCatalogo();
+  const cat = await repo.listarCatalogo(1);
   assertEquals(cat.map((c) => [c.codigo, c.base_legal, c.fase_nome, c.fase_ordem, c.parent_codigo]), [
     // produção (en_US.UTF-8, 11/10): string_agg dá "art. 54 (§ 1º); art. 54 (caput)" para 14133-F01-T01
     ["14133-F01-T01", "art. 54 (§ 1º); art. 54 (caput)", "Edital publicado", 1, null],
     ["14133-FX-T01", null, "Trilha", null, "14133-F01-T01"],
   ]);
-  assertEquals(filtros, ["ativo=true", "norma=LEI_14133_2021"]);
+  // tenant sem etapa NX (contagem 0 no cliente falso): só a 14.133, como antes
+  assertEquals(filtros, ["tenant_id=1", "fase_codigo not is null", "ativo=true", "norma=LEI_14133_2021"]);
 });
 
 Deno.test("catalogo_listar (repo real): erro do banco rejeita (não vira catálogo vazio); lista cheia acusa corte", async () => {
-  const e = await createSupabaseRepo(clienteCatalogo({ data: null, error: { message: "sem catálogo" } })).listarCatalogo()
+  const e = await createSupabaseRepo(clienteCatalogo({ data: null, error: { message: "sem catálogo" } })).listarCatalogo(1)
     .then(() => null, (x) => x);
   assertEquals(e instanceof Error ? e.message : e, "sem catálogo");
   const cheia = Array.from({ length: 1000 }, (_, i) => ({ codigo: `c${i}`, fase_codigo: "F01", ordem: i, base: [] }));
-  const e2 = await createSupabaseRepo(clienteCatalogo({ data: cheia, error: null })).listarCatalogo().then(() => null, (x) => x);
+  const e2 = await createSupabaseRepo(clienteCatalogo({ data: cheia, error: null })).listarCatalogo(1).then(() => null, (x) => x);
   assertEquals(e2 instanceof Error, true);
 });
 
@@ -815,4 +819,36 @@ Deno.test("K-5/K-7 (repo real): reordenar e criar usam as funções com lock; c�
   const dup = createSupabaseRepo(clienteEtapas({ pipeline_etapa_criar: { data: null, error: { code: "23505", message: "duplicate key" } } }, []));
   const e = await dup.criarEtapa(1, { nome: "Nova", fase: "proposta", desfecho: null, exige_motivo: false }, "u").then(() => null, (x) => x);
   assertEquals(e instanceof ErroPipeline ? e.status : e, 409);
+});
+
+// Spec 0042 (K-5): tenant com etapa NX recebe também os modelos NX; a etapa diz qual fase NX ela representa.
+Deno.test("0042 CA-6 (repo real): tenant com etapa NX lista 14.133 e NX; sem etapa NX, só 14.133", async () => {
+  const filtros: string[] = [];
+  const base = { data: [], error: null };
+  const cliente = (contagem: number) => {
+    const q: Record<string, unknown> = {};
+    let tabela = "";
+    q.select = () => q;
+    q.order = () => q;
+    q.eq = (c: string, v: unknown) => (filtros.push(`${tabela}.${c}=${v}`), q);
+    q.in = (c: string, v: unknown[]) => (filtros.push(`${tabela}.${c} in ${v.join(",")}`), q);
+    q.not = () => q;
+    q.then = (ok: (v: unknown) => unknown) =>
+      Promise.resolve(tabela === "pipeline_etapas" ? { data: null, error: null, count: contagem } : base).then(ok);
+    return { from: (t: string) => (tabela = t, q) } as unknown as Parameters<typeof createSupabaseRepo>[0];
+  };
+  await createSupabaseRepo(cliente(14)).listarCatalogo(7);
+  assertEquals(filtros.filter((f) => f.startsWith("tarefas_catalogo.norma")), ["tarefas_catalogo.norma in LEI_14133_2021,NX"]);
+  filtros.length = 0;
+  await createSupabaseRepo(cliente(0)).listarCatalogo(7);
+  assertEquals(filtros.filter((f) => f.startsWith("tarefas_catalogo.norma")), ["tarefas_catalogo.norma=LEI_14133_2021"]);
+  assertEquals(filtros.includes("pipeline_etapas.tenant_id=7"), true);
+});
+
+Deno.test("0042 K-6: etapa_tarefas_listar devolve fase_codigo da etapa (null fora do NX)", async () => {
+  const { repo } = repoMemoria();
+  const r = await chamar(ctx(repo), { action: "etapa_tarefas_listar", etapa_id: 2 });
+  assertEquals([r.status, r.json.fase_codigo], [200, "A01"]);
+  const r2 = await chamar(ctx(repo), { action: "etapa_tarefas_listar", etapa_id: 1 });
+  assertEquals([r2.status, r2.json.fase_codigo], [200, null]);
 });

@@ -208,5 +208,5 @@ Só a etapa 1 tem CAs completos. As etapas 2 a 4 ganham CAs na revisão desta sp
    continua fora, e a fonte do chat passa a ser o Integra Compras; a linha 436 da matriz de segurança ganha a nota
    "lance só por código determinístico autorizado pelo operador, nunca pelo modelo".
 6. O contrato está no CNPJ da Vectra Hub. Quando a LicitaGym tiver CNPJ próprio, precisa de contrato novo.
-7. Prazo do texto bruto de compra que nunca homologa (deserta, fracassada, revogada, anulada). Proposta: 90 dias
-   depois do fim do recebimento de propostas mais 180 dias. Até a decisão, o texto dessas compras fica.
+7. Prazo do texto bruto de compra que nunca homologa (deserta, fracassada, revogada, anulada). Proposta: 180 dias
+   depois do fim do recebimento de propostas. Até a decisão, o texto dessas compras fica.

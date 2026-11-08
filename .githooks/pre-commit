@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Pre-commit do LicitaGym: lint e testes afetados só pelos arquivos do commit (meta: < 30 s).
+#   0. higiene do commit                  (scripts/ci/checar-higiene.sh: conflito, arquivo proibido, raiz)
 #   1. lint dos arquivos staged           (scripts/ci/lint-alterados.sh)
 #   2. deno check das funções tocadas     (scripts/ci/deno-check-funcoes.sh; _shared tocado = todas)
 #   3. deno test dos testes afetados      (testes staged + testes que citam a função ou o módulo _shared)
@@ -16,6 +17,9 @@ mapfile -t ARQS < <(git diff --cached --name-only --diff-filter=ACMR)
 [ "${#ARQS[@]}" -eq 0 ] && exit 0
 tem() { command -v "$1" >/dev/null 2>&1 || { echo "aviso: $1 não instalado, etapa pulada"; return 1; }; }
 PY=python3; command -v python3 >/dev/null 2>&1 || PY=python
+
+echo "[pre-commit] higiene (conflito de merge, arquivo proibido, raiz)"
+git diff --cached --name-status -z --diff-filter=ACMR | HIGIENE_STAGED=1 scripts/ci/checar-higiene.sh - || rc=1
 
 echo "[pre-commit] lint"
 PULAR_SEM_FERRAMENTA=1 scripts/ci/lint-alterados.sh "${ARQS[@]}" || rc=1

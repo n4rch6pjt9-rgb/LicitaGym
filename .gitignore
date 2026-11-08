@@ -99,3 +99,14 @@ docs/ai-audits/
 
 # Arquivo temporario do Excel/Word enquanto o documento esta aberto
 ~$*
+
+# Logs, dumps de coleta e temporários locais (nunca versionar; ver scripts/ci/checar-higiene.sh)
+*.log
+*_resultado.json
+*.tmp
+.tmp/
+.sync_state/
+*.sqlite3
+*.sqlite3-journal
+**/artifacts/
+Thumbs.db

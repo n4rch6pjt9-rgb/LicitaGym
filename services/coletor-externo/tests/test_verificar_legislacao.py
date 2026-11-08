@@ -52,12 +52,16 @@ class Baixador:
 class SupabaseFalso:
     """Registra toda chamada; só selecionar devolve dado."""
 
-    def __init__(self, linhas: list[dict]):
+    def __init__(self, linhas: list[dict] | Exception):
         self.linhas = linhas
         self.chamadas: list[str] = []
+        self.filtros: dict[str, str] = {}
 
     def selecionar(self, tabela: str, **filtros: str) -> list[dict]:
         self.chamadas.append(f"selecionar:{tabela}")
+        self.filtros = filtros
+        if isinstance(self.linhas, Exception):
+            raise self.linhas
         return list(self.linhas)
 
     def __getattr__(self, nome: str):
@@ -115,6 +119,8 @@ def test_ca7_artigo_conferido_que_nao_e_mais_substring_sai_divergente_e_so_ha_se
     assert status == {("LEI_14133_2021", 41): "confere", ("LEI_14133_2021", 42): "divergente"}
     assert rel.codigo_saida() != 0
     assert sb.chamadas == ["selecionar:norma_dispositivos"]
+    # só os conferidos: sem o filtro, os não conferidos voltariam como "divergente" todo trimestre
+    assert sb.filtros == {"select": "norma,artigo,texto,fonte_url", "conferido_oficial": "eq.true"}
     assert baixar.urls == [URL_LEI]  # a mesma página é baixada uma vez só
 
 
@@ -158,14 +164,18 @@ class Resp:
     def __init__(self, status: int, conteudo: bytes = b"<p>ok</p>", headers: dict | None = None):
         self.status_code, self.content, self.headers = status, conteudo, headers or {}
 
+    def iter_content(self, chunk_size: int):
+        for i in range(0, len(self.content), chunk_size):
+            yield self.content[i:i + chunk_size]
+
 
 class SessaoFalsa:
     def __init__(self, respostas: list):
         self.respostas = list(respostas)
         self.chamadas = 0
 
-    def get(self, url, timeout, headers):
-        assert timeout == vl.TIMEOUT_S
+    def get(self, url, timeout, headers, stream=False):
+        assert timeout == vl.TIMEOUT_S and stream
         self.chamadas += 1
         r = self.respostas.pop(0)
         if isinstance(r, Exception):
@@ -201,3 +211,45 @@ def test_baixar_http_falha_ate_o_limite_e_200_vazio_nao_e_sucesso():
     assert s.chamadas == vl.TENTATIVAS
     with pytest.raises(vl.ErroDownload):
         vl.baixar_http("https://x", SessaoFalsa([Resp(200, b"")] * vl.TENTATIVAS), lambda _s: None)
+
+
+def test_resposta_acima_do_teto_e_erro_nao_texto_truncado(monkeypatch):
+    monkeypatch.setattr(vl, "MAX_BYTES", 10)
+    with pytest.raises(vl.ErroDownload, match="maior que"):
+        vl.baixar_http("https://x", SessaoFalsa([Resp(200, b"<p>" + b"a" * 100 + b"</p>")]), lambda _s: None)
+
+
+def test_html_utf8_declarado_e_decodificado_como_utf8():
+    pagina = ("<html><head><meta charset=\"utf-8\"></head><body><p>Instrução Normativa nº 65</p>"
+              "</body></html>").encode("utf-8")
+    assert "Instrução Normativa nº 65" in vl.normalizar_html(pagina)
+
+
+def test_tag_sem_fechamento_nao_trava_e_some_do_texto():
+    texto = vl.normalizar_html(("<p>Art. 1. " + "<a" * 20000 + " fim</p>").encode("cp1252"))
+    assert texto.startswith("Art. 1.")
+
+
+@pytest.mark.parametrize("url", ["http://www.planalto.gov.br/x.htm", "https://www.legjur.com/x",
+                                 "https://169.254.169.254/computeMetadata/v1/", "https://gov.br.exemplo.com/x"])
+def test_url_fora_dos_dominios_oficiais_nao_e_baixada(url):
+    baixar = Baixador({})
+    rel = vl.verificar([], [{"norma": "LEI_14133_2021", "artigo": 41, "fonte_url": url, "texto": "Art. 41."}], baixar)
+    assert [a.status for a in rel.artigos] == ["nao_verificado"]
+    assert baixar.urls == []
+
+
+@pytest.mark.parametrize("falha", [requests.HTTPError("401 Unauthorized"), RuntimeError("Supabase: página repetida")])
+def test_falha_ao_ler_o_banco_e_erro_de_execucao_nunca_mudou(falha, tmp_path):
+    corpus = tmp_path / "corpus.json"
+    corpus.write_text(json.dumps(_corpus(None)), encoding="utf-8")
+    baixar = Baixador({})
+    assert vl.executar(str(corpus), SupabaseFalso(falha), baixar) == vl.SAIDA_ERRO
+    assert baixar.urls == []
+
+
+def test_corpus_ilegivel_e_erro_de_execucao(tmp_path):
+    ruim = tmp_path / "corpus.json"
+    ruim.write_text("{nao e json", encoding="utf-8")
+    assert vl.executar(str(ruim), SupabaseFalso([]), Baixador({})) == vl.SAIDA_ERRO
+    assert vl.executar(str(tmp_path / "nao-existe.json"), SupabaseFalso([]), Baixador({})) == vl.SAIDA_ERRO

@@ -38,3 +38,21 @@ Deno.test("CA-3: o código não importa mais o cliente admin nem o lock do sync"
   const codigo = await Deno.readTextFile("./supabase/functions/sync-pncp-legislation/index.ts");
   assertEquals(/supabase-admin|acquireSyncLock|createServiceClient/.test(codigo), false);
 });
+
+Deno.test("CA-3: contexto padrão (requireCronAuth real) sem Bearer responde 401", async () => {
+  const anterior = Deno.env.get("SYNC_CRON_SECRET");
+  Deno.env.set("SYNC_CRON_SECRET", "segredo-de-teste-0042");
+  try {
+    const { resultado, chamadas } = await semRede(() => Promise.resolve(handleRequest(post())));
+    assertEquals(resultado.status, 401);
+    assertEquals(chamadas, 0);
+  } finally {
+    if (anterior === undefined) Deno.env.delete("SYNC_CRON_SECRET");
+    else Deno.env.set("SYNC_CRON_SECRET", anterior);
+  }
+});
+
+Deno.test("CA-3: método diferente de POST continua 405 antes da auth", () => {
+  const res = handleRequest(new Request("http://x/sync-pncp-legislation"), { validarCron: () => true });
+  assertEquals(res.status, 405);
+});

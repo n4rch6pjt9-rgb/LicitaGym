@@ -12,7 +12,7 @@
 --     API do Compras (compras_api_secao_legislacao). Documento que não existe é ignorado (idempotente).
 --   * apaga os 21 documentos por id (lista explícita, conferida em produção em 08/11; nunca por padrão de título).
 -- Fora daqui: os 27 arquivos no bucket pncp-legislation (Storage, ~3,8 MB) saem pelo script de operação
--- scripts/operacao/legislacao_apagar_arquivos.py (API de Storage, com --dry-run), rodado pelo Marcelo.
+-- scripts/ops/legislacao_apagar_arquivos.py (API de Storage; sem --executar só lista), rodado pelo Marcelo.
 -- Backup: não (decisão de 08/11: o lixo não tem valor; as normas do seed ficam).
 -- ACL: função nova sem EXECUTE para public, anon, authenticated nem service_role (só o dono, nas migrations).
 -- Verificação: supabase/tests/legislacao_limpeza_catalogo_check.sql. Idempotente.
@@ -30,6 +30,7 @@ as $fn$
 declare
   v_norma text;
   v_apagados integer;
+  v_relacoes_externas integer;
 begin
   if p_ids is null or cardinality(p_ids) = 0 then
     return 0;
@@ -42,6 +43,14 @@ begin
           or exists (select 1 from public.compras_api_secao_legislacao s where s.documento_id = d.id));
   if v_norma is not null then
     raise exception 'legislacao_apagar_documentos: a lista tem norma do seed; nada apagado: %', v_norma;
+  end if;
+
+  select count(*) into v_relacoes_externas
+    from public.legislacao_relacoes r
+   where (r.documento_origem_id = any (p_ids) and not r.documento_destino_id = any (p_ids))
+      or (r.documento_destino_id = any (p_ids) and not r.documento_origem_id = any (p_ids));
+  if v_relacoes_externas > 0 then
+    raise notice 'legislacao_apagar_documentos: % relação(ões) com documento fora da lista também saem', v_relacoes_externas;
   end if;
 
   update public.legislacao_documentos set versao_atual_id = null

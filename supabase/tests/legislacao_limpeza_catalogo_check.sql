@@ -1,6 +1,6 @@
 -- Spec 0042 (K-3, CA-5): limpeza do catálogo legislacao_* (migration 20261109000100_legislacao_limpeza_catalogo).
 --   1. Nenhum dos 21 documentos-lixo da lista existe mais (documentos, versões, alertas).
---   2. As normas do seed (tipo_norma preenchido) que existirem continuam 'vigente'.
+--   2. As normas do seed 20260920142857 (por url_canonica) que existirem continuam 'vigente'.
 --   3. private.legislacao_apagar_documentos(uuid[]): apaga documento sem tipo_norma com versões e alertas; recusa
 --      documento com tipo_norma (norma do seed); rodar de novo não muda nada. EXECUTE de ninguém além do dono.
 -- As linhas de teste são desfeitas no fim (bloco interno encerrado por exceção sentinela).
@@ -22,6 +22,7 @@ declare
     '36cbd6e7-5187-4f2c-af23-995f9254f06f']::uuid[];
   v_norma uuid;
   v_lixo_teste uuid;
+  v_lixo_secao uuid;
   v_versao uuid;
   v_n bigint;
 begin
@@ -37,7 +38,20 @@ begin
   if v_n > 0 then
     raise exception 'LIMPEZA CHECK FALHOU (CA-5): % documento(s)-lixo da lista ainda existem', v_n;
   end if;
-  select count(*) into v_n from public.legislacao_documentos where tipo_norma is not null and status <> 'vigente';
+  select count(*) into v_n from public.legislacao_documentos
+   where status <> 'vigente'
+     and url_canonica in (
+       'https://www.planalto.gov.br/ccivil_03/_ato2019-2022/2021/lei/l14133.htm',
+       'https://www.planalto.gov.br/ccivil_03/leis/l8666cons.htm',
+       'https://www.planalto.gov.br/ccivil_03/leis/lcp/lcp123.htm',
+       'https://www.planalto.gov.br/ccivil_03/_ato2011-2014/2011/lei/l12527.htm',
+       'https://www.planalto.gov.br/ccivil_03/_ato2015-2018/2018/lei/l13709.htm',
+       'https://www.planalto.gov.br/ccivil_03/_ato2019-2022/2022/decreto/d10947.htm',
+       'https://www.planalto.gov.br/ccivil_03/_ato2023-2026/2023/decreto/d11462.htm',
+       'https://www.planalto.gov.br/ccivil_03/_ato2023-2026/2025/decreto/d12807.htm',
+       'https://www.gov.br/compras/pt-br/acesso-a-informacao/legislacao/instrucoes-normativas/instrucao-normativa-seges-me-no-65-de-7-de-julho-de-2021',
+       'https://www.gov.br/compras/pt-br/acesso-a-informacao/legislacao/instrucoes-normativas/instrucao-normativa-seges-me-no-81-de-25-de-novembro-de-2022',
+       'https://www.gov.br/compras/pt-br/acesso-a-informacao/legislacao/instrucoes-normativas/instrucao-normativa-seges-me-no-73-de-30-de-setembro-de-2022');
   if v_n > 0 then
     raise exception 'LIMPEZA CHECK FALHOU (CA-5): % norma(s) do seed fora de vigente', v_n;
   end if;
@@ -55,6 +69,25 @@ begin
     update public.legislacao_documentos set versao_atual_id = v_versao where id = v_lixo_teste;
     insert into public.legislacao_alertas (documento_id, tipo_alerta, titulo)
     values (v_lixo_teste, 'nova_versao', 'teste 0042');
+    -- relação entre o lixo e a norma: sai junto (sem cascade na FK, a função apaga antes do documento)
+    insert into public.legislacao_relacoes (documento_origem_id, documento_destino_id, tipo_relacao)
+    values (v_lixo_teste, v_norma, 'referencia');
+    -- documento sem tipo_norma mas ligado a uma seção da API do Compras: também é recusado
+    insert into public.legislacao_documentos (titulo, status, url_canonica)
+    values ('Sem tipo, ligado a seção (teste 0042)', 'vigente', 'https://teste.invalid/secao-0042')
+    returning id into v_lixo_secao;
+    insert into public.compras_api_secoes (codigo, nome) values ('T0042', 'teste 0042') on conflict do nothing;
+    insert into public.compras_api_secao_legislacao (secao_codigo, documento_id, papel)
+    values ('T0042', v_lixo_secao, 'referencia');
+    begin
+      perform private.legislacao_apagar_documentos(array[v_lixo_secao]);
+      raise exception 'LIMPEZA CHECK FALHOU (CA-5): apagou documento ligado a compras_api_secao_legislacao';
+    exception when others then
+      if sqlerrm like 'LIMPEZA CHECK FALHOU%' then raise; end if;
+    end;
+    if not exists (select 1 from public.legislacao_documentos where id = v_lixo_secao) then
+      raise exception 'LIMPEZA CHECK FALHOU (CA-5): documento ligado a seção sumiu';
+    end if;
 
     -- recusa norma do seed (tipo_norma preenchido), sem apagar nada
     begin
@@ -70,8 +103,9 @@ begin
     perform private.legislacao_apagar_documentos(array[v_lixo_teste]);
     if exists (select 1 from public.legislacao_documentos where id = v_lixo_teste)
        or exists (select 1 from public.legislacao_versoes where documento_id = v_lixo_teste)
-       or exists (select 1 from public.legislacao_alertas where documento_id = v_lixo_teste) then
-      raise exception 'LIMPEZA CHECK FALHOU (CA-5): documento-lixo, versão ou alerta sobrou';
+       or exists (select 1 from public.legislacao_alertas where documento_id = v_lixo_teste)
+       or exists (select 1 from public.legislacao_relacoes where documento_origem_id = v_lixo_teste) then
+      raise exception 'LIMPEZA CHECK FALHOU (CA-5): documento-lixo, versão, alerta ou relação sobrou';
     end if;
     if not exists (select 1 from public.legislacao_documentos where id = v_norma and status = 'vigente') then
       raise exception 'LIMPEZA CHECK FALHOU (CA-5): a norma de teste sumiu ou saiu de vigente';

@@ -17,6 +17,8 @@ const contextoPadrao: SyncLegislationContext = {
 
 export function handleRequest(req: Request, ctx: SyncLegislationContext = contextoPadrao): Response {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+  // Mesma ordem da versão anterior: método, depois auth, depois a resposta.
+  if (req.method !== "POST") return jsonResponse({ error: "Use POST" }, 405);
   if (!ctx.validarCron(req)) return jsonResponse({ error: "Unauthorized" }, 401);
   return jsonResponse({ error: "aposentada pela spec 0042" }, 410);
 }

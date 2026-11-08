@@ -7,7 +7,8 @@ comparação depois de colapsar espaços).
 
 Só lê: o banco recebe um único `select` em `norma_dispositivos`; nada é gravado. O relatório vai para o log
 (stdout) e o código de saída avisa o Cloud Run (decisão P-8 da spec: sem issue automática):
-  0 tudo igual e conferido · 1 norma mudou ou artigo divergente · 2 falha parcial (não verificado ou sem referência).
+  0 tudo igual e conferido · 1 norma mudou ou artigo divergente · 2 falha parcial (não verificado ou sem referência)
+  · 3 erro de execução (corpus ilegível ou banco inacessível: nada foi verificado).
 
 Uso (Cloud Run Job, agendado pelo Cloud Scheduler no dia 1 de jan/abr/jul/out):
   python -m coletor.verificar_legislacao [--corpus caminho.json]
@@ -28,6 +29,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import requests
 
@@ -37,14 +39,18 @@ CORPUS_PADRAO = Path(__file__).parent / "data" / "legislacao_corpus.json"
 SAIDA_OK = 0
 SAIDA_MUDOU = 1
 SAIDA_FALHA_PARCIAL = 2
+SAIDA_ERRO = 3
 
 TIMEOUT_S = 30
 TENTATIVAS = 3
 USER_AGENT = "licitagym-verificador-legislacao/1.0"
 TRANSITORIOS = {429, 500, 502, 503, 504}
+MAX_BYTES = 20 * 1024 * 1024  # a 14.133 no Planalto tem ~1,5 MB; acima disso a resposta não é a norma
+PRAZO_TOTAL_S = 120  # por download, somando as leituras (o timeout do requests vale por leitura)
 
-_RE_SCRIPT_STYLE = re.compile(r"<(script|style)\b[^>]*>.*?</\1\s*>", re.IGNORECASE | re.DOTALL)
-_RE_TAG = re.compile(r"<[^>]+>")
+# Tags sem "<" nem ">" internos: linear mesmo com HTML quebrado (o corpo também é limitado a MAX_BYTES).
+_RE_SCRIPT_STYLE = re.compile(r"<(script|style)\b[^<>]*>.*?</\1\s*>", re.IGNORECASE | re.DOTALL)
+_RE_TAG = re.compile(r"<[^<>]*>")
 _RE_ESPACOS = re.compile(r"\s+")
 _RE_CHARSET = re.compile(rb"charset\s*=\s*[\"']?([A-Za-z0-9_-]+)", re.IGNORECASE)
 
@@ -55,7 +61,7 @@ class ErroDownload(Exception):
 
 def _decodificar(conteudo: bytes) -> str:
     # O Planalto serve Windows-1252; o gov.br, UTF-8. Vale o charset declarado no HTML; sem ele, Windows-1252.
-    m = _RE_CHARSET.search(conteudo[:4096])
+    m = _RE_CHARSET.search(conteudo[:65536])
     charset = m.group(1).decode("ascii").lower() if m else "cp1252"
     if charset in ("windows-1252", "iso-8859-1", "latin-1", "latin1"):
         charset = "cp1252"
@@ -76,6 +82,13 @@ def normalizar_html(conteudo: bytes) -> str:
     return colapsar(html_mod.unescape(texto))
 
 
+def url_permitida(url: str) -> bool:
+    """Só https em domínio oficial (gov.br e subdomínios, como planalto.gov.br). A URL dos artigos vem do banco."""
+    partes = urlsplit(url)
+    host = (partes.hostname or "").lower()
+    return partes.scheme == "https" and (host == "gov.br" or host.endswith(".gov.br"))
+
+
 def sha256_texto(texto: str) -> str:
     return hashlib.sha256(texto.encode("utf-8")).hexdigest()
 
@@ -86,12 +99,13 @@ def baixar_http(url: str, sessao: requests.Session | None = None, espera: Callab
     ultimo: Exception | None = None
     for tentativa in range(TENTATIVAS):
         try:
-            r = s.get(url, timeout=TIMEOUT_S, headers={"User-Agent": USER_AGENT, "Accept": "text/html"})
+            r = s.get(url, timeout=TIMEOUT_S, headers={"User-Agent": USER_AGENT, "Accept": "text/html"}, stream=True)
+            corpo = _ler_limitado(r) if 200 <= r.status_code < 300 else b""
         except (requests.ConnectionError, requests.Timeout) as e:
             ultimo = e
         else:
-            if 200 <= r.status_code < 300 and r.content:
-                return r.content
+            if 200 <= r.status_code < 300 and corpo:
+                return corpo
             if r.status_code not in TRANSITORIOS:
                 raise ErroDownload(f"HTTP {r.status_code} em {url}")
             ultimo = ErroDownload(f"HTTP {r.status_code} em {url}")
@@ -102,6 +116,21 @@ def baixar_http(url: str, sessao: requests.Session | None = None, espera: Callab
         if tentativa < TENTATIVAS - 1:
             espera(min(60.0, 2.0 * 2 ** tentativa) + random.uniform(0, 1))
     raise ultimo if ultimo else ErroDownload(f"sem resposta de {url}")
+
+
+def _ler_limitado(r) -> bytes:
+    """Lê o corpo com teto de tamanho e prazo total; acima disso é erro, não texto truncado."""
+    inicio = time.monotonic()
+    partes: list[bytes] = []
+    total = 0
+    for pedaco in r.iter_content(chunk_size=65536):
+        total += len(pedaco)
+        if total > MAX_BYTES:
+            raise ErroDownload(f"resposta maior que {MAX_BYTES} bytes")
+        if time.monotonic() - inicio > PRAZO_TOTAL_S:
+            raise ErroDownload(f"download passou de {PRAZO_TOTAL_S} s")
+        partes.append(pedaco)
+    return b"".join(partes)
 
 
 @dataclass
@@ -152,6 +181,9 @@ def verificar(corpus: list[dict], dispositivos: list[dict], baixar: Callable[[st
 
     def texto_oficial(url: str) -> str | Exception:
         if url not in textos:
+            if not url_permitida(url):
+                textos[url] = ErroDownload(f"URL fora dos domínios oficiais (https://*.gov.br): {url!r}")
+                return textos[url]
             try:
                 textos[url] = normalizar_html(baixar(url))
             except (requests.RequestException, ErroDownload) as e:
@@ -173,6 +205,8 @@ def verificar(corpus: list[dict], dispositivos: list[dict], baixar: Callable[[st
             status = "igual" if atual == referencia else "mudou"
         rel.normas.append(ResultadoNorma(c["norma"], url, status, sha256_atual=atual))
 
+    if not dispositivos:
+        log.warning("legislacao: nenhum artigo com conferido_oficial = true veio do banco; nada a conferir")
     for d in dispositivos:
         url = d.get("fonte_url") or ""
         t = texto_oficial(url) if url else ErroDownload("dispositivo sem fonte_url")
@@ -211,11 +245,21 @@ def main(argv: list[str] | None = None) -> int:
     url, chave = os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
     if not url or not chave:
         log.error("SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY são obrigatórias")
-        return SAIDA_FALHA_PARCIAL
-    corpus = json.loads(Path(args.corpus).read_text(encoding="utf-8"))
+        return SAIDA_ERRO
+    return executar(args.corpus, Supabase(url, chave, drenar_catmat=False))
+
+
+def executar(caminho_corpus: str, sb, baixar: Callable[[str], bytes] | None = None) -> int:
+    """Lê corpus e banco; falha nessa leitura é erro de execução (3), nunca "mudou" (1)."""
+    try:
+        corpus = json.loads(Path(caminho_corpus).read_text(encoding="utf-8"))
+        dispositivos = ler_dispositivos(sb)
+    except (OSError, ValueError, RuntimeError, requests.RequestException) as e:
+        # Só o tipo e a mensagem da exceção (o cliente não põe a chave nelas); nada foi verificado.
+        log.error("legislacao: erro de execução, nada verificado: %s: %s", type(e).__name__, str(e)[:300])
+        return SAIDA_ERRO
     sessao = requests.Session()
-    rel = verificar(corpus, ler_dispositivos(Supabase(url, chave, drenar_catmat=False)),
-                    lambda u: baixar_http(u, sessao))
+    rel = verificar(corpus, dispositivos, baixar or (lambda u: baixar_http(u, sessao)))
     _imprimir(rel)
     return rel.codigo_saida()
 

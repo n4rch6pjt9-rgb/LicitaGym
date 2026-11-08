@@ -18,6 +18,7 @@ cd "$(git rev-parse --show-toplevel)"
 [ "${1:-}" = "-" ] || { echo "uso: ... | $0 -" >&2; exit 2; }
 REV="${HIGIENE_REV:-HEAD}"
 SO_TIPO="${HIGIENE_SO_TIPO:-0}"
+CR=$'\r'
 
 conteudo() {
   if [ "${HIGIENE_STAGED:-0}" = 1 ]; then git show ":$1" 2>/dev/null; else git show "$REV:$1" 2>/dev/null; fi
@@ -42,7 +43,8 @@ while IFS= read -r -d '' status; do
   if [ "$SO_TIPO" != 1 ] && [ "$status" != D ]; then
     # 1. Conflito de merge (grep -I ignora binário; o conteúdo vai direto no pipe para não perder o NUL).
     padrao='^(<<<<<<< |>>>>>>> )'
-    case "$nome_min" in *.md|*.mdx|*.mdc|*.markdown|*.rst|*.txt|*.adoc) ;; *) padrao='^(<<<<<<< |>>>>>>> |=======\r?$)' ;; esac
+    # CR literal: o GNU grep da CI não entende \r no padrão (o do Git Bash entende).
+    case "$nome_min" in *.md|*.mdx|*.mdc|*.markdown|*.rst|*.txt|*.adoc) ;; *) padrao="^(<<<<<<< |>>>>>>> |=======${CR}?\$)" ;; esac
     linha=$(conteudo "$caminho" | grep -IEn -m1 "$padrao")
     [ -n "$linha" ] && erro "marcador de conflito em $caminho:${linha%%:*}"
     # 2. Segredo no conteúdo.

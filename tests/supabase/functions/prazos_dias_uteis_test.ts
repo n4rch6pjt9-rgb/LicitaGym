@@ -32,6 +32,19 @@ Deno.test("dias úteis: a data do evento usa o dia em Brasília, não em UTC", (
   assertEquals(somarDiasUteis("2026-10-16T02:30:00Z", 3, "antes_de", FERIADOS).data, "2026-10-09");
 });
 
+Deno.test("dias úteis: instante sem fuso é hora de Brasília, igual em qualquer máquina", () => {
+  // Formato do PNCP (dataAberturaProposta): sem offset. Vale o dia escrito, não o fuso do processo.
+  assertEquals(somarDiasUteis("2026-10-15T01:00:00", 3, "antes_de", FERIADOS).data, "2026-10-09");
+  assertEquals(somarDiasUteis("2026-10-15T23:59", 3, "antes_de", FERIADOS).data, "2026-10-09");
+  assertThrows(() => somarDiasUteis("2026-10-15 09:00:00-03", 3, "antes_de", FERIADOS), RangeError);
+});
+
+Deno.test("dias úteis: ano com feriado fixo faltando não conta como coberto", () => {
+  // Só 01/01/2028 cadastrado: a conta em 2028 não pode sair "com feriados" sem Tiradentes e Natal.
+  const meio = calendarioNacional(["2026-01-01", "2028-01-01"]);
+  assertThrows(() => somarDiasUteis("2028-03-10", 3, "antes_de", meio), RangeError, "incompleto");
+});
+
 Deno.test("dias úteis: após, atravessando o Natal e a virada do ano", () => {
   const r = somarDiasUteis("2026-12-24", 3, "apos", FERIADOS);
   assertEquals(r, { data: "2026-12-30", feriados_considerados: ["2026-12-25"], abrangencia: "nacional" });

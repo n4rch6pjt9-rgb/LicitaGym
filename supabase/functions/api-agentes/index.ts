@@ -1,7 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { hashContexto, validarAchado } from "../_shared/agentes/achados.ts";
-import { agenteEdital } from "../_shared/agentes/edital.ts";
+import { agenteEdital, dadosImpugnacao } from "../_shared/agentes/edital.ts";
 import { calendarioNacional } from "../_shared/prazos/dias-uteis.ts";
 import { agenteJuridico } from "../_shared/agentes/juridico.ts";
 import { agentePreco, type PropostaItem } from "../_shared/agentes/preco.ts";
@@ -73,7 +73,10 @@ export async function contextos(d: Dossie, proposta: PropostaItem[] | null): Pro
     documentos: d.documentos_sha256,
     chunks: await impressaoChunks(d.chunks),
     portal: d.portal_oficial ?? null,
-    feriados: d.feriados ?? null,
+    // Só o resultado do prazo entra no hash: feriado de outro ano, ou sem data de abertura, não desatualiza a análise.
+    prazo_impugnacao: d.licitacao.data_abertura
+      ? dadosImpugnacao(d.licitacao.data_abertura, d.feriados ? calendarioNacional(d.feriados) : null)
+      : null,
   });
   const precoEntrada = {
     agente: "preco",

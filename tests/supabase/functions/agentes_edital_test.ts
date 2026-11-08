@@ -93,6 +93,15 @@ Deno.test("edital (0041 K-3): sem calendário do ano, prazo nao_calculado com mo
   assertEquals(semCalendario.dados?.data_limite, null);
 });
 
+Deno.test("edital (0041 K-3): abertura em formato inválido vira nao_calculado, sem derrubar o agente", () => {
+  const r = agenteEdital({ chunks: [c(1, "amostra")], data_abertura: "2026-10-15 09:00:00-03", feriados: FERIADOS_2026 });
+  assertEquals(r.situacao, "ok");
+  assertEquals(r.achados.some((a) => a.codigo === "exigencia.amostra"), true);
+  const prazo = r.achados.find((a) => a.codigo === "prazo.impugnacao")!;
+  assertEquals([prazo.dados?.situacao, prazo.dados?.data_limite, prazo.dados?.data_abertura], ["nao_calculado", null, null]);
+  assertEquals(String(prazo.dados?.motivo).startsWith("Data inválida"), true);
+});
+
 Deno.test("edital: sem chunks é sem_documento, não 'nenhuma exigência'", () => {
   const r = agenteEdital({ chunks: [], data_abertura: "2026-10-21T09:00:00-03:00" });
   assertEquals(r.situacao, "sem_documento");

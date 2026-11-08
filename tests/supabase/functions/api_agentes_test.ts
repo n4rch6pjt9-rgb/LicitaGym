@@ -536,11 +536,13 @@ Deno.test("contextos: norma jurídica altera o hash jurídico; mesma entrada per
   assertEquals(depois.edital, antes.edital);
   assertEquals(depois.preco, antes.preco);
 });
+const FERIADOS_2026 = ["2026-01-01", "2026-04-21", "2026-05-01", "2026-09-07", "2026-10-12", "2026-11-02", "2026-11-15", "2026-11-20", "2026-12-25"];
+
 // Spec 0041 K-3: o dossiê leva os feriados nacionais ao agente de edital e ao hash do contexto.
 Deno.test("api-agentes (0041 K-3): impugnação usa os feriados do dossiê; sem calendário fica nao_calculado", async () => {
   const { repo, dossie } = ambiente();
   dossie.licitacao.data_abertura = "2026-10-15T09:00:00-03:00";
-  dossie.feriados = ["2026-01-01", "2026-10-12", "2026-12-25"];
+  dossie.feriados = FERIADOS_2026;
   const r = await chamar(ctx(repo), { action: "analise_executar", licitacao_id: 101, proposta: P, agentes: ["edital"] });
   assertEquals(r.status, 200);
   const prazo = r.json.execucoes[0].achados.find((a: Achado) => a.codigo === "prazo.impugnacao");
@@ -553,12 +555,23 @@ Deno.test("api-agentes (0041 K-3): impugnação usa os feriados do dossiê; sem 
   assertEquals([p2.dados.situacao, p2.dados.data_limite], ["nao_calculado", null]);
 });
 
-Deno.test("api-agentes (0041 K-3): feriado novo muda o contexto do edital", async () => {
+Deno.test("api-agentes (0041 K-3): só o resultado do prazo entra no hash do contexto", async () => {
   const { dossie } = ambiente();
-  const a = await contextos({ ...dossie, feriados: ["2026-10-12"] }, P);
-  const b = await contextos({ ...dossie, feriados: ["2026-10-12", "2026-12-25"] }, P);
-  assertEquals(a.edital === b.edital, false);
-  assertEquals(a.preco, b.preco);
+  const com = (abertura: string | null, feriados: string[]) =>
+    contextos({ ...dossie, licitacao: { ...dossie.licitacao, data_abertura: abertura }, feriados }, P);
+  const F2028 = FERIADOS_2026.map((d) => d.replace("2026", "2028"));
+  // Sem data de abertura: cadastrar feriados de outro ano não desatualiza nada.
+  const a = await com(null, FERIADOS_2026);
+  const b = await com(null, [...FERIADOS_2026, ...F2028]);
+  assertEquals([a.edital, a.juridico, a.recomendacao], [b.edital, b.juridico, b.recomendacao]);
+  // Com abertura em 2026: o ano de 2028 não muda o resultado nem o hash.
+  const c = await com("2026-10-15T09:00:00-03:00", FERIADOS_2026);
+  const d = await com("2026-10-15T09:00:00-03:00", [...FERIADOS_2026, ...F2028]);
+  assertEquals(c.edital, d.edital);
+  // Sem o calendário de 2026 o resultado muda (nao_calculado) e o hash também.
+  const e = await com("2026-10-15T09:00:00-03:00", F2028);
+  assertEquals(c.edital === e.edital, false);
+  assertEquals(c.preco, e.preco);
 });
 
 Deno.test("repo (0041 K-3): o dossiê traz as datas de feriados_nacionais, ordenadas", async () => {

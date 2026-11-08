@@ -37,37 +37,43 @@ export function limiteImpugnacao(
 
 const AVISO_FERIADOS_LOCAIS = "Feriados estaduais e municipais e pontos facultativos não verificados.";
 
-function achadoImpugnacao(dataAberturaIso: string, feriados: CalendarioFeriados | null): Achado {
-  const data_abertura = diaLocal(dataAberturaIso);
-  const fontes: Fonte[] = [{ tipo: "calculo", regra: "lei_14133_art_164_3_dias_uteis", versao: REGRA_VERSAO }];
-  const base = { codigo: "prazo.impugnacao", natureza: "analise", metodo: "regra", severidade: "atencao", titulo: "prazo.impugnacao" } as const;
+/** Dados do achado `prazo.impugnacao`; também entram no hash do contexto (só o que a conta usou). */
+export function dadosImpugnacao(dataAberturaIso: string, feriados: CalendarioFeriados | null): Record<string, unknown> {
+  let data_abertura: string | null = null;
   let motivo = "Calendário de feriados nacionais não carregado.";
-  if (feriados) {
-    try {
+  try {
+    data_abertura = diaLocal(dataAberturaIso);
+    if (feriados) {
       const { data_limite, feriados_pulados } = limiteImpugnacao(dataAberturaIso, feriados);
       return {
-        ...base,
-        detalhe: `Limite de impugnação: 3 dias úteis antes da abertura, com feriados nacionais. ${AVISO_FERIADOS_LOCAIS}`,
-        dados: {
-          situacao: "calculado",
-          data_limite,
-          data_abertura,
-          feriados_considerados: true,
-          abrangencia: "nacional",
-          feriados_pulados,
-        },
-        fontes,
+        situacao: "calculado",
+        data_limite,
+        data_abertura,
+        feriados_considerados: true,
+        abrangencia: "nacional",
+        feriados_pulados,
       };
-    } catch (e) {
-      if (!(e instanceof RangeError)) throw e;
-      motivo = e.message;
     }
+  } catch (e) {
+    if (!(e instanceof RangeError)) throw e;
+    motivo = e.message;
   }
+  return { situacao: "nao_calculado", data_limite: null, data_abertura, feriados_considerados: false, motivo };
+}
+
+function achadoImpugnacao(dataAberturaIso: string, feriados: CalendarioFeriados | null): Achado {
+  const dados = dadosImpugnacao(dataAberturaIso, feriados);
   return {
-    ...base,
-    detalhe: `Limite de impugnação não calculado: ${motivo}`,
-    dados: { situacao: "nao_calculado", data_limite: null, data_abertura, feriados_considerados: false, motivo },
-    fontes,
+    codigo: "prazo.impugnacao",
+    natureza: "analise",
+    metodo: "regra",
+    severidade: "atencao",
+    titulo: "prazo.impugnacao",
+    detalhe: dados.situacao === "calculado"
+      ? `Limite de impugnação: 3 dias úteis antes da abertura, com feriados nacionais. ${AVISO_FERIADOS_LOCAIS}`
+      : `Limite de impugnação não calculado: ${String(dados.motivo)}`,
+    dados,
+    fontes: [{ tipo: "calculo", regra: "lei_14133_art_164_3_dias_uteis", versao: REGRA_VERSAO }],
   };
 }
 

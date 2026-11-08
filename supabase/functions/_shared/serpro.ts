@@ -195,8 +195,15 @@ async function consultarSemEmbrulho(
   }
 
   if (res.status !== 200 && res.status !== 206) {
-    await res.body?.cancel();
-    throw new ErroIntegraCompras(`Integra Compras respondeu HTTP ${res.status}.`, res.status);
+    // Erro 4xx traz o motivo no corpo (ex.: parâmetro faltando). Vai para o registro privado da execução,
+    // curto e sem nada que pareça credencial; 5xx (página de manutenção) não precisa do corpo.
+    let detalhe: string | null = null;
+    if (res.status >= 400 && res.status < 500) detalhe = await detalheDoErro(res);
+    else await res.body?.cancel();
+    throw new ErroIntegraCompras(
+      `Integra Compras respondeu HTTP ${res.status}${detalhe ? `: ${detalhe}` : "."}`,
+      res.status,
+    );
   }
 
   const corpo: unknown = await res.json();
@@ -204,6 +211,25 @@ async function consultarSemEmbrulho(
     throw new ErroIntegraCompras(`Resposta do Integra Compras fora do formato documentado (esperada uma lista).`, res.status);
   }
   return { status: res.status, mensagens: corpo.map((m, i) => normalizarMensagem(m, tipo, i)) };
+}
+
+const DETALHE_MAX = 300;
+
+/** Texto curto do corpo de um erro 4xx: uma linha, sem tokens, no máximo DETALHE_MAX caracteres. */
+async function detalheDoErro(res: Response): Promise<string | null> {
+  let texto: string;
+  try {
+    texto = await res.text();
+  } catch {
+    return null;
+  }
+  const limpo = texto
+    .replace(/Bearer\s+\S+/gi, "Bearer [omitido]")
+    .replace(/[A-Za-z0-9_\-]{32,}(\.[A-Za-z0-9_\-]+)*/g, "[omitido]")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!limpo) return null;
+  return limpo.length > DETALHE_MAX ? `${limpo.slice(0, DETALHE_MAX)}…` : limpo;
 }
 
 function esperaMs(retryAfter: string | null, tentativa: number): number {

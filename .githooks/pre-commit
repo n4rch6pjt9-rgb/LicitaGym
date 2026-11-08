@@ -19,7 +19,7 @@ tem() { command -v "$1" >/dev/null 2>&1 || { echo "aviso: $1 não instalado, eta
 PY=python3; command -v python3 >/dev/null 2>&1 || PY=python
 
 echo "[pre-commit] higiene (conflito de merge, arquivo proibido, raiz)"
-git -c core.quotePath=false diff --cached --name-status --diff-filter=ACMR | HIGIENE_STAGED=1 scripts/ci/checar-higiene.sh - || rc=1
+git diff --cached --name-status -z --diff-filter=ACMR | HIGIENE_STAGED=1 scripts/ci/checar-higiene.sh - || rc=1
 
 echo "[pre-commit] lint"
 PULAR_SEM_FERRAMENTA=1 scripts/ci/lint-alterados.sh "${ARQS[@]}" || rc=1

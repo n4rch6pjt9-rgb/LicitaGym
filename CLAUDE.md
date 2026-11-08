@@ -34,7 +34,7 @@ cd services/coletor-externo && pip install -r requirements.txt -r ../../requirem
 scripts/validar-migrations.sh        # Postgres 17 descartável (Docker)
 ```
 - Pre-commit: `git config core.hooksPath .githooks` uma vez por clone. Ele e a CI barram marcador de conflito,
-  log/HAR/zip/CSV/dump de coleta e item novo na raiz (`scripts/ci/checar-higiene.sh`, lista em `raiz-permitida.txt`).
+  segredo no conteúdo, log/HAR/compactado/chave/CSV/dump de coleta e item novo na raiz (`scripts/ci/checar-higiene.sh`, lista em `raiz-permitida.txt`).
 - Pendências conhecidas: `.github/ci/deno-check-pendentes.txt` e `supabase/tests/pendentes.txt`. A lista só diminui.
 - Quem toca um arquivo resolve o lint dele inteiro. Não acrescente regra de lint sem limpar a base.
 - Workflow novo do GitHub Actions não usa `uses:` (marketplace bloqueado): siga `pr-quality.yml`.

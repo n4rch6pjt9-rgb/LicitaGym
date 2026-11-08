@@ -99,9 +99,14 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${BASE_SHA}" ] || ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            echo "aviso: base do PR indisponível; checando só o último commit (HEAD~1..HEAD)"
             BASE_SHA="$(git rev-parse HEAD~1)"
           fi
-          git -c core.quotePath=false diff --name-status --diff-filter=ACMR "${BASE_SHA}" HEAD | bash scripts/ci/checar-higiene.sh -
+          # Estado final do PR: conflito, segredo, tipo proibido e raiz.
+          git diff --name-status -z --diff-filter=ACMR "${BASE_SHA}" HEAD | bash scripts/ci/checar-higiene.sh -
+          # Cada commit do PR: arquivo proibido adicionado e apagado depois continua no histórico (merge commit).
+          git log --format= --name-status -z --diff-filter=AR "${BASE_SHA}..HEAD" \
+            | HIGIENE_SO_TIPO=1 bash scripts/ci/checar-higiene.sh -
 
       - name: Regras do Claude (.claude/rules) sincronizadas com .github/instructions
         run: bash scripts/ci/sincronizar-regras-claude.sh --check

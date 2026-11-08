@@ -6,23 +6,23 @@ const FILA = ["total", "pendentes", "processando", "erros_nao_esgotados", "esgot
 const CONTAGENS = ["recebidos", "novos", "alterados", "inalterados", "erros", "planos_feitos", "planos_erro", "itens_inativados", "planos_inativados"] as const;
 
 function objeto(value: unknown): Row {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Resumo PCA invalido");
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Resumo PCA inválido");
   return value as Row;
 }
 
 function contador(value: unknown): number {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new Error("Contagem PCA invalida");
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new Error("Contagem PCA inválida");
   return value;
 }
 
 function texto(value: unknown): string {
-  if (typeof value !== "string" || value.length === 0) throw new Error("Campo PCA invalido");
+  if (typeof value !== "string" || value.length === 0) throw new Error("Campo PCA inválido");
   return value;
 }
 
 function data(value: unknown): string {
   const result = texto(value);
-  if (!Number.isFinite(Date.parse(result))) throw new Error("Data PCA invalida");
+  if (!Number.isFinite(Date.parse(result))) throw new Error("Data PCA inválida");
   return result;
 }
 
@@ -31,8 +31,8 @@ function execucao(value: unknown) {
   const row = objeto(value);
   const raw = objeto(row.contagens);
   const contagens = Object.fromEntries(CONTAGENS.map((key) => [key, raw[key] === null ? null : contador(raw[key])]));
-  if (typeof row.tem_erro !== "boolean") throw new Error("Estado de erro PCA invalido");
-  // Projecao explicita: nunca devolver parametros, erros SQL ou campos extras da RPC.
+  if (typeof row.tem_erro !== "boolean") throw new Error("Estado de erro PCA inválido");
+  // Projeção explícita: nunca devolver parâmetros, erros SQL ou campos extras da RPC.
   return {
     sync_id: texto(row.sync_id), status: texto(row.status), rotina: texto(row.rotina),
     iniciada_em: data(row.iniciada_em),
@@ -77,12 +77,12 @@ async function consultar(ano: number): Promise<unknown> {
 export async function responderEstadoPca(body: Row, agora: Date, ler: (ano: number) => Promise<unknown> = consultar) {
   const ano = body.ano === undefined ? agora.getUTCFullYear() : body.ano;
   if (typeof ano !== "number" || !Number.isInteger(ano) || ano < 1900 || ano > 2100) {
-    return jsonResponse({ error: "Ano invalido: informe um inteiro entre 1900 e 2100." }, 400);
+    return jsonResponse({ error: "Ano inválido: informe um inteiro entre 1900 e 2100." }, 400);
   }
   try {
     const resumo = projetarEstadoPca(await ler(ano), ano);
     return jsonResponse({ action: "estado_pca", ...resumo }, 200, { "Cache-Control": "no-store" });
   } catch {
-    return jsonResponse({ error: "Nao foi possivel consultar o estado do PCA." }, 502, { "Cache-Control": "no-store" });
+    return jsonResponse({ error: "Não foi possível consultar o estado do PCA." }, 502, { "Cache-Control": "no-store" });
   }
 }

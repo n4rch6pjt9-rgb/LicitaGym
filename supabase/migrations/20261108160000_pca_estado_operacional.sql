@@ -1,4 +1,4 @@
--- Resumo de leitura para api-syncs; dados privados acessiveis somente ao service_role.
+-- Resumo de leitura para api-syncs; dados privados acessíveis somente ao service_role.
 begin;
 
 create or replace function public.pca_estado_operacional(p_ano integer)
@@ -7,7 +7,7 @@ as $fn$
 declare resultado jsonb;
 begin
   if p_ano is null or p_ano < 1900 or p_ano > 2100 then
-    raise exception 'Ano PCA invalido' using errcode = '22023';
+    raise exception 'Ano PCA inválido' using errcode = '22023';
   end if;
 
   with fila as (
@@ -42,7 +42,9 @@ begin
       ) as resumo
     from private.pncp_sync_run r
     where r.resource_type = 'pca'
-      and (r.parametros ->> 'ano' = p_ano::text or r.lock_key = 'pca-fila:' || p_ano::text)
+      -- reprocessamento e parte do incremental gravam o ano só no lock (pca-sync:<ano>:<grupo>), sem parametros.ano
+      and (r.parametros ->> 'ano' = p_ano::text or r.lock_key = 'pca-fila:' || p_ano::text
+        or r.lock_key like 'pca-sync:' || p_ano::text || ':%')
   )
   select jsonb_build_object(
     'ano',p_ano, 'observado_em',statement_timestamp(), 'fila',to_jsonb(fila),
@@ -65,6 +67,6 @@ $fn$;
 revoke all on function public.pca_estado_operacional(integer) from public, anon, authenticated;
 grant execute on function public.pca_estado_operacional(integer) to service_role;
 comment on function public.pca_estado_operacional(integer) is
-  'Leitura operacional PCA por ano. api-syncs exige administrador; nao altera fila nem dispara sync. Contagens nao sao progresso percentual.';
+  'Leitura operacional PCA por ano. api-syncs exige administrador; não altera fila nem dispara sync. Contagens não são progresso percentual.';
 
 commit;

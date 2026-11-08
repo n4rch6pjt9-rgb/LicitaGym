@@ -8,6 +8,7 @@ declare
   run_parcial uuid := '99000000-0000-4000-8000-000000000002';
   run_erro uuid := '99000000-0000-4000-8000-000000000003';
   run_ativo uuid := '99000000-0000-4000-8000-000000000004';
+  run_reproc uuid := '99000000-0000-4000-8000-000000000005';
   rejeitou boolean := false;
 begin
   if has_function_privilege('anon',
@@ -29,7 +30,7 @@ begin
 
   if exists(select 1 from private.pca_plano_fila where ano=2093)
      or exists(select 1 from private.pncp_sync_run
-       where parametros->>'ano'='2093' or lock_key='pca-fila:2093') then
+       where parametros->>'ano'='2093' or lock_key='pca-fila:2093' or lock_key like 'pca-sync:2093:%') then
     raise exception 'Ano de fixture ocupado; check interrompido';
   end if;
 
@@ -137,6 +138,19 @@ begin
   if (j->>'execucoes_ativas')::integer <> 0
      or (j->>'execucoes_sem_heartbeat')::integer <> 1 then
     raise exception 'Heartbeat vencido apresentado como atividade';
+  end if;
+
+  -- Reprocessamento grava o ano só no lock (pca-sync:<ano>:<grupo>), sem parametros.ano: tem de entrar no ano.
+  insert into private.pncp_sync_run
+    (id,resource_type,modo,status,lock_key,parametros,iniciada_em,finalizada_em,last_heartbeat_at)
+  values
+    (run_reproc,'pca','reprocessamento','concluida','pca-sync:2093:7830','{}'::jsonb,
+     now()+interval '1 minute',now()+interval '2 minutes',now()+interval '2 minutes');
+
+  j := public.pca_estado_operacional(2093);
+  if j#>>'{ultima_execucao,sync_id}' is distinct from run_reproc::text
+     or j#>>'{ultima_execucao,rotina}' is distinct from 'reprocessamento' then
+    raise exception 'Execucao registrada so pelo lock pca-sync nao entrou no ano: %', j->'ultima_execucao';
   end if;
 
   j := public.pca_estado_operacional(2092);

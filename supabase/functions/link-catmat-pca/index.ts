@@ -42,6 +42,95 @@ function jaccard(a: Set<string>, b: Set<string>): number {
 
 type LinkClient = ReturnType<typeof createServiceClient>;
 
+type Vinculo = {
+  pcaItemId: string;
+  catalogoItemId: string;
+  codigoPdm: string | null;
+  score: number;
+  tipo: "exata" | "provavel" | "incerta";
+  evidencia: string;
+};
+
+type Stats = {
+  vinculos_novos: number;
+  vinculos_atualizados: number;
+  pdm_vinculos: number;
+  erros: number;
+};
+
+/** Tamanho dos blocos de leitura/escrita: mantém a URL do filtro `in` e o corpo do upsert pequenos. */
+export const BLOCO_GRAVACAO = 100;
+
+/**
+ * Grava os vínculos do lote com 3 operações por bloco de BLOCO_GRAVACAO itens (leitura das pontes que já existem,
+ * upsert da ponte, upsert do PDM), em vez de 3 por item. Mesmas linhas e mesmas contagens da versão item a item:
+ * vínculo existente conta como atualizado; falha no upsert da ponte conta erro por item e não grava o PDM do bloco.
+ */
+export async function gravarVinculos(
+  client: LinkClient,
+  vinculos: Vinculo[],
+  stats: Stats,
+): Promise<void> {
+  for (let i = 0; i < vinculos.length; i += BLOCO_GRAVACAO) {
+    const bloco = vinculos.slice(i, i + BLOCO_GRAVACAO);
+    const { data: existentes, error: lerErro } = await client
+      .from("catalogo_ponte")
+      .select("catalogo_item_id, entidade_id")
+      .eq("entidade_tipo", "pca_item")
+      .in("entidade_id", bloco.map((v) => v.pcaItemId));
+    if (lerErro) {
+      stats.erros += bloco.length;
+      continue;
+    }
+    const jaExiste = new Set(
+      (existentes ?? []).map((
+        e: { catalogo_item_id: string; entidade_id: string },
+      ) => `${e.catalogo_item_id}|${e.entidade_id}`),
+    );
+
+    const { error: ponteErro } = await client.from("catalogo_ponte").upsert(
+      bloco.map((v) => ({
+        catalogo_item_id: v.catalogoItemId,
+        entidade_tipo: "pca_item",
+        entidade_id: v.pcaItemId,
+        tipo_correspondencia: v.tipo,
+        evidencia: v.evidencia,
+      })),
+      { onConflict: "catalogo_item_id,entidade_tipo,entidade_id" },
+    );
+    if (ponteErro) {
+      stats.erros += bloco.length;
+      continue;
+    }
+    for (const v of bloco) {
+      if (jaExiste.has(`${v.catalogoItemId}|${v.pcaItemId}`)) {
+        stats.vinculos_atualizados++;
+      } else stats.vinculos_novos++;
+    }
+
+    const agora = new Date().toISOString();
+    const pdms = bloco.flatMap((v) => {
+      const codigoPdm = v.codigoPdm ? Number(v.codigoPdm) : NaN;
+      if (!Number.isFinite(codigoPdm)) return [];
+      return [{
+        pca_item_id: v.pcaItemId,
+        codigo_pdm: codigoPdm,
+        tipo_correspondencia: v.tipo,
+        score: v.score,
+        evidencia: `catalogo_ponte;${v.evidencia}`,
+        confirmado: v.tipo === "exata",
+        updated_at: agora,
+      }];
+    });
+    if (pdms.length === 0) continue;
+    const { error: pdmErro } = await client.from("pca_item_pdm").upsert(pdms, {
+      onConflict: "pca_item_id,codigo_pdm",
+    });
+    if (pdmErro) stats.erros += pdms.length;
+    else stats.pdm_vinculos += pdms.length;
+  }
+}
+
 async function linkOneClass(
   client: LinkClient,
   classeCatmat: string,
@@ -84,6 +173,7 @@ async function linkOneClass(
     erros: 0,
   };
 
+  const vinculos: Vinculo[] = [];
   for (const pcaItem of pcaItens ?? []) {
     stats.analisados++;
     const pcaTokens = tokenSet(normalizeText(pcaItem.descricao));
@@ -111,47 +201,19 @@ async function linkOneClass(
       : best.score >= 0.7
       ? "provavel"
       : "incerta";
-    const evidencia = `jaccard=${best.score.toFixed(3)};classe=${classeCatmat}`;
-
-    const { data: ponteExistente } = await client
-      .from("catalogo_ponte")
-      .select("id")
-      .eq("entidade_tipo", "pca_item")
-      .eq("entidade_id", pcaItem.id)
-      .eq("catalogo_item_id", best.id)
-      .maybeSingle();
-
-    const { error: ponteError } = await client.from("catalogo_ponte").upsert({
-      catalogo_item_id: best.id,
-      entidade_tipo: "pca_item",
-      entidade_id: pcaItem.id,
-      tipo_correspondencia: tipo,
-      evidencia,
-    }, { onConflict: "catalogo_item_id,entidade_tipo,entidade_id" });
-
-    if (ponteError) {
-      stats.erros++;
-      continue;
-    }
-    if (ponteExistente) stats.vinculos_atualizados++;
-    else stats.vinculos_novos++;
-
-    const codigoPdm = best.codigo_pdm ? Number(best.codigo_pdm) : NaN;
-    if (Number.isFinite(codigoPdm)) {
-      const { error: pdmError } = await client.from("pca_item_pdm").upsert({
-        pca_item_id: pcaItem.id,
-        codigo_pdm: codigoPdm,
-        tipo_correspondencia: tipo,
-        score: best.score,
-        evidencia: `catalogo_ponte;${evidencia}`,
-        confirmado: tipo === "exata",
-        updated_at: new Date().toISOString(),
-      }, { onConflict: "pca_item_id,codigo_pdm" });
-
-      if (pdmError) stats.erros++;
-      else stats.pdm_vinculos++;
-    }
+    vinculos.push({
+      pcaItemId: pcaItem.id,
+      catalogoItemId: best.id,
+      codigoPdm: best.codigo_pdm,
+      score: best.score,
+      tipo,
+      evidencia: `jaccard=${best.score.toFixed(3)};classe=${classeCatmat}`,
+    });
   }
+
+  // Gravação em lote (issue #245): antes eram 3 idas ao banco por item (~1.500 por chamada de 500), e as chamadas
+  // paralelas do cron estouravam o limite de CPU do worker ("CPU Time exceeded", HTTP 546).
+  await gravarVinculos(client, vinculos, stats);
 
   const batchSize = pcaItens?.length ?? 0;
   const proximoOffset = offset + batchSize;

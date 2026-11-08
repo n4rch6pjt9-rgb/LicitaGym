@@ -167,3 +167,26 @@ Deno.test("situacaoColeta: mesma janela de private.sessao_chat_alvos", () => {
   assertEquals(situacaoColeta({ ...base, data_fim: iso(AGORA), desfecho: "descartada" }, AGORA), "encerrada_no_pipeline");
   assertEquals(situacaoColeta({ ...base, data_fim: iso(AGORA), desfecho: "vencida" }, AGORA), "em_coleta");
 });
+
+Deno.test("sessoes: muitas execuções de outras compras não escondem a última consulta nem as mensagens", async () => {
+  const banco = bancoBase();
+  for (let i = 0; i < 1500; i++) {
+    banco["private.integra_compras_run"].push({
+      chave_compra: "15300005000052026", iniciado_em: iso(AGORA - i * 1000), terminado_em: null, erro: null,
+    });
+  }
+  // Mensagem gravada sem execução registrada (ex.: extensão, etapa 2) também conta.
+  banco.sessao_mensagens.push({ id: 9, chave_compra: "15300005000022026", data_hora: "2026-11-09T09:00:00Z" });
+  const json = await (await chamar(banco)).json();
+  // deno-lint-ignore no-explicit-any
+  const porId = new Map(json.sessoes.map((s: any) => [s.licitacao_id, s]));
+  // deno-lint-ignore no-explicit-any
+  const s1: any = porId.get(1);
+  assertEquals(s1.ultima_consulta?.iniciado_em, iso(AGORA - H));
+  assertEquals(s1.total_mensagens, 2);
+  // deno-lint-ignore no-explicit-any
+  const s2: any = porId.get(2);
+  assertEquals(s2.ultima_consulta, null);
+  assertEquals(s2.total_mensagens, 1);
+  assertEquals(s2.ultima_mensagem_em, "2026-11-09T09:00:00Z");
+});

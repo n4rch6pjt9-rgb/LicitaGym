@@ -7,20 +7,33 @@ async function sql(): Promise<string> {
   return await Deno.readTextFile(MIGRATION);
 }
 
+const APOSENTA_LEGISLACAO = "./supabase/migrations/20261109000000_legislacao_aposenta_sync.sql";
+
+// Jobs desagendados por migrations posteriores (ex.: spec 0042 tira a legislação).
+async function jobsDesagendados(): Promise<Set<string>> {
+  const nomes = new Set<string>();
+  for await (const e of Deno.readDir("./supabase/migrations")) {
+    if (!e.name.endsWith(".sql") || e.name <= "20260930180000") continue;
+    const t = await Deno.readTextFile(`./supabase/migrations/${e.name}`);
+    for (const m of t.matchAll(/jobname\s*=\s*'(licitagym-[a-z0-9-]+)'[^;]*;\s*-- desagenda/g)) nomes.add(m[1]);
+  }
+  return nomes;
+}
+
 Deno.test("cron: toda função agendada existe, está no config.toml com verify_jwt=false e exige o Bearer do cron", async () => {
   const texto = await sql();
   const config = await Deno.readTextFile(CONFIG);
+  const desagendados = await jobsDesagendados();
   const funcoes = new Set<string>();
   for (
     const m of texto.matchAll(
-      /private\.cron_chamar_edge\('licitagym-[a-z0-9-]+', '([a-z0-9-]+)'/g,
+      /private\.cron_chamar_edge\('(licitagym-[a-z0-9-]+)', '([a-z0-9-]+)'/g,
     )
-  ) funcoes.add(m[1]);
+  ) if (!desagendados.has(m[1])) funcoes.add(m[2]);
   assertEquals([...funcoes].sort(), [
     "link-catmat-pca",
     "sync-compras-catmat",
     "sync-pncp-catalogo",
-    "sync-pncp-legislation",
     "sync-pncp-orgaos",
     "sync-pncp-pca",
   ]);
@@ -84,4 +97,15 @@ Deno.test("cron: agendamento idempotente, nomes únicos e helper sem EXECUTE par
       "revoke all on function private.cron_chamar_edge(text, text, jsonb, integer) from public, anon, authenticated, service_role;",
     ),
   );
+});
+
+Deno.test("CA-1 (spec 0042): a migration desagenda a legislação por nome, sem depender do pg_cron existir", async () => {
+  const t = await Deno.readTextFile(APOSENTA_LEGISLACAO);
+  assert(t.includes("extname = 'pg_cron'"), "guarda para Postgres sem pg_cron (validar-migrations)");
+  assert(
+    /cron\.unschedule\(c\.jobid\) from cron\.job c where c\.jobname = 'licitagym-sync-pncp-legislation';\s*-- desagenda/
+      .test(t),
+    "unschedule pelo jobid do nome (idempotente: sem linha, não faz nada)",
+  );
+  assertEquals((await jobsDesagendados()).has("licitagym-sync-pncp-legislation"), true);
 });

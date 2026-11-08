@@ -473,3 +473,17 @@ Deno.test("api-syncs: coletor-precos segue a mesma estrutura do coletor-pncp (li
   assertEquals(url, "https://api.github.com/repos/dono/repo/actions/workflows/coletor-precos.yml/dispatches");
   assertEquals(JSON.parse(enviado), { ref: "main", inputs: { modo: "todos", dry_run: "false" } });
 });
+
+Deno.test("CA-4 (spec 0042): a legislação sai do catálogo e o disparo dela é slug desconhecido", async () => {
+  assertEquals(SYNCS.some((s) => s.slug === "sync-pncp-legislation" || s.funcao === "sync-pncp-legislation"), false);
+  const lista = await (await handleRequest(post({ action: "listar" }), ctx())).json();
+  assertEquals(lista.syncs.some((s: { slug: string }) => s.slug === "sync-pncp-legislation"), false);
+  let chamou = false;
+  const res = await handleRequest(
+    post({ action: "rodar", sync: "sync-pncp-legislation" }),
+    ctx({ fetchFn: () => { chamou = true; return Promise.resolve(new Response("{}")); } }),
+  );
+  assertEquals(res.status, 400);
+  assertEquals((await res.json()).error, "Sync desconhecido.");
+  assertEquals(chamou, false);
+});

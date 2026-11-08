@@ -1,0 +1,154 @@
+"""Spec 0042, K-5: verificador trimestral do corpus de legislação (sem rede: o download é injetado)."""
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+
+import pytest
+import requests
+
+from coletor import verificar_legislacao as vl
+
+URL_LEI = "https://www.planalto.gov.br/ccivil_03/_ato2019-2022/2021/lei/l14133.htm"
+URL_DECRETO = "https://www.planalto.gov.br/ccivil_03/_ato2023-2026/2025/decreto/d12807.htm"
+
+# Trecho no formato do Planalto: Windows-1252, entidades HTML, espaços e quebras irregulares.
+HTML_LEI = (
+    "<html><head><meta http-equiv=Content-Type content='text/html; charset=windows-1252'>"
+    "<style>p{}</style><script>var x = 1;</script></head><body>"
+    "<p>Art.&nbsp;41.&nbsp;No caso de licita\xe7\xe3o que envolva o fornecimento de bens, a Administra\xe7\xe3o "
+    "poder\xe1 excepcionalmente:</p>\r\n<p>I - indicar uma ou mais marcas ou modelos,\n   desde que "
+    "formalmente justificado;</p>"
+    "<p>Art. 42. A prova de qualidade de produto apresentado pelos proponentes como similar \xe0s das marcas "
+    "eventualmente indicadas no edital ser\xe1 admitida.</p>"
+    "</body></html>"
+).encode("cp1252")
+
+
+def _hash(html: bytes) -> str:
+    return hashlib.sha256(vl.normalizar_html(html).encode("utf-8")).hexdigest()
+
+
+def _corpus(sha_lei: str | None) -> list[dict]:
+    return [{"norma": "LEI_14133_2021", "titulo": "Lei nº 14.133/2021", "url_oficial": URL_LEI,
+             "sha256_texto_normalizado": sha_lei, "conferido_em": None,
+             "vigencia_inicio": None, "revogada_em": None}]
+
+
+class Baixador:
+    def __init__(self, respostas: dict[str, bytes | Exception]):
+        self.respostas = respostas
+        self.urls: list[str] = []
+
+    def __call__(self, url: str) -> bytes:
+        self.urls.append(url)
+        r = self.respostas[url]
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+
+class SupabaseFalso:
+    """Registra toda chamada; só selecionar devolve dado."""
+
+    def __init__(self, linhas: list[dict]):
+        self.linhas = linhas
+        self.chamadas: list[str] = []
+
+    def selecionar(self, tabela: str, **filtros: str) -> list[dict]:
+        self.chamadas.append(f"selecionar:{tabela}")
+        return list(self.linhas)
+
+    def __getattr__(self, nome: str):
+        def proibido(*_a, **_k):
+            self.chamadas.append(nome)
+            raise AssertionError(f"verificador chamou {nome}: só select é permitido")
+        return proibido
+
+
+def test_normalizar_html_decodifica_cp1252_tira_tags_e_colapsa_espacos():
+    texto = vl.normalizar_html(HTML_LEI)
+    assert "Art. 41. No caso de licitação" in texto
+    assert "I - indicar uma ou mais marcas ou modelos, desde que formalmente justificado;" in texto
+    assert "var x" not in texto and "p{}" not in texto and "<" not in texto
+
+
+def test_ca6_texto_diferente_marca_mudou_com_norma_url_e_saida_diferente_de_zero():
+    outro = HTML_LEI.replace(b"excepcionalmente", b"em regra")
+    rel = vl.verificar(_corpus(_hash(HTML_LEI)), [], Baixador({URL_LEI: outro}))
+    [n] = rel.normas
+    assert (n.norma, n.url, n.status) == ("LEI_14133_2021", URL_LEI, "mudou")
+    assert n.sha256_atual == _hash(outro)
+    assert rel.codigo_saida() != 0
+
+
+def test_ca6_mesmo_texto_marca_igual_e_sai_com_zero():
+    # Mudança só de marcação/espaço não conta como mudança de texto.
+    mesmo = HTML_LEI.replace(b"<p>", b"<p class='x'>  ").replace(b"\r\n", b"\n\n")
+    rel = vl.verificar(_corpus(_hash(HTML_LEI)), [], Baixador({URL_LEI: mesmo}))
+    assert [n.status for n in rel.normas] == ["igual"]
+    assert rel.codigo_saida() == 0
+
+
+def test_norma_sem_hash_de_referencia_nao_e_igual_nem_mudou():
+    rel = vl.verificar(_corpus(None), [], Baixador({URL_LEI: HTML_LEI}))
+    [n] = rel.normas
+    assert n.status == "sem_referencia"
+    assert n.sha256_atual == _hash(HTML_LEI)
+    assert rel.codigo_saida() != 0
+
+
+def test_ca7_artigo_conferido_que_nao_e_mais_substring_sai_divergente_e_so_ha_select():
+    dispositivos = [
+        {"norma": "LEI_14133_2021", "artigo": 41, "fonte_url": URL_LEI,
+         "texto": "Art. 41. No caso de licitação que envolva o fornecimento de bens, a Administração poderá "
+                  "excepcionalmente:\n\nI - indicar uma ou mais marcas ou modelos, desde que formalmente justificado;"},
+        {"norma": "LEI_14133_2021", "artigo": 42, "fonte_url": URL_LEI,
+         "texto": "Art. 42. A prova de qualidade de produto apresentado pelos proponentes como similar às das marcas "
+                  "eventualmente indicadas no edital será sempre admitida."},  # "sempre": não está no oficial
+    ]
+    sb = SupabaseFalso(dispositivos)
+    baixar = Baixador({URL_LEI: HTML_LEI})
+    rel = vl.verificar(_corpus(_hash(HTML_LEI)), vl.ler_dispositivos(sb), baixar)
+    status = {(a.norma, a.artigo): a.status for a in rel.artigos}
+    assert status == {("LEI_14133_2021", 41): "confere", ("LEI_14133_2021", 42): "divergente"}
+    assert rel.codigo_saida() != 0
+    assert sb.chamadas == ["selecionar:norma_dispositivos"]
+    assert baixar.urls == [URL_LEI]  # a mesma página é baixada uma vez só
+
+
+@pytest.mark.parametrize("erro", [
+    requests.ConnectionError("Connection reset by peer"),
+    requests.Timeout("timeout"),
+    vl.ErroDownload("HTTP 403"),
+    vl.ErroDownload("HTTP 503"),
+])
+def test_ca8_erro_de_rede_ou_http_vira_nao_verificado_nunca_igual_nem_mudou(erro):
+    dispositivos = [{"norma": "LEI_14133_2021", "artigo": 41, "fonte_url": URL_LEI, "texto": "Art. 41."}]
+    rel = vl.verificar(_corpus(_hash(HTML_LEI)), dispositivos, Baixador({URL_LEI: erro}))
+    assert [n.status for n in rel.normas] == ["nao_verificado"]
+    assert [a.status for a in rel.artigos] == ["nao_verificado"]
+    assert rel.codigo_saida() == vl.SAIDA_FALHA_PARCIAL
+
+
+def test_ca8_uma_norma_falha_e_a_outra_e_verificada():
+    corpus = _corpus(_hash(HTML_LEI)) + [{"norma": "DECRETO_12807_2025", "titulo": "Decreto nº 12.807/2025",
+                                          "url_oficial": URL_DECRETO, "sha256_texto_normalizado": "x",
+                                          "conferido_em": None, "vigencia_inicio": None, "revogada_em": None}]
+    rel = vl.verificar(corpus, [], Baixador({URL_LEI: HTML_LEI, URL_DECRETO: requests.ConnectionError("reset")}))
+    assert {n.norma: n.status for n in rel.normas} == {"LEI_14133_2021": "igual", "DECRETO_12807_2025": "nao_verificado"}
+    assert rel.codigo_saida() == vl.SAIDA_FALHA_PARCIAL
+
+
+def test_corpus_versionado_tem_os_campos_da_k4_e_nao_inventa_hash():
+    corpus = json.loads(Path(vl.CORPUS_PADRAO).read_text(encoding="utf-8"))
+    assert corpus, "corpus vazio"
+    normas = {c["norma"] for c in corpus}
+    assert "LEI_14133_2021" in normas
+    for c in corpus:
+        assert set(c) >= {"norma", "titulo", "url_oficial", "vigencia_inicio", "revogada_em",
+                          "sha256_texto_normalizado", "conferido_em"}
+        assert c["url_oficial"].startswith("https://")
+        # hash e data de conferência andam juntos: sem conferência, os dois ficam nulos (nunca hash inventado)
+        assert (c["sha256_texto_normalizado"] is None) == (c["conferido_em"] is None)

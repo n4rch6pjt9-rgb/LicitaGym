@@ -57,7 +57,11 @@ function extractDocumentLinks(html: string, baseUrl: string): Array<{ titulo: st
   return links;
 }
 
-Deno.serve(async (req) => {
+export function handleRequest(_req: Request, _ctx?: { validarCron: (r: Request) => boolean }): Response {
+  throw new Error("não implementado (spec 0042)");
+}
+
+if (import.meta.main) Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return jsonResponse({ error: "Use POST" }, 405);
   if (!validateCronAuth(req)) return jsonResponse({ error: "Unauthorized" }, 401);

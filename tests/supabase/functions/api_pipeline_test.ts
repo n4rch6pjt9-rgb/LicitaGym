@@ -185,7 +185,7 @@ function repoMemoria() {
       Promise.resolve([{
         codigo: "14133-F01-T01", fase_codigo: "F01", fase_nome: "Edital publicado", fase_ordem: 1, parent_codigo: null, ordem: 10,
         titulo: "Registrar edital e anexos", natureza: "acompanhamento", ator: "licitante", prazo_unidade: "sem_prazo_legal",
-        base_legal: "art. 54 (caput)",
+        norma: "LEI_14133_2021", responsavel_padrao: null, prazo_horas_apos_etapa: null, base_legal: "art. 54 (caput)",
       }]),
   };
   return { repo, ops, hist, etapas, modelo, modeloAgentes };

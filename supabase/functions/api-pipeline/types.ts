@@ -150,6 +150,12 @@ export interface TarefaCatalogo {
   natureza: string;
   ator: string;
   prazo_unidade: string;
+  /** Spec 0042: 'LEI_14133_2021' ou 'NX'. */
+  norma: string | null;
+  /** Spec 0042: só modelos NX ('papel:operacao', 'agente:juridico', ...). */
+  responsavel_padrao: string | null;
+  /** Spec 0042: SLA interno do modelo NX, em horas a partir da entrada na etapa. */
+  prazo_horas_apos_etapa: number | null;
   /** "art. 165 (§ 1º, I); ..." a partir de tarefas_catalogo_base_legal; null se não houver. */
   base_legal: string | null;
 }

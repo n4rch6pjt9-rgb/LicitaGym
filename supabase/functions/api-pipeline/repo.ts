@@ -217,7 +217,7 @@ export function createSupabaseRepo(client: SupabaseClient): PipelineRepo {
       const comNx = (nx.count ?? 0) > 0;
       // Base legal embutida (FK tarefa_codigo): uma consulta só, sem o corte silencioso do max_rows numa segunda.
       const consulta = client.from("tarefas_catalogo")
-        .select("codigo,fase_codigo,parent_codigo,ordem,titulo,natureza,ator,prazo_unidade,fase:processo_fases(nome,ordem),base:tarefas_catalogo_base_legal(artigo,dispositivo)")
+        .select("codigo,norma,fase_codigo,parent_codigo,ordem,titulo,natureza,ator,prazo_unidade,responsavel_padrao,prazo_horas_apos_etapa,fase:processo_fases(nome,ordem),base:tarefas_catalogo_base_legal(artigo,dispositivo)")
         .eq("ativo", true);
       const { data, error } = await (comNx ? consulta.in("norma", [NORMA_CATALOGO, NORMA_NX]) : consulta.eq("norma", NORMA_CATALOGO))
         .order("fase_codigo").order("ordem");
@@ -235,6 +235,9 @@ export function createSupabaseRepo(client: SupabaseClient): PipelineRepo {
           fase_ordem: fase?.ordem ?? null, parent_codigo: c.parent_codigo == null ? null : String(c.parent_codigo),
           ordem: Number(c.ordem), titulo: String(c.titulo), natureza: String(c.natureza), ator: String(c.ator),
           prazo_unidade: String(c.prazo_unidade),
+          norma: c.norma == null ? null : String(c.norma),
+          responsavel_padrao: c.responsavel_padrao == null ? null : String(c.responsavel_padrao),
+          prazo_horas_apos_etapa: c.prazo_horas_apos_etapa == null ? null : Number(c.prazo_horas_apos_etapa),
           base_legal: bases.length ? bases.map((b) => `art. ${b.artigo} (${b.dispositivo})`).join("; ") : null,
         };
       });

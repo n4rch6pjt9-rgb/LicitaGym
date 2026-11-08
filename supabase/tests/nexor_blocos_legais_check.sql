@@ -45,8 +45,12 @@ begin
 
   select * into b from public.blocos_legais
    where regime_id = 'lei_14133' and procedimento = 'pregao' and bloco = 'impugnacao_esclarecimento';
-  if b.status <> 'obrigatorio' or b.prazo_quantidade <> 3 or b.prazo_unidade <> 'du' or b.prazo_sentido <> 'antes'
-     or b.prazo_ancora <> 'abertura_sessao' or b.base_legal !~ 'art\. 164' then
+  if not found then
+    raise exception 'CHECK FALHOU: bloco impugnacao_esclarecimento do pregão ausente';
+  end if;
+  if b.status is distinct from 'obrigatorio' or b.prazo_quantidade is distinct from 3
+     or b.prazo_unidade is distinct from 'du' or b.prazo_sentido is distinct from 'antes'
+     or b.prazo_ancora is distinct from 'abertura_sessao' or coalesce(b.base_legal, '') !~ 'art\. 164' then
     raise exception 'CHECK FALHOU: impugnação no pregão diferente de 3 du antes da abertura (art. 164)';
   end if;
 

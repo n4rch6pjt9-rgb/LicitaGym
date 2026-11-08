@@ -530,3 +530,36 @@ Deno.test("import-spec (blocos): bloco da migration é o que o script gera da pl
   assert(i >= 0 && j > i, "marcas do bloco gerado não encontradas na migration");
   assertEquals(sql.slice(i, j + MARCA_BLOCOS_FIM.length), gerarSeedBlocosSql(lerBlocosLegais(wb)));
 });
+
+Deno.test("import-spec (blocos): coluna a mais (procedimento ou campo novo) dá erro, não some", () => {
+  assertThrows(() => lerBlocosLegais(planilhaCom("Padrao_Lei", "G3", "leilao")), Error, "G3");
+  assertThrows(() => lerBlocosLegais(planilhaCom("Padrao_Lei", "G4", "Obrig. [alta]")), Error, "G4");
+  // Fora do intervalo da aba (A1:L59): o Excel amplia o !ref ao gravar; aqui amplia-se à mão.
+  const comM = (celulaM: string, v: string) => {
+    const c = planilhaCom("Padrao_Lei", celulaM, v);
+    c.Sheets["Padrao_Lei"]["!ref"] = "A1:M59";
+    return c;
+  };
+  assertThrows(() => lerBlocosLegais(comM("M28", "prazo_obs")), Error, "M28");
+  assertThrows(() => lerBlocosLegais(comM("M34", "x")), Error, "M34");
+});
+
+Deno.test("import-spec (blocos): linha em branco no meio das duas seções dá erro, não corta blocos", () => {
+  const apagar = (linha: number, ate: string) =>
+    [..."ABCDEFGHIJKL".slice(0, "ABCDEFGHIJKL".indexOf(ate) + 1)].map((c) =>
+      ["Padrao_Lei", `${c}${linha}`, null] as [string, string, null]
+    );
+  assertThrows(
+    () => lerBlocosLegais(planilhaComVarias([...apagar(15, "F"), ...apagar(40, "L")])),
+    Error,
+    "linha em branco",
+  );
+});
+
+Deno.test("import-spec (blocos): unidade com nome de propriedade herdada dá erro com a célula", () => {
+  assertThrows(
+    () => lerBlocosLegais(planilhaCom("Padrao_Lei", "C9", "Obrig. · 3 constructor antes abertura_sessao [alta]")),
+    Error,
+    "C9",
+  );
+});

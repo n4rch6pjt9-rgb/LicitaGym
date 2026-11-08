@@ -817,6 +817,26 @@ function celula(linha: number, col: number): string {
   return `${String.fromCharCode(65 + col)}${linha + 1}`;
 }
 
+/** Coluna a mais (procedimento ou campo novo) não pode ser descartada em silêncio. */
+function exigirSemColunaExtra(l: Linha, n: number, aba: string, i: number): void {
+  for (let k = n; k < l.length; k++) {
+    if (texto(l[k]) !== "") throw new Error(`${aba} ${celula(i, k)}: coluna fora do layout esperado`);
+  }
+}
+
+/** Linha em branco no meio da seção cortaria os blocos seguintes: o resto até a próxima seção tem de estar vazio. */
+function exigirLinhasVazias(ls: Linha[], de: number, ate: number, aba: string): void {
+  for (let i = de; i < ate; i++) {
+    if ((ls[i] ?? []).some((c) => texto(c) !== "")) {
+      throw new Error(`${aba} linha ${de + 1}: linha em branco no meio da seção (há dados na linha ${i + 1})`);
+    }
+  }
+}
+
+function proprio<T>(mapa: Readonly<Record<string, T>>, chave: string): T | undefined {
+  return Object.hasOwn(mapa, chave) ? mapa[chave] : undefined;
+}
+
 /**
  * Padrao_Lei seção 1 (matriz bloco × procedimento) + seção 2 (detalhe do pregão). O regime vem do título da seção 2
  * ("Lei 14.133"), nunca é adivinhado; a matriz do pregão tem de bater com o detalhe (status, prazo e confiança).
@@ -826,7 +846,10 @@ export function lerBlocosLegais(wb: XLSX.WorkBook): BlocoLegal[] {
   const ls = linhas(wb, aba);
   const t1 = achar(ls, 0, "1. MATRIZ BLOCO", aba);
   exigirCabecalho(ls[t1 + 1] ?? [], 0, ["bloco", ...PROCEDIMENTOS], `${aba} seção 1`);
+  const N1 = 1 + PROCEDIMENTOS.length;
+  exigirSemColunaExtra(ls[t1 + 1] ?? [], N1, aba, t1 + 1);
   const t2 = achar(ls, 0, "2. PREGÃO", aba);
+  const t3 = achar(ls, 0, "3. REGIMES", aba);
   if (!texto(ls[t2][0]).includes("Lei 14.133")) {
     throw new Error(`${aba} seção 2: título sem "Lei 14.133"; o regime dos blocos não é adivinhado`);
   }
@@ -845,12 +868,18 @@ export function lerBlocosLegais(wb: XLSX.WorkBook): BlocoLegal[] {
     "variacoes (regime/UF)",
     "confianca",
   ], `${aba} seção 2`);
+  const N2 = 12;
+  exigirSemColunaExtra(ls[t2 + 1] ?? [], N2, aba, t2 + 1);
 
   const out: BlocoLegal[] = [];
   const ordemDe = new Map<string, number>();
   for (let i = t1 + 2; i < t2; i++) {
     const bloco = texto(ls[i][0]);
-    if (!bloco) break;
+    if (!bloco) {
+      exigirLinhasVazias(ls, i, t2, aba);
+      break;
+    }
+    exigirSemColunaExtra(ls[i], N1, aba, i);
     if (!ID_RE.test(bloco)) throw new Error(`${aba} ${celula(i, 0)}: bloco inválido "${bloco}"`);
     if (ordemDe.has(bloco)) throw new Error(`${aba} ${celula(i, 0)}: bloco repetido "${bloco}"`);
     ordemDe.set(bloco, ordemDe.size + 1);
@@ -863,9 +892,9 @@ export function lerBlocosLegais(wb: XLSX.WorkBook): BlocoLegal[] {
           `${aba} ${ref}: célula fora do padrão "Obrig.|Cond.|N/A [· n unidade antes|depois âncora] [confiança]": "${v}"`,
         );
       }
-      const unidade = m[3] === undefined ? null : UNIDADES[m[3]];
+      const unidade = m[3] === undefined ? null : proprio(UNIDADES, m[3]);
       if (unidade === undefined) throw new Error(`${aba} ${ref}: unidade de prazo desconhecida "${m[3]}"`);
-      const status = STATUS_MATRIZ[m[1]];
+      const status = proprio(STATUS_MATRIZ, m[1])!;
       if (status === "nao_aplica" && m[2] !== undefined) throw new Error(`${aba} ${ref}: N/A com prazo`);
       out.push({
         regime_id,
@@ -888,10 +917,14 @@ export function lerBlocosLegais(wb: XLSX.WorkBook): BlocoLegal[] {
   }
 
   const vistosDetalhe = new Set<string>();
-  for (let i = t2 + 2; i < ls.length; i++) {
+  for (let i = t2 + 2; i < t3; i++) {
     const l = ls[i];
     const bloco = texto(l[0]);
-    if (!bloco) break;
+    if (!bloco) {
+      exigirLinhasVazias(ls, i, t3, aba);
+      break;
+    }
+    exigirSemColunaExtra(l, N2, aba, i);
     const alvo = out.find((x) => x.procedimento === "pregao" && x.bloco === bloco);
     if (!alvo) throw new Error(`${aba} ${celula(i, 0)}: bloco "${bloco}" do detalhe não está na matriz`);
     if (vistosDetalhe.has(bloco)) throw new Error(`${aba} ${celula(i, 0)}: bloco repetido no detalhe "${bloco}"`);
@@ -902,7 +935,7 @@ export function lerBlocosLegais(wb: XLSX.WorkBook): BlocoLegal[] {
       throw new Error(`${aba} ${celula(i, 4)}: prazo_qtd inválido "${qtdTxt}"`);
     }
     const unidadeTxt = texto(l[5]);
-    const unidade = unidadeTxt ? UNIDADES[unidadeTxt] : null;
+    const unidade = unidadeTxt ? proprio(UNIDADES, unidadeTxt) : null;
     if (unidade === undefined) throw new Error(`${aba} ${celula(i, 5)}: unidade desconhecida "${unidadeTxt}"`);
     const sentido = texto(l[6]) || null;
     const ancora = texto(l[7]) || null;
@@ -937,6 +970,7 @@ export function lerBlocosLegais(wb: XLSX.WorkBook): BlocoLegal[] {
     }
     const temas = texto(l[9]).split(",").map((t) => t.trim()).filter(Boolean);
     if (temas.some((t) => !ID_RE.test(t))) throw new Error(`${aba} ${celula(i, 9)}: tema inválido`);
+    if (temas.length === 0) throw new Error(`${aba} ${celula(i, 9)}: bloco "${bloco}" sem temas_rag`);
     // Sem quantidade, o detalhe ainda pode dar sentido e âncora (ex.: proposta "até a abertura da sessão").
     alvo.prazo_sentido = sentido;
     alvo.prazo_ancora = ancora;

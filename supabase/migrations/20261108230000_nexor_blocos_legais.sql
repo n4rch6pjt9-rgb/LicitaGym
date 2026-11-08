@@ -60,7 +60,14 @@ comment on column public.blocos_legais.prazo_ancora is
 comment on column public.blocos_legais.confianca is
   'Confiança da pesquisa da planilha (alta, media, baixa); não é confiança do modelo.';
 comment on column public.blocos_legais.condicao is
-  'Detalhe da seção 2 (só pregão). Alguns textos terminam em "…": vieram cortados na própria planilha.';
+  'Detalhe da seção 2 (só pregão). Texto possivelmente cortado na própria planilha (teto de ~230 caracteres, '
+  'muitos terminam em "…"): conferir na fonte antes de citar.';
+comment on column public.blocos_legais.base_legal is
+  'Base legal da seção 2 (só pregão). Texto possivelmente cortado na própria planilha (teto de ~130 caracteres): '
+  'conferir na fonte antes de citar.';
+comment on column public.blocos_legais.variacoes is
+  'Variações por regime/UF da seção 2 (só pregão). Texto possivelmente cortado na própria planilha (teto de ~160 '
+  'caracteres, às vezes sem "…"): conferir na fonte antes de citar.';
 
 alter table public.blocos_legais enable row level security;
 

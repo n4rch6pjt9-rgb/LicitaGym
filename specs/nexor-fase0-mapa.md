@@ -73,8 +73,11 @@ Migration `20261108230000_nexor_blocos_legais.sql`, bloco gerado por `scripts/im
 - **Outros procedimentos:** só o que a matriz diz; condição, base legal, parte obrigada, temas e variações ficam
   `null` (não pesquisados).
 - **Unidade:** `ano(s)` da planilha vira `anos`.
-- **Achado na planilha:** 17 textos da seção 2 (condição, base legal) terminam em "…": vieram cortados na própria
-  planilha. Entram como estão; completar é na planilha.
+- **Achado na planilha:** os textos da seção 2 param em tetos fixos (condição 230, base legal 130, variações 160
+  caracteres): vieram cortados na própria planilha, às vezes com "…", às vezes no meio da frase (ex.: variações das
+  linhas 29 e 32). Entram como estão, com aviso no comentário de cada coluna; completar é na planilha. Agente que
+  citar esses campos confere a fonte antes.
+- **Layout:** coluna a mais ou linha em branco no meio de qualquer das duas seções dá erro (nada some em silêncio).
 
 Fica para depois: etapas por tenant, marca do tenant e prazo de tarefa em dias úteis (0041 K-4).
 

@@ -159,6 +159,7 @@ as $$
 begin
   -- Semente antiga (13 etapas + tarefas da 14.133) só quando a sessão pede explicitamente: os checks SQL do modelo da
   -- Konnen usam isso. A api-tenant (PostgREST) não define essa configuração, então tenant criado pelo app nasce NX.
+  -- Nunca pôr nexor.semente_pipeline em ALTER DATABASE/ROLE ... SET: todo tenant novo voltaria ao modelo antigo.
   if current_setting('nexor.semente_pipeline', true) = 'lei14133' then
     perform public.pipeline_semear_etapas(new.id);
     perform public.pipeline_semear_tarefas(new.id);
@@ -361,6 +362,49 @@ begin
   return query select v_cat + v_emp, v_total - (v_cat + v_emp), v_bloqueio;
 end;
 $$;
+
+-- 6) Empresa reativada (antes: sempre a semente antiga) -------------------------------------------------------------
+-- Sem etapa: recebe a mesma semente de uma empresa nova (NX, salvo nexor.semente_pipeline = 'lei14133'). Com etapa NX:
+-- as tarefas padrão NX. Sem etapa NX (Konnen): a semente antiga, como antes. A antiga casa etapa pelo nome e, numa
+-- empresa NX, poria tarefas da Konnen em "Triagem" e "Perdida" (mesmo nome nas duas sementes).
+create or replace function public.tenants_reativada_semear()
+returns trigger
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $$
+begin
+  if not exists (select 1 from public.pipeline_etapas e where e.tenant_id = new.id) then
+    if current_setting('nexor.semente_pipeline', true) = 'lei14133' then
+      perform public.pipeline_semear_etapas(new.id);
+    else
+      perform public.pipeline_semear_etapas_nx(new.id);
+    end if;
+  end if;
+  if exists (select 1 from public.pipeline_etapas e where e.tenant_id = new.id and e.fase_codigo is not null) then
+    perform public.pipeline_semear_tarefas_nx(new.id);
+  else
+    perform public.pipeline_semear_tarefas(new.id);
+  end if;
+  -- cards que ficaram em Triagem enquanto a empresa estava inativa ganham pedido de preparação (mesma regra do
+  -- backfill da 20261011160000; um pedido aberto por empresa e licitação)
+  insert into private.job_queue (job_type, payload)
+  select 'preparar_triagem', jsonb_build_object('tenant_id', po.tenant_id::text, 'licitacao_id', po.licitacao_id::text,
+                                                'fonte', l.fonte)
+    from public.pipeline_oportunidades po
+    join public.pipeline_etapas e on e.id = po.etapa_id and e.tenant_id = po.tenant_id and lower(btrim(e.nome)) = 'triagem'
+    left join public.licitacoes_externas l on l.id = po.licitacao_id
+   where po.tenant_id = new.id
+  on conflict ((payload ->> 'tenant_id'), (payload ->> 'licitacao_id'))
+    where job_type = 'preparar_triagem' and status in ('pending', 'processing')
+  do nothing;
+  return null;
+end;
+$$;
+comment on function public.tenants_reativada_semear() is
+  'Empresa reativada: sem etapa recebe a semente de empresa nova (NX); com etapa NX, as tarefas padrão NX; sem etapa '
+  'NX, o modelo antigo nas etapas que existem (spec 0018). Não recria etapa excluída. Spec 0042.';
+revoke all on function public.tenants_reativada_semear() from public, anon, authenticated;
 
 revoke execute on function public.pipeline_semear_etapas_nx(bigint) from public, anon, authenticated;
 revoke execute on function public.pipeline_semear_tarefas_nx(bigint) from public, anon, authenticated;

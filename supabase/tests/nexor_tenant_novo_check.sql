@@ -141,6 +141,15 @@ begin
       raise exception 'CHECK FALHOU: NX-T01 não nasceu com o agente jurídico (%, %)', v_te.responsavel_tipo, v_te.responsavel_agente;
     end if;
 
+    -- Reativar a empresa NX não traz tarefas da Konnen para "Triagem"/"Perdida" (nomes iguais nas duas sementes) ------
+    update public.tenants set ativo = false where id = v_t;
+    update public.tenants set ativo = true where id = v_t;
+    select count(*) into n from public.pipeline_etapa_tarefas where tenant_id = v_t;
+    if n <> 34 then raise exception 'CHECK FALHOU: reativar a empresa NX mudou as tarefas padrão (% em vez de 34)', n; end if;
+    if exists (select 1 from public.pipeline_etapa_tarefas where tenant_id = v_t and origem <> 'catalogo') then
+      raise exception 'CHECK FALHOU: reativar a empresa NX semeou tarefa da empresa do modelo antigo';
+    end if;
+
     raise exception 'ROLLBACK_CHECK';
   exception when raise_exception then
     if sqlerrm <> 'ROLLBACK_CHECK' then raise; end if;

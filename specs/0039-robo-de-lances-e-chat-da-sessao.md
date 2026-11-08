@@ -99,8 +99,10 @@ tenant. A etapa 1 corrige esse código em vez de criar outro:
     com a chave + 90 dias; texto vencido vira nulo e a linha fica. A ligação com a licitação vem da coluna nova
     `integra_compras_run.licitacao_id`. Homologação desfeita na fonte tira o prazo de quem ainda tem texto.
     Limitação: compra que nunca homologa (deserta, fracassada, revogada) não expira. Ver pergunta 7.
-- Ficam para depois: o alerta (K-5, CA-7), que precisa de um sino de notificações que ainda não existe, e a aba
-  Sessão no Dashboard (CA-9).
+- Aba Sessão (pedido do Marcelo em 08/11/2026): `GET /api-disputa/sessoes` lista as compras do pipeline da empresa
+  com a situação da coleta (mesma janela de `private.sessao_chat_alvos`), a última consulta e o total de mensagens.
+  Só lê, não chama o Integra Compras. A tela no Dashboard usa essa rota, `GET /chat` e `POST /sync-chat`.
+- Fica para depois: o alerta (K-5, CA-7), que precisa de um sino de notificações que ainda não existe.
 
 | CA | Teste |
 |---|---|
@@ -112,7 +114,7 @@ tenant. A etapa 1 corrige esse código em vez de criar outro:
 | CA-6 | coberto por `lerTenantDoUsuario` (`_shared/tenant.ts`), sem teste novo |
 | CA-7 | pendente (sino de notificações) |
 | CA-8 | `supabase/tests/sessao_chat_cron_retencao_check.sql` |
-| CA-9 | pendente (aba Sessão) |
+| CA-9 | Dashboard `src/test/sessao.test.tsx`; lista em `tests/supabase/functions/api_disputa_sessoes_test.ts` |
 | K-3 agendado | `tests/supabase/functions/sync_sessao_chat_test.ts` |
 
 ## Contrato

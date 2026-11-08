@@ -152,3 +152,52 @@ def test_corpus_versionado_tem_os_campos_da_k4_e_nao_inventa_hash():
         assert c["url_oficial"].startswith("https://")
         # hash e data de conferência andam juntos: sem conferência, os dois ficam nulos (nunca hash inventado)
         assert (c["sha256_texto_normalizado"] is None) == (c["conferido_em"] is None)
+
+
+class Resp:
+    def __init__(self, status: int, conteudo: bytes = b"<p>ok</p>", headers: dict | None = None):
+        self.status_code, self.content, self.headers = status, conteudo, headers or {}
+
+
+class SessaoFalsa:
+    def __init__(self, respostas: list):
+        self.respostas = list(respostas)
+        self.chamadas = 0
+
+    def get(self, url, timeout, headers):
+        assert timeout == vl.TIMEOUT_S
+        self.chamadas += 1
+        r = self.respostas.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+
+def test_baixar_http_transitorio_depois_sucesso_sem_sleep_real():
+    esperas: list[float] = []
+    s = SessaoFalsa([Resp(503), requests.ConnectionError("reset"), Resp(200, b"<p>lei</p>")])
+    assert vl.baixar_http("https://x", s, esperas.append) == b"<p>lei</p>"
+    assert s.chamadas == 3 and len(esperas) == 2
+
+
+def test_baixar_http_429_respeita_retry_after():
+    esperas: list[float] = []
+    s = SessaoFalsa([Resp(429, headers={"Retry-After": "7"}), Resp(200)])
+    vl.baixar_http("https://x", s, esperas.append)
+    assert esperas == [7.0]
+
+
+def test_baixar_http_403_nao_repete_e_falha():
+    s = SessaoFalsa([Resp(403)])
+    with pytest.raises(vl.ErroDownload, match="HTTP 403"):
+        vl.baixar_http("https://x", s, lambda _s: None)
+    assert s.chamadas == 1
+
+
+def test_baixar_http_falha_ate_o_limite_e_200_vazio_nao_e_sucesso():
+    s = SessaoFalsa([requests.Timeout("t")] * vl.TENTATIVAS)
+    with pytest.raises(requests.Timeout):
+        vl.baixar_http("https://x", s, lambda _s: None)
+    assert s.chamadas == vl.TENTATIVAS
+    with pytest.raises(vl.ErroDownload):
+        vl.baixar_http("https://x", SessaoFalsa([Resp(200, b"")] * vl.TENTATIVAS), lambda _s: None)

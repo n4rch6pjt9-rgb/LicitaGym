@@ -1,6 +1,6 @@
 # 0042: Tratar a legislação como corpus curado e aposentar o sync semanal
 
-- **Status:** aprovada (Marcelo, 08/11/2026)
+- **Status:** em implementação (aprovada pelo Marcelo em 08/11/2026)
 - **Alimenta:** spec-mãe 0032, fase 4 (peça jurídica: "o artigo citado"). O insumo é a garantia de que o texto dos
   artigos da Lei 14.133 que o agente jurídico cita (`norma_dispositivos`) continua igual ao oficial. Desligar o sync
   morto e corrigir o alerta vêm junto, como limpeza (decisão P-1).
@@ -72,9 +72,9 @@ A legislação de licitação muda raramente. Sync semanal de páginas-índice n
 |---|---|---|---|---|---|
 | K-1 | Migration `<timestamp>_legislacao_aposenta_sync.sql`: desagenda o cron `licitagym-sync-pncp-legislation` (idempotente) e recria a função de saúde sem `legislacao` na lista de `pncp_sync_dias_sem_sucesso` (fica `pca`, `orgaos`, `compras_catmat`) | — | `cron.job` sem o job; `pncp_sync_dias_sem_sucesso.detalhe` sem a chave `legislacao` | migration falha se a função de saúde vigente tiver mudado depois de `20261108150000` (recriar a partir da última versão) | migration (deploy) |
 | K-2 | `api-syncs` catálogo: a entrada `sync-pncp-legislation` **sai** da lista (decisão de 08/11) | `GET` do catálogo | entrada ausente | disparo manual dela → o erro de slug desconhecido do contrato atual da `api-syncs` | admin |
-| K-3 | Limpeza do catálogo `legislacao_*`: os documentos que não são norma são **apagados** (decisão de 08/11), junto com suas versões e alertas, por migration com lista explícita de `id` e contagem antes e depois. Os arquivos no bucket `pncp-legislation` desses documentos são apagados pela API de Storage num script de operação (`scripts/operacao/legislacao_apagar_arquivos.py`, com `--dry-run`), não por `delete` em `storage.objects`. Os documentos de seed com norma ficam intactos | lista explícita de `id` (não por padrão de título) | documentos de norma intactos; lixo, versões, alertas e arquivos fora | migration falha se algum `id` da lista for de documento de seed (20/09) | migration (deploy) + script (Marcelo roda) |
-| K-4 | Corpus curado versionado `docs/legislacao/corpus.json`: por norma, `norma` (ex.: `LEI_14133_2021`), título, URL oficial, `vigencia_inicio`, `revogada_em` (ou `null`), `sha256_texto_normalizado` e `conferido_em` da última conferência | — | arquivo no repositório, revisado em PR | — | quem edita: PR (Marcelo aprova) |
-| K-5 | Verificador **trimestral** no **Cloud Run Job** (GCP, onde os coletores já rodam): módulo `services/coletor-externo/coletor/verificar_legislacao.py` (`python -m coletor.verificar_legislacao`). Para cada norma do K-4, baixa o texto oficial, normaliza (mesma regra da `20261011100500`: decodificar Windows-1252 e colapsar espaços) e compara o hash. Para os artigos de `norma_dispositivos` com `conferido_oficial = true`, confere se o trecho ainda é substring literal. Agendamento pelo Cloud Scheduler (dia 1 de jan/abr/jul/out), configurado pelo Marcelo como os outros jobs | `corpus.json` (copiado na imagem); `norma_dispositivos` (somente `select`, com as variáveis `SUPABASE_URL` e `SUPABASE_SERVICE_ROLE_KEY` que os coletores já usam) | por norma: `igual`, `mudou` ou `nao_verificado` (erro de rede ou HTTP); por artigo: `confere` ou `divergente`. Havendo `mudou` ou `divergente`, o job sai com código ≠ 0 e grava o relatório no log do Cloud Run; não abre issue (decisão P-8) | rede, timeout ou 4xx/5xx → `nao_verificado`, nunca `igual` nem `mudou` | Cloud Scheduler; nunca escreve no banco |
+| K-3 | Limpeza do catálogo `legislacao_*`: os documentos que não são norma são **apagados** (decisão de 08/11), junto com suas versões e alertas, por migration com lista explícita de `id` e contagem antes e depois. Os arquivos no bucket `pncp-legislation` desses documentos são apagados pela API de Storage num script de operação (`scripts/ops/legislacao_apagar_arquivos.py`, com `--dry-run`), não por `delete` em `storage.objects`. Os documentos de seed com norma ficam intactos | lista explícita de `id` (não por padrão de título) | documentos de norma intactos; lixo, versões, alertas e arquivos fora | migration falha se algum `id` da lista for de documento de seed (20/09) | migration (deploy) + script (Marcelo roda) |
+| K-4 | Corpus curado versionado `services/coletor-externo/coletor/data/legislacao_corpus.json` (ajuste da implementação: o Dockerfile do coletor só copia `coletor/`, e o arquivo precisa estar na imagem do Cloud Run): por norma, `norma` (ex.: `LEI_14133_2021`), título, URL oficial, `vigencia_inicio`, `revogada_em` (ou `null`), `sha256_texto_normalizado` e `conferido_em` da última conferência | — | arquivo no repositório, revisado em PR | — | quem edita: PR (Marcelo aprova) |
+| K-5 | Verificador **trimestral** no **Cloud Run Job** (GCP, onde os coletores já rodam): módulo `services/coletor-externo/coletor/verificar_legislacao.py` (`python -m coletor.verificar_legislacao`). Para cada norma da K-4, baixa o texto oficial, normaliza (mesma regra da `20261011100500`: decodificar Windows-1252 e colapsar espaços) e compara o hash. Para os artigos de `norma_dispositivos` com `conferido_oficial = true`, confere se o trecho ainda é substring literal. Agendamento pelo Cloud Scheduler (dia 1 de jan/abr/jul/out), configurado pelo Marcelo como os outros jobs | corpus da K-4 (dentro da imagem); `norma_dispositivos` (somente `select`, com as variáveis `SUPABASE_URL` e `SUPABASE_SERVICE_ROLE_KEY` que os coletores já usam) | por norma: `igual`, `mudou` ou `nao_verificado` (erro de rede ou HTTP); por artigo: `confere` ou `divergente`. Havendo `mudou` ou `divergente`, o job sai com código ≠ 0 e grava o relatório no log do Cloud Run; não abre issue (decisão P-8) | rede, timeout ou 4xx/5xx → `nao_verificado`, nunca `igual` nem `mudou` | Cloud Scheduler; nunca escreve no banco |
 | K-6 | `sync-pncp-legislation` aposentada: com auth de cron válida, responde `410` `{ "error": "aposentada pela spec 0042" }` sem abrir execução nem chamar rede | `POST` | `410` | sem auth → `401` (ordem de checagem atual mantida) | cron (já desagendado) |
 
 ## Critérios de aceite
@@ -111,7 +111,7 @@ A legislação de licitação muda raramente. Sync semanal de páginas-índice n
 - Remover a `api-pncp-legislacao` e as tabelas `legislacao_*` (ver P-4).
 - Levar o catálogo `legislacao_*` para o RAG: o RAG não é usado pelo produto hoje (nenhuma Edge Function nem coletor
   chama `match_legislacao_embeddings` ou lê `public.legislacao`, conferido em 08/11). Se o RAG entrar no produto, a
-  ingestão dele lê o `corpus.json` da K-4.
+  ingestão dele lê o corpus da K-4.
 - Workflow no GitHub Actions para o verificador (decisão de 08/11: vai direto para o Cloud Run).
 - As linhas `resource_type = 'teste'`/`'teste_editais'` em `private.pncp_sync_run` (02/11). É outro assunto e vira
   issue própria.
@@ -151,6 +151,26 @@ O jurídico não lê arquivo: lê a tabela `norma_dispositivos`.
    não conferido com a fonte oficial)"; artigo ausente vai para `dispositivos_ausentes`.
 
 Esse texto é o que a minuta da fase 4 vai citar. Se o Planalto mudar o artigo, hoje nada avisa.
+
+## Implementação (08/11/2026)
+
+| CA | Teste | Resultado local |
+|---|---|---|
+| CA-1 | `supabase/tests/legislacao_aposenta_sync_check.sql` + `tests/supabase/cron_sync_jobs_test.ts` ("CA-1 (spec 0042)") | passa (`validar-migrations`: Tudo OK; Deno ok) |
+| CA-2 | `supabase/tests/legislacao_aposenta_sync_check.sql` | passa |
+| CA-3 | `tests/supabase/functions/sync_pncp_legislation_aposentada_test.ts` | passa |
+| CA-4 | `tests/supabase/functions/api_syncs_test.ts` ("CA-4 (spec 0042)") | passa |
+| CA-5 | `supabase/tests/legislacao_limpeza_catalogo_check.sql` (+ `tests/test_legislacao_apagar_arquivos.py` para o script de Storage) | passa |
+| CA-6 | `services/coletor-externo/tests/test_verificar_legislacao.py` (`test_ca6_*`) | passa |
+| CA-7 | idem (`test_ca7_*`) | passa |
+| CA-8 | idem (`test_ca8_*`, mais os testes de `baixar_http`: retry, 429 com Retry-After, 403 sem retry) | passa |
+
+- Os hashes de referência do corpus estão `null`: o `planalto.gov.br` não respondeu da máquina de desenvolvimento
+  (timeout, 08/11), o mesmo sintoma visto do Supabase. O verificador marca essas normas `sem_referencia`, imprime o
+  `sha256_atual` e sai com 2; a primeira execução no Cloud Run fornece os hashes para um PR que os grava. Se o Planalto
+  também recusar o Cloud Run, as normas do Planalto ficam `nao_verificado` (decisão P-6: não testar antes).
+- A lista dos 21 documentos-lixo foi conferida em produção em 08/11 (consulta somente leitura): 2 páginas-índice do
+  sync de 20/09 e 19 do sync de 05/10; as 11 normas do seed (tipo_norma preenchido) ficam.
 
 ## Decisões do Marcelo
 

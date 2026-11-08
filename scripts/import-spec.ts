@@ -1015,8 +1015,85 @@ export function gerarSeedBlocosSql(blocos: BlocoLegal[]): string {
   ].join("\n");
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Spec 0042: tarefas padrão por etapa NX (o que nasce no tenant novo)
+// ---------------------------------------------------------------------------------------------------------------
+export const MARCA_ETAPA_TAREFAS_INICIO =
+  "-- >>> gerado por scripts/import-spec.ts --bloco=etapa-tarefas: não editar à mão";
+export const MARCA_ETAPA_TAREFAS_FIM = "-- <<< fim do bloco gerado (tarefas padrão por etapa NX)";
+
+export type EtapaTarefa = {
+  etapa_codigo: string;
+  tarefa_codigo: string;
+  apelido: string;
+  ordem: number;
+};
+
+/**
+ * Tarefas_Default (etapa_gatilho de cada NX-T) + Pipeline_Etapas (tarefas_padrao de cada etapa, na ordem): as duas abas
+ * têm de listar as mesmas tarefas por etapa. O código vem do modelo NX ou, para os apelidos, do de-para aprovado com a
+ * 14.133 (NX-T18 = dois modelos). Código reservado não entra.
+ */
+export function lerEtapaTarefasPadrao(wb: XLSX.WorkBook): EtapaTarefa[] {
+  const { etapas, modelos } = lerModelosNx(wb);
+  const etapaPorNome = new Map(etapas.map((e) => [e.nome, e.codigo]));
+  const codigoNx = new Map(modelos.map((m) => [m.curto, m.codigo]));
+
+  const td = linhas(wb, "Tarefas_Default");
+  exigirCabecalho(td[0] ?? [], 0, ["codigo", "etapa_gatilho"], "Tarefas_Default");
+  const etapaDaTarefa = new Map<string, string>();
+  for (let i = 1; i < td.length && texto(td[i][0]); i++) {
+    const curto = texto(td[i][0]);
+    if (RESERVADOS.has(curto)) continue;
+    const etapa = etapaPorNome.get(texto(td[i][1]));
+    if (!etapa) throw new Error(`Tarefas_Default ${celula(i, 1)}: etapa "${texto(td[i][1])}" não está nas etapas NX`);
+    etapaDaTarefa.set(curto, etapa);
+  }
+
+  const pe = linhas(wb, "Pipeline_Etapas");
+  exigirCabecalho(pe[0] ?? [], 0, ["ordem", "grupo", "coluna_nova", "coluna_atual", "tarefas_padrao"], "Pipeline_Etapas");
+  const out: EtapaTarefa[] = [];
+  const vistas = new Set<string>();
+  for (let i = 1; i < pe.length && typeof pe[i][0] === "number"; i++) {
+    const etapa = etapaPorNome.get(texto(pe[i][2]));
+    if (!etapa) throw new Error(`Pipeline_Etapas ${celula(i, 2)}: etapa "${texto(pe[i][2])}" não está nas etapas NX`);
+    const lista = [...new Set(texto(pe[i][4]).match(/NX-T\d{2}/g) ?? [])].filter((c) => !RESERVADOS.has(c));
+    const daTd = [...etapaDaTarefa].filter(([, e]) => e === etapa).map(([c]) => c);
+    if ([...lista].sort().join() !== [...daTd].sort().join()) {
+      throw new Error(
+        `etapa ${etapa}: Pipeline_Etapas lista [${lista.join(", ")}] e Tarefas_Default tem [${daTd.join(", ")}]`,
+      );
+    }
+    lista.forEach((curto, k) => {
+      const codigos = DE_PARA_14133[curto] ?? [codigoNx.get(curto)];
+      codigos.forEach((tarefa_codigo, j) => {
+        if (!tarefa_codigo) throw new Error(`${curto}: sem modelo NX nem de-para 14.133`);
+        out.push({ etapa_codigo: etapa, tarefa_codigo, apelido: curto, ordem: (k + 1) * 10 + j });
+      });
+      vistas.add(curto);
+    });
+  }
+  const fora = [...etapaDaTarefa.keys()].filter((c) => !vistas.has(c));
+  if (fora.length) throw new Error(`tarefas sem etapa na Pipeline_Etapas: ${fora.join(", ")}`);
+  return semVazioNemRepetido(out, (x) => `${x.etapa_codigo}/${x.tarefa_codigo}`, "tarefas padrão por etapa");
+}
+
+// on conflict ... do update: a planilha é a fonte. Tarefa que sair da planilha não é apagada aqui.
+export function gerarSeedEtapaTarefasSql(linhasEt: EtapaTarefa[]): string {
+  const v = linhasEt.map((x) =>
+    `  (${lit(x.etapa_codigo)}, ${lit(x.tarefa_codigo)}, ${lit(x.apelido)}, ${x.ordem})`
+  ).join(",\n");
+  return [
+    MARCA_ETAPA_TAREFAS_INICIO,
+    "insert into public.nexor_etapa_tarefas_padrao (etapa_codigo, tarefa_codigo, apelido, ordem) values",
+    v,
+    "on conflict (etapa_codigo, tarefa_codigo) do update set apelido = excluded.apelido, ordem = excluded.ordem;",
+    MARCA_ETAPA_TAREFAS_FIM,
+  ].join("\n");
+}
+
 if (import.meta.main) {
-  const BLOCOS = ["--bloco=feriados", "--bloco=modelos", "--bloco=blocos"];
+  const BLOCOS = ["--bloco=feriados", "--bloco=modelos", "--bloco=blocos", "--bloco=etapa-tarefas"];
   const flags = Deno.args.filter((a) => a.startsWith("--"));
   const desconhecidas = flags.filter((f) => !BLOCOS.includes(f));
   if (desconhecidas.length) {
@@ -1030,5 +1107,7 @@ if (import.meta.main) {
     console.log(gerarSeedModelosSql(lerModelosNx(wb)));
   } else if (flags.includes("--bloco=blocos")) {
     console.log(gerarSeedBlocosSql(lerBlocosLegais(wb)));
+  } else if (flags.includes("--bloco=etapa-tarefas")) {
+    console.log(gerarSeedEtapaTarefasSql(lerEtapaTarefasPadrao(wb)));
   } else console.log(gerarSeedSql(lerFeriados(wb), lerRegimes(wb)));
 }

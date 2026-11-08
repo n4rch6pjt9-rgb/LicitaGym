@@ -93,6 +93,16 @@ jobs:
             git -c http.extraheader="$auth" fetch -q --depth=50 origin "$BASE_SHA" || echo "base ${BASE_SHA} não baixou"
           fi
 
+      - name: Higiene (conflito de merge, arquivo proibido, item novo na raiz)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BASE_SHA}" ] || ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            BASE_SHA="$(git rev-parse HEAD~1)"
+          fi
+          git -c core.quotePath=false diff --name-status --diff-filter=ACMR "${BASE_SHA}" HEAD | bash scripts/ci/checar-higiene.sh -
+
       - name: Regras do Claude (.claude/rules) sincronizadas com .github/instructions
         run: bash scripts/ci/sincronizar-regras-claude.sh --check
 

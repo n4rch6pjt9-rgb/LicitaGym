@@ -3,13 +3,17 @@ import * as XLSX from "npm:xlsx@0.18.5";
 import {
   dataIso,
   digitoVerificador,
+  gerarSeedBlocosSql,
   gerarSeedModelosSql,
   gerarSeedSql,
   idModelo,
+  lerBlocosLegais,
   lerFeriados,
   lerModelosNx,
   lerPlanilha,
   lerRegimes,
+  MARCA_BLOCOS_FIM,
+  MARCA_BLOCOS_INICIO,
   MARCA_FIM,
   MARCA_INICIO,
   MARCA_MODELOS_FIM,
@@ -445,4 +449,84 @@ Deno.test("import-spec: aspas simples escapadas no seed de modelos", () => {
   const sql = gerarSeedModelosSql({ ...base, modelos: [m] });
   assert(sql.includes("'D''Ávila'"));
   assert(sql.includes(`'{"condicao_nx":"se o órgão ''exigir''"}'::jsonb`));
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// PR 3b: blocos legais (Padrao_Lei, seções 1 e 2)
+// ---------------------------------------------------------------------------------------------------------------
+const MIGRATION_BLOCOS = new URL(
+  "../../../supabase/migrations/20261108230000_nexor_blocos_legais.sql",
+  import.meta.url,
+);
+
+Deno.test("import-spec (blocos): 22 blocos × 5 procedimentos, todos da Lei 14.133", () => {
+  const b = lerBlocosLegais(wb);
+  assertEquals(b.length, 110);
+  assertEquals(new Set(b.map((x) => x.bloco)).size, 22);
+  assertEquals(
+    [...new Set(b.map((x) => x.procedimento))],
+    ["pregao", "concorrencia", "dispensa", "inexigibilidade", "credenciamento"],
+  );
+  assert(b.every((x) => x.regime_id === "lei_14133"));
+  assertEquals(b.filter((x) => x.procedimento === "pregao").map((x) => x.ordem), Array.from({ length: 22 }, (_, i) => i + 1));
+});
+
+Deno.test("import-spec (blocos): célula da matriz vira status, prazo e confiança", () => {
+  const b = lerBlocosLegais(wb);
+  const um = (proc: string, bloco: string) => b.find((x) => x.procedimento === proc && x.bloco === bloco)!;
+  const imp = um("pregao", "impugnacao_esclarecimento");
+  assertEquals(
+    [imp.status, imp.prazo_quantidade, imp.prazo_unidade, imp.prazo_sentido, imp.prazo_ancora, imp.confianca],
+    ["obrigatorio", 3, "du", "antes", "abertura_sessao", "alta"],
+  );
+  assert(imp.base_legal?.includes("art. 164"));
+  assertEquals(imp.parte_obrigada, "licitante");
+  assert(imp.temas_rag?.includes("prazo_impugnacao"));
+  const inex = um("inexigibilidade", "valor_estimado_sigilo");
+  assertEquals([inex.prazo_quantidade, inex.prazo_unidade, inex.prazo_sentido, inex.prazo_ancora], [1, "anos", "antes", "contratacao"]);
+  const cred = um("credenciamento", "impugnacao_esclarecimento");
+  assertEquals([cred.prazo_sentido, cred.prazo_ancora], ["depois", "recebimento_pedido"]);
+  const na = um("inexigibilidade", "proposta");
+  assertEquals([na.status, na.prazo_quantidade, na.confianca], ["nao_aplica", null, "media"]);
+  const anexos = um("pregao", "anexos_obrigatorios");
+  assertEquals([anexos.prazo_quantidade, anexos.prazo_unidade], [0, "dc"]);
+  // Proposta no pregão: sem quantidade, mas "até a abertura" (sentido e âncora da seção 2).
+  const prop = um("pregao", "proposta");
+  assertEquals([prop.prazo_quantidade, prop.prazo_unidade, prop.prazo_sentido, prop.prazo_ancora], [null, null, "antes", "abertura_sessao"]);
+});
+
+Deno.test("import-spec (blocos): detalhe (condição, base legal) só no pregão; os outros ficam null", () => {
+  const b = lerBlocosLegais(wb);
+  assert(b.filter((x) => x.procedimento === "pregao").every((x) => x.base_legal && x.condicao && x.parte_obrigada));
+  assert(
+    b.filter((x) => x.procedimento !== "pregao").every((x) =>
+      x.base_legal === null && x.condicao === null && x.parte_obrigada === null && x.temas_rag === null &&
+      x.variacoes === null
+    ),
+  );
+});
+
+Deno.test("import-spec (blocos): célula fora do padrão dá erro com a célula", () => {
+  assertThrows(() => lerBlocosLegais(planilhaCom("Padrao_Lei", "B9", "Obrigatório")), Error, "B9");
+  assertThrows(() => lerBlocosLegais(planilhaCom("Padrao_Lei", "C9", "Obrig. · 3 semanas antes abertura_sessao [alta]")), Error, "C9");
+  assertThrows(() => lerBlocosLegais(planilhaCom("Padrao_Lei", "D9", null)), Error, "D9");
+});
+
+Deno.test("import-spec (blocos): pregão da matriz divergente do detalhe dá erro", () => {
+  assertThrows(() => lerBlocosLegais(planilhaCom("Padrao_Lei", "E34", 4)), Error, "diverge");
+  assertThrows(() => lerBlocosLegais(planilhaCom("Padrao_Lei", "L34", "media")), Error, "diverge");
+  assertThrows(() => lerBlocosLegais(planilhaCom("Padrao_Lei", "B34", "condicional")), Error, "diverge");
+  assertThrows(() => lerBlocosLegais(planilhaCom("Padrao_Lei", "A34", "bloco_inexistente")), Error, "bloco_inexistente");
+});
+
+Deno.test("import-spec (blocos): seção 2 sem Lei 14.133 no título dá erro (regime não é adivinhado)", () => {
+  assertThrows(() => lerBlocosLegais(planilhaCom("Padrao_Lei", "A27", "2. PREGÃO – DETALHE POR BLOCO")), Error, "14.133");
+});
+
+Deno.test("import-spec (blocos): bloco da migration é o que o script gera da planilha", () => {
+  const sql = Deno.readTextFileSync(MIGRATION_BLOCOS);
+  const i = sql.indexOf(MARCA_BLOCOS_INICIO);
+  const j = sql.indexOf(MARCA_BLOCOS_FIM);
+  assert(i >= 0 && j > i, "marcas do bloco gerado não encontradas na migration");
+  assertEquals(sql.slice(i, j + MARCA_BLOCOS_FIM.length), gerarSeedBlocosSql(lerBlocosLegais(wb)));
 });

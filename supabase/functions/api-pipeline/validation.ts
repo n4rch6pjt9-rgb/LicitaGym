@@ -44,7 +44,8 @@ function motivo(v: unknown): string | null | { error: string } {
 const erro = (x: unknown): x is { error: string } => typeof x === "object" && x !== null && "error" in x;
 
 const MAX_TAREFAS_ETAPA = 100;
-const CODIGO_CATALOGO_RE = /^\d{5}-F\d{2}-T\d{2}$/;
+// 14.133 (14133-F01-T01) ou modelo Nexor (spec 0042), no mesmo formato do check tarefas_catalogo_codigo_nx_check.
+const CODIGO_CATALOGO_RE = /^(\d{5}-F\d{2}-T\d{2}|NX\.[A-Z0-9]{3,5}\.[APSR]\d{2}\.[A-Z]{3}\.\d{3}-\d)$/;
 const CHAVE_RE = /^[a-z0-9][a-z0-9-]{2,59}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const AGENTE_RE = /^[a-z][a-z0-9_]{1,30}$/;

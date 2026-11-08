@@ -22,6 +22,8 @@
 
 begin;
 
+set local lock_timeout = '5s';
+
 -- 1) Etapa → fase NX ------------------------------------------------------------------------------------------------
 alter table public.pipeline_etapas
   add column if not exists fase_codigo text;
@@ -173,33 +175,28 @@ $$;
 
 -- 4) Responsável de tarefa de catálogo a partir do modelo -----------------------------------------------------------
 -- responsavel_padrao (só modelos NX): 'papel:<admin|operacao>' ou 'agente:<nome>', combinável com ' + '. Vale o
--- primeiro. agente:precos → preco (código de agentes_catalogo). Agente inexistente ou inativo → papel admin (R-14).
+-- primeiro. Decisão do Marcelo (08/11, spec 0042): por ora o agente é só sugestão. A tarefa de catálogo com agente
+-- travaria (api-tarefas recusa mudar status de tarefa de agente; o envio da análise liga uma tarefa só), então ela nasce
+-- na fila do admin e a tela mostra o agente sugerido (responsavel_padrao). O fluxo do agente por tarefa é a spec 0043.
 create or replace function public.tarefa_responsavel_do_modelo(p_padrao text)
 returns table (responsavel_tipo text, responsavel_papel text, responsavel_agente text)
 language sql
-stable
+immutable
 security invoker
 set search_path = public, pg_temp
 as $$
   with primeiro as (
     select split_part(btrim(split_part(coalesce(p_padrao, ''), '+', 1)), ':', 1) as tipo,
            split_part(btrim(split_part(coalesce(p_padrao, ''), '+', 1)), ':', 2) as valor
-  ),
-  agente as (
-    select a.codigo
-      from primeiro p
-      join public.agentes_catalogo a
-        on a.ativo and a.codigo = case p.valor when 'precos' then 'preco' else p.valor end
-     where p.tipo = 'agente'
   )
-  select case when exists (select 1 from agente) then 'agente' else 'papel' end,
+  select 'papel'::text,
          case when p.tipo = 'papel' and p.valor in ('admin', 'operacao') then p.valor else 'admin' end,
-         (select codigo from agente)
+         null::text
     from primeiro p
 $$;
 comment on function public.tarefa_responsavel_do_modelo(text) is
-  'Spec 0042: responsável de uma tarefa de catálogo pelo responsavel_padrao do modelo. Sem padrão: papel admin (regra '
-  'de antes). Agente inativo ou desconhecido: papel admin, nunca responsável inválido.';
+  'Spec 0042: fila (papel) de uma tarefa de catálogo pelo responsavel_padrao do modelo. papel:operacao → operacao; '
+  'sem padrão ou agente:* → admin (o agente é sugestão até a spec 0043).';
 
 -- 5) Criar as tarefas da etapa: prazo e responsável do modelo NX; NX em qualquer regulamento informado -------------
 create or replace function public.pipeline_etapa_tarefas_criar(
@@ -406,6 +403,10 @@ comment on function public.tenants_reativada_semear() is
   'NX, o modelo antigo nas etapas que existem (spec 0018). Não recria etapa excluída. Spec 0042.';
 revoke all on function public.tenants_reativada_semear() from public, anon, authenticated;
 
+comment on function public.pipeline_etapa_tarefas_criar(bigint, bigint, bigint, uuid, timestamptz) is
+  'Cria as tarefas da etapa para a licitação (spec 0018). Catálogo: só 14.133/14.981, salvo modelo NX (spec 0042), que '
+  'nasce em qualquer regulamento informado com o SLA (prazo_horas_apos_etapa) e a fila (responsavel_padrao) do modelo. '
+  'Regulamento não informado bloqueia o catálogo. Tarefas da empresa e de agente: sempre.';
 revoke execute on function public.pipeline_semear_etapas_nx(bigint) from public, anon, authenticated;
 revoke execute on function public.pipeline_semear_tarefas_nx(bigint) from public, anon, authenticated;
 revoke execute on function public.tarefa_responsavel_do_modelo(text) from public, anon, authenticated;

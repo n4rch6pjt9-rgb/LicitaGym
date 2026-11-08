@@ -12,6 +12,7 @@ declare
   v_a01  bigint; v_a02 bigint; v_s08 bigint;
   v_l1   bigint;  -- LEI_14133
   v_l2   bigint;  -- RCA (Sistema S)
+  v_l3   bigint;  -- regulamento não informado
   v_res  record;
   v_te   record;
   v_ant  integer;
@@ -47,10 +48,13 @@ begin
   if (v_res.responsavel_tipo, v_res.responsavel_papel, v_res.responsavel_agente) is distinct from ('papel', 'operacao', null::text) then
     raise exception 'CHECK FALHOU: papel:operacao virou %', v_res;
   end if;
-  select * into v_res from public.tarefa_responsavel_do_modelo('agente:juridico + agente:edital');
-  if (v_res.responsavel_tipo, v_res.responsavel_agente) is distinct from ('agente', 'juridico') then
-    raise exception 'CHECK FALHOU: agente:juridico + agente:edital virou %', v_res;
-  end if;
+  -- agente é sugestão (decisão de 08/11): a tarefa nasce na fila do admin, nunca com responsável agente
+  foreach r in array array['agente:juridico + agente:edital', 'agente:precos', 'agente:inexistente'] loop
+    select * into v_res from public.tarefa_responsavel_do_modelo(r);
+    if (v_res.responsavel_tipo, v_res.responsavel_papel, v_res.responsavel_agente) is distinct from ('papel', 'admin', null::text) then
+      raise exception 'CHECK FALHOU: % virou % (esperado fila do admin)', r, v_res;
+    end if;
+  end loop;
   select * into v_res from public.tarefa_responsavel_do_modelo(null);
   if (v_res.responsavel_tipo, v_res.responsavel_papel, v_res.responsavel_agente) is distinct from ('papel', 'admin', null::text) then
     raise exception 'CHECK FALHOU: modelo sem responsável virou %', v_res;
@@ -133,12 +137,31 @@ begin
       raise exception 'CHECK FALHOU: Sistema S em A02 (%)', v_res;
     end if;
 
-    -- Agente como responsável: NX-T01 (agente:juridico) em A01 ---------------------------------------------------------
+    -- Agente sugerido: NX-T01 (agente:juridico) nasce na fila do admin, com SLA de 4h -------------------------------
     update public.pipeline_oportunidades set etapa_id = v_a01, atualizada_por = v_u
      where tenant_id = v_t and licitacao_id = v_l1;
     select * into v_te from public.tarefas_equipe where licitacao_id = v_l1 and tarefa_codigo = 'NX.GEN.A01.DAT.001-2';
-    if v_te.responsavel_tipo is distinct from 'agente' or v_te.responsavel_agente is distinct from 'juridico' then
-      raise exception 'CHECK FALHOU: NX-T01 não nasceu com o agente jurídico (%, %)', v_te.responsavel_tipo, v_te.responsavel_agente;
+    if v_te.responsavel_tipo is distinct from 'papel' or v_te.responsavel_papel is distinct from 'admin'
+       or v_te.responsavel_agente is not null or v_te.prazo_situacao is distinct from 'calculado' then
+      raise exception 'CHECK FALHOU: NX-T01 (%, %, %, %)', v_te.responsavel_tipo, v_te.responsavel_papel,
+        v_te.responsavel_agente, v_te.prazo_situacao;
+    end if;
+
+    -- Etapa só com modelo NX (A04) e regulamento fora da lei (RCA): nascem as NX, sem aviso -------------------------
+    select * into v_res from public.pipeline_etapa_tarefas_criar(v_t, v_l2,
+      (select id from public.pipeline_etapas where tenant_id = v_t and fase_codigo = 'A04'), v_u);
+    if v_res.bloqueio is not null or v_res.criadas <> 3 then
+      raise exception 'CHECK FALHOU: A04 só NX com RCA (%)', v_res;
+    end if;
+
+    -- Regulamento não informado: nada do catálogo nasce, nem NX ---------------------------------------------------------
+    insert into public.licitacoes_externas (fonte) values ('pncp') returning id into v_l3;
+    insert into public.pipeline_oportunidades (tenant_id, licitacao_id, etapa_id, adicionada_por, atualizada_por)
+    values (v_t, v_l3, v_a01, v_u, v_u);
+    select * into v_res from public.pipeline_etapa_tarefas_criar(v_t, v_l3, v_a01, v_u);
+    if v_res.bloqueio is distinct from 'regulamento_nao_informado'
+       or exists (select 1 from public.tarefas_equipe where licitacao_id = v_l3 and origem = 'catalogo') then
+      raise exception 'CHECK FALHOU: regulamento nulo criou tarefa de catálogo (%)', v_res;
     end if;
 
     -- Reativar a empresa NX não traz tarefas da Konnen para "Triagem"/"Perdida" (nomes iguais nas duas sementes) ------

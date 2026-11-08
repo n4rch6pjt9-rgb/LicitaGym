@@ -852,3 +852,16 @@ Deno.test("0042 K-6: etapa_tarefas_listar devolve fase_codigo da etapa (null for
   const r2 = await chamar(ctx(repo), { action: "etapa_tarefas_listar", etapa_id: 1 });
   assertEquals([r2.status, r2.json.fase_codigo], [200, null]);
 });
+
+Deno.test("0042: etapa_tarefas_salvar aceita código NX e continua recusando código inválido", () => {
+  const ok = parseActionFromBody({
+    action: "etapa_tarefas_salvar",
+    etapa_id: 2,
+    tarefas: [{ origem: "catalogo", tarefa_codigo: "NX.GEN.A01.DAT.001-2" }, { origem: "catalogo", tarefa_codigo: "14133-F01-T01" }],
+  });
+  assertEquals("error" in ok, false);
+  for (const ruim of ["NX.GEN.A01.DAT.001", "NX.GEN.Z01.DAT.001-2", "nx.gen.a01.dat.001-2", "14133-F01-T1"]) {
+    const r = parseActionFromBody({ action: "etapa_tarefas_salvar", etapa_id: 2, tarefas: [{ origem: "catalogo", tarefa_codigo: ruim }] });
+    assertEquals("error" in r, true, ruim);
+  }
+});

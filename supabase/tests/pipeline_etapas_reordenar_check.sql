@@ -1,3 +1,6 @@
+-- Spec 0042: tenant novo nasce NX; este check testa o modelo antigo (Konnen), então pede a semente antiga.
+select set_config('nexor.semente_pipeline', 'lei14133', false);
+
 -- Checagem da migration 20261021120000_pipeline_etapas_reordenar (spec 0034, K-5 a K-7).
 --   CA-3e: ACL das 4 funções (só service_role); ordem final única e contínua (10, 20, 30...).
 --   CA-3g: a versao de pipeline_etapas_listar é a de pipeline_etapas_versao sobre as mesmas linhas.

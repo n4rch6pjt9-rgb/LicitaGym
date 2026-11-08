@@ -1,3 +1,6 @@
+-- Spec 0042: tenant novo nasce NX; este check testa o modelo antigo (Konnen), então pede a semente antiga.
+select set_config('nexor.semente_pipeline', 'lei14133', false);
+
 -- Checagem da migration 20261011140000_pipeline_etapa_tarefas_salvar (spec 0018, PR 3).
 --   ACL; salvar a lista completa (upsert e desligar, nunca apagar); chave imutável; recusas (CA-10) sem gravar nada.
 -- Tudo o que grava é desfeito ao final (exceção proposital).

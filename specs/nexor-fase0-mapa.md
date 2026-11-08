@@ -11,7 +11,7 @@ os PRs da Fase 0. Fonte: `specs/nexor_spec.xlsx` (aba indicada) e schema de prod
 | `regimes` | Padrao_Lei, seção 3 | `regimes` (nova) | **criada** | 1 |
 | `tenants` | Nexor_Dados (`nx_tn_*`, `nx_emp_*`) | `tenants` + `tenant_dados_restritos` + `tenant_regras_comerciais` | existe; faltam marca (`nx_tn_*`) e dados da proposta (`nx_emp_*`) | 3 |
 | `pipeline_stages` (catálogo) | Glossario 2a, Pipeline_Etapas | `processo_fases` (`norma = 'NX'`) | **criadas** as 14 etapas A01–R14 | 2 |
-| `pipeline_stages` (tenant) | Pipeline_Etapas | `pipeline_etapas` (por tenant) | padrão de tenant novo; Konnen em PR próprio com dry-run | 3 |
+| `pipeline_stages` (tenant) | Pipeline_Etapas | `pipeline_etapas` (por tenant, `fase_codigo` → etapa NX) + `nexor_etapa_tarefas_padrao` | **tenant novo nasce NX** (spec 0042); Konnen em PR próprio com dry-run | 3c |
 | `task_templates` | Tarefas_Default, Glossario §2b e §3 | `tarefas_catalogo` (`norma = 'NX'`) + `tarefas_catalogo_apelidos` | **criados** 23 modelos NX e 45 apelidos | 2 |
 | `task_instances` | — | `tarefas_equipe` | existe; muda só o cálculo de prazo (0041 K-4) | 3 |
 | `legal_blocks` (22 × 5) | Padrao_Lei, seções 1 e 2 | `norma_dispositivos` guarda artigo; a matriz bloco × procedimento **não existe** | **criada** `blocos_legais` (110 linhas, regime `lei_14133`) | 3b |
@@ -79,7 +79,15 @@ Migration `20261108230000_nexor_blocos_legais.sql`, bloco gerado por `scripts/im
   citar esses campos confere a fonte antes.
 - **Layout:** coluna a mais ou linha em branco no meio de qualquer das duas seções dá erro (nada some em silêncio).
 
-Fica para depois: etapas por tenant, marca do tenant e prazo de tarefa em dias úteis (0041 K-4).
+Fica para depois: marca do tenant e prazo de tarefa em dias úteis (0041 K-4).
+
+## PR 3c (tenant novo nasce NX, spec 0042)
+Migration `20261109010000_nexor_tenant_novo.sql`. O gatilho de tenant novo semeia as 14 etapas NX e as 34 tarefas
+padrão (23 NX + 11 modelos 14.133 dos 10 apelidos, gerados da planilha por `--bloco=etapa-tarefas`). A tarefa NX
+nasce com o SLA (`prazo_horas_apos_etapa`) e o responsável (`responsavel_padrao`) da planilha; modelo NX nasce em
+qualquer regulamento informado. A semente antiga (13 etapas da Konnen) continua disponível só por
+`set_config('nexor.semente_pipeline', 'lei14133', ...)`, usada pelos checks SQL do modelo da Konnen. Empresa reativada
+sem etapa continua recebendo a semente antiga (`tenants_reativada_semear`, não mexido).
 
 ### Achado na planilha
 - A aba PRD (C32) dava o exemplo `NX.GEN.A02.IMP.005-8`, mas 8 é o DV com origem `LG`. Em 07/11 a planilha passou

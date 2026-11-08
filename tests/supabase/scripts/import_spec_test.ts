@@ -4,16 +4,20 @@ import {
   dataIso,
   digitoVerificador,
   gerarSeedBlocosSql,
+  gerarSeedEtapaTarefasSql,
   gerarSeedModelosSql,
   gerarSeedSql,
   idModelo,
   lerBlocosLegais,
+  lerEtapaTarefasPadrao,
   lerFeriados,
   lerModelosNx,
   lerPlanilha,
   lerRegimes,
   MARCA_BLOCOS_FIM,
   MARCA_BLOCOS_INICIO,
+  MARCA_ETAPA_TAREFAS_FIM,
+  MARCA_ETAPA_TAREFAS_INICIO,
   MARCA_FIM,
   MARCA_INICIO,
   MARCA_MODELOS_FIM,
@@ -562,4 +566,41 @@ Deno.test("import-spec (blocos): unidade com nome de propriedade herdada dá err
     Error,
     "C9",
   );
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Spec 0042: tarefas padrão por etapa NX
+// ---------------------------------------------------------------------------------------------------------------
+const MIGRATION_TENANT_NX = new URL(
+  "../../../supabase/migrations/20261109010000_nexor_tenant_novo.sql",
+  import.meta.url,
+);
+
+Deno.test("import-spec (0042 CA-7): 34 tarefas padrão nas etapas certas, apelidos na etapa NX", () => {
+  const et = lerEtapaTarefasPadrao(wb);
+  assertEquals(et.length, 34);
+  const etapaDe = (apelido: string) => [...new Set(et.filter((x) => x.apelido === apelido).map((x) => x.etapa_codigo))];
+  assertEquals(etapaDe("NX-T05"), ["A02"]);
+  assertEquals(etapaDe("NX-T16"), ["S10"]);
+  assertEquals(etapaDe("NX-T19"), ["R13"]);
+  assertEquals(et.filter((x) => x.apelido === "NX-T18").map((x) => x.tarefa_codigo), ["14133-F05-T01", "14133-F05-T02"]);
+  assertEquals(et.some((x) => x.apelido === "NX-T34"), false);
+  assertEquals(et.some((x) => x.etapa_codigo === "S08"), false);
+  assertEquals(
+    et.filter((x) => x.etapa_codigo === "A01").map((x) => x.apelido),
+    ["NX-T01", "NX-T02", "NX-T03", "NX-T27"],
+  );
+});
+
+Deno.test("import-spec (0042): Pipeline_Etapas e Tarefas_Default divergentes dão erro", () => {
+  // NX-T04 passa a Análise do edital na Tarefas_Default, mas a Pipeline_Etapas ainda a lista em Triagem
+  assertThrows(() => lerEtapaTarefasPadrao(planilhaCom("Tarefas_Default", "B5", "Análise do edital")), Error);
+});
+
+Deno.test("import-spec (0042): bloco da migration é o que o script gera da planilha", () => {
+  const sql = Deno.readTextFileSync(MIGRATION_TENANT_NX);
+  const i = sql.indexOf(MARCA_ETAPA_TAREFAS_INICIO);
+  const j = sql.indexOf(MARCA_ETAPA_TAREFAS_FIM);
+  assert(i >= 0 && j > i, "marcas do bloco gerado não encontradas na migration");
+  assertEquals(sql.slice(i, j + MARCA_ETAPA_TAREFAS_FIM.length), gerarSeedEtapaTarefasSql(lerEtapaTarefasPadrao(wb)));
 });

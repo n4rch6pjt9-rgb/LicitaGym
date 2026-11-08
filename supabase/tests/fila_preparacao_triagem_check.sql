@@ -1,3 +1,6 @@
+-- Spec 0042: tenant novo nasce NX; este check testa o modelo antigo (Konnen), então pede a semente antiga.
+select set_config('nexor.semente_pipeline', 'lei14133', false);
+
 -- Checagem da migration 20261011160000_fila_preparacao_triagem (spec 0018, PR 4a; CA-17).
 --   ACL; entrar em Triagem enfileira um pedido por (empresa, licitação), sem duplicar; reivindicar/concluir;
 --   reagendar com erro; estado para a tela. Tudo desfeito ao final.

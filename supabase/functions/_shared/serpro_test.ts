@@ -76,7 +76,7 @@ Deno.test("CA-2 (cliente): exemplo oficial vira 3 mensagens, item nulo na primei
     assertEquals(r.mensagens[0].dataHora, "2026-02-05T19:15:00.144Z");
     assertEquals(r.mensagens[0].dataHoraFonte, "2026-02-05 16:15:00.144");
     assertEquals(r.mensagens[0].chaveCompra?.numeroUasg, 999988);
-    assertEquals(f.chamadas.api, [`https://gateway.apiserpro.serpro.gov.br/integra-compras/v1/chat/${CHAVE}?ordem=ASC`]);
+    assertEquals(f.chamadas.api, [`https://gateway.apiserpro.serpro.gov.br/integra-compras/v1/chat/${CHAVE}?ordem=ASC&page=0`]);
   } finally {
     f.restaurar();
   }
@@ -88,7 +88,7 @@ Deno.test("Serpro: diligências usam /chat/{chave}/diligencias e marcam tipo dil
     const r = await consultarDiligenciasSerpro(CHAVE);
     assertEquals(r.mensagens.every((m) => m.tipo === "diligencia"), true);
     assertEquals(f.chamadas.api, [
-      `https://gateway.apiserpro.serpro.gov.br/integra-compras/v1/chat/${CHAVE}/diligencias?ordem=ASC`,
+      `https://gateway.apiserpro.serpro.gov.br/integra-compras/v1/chat/${CHAVE}/diligencias?ordem=ASC&page=0`,
     ]);
   } finally {
     f.restaurar();
@@ -99,7 +99,7 @@ Deno.test("CA-3 (cliente): 404 = zero mensagens com status 404, sem erro", async
   const f = comFetch(() => new Response("", { status: 404 }));
   try {
     const r = await consultarChatSerpro(CHAVE);
-    assertEquals(r, { status: 404, mensagens: [] });
+    assertEquals(r, { status: 404, mensagens: [], statusPaginas: [404] });
   } finally {
     f.restaurar();
   }
@@ -260,6 +260,72 @@ Deno.test("Serpro: 502 não lê o corpo (página de manutenção)", async () => 
   try {
     const e = await assertRejects(() => consultarChatSerpro(CHAVE), ErroIntegraCompras);
     assertEquals(e.message, "Integra Compras respondeu HTTP 502.");
+  } finally {
+    f.restaurar();
+  }
+});
+
+/** Página N do exemplo oficial com chaves trocadas, para as páginas não se repetirem. */
+function paginaExemplo(n: number): string {
+  // deno-lint-ignore no-explicit-any
+  const lista = JSON.parse(EXEMPLO_OFICIAL).map((m: any, i: number) => ({
+    ...m,
+    chaveMensagem: `00000000-0000-4000-8000-${String(n * 10 + i).padStart(12, "0")}`,
+  }));
+  return JSON.stringify(lista);
+}
+
+Deno.test("Paginação: 206 com Pages-Count lê todas as páginas por page=N, começando em 0", async () => {
+  const f = comFetch((url) => {
+    const page = Number(new URL(url).searchParams.get("page"));
+    return new Response(paginaExemplo(page), { status: 206, headers: { "Pages-Count": "3", "Page": String(page) } });
+  });
+  try {
+    const r = await consultarChatSerpro(CHAVE);
+    assertEquals(f.chamadas.api.map((u) => new URL(u).searchParams.get("page")), ["0", "1", "2"]);
+    assertEquals(r.mensagens.length, 9);
+    assertEquals(new Set(r.mensagens.map((m) => m.chaveMensagem)).size, 9);
+    assertEquals(r.statusPaginas, [206, 206, 206]);
+    assertEquals(r.aviso, undefined);
+  } finally {
+    f.restaurar();
+  }
+});
+
+Deno.test("Paginação: 200 encerra na primeira página", async () => {
+  const f = comFetch(() => new Response(EXEMPLO_OFICIAL, { status: 200 }));
+  try {
+    const r = await consultarChatSerpro(CHAVE);
+    assertEquals(f.chamadas.api.length, 1);
+    assertEquals(r.statusPaginas, [200]);
+  } finally {
+    f.restaurar();
+  }
+});
+
+Deno.test("Paginação: 206 sem Pages-Count para, guarda o que leu e avisa (não inventa páginas)", async () => {
+  const f = comFetch(() => new Response(EXEMPLO_OFICIAL, { status: 206 }));
+  try {
+    const r = await consultarChatSerpro(CHAVE);
+    assertEquals(f.chamadas.api.length, 1);
+    assertEquals(r.mensagens.length, 3);
+    assertEquals(r.aviso?.includes("Pages-Count"), true);
+  } finally {
+    f.restaurar();
+  }
+});
+
+Deno.test("Paginação: falha na página 1 leva as páginas já lidas no erro (cobradas e gravadas)", async () => {
+  const f = comFetch((url) =>
+    new URL(url).searchParams.get("page") === "0"
+      ? new Response(paginaExemplo(0), { status: 206, headers: { "Pages-Count": "2" } })
+      : new Response("", { status: 502 })
+  );
+  try {
+    const e = await assertRejects(() => consultarChatSerpro(CHAVE), ErroIntegraCompras);
+    assertEquals(e.status, 502);
+    assertEquals(e.statusPaginasAnteriores, [206]);
+    assertEquals(e.mensagensAnteriores.length, 3);
   } finally {
     f.restaurar();
   }

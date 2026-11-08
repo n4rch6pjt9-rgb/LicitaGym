@@ -37,14 +37,27 @@ export interface ChaveCompraIntegra {
   numeroUasg: number | null;
 }
 
-/** Resultado de uma chamada. `status` vai para o registro de execução (200, 206 e 404 são cobrados). */
+/**
+ * Resultado de uma consulta (todas as páginas). `status` é o da primeira página; `statusPaginas` traz o status de
+ * cada chamada feita, na ordem, para o registro de execução (200, 206 e 404 são cobrados, um por página).
+ */
 export interface ResultadoConsultaIntegra {
   status: number;
   mensagens: MensagemIntegra[];
+  statusPaginas?: number[];
+  /** Leitura incompleta sem erro HTTP (206 sem Pages-Count, ou teto de páginas): as mensagens lidas valem. */
+  aviso?: string | null;
 }
 
 export class ErroIntegraCompras extends Error {
-  constructor(message: string, readonly status: number | null) {
+  constructor(
+    message: string,
+    readonly status: number | null,
+    /** Status das páginas lidas com sucesso antes da falha (cobradas, mesmo que a consulta tenha falhado). */
+    readonly statusPaginasAnteriores: number[] = [],
+    /** Mensagens dessas páginas: são gravadas mesmo com a falha numa página seguinte. */
+    readonly mensagensAnteriores: MensagemIntegra[] = [],
+  ) {
     super(message);
     this.name = "ErroIntegraCompras";
   }
@@ -66,6 +79,12 @@ const CHAVE_COMPRA_RE = /^\d{17}$/;
  * 18017805000292026). ASC traz da mais antiga para a mais recente, a ordem em que a sessão aconteceu.
  */
 export const ORDEM = "ASC";
+/**
+ * Paginação: a resposta 206 traz os cabeçalhos Page (começa em 0), Page-Size (20), Pages-Count e Register-Count; a
+ * página seguinte se pede com `page=N` (`pagina` é ignorado). Teste do Marcelo em 08/11/2026: 76 mensagens, 4 páginas.
+ * Cada página é uma chamada cobrada; o teto evita laço sem fim se o cabeçalho vier errado.
+ */
+export const MAX_PAGINAS = 50;
 
 let cacheToken: TokenCache | null = null;
 
@@ -146,7 +165,7 @@ async function consultar(
   tipo: MensagemIntegra["tipo"],
 ): Promise<ResultadoConsultaIntegra> {
   try {
-    return await consultarSemEmbrulho(chaveCompra, tipo);
+    return await consultarTodasAsPaginas(chaveCompra, tipo);
   } catch (e) {
     if (e instanceof ErroIntegraCompras) throw e;
     // Timeout, rede, JSON inválido ou credencial ausente: o chamador sempre recebe ErroIntegraCompras,
@@ -156,15 +175,64 @@ async function consultar(
   }
 }
 
-async function consultarSemEmbrulho(
+async function consultarTodasAsPaginas(
   chaveCompra: string,
   tipo: MensagemIntegra["tipo"],
 ): Promise<ResultadoConsultaIntegra> {
   if (!CHAVE_COMPRA_RE.test(chaveCompra)) {
     throw new ErroIntegraCompras("chaveCompra deve ter 17 dígitos.", null);
   }
+  const mensagens: MensagemIntegra[] = [];
+  const statusPaginas: number[] = [];
+  for (let pagina = 0; pagina < MAX_PAGINAS; pagina++) {
+    let r: PaginaIntegra;
+    try {
+      r = await consultarPagina(chaveCompra, tipo, pagina);
+    } catch (e) {
+      if (e instanceof ErroIntegraCompras && statusPaginas.length > 0) {
+        throw new ErroIntegraCompras(e.message, e.status, [...statusPaginas], [...mensagens]);
+      }
+      throw e;
+    }
+    statusPaginas.push(r.status);
+    mensagens.push(...r.mensagens);
+    if (r.status !== 206) {
+      return { status: statusPaginas[0], mensagens, statusPaginas };
+    }
+    if (r.totalPaginas === null) {
+      return {
+        status: statusPaginas[0],
+        mensagens,
+        statusPaginas,
+        aviso: "Integra Compras respondeu 206 sem o cabeçalho Pages-Count; as páginas seguintes não foram lidas.",
+      };
+    }
+    if (pagina + 1 >= r.totalPaginas) {
+      return { status: statusPaginas[0], mensagens, statusPaginas };
+    }
+  }
+  return {
+    status: statusPaginas[0],
+    mensagens,
+    statusPaginas,
+    aviso: `Integra Compras: compra com mais de ${MAX_PAGINAS} páginas; as seguintes não foram lidas.`,
+  };
+}
+
+interface PaginaIntegra {
+  status: number;
+  mensagens: MensagemIntegra[];
+  /** Pages-Count da resposta; null = cabeçalho ausente ou inválido. */
+  totalPaginas: number | null;
+}
+
+async function consultarPagina(
+  chaveCompra: string,
+  tipo: MensagemIntegra["tipo"],
+  pagina: number,
+): Promise<PaginaIntegra> {
   const caminho = `/integra-compras/v1/chat/${chaveCompra}${tipo === "diligencia" ? "/diligencias" : ""}` +
-    `?ordem=${ORDEM}`;
+    `?ordem=${ORDEM}&page=${pagina}`;
 
   let token = await obterTokenSerpro();
   let renovouToken = false;
@@ -198,7 +266,7 @@ async function consultarSemEmbrulho(
 
   if (res.status === 404) {
     await res.body?.cancel();
-    return { status: 404, mensagens: [] };
+    return { status: 404, mensagens: [], totalPaginas: null };
   }
 
   if (res.status !== 200 && res.status !== 206) {
@@ -217,7 +285,12 @@ async function consultarSemEmbrulho(
   if (!Array.isArray(corpo)) {
     throw new ErroIntegraCompras(`Resposta do Integra Compras fora do formato documentado (esperada uma lista).`, res.status);
   }
-  return { status: res.status, mensagens: corpo.map((m, i) => normalizarMensagem(m, tipo, i)) };
+  const total = Number(res.headers.get("Pages-Count"));
+  return {
+    status: res.status,
+    mensagens: corpo.map((m, i) => normalizarMensagem(m, tipo, i)),
+    totalPaginas: Number.isInteger(total) && total > 0 ? total : null,
+  };
 }
 
 const DETALHE_MAX = 300;

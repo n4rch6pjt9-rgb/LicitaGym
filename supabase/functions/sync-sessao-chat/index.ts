@@ -17,7 +17,8 @@ import {
  * ativa, fora das etapas perdida e descartada, sem homologação e com o fim do recebimento de propostas (data_fim)
  * entre 30 dias atrás e 2 horas à frente.
  *
- * Custo (cada consulta = 2 chamadas cobradas, chat e diligências):
+ * Custo (cada consulta = no mínimo 2 chamadas cobradas, chat e diligências, mais 1 por página além da primeira;
+ * o chat vem em páginas de 20 mensagens):
  * - rodízio: a compra consultada há mais tempo (ou nunca) vem primeiro;
  * - compra consultada há menos de 55 min (por cron ou usuário) fica para a próxima rodada: com o cron a cada 30 min,
  *   cada compra é lida cerca de uma vez por hora;

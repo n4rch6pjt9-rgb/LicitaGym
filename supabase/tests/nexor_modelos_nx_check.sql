@@ -1,6 +1,6 @@
 -- Checagem da migration 20261107220000_nexor_modelos_nx (Nexor Fase 0, PR 2).
 --   14 etapas NX; 23 modelos NX com DV correto (recalculado aqui em SQL, independente do script); 84 modelos da
---   14.133 intactos; apelidos (33 LG-T ativos, LG-T18 com dois modelos, LG-T34 ausente); condição em texto = "não
+--   14.133 intactos; apelidos (33 NX-T ativos, NX-T18 com dois modelos, NX-T34 ausente); condição em texto = "não
 --   verificada"; ACL de tarefas_catalogo_apelidos (RLS, sem policy, só service_role lê).
 
 do $$
@@ -58,7 +58,7 @@ begin
   end loop;
   if not exists (select 1 from public.tarefas_catalogo_apelidos
                   where sistema = 'nx' and apelido = 'NX.GEN.A02.IMP.005-4' and tarefa_codigo = '14133-F01-T04') then
-    raise exception 'CHECK FALHOU: NX.GEN.A02.IMP.005-4 (LG-T05) não aponta para 14133-F01-T04';
+    raise exception 'CHECK FALHOU: NX.GEN.A02.IMP.005-4 (NX-T05) não aponta para 14133-F01-T04';
   end if;
 
   if exists (select 1 from public.tarefas_catalogo where norma = 'NX'
@@ -72,13 +72,13 @@ begin
 
   select count(*) into n from public.tarefas_catalogo_apelidos;
   if n <> 45 then raise exception 'CHECK FALHOU: esperados 45 apelidos, achei %', n; end if;
-  select count(distinct apelido) into n from public.tarefas_catalogo_apelidos where sistema = 'lg_t';
-  if n <> 33 then raise exception 'CHECK FALHOU: esperados 33 LG-T com apelido, achei %', n; end if;
-  if exists (select 1 from public.tarefas_catalogo_apelidos where apelido = 'LG-T34') then
-    raise exception 'CHECK FALHOU: LG-T34 é reservado e não pode ter apelido';
+  select count(distinct apelido) into n from public.tarefas_catalogo_apelidos where sistema = 'nx_t';
+  if n <> 33 then raise exception 'CHECK FALHOU: esperados 33 NX-T com apelido, achei %', n; end if;
+  if exists (select 1 from public.tarefas_catalogo_apelidos where apelido = 'NX-T34') then
+    raise exception 'CHECK FALHOU: NX-T34 é reservado e não pode ter apelido';
   end if;
-  select count(*) into n from public.tarefas_catalogo_apelidos where sistema = 'lg_t' and apelido = 'LG-T18';
-  if n <> 2 then raise exception 'CHECK FALHOU: LG-T18 deveria apontar para 2 modelos, achei %', n; end if;
+  select count(*) into n from public.tarefas_catalogo_apelidos where sistema = 'nx_t' and apelido = 'NX-T18';
+  if n <> 2 then raise exception 'CHECK FALHOU: NX-T18 deveria apontar para 2 modelos, achei %', n; end if;
 
   if not (select relrowsecurity from pg_class where oid = 'public.tarefas_catalogo_apelidos'::regclass) then
     raise exception 'CHECK FALHOU: RLS desligada em tarefas_catalogo_apelidos';

@@ -1,7 +1,7 @@
--- Nexor, Fase 0 (PR 2): etapas e modelos de tarefa NX no catálogo da plataforma, e apelidos LG-T/NX.
+-- Nexor, Fase 0 (PR 2): etapas e modelos de tarefa NX no catálogo da plataforma, e apelidos NX-T/NX.
 --
 -- Por quê: o prompt Nexor v0.2 dá a cada modelo de tarefa um id fixo Origem.Regime.Etapa.Bloco.Seq-DV
--- (ex.: NX.GEN.A02.IMP.005-4) e guarda LG-Txx e 14133-Fxx-Tyy como apelidos. Decisões do Marcelo (07/11/2026) em
+-- (ex.: NX.GEN.A02.IMP.005-4) e guarda NX-Txx (antigo LG-Txx) e 14133-Fxx-Tyy como apelidos. Decisões do Marcelo (07/11/2026) em
 -- specs/nexor-fase0-mapa.md: estender processo_fases e tarefas_catalogo (norma = 'NX'), apelidos em tabela própria,
 -- etapas Nexor só para tenant novo. De-para aprovado em specs/nexor-de-para-tarefas.md.
 --
@@ -10,7 +10,7 @@
 --   public.tarefas_catalogo          + colunas prazo_horas_apos_etapa (SLA interno da planilha, em horas) e
 --                                    responsavel_padrao (texto da planilha, ex.: "agente:juridico"); check do formato do
 --                                    código NX; + 23 modelos NX (18 novos + 5 parciais aprovados como modelo novo).
---   public.tarefas_catalogo_apelidos (nova) LG-Txx e NX → modelo. LG-T18 aponta para dois modelos. LG-T34 é reservado:
+--   public.tarefas_catalogo_apelidos (nova) NX-Txx e id NX → modelo. NX-T18 aponta para dois modelos. NX-T34 é reservado:
 --                                    sem modelo nem apelido.
 --
 -- Efeito para a Konnen: nenhum. O seletor do catálogo (api-pipeline, listarCatalogo) filtra norma = 'LEI_14133_2021';
@@ -61,20 +61,20 @@ comment on table public.tarefas_catalogo is
   'Origem.Regime.Etapa.Bloco.Seq-DV, gerados de specs/nexor_spec.xlsx). Apelidos em tarefas_catalogo_apelidos.';
 
 create table if not exists public.tarefas_catalogo_apelidos (
-  sistema       text not null check (sistema in ('nx', 'lg_t')),
+  sistema       text not null check (sistema in ('nx', 'nx_t')),
   apelido       text not null,
   tarefa_codigo text not null references public.tarefas_catalogo (codigo) on delete restrict,
   primary key (sistema, apelido, tarefa_codigo),
   constraint tarefas_catalogo_apelidos_formato_check check (
-    (sistema = 'lg_t' and apelido ~ '^LG-T[0-9]{2}$')
+    (sistema = 'nx_t' and apelido ~ '^NX-T[0-9]{2}$')
     or (sistema = 'nx' and apelido ~ '^NX\.[A-Z0-9]{3,5}\.[APSR][0-9]{2}\.[A-Z]{3}\.[0-9]{3}-[0-9]$')
   )
 );
 create index if not exists tarefas_catalogo_apelidos_tarefa_idx on public.tarefas_catalogo_apelidos (tarefa_codigo);
 
 comment on table public.tarefas_catalogo_apelidos is
-  'Códigos alternativos de um modelo do catálogo: LG-Txx (planilha legada) e id NX dos modelos da 14.133. Fonte: '
-  'specs/nexor-de-para-tarefas.md. Um apelido pode apontar para mais de um modelo (LG-T18).';
+  'Códigos alternativos de um modelo do catálogo: NX-Txx (código curto da planilha, antigo LG-Txx) e id NX dos modelos da 14.133. Fonte: '
+  'specs/nexor-de-para-tarefas.md. Um apelido pode apontar para mais de um modelo (NX-T18).';
 
 alter table public.tarefas_catalogo_apelidos enable row level security;
 revoke all on table public.tarefas_catalogo_apelidos from anon, authenticated, service_role, public;
@@ -82,20 +82,20 @@ grant select on table public.tarefas_catalogo_apelidos to service_role;
 
 -- >>> gerado por scripts/import-spec.ts (modelos NX): não editar à mão
 insert into public.processo_fases (codigo, norma, ordem, nome, macro, descricao, artigos) values
-  ('A01', 'NX', 1, 'Captada', 'certame', 'Grupo: Análise. Coluna atual no LicitaGym: Nova. Entrada automática: Ao importar o edital. Gatilho: Captura / upload.', '{}'::integer[]),
-  ('A02', 'NX', 2, 'Triagem', 'certame', 'Grupo: Análise. Coluna atual no LicitaGym: Triagem. Entrada automática: Não. Guardrail: Alerta se o prazo de impugnação vencer em menos de 48h.', '{}'::integer[]),
-  ('A03', 'NX', 3, 'Análise do edital', 'certame', 'Grupo: Análise. Coluna atual no LicitaGym: Em análise. Entrada automática: Não.', '{}'::integer[]),
-  ('A04', 'NX', 4, 'Decisão de participar', 'certame', 'Grupo: Análise. Coluna atual no LicitaGym: Interessante. Entrada automática: Não. Guardrail: Alerta se não houver decisão até 72h antes do limite de propostas.', '{}'::integer[]),
-  ('P05', 'NX', 5, 'Habilitação', 'certame', 'Grupo: Preparação. Coluna atual no LicitaGym: Qualificação. Entrada automática: Não. Guardrail: Alerta se houver certidão vencida na data da abertura.', '{}'::integer[]),
-  ('P06', 'NX', 6, 'Proposta de preços', 'certame', 'Grupo: Preparação. Coluna atual no LicitaGym: Preparando proposta. Entrada automática: Não.', '{}'::integer[]),
-  ('P07', 'NX', 7, 'Declarações e amostras', 'certame', 'Grupo: Preparação. Coluna atual no LicitaGym: Documentação. Entrada automática: Não. Guardrail: Alerta 48h e 24h antes do limite de propostas se o card ainda estiver em Análise ou Preparação.', '{}'::integer[]),
-  ('S08', 'NX', 8, 'Proposta cadastrada', 'certame', 'Grupo: Sessão pública. Coluna atual no LicitaGym: Proposta enviada. Entrada automática: Quando a API confirmar a proposta registrada. Gatilho: API da plataforma. Guardrail: Se a API não confirmar até o limite de propostas: alerta crítico.', '{}'::integer[]),
-  ('S09', 'NX', 9, 'Lances', 'certame', 'Grupo: Sessão pública. Coluna atual no LicitaGym: Disputa. Entrada automática: Sim: na data/hora de abertura. Gatilho: API (status da sessão) > preâmbulo (data de abertura). Guardrail: Move de qualquer coluna anterior; se vier de Análise ou Preparação, marca ''proposta não confirmada''. Nunca move Perdida ou Descartada.', '{}'::integer[]),
-  ('S10', 'NX', 10, 'Aceitação e habilitação', 'certame', 'Grupo: Sessão pública. Coluna atual no LicitaGym: (nova). Entrada automática: Sim: quando o pregoeiro convocar. Gatilho: API (evento de convocação). Guardrail: Inicia o prazo do edital (ex.: 2h SESC, 1 dia útil Sorriso) e alerta na metade do prazo.', '{}'::integer[]),
-  ('S11', 'NX', 11, 'Recurso e homologação', 'certame', 'Grupo: Sessão pública. Coluna atual no LicitaGym: Aguardando resultado. Entrada automática: Sim: quando abrir a fase de recurso ou sair o resultado. Gatilho: API (fase recursal / resultado). Guardrail: Inicia a contagem de 3 dias úteis para as razões.', '{}'::integer[]),
-  ('R12', 'NX', 12, 'Ata e execução', 'contrato', 'Grupo: Resultado. Coluna atual no LicitaGym: Vencida. Entrada automática: Sim: homologação a favor da empresa. Gatilho: API (homologação). Guardrail: Inicia os 5 dias úteis para assinar a ata.', '{}'::integer[]),
-  ('R13', 'NX', 13, 'Perdida', 'certame', 'Grupo: Resultado. Coluna atual no LicitaGym: Perdida. Entrada automática: Sim: homologação a favor de outra empresa. Gatilho: API (homologação).', '{}'::integer[]),
-  ('R14', 'NX', 14, 'Descartada', 'certame', 'Grupo: Resultado. Coluna atual no LicitaGym: Descartada. Entrada automática: Não (só manual). Guardrail: Exige motivo.', '{}'::integer[])
+  ('A01', 'NX', 1, 'Captada', 'certame', 'Grupo: Análise. Coluna atual no pipeline: Nova. Entrada automática: Ao importar o edital. Gatilho: Captura / upload.', '{}'::integer[]),
+  ('A02', 'NX', 2, 'Triagem', 'certame', 'Grupo: Análise. Coluna atual no pipeline: Triagem. Entrada automática: Não. Guardrail: Alerta se o prazo de impugnação vencer em menos de 48h.', '{}'::integer[]),
+  ('A03', 'NX', 3, 'Análise do edital', 'certame', 'Grupo: Análise. Coluna atual no pipeline: Em análise. Entrada automática: Não.', '{}'::integer[]),
+  ('A04', 'NX', 4, 'Decisão de participar', 'certame', 'Grupo: Análise. Coluna atual no pipeline: Interessante. Entrada automática: Não. Guardrail: Alerta se não houver decisão até 72h antes do limite de propostas.', '{}'::integer[]),
+  ('P05', 'NX', 5, 'Habilitação', 'certame', 'Grupo: Preparação. Coluna atual no pipeline: Qualificação. Entrada automática: Não. Guardrail: Alerta se houver certidão vencida na data da abertura.', '{}'::integer[]),
+  ('P06', 'NX', 6, 'Proposta de preços', 'certame', 'Grupo: Preparação. Coluna atual no pipeline: Preparando proposta. Entrada automática: Não.', '{}'::integer[]),
+  ('P07', 'NX', 7, 'Declarações e amostras', 'certame', 'Grupo: Preparação. Coluna atual no pipeline: Documentação. Entrada automática: Não. Guardrail: Alerta 48h e 24h antes do limite de propostas se o card ainda estiver em Análise ou Preparação.', '{}'::integer[]),
+  ('S08', 'NX', 8, 'Proposta cadastrada', 'certame', 'Grupo: Sessão pública. Coluna atual no pipeline: Proposta enviada. Entrada automática: Quando a API confirmar a proposta registrada. Gatilho: API da plataforma. Guardrail: Se a API não confirmar até o limite de propostas: alerta crítico.', '{}'::integer[]),
+  ('S09', 'NX', 9, 'Lances', 'certame', 'Grupo: Sessão pública. Coluna atual no pipeline: Disputa. Entrada automática: Sim: na data/hora de abertura. Gatilho: API (status da sessão) > preâmbulo (data de abertura). Guardrail: Move de qualquer coluna anterior; se vier de Análise ou Preparação, marca ''proposta não confirmada''. Nunca move Perdida ou Descartada.', '{}'::integer[]),
+  ('S10', 'NX', 10, 'Aceitação e habilitação', 'certame', 'Grupo: Sessão pública. Coluna atual no pipeline: (nova). Entrada automática: Sim: quando o pregoeiro convocar. Gatilho: API (evento de convocação). Guardrail: Inicia o prazo do edital (ex.: 2h SESC, 1 dia útil Sorriso) e alerta na metade do prazo.', '{}'::integer[]),
+  ('S11', 'NX', 11, 'Recurso e homologação', 'certame', 'Grupo: Sessão pública. Coluna atual no pipeline: Aguardando resultado. Entrada automática: Sim: quando abrir a fase de recurso ou sair o resultado. Gatilho: API (fase recursal / resultado). Guardrail: Inicia a contagem de 3 dias úteis para as razões.', '{}'::integer[]),
+  ('R12', 'NX', 12, 'Ata e execução', 'contrato', 'Grupo: Resultado. Coluna atual no pipeline: Vencida. Entrada automática: Sim: homologação a favor da empresa. Gatilho: API (homologação). Guardrail: Inicia os 5 dias úteis para assinar a ata.', '{}'::integer[]),
+  ('R13', 'NX', 13, 'Perdida', 'certame', 'Grupo: Resultado. Coluna atual no pipeline: Perdida. Entrada automática: Sim: homologação a favor de outra empresa. Gatilho: API (homologação).', '{}'::integer[]),
+  ('R14', 'NX', 14, 'Descartada', 'certame', 'Grupo: Resultado. Coluna atual no pipeline: Descartada. Entrada automática: Não (só manual). Guardrail: Exige motivo.', '{}'::integer[])
 on conflict (codigo) do update set ordem = excluded.ordem, nome = excluded.nome, macro = excluded.macro,
   descricao = excluded.descricao
   where public.processo_fases.norma = 'NX';
@@ -133,51 +133,51 @@ on conflict (codigo) do update set fase_codigo = excluded.fase_codigo, ordem = e
   where public.tarefas_catalogo.norma = 'NX';
 
 insert into public.tarefas_catalogo_apelidos (sistema, apelido, tarefa_codigo) values
-  ('lg_t', 'LG-T01', 'NX.GEN.A01.DAT.001-2'),
-  ('lg_t', 'LG-T02', '14133-F01-T01'),
+  ('nx_t', 'NX-T01', 'NX.GEN.A01.DAT.001-2'),
+  ('nx_t', 'NX-T02', '14133-F01-T01'),
   ('nx', 'NX.GEN.A01.ANX.002-9', '14133-F01-T01'),
-  ('lg_t', 'LG-T03', 'NX.GEN.A01.DAT.003-8'),
-  ('lg_t', 'LG-T04', 'NX.GEN.A02.PAR.004-2'),
-  ('lg_t', 'LG-T05', '14133-F01-T04'),
+  ('nx_t', 'NX-T03', 'NX.GEN.A01.DAT.003-8'),
+  ('nx_t', 'NX-T04', 'NX.GEN.A02.PAR.004-2'),
+  ('nx_t', 'NX-T05', '14133-F01-T04'),
   ('nx', 'NX.GEN.A02.IMP.005-4', '14133-F01-T04'),
-  ('lg_t', 'LG-T06', 'NX.GEN.A03.PAR.006-8'),
-  ('lg_t', 'LG-T07', 'NX.GEN.A03.OBJ.007-5'),
-  ('lg_t', 'LG-T08', 'NX.GEN.A03.PAR.008-4'),
-  ('lg_t', 'LG-T09', 'NX.GEN.P05.HJU.009-5'),
-  ('lg_t', 'LG-T10', 'NX.GEN.A04.GER.010-1'),
-  ('lg_t', 'LG-T11', 'NX.GEN.P06.JUL.011-9'),
-  ('lg_t', 'LG-T12', 'NX.GEN.P06.EXE.012-8'),
-  ('lg_t', 'LG-T13', '14133-F01-T10'),
+  ('nx_t', 'NX-T06', 'NX.GEN.A03.PAR.006-8'),
+  ('nx_t', 'NX-T07', 'NX.GEN.A03.OBJ.007-5'),
+  ('nx_t', 'NX-T08', 'NX.GEN.A03.PAR.008-4'),
+  ('nx_t', 'NX-T09', 'NX.GEN.P05.HJU.009-5'),
+  ('nx_t', 'NX-T10', 'NX.GEN.A04.GER.010-1'),
+  ('nx_t', 'NX-T11', 'NX.GEN.P06.JUL.011-9'),
+  ('nx_t', 'NX-T12', 'NX.GEN.P06.EXE.012-8'),
+  ('nx_t', 'NX-T13', '14133-F01-T10'),
   ('nx', 'NX.GEN.P06.PRO.013-0', '14133-F01-T10'),
-  ('lg_t', 'LG-T14', '14133-F01-T09'),
+  ('nx_t', 'NX-T14', '14133-F01-T09'),
   ('nx', 'NX.GEN.P07.HFT.014-6', '14133-F01-T09'),
-  ('lg_t', 'LG-T15', 'NX.GEN.P07.AMO.015-1'),
-  ('lg_t', 'LG-T16', '14133-F04-T01'),
+  ('nx_t', 'NX-T15', 'NX.GEN.P07.AMO.015-1'),
+  ('nx_t', 'NX-T16', '14133-F04-T01'),
   ('nx', 'NX.GEN.S10.ACE.016-2', '14133-F04-T01'),
-  ('lg_t', 'LG-T17', '14133-F02-T04'),
+  ('nx_t', 'NX-T17', '14133-F02-T04'),
   ('nx', 'NX.GEN.S09.MEP.017-5', '14133-F02-T04'),
-  ('lg_t', 'LG-T18', '14133-F05-T01'),
+  ('nx_t', 'NX-T18', '14133-F05-T01'),
   ('nx', 'NX.GEN.S11.REC.018-0', '14133-F05-T01'),
-  ('lg_t', 'LG-T18', '14133-F05-T02'),
+  ('nx_t', 'NX-T18', '14133-F05-T02'),
   ('nx', 'NX.GEN.S11.REC.018-0', '14133-F05-T02'),
-  ('lg_t', 'LG-T19', '14133-F06-T04'),
+  ('nx_t', 'NX-T19', '14133-F06-T04'),
   ('nx', 'NX.GEN.R13.HOM.019-0', '14133-F06-T04'),
-  ('lg_t', 'LG-T20', 'NX.GEN.R12.CTR.020-0'),
-  ('lg_t', 'LG-T21', 'NX.GEN.R12.SAN.021-7'),
-  ('lg_t', 'LG-T22', '14133-F08-T01'),
+  ('nx_t', 'NX-T20', 'NX.GEN.R12.CTR.020-0'),
+  ('nx_t', 'NX-T21', 'NX.GEN.R12.SAN.021-7'),
+  ('nx_t', 'NX-T22', '14133-F08-T01'),
   ('nx', 'NX.GEN.R12.EXE.022-0', '14133-F08-T01'),
-  ('lg_t', 'LG-T23', 'NX.GEN.R12.EXE.023-8'),
-  ('lg_t', 'LG-T24', '14133-F12-T02'),
+  ('nx_t', 'NX-T23', 'NX.GEN.R12.EXE.023-8'),
+  ('nx_t', 'NX-T24', '14133-F12-T02'),
   ('nx', 'NX.GEN.R12.SRP.024-0', '14133-F12-T02'),
-  ('lg_t', 'LG-T25', 'NX.GEN.R12.GER.025-3'),
-  ('lg_t', 'LG-T26', 'NX.GEN.R14.GER.026-1'),
-  ('lg_t', 'LG-T27', 'NX.GEN.A01.DAT.027-4'),
-  ('lg_t', 'LG-T28', 'NX.GEN.R12.EXE.028-8'),
-  ('lg_t', 'LG-T29', 'NX.GEN.A03.VAL.029-4'),
-  ('lg_t', 'LG-T30', 'NX.GEN.A04.EXE.030-6'),
-  ('lg_t', 'LG-T31', 'NX.GEN.A04.EXE.031-4'),
-  ('lg_t', 'LG-T32', 'NX.GEN.P06.EXE.032-2'),
-  ('lg_t', 'LG-T33', 'NX.GEN.R12.CTR.033-1')
+  ('nx_t', 'NX-T25', 'NX.GEN.R12.GER.025-3'),
+  ('nx_t', 'NX-T26', 'NX.GEN.R14.GER.026-1'),
+  ('nx_t', 'NX-T27', 'NX.GEN.A01.DAT.027-4'),
+  ('nx_t', 'NX-T28', 'NX.GEN.R12.EXE.028-8'),
+  ('nx_t', 'NX-T29', 'NX.GEN.A03.VAL.029-4'),
+  ('nx_t', 'NX-T30', 'NX.GEN.A04.EXE.030-6'),
+  ('nx_t', 'NX-T31', 'NX.GEN.A04.EXE.031-4'),
+  ('nx_t', 'NX-T32', 'NX.GEN.P06.EXE.032-2'),
+  ('nx_t', 'NX-T33', 'NX.GEN.R12.CTR.033-1')
 on conflict (sistema, apelido, tarefa_codigo) do nothing;
 -- <<< fim do bloco gerado (modelos NX)
 

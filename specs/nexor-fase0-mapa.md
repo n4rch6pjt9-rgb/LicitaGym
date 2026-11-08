@@ -37,11 +37,11 @@ Como cada campo obrigatório foi preenchido sem inventar dado:
   Pipeline_Etapas. `macro`: R12 (Ata e execução) = `contrato`; as demais = `certame` (Perdida e Descartada encerram o
   certame). `artigos` vazio: a base legal entra com os blocos legais (PR 3).
 - **Código do modelo**: `NX.GEN.<etapa>.<bloco>.<seq>-<DV>`. Etapa e bloco vêm da Tarefas_Default via Glossario 2a/2b;
-  o script recalcula o id com origem `LG` e exige que bata com o Glossario 3 (as 34 linhas batem).
+  o script recalcula o id e exige que bata com o id que o Glossario 3 calcula por fórmula (as 34 linhas batem).
 - **Prazo**: `prazo_horas_apos_etapa` preenchido → `sem_prazo_legal` + coluna nova `prazo_horas_apos_etapa` (SLA
   interno, não é prazo legal); `prazo_evento` preenchido → `definido_no_edital` + `prazo_observacao` com o texto da
   planilha. Os dois ou nenhum → erro. Aqui `definido_no_edital` quer dizer "prazo em texto, ainda não estruturado":
-  LG-T29 (antes do limite de impugnação, art. 164) e LG-T23 (recorrente até o fim da ARP) ficam assim até o cálculo
+  NX-T29 (antes do limite de impugnação, art. 164) e NX-T23 (recorrente até o fim da ARP) ficam assim até o cálculo
   de prazo da 0041 K-4 estruturá-los.
 - **Responsável**: copiado da planilha e validado no formato `papel:<admin|operacao>` ou `agente:<nome>`, combinável
   com ` + `. O nome do agente é o da planilha (`precos`), não o código de `agentes_catalogo` (`preco`): quem for usar
@@ -53,15 +53,16 @@ Como cada campo obrigatório foi preenchido sem inventar dado:
   `null` ("não verificada"), nunca `true`.
 - **Descrição e saída**: `descricao` e `saida_esperada` = `criterio_conclusao`; `responsavel_padrao` = coluna
   `responsavel` (só sugestão: o tenant decide).
-- **Apelidos**: 33 LG-T ativos (LG-T18 → F05-T01 e F05-T02); id NX dos 10 LG-T mapeados para a 14.133; LG-T34 sem
+- **Apelidos**: 33 NX-T ativos (NX-T18 → F05-T01 e F05-T02); id NX dos 10 NX-T mapeados para a 14.133; NX-T34 sem
   apelido.
 
 Fica para o PR 3: etapas por tenant (`pipeline_etapas`), blocos legais, marca do tenant e cálculo de prazo (0041 K-4).
 
 ### Achado na planilha
-- A aba PRD (C32) dava o exemplo `NX.GEN.A02.IMP.005-8`, mas 8 é o DV com origem `LG`. Corrigido em 07/11 para
-  `NX.GEN.A02.IMP.005-4`. O Glossario continua com origem `LG` (D5:D12 e fórmula de F44:F77); o script confere contra
-  esse `LG`. Se o Glossario passar para `NX`, trocar a origem da conferência em `lerModelosNx` no mesmo commit.
+- A aba PRD (C32) dava o exemplo `NX.GEN.A02.IMP.005-8`, mas 8 é o DV com origem `LG`. Em 07/11 a planilha passou
+  inteira para NX: códigos curtos `LG-Txx` → `NX-Txx` (mesmo número e conteúdo), Glossario D5:D12 e fórmula de
+  F44:F77 com origem `NX` (`NX.GEN.A02.IMP.005-4`), PRD C19/C31/C32 atualizados. O apelido curto no banco é
+  `sistema = 'nx_t'`; `LG-Txx` não é gravado (a tabela ainda não existia em produção, nada a migrar).
 
 ## Decisões do Marcelo (07/11/2026)
 
@@ -83,8 +84,8 @@ Fica para o PR 3: etapas por tenant (`pipeline_etapas`), blocos legais, marca do
    - `natureza` (enum `tarefa_natureza`): `obrigacao`, `faculdade`, `direito`, `acompanhamento`, `preparacao`;
    - `ator` (check): `licitante`, `contratado`, `licitante_ou_contratado`.
    O gerador falha se a coluna estiver vazia ou com valor fora da lista.
-2. **Apelidos em tabela própria:** `tarefas_catalogo_apelidos (tarefa_codigo, sistema in ('nx','lg_t'), apelido)`,
-   unique `(sistema, apelido, tarefa_codigo)`. Aceita o LG-T18 apontando para F05-T01 e F05-T02.
+2. **Apelidos em tabela própria:** `tarefas_catalogo_apelidos (tarefa_codigo, sistema in ('nx','nx_t'), apelido)`,
+   unique `(sistema, apelido, tarefa_codigo)`. Aceita o NX-T18 apontando para F05-T01 e F05-T02.
 3. **Etapas Nexor só para tenant novo.** As 14 etapas viram o padrão de tenant novo. A Konnen fica como está; migrá-la
    é PR próprio, com dry-run (contagem por etapa antes/depois) e ok do Marcelo.
 4. **Parciais do de-para aprovados:** 3 apelidos (T16, T19, T22) e 5 NX novas (T09, T11, T20, T21, T32). Ver

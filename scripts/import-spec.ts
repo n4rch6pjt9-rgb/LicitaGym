@@ -14,7 +14,7 @@
 //
 // Fase 0, PR 1: feriados nacionais (Documentacao_Edital, M34:O52) e regimes (Padrao_Lei, seção 3).
 // Fase 0, PR 2: etapas NX (Glossario 2a + Pipeline_Etapas), modelos NX (Tarefas_Default + Glossario 2b/3) e apelidos
-// LG-T/NX (de-para aprovado em specs/nexor-de-para-tarefas.md). Decisões em specs/nexor-fase0-mapa.md.
+// NX-T/NX (de-para aprovado em specs/nexor-de-para-tarefas.md). Decisões em specs/nexor-fase0-mapa.md.
 //
 // Uso do bloco do PR 2: deno run --allow-read scripts/import-spec.ts [planilha] --bloco=modelos
 
@@ -207,28 +207,28 @@ const ETAPAS_CONTRATO: ReadonlyMap<string, string> = new Map([[
   "Ata e execução",
 ]]);
 
-/** Códigos LG-T reservados (descontinuados): não viram modelo nem apelido. LG-T34 foi fundido no LG-T09 em 07/11. */
-export const RESERVADOS: ReadonlySet<string> = new Set(["LG-T34"]);
+/** Códigos NX-T reservados (descontinuados): não viram modelo nem apelido. NX-T34 foi fundido no NX-T09 em 07/11. */
+export const RESERVADOS: ReadonlySet<string> = new Set(["NX-T34"]);
 
 /** Responsável sugerido pela planilha: papel ou agente, podendo combinar com " + " (ex.: "agente:edital + agente:precos"). */
 const RESPONSAVEL_RE =
   /^(papel:(admin|operacao)|agente:[a-z_]+)( \+ (papel:(admin|operacao)|agente:[a-z_]+))*$/;
 
 /**
- * De-para aprovado em 07/11/2026 (specs/nexor-de-para-tarefas.md): LG-T que **não** vira modelo NX novo, porque o
- * modelo da 14.133 já cobre (7 iguais + 3 parciais com apelido). LG-T18 aponta para dois modelos.
+ * De-para aprovado em 07/11/2026 (specs/nexor-de-para-tarefas.md): NX-T que **não** vira modelo NX novo, porque o
+ * modelo da 14.133 já cobre (7 iguais + 3 parciais com apelido). NX-T18 aponta para dois modelos.
  */
 export const DE_PARA_14133: Readonly<Record<string, readonly string[]>> = {
-  "LG-T02": ["14133-F01-T01"],
-  "LG-T05": ["14133-F01-T04"],
-  "LG-T13": ["14133-F01-T10"],
-  "LG-T14": ["14133-F01-T09"],
-  "LG-T16": ["14133-F04-T01"],
-  "LG-T17": ["14133-F02-T04"],
-  "LG-T18": ["14133-F05-T01", "14133-F05-T02"],
-  "LG-T19": ["14133-F06-T04"],
-  "LG-T22": ["14133-F08-T01"],
-  "LG-T24": ["14133-F12-T02"],
+  "NX-T02": ["14133-F01-T01"],
+  "NX-T05": ["14133-F01-T04"],
+  "NX-T13": ["14133-F01-T10"],
+  "NX-T14": ["14133-F01-T09"],
+  "NX-T16": ["14133-F04-T01"],
+  "NX-T17": ["14133-F02-T04"],
+  "NX-T18": ["14133-F05-T01", "14133-F05-T02"],
+  "NX-T19": ["14133-F06-T04"],
+  "NX-T22": ["14133-F08-T01"],
+  "NX-T24": ["14133-F12-T02"],
 };
 
 export type EtapaNx = {
@@ -241,7 +241,8 @@ export type EtapaNx = {
 
 export type ModeloNx = {
   codigo: string;
-  lgT: string;
+  /** Código curto da planilha (NX-Txx, antigo LG-Txx). */
+  curto: string;
   fase: string;
   ordem: number;
   titulo: string;
@@ -256,7 +257,7 @@ export type ModeloNx = {
 };
 
 export type Apelido = {
-  sistema: "nx" | "lg_t";
+  sistema: "nx" | "nx_t";
   apelido: string;
   tarefa_codigo: string;
 };
@@ -371,7 +372,7 @@ export function lerEtapasNx(wb: XLSX.WorkBook): EtapaNx[] {
     }
     const partes = [
       `Grupo: ${grupo}.`,
-      `Coluna atual no LicitaGym: ${texto(pe[3])}.`,
+      `Coluna atual no pipeline: ${texto(pe[3])}.`,
     ];
     for (
       const [rotulo, v] of [["Entrada automática", pe[5]], ["Gatilho", pe[6]], [
@@ -443,7 +444,7 @@ function lerBlocos(wb: XLSX.WorkBook): Map<string, string> {
 type LinhaGlossario = { idModelo: string; codigoBanco: string };
 
 /**
- * Glossario 3: id_modelo com origem LG (calculado pela planilha) e codigo_catalogo_banco. Usado só para conferir o
+ * Glossario 3: id_modelo com origem NX (calculado pela planilha) e codigo_catalogo_banco. Usado só para conferir o
  * cálculo deste script e o de-para; é uma contagem independente (INDEX sobre a tabela TarefasDefault inteira).
  */
 function lerIdsGlossario(wb: XLSX.WorkBook): Map<string, LinhaGlossario> {
@@ -461,7 +462,7 @@ function lerIdsGlossario(wb: XLSX.WorkBook): Map<string, LinhaGlossario> {
   const m = new Map<string, LinhaGlossario>();
   for (let i = t + 2; i < g.length; i++) {
     const cod = texto(g[i][0]);
-    if (!/^LG-T\d{2}$/.test(cod)) break;
+    if (!/^NX-T\d{2}$/.test(cod)) break;
     if (m.has(cod)) throw new Error(`${cod} repetido no Glossario 3`);
     m.set(cod, { idModelo: texto(g[i][7]), codigoBanco: texto(g[i][8]) });
   }
@@ -525,36 +526,38 @@ export function lerModelosNx(wb: XLSX.WorkBook): ModelosNx {
   }
   for (let i = 1; i < fim; i++) {
     const l = ls[i];
-    const lgT = texto(l[0]);
+    const curto = texto(l[0]);
     const linha = i + 1;
-    if (!/^LG-T(\d{2})$/.test(lgT)) {
+    if (!/^NX-T(\d{2})$/.test(curto)) {
       throw new Error(
-        `código inválido na linha ${linha} de Tarefas_Default: "${lgT}"`,
+        `código inválido na linha ${linha} de Tarefas_Default: "${curto}"`,
       );
     }
-    if (vistos.has(lgT)) throw new Error(`${lgT} repetido em Tarefas_Default`);
-    vistos.add(lgT);
-    const seq = Number(lgT.slice(4));
+    if (vistos.has(curto)) {
+      throw new Error(`${curto} repetido em Tarefas_Default`);
+    }
+    vistos.add(curto);
+    const seq = Number(curto.slice(4));
     const condicaoTxt = texto(l[6]);
     const natureza = texto(l[cNat]);
     const ator = texto(l[cAtor]);
 
     // Código reservado (RESERVADOS): não vira modelo nem apelido. A planilha também precisa marcá-lo como reservado.
     const marcadoReservado = condicaoTxt.startsWith("nunca (código reservado");
-    if (RESERVADOS.has(lgT) !== marcadoReservado) {
+    if (RESERVADOS.has(curto) !== marcadoReservado) {
       throw new Error(
-        `${lgT}: reserva divergente (lista do script: ${
-          RESERVADOS.has(lgT)
+        `${curto}: reserva divergente (lista do script: ${
+          RESERVADOS.has(curto)
         }; condição na planilha: "${condicaoTxt}")`,
       );
     }
-    if (RESERVADOS.has(lgT)) {
-      if (DE_PARA_14133[lgT]) {
-        throw new Error(`${lgT} está reservado e também no de-para`);
+    if (RESERVADOS.has(curto)) {
+      if (DE_PARA_14133[curto]) {
+        throw new Error(`${curto} está reservado e também no de-para`);
       }
       if (natureza || ator) {
         throw new Error(
-          `${lgT} está reservado e tem natureza/ator preenchidos`,
+          `${curto} está reservado e tem natureza/ator preenchidos`,
         );
       }
       continue;
@@ -563,7 +566,7 @@ export function lerModelosNx(wb: XLSX.WorkBook): ModelosNx {
     const etapa = etapaPorNome.get(texto(l[1]));
     if (!etapa) {
       throw new Error(
-        `${lgT}: etapa "${texto(l[1])}" não está no Glossario 2a`,
+        `${curto}: etapa "${texto(l[1])}" não está no Glossario 2a`,
       );
     }
     // Vazio não é "sem bloco": só o "—" do Glossario 2b vira GER.
@@ -571,36 +574,36 @@ export function lerModelosNx(wb: XLSX.WorkBook): ModelosNx {
     const bloco = blocos.get(blocoPadrao);
     if (!bloco) {
       throw new Error(
-        `${lgT}: bloco_padrao "${blocoPadrao}" vazio ou fora do Glossario 2b`,
+        `${curto}: bloco_padrao "${blocoPadrao}" vazio ou fora do Glossario 2b`,
       );
     }
 
-    const gl = idsGlossario.get(lgT);
-    const conferencia = idModelo("LG", "GEN", etapa, bloco, seq);
-    if (gl?.idModelo !== conferencia) {
+    // O Glossario 3 calcula o mesmo id por fórmula do Excel: conferência independente deste cálculo.
+    const gl = idsGlossario.get(curto);
+    const nx = idModelo("NX", "GEN", etapa, bloco, seq);
+    if (gl?.idModelo !== nx) {
       throw new Error(
-        `${lgT}: id calculado ${conferencia} difere do Glossario 3 (${
+        `${curto}: id calculado ${nx} difere do Glossario 3 (${
           gl?.idModelo ?? "ausente"
         })`,
       );
     }
-    const nx = idModelo("NX", "GEN", etapa, bloco, seq);
 
-    const destinos = DE_PARA_14133[lgT];
+    const destinos = DE_PARA_14133[curto];
     // Glossario 3, coluna I: quando aponta para um modelo da 14.133, o de-para deste script tem de concordar.
     if (
       /^14133-F\d{2}-T\d{2}$/.test(gl.codigoBanco) &&
       !destinos?.includes(gl.codigoBanco)
     ) {
       throw new Error(
-        `${lgT}: Glossario 3 aponta ${gl.codigoBanco}, de-para do script diz ${
+        `${curto}: Glossario 3 aponta ${gl.codigoBanco}, de-para do script diz ${
           destinos?.join(", ") ?? "modelo NX novo"
         }`,
       );
     }
     if (destinos) {
       for (const d of destinos) {
-        apelidos.push({ sistema: "lg_t", apelido: lgT, tarefa_codigo: d });
+        apelidos.push({ sistema: "nx_t", apelido: curto, tarefa_codigo: d });
         apelidos.push({ sistema: "nx", apelido: nx, tarefa_codigo: d });
       }
       continue;
@@ -608,14 +611,14 @@ export function lerModelosNx(wb: XLSX.WorkBook): ModelosNx {
 
     if (!(NATUREZAS as readonly string[]).includes(natureza)) {
       throw new Error(
-        `${lgT}: natureza "${natureza}" inválida ou vazia (aceitos: ${
+        `${curto}: natureza "${natureza}" inválida ou vazia (aceitos: ${
           NATUREZAS.join(", ")
         })`,
       );
     }
     if (!(ATORES as readonly string[]).includes(ator)) {
       throw new Error(
-        `${lgT}: ator "${ator}" inválido ou vazio (aceitos: ${
+        `${curto}: ator "${ator}" inválido ou vazio (aceitos: ${
           ATORES.join(", ")
         })`,
       );
@@ -624,11 +627,11 @@ export function lerModelosNx(wb: XLSX.WorkBook): ModelosNx {
     const responsavel = texto(l[3]);
     const criterio = texto(l[7]);
     if (!titulo || !responsavel || !criterio) {
-      throw new Error(`${lgT}: título, responsável ou critério vazio`);
+      throw new Error(`${curto}: título, responsável ou critério vazio`);
     }
     if (!RESPONSAVEL_RE.test(responsavel)) {
       throw new Error(
-        `${lgT}: responsável "${responsavel}" fora do formato papel:<admin|operacao> ou agente:<nome>`,
+        `${curto}: responsável "${responsavel}" fora do formato papel:<admin|operacao> ou agente:<nome>`,
       );
     }
 
@@ -639,7 +642,7 @@ export function lerModelosNx(wb: XLSX.WorkBook): ModelosNx {
       texto(horas) !== "";
     if (temHoras === (evento !== "")) {
       throw new Error(
-        `${lgT}: informe só prazo_horas_apos_etapa ou só prazo_evento`,
+        `${curto}: informe só prazo_horas_apos_etapa ou só prazo_evento`,
       );
     }
     if (
@@ -647,14 +650,14 @@ export function lerModelosNx(wb: XLSX.WorkBook): ModelosNx {
       (typeof horas !== "number" || !Number.isInteger(horas) || horas <= 0)
     ) {
       throw new Error(
-        `${lgT}: prazo_horas_apos_etapa inválido: ${JSON.stringify(horas)}`,
+        `${curto}: prazo_horas_apos_etapa inválido: ${JSON.stringify(horas)}`,
       );
     }
 
-    if (!condicaoTxt) throw new Error(`${lgT}: condição vazia`);
+    if (!condicaoTxt) throw new Error(`${curto}: condição vazia`);
     modelos.push({
       codigo: nx,
-      lgT,
+      curto,
       fase: etapa,
       ordem: seq,
       titulo,
@@ -669,13 +672,13 @@ export function lerModelosNx(wb: XLSX.WorkBook): ModelosNx {
       // ("não verificada"). Nunca vira {} (que seria "sempre").
       condicao: condicaoTxt === "sempre" ? {} : { condicao_nx: condicaoTxt },
     });
-    apelidos.push({ sistema: "lg_t", apelido: lgT, tarefa_codigo: nx });
+    apelidos.push({ sistema: "nx_t", apelido: curto, tarefa_codigo: nx });
   }
 
-  for (const lgT of [...Object.keys(DE_PARA_14133), ...RESERVADOS]) {
-    if (!vistos.has(lgT)) {
+  for (const curto of [...Object.keys(DE_PARA_14133), ...RESERVADOS]) {
+    if (!vistos.has(curto)) {
       throw new Error(
-        `de-para ou reserva cita ${lgT}, que não está em Tarefas_Default`,
+        `de-para ou reserva cita ${curto}, que não está em Tarefas_Default`,
       );
     }
   }

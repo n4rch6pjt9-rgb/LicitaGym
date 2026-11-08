@@ -189,15 +189,15 @@ Deno.test("import-spec: 14 etapas NX, R12 é contrato e as demais certame", () =
   assert(etapas.every((e) => e.descricao.startsWith("Grupo: ")));
 });
 
-Deno.test("import-spec: 23 modelos NX (18 novos + 5 parciais), sem LG-T34 e sem os do de-para", () => {
+Deno.test("import-spec: 23 modelos NX (18 novos + 5 parciais), sem NX-T34 e sem os do de-para", () => {
   const { modelos } = lerModelosNx(wb);
   assertEquals(modelos.length, 23);
-  const lgT = new Set(modelos.map((m) => m.lgT));
-  for (const x of ["LG-T09", "LG-T11", "LG-T20", "LG-T21", "LG-T32"]) {
-    assert(lgT.has(x), `falta ${x}`);
+  const curto = new Set(modelos.map((m) => m.curto));
+  for (const x of ["NX-T09", "NX-T11", "NX-T20", "NX-T21", "NX-T32"]) {
+    assert(curto.has(x), `falta ${x}`);
   }
-  for (const x of ["LG-T02", "LG-T05", "LG-T16", "LG-T18", "LG-T34"]) {
-    assert(!lgT.has(x), `${x} não vira modelo NX`);
+  for (const x of ["NX-T02", "NX-T05", "NX-T16", "NX-T18", "NX-T34"]) {
+    assert(!curto.has(x), `${x} não vira modelo NX`);
   }
   assert(
     modelos.every((m) =>
@@ -206,16 +206,16 @@ Deno.test("import-spec: 23 modelos NX (18 novos + 5 parciais), sem LG-T34 e sem 
   );
 });
 
-Deno.test("import-spec: apelidos (33 LG-T, LG-T18 com dois modelos, NX dos mapeados)", () => {
+Deno.test("import-spec: apelidos (33 NX-T, NX-T18 com dois modelos, NX dos mapeados)", () => {
   const { apelidos } = lerModelosNx(wb);
   assertEquals(apelidos.length, 45);
   assertEquals(
-    new Set(apelidos.filter((a) => a.sistema === "lg_t").map((a) => a.apelido))
+    new Set(apelidos.filter((a) => a.sistema === "nx_t").map((a) => a.apelido))
       .size,
     33,
   );
   assertEquals(
-    apelidos.filter((a) => a.apelido === "LG-T18").map((a) => a.tarefa_codigo),
+    apelidos.filter((a) => a.apelido === "NX-T18").map((a) => a.tarefa_codigo),
     [
       "14133-F05-T01",
       "14133-F05-T02",
@@ -227,25 +227,25 @@ Deno.test("import-spec: apelidos (33 LG-T, LG-T18 com dois modelos, NX dos mapea
       a.tarefa_codigo === "14133-F01-T04"
     ),
   );
-  assert(!apelidos.some((a) => a.apelido === "LG-T34"));
+  assert(!apelidos.some((a) => a.apelido === "NX-T34"));
 });
 
 Deno.test("import-spec: prazo e condição seguem a planilha, sem inventar regra", () => {
-  const m = new Map(lerModelosNx(wb).modelos.map((x) => [x.lgT, x]));
-  const t01 = m.get("LG-T01")!;
+  const m = new Map(lerModelosNx(wb).modelos.map((x) => [x.curto, x]));
+  const t01 = m.get("NX-T01")!;
   assertEquals([t01.prazoUnidade, t01.prazoHoras, t01.prazoObservacao], [
     "sem_prazo_legal",
     4,
     null,
   ]);
   assertEquals(t01.condicao, {});
-  const t20 = m.get("LG-T20")!;
+  const t20 = m.get("NX-T20")!;
   assertEquals([t20.prazoUnidade, t20.prazoHoras, t20.prazoObservacao], [
     "definido_no_edital",
     null,
     "5 dias úteis após convocação",
   ]);
-  assertEquals(m.get("LG-T33")!.condicao, { condicao_nx: "se vencedor" });
+  assertEquals(m.get("NX-T33")!.condicao, { condicao_nx: "se vencedor" });
 });
 
 Deno.test("import-spec: bloco de modelos da migration é o que o script gera (sem drift)", () => {
@@ -306,7 +306,7 @@ Deno.test("import-spec: ator fora da lista dá erro", () => {
 });
 
 Deno.test("import-spec: id calculado diferente do Glossario dá erro", () => {
-  // LG-T01 passa de preambulo_quadro_datas (DAT) para objeto (OBJ); o Glossario guardado ainda diz DAT.
+  // NX-T01 passa de preambulo_quadro_datas (DAT) para objeto (OBJ); o Glossario guardado ainda diz DAT.
   assertThrows(
     () => lerModelosNx(planilhaCom("Tarefas_Default", "P2", "objeto")),
     Error,
@@ -376,7 +376,7 @@ Deno.test("import-spec: condição começando com 'nunca' não torna a tarefa re
     planilhaCom("Tarefas_Default", "G2", "nunca se consórcio"),
   );
   assertEquals(modelos.length, 23);
-  assertEquals(modelos.find((m) => m.lgT === "LG-T01")?.condicao, {
+  assertEquals(modelos.find((m) => m.curto === "NX-T01")?.condicao, {
     condicao_nx: "nunca se consórcio",
   });
 });
@@ -394,8 +394,8 @@ Deno.test("import-spec: bloco ou etapa fora do Glossario dá erro", () => {
   erroModelos("Tarefas_Default", "B2", "Etapa inexistente", "Glossario 2a");
 });
 
-Deno.test("import-spec: LG-T repetido ou fora do Glossario 3 dá erro", () => {
-  erroModelos("Tarefas_Default", "A3", "LG-T01", "repetido");
+Deno.test("import-spec: NX-T repetido ou fora do Glossario 3 dá erro", () => {
+  erroModelos("Tarefas_Default", "A3", "NX-T01", "repetido");
   erroModelos("Glossario", "A77", null, "Glossario 3");
 });
 

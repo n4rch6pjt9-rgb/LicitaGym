@@ -1,3 +1,6 @@
+-- Spec 0042: tenant novo nasce NX; este check testa o modelo antigo (Konnen), então pede a semente antiga.
+select set_config('nexor.semente_pipeline', 'lei14133', false);
+
 -- Checagem das migrations 20261021130100_tarefas_responsavel_agente e 20261021130300_tarefas_agente_semente
 -- (spec 0035: K-11 a K-14, R-12 a R-16; CA-20, CA-21, CA-23, CA-33).
 --   ACL; semente das 2 tarefas de agente na Nova; tarefa de agente nasce com qualquer regulamento e responsável agente;

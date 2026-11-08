@@ -157,8 +157,15 @@ security invoker
 set search_path = public, pg_temp
 as $$
 begin
-  perform public.pipeline_semear_etapas_nx(new.id);
-  perform public.pipeline_semear_tarefas_nx(new.id);
+  -- Semente antiga (13 etapas + tarefas da 14.133) só quando a sessão pede explicitamente: os checks SQL do modelo da
+  -- Konnen usam isso. A api-tenant (PostgREST) não define essa configuração, então tenant criado pelo app nasce NX.
+  if current_setting('nexor.semente_pipeline', true) = 'lei14133' then
+    perform public.pipeline_semear_etapas(new.id);
+    perform public.pipeline_semear_tarefas(new.id);
+  else
+    perform public.pipeline_semear_etapas_nx(new.id);
+    perform public.pipeline_semear_tarefas_nx(new.id);
+  end if;
   return new;
 end
 $$;

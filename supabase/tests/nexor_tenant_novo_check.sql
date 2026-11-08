@@ -107,12 +107,14 @@ begin
     insert into public.pipeline_oportunidades (tenant_id, licitacao_id, etapa_id, adicionada_por, atualizada_por)
     values (v_t, v_l1, v_a02, v_u, v_u), (v_t, v_l2, v_a02, v_u, v_u);
 
-    select * into v_res from public.pipeline_etapa_tarefas_criar(v_t, v_l1, v_a02, v_u, '2026-11-09 10:00-03'::timestamptz);
-    if v_res.bloqueio is not null or v_res.criadas <> 2 then
-      raise exception 'CHECK FALHOU: A02 com 14.133 criou % (bloqueio %)', v_res.criadas, v_res.bloqueio;
+    -- o gatilho pipeline_oportunidades_tarefas_trg cria as tarefas no insert (entrada = agora)
+    if (select string_agg(tarefa_codigo, ',' order by tarefa_codigo) from public.tarefas_equipe where licitacao_id = v_l1)
+       is distinct from '14133-F01-T04,NX.GEN.A02.PAR.004-2' then
+      raise exception 'CHECK FALHOU: A02 com 14.133 não criou NX-T04 e NX-T05';
     end if;
     select * into v_te from public.tarefas_equipe where licitacao_id = v_l1 and tarefa_codigo = 'NX.GEN.A02.PAR.004-2';
-    if v_te.prazo_situacao is distinct from 'calculado' or v_te.prazo_em is distinct from '2026-11-10 10:00-03'::timestamptz
+    if v_te.prazo_situacao is distinct from 'calculado'
+       or v_te.prazo_em not between now() + interval '23 hours 59 minutes' and now() + interval '24 hours 1 minute'
        or v_te.responsavel_papel is distinct from 'operacao' or v_te.responsavel_tipo is distinct from 'papel' then
       raise exception 'CHECK FALHOU: NX-T04 sem prazo de 24h ou sem papel operacao (%, %, %)',
         v_te.prazo_situacao, v_te.prazo_em, v_te.responsavel_papel;
@@ -125,14 +127,15 @@ begin
     end if;
 
     -- Regulamento sem catálogo da lei (Sistema S): nasce só a NX e o aviso continua, porque a etapa tem 14.133 --------
-    select * into v_res from public.pipeline_etapa_tarefas_criar(v_t, v_l2, v_a02, v_u, '2026-11-09 10:00-03'::timestamptz);
+    select * into v_res from public.pipeline_etapa_tarefas_criar(v_t, v_l2, v_a02, v_u);
     if v_res.bloqueio is distinct from 'regulamento_sem_catalogo'
        or (select string_agg(tarefa_codigo, ',') from public.tarefas_equipe where licitacao_id = v_l2) is distinct from 'NX.GEN.A02.PAR.004-2' then
       raise exception 'CHECK FALHOU: Sistema S em A02 (%)', v_res;
     end if;
 
     -- Agente como responsável: NX-T01 (agente:juridico) em A01 ---------------------------------------------------------
-    perform public.pipeline_etapa_tarefas_criar(v_t, v_l1, v_a01, v_u, now());
+    update public.pipeline_oportunidades set etapa_id = v_a01, atualizada_por = v_u
+     where tenant_id = v_t and licitacao_id = v_l1;
     select * into v_te from public.tarefas_equipe where licitacao_id = v_l1 and tarefa_codigo = 'NX.GEN.A01.DAT.001-2';
     if v_te.responsavel_tipo is distinct from 'agente' or v_te.responsavel_agente is distinct from 'juridico' then
       raise exception 'CHECK FALHOU: NX-T01 não nasceu com o agente jurídico (%, %)', v_te.responsavel_tipo, v_te.responsavel_agente;

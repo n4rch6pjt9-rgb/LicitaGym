@@ -48,9 +48,23 @@ Uma **lista** (não um objeto). Cada item:
 | `texto` | texto | |
 | `categoria` | texto com código numérico (`"2"`, `"11"`) | significado dos códigos não documentado no guia; guardado sem tradução |
 | `dataHora` | texto `AAAA-MM-DD HH:MM:SS.mmm` | sem fuso; tratado como horário de Brasília (UTC-3); original guardado em `data_hora_fonte` |
-| `tipoRemetente` | texto com código (`"0"`) | significado não documentado no guia; guardado sem tradução |
+| `tipoRemetente` | texto com código (`"0"`) | significado não documentado no guia; guardado sem tradução (ver "Remetente deduzido") |
+
+## Remetente deduzido (só na tela)
+O banco guarda `tipo_remetente` como veio. A aba Sessão do Dashboard (PR #117) rotula o código com um mapa
+**deduzido do conteúdo**, não oficial, e avisa isso no badge. Evidência: 163 mensagens de 2 compras
+(`18017805000292026` e `45102305000112026`), lidas em 08/11/2026:
+
+| Código | Rótulo na tela | Categorias vistas | O que as mensagens dizem |
+|---|---|---|---|
+| `0` | Sistema | 2, 4, 5, 7, 8, 11, 12 | avisos automáticos: sessão aberta, item aberto/encerrado, convocação de anexos, recursos |
+| `1` | Licitante | 13, 14 | 14: falas do fornecedor ("Sra. Pregoeira, necessitamos de mais tempo"); 13: aviso automático de anexos enviados pelo fornecedor |
+| `3` | Pregoeiro | 9 | falas do pregoeiro ("suspenso para almoço") |
+
+Código fora do mapa aparece na tela como "Remetente N". Quando o Serpro mandar a tabela, o mapa da tela segue a
+tabela oficial.
 
 ## Em aberto
-- Tabela de códigos de `categoria` e `tipoRemetente` (pedir na OAS ou ao Serpro). Até lá, o alerta de convocação
-  (K-5) usa o texto da mensagem.
+- Tabela oficial de códigos de `categoria` e `tipoRemetente` (pedir na OAS ou ao Serpro). Até lá, o alerta de
+  convocação (K-5) usa o texto da mensagem e a tela usa o mapa deduzido acima.
 - Nada sobre paginação em aberto (ver "Paginação" acima).

@@ -1,6 +1,6 @@
 # 0047: Levar o preço homologado ao histórico de preço até o dia seguinte à homologação
 
-- **Status:** rascunho
+- **Status:** aprovada (Marcelo, 09/11/2026)
 - **Alimenta:** módulo 9 de `docs/produto/ESCOPO.md` (Preços e BI: "preço, marca e fornecedor de compra
   homologada"), que por sua vez alimenta a fase 3 da spec-mãe 0032 (agente de preço). O Marcelo pediu a spec em
   09/11/2026.
@@ -186,9 +186,10 @@ ficar fora do cron; se ficar, é defeito, e o caso aparece nominalmente na recon
 - 09/11/2026: infraestrutura **onde o custo for menor** (proposta na seção "Onde roda").
 - 09/11/2026: **sem meta percentual**: a coleta é determinística por data; toda compra da janela é coletada.
 - 09/11/2026: fim de semana decidido pela medição (seção "Fim de semana").
+- 09/11/2026: infraestrutura aprovada: varredura em Edge Function por pg_cron; consumidor Python existente no
+  GitHub Actions por `workflow_dispatch` (Cloud Run só se o disparo demorar); token do GitHub só com `actions:write`
+  como segredo da Edge Function.
 
 ## Perguntas em aberto
 
-1. **Proposta de infraestrutura:** varredura em Edge Function por pg_cron + consumidor Python no GitHub Actions
-   disparado por `workflow_dispatch` (Cloud Run só se o disparo demorar) atende ao "menor custo"? O token do GitHub
-   para o disparo fica como segredo da Edge Function: ok?
+- Nenhuma.

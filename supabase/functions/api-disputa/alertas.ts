@@ -21,6 +21,10 @@ export interface AlertaSaida {
   lido_em: string | null;
   /** prazo < agora; null quando o texto não trouxe prazo (desconhecido, nunca inventado). */
   vencido: boolean | null;
+  /** Compra do alerta (licitacoes_externas); null quando a licitação não tem o dado. */
+  orgao_nome: string | null;
+  uf: string | null;
+  objeto: string | null;
 }
 
 export async function listarAlertas(
@@ -32,7 +36,23 @@ export async function listarAlertas(
   if (opcoes.naoLidos) q = q.is("lido_em", null);
   const { data, error } = await q.order("mensagem_em", { ascending: false }).limit(LIMITE);
   if (error) throw error;
-  return ((data ?? []) as Array<Omit<AlertaSaida, "vencido">>).map((a) => ({
+  const linhas = (data ?? []) as Array<Omit<AlertaSaida, "vencido" | "orgao_nome" | "uf" | "objeto">>;
+
+  // Identificação da compra (revisão de UX): órgão, UF e objeto da licitação ligada ao alerta.
+  const ids = [...new Set(linhas.map((a) => a.licitacao_id))];
+  const compras = new Map<number, { orgao_nome: string | null; uf: string | null; objeto: string | null }>();
+  if (ids.length > 0) {
+    const { data: lics, error: erroLics } = await supabase
+      .from("licitacoes_externas")
+      .select("id,orgao_nome,uf,objeto")
+      .in("id", ids);
+    if (erroLics) throw erroLics;
+    for (const l of (lics ?? []) as Array<{ id: number; orgao_nome: string | null; uf: string | null; objeto: string | null }>) {
+      compras.set(Number(l.id), { orgao_nome: l.orgao_nome ?? null, uf: l.uf ?? null, objeto: l.objeto ?? null });
+    }
+  }
+
+  return linhas.map((a) => ({
     id: a.id,
     licitacao_id: a.licitacao_id,
     tipo: a.tipo,
@@ -44,6 +64,9 @@ export async function listarAlertas(
     mensagem_em: a.mensagem_em,
     lido_em: a.lido_em,
     vencido: a.prazo ? Date.parse(a.prazo) < opcoes.agoraMs : null,
+    orgao_nome: compras.get(a.licitacao_id)?.orgao_nome ?? null,
+    uf: compras.get(a.licitacao_id)?.uf ?? null,
+    objeto: compras.get(a.licitacao_id)?.objeto ?? null,
   }));
 }
 

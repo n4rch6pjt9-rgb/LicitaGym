@@ -42,7 +42,7 @@ jobs:
       - name: Install Supabase CLI
         run: |
           CLI_URL="https://github.com/supabase/cli/releases/download/v${SUPABASE_CLI_VERSION}/supabase_linux_amd64.tar.gz"
-          curl -fsSL -o /tmp/supabase-cli.tgz "$CLI_URL"
+          curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -o /tmp/supabase-cli.tgz "$CLI_URL"
           echo "${SUPABASE_CLI_SHA256}  /tmp/supabase-cli.tgz" | sha256sum -c -
           mkdir -p /tmp/supabase-cli
           tar -xzf /tmp/supabase-cli.tgz -C /tmp/supabase-cli

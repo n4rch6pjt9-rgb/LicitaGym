@@ -5,6 +5,11 @@ import { RateLimitPauseError, SAFE_EDGE_MARGIN_MS } from "../http-client/index.t
 import { storeSourceRecord } from "./supabase-admin.ts";
 import { hashPayload, sha256Hex } from "./hash.ts";
 
+function ePerdaDePosse(error: unknown): boolean {
+  return error instanceof ReservaPcaPerdidaError ||
+    (error != null && typeof error === "object" && "code" in error && error.code === "40001");
+}
+
 /**
  * Sync do PCA por fila de planos (spec 0012, PR 2).
  *
@@ -448,6 +453,16 @@ export async function lerItensPlano(
           `integração ${cnpj}/${ano}/${sequencial} página ${pagina}: numeroItem repetido (${numero})`,
         );
       }
+      // Classificação desconhecida não comprova que o item saiu do escopo.
+      const classe = item?.classificacaoSuperiorCodigo;
+      // Grupos de servico (tipo 2) podem ter tres digitos no payload oficial.
+      // Sem tipo confirmado, manter a validacao anterior para evitar falsa ausencia.
+      const servico = item?.classificacaoCatalogoId === 2 || item?.classificacaoCatalogoId === "2";
+      const codigoValido = /^\d{4}$/.test(String(classe)) ||
+        (servico && /^\d{3}$/.test(String(classe)));
+      if ((typeof classe !== "string" && typeof classe !== "number") || !codigoValido) {
+        throw new Error(`integração ${cnpj}/${ano}/${sequencial} página ${pagina}: classificacaoSuperiorCodigo inválida`);
+      }
       numeros.add(numero);
       itens.push(item as Row);
     }
@@ -553,7 +568,7 @@ export type FilaStats = LoteStats & {
 };
 
 export class ReservaPcaPerdidaError extends Error {
-  constructor() { super("reserva PCA não pertence mais ao worker"); this.name = "ReservaPcaPerdidaError"; }
+  constructor(cause?: unknown) { super("reserva PCA não pertence mais ao worker", { cause }); this.name = "ReservaPcaPerdidaError"; }
 }
 
 async function marcarFila(client: SupabaseClient, linha: Row, ok: boolean, erro: string | null) {
@@ -571,6 +586,7 @@ async function marcarFila(client: SupabaseClient, linha: Row, ok: boolean, erro:
     // Desliga reprocessar antes de concluir, enquanto o token ainda autoriza a escrita no plano.
     const { error: eMarca } = await client.from("pca_planos").update({ reprocessar: false })
       .eq("id_pca_pncp", String(linha.id_pca_pncp)).eq("reprocessar", true);
+    if (ePerdaDePosse(eMarca)) throw eMarca;
     if (eMarca) console.warn(`[pca-fila] marca reprocessar de ${linha.id_pca_pncp} não desligou: ${eMarca.message}`);
   }
   const { data, error } = await client.schema("private").from("pca_plano_fila").update(patch)
@@ -722,6 +738,7 @@ export async function processarFila(
           stats.planos_erro++;
           falhaContada = true;
           const eReset = await marcarCabecalhoParaReprocessar(clientPlano, idPca);
+          if (ePerdaDePosse(eReset)) throw eReset;
           if (eReset) throw new Error(`${r.erros} erro(s) na gravação em lote; reprocessar não gravou: ${eReset.message}`);
           await marcarFila(clientPlano, linha, false, `${r.erros} erro(s) na gravação em lote`);
           continue;
@@ -730,9 +747,9 @@ export async function processarFila(
         await marcarFila(clientPlano, linha, true, null);
         stats.planos_feitos++;
       } catch (error) {
-        if (error instanceof ReservaPcaPerdidaError) {
+        if (ePerdaDePosse(error)) {
           await devolverReservados(client, reservados.slice(i + 1));
-          throw error;
+          throw error instanceof ReservaPcaPerdidaError ? error : new ReservaPcaPerdidaError(error);
         }
         if (ePausaDaCarga(error, opts.http?.budget)) {
           // pausa de cota ou fim do orçamento: não é falha do plano; volta para a fila sem gastar tentativa
@@ -765,6 +782,10 @@ export async function processarFila(
         // A falha pode ter vindo depois de gravar o cabeçalho (inativação, contador de ausência): sem o reset, um plano
         // que esgota as tentativas ficaria com a data nova e o incremental não o reenfileiraria.
         const eReset = await marcarCabecalhoParaReprocessar(clientPlano, idPca);
+        if (ePerdaDePosse(eReset)) {
+          await devolverReservados(client, reservados.slice(i + 1));
+          throw new ReservaPcaPerdidaError(eReset);
+        }
         if (eReset) console.warn(`[pca-fila] reset do cabeçalho ${idPca} falhou: ${eReset.message}`);
         const mensagem = error instanceof BudgetExhaustedError
           ? "timeout repetido na integração (orçamento ainda sobrava)"
@@ -792,7 +813,7 @@ export async function processarFila(
 
 /**
  * O cabeçalho pode ter ficado com a data nova depois de uma falha. Liga `reprocessar` para o incremental reenfileirar o
- * plano mesmo se a fila esgotar as tentativas. Os campos da fonte (data, hash) ficam com o último dado oficial gravado:
+ * plano enquanto houver tentativas. Filas esgotadas exigem recuperação explícita. Os campos da fonte (data, hash) ficam com o último dado oficial gravado:
  * a nova tentativa relê os itens da integração de qualquer jeito. Plano que não existe no banco: nada muda (o
  * incremental o vê como novo).
  */

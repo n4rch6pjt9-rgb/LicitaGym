@@ -1,0 +1,136 @@
+# Coleta recorrente de oportunidades do Sistema S / Paradigma (`python3 -m coletor.paradigma`) no runner do GitHub,
+# todo dia, sem actions de terceiros (regra do repo): checkout por git, Python do runner.
+# Grava em licitacoes_externas, licitacao_itens e licitacao_resultados com proveniência `ingestao_origem = cron|manual` (spec 0023).
+# Pré-requisitos (secrets do repositório): SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY.
+# Roda com `--sem-documentos` no runner (mesmo padrão do Coletor PNCP).
+# Fontes ativas no runner: 12 portais que respondem ao WebService público (fiemg fica de fora por WAF 403;
+# fiergs saiu do lote padrão em 08/11/2026 porque o host passou a responder HTTP 403 ao runner, e bloqueio não se
+# contorna: segue disponível só por disparo manual, para conferir se voltou).
+# fiems voltou ao lote em 09/11/2026: dry-run no runner (run 42553195374) leu 12 processos, 6 no escopo, sem erro.
+# fiemt segue fora: o host não aceita conexão do runner (ConnectTimeout em compras.sfiemt.ind.br:443, run
+# 42553197711, 09/11/2026), embora responda fora de datacenter; fica só no disparo manual, para conferir se voltou.
+# Cada execução fica registrada em private.coleta_externa_run (RPCs coleta_externa_iniciar/finalizar), que a saúde
+# operacional lê (coleta_externa_dias_sem_sucesso).
+name: Coletor Sistema S
+
+on:
+  schedule:
+    - cron: "30 9 * * *"   # 06:30 em Brasília
+  workflow_dispatch:
+    inputs:
+      fonte:
+        description: "todas (sem fiergs e fiemt) | sestsenat | fiesc | firjan | fiergs | findes | fieb | fiems | fiemt | sfiec | sescsp | sesc_senac_rs | sescdn | sescrj | sescba"
+        default: "todas"
+        required: false
+      paginas:
+        description: "Teto opcional de páginas de até 100 itens por termo (padrão: 3)"
+        default: "3"
+        required: false
+      documentos:
+        description: "Habilitar coleta documental manual"
+        type: boolean
+        default: false
+        required: false
+      dry_run:
+        description: "true = só consulta, não grava"
+        default: "false"
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coletor-sistema-s
+  cancel-in-progress: false
+
+jobs:
+  plano:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      fontes: ${{ steps.fontes.outputs.fontes }}
+    steps:
+      - name: Fontes
+        id: fontes
+        env:
+          FONTE: ${{ github.event.inputs.fonte || 'todas' }}
+        run: |
+          case "${FONTE}" in
+            todas|"")
+              FONTES='["sestsenat","fiesc","firjan","findes","fieb","fiems","sfiec","sescsp","sesc_senac_rs","sescdn","sescrj","sescba"]'
+              ;;
+            sestsenat|fiesc|firjan|fiergs|findes|fieb|fiems|fiemt|sfiec|sescsp|sesc_senac_rs|sescdn|sescrj|sescba)
+              FONTES="[\"${FONTE}\"]"
+              ;;
+            *)
+              echo "Fonte desconhecida ou bloqueada por WAF: ${FONTE}" >&2
+              exit 1
+              ;;
+          esac
+          echo "fontes=${FONTES}" >> "${GITHUB_OUTPUT}"
+          echo "fonte ${FONTE}: ${FONTES}"
+
+  coletar:
+    needs: plano
+    name: coletar (${{ matrix.fonte }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        fonte: ${{ fromJSON(needs.plano.outputs.fontes) }}
+    env:
+      DELAY_SEGUNDOS: "1.5"
+      FONTE: ${{ matrix.fonte }}
+      PAGINAS: ${{ github.event.inputs.paginas || '3' }}
+      DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+      DOCUMENTOS_HABILITADOS: ${{ github.event_name == 'workflow_dispatch' && inputs.documentos == true }}
+      ORIGEM: ${{ github.event_name == 'schedule' && 'cron' || 'manual' }}
+    steps:
+      - name: Checkout (git, sem actions de terceiros)
+        run: |
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c http.extraheader="$auth" fetch -q --depth 1 origin "${GITHUB_SHA}"
+          git checkout -q FETCH_HEAD -- services/coletor-externo
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Conferir segredos
+        env:
+          TEM_URL: ${{ secrets.SUPABASE_URL != '' }}
+          TEM_CHAVE: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY != '' }}
+        run: |
+          if [ "${TEM_URL}" != "true" ] || [ "${TEM_CHAVE}" != "true" ]; then
+            echo "Secrets SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY ausentes no repositório."; exit 1
+          fi
+
+      - name: Dependências
+        working-directory: services/coletor-externo
+        run: |
+          python3 --version
+          python3 -m pip install --quiet --disable-pip-version-check --only-binary :all: -r requirements.txt
+
+      - name: Coleta
+        working-directory: services/coletor-externo
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_STORAGE_BUCKET: ${{ secrets.SUPABASE_STORAGE_BUCKET }}
+        run: |
+          ARGS=(--fonte "${FONTE}" --origem "${ORIGEM}")
+          if [ "${DOCUMENTOS_HABILITADOS}" != "true" ]; then
+            ARGS+=(--sem-documentos)
+          fi
+          if [ -n "${PAGINAS}" ]; then
+            ARGS+=(--paginas "${PAGINAS}")
+          fi
+          if [ "${DRY_RUN}" = "true" ]; then
+            ARGS+=(--dry-run)
+          fi
+          if [ "${DOCUMENTOS_HABILITADOS}" = "true" ] && [ -z "${SUPABASE_STORAGE_BUCKET:-}" ]; then
+            echo "SUPABASE_STORAGE_BUCKET ausente."; exit 1
+          fi
+          python3 -m coletor.paradigma "${ARGS[@]}"

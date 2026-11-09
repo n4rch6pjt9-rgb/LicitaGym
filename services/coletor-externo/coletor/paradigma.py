@@ -42,6 +42,7 @@ import argparse
 import json
 import logging
 import re
+import signal
 import sys
 import time
 from dataclasses import dataclass
@@ -52,7 +53,7 @@ import requests
 
 from .paginacao import TAMANHO_PAGINA_MAX, avaliar_pagina, clamp_tamanho, pagina_repetida
 from .perfil_item import normalizar_marca, perfil_item, texto_do_item
-from .escopo import ITEM_FORA, classificar, contexto_academia, e_peca, classificar_texto_item, interesse_borracha, interesse_borracha_item, normalizar, piso_item_fora, CATEGORIAS_PISO_VETAVEL
+from .escopo import ITEM_FORA, academia_ar_livre, brinquedo_infantil, classificar, contexto_academia, e_peca, classificar_texto_item, interesse_borracha, interesse_borracha_item, normalizar, piso_item_fora, CATEGORIAS_PISO_VETAVEL
 from .portal import cnpj_ou_none, limpar, parse_data
 from .proveniencia import ORIGENS, campos_proveniencia
 from .retry import retry_after_s
@@ -111,6 +112,23 @@ TIPOS_CATALOGO = {"todos": 0, "produto": 1, "servico": 2}
 # Filtro "Categoria" já mapeado (catálogo SFIEC, 26/09/2026): AI03 = EQUIPAMENTOS ESPORTIVOS; NE53 e MC06 = ESPORTIVO.
 # Casamento por nome exato (normalizado), porque o autocomplete devolve várias classes por prefixo.
 CATEGORIAS_MAPEADAS = ["EQUIPAMENTOS ESPORTIVOS", "ESPORTIVO"]
+# Portais cujo catálogo usa outros nomes. Todos os nomes abaixo foram devolvidos pelo autocomplete
+# PesquisarCatalogoProdutoClasses (termo "ESPORT") no estudo dos murais, 08/11/2026 (spec 0051): fiems classe 20;
+# fiemt classes 9, 91, 172 e 191 (com e sem o prefixo "25 -" são classes distintas). Decisão do Marcelo (09/11/2026):
+# sem gate, entra o que vier dessas categorias (material esportivo inclusive). Premiação (fiemt 456) fica de fora.
+# fieb: autocomplete com o termo "ACADEMIA" (09/11/2026) devolveu a classe 226, com 123 produtos. Decisão do Marcelo
+# (09/11/2026): só a 226; a 192 MATERIAL ESPORTIVO (1.031 produtos) fica fora. A lista fixa sai com a spec 0052.
+CATEGORIAS_POR_FONTE: dict[str, list[str]] = {
+    "fieb": ["EQUIPAMENTOS PARA ACADEMIA"],
+    "fiems": ["MATERIAIS ESPORTIVOS"],
+    "fiemt": ["25 - EQUIPAMENTOS ESPORTIVOS, ARTISTICOS E DE RECREACAO", "25 - MATERIAL ESPORTIVO E DE RECREACAO",
+              "EQUIPAMENTOS ESPORTIVOS, ARTISTICOS E DE RECREACAO", "MATERIAL ESPORTIVO E DE RECREACAO"],
+}
+
+
+def categorias_da_fonte(slug: str) -> list[str]:
+    """Categorias do catálogo usadas por padrão na fonte (sem --categorias)."""
+    return CATEGORIAS_POR_FONTE.get(slug, CATEGORIAS_MAPEADAS)
 # Regra de 03/10/2026: no máximo 100 itens por página.
 TAMANHO_PAGINA = TAMANHO_PAGINA_MAX
 # Teto contra laço infinito quando a API não devolve página vazia nem total.
@@ -347,13 +365,15 @@ def classificar_item_detalhe(it: dict, produtos: dict[int, dict] | None = None,
                              contexto: bool = False) -> tuple[str | None, bool, str, str]:
     """(categoria_escopo, interesse_borracha, material_ou_servico, escopo_metodo) para um item Paradigma.
     `produtos`: nCdProduto -> produto do catálogo filtrado por Tipo+Categoria (ver PortalParadigma.produtos_escopo).
-    Ordem: serviço (gate) > ITEM_FORA (balança etc., mesmo estando na categoria) > catálogo > regras de texto."""
+    Ordem: serviço (gate) > ITEM_FORA (balança etc., mesmo estando na categoria) > catálogo > regras de texto.
+    Academia ao ar livre e brinquedo infantil não entram pelo catálogo: o texto do item decide (regra de negócio; uma
+    classe genérica como "EQUIPAMENTOS PARA ACADEMIA", da FIEB, pode ter ATI cadastrado)."""
     p = partes_item(it.get("sDsItem"))
     texto = " ".join(x for x in (p["categoria"], p["variacao"], p["descricao"]) if x)
     ms = "S" if e_servico(p["categoria"], p["descricao"]) else "M"
     if ms == "S":
         return None, False, ms, "regra"  # gate MATERIAL_SCOPE: serviço não é oportunidade de material
-    if produtos and it.get("nCdProduto") in produtos:
+    if produtos and it.get("nCdProduto") in produtos and not (academia_ar_livre(texto) or brinquedo_infantil(texto)):
         if ITEM_FORA.search(normalizar(texto)):
             return None, False, ms, "catalogo"
         cat = "manutencao" if e_peca(normalizar(texto)) else "forte"  # ex.: MOLA PARA TRAMPOLIM (peça)
@@ -509,6 +529,13 @@ class PortalParadigma:
     def catalogo(self, classe: dict | None = None, tipo: str = "produto", descricao: str = "",
                  codigo: str = "") -> list[dict]:
         """PesquisarCatalogoProdutos com os filtros da tela Catálogo, em faixas de até 100."""
+        itens, _avisos = self.catalogo_com_avisos(classe, tipo, descricao, codigo)
+        return itens
+
+    def catalogo_com_avisos(self, classe: dict | None = None, tipo: str = "produto", descricao: str = "",
+                            codigo: str = "") -> tuple[list[dict], list[str]]:
+        """Como `catalogo`, mais os avisos de paginação (página repetida, limite de segurança): com aviso, a lista pode
+        estar cortada e o fim não foi confirmado."""
         def buscar(de: int, ate: int) -> Any:
             return self._ws("PesquisarCatalogoProdutos", {"dtoProduto": {
                 "sCdProduto": codigo, "sDsProduto": descricao, "nCdTipo": TIPOS_CATALOGO[tipo],
@@ -516,14 +543,18 @@ class PortalParadigma:
                 "sOrdenarPor": "SCDPRODUTOEMPRESA", "sOrdenarPorDirecao": "ASC",
                 "dtoPaginacao": {"nPaginaDe": de, "nPaginaAte": ate},
                 "dtoIdioma": {"nCdIdioma": 1}}})
-        itens, _avisos = paginar_intervalo(buscar, tamanho=TAMANHO_PAGINA, rotulo=f"catálogo {self.fonte.slug}")
-        return itens
+        return paginar_intervalo(buscar, tamanho=TAMANHO_PAGINA, rotulo=f"catálogo {self.fonte.slug}")
 
     def produtos_escopo(self, categorias: list[str] | None = None, tipo: str = "produto") -> dict[int, dict]:
         """nCdProduto -> {codigo, descricao, categoria, tipo} para as categorias mapeadas, filtradas por Tipo."""
         produtos: dict[int, dict] = {}
-        for nome in categorias or CATEGORIAS_MAPEADAS:
-            for c in self.classes_catalogo(nome):
+        for nome in categorias or categorias_da_fonte(self.fonte.slug):
+            classes = self.classes_catalogo(nome)
+            if not classes:
+                # Categoria renomeada ou removida no portal: sem aviso, o catálogo encolhe calado (FIEMS/FIEMT
+                # ficaram meses com 0 produtos assim).
+                log.warning("catálogo %s: categoria %r sem classe de nome exato no portal", self.fonte.slug, nome)
+            for c in classes:
                 for x in self.catalogo(c, tipo):
                     if isinstance(x.get("nCdProduto"), int):
                         produtos[x["nCdProduto"]] = {"codigo": x.get("sCdProdutoEmpresa"), "descricao": x.get("sDsProduto"),
@@ -882,8 +913,74 @@ def coletar(portal: "PortalParadigma", sb, termos: list[str], paginas: int | Non
     return resumo
 
 
+def modo_registro(anos: list[int] | None, processos: list[tuple[int, int]] | None) -> str:
+    """Modo gravado em private.coleta_externa_run (vocabulário da constraint da tabela)."""
+    if anos:
+        return "historico"
+    if processos:
+        return "monitorar"
+    return "leads"
+
+
+def status_final(resumo: dict) -> str:
+    """Status gravado em coleta_externa_run; 'falhou' é também o critério do código de saída 1.
+
+    Erro sem nada no escopo é falha. Aviso de paginação (teto de segurança ou página repetida) não é fim confirmado
+    da listagem: a coleta conta como concluída com erros, nunca como concluída limpa."""
+    if resumo.get("erros") and not resumo.get("no_escopo"):
+        return "falhou"
+    if resumo.get("erros") or resumo.get("paginacao_avisos"):
+        return "concluida_com_erros"
+    return "concluida"
+
+
+_SEGREDOS = re.compile(r"(?i)(bearer\s+)\S+|eyJ[\w-]+\.[\w-]+\.[\w-]*|((?:apikey|api_key|token|key)=)[^&\s]+")
+
+
+def mascarar_segredos(texto: str) -> str:
+    """Mascara token Bearer, JWT e chave em query string antes de gravar mensagem de erro no banco."""
+    return _SEGREDOS.sub(lambda m: (m.group(1) or m.group(2) or "") + "***", texto)
+
+
+class RegistroColeta:
+    """Registra a execução em private.coleta_externa_run pelas RPCs coleta_externa_iniciar/finalizar.
+
+    É o dado que a saúde operacional (coleta_externa_dias_sem_sucesso) lê. Falha ao registrar não derruba a
+    coleta: vira aviso no log. Sem cliente (dry-run), não registra nada."""
+
+    def __init__(self, sb, fonte: str, modo: str, termos: list[str] | None):
+        self.sb = sb
+        self.id: int | None = None
+        if sb is None:
+            return
+        try:
+            self.id = int(sb.rpc("coleta_externa_iniciar", {"p_fonte": fonte, "p_modo": modo, "p_termos": termos}))
+        except Exception as e:  # noqa: BLE001 - registro é observabilidade, não pode parar a coleta
+            log.warning("coleta_externa_run: não abriu o registro da execução (%s)", e)
+
+    def finalizar(self, status: str, resumo: dict | None = None, erro: str | None = None) -> None:
+        if self.sb is None or self.id is None:
+            return
+        r = resumo or {}
+        detalhe: dict[str, Any] = {}
+        if erro:
+            detalhe["erro"] = mascarar_segredos(erro)[:500]
+        if r.get("paginacao_avisos"):
+            detalhe["paginacao_avisos"] = [str(a)[:200] for a in r["paginacao_avisos"][:20]]
+        try:
+            self.sb.rpc("coleta_externa_finalizar", {
+                "p_id": self.id, "p_status": status,
+                "p_listados": int(r.get("listados", 0)), "p_processos": int(r.get("processos", 0)),
+                "p_no_escopo": int(r.get("no_escopo", 0)), "p_itens_escopo": int(r.get("itens_escopo", 0)),
+                "p_erros": int(r.get("erros", 0) or (1 if erro else 0)),
+                "p_detalhe_erros": detalhe or None,
+            })
+        except Exception as e:  # noqa: BLE001
+            log.warning("coleta_externa_run: não fechou o registro %s (%s)", self.id, e)
+
+
 def main(argv: list[str] | None = None) -> int:
-    from .destino import Supabase, drenar_licitacao_match, env
+    from .destino import Supabase, env
     from .fornecedores import CadastroFornecedores
 
     ap = argparse.ArgumentParser(description="Coletor Paradigma (Sistema S)")
@@ -895,7 +992,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="coleta só este processo (nCdOrigem), ex.: 32/18; pode repetir")
     ap.add_argument("--anos", help="busca no Mural estatístico (encerrados) destes anos, ex.: 2022,2023")
     ap.add_argument("--categorias", help="filtro Categoria do catálogo, separado por ';' "
-                                         f"(padrão: {'; '.join(CATEGORIAS_MAPEADAS)})")
+                                         f"(padrão: {'; '.join(CATEGORIAS_MAPEADAS)}; fieb, fiems e fiemt têm "
+                                         "nomes próprios em CATEGORIAS_POR_FONTE)")
     ap.add_argument("--tipo", choices=sorted(TIPOS_CATALOGO), default="produto", help="filtro Tipo do catálogo")
     ap.add_argument("--sem-catalogo", action="store_true", help="não usa o catálogo do portal (só regras de texto)")
     ap.add_argument("--sem-resultados", action="store_true")
@@ -912,23 +1010,51 @@ def main(argv: list[str] | None = None) -> int:
     fonte = FONTES[args.fonte]
     portal = PortalParadigma(
         fonte, delay=float(env("DELAY_SEGUNDOS", "1.5")), autorizado=autorizado_para_coleta(fonte))
+    # O Sistema S adota regulamento próprio (RCA) e não acompanha CATMAT federal (drenar_catmat=False).
     sb = None if args.dry_run else Supabase(env("SUPABASE_URL", obrigatorio=True),
-                                            env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True))
+                                            env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True),
+                                            drenar_catmat=False)
     termos = [t.strip() for t in args.termos.split(";")] if args.termos else TERMOS_SISTEMA_S
+    processos = None
+    if args.processo:
+        processos = [(int(p.split("/")[0]), int(p.split("/")[1]) if "/" in p else MODULO_PADRAO) for p in args.processo]
+    anos = [int(a) for a in args.anos.split(",")] if args.anos else None
+    # Só a coleta agendada (origem cron) entra em coleta_externa_run: é ela que a saúde acompanha
+    # (coleta_externa_dias_sem_sucesso, pior fonte). Disparo manual de uma fonte fora do lote agendado deixaria a
+    # métrica crítica para sempre. Fonte bloqueada no construtor do portal (ex.: fiemg) nem chega aqui.
+    registro = RegistroColeta(sb if args.origem == "cron" else None, fonte.slug, modo_registro(anos, processos), termos)
+    # Timeout do runner manda SIGTERM: vira SystemExit para fechar o registro como falha em vez de deixá-lo aberto.
+    sigterm_anterior = signal.signal(signal.SIGTERM, lambda _sig, _frame: sys.exit(143))
+    try:
+        r = _executar(args, fonte, portal, sb, termos, processos, anos, CadastroFornecedores)
+    except KeyboardInterrupt:
+        registro.finalizar("cancelada", erro="interrompida (KeyboardInterrupt)")
+        raise
+    except BaseException as e:
+        registro.finalizar("falhou", erro=f"{type(e).__name__}: {e}")
+        raise
+    finally:
+        signal.signal(signal.SIGTERM, sigterm_anterior)
+    status = status_final(r)
+    registro.finalizar(status, r)
+    print(json.dumps(r, ensure_ascii=False))
+    return 1 if status == "falhou" else 0
+
+
+def _executar(args, fonte: Fonte, portal: "PortalParadigma", sb, termos: list[str],
+              processos: list[tuple[int, int]] | None, anos: list[int] | None, cadastro_fornecedores) -> dict:
+    from .destino import env
+
     produtos = None
     if not args.sem_catalogo:
         cats = [c.strip() for c in args.categorias.split(";")] if args.categorias else None
         try:
             produtos = portal.produtos_escopo(cats, args.tipo)
             log.info("catálogo %s: %d produtos (tipo=%s, categorias=%s)", args.fonte, len(produtos), args.tipo,
-                     cats or CATEGORIAS_MAPEADAS)
+                     cats or categorias_da_fonte(args.fonte))
         except requests.RequestException as e:  # tenant sem catálogo público: segue só com regras de texto
             log.warning("catálogo %s indisponível: %s", args.fonte, e)
-    processos = None
-    if args.processo:
-        processos = [(int(p.split("/")[0]), int(p.split("/")[1]) if "/" in p else MODULO_PADRAO) for p in args.processo]
-    forn = None if args.sem_fornecedores or args.sem_resultados else CadastroFornecedores(sb, dry_run=args.dry_run)
-    anos = [int(a) for a in args.anos.split(",")] if args.anos else None
+    forn = None if args.sem_fornecedores or args.sem_resultados else cadastro_fornecedores(sb, dry_run=args.dry_run)
     docs = None
     if not args.sem_documentos:
         from .destino import Armazenamento
@@ -946,11 +1072,8 @@ def main(argv: list[str] | None = None) -> int:
         if visitante is None and fonte.slug not in FONTES_MURAL_AUTORIZADO:
             log.warning("VISITANTE_* não configurado: documentos que exigem cadastro ficam registrados como pendentes")
         docs = DocumentosParadigma(portal, sb, arm, visitante, int(float(env("MAX_MB", "50")) * 1048576), args.dry_run)
-    r = coletar(portal, sb, termos, args.paginas, args.dry_run, not args.sem_resultados, produtos, forn, processos, anos,
-                docs, origem=args.origem)
-    drenar_licitacao_match(sb)  # recorte CATMAT por texto: zera a pendência de licitacao_match (sem efeito no dry-run)
-    print(json.dumps(r, ensure_ascii=False))
-    return 1 if r["erros"] and not r["no_escopo"] else 0
+    return coletar(portal, sb, termos, args.paginas, args.dry_run, not args.sem_resultados, produtos, forn, processos,
+                   anos, docs, origem=args.origem)
 
 
 if __name__ == "__main__":

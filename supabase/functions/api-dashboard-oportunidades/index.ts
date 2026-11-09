@@ -8,7 +8,15 @@ export const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, idempotency-key",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
 };
-import type { ActionParams, GetActionParams, LicitacaoFiltros, ListActionParams, SortField } from "./types.ts";
+import type {
+  ActionParams,
+  GetActionParams,
+  LicitacaoFiltros,
+  ListActionParams,
+  ResumoExecutivo,
+  ResumoExecutivoActionParams,
+  SortField,
+} from "./types.ts";
 import { parseActionFromBody, parseActionFromUrl } from "./validation.ts";
 import { applyLicitacaoFilters, applyOportunidadesScope, calculateRange } from "./query.ts";
 import { buildEditalUrl, buildPortalUrl, ehFonteSistemaS } from "../_shared/edital-url.ts";
@@ -889,6 +897,101 @@ async function handleList(
   }
 }
 
+/** Spec 0048 K-1: função SQL do resumo executivo (EXECUTE só service_role). */
+export const RESUMO_EXECUTIVO_RPC = "dashboard_resumo_executivo";
+
+function numeroOuNull(v: unknown): number | null {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+const CONTAGENS_RESUMO = [
+  "leads_total",
+  "monitoradas_total",
+  "com_valor_total",
+  "prazo_amanha_total",
+  "prazo_7_dias_total",
+] as const;
+
+/**
+ * Linha de K-1 com tipos estáveis. Somas podem ser null (nenhuma linha com valor). Contagem ausente ou não numérica
+ * (count nunca é null no SQL) é contrato quebrado: devolve null para o handler responder 500, nunca um 0 inventado.
+ */
+function normalizarResumo(row: Record<string, unknown>): ResumoExecutivo | null {
+  const contagens: Record<string, number> = {};
+  for (const campo of CONTAGENS_RESUMO) {
+    const n = numeroOuNull(row[campo]);
+    if (n === null) return null;
+    contagens[campo] = n;
+  }
+  return {
+    leads_total: contagens.leads_total,
+    monitoradas_total: contagens.monitoradas_total,
+    valor_potencial_total: numeroOuNull(row.valor_potencial_total),
+    com_valor_total: contagens.com_valor_total,
+    prazo_amanha_total: contagens.prazo_amanha_total,
+    prazo_amanha_valor: numeroOuNull(row.prazo_amanha_valor),
+    prazo_7_dias_total: contagens.prazo_7_dias_total,
+    prazo_7_dias_valor: numeroOuNull(row.prazo_7_dias_valor),
+    calculado_em: typeof row.calculado_em === "string" ? row.calculado_em : null,
+  };
+}
+
+/**
+ * Spec 0048 K-2: números do painel executivo, calculados no banco (K-1) sobre o mesmo recorte de catálogo/CATMAT da
+ * action=list. Exige empresa ativa de quem chama (403 sem vínculo, vínculo desligado ou empresa desativada), antes
+ * de qualquer consulta de dados. Recorte sem resultado calcula sobre nenhuma licitação (array vazio), nunca sobre
+ * todas.
+ */
+async function handleResumoExecutivo(
+  params: ResumoExecutivoActionParams,
+  ctx: DashboardOportunidadesClientContext,
+): Promise<Response> {
+  try {
+    const tenant = await (ctx.tenantDoUsuario ?? semTenant)();
+    if (tenant === null) {
+      return jsonResponse({ error: "Usuário sem empresa ativa." }, 403);
+    }
+    const client = ctx.getClient ? ctx.getClient() : getDefaultServiceClient();
+    const { recorte } = params;
+
+    let ids: number[] | null = null;
+    if (temRecorteCatmat(recorte)) {
+      try {
+        ids = (await resolverCatmat(client, recorte)).ids;
+      } catch (err: unknown) {
+        if (ehStatementTimeout(err)) {
+          console.error("[api-dashboard-oportunidades] Timeout ao resolver o recorte CATMAT do resumo:", err);
+          return jsonResponse({ error: "filtro de catálogo indisponível" }, 503);
+        }
+        throw err;
+      }
+    }
+
+    const { data, error } = await client.rpc(RESUMO_EXECUTIVO_RPC, { p_ids_filtro: ids }).single();
+    if (error && ehStatementTimeout(error)) {
+      console.error("[api-dashboard-oportunidades] Timeout em dashboard_resumo_executivo:", error);
+      return jsonResponse({ error: "resumo executivo indisponível" }, 503);
+    }
+    const resumo = !error && data && typeof data === "object" ? normalizarResumo(data as Record<string, unknown>) : null;
+    if (!resumo) {
+      console.error("[api-dashboard-oportunidades] Erro em resumo_executivo:", error ?? "linha fora do contrato K-1");
+      return jsonResponse({ error: "Falha ao calcular o resumo executivo" }, 500);
+    }
+
+    return jsonResponse({
+      action: "resumo_executivo",
+      resumo,
+      recorte: { aplicado: ids !== null, filtros: recorte, licitacoes_total: ids === null ? null : ids.length },
+      fonte: OPORTUNIDADES_VIEW,
+    });
+  } catch (err: unknown) {
+    console.error("[api-dashboard-oportunidades] Exceção em resumo_executivo:", err);
+    return jsonResponse({ error: "Erro interno no servidor" }, 500);
+  }
+}
+
 export async function handleRequest(
   req: Request,
   ctx?: DashboardOportunidadesClientContext,
@@ -950,6 +1053,8 @@ export async function handleRequest(
       return await handleAcompanhamento(actionParams, ctxTenant, getDefaultServiceClient);
     case "objeto_categorias":
       return await handleObjetoCategorias(ctx);
+    case "resumo_executivo":
+      return await handleResumoExecutivo(actionParams, ctxTenant);
     default:
       return jsonResponse({ error: "Ação não suportada" }, 400);
   }

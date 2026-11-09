@@ -449,3 +449,21 @@ def test_ca9_supabase_selecionar_precos_usa_offset_e_order_pedido(monkeypatch):
     assert pedidos[0]["order"] == "codigo_item_catalogo.asc,id_compra.asc,id_item_compra.asc"
     assert pedidos[0]["offset"] == "0"
     assert "id" not in pedidos[0]
+
+
+def test_ca9_cli_modo_detalhe_e_dry_run(monkeypatch, sem_espera):
+    """CLI de compras_precos aceita --modo detalhe (com e sem --dry-run) para rodar como etapa isolada no CI."""
+    sessao = SessaoFalsa(detalhe=_detalhe_por_item({
+        480144: [_preco("16021105900032024", 1, desc="Descrição detalhada do 2_")],
+    }))
+    sb = SupabaseFalso(pendentes=PENDENTES[:1])
+    monkeypatch.setattr(compras_precos.requests, "Session", lambda: sessao)
+    monkeypatch.setattr(compras_precos, "Supabase", lambda *a, **k: sb)
+    monkeypatch.setattr(compras_precos, "env", lambda nome, padrao=None, obrigatorio=False: padrao if padrao else "x")
+
+    assert compras_precos.main(["--modo", "detalhe", "--dry-run", "--limite", "1"]) == 0
+    assert sb.updates == []  # dry-run consulta mas não grava
+
+    assert compras_precos.main(["--modo", "detalhe", "--limite", "1"]) == 0
+    assert len(sb.updates) == 1
+

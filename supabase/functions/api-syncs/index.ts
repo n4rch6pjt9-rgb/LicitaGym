@@ -8,6 +8,7 @@ import {
   jsonResponse,
 } from "../_shared/http.ts";
 import { SYNCS, syncPorSlug } from "./catalogo.ts";
+import { responderEstadoPca } from "./estado-pca.ts";
 
 /**
  * api-syncs: catálogo dos syncs e disparo manual.
@@ -30,6 +31,7 @@ export interface ApiSyncsContext {
   githubRepo?: () => string | null;
   /** Relógio (testes): a janela de 30 dias do re-run do GitHub depende de "agora". */
   agora?: () => Date;
+  lerEstadoPca?: (ano: number) => Promise<unknown>;
 }
 
 const REPO_PADRAO = "n4rch6pjt9-rgb/LicitaGym";
@@ -225,6 +227,14 @@ export async function handleRequest(req: Request, ctx: ApiSyncsContext = {}): Pr
   const action = body.action ?? "listar";
   const fetchGh = ctx.fetchFn ?? fetch;
   const agora = (ctx.agora ?? (() => new Date()))();
+  if (action === "estado_pca") {
+    if (cron) {
+      return jsonResponse({
+        error: "Sem permissão: consulta restrita a administradores."
+      }, 403);
+    }
+    return await responderEstadoPca(body, agora, ctx.lerEstadoPca);
+  }
   if (action === "listar") {
     const syncs = await Promise.all(SYNCS.map(async (s) => {
       if (!s.refazer_cron) return s;

@@ -1,0 +1,415 @@
+-- TX02: persistência atômica de unidades PCA.
+-- Executar inicialmente apenas em licitagym_pca_tx_test.
+
+BEGIN;
+
+CREATE OR REPLACE FUNCTION private.pca_persistir_unidade_atomica(
+  p_tabela text,
+  p_chave jsonb,
+  p_linha jsonb,
+  p_sync_run_id uuid
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = ''
+AS $function$
+DECLARE
+  v_tabela text;
+  v_chave text;
+  v_id uuid;
+  v_atual jsonb;
+  v_novo jsonb;
+  v_payload jsonb;
+  v_hash text;
+  v_resultado text;
+  v_reativacao boolean := false;
+  v_colunas text;
+  v_colunas_select text;
+  v_colunas_update text;
+  v_colunas_update_select text;
+  v_filtro text;
+  v_valor1 text;
+  v_valor2 text;
+  v_headers jsonb;
+  v_run_header text;
+BEGIN
+  IF p_tabela NOT IN ('pca_planos', 'pca_itens')
+     OR p_tabela IS NULL THEN
+    RAISE EXCEPTION 'Tabela PCA não permitida'
+      USING ERRCODE = '22023';
+  END IF;
+
+  IF p_chave IS NULL
+     OR jsonb_typeof(p_chave) <> 'object'
+     OR p_linha IS NULL
+     OR jsonb_typeof(p_linha) <> 'object'
+     OR p_sync_run_id IS NULL THEN
+    RAISE EXCEPTION 'Argumentos PCA inválidos'
+      USING ERRCODE = '22023';
+  END IF;
+
+  v_headers := COALESCE(
+    NULLIF(current_setting('request.headers', true), '')::jsonb,
+    '{}'::jsonb
+  );
+
+  v_run_header := v_headers ->> 'x-pca-run-id';
+
+  IF v_run_header IS DISTINCT FROM p_sync_run_id::text THEN
+    RAISE EXCEPTION 'Execução PCA não corresponde ao header'
+      USING ERRCODE = '40001';
+  END IF;
+
+  PERFORM 1
+  FROM private.pncp_sync_run
+  WHERE id = p_sync_run_id
+    AND resource_type = 'pca'
+    AND status = 'executando'
+  FOR SHARE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Execução PCA não está ativa'
+      USING ERRCODE = '40001';
+  END IF;
+
+  IF p_tabela = 'pca_planos' THEN
+    IF (SELECT count(*) FROM jsonb_object_keys(p_chave)) <> 1
+       OR NOT (p_chave ? 'id_pca_pncp') THEN
+      RAISE EXCEPTION 'Chave natural inválida para plano'
+        USING ERRCODE = '22023';
+    END IF;
+
+    v_valor1 := p_chave ->> 'id_pca_pncp';
+
+    IF NULLIF(v_valor1, '') IS NULL
+       OR p_linha ->> 'id_pca_pncp' IS DISTINCT FROM v_valor1 THEN
+      RAISE EXCEPTION 'Identificador do plano inconsistente'
+        USING ERRCODE = '22023';
+    END IF;
+
+    v_filtro := 'id_pca_pncp = $1';
+    v_chave := v_valor1;
+  ELSE
+    IF (SELECT count(*) FROM jsonb_object_keys(p_chave)) <> 2
+       OR NOT (p_chave ? 'pca_plano_id')
+       OR NOT (p_chave ? 'numero_item') THEN
+      RAISE EXCEPTION 'Chave natural inválida para item'
+        USING ERRCODE = '22023';
+    END IF;
+
+    v_valor1 := (p_chave ->> 'pca_plano_id')::uuid::text;
+    v_valor2 := (p_chave ->> 'numero_item')::integer::text;
+
+    IF p_linha ->> 'pca_plano_id' IS DISTINCT FROM v_valor1
+       OR (p_linha ->> 'numero_item')::integer::text
+          IS DISTINCT FROM v_valor2 THEN
+      RAISE EXCEPTION 'Identificador do item inconsistente'
+        USING ERRCODE = '22023';
+    END IF;
+
+    v_filtro := 'pca_plano_id = $1::uuid AND numero_item = $2::integer';
+    v_chave := v_valor1 || ':' || v_valor2;
+  END IF;
+
+  v_hash := NULLIF(p_linha ->> 'payload_hash', '');
+
+  IF v_hash IS NULL THEN
+    RAISE EXCEPTION 'payload_hash obrigatório'
+      USING ERRCODE = '22023';
+  END IF;
+
+  -- Bloqueio serializa escritores cooperativos da mesma chave.
+  PERFORM pg_advisory_xact_lock(
+    hashtextextended('pca:' || p_tabela || ':' || v_chave, 0)
+  );
+
+  -- Identidade e estado operacional não são controlados pelo payload.
+  -- Campos de sincronização recebidos do TS serão sobrescritos abaixo.
+  IF p_linha ?| ARRAY[
+    'id', 'created_at', 'ativo',
+    'descoberta_ausente', 'reprocessar'
+  ] THEN
+    RAISE EXCEPTION 'Campo PCA protegido no payload'
+      USING ERRCODE = '22023';
+  END IF;
+
+  -- Somente campos explicitamente permitidos podem ser persistidos.
+  -- A lista é separada por tabela para impedir escrita em colunas
+  -- operacionais adicionadas futuramente.
+  IF EXISTS (
+    SELECT 1
+    FROM jsonb_object_keys(p_linha) AS k(nome)
+    WHERE NOT (
+      CASE p_tabela
+        WHEN 'pca_planos' THEN
+          k.nome = ANY (ARRAY[
+            'id_pca_pncp', 'ano_exercicio', 'orgao_cnpj',
+            'unidade_codigo', 'numero_plano', 'titulo',
+            'descricao', 'status', 'data_aprovacao',
+            'data_publicacao', 'data_atualizacao_origem',
+            'url_origem', 'payload_hash',
+            'updated_at', 'last_synced_at', 'last_seen_sync_id'
+          ])
+        WHEN 'pca_itens' THEN
+          k.nome = ANY (ARRAY[
+            'pca_plano_id', 'numero_item', 'descricao',
+            'categoria', 'classe_material_servico',
+            'codigo_classe_catmat', 'classificacao_catalogo_id',
+            'pdm_codigo_origem', 'codigo_item_origem',
+            'quantidade', 'unidade_medida',
+            'valor_unitario_estimado', 'valor_total_estimado',
+            'data_prevista_contratacao', 'prioridade',
+            'status', 'payload_hash',
+            'updated_at', 'last_synced_at', 'last_seen_sync_id'
+          ])
+        ELSE false
+      END
+    )
+  ) THEN
+    RAISE EXCEPTION 'Campo PCA fora da lista permitida'
+      USING ERRCODE = '22023';
+  END IF;
+
+  -- Evita colunas desconhecidas ou pertencentes a outra tabela.
+  IF EXISTS (
+    SELECT 1
+    FROM jsonb_object_keys(p_linha) AS k(nome)
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM pg_catalog.pg_attribute a
+      WHERE a.attrelid = format('public.%I', p_tabela)::regclass
+        AND a.attname = k.nome
+        AND a.attnum > 0
+        AND NOT a.attisdropped
+    )
+  ) THEN
+    RAISE EXCEPTION 'Payload contém coluna PCA desconhecida'
+      USING ERRCODE = '22023';
+  END IF;
+
+  v_tabela := format('public.%I', p_tabela);
+
+  -- Metadados controlados pelo servidor.
+  v_payload := p_linha || jsonb_build_object(
+    'last_synced_at', now(),
+    'last_seen_sync_id', p_sync_run_id,
+    'updated_at', now()
+  );
+
+  IF p_tabela = 'pca_planos' THEN
+    EXECUTE format(
+      'SELECT to_jsonb(t) FROM %s t WHERE %s FOR UPDATE',
+      v_tabela, v_filtro
+    )
+    INTO v_atual
+    USING v_valor1;
+  ELSE
+    EXECUTE format(
+      'SELECT to_jsonb(t) FROM %s t WHERE %s FOR UPDATE',
+      v_tabela, v_filtro
+    )
+    INTO v_atual
+    USING v_valor1, v_valor2;
+  END IF;
+
+  SELECT
+    string_agg(format('%I', k.nome), ', ' ORDER BY k.nome),
+    string_agg(format('%I', k.nome), ', ' ORDER BY k.nome)
+  INTO v_colunas, v_colunas_select
+  FROM jsonb_object_keys(v_payload) AS k(nome);
+
+  IF v_atual IS NULL THEN
+    EXECUTE format(
+      'INSERT INTO %s (%s)
+       SELECT %s
+       FROM jsonb_populate_record(NULL::%s, $1)
+       RETURNING id',
+      v_tabela, v_colunas, v_colunas_select, v_tabela
+    )
+    INTO v_id
+    USING v_payload;
+
+    v_resultado := 'novo';
+  ELSE
+    v_id := (v_atual ->> 'id')::uuid;
+
+    v_reativacao := COALESCE((v_atual ->> 'ativo')::boolean, false) = false;
+
+    IF v_atual ->> 'payload_hash' = v_hash THEN
+      EXECUTE format(
+        'UPDATE %s
+         SET last_synced_at = now(),
+             last_seen_sync_id = $1,
+             ativo = true
+         WHERE id = $2',
+        v_tabela
+      )
+      USING p_sync_run_id, v_id;
+
+      IF NOT v_reativacao THEN
+        RETURN jsonb_build_object(
+          'id', v_id,
+          'resultado', 'inalterado'
+        );
+      END IF;
+
+      v_resultado := 'alterado';
+    ELSE
+    SELECT
+      string_agg(format('%I', k.nome), ', ' ORDER BY k.nome),
+      string_agg(format('%I', k.nome), ', ' ORDER BY k.nome)
+    INTO v_colunas_update, v_colunas_update_select
+    FROM jsonb_object_keys(v_payload) AS k(nome)
+    WHERE k.nome NOT IN (
+      'id_pca_pncp', 'pca_plano_id', 'numero_item'
+    );
+
+    EXECUTE format(
+      'UPDATE %s
+       SET (%s) = (
+         SELECT %s
+         FROM jsonb_populate_record(NULL::%s, $1)
+       ),
+       ativo = true
+       WHERE id = $2',
+      v_tabela,
+      v_colunas_update,
+      v_colunas_update_select,
+      v_tabela
+    )
+    USING v_payload, v_id;
+
+    v_resultado := 'alterado';
+    END IF;
+  END IF;
+
+  -- Snapshot completo do estado efetivamente persistido.
+  EXECUTE format(
+    'SELECT to_jsonb(t) FROM %s t WHERE id = $1',
+    v_tabela
+  )
+  INTO v_novo
+  USING v_id;
+
+  IF v_novo IS NULL THEN
+    RAISE EXCEPTION 'Estado PCA não encontrado após persistência'
+      USING ERRCODE = 'P0002';
+  END IF;
+
+  -- O erro desta inserção aborta também a alteração principal.
+  IF p_tabela = 'pca_planos' THEN
+    INSERT INTO public.pca_alteracoes (
+      pca_plano_id,
+      tipo_operacao,
+      dados_anteriores,
+      dados_novos,
+      payload_hash_anterior,
+      payload_hash_novo,
+      sync_run_id
+    )
+    VALUES (
+      v_id,
+      CASE
+        WHEN v_resultado = 'novo' THEN 'insert'
+        WHEN v_reativacao THEN 'reativacao'
+        ELSE 'update'
+      END,
+      v_atual,
+      v_novo,
+      v_atual ->> 'payload_hash',
+      v_hash,
+      p_sync_run_id
+    );
+  ELSE
+    INSERT INTO public.pca_alteracoes (
+      pca_plano_id,
+      pca_item_id,
+      tipo_operacao,
+      dados_anteriores,
+      dados_novos,
+      payload_hash_anterior,
+      payload_hash_novo,
+      sync_run_id
+    )
+    VALUES (
+      v_valor1::uuid,
+      v_id,
+      CASE
+        WHEN v_resultado = 'novo' THEN 'insert'
+        WHEN v_reativacao THEN 'reativacao'
+        ELSE 'update'
+      END,
+      v_atual,
+      v_novo,
+      v_atual ->> 'payload_hash',
+      v_hash,
+      p_sync_run_id
+    );
+  END IF;
+
+  RETURN jsonb_build_object(
+    'id', v_id,
+    'resultado', v_resultado
+  );
+END;
+$function$;
+
+REVOKE ALL ON FUNCTION private.pca_persistir_unidade_atomica(
+  text, jsonb, jsonb, uuid
+) FROM PUBLIC, anon, authenticated;
+
+GRANT EXECUTE ON FUNCTION private.pca_persistir_unidade_atomica(
+  text, jsonb, jsonb, uuid
+) TO service_role;
+
+
+-- Lote PCA: todas as unidades são confirmadas ou revertidas juntas.
+CREATE OR REPLACE FUNCTION private.pca_persistir_lote_atomico(
+  p_unidades jsonb,
+  p_sync_run_id uuid
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = ''
+AS $function$
+DECLARE
+  v_unidade jsonb;
+  v_resultados jsonb := '[]'::jsonb;
+  v_resultado jsonb;
+BEGIN
+  IF p_unidades IS NULL
+     OR jsonb_typeof(p_unidades) <> 'array'
+     OR jsonb_array_length(p_unidades) NOT BETWEEN 1 AND 100 THEN
+    RAISE EXCEPTION 'Lote PCA deve conter entre 1 e 100 unidades'
+      USING ERRCODE = '22023';
+  END IF;
+
+  FOR v_unidade IN
+    SELECT value
+    FROM jsonb_array_elements(p_unidades)
+  LOOP
+    v_resultado := private.pca_persistir_unidade_atomica(
+      v_unidade ->> 'tabela',
+      v_unidade -> 'chave',
+      v_unidade -> 'linha',
+      p_sync_run_id
+    );
+
+    v_resultados := v_resultados || jsonb_build_array(v_resultado);
+  END LOOP;
+
+  RETURN v_resultados;
+END;
+$function$;
+
+REVOKE ALL ON FUNCTION private.pca_persistir_lote_atomico(
+  jsonb, uuid
+) FROM PUBLIC, anon, authenticated;
+
+GRANT EXECUTE ON FUNCTION private.pca_persistir_lote_atomico(
+  jsonb, uuid
+) TO service_role;
+
+COMMIT;

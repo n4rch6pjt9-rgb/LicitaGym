@@ -52,7 +52,7 @@ async function lerConsulta(client: SupabaseClient, licitacaoId: number): Promise
  */
 export type TenantDoUsuario = () => Promise<number | null>;
 
-async function estaNoPipeline(client: SupabaseClient, licitacaoId: number, tenant: number | null): Promise<boolean> {
+export async function estaNoPipeline(client: SupabaseClient, licitacaoId: number, tenant: number | null): Promise<boolean> {
   if (tenant === null) return false;
   const { data, error } = await client
     .from("pipeline_oportunidades")

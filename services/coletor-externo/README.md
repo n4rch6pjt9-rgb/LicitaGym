@@ -154,6 +154,24 @@ const { data } = await supabase.storage.from(doc.bucket).createSignedUrl(doc.cam
 
 Migração: `supabase/migrations/20260929140000_documentos_no_licitagym.sql` (aplicada pela integração Supabase no merge) (bucket + policy de leitura para `authenticated`, colunas de histórico, `portal_visitante`, view e o cadastro das fontes Paradigma que faltavam em `fontes_externas`).
 
+## Catálogo de produtos Paradigma por categoria (08/11/2026)
+
+`coletor/catalogo_paradigma.py` exporta o catálogo público de um portal Paradigma (tela `CatalogoProdutos.aspx`) por
+categoria, com o **código interno da entidade** (`sCdProdutoEmpresa`, ex.: Sesc DN `310031041500001`). Usa o cliente
+`PortalParadigma` (mesmo intervalo, 429 com `Retry-After`, 401/403 encerram, faixas de até 100). Só leitura, sem login,
+sem gravar no banco. A categoria vai por código (`PT030`) ou nome exato; categoria inexistente dá erro.
+
+```bash
+python -m coletor.catalogo_paradigma --fonte sescdn --categorias "PT030;ES1205" --saida /fora/do/repo/catalogo.csv
+```
+
+Saída `.csv` (`;`, UTF-8 com BOM) ou `.json`, com `codigo_sesc`, `descricao`, `tipo`, `categoria`, `id_categoria`,
+`id_produto` e `fonte` (no CSV, texto que o Excel leria como fórmula ganha `'` na frente; o JSON guarda o original).
+É dado de coleta: caminho dentro do repositório é recusado. Saída: 0 ok; 2 categoria inexistente ou ambígua, ou
+saída inválida; 3 catálogo possivelmente cortado (página repetida ou limite da paginação), sem gravar.
+Em 08/11/2026 o Sesc DN tinha 52 produtos em
+`PT030 - EQUIP CONDICIONAMENTO FISICO` e 79 em `ES1205 - EQUIP E MAT ESPORTIVO`.
+
 ## Coletor Sistema S — adaptador Paradigma (v15, 26/09/2026)
 
 Novidades sobre a v14 (validado ao vivo na SFIEC, PE000652022):
@@ -386,6 +404,24 @@ no bucket e `roles/secretmanager.secretAccessor` no secret.
 
 Para rodar toda semana: Cloud Scheduler → `gcloud run jobs execute`.
 A coleta é idempotente (upsert + só baixa o que está `pendente`/`erro`).
+
+## Verificador de legislação (spec 0044, trimestral)
+
+`python -m coletor.verificar_legislacao` confere se o texto oficial das normas do corpus curado
+(`coletor/data/legislacao_corpus.json`) mudou e se os artigos de `norma_dispositivos` com `conferido_oficial = true`
+ainda são trecho literal do texto oficial. Só faz `select` em `norma_dispositivos`; não grava nada.
+O relatório sai no log (uma linha JSON por norma e por artigo que não confere, mais o resumo).
+Código de saída: 0 tudo igual; 1 norma mudou ou artigo divergente; 2 não verificado ou sem hash de referência.
+
+```bash
+gcloud run jobs deploy verificar-legislacao --source . --region $REGION   --command python --args="-m,coletor.verificar_legislacao"   --set-env-vars SUPABASE_URL=$SUPABASE_URL   --set-secrets SUPABASE_SERVICE_ROLE_KEY=supabase-service-key:latest   --task-timeout=10m --max-retries=0
+gcloud run jobs execute verificar-legislacao --region $REGION   # primeira execução: imprime os hashes atuais
+# Cloud Scheduler: dia 1 de jan/abr/jul/out, 09:00 BRT -> gcloud run jobs execute verificar-legislacao
+```
+
+Corpus sem hash (`sha256_texto_normalizado: null`) sai como `sem_referencia` com o `sha256_atual`: grave o hash e a
+data (`conferido_em`) num PR depois de conferir o texto. Norma que mudou: confira o texto novo, atualize
+`norma_dispositivos` por migration se algum artigo citado mudou, e só então grave o hash novo.
 
 ## Configuração
 

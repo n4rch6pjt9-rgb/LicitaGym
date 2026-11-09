@@ -1,7 +1,10 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import { handleRequest } from "../../../supabase/functions/api-disputa/index.ts";
 import type { AuthenticatedUser } from "../../../supabase/functions/_shared/http.ts";
-import type { MensagemSerpro } from "../../../supabase/functions/_shared/serpro.ts";
+import {
+  ErroIntegraCompras,
+  type ResultadoConsultaIntegra,
+} from "../../../supabase/functions/_shared/serpro.ts";
 
 const USUARIO_TESTE: AuthenticatedUser = {
   id: "user-uuid-1",
@@ -44,13 +47,16 @@ interface MockDatabase {
   }>;
   mensagens: Array<Record<string, unknown>>;
   auditoria: Array<Record<string, unknown>>;
+  runs?: Array<Record<string, unknown>>;
   licitacoesExternas?: Array<{ id: number; codigo_externo?: string; raw?: Record<string, unknown> }>;
   failUpsert?: boolean;
 }
 
 function createMockSupabase(db: MockDatabase) {
+  db.runs ??= [];
   // deno-lint-ignore no-explicit-any
-  return {
+  const mock: any = {
+    schema: (nome: string) => ({ from: (t: string) => mock.from(`${nome}.${t}`) }),
     from: (table: string) => {
       const filters: Array<(row: any) => boolean> = [];
       let sortField: string | null = null;
@@ -98,6 +104,15 @@ function createMockSupabase(db: MockDatabase) {
           return builder;
         },
         insert: (row: any) => {
+          if (table === "private.integra_compras_run") {
+            const id = db.runs!.length + 1;
+            db.runs!.push({ id, ...row });
+            return {
+              select: () => ({
+                single: () => Promise.resolve({ data: { id }, error: null }),
+              }),
+            };
+          }
           if (table === "disputa_lances_auditoria") {
             const id = db.auditoria.length + 1;
             const saved = { id, ...row };
@@ -110,15 +125,29 @@ function createMockSupabase(db: MockDatabase) {
           }
           return Promise.resolve({ data: row, error: null });
         },
-        upsert: (row: any) => {
+        update: (patch: any) => ({
+          eq: (col: string, val: any) => {
+            if (table === "private.integra_compras_run") {
+              for (const r of db.runs!) if (r[col] === val) Object.assign(r, patch);
+            }
+            return Promise.resolve({ data: null, error: null });
+          },
+        }),
+        upsert: (rows: any, _opts?: any) => {
+          const lista = Array.isArray(rows) ? rows : [rows];
           if (db.failUpsert) {
-            return Promise.resolve({ data: null, error: new Error("Erro de banco ao inserir mensagem") });
+            return { select: () => Promise.resolve({ data: null, error: new Error("Erro de banco ao inserir mensagem") }) };
           }
-          if (table === "disputa_mensagens") {
-            db.mensagens.push(row);
-            return Promise.resolve({ data: row, error: null });
+          const inseridas: any[] = [];
+          if (table === "sessao_mensagens") {
+            for (const r of lista) {
+              if (!db.mensagens.some((m) => m.chave_mensagem === r.chave_mensagem)) {
+                db.mensagens.push(r);
+                inseridas.push({ chave_mensagem: r.chave_mensagem });
+              }
+            }
           }
-          return Promise.resolve({ data: row, error: null });
+          return { select: () => Promise.resolve({ data: inseridas, error: null }) };
         },
         then: (resolve: (val: any) => void) => {
           let rows: any[] = [];
@@ -134,8 +163,10 @@ function createMockSupabase(db: MockDatabase) {
             rows = [...db.dePara];
           } else if (table === "catalogo_precos") {
             rows = [...db.precos];
-          } else if (table === "disputa_mensagens") {
+          } else if (table === "sessao_mensagens") {
             rows = [...db.mensagens];
+          } else if (table === "private.integra_compras_run") {
+            rows = [...db.runs!];
           } else if (table === "disputa_lances_auditoria") {
             rows = [...db.auditoria];
           } else if (table === "licitacoes_externas") {
@@ -168,6 +199,7 @@ function createMockSupabase(db: MockDatabase) {
       return builder;
     },
   };
+  return mock;
 }
 
 Deno.test("api-disputa: 401 para requisição sem autenticação", async () => {
@@ -349,105 +381,211 @@ Deno.test("api-disputa: POST /sync-chat - 404 se licitação não está no pipel
   assertEquals(json.erro, "Oportunidade não encontrada no pipeline do tenant.");
 });
 
-Deno.test("api-disputa: POST /sync-chat - consome Serpro e sincroniza com idempotência", async () => {
-  const db: MockDatabase = {
+const EXEMPLO_OFICIAL: unknown[] = JSON.parse(
+  await Deno.readTextFile(new URL("../fixtures/integra_compras_chat_exemplo.json", import.meta.url)),
+);
+const CHAVE_DEMO = "99998803000012026";
+
+/** Resultado da consulta como o cliente devolve, a partir do exemplo oficial (sem rede). */
+function resultadoExemplo(tipo: "mensagem" | "diligencia"): ResultadoConsultaIntegra {
+  return {
+    status: 200,
+    // deno-lint-ignore no-explicit-any
+    mensagens: EXEMPLO_OFICIAL.map((m: any) => ({
+      tipo,
+      chaveMensagem: tipo === "mensagem" ? m.chaveMensagem : m.chaveMensagem.replace(/^.{8}/, "dddddddd"),
+      identificadorItem: m.identificadorItem ?? null,
+      texto: m.texto,
+      categoria: m.categoria,
+      tipoRemetente: m.tipoRemetente,
+      dataHora: new Date(m.dataHora.replace(" ", "T") + "-03:00").toISOString(),
+      dataHoraFonte: m.dataHora,
+      chaveCompra: m.chaveCompra,
+    })),
+  };
+}
+const vazio404 = (): Promise<ResultadoConsultaIntegra> => Promise.resolve({ status: 404, mensagens: [] });
+
+function dbDemo(extra: Partial<MockDatabase> = {}): MockDatabase {
+  return {
     pipeline: [{ tenant_id: 1, licitacao_id: 101 }],
     itens: [],
     dePara: [],
     precos: [],
     mensagens: [],
     auditoria: [],
+    licitacoesExternas: [{ id: 101, codigo_externo: CHAVE_DEMO, raw: {} }],
+    ...extra,
   };
+}
 
-  const mockMensagens: MensagemSerpro[] = [
-    {
-      id: 1,
-      item: 1,
-      categoria: "CHAT",
-      remetente: "Pregoeiro",
-      texto: "Iniciada fase de lances para o item 1.",
-      dataHora: 1792900000000,
-    },
-  ];
-
-  const mockDiligencias: MensagemSerpro[] = [
-    {
-      id: 2,
-      item: 1,
-      categoria: "DILIGENCIA",
-      remetente: "Pregoeiro",
-      texto: "Convocado para envio de proposta ajustada.",
-      dataHora: 1792900050000,
-    },
-  ];
-
-  const req = new Request("http://localhost/api-disputa/sync-chat", {
+function reqSync(body: Record<string, unknown> = { licitacao_id: 101 }) {
+  return new Request("http://localhost/api-disputa/sync-chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      licitacao_id: 101,
-      chave_compra: "15300005000012026",
-    }),
+    body: JSON.stringify(body),
   });
+}
 
-  const res = await handleRequest(req, {
+Deno.test("CA-2: exemplo oficial processado duas vezes dá 3 linhas, item nulo na primeira e \"1\" nas outras", async () => {
+  const db = dbDemo();
+  const ctx = {
     getUser: () => Promise.resolve(USUARIO_TESTE),
     // deno-lint-ignore no-explicit-any
     getSupabase: () => createMockSupabase(db) as any,
-    consultarChat: () => Promise.resolve(mockMensagens),
-    consultarDiligencias: () => Promise.resolve(mockDiligencias),
-  });
+    consultarChat: () => Promise.resolve(resultadoExemplo("mensagem")),
+    consultarDiligencias: vazio404,
+  };
 
+  const r1 = await handleRequest(reqSync(), ctx);
+  assertEquals(r1.status, 200);
+  assertEquals((await r1.json()).novas_inseridas, 3);
+
+  const r2 = await handleRequest(reqSync(), ctx);
+  const j2 = await r2.json();
+  assertEquals(j2.total_lidas, 3);
+  assertEquals(j2.novas_inseridas, 0);
+
+  assertEquals(db.mensagens.length, 3);
+  assertEquals(db.mensagens.map((m) => m.identificador_item), [null, "1", "1"]);
+  assertEquals(db.mensagens.every((m) => m.chave_compra === CHAVE_DEMO && !("tenant_id" in m)), true);
+  assertEquals(db.mensagens[0].categoria, "11");
+  assertEquals(db.mensagens[0].data_hora_fonte, "2026-02-05 16:15:00.144");
+  // K-2: uma execução por consulta, com as chamadas por código HTTP
+  assertEquals(db.runs!.length, 2);
+  assertEquals(db.runs![0].chamadas, { "200": 1, "404": 1 });
+  assertEquals(db.runs![0].mensagens_novas, 3);
+  assertEquals(db.runs![1].mensagens_novas, 0);
+});
+
+Deno.test("CA-3: 404 grava zero mensagens e o registro conta os 404 (cobrados), sem erro", async () => {
+  const db = dbDemo();
+  const res = await handleRequest(reqSync(), {
+    getUser: () => Promise.resolve(USUARIO_TESTE),
+    // deno-lint-ignore no-explicit-any
+    getSupabase: () => createMockSupabase(db) as any,
+    consultarChat: vazio404,
+    consultarDiligencias: vazio404,
+  });
   assertEquals(res.status, 200);
   const json = await res.json();
   assertEquals(json.ok, true);
-  assertEquals(json.total_lidas, 2);
-  assertEquals(json.novas_inseridas, 2);
-  assertEquals(db.mensagens.length, 2);
+  assertEquals(json.total_lidas, 0);
+  assertEquals(db.mensagens.length, 0);
+  assertEquals(db.runs![0].chamadas, { "404": 2 });
+  assertEquals(db.runs![0].erro, null);
+  // K-7: a execução guarda a licitação de onde veio a chave (base da retenção).
+  assertEquals(db.runs![0].licitacao_id, 101);
+  assertEquals(db.runs![0].origem, "usuario");
 });
 
-Deno.test("api-disputa: POST /sync-chat - não mascara erro se upsert falhar e retorna 500 higienizado", async () => {
-  const db: MockDatabase = {
-    pipeline: [{ tenant_id: 1, licitacao_id: 101 }],
-    itens: [],
-    dePara: [],
-    precos: [],
-    mensagens: [],
-    auditoria: [],
-    failUpsert: true, // Simula falha de banco no upsert
-  };
-
-  const mockMensagens: MensagemSerpro[] = [
-    {
-      id: 1,
-      categoria: "CHAT",
-      remetente: "Pregoeiro",
-      texto: "Mensagem qualquer",
-      dataHora: 1792900000000,
-    },
-  ];
-
-  const req = new Request("http://localhost/api-disputa/sync-chat", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      licitacao_id: 101,
-      chave_compra: "15300005000012026",
-    }),
-  });
-
-  const res = await handleRequest(req, {
+Deno.test("CA-5: 502 registra erro, não apaga nem inventa mensagem e responde 502", async () => {
+  const existente = { chave_compra: CHAVE_DEMO, chave_mensagem: "ja-gravada", texto: "anterior" };
+  const db = dbDemo({ mensagens: [existente] });
+  const res = await handleRequest(reqSync(), {
     getUser: () => Promise.resolve(USUARIO_TESTE),
     // deno-lint-ignore no-explicit-any
     getSupabase: () => createMockSupabase(db) as any,
-    consultarChat: () => Promise.resolve(mockMensagens),
-    consultarDiligencias: () => Promise.resolve([]),
+    consultarChat: () => Promise.reject(new ErroIntegraCompras("Integra Compras respondeu HTTP 502", 502)),
+    consultarDiligencias: () => Promise.resolve(resultadoExemplo("diligencia")),
   });
-
-  // Deve retornar 500 com mensagem genérica mascarada (sem vazar detalhes internos)
-  assertEquals(res.status, 500);
+  assertEquals(res.status, 502);
   const json = await res.json();
-  assertEquals(json.erro, "Erro interno no servidor.");
+  assertEquals(json.ok, false);
+  assertEquals(db.mensagens, [existente]);
+  assertEquals(db.runs![0].chamadas, { "502": 1 });
+  assertEquals(typeof db.runs![0].erro, "string");
+  assertEquals(typeof db.runs![0].terminado_em, "string");
+});
+
+Deno.test("api-disputa: POST /sync-chat - falha sem status (timeout) fecha o registro com erro", async () => {
+  const db = dbDemo();
+  const res = await handleRequest(reqSync(), {
+    getUser: () => Promise.resolve(USUARIO_TESTE),
+    // deno-lint-ignore no-explicit-any
+    getSupabase: () => createMockSupabase(db) as any,
+    consultarChat: () => Promise.reject(new ErroIntegraCompras("Falha ao consultar o Integra Compras (TimeoutError).", null)),
+    consultarDiligencias: vazio404,
+  });
+  assertEquals(res.status, 502);
+  assertEquals(db.runs![0].chamadas, { "sem_resposta": 1 });
+  assertEquals(typeof db.runs![0].erro, "string");
+  assertEquals(typeof db.runs![0].terminado_em, "string");
+});
+
+Deno.test("api-disputa: POST /sync-chat - consulta manual repetida em menos de 5 min recebe 429 e não chama a API", async () => {
+  const db = dbDemo({ runs: [{ id: 1, chave_compra: CHAVE_DEMO, origem: "usuario", iniciado_em: new Date().toISOString() }] });
+  let chamou = false;
+  const res = await handleRequest(reqSync(), {
+    getUser: () => Promise.resolve(USUARIO_TESTE),
+    // deno-lint-ignore no-explicit-any
+    getSupabase: () => createMockSupabase(db) as any,
+    consultarChat: () => {
+      chamou = true;
+      return vazio404();
+    },
+    consultarDiligencias: vazio404,
+  });
+  assertEquals(res.status, 429);
+  assertEquals(chamou, false);
+  assertEquals(db.runs!.length, 1);
+});
+
+Deno.test("api-disputa: POST /sync-chat - corpo que não é JSON recebe 400", async () => {
+  const res = await handleRequest(
+    new Request("http://localhost/api-disputa/sync-chat", { method: "POST", body: "{" }),
+    {
+      getUser: () => Promise.resolve(USUARIO_TESTE),
+      // deno-lint-ignore no-explicit-any
+      getSupabase: () => createMockSupabase(dbDemo()) as any,
+    },
+  );
+  assertEquals(res.status, 400);
+});
+
+Deno.test("api-disputa: POST /sync-chat - não mascara erro se upsert falhar e retorna 500 higienizado", async () => {
+  const db = dbDemo({ failUpsert: true });
+  const res = await handleRequest(reqSync(), {
+    getUser: () => Promise.resolve(USUARIO_TESTE),
+    // deno-lint-ignore no-explicit-any
+    getSupabase: () => createMockSupabase(db) as any,
+    consultarChat: () => Promise.resolve(resultadoExemplo("mensagem")),
+    consultarDiligencias: vazio404,
+  });
+  assertEquals(res.status, 500);
+  assertEquals((await res.json()).erro, "Erro interno no servidor.");
+  assertEquals(db.runs![0].erro, "falha ao gravar mensagens");
+});
+
+Deno.test("api-disputa: GET /chat - mensagens globais da compra, em ordem, com a última consulta", async () => {
+  const db = dbDemo();
+  const ctx = {
+    getUser: () => Promise.resolve(USUARIO_TESTE),
+    // deno-lint-ignore no-explicit-any
+    getSupabase: () => createMockSupabase(db) as any,
+    consultarChat: () => Promise.resolve(resultadoExemplo("mensagem")),
+    consultarDiligencias: vazio404,
+  };
+  await handleRequest(reqSync(), ctx);
+  const res = await handleRequest(new Request("http://localhost/api-disputa/chat?licitacao_id=101"), ctx);
+  assertEquals(res.status, 200);
+  const json = await res.json();
+  assertEquals(json.chave_compra, CHAVE_DEMO);
+  assertEquals(json.mensagens.length, 3);
+  assertEquals(json.ultima_consulta.com_erro, false);
+});
+
+Deno.test("api-disputa: GET /chat - sem chave oficial devolve motivo explícito, não lista vazia muda", async () => {
+  const db = dbDemo({ licitacoesExternas: [{ id: 101, codigo_externo: "00394460000141-1-000001/2026", raw: {} }] });
+  const res = await handleRequest(new Request("http://localhost/api-disputa/chat?licitacao_id=101"), {
+    getUser: () => Promise.resolve(USUARIO_TESTE),
+    // deno-lint-ignore no-explicit-any
+    getSupabase: () => createMockSupabase(db) as any,
+  });
+  assertEquals(res.status, 200);
+  const json = await res.json();
+  assertEquals(json.chave_compra, null);
+  assertEquals(json.motivo, "sem_chave_compra");
 });
 
 Deno.test("api-disputa: POST /sync-chat - rejeita proxy se chave_compra divergir da oficial", async () => {
@@ -517,119 +655,36 @@ Deno.test("api-disputa: POST /sync-chat - rejeita sync se licitação não possu
   assertEquals(json.erro, "Esta licitação não possui chave oficial de compra do Compras.gov (17 dígitos) para consulta no Integra Compras.");
 });
 
-Deno.test("api-disputa: POST /sync-chat - autentica via cron secret e sincroniza com sucesso para múltiplos tenants", async () => {
-  const db: MockDatabase = {
-    pipeline: [
-      { tenant_id: 1, licitacao_id: 101 },
-      { tenant_id: 2, licitacao_id: 101 },
-    ],
-    itens: [],
-    dePara: [],
-    precos: [],
-    mensagens: [],
-    auditoria: [],
-    licitacoesExternas: [
-      { id: 101, codigo_externo: "15300005000012026", raw: {} },
-    ],
-  };
-
-  const mockMensagens: MensagemSerpro[] = [
-    {
-      id: 99,
-      item: 1,
-      categoria: "AVISO",
-      remetente: "Sistema",
-      texto: "Aviso de cron automático",
-      dataHora: 1792900000000,
-    },
-  ];
-
-  const req = new Request("http://localhost/api-disputa/sync-chat", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      licitacao_id: 101,
-    }),
-  });
-
-  const res = await handleRequest(req, {
+Deno.test("api-disputa: POST /sync-chat - cron grava uma cópia global, mesmo com a compra em dois tenants", async () => {
+  const db = dbDemo({ pipeline: [{ tenant_id: 1, licitacao_id: 101 }, { tenant_id: 2, licitacao_id: 101 }] });
+  const res = await handleRequest(reqSync(), {
     isCron: () => true,
     // deno-lint-ignore no-explicit-any
     getSupabase: () => createMockSupabase(db) as any,
-    consultarChat: () => Promise.resolve(mockMensagens),
-    consultarDiligencias: () => Promise.resolve([]),
+    consultarChat: () => Promise.resolve(resultadoExemplo("mensagem")),
+    consultarDiligencias: vazio404,
   });
-
   assertEquals(res.status, 200);
-  const json = await res.json();
-  assertEquals(json.ok, true);
-  // Deve inserir 1 mensagem para o tenant 1 e 1 mensagem para o tenant 2
-  assertEquals(json.novas_inseridas, 2);
-  assertEquals(db.mensagens.length, 2);
-  assertEquals(db.mensagens[0].tenant_id, 1);
-  assertEquals(db.mensagens[1].tenant_id, 2);
+  assertEquals((await res.json()).novas_inseridas, 3);
+  assertEquals(db.mensagens.length, 3);
+  assertEquals(db.runs![0].origem, "cron");
 });
 
 Deno.test("api-disputa: POST /sync-chat - cron com tenant_id valida presença no pipeline", async () => {
-  const db: MockDatabase = {
-    pipeline: [
-      { tenant_id: 1, licitacao_id: 101 },
-    ],
-    itens: [],
-    dePara: [],
-    precos: [],
-    mensagens: [],
-    auditoria: [],
-    licitacoesExternas: [
-      { id: 101, codigo_externo: "15300005000012026", raw: {} },
-    ],
+  const db = dbDemo();
+  const ctx = {
+    isCron: () => true,
+    // deno-lint-ignore no-explicit-any
+    getSupabase: () => createMockSupabase(db) as any,
+    consultarChat: () => Promise.resolve(resultadoExemplo("mensagem")),
+    consultarDiligencias: vazio404,
   };
+  const ok = await handleRequest(reqSync({ licitacao_id: 101, tenant_id: 1 }), ctx);
+  assertEquals(ok.status, 200);
 
-  // 1. Cron enviando tenant_id válido que possui a licitação no pipeline
-  const reqValido = new Request("http://localhost/api-disputa/sync-chat", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      licitacao_id: 101,
-      tenant_id: 1,
-    }),
-  });
-
-  const resValido = await handleRequest(reqValido, {
-    isCron: () => true,
-    // deno-lint-ignore no-explicit-any
-    getSupabase: () => createMockSupabase(db) as any,
-    consultarChat: () => Promise.resolve([{ id: 10, item: 1, categoria: "AVISO", remetente: "Sis", texto: "Teste", dataHora: 1792900000000 }]),
-    consultarDiligencias: () => Promise.resolve([]),
-  });
-
-  assertEquals(resValido.status, 200);
-  const jsonValido = await resValido.json();
-  assertEquals(jsonValido.ok, true);
-  assertEquals(db.mensagens.length, 1);
-  assertEquals(db.mensagens[0].tenant_id, 1);
-
-  // 2. Cron enviando tenant_id que NÃO possui a licitação no pipeline -> 404
-  const reqInvalido = new Request("http://localhost/api-disputa/sync-chat", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      licitacao_id: 101,
-      tenant_id: 99,
-    }),
-  });
-
-  const resInvalido = await handleRequest(reqInvalido, {
-    isCron: () => true,
-    // deno-lint-ignore no-explicit-any
-    getSupabase: () => createMockSupabase(db) as any,
-    consultarChat: () => Promise.resolve([]),
-    consultarDiligencias: () => Promise.resolve([]),
-  });
-
-  assertEquals(resInvalido.status, 404);
-  const jsonInvalido = await resInvalido.json();
-  assertEquals(jsonInvalido.erro, "Licitação não vinculada ao tenant informado no pipeline.");
+  const invalido = await handleRequest(reqSync({ licitacao_id: 101, tenant_id: 99 }), ctx);
+  assertEquals(invalido.status, 404);
+  assertEquals((await invalido.json()).erro, "Licitação não vinculada ao tenant informado no pipeline.");
 });
 
 Deno.test("api-disputa: GET /estrategia - seleção determinística do menor id de catalogo_de_para compatível com api-agentes", async () => {

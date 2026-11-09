@@ -87,6 +87,32 @@ Deno.test("api-syncs: sync desconhecido e sync sem função nem workflow não di
   assertEquals(SYNCS.every((s) => !s.disparavel || Boolean(s.funcao) || Boolean(s.github_workflow)), true);
 });
 
+// Syncs presos por trava de ambiente (PNCP_NATIONAL_SYNC_ENABLED, IRP_SYNC_ENABLED) ou que dependem de um sync
+// travado: a tela não oferece "Rodar agora" e o disparo responde 400 com o motivo, sem chamar a função. Provisório:
+// a spec 0024 (decisão de 14/10, #363) troca a trava pelo catálogo e devolve o disparo manual; aí saem desta lista.
+const SYNCS_TRAVADOS = [
+  "sync-pncp-contratacoes-editais",
+  "sync-pncp-contratacoes-atas",
+  "sync-pncp-contratacoes-contratos",
+  "sync-pncp-irp",
+  // depende de contratacoes_editais, alimentada só pelo sync nacional de editais (travado)
+  "sync-pncp-contratacoes-itens",
+];
+
+Deno.test("api-syncs: syncs travados por escopo não são disparáveis e não chamam a função", async () => {
+  let chamou = false;
+  const c = ctx({ fetchFn: () => { chamou = true; return Promise.resolve(new Response("{}")); } });
+  for (const slug of SYNCS_TRAVADOS) {
+    const item = SYNCS.find((s) => s.slug === slug);
+    assertEquals(item?.disparavel, false, slug);
+    assertEquals(Boolean(item?.aviso), true, `${slug} precisa dizer por que está desligado`);
+    const res = await handleRequest(post({ action: "rodar", sync: slug }), c);
+    assertEquals(res.status, 400, slug);
+    assertEquals((await res.json()).error, item?.aviso);
+  }
+  assertEquals(chamou, false);
+});
+
 Deno.test("CA-6 (spec 0023): rodar manda origem manual no corpo da função disparada", async () => {
   let enviado = "";
   const c = ctx({
@@ -210,17 +236,19 @@ function github(
       return st === 201 ? Promise.resolve(new Response(null, { status: 201 })) : json({ message: "Cannot rerun" }, st);
     }
     if (url.includes("/actions/runs/") && url.includes("/jobs")) return json(JOBS_GH);
-    if (url.includes("/workflows/coletor-pncp.yml/runs") && url.includes("event=schedule")) {
+    const ehWorkflowRuns = url.includes("/workflows/coletor-pncp.yml/runs") ||
+      url.includes("/workflows/coletor-precos.yml/runs");
+    if (ehWorkflowRuns && url.includes("event=schedule")) {
       return json({ total_count: agendado ? 1 : 0, workflow_runs: agendado ? [agendado] : [] });
     }
-    if (opts.foraDoFormato && url.includes("/workflows/coletor-pncp.yml/runs")) return json({ total_count: 0 });
+    if (opts.foraDoFormato && ehWorkflowRuns) return json({ total_count: 0 });
     const filtro = /[?&]status=([a-z_]+)/.exec(url)?.[1];
-    if (url.includes("/workflows/coletor-pncp.yml/runs") && filtro) {
+    if (ehWorkflowRuns && filtro) {
       const todos = [...(opts.recentes ?? []), ...(opts.ativosAntigos ?? [])];
       const achados = todos.filter((r) => r.status === filtro);
       return json({ total_count: achados.length, workflow_runs: achados });
     }
-    if (url.includes("/workflows/coletor-pncp.yml/runs")) {
+    if (ehWorkflowRuns) {
       const recentes = opts.recentes ?? (agendado ? [agendado] : []);
       return json({ total_count: recentes.length, workflow_runs: recentes });
     }
@@ -443,4 +471,45 @@ Deno.test("CA-7: rodar coletor-pncp continua um workflow_dispatch rápido, sem r
   assertEquals(res.status, 200);
   assertEquals(url, "https://api.github.com/repos/dono/repo/actions/workflows/coletor-pncp.yml/dispatches");
   assertEquals(JSON.parse(enviado), { ref: "main", inputs: { modo: "leads", dry_run: "false", rapido: "true" } });
+});
+
+Deno.test("api-syncs: coletor-precos segue a mesma estrutura do coletor-pncp (listar, rodar e refazer)", async () => {
+  const gh = github({ agendado: runGh({ conclusion: "failure" }) });
+  const listRes = await (await handleRequest(post({ action: "listar" }), ctxGh(gh))).json();
+  const precos = listRes.syncs.find((s: { slug: string }) => s.slug === "coletor-precos");
+  assertEquals(precos.disparavel, true);
+  assertEquals(precos.github_workflow, "coletor-precos.yml");
+  assertEquals(precos.pode_refazer, true);
+
+  const refRes = await handleRequest(post({ action: "refazer", sync: "coletor-precos" }), ctxGh(gh));
+  assertEquals(refRes.status, 200);
+  assertEquals((await refRes.json()).resposta?.status, "refeito");
+
+  let url = "";
+  let enviado = "";
+  const cRodar = ctxGh(gh, {
+    fetchFn: (input, init) => {
+      url = String(input);
+      enviado = String(init?.body);
+      return Promise.resolve(new Response(null, { status: 204 }));
+    },
+  });
+  const rodRes = await handleRequest(post({ action: "rodar", sync: "coletor-precos" }), cRodar);
+  assertEquals(rodRes.status, 200);
+  assertEquals(url, "https://api.github.com/repos/dono/repo/actions/workflows/coletor-precos.yml/dispatches");
+  assertEquals(JSON.parse(enviado), { ref: "main", inputs: { modo: "todos", dry_run: "false" } });
+});
+
+Deno.test("CA-4 (spec 0044): a legislação sai do catálogo e o disparo dela é slug desconhecido", async () => {
+  assertEquals(SYNCS.some((s) => s.slug === "sync-pncp-legislation" || s.funcao === "sync-pncp-legislation"), false);
+  const lista = await (await handleRequest(post({ action: "listar" }), ctx())).json();
+  assertEquals(lista.syncs.some((s: { slug: string }) => s.slug === "sync-pncp-legislation"), false);
+  let chamou = false;
+  const res = await handleRequest(
+    post({ action: "rodar", sync: "sync-pncp-legislation" }),
+    ctx({ fetchFn: () => { chamou = true; return Promise.resolve(new Response("{}")); } }),
+  );
+  assertEquals(res.status, 400);
+  assertEquals((await res.json()).error, "Sync desconhecido.");
+  assertEquals(chamou, false);
 });

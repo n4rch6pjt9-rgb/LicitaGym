@@ -585,7 +585,12 @@ def _ler_detalhe_item(cliente: ClienteComprasPrecos, codigo_item: int,
         pagina += 1
 
 
-def completar_detalhes(cliente: ClienteComprasPrecos, sb: Supabase, limite_itens: int | None = None) -> dict[str, Any]:
+def completar_detalhes(
+    cliente: ClienteComprasPrecos,
+    sb: Supabase,
+    limite_itens: int | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
     """Completa a descrição detalhada pelo 2_consultarMaterialDetalhe só nas linhas que não a têm (spec 0009, CA-9).
 
     Lê de precos_praticados_itens as linhas com descricao_detalhada_item nula ou em branco e detalhe_sincronizado_em
@@ -654,14 +659,15 @@ def completar_detalhes(cliente: ClienteComprasPrecos, sb: Supabase, limite_itens
             campos: dict[str, Any] = {"detalhe_sincronizado_em": agora}
             if isinstance(bruto, str) and bruto.strip():
                 campos["descricao_detalhada_item"] = bruto  # como veio da fonte (mesma regra do 1_)
-            try:
-                n = sb.atualizar_onde("precos_praticados_itens",
-                                      {"id_compra": f"eq.{chave[0]}", "id_item_compra": f"eq.{chave[1]}"}, campos)
-                if n != 1:
-                    raise RuntimeError(f"{n} linha(s) atualizada(s), esperado 1")
-            except Exception as e:
-                falhar(1, f"gravação de {chave[0]}/{chave[1]}: {e}")
-                continue
+            if not dry_run:
+                try:
+                    n = sb.atualizar_onde("precos_praticados_itens",
+                                          {"id_compra": f"eq.{chave[0]}", "id_item_compra": f"eq.{chave[1]}"}, campos)
+                    if n != 1:
+                        raise RuntimeError(f"{n} linha(s) atualizada(s), esperado 1")
+                except Exception as e:
+                    falhar(1, f"gravação de {chave[0]}/{chave[1]}: {e}")
+                    continue
             if "descricao_detalhada_item" in campos:
                 resumo["completadas"] += 1
             else:
@@ -673,6 +679,8 @@ def completar_detalhes(cliente: ClienteComprasPrecos, sb: Supabase, limite_itens
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Coletor Compras.gov Pesquisa de Preço (preços praticados)")
+    ap.add_argument("--modo", choices=("catalogo", "detalhe"), default="catalogo",
+                    help="catalogo = 1_consultarMaterial por PDM/item; detalhe = 2_consultarMaterialDetalhe nas linhas sem descrição")
     ap.add_argument("--pdms", help="Códigos PDM separados por vírgula")
     ap.add_argument("--itens", help="Códigos CATMAT item separados por vírgula")
     ap.add_argument("--limite", type=int, help="Teto de itens a processar")
@@ -682,15 +690,18 @@ def main(argv: list[str] | None = None) -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
-    pdms = [int(p.strip()) for p in args.pdms.split(",") if p.strip()] if args.pdms else None
-    itens = [int(i.strip()) for i in args.itens.split(",") if i.strip()] if args.itens else None
-
     cliente = ClienteComprasPrecos(delay=args.delay)
     sb = None
-    if not args.dry_run:
+    if args.modo == "detalhe" or not args.dry_run:
         sb = Supabase(env("SUPABASE_URL", obrigatorio=True), env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True))
 
-    res = coletar(cliente, sb, pdms=pdms, itens=itens, limite=args.limite, dry_run=args.dry_run)
+    if args.modo == "detalhe":
+        assert sb is not None
+        res = completar_detalhes(cliente, sb, limite_itens=args.limite, dry_run=args.dry_run)
+    else:
+        pdms = [int(p.strip()) for p in args.pdms.split(",") if p.strip()] if args.pdms else None
+        itens = [int(i.strip()) for i in args.itens.split(",") if i.strip()] if args.itens else None
+        res = coletar(cliente, sb, pdms=pdms, itens=itens, limite=args.limite, dry_run=args.dry_run)
     print(json.dumps(res, indent=2, ensure_ascii=False))
     return 0 if res["sucesso"] else 1
 

@@ -1,3 +1,6 @@
+-- Spec 0042: tenant novo nasce NX; este check testa o modelo antigo (Konnen), então pede a semente antiga.
+select set_config('nexor.semente_pipeline', 'lei14133', false);
+
 -- Checagem de 20261011235000_pipeline_remover_apaga_tarefas.
 -- Remover do Kanban apaga as tarefas daquela empresa. Mudar de etapa não apaga. Outra empresa não é afetada.
 -- O que o teste grava é desfeito.

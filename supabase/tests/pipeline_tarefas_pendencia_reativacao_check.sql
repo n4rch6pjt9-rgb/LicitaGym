@@ -1,3 +1,6 @@
+-- Spec 0042: tenant novo nasce NX; este check testa o modelo antigo (Konnen), então pede a semente antiga.
+select set_config('nexor.semente_pipeline', 'lei14133', false);
+
 -- Checagem da migration 20261011180000_pipeline_tarefas_pendencia_reativacao (revisão do PR #329, spec 0018).
 --   pendência limpa com bloqueio de regulamento e fora do pipeline; reativar empresa não recria etapa excluída e
 --   semeia o modelo nas etapas existentes. Tudo desfeito ao final.

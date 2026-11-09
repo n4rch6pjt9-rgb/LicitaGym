@@ -17,6 +17,13 @@ export interface SyncCatalogo {
   refazer_cron?: boolean;
 }
 
+/** Syncs nacionais do PNCP: a trava de escopo (_shared/pncp/licitagym-scope-gate.ts) responde 423 sem o override
+ * PNCP_NATIONAL_SYNC_ENABLED. Provisório: a spec 0024 (#363) troca a trava pelo catálogo da empresa e liga cron e
+ * disparo manual; até lá, sem botão na tela. */
+const AVISO_NACIONAL =
+  "Sem disparo pela tela: a função ainda usa a trava fixa 7830/7220 e, sem o override " +
+  "PNCP_NATIONAL_SYNC_ENABLED, responde HTTP 423. Volta com a spec 0024 (escopo pelo catálogo, cron e disparo manual).";
+
 export const SYNCS: SyncCatalogo[] = [
   {
     slug: "coletor-pncp",
@@ -95,16 +102,6 @@ export const SYNCS: SyncCatalogo[] = [
     aviso: null,
   },
   {
-    slug: "sync-pncp-legislation",
-    funcao: "sync-pncp-legislation",
-    titulo: "Legislação",
-    faz: "PDFs oficiais de legislação.",
-    cron: "Segunda-feira às 05:27.",
-    corpo: {},
-    disparavel: true,
-    aviso: null,
-  },
-  {
     slug: "sync-pncp-catalogo",
     funcao: "sync-pncp-catalogo",
     titulo: "Catálogo PNCP",
@@ -151,8 +148,8 @@ export const SYNCS: SyncCatalogo[] = [
     faz: "Publicações nacionais em contratacoes_editais. Não grava a lista de oportunidades.",
     cron: null,
     corpo: {},
-    disparavel: true,
-    aviso: "Sem PNCP_NATIONAL_SYNC_ENABLED a função responde 423.",
+    disparavel: false,
+    aviso: AVISO_NACIONAL + " As oportunidades vêm do Coletor PNCP.",
   },
   {
     slug: "sync-pncp-contratacoes-atas",
@@ -161,8 +158,8 @@ export const SYNCS: SyncCatalogo[] = [
     faz: "Atas de registro de preço.",
     cron: null,
     corpo: {},
-    disparavel: true,
-    aviso: "Sem PNCP_NATIONAL_SYNC_ENABLED a função responde 423.",
+    disparavel: false,
+    aviso: AVISO_NACIONAL + " As atas do escopo vêm do coletor de ARP do Compras.gov (atas_rp_itens).",
   },
   {
     slug: "sync-pncp-contratacoes-contratos",
@@ -171,8 +168,8 @@ export const SYNCS: SyncCatalogo[] = [
     faz: "Contratos publicados no PNCP.",
     cron: null,
     corpo: {},
-    disparavel: true,
-    aviso: "Sem PNCP_NATIONAL_SYNC_ENABLED a função responde 423.",
+    disparavel: false,
+    aviso: AVISO_NACIONAL,
   },
   {
     slug: "sync-pncp-contratacoes-itens",
@@ -181,8 +178,9 @@ export const SYNCS: SyncCatalogo[] = [
     faz: "Itens dos editais que ainda não têm item gravado.",
     cron: null,
     corpo: { limite: 50, so_sem_itens: true },
-    disparavel: true,
-    aviso: null,
+    disparavel: false,
+    aviso: "Sem disparo pela tela: completa itens de contratacoes_editais, que vem do sync nacional de editais " +
+      "(travado) e está parada desde 20/09/2026. Os itens das oportunidades vêm do Coletor PNCP. Volta com a spec 0024.",
   },
   {
     slug: "sync-pncp-irp",
@@ -191,8 +189,9 @@ export const SYNCS: SyncCatalogo[] = [
     faz: "Intenção de registro de preço.",
     cron: null,
     corpo: {},
-    disparavel: true,
-    aviso: "Só segue se IRP_SYNC_ENABLED=true.",
+    disparavel: false,
+    aviso: "Sem disparo pela tela: o endpoint de IRP da API de Consulta do PNCP ainda não foi verificado (trava " +
+      "IRP_SYNC_ENABLED, CLA-34). Disparar daqui só devolveria HTTP 423. Volta com a spec 0024.",
   },
   {
     slug: "import-catmat-curadoria",

@@ -3,13 +3,21 @@ import * as XLSX from "npm:xlsx@0.18.5";
 import {
   dataIso,
   digitoVerificador,
+  gerarSeedBlocosSql,
+  gerarSeedEtapaTarefasSql,
   gerarSeedModelosSql,
   gerarSeedSql,
   idModelo,
+  lerBlocosLegais,
+  lerEtapaTarefasPadrao,
   lerFeriados,
   lerModelosNx,
   lerPlanilha,
   lerRegimes,
+  MARCA_BLOCOS_FIM,
+  MARCA_BLOCOS_INICIO,
+  MARCA_ETAPA_TAREFAS_FIM,
+  MARCA_ETAPA_TAREFAS_INICIO,
   MARCA_FIM,
   MARCA_INICIO,
   MARCA_MODELOS_FIM,
@@ -445,4 +453,154 @@ Deno.test("import-spec: aspas simples escapadas no seed de modelos", () => {
   const sql = gerarSeedModelosSql({ ...base, modelos: [m] });
   assert(sql.includes("'D''Ávila'"));
   assert(sql.includes(`'{"condicao_nx":"se o órgão ''exigir''"}'::jsonb`));
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// PR 3b: blocos legais (Padrao_Lei, seções 1 e 2)
+// ---------------------------------------------------------------------------------------------------------------
+const MIGRATION_BLOCOS = new URL(
+  "../../../supabase/migrations/20261108230000_nexor_blocos_legais.sql",
+  import.meta.url,
+);
+
+Deno.test("import-spec (blocos): 22 blocos × 5 procedimentos, todos da Lei 14.133", () => {
+  const b = lerBlocosLegais(wb);
+  assertEquals(b.length, 110);
+  assertEquals(new Set(b.map((x) => x.bloco)).size, 22);
+  assertEquals(
+    [...new Set(b.map((x) => x.procedimento))],
+    ["pregao", "concorrencia", "dispensa", "inexigibilidade", "credenciamento"],
+  );
+  assert(b.every((x) => x.regime_id === "lei_14133"));
+  assertEquals(b.filter((x) => x.procedimento === "pregao").map((x) => x.ordem), Array.from({ length: 22 }, (_, i) => i + 1));
+});
+
+Deno.test("import-spec (blocos): célula da matriz vira status, prazo e confiança", () => {
+  const b = lerBlocosLegais(wb);
+  const um = (proc: string, bloco: string) => b.find((x) => x.procedimento === proc && x.bloco === bloco)!;
+  const imp = um("pregao", "impugnacao_esclarecimento");
+  assertEquals(
+    [imp.status, imp.prazo_quantidade, imp.prazo_unidade, imp.prazo_sentido, imp.prazo_ancora, imp.confianca],
+    ["obrigatorio", 3, "du", "antes", "abertura_sessao", "alta"],
+  );
+  assert(imp.base_legal?.includes("art. 164"));
+  assertEquals(imp.parte_obrigada, "licitante");
+  assert(imp.temas_rag?.includes("prazo_impugnacao"));
+  const inex = um("inexigibilidade", "valor_estimado_sigilo");
+  assertEquals([inex.prazo_quantidade, inex.prazo_unidade, inex.prazo_sentido, inex.prazo_ancora], [1, "anos", "antes", "contratacao"]);
+  const cred = um("credenciamento", "impugnacao_esclarecimento");
+  assertEquals([cred.prazo_sentido, cred.prazo_ancora], ["depois", "recebimento_pedido"]);
+  const na = um("inexigibilidade", "proposta");
+  assertEquals([na.status, na.prazo_quantidade, na.confianca], ["nao_aplica", null, "media"]);
+  const anexos = um("pregao", "anexos_obrigatorios");
+  assertEquals([anexos.prazo_quantidade, anexos.prazo_unidade], [0, "dc"]);
+  // Proposta no pregão: sem quantidade, mas "até a abertura" (sentido e âncora da seção 2).
+  const prop = um("pregao", "proposta");
+  assertEquals([prop.prazo_quantidade, prop.prazo_unidade, prop.prazo_sentido, prop.prazo_ancora], [null, null, "antes", "abertura_sessao"]);
+});
+
+Deno.test("import-spec (blocos): detalhe (condição, base legal) só no pregão; os outros ficam null", () => {
+  const b = lerBlocosLegais(wb);
+  assert(b.filter((x) => x.procedimento === "pregao").every((x) => x.base_legal && x.condicao && x.parte_obrigada));
+  assert(
+    b.filter((x) => x.procedimento !== "pregao").every((x) =>
+      x.base_legal === null && x.condicao === null && x.parte_obrigada === null && x.temas_rag === null &&
+      x.variacoes === null
+    ),
+  );
+});
+
+Deno.test("import-spec (blocos): célula fora do padrão dá erro com a célula", () => {
+  assertThrows(() => lerBlocosLegais(planilhaCom("Padrao_Lei", "B9", "Obrigatório")), Error, "B9");
+  assertThrows(() => lerBlocosLegais(planilhaCom("Padrao_Lei", "C9", "Obrig. · 3 semanas antes abertura_sessao [alta]")), Error, "C9");
+  assertThrows(() => lerBlocosLegais(planilhaCom("Padrao_Lei", "D9", null)), Error, "D9");
+});
+
+Deno.test("import-spec (blocos): pregão da matriz divergente do detalhe dá erro", () => {
+  assertThrows(() => lerBlocosLegais(planilhaCom("Padrao_Lei", "E34", 4)), Error, "diverge");
+  assertThrows(() => lerBlocosLegais(planilhaCom("Padrao_Lei", "L34", "media")), Error, "diverge");
+  assertThrows(() => lerBlocosLegais(planilhaCom("Padrao_Lei", "B34", "condicional")), Error, "diverge");
+  assertThrows(() => lerBlocosLegais(planilhaCom("Padrao_Lei", "A34", "bloco_inexistente")), Error, "bloco_inexistente");
+});
+
+Deno.test("import-spec (blocos): seção 2 sem Lei 14.133 no título dá erro (regime não é adivinhado)", () => {
+  assertThrows(() => lerBlocosLegais(planilhaCom("Padrao_Lei", "A27", "2. PREGÃO – DETALHE POR BLOCO")), Error, "14.133");
+});
+
+Deno.test("import-spec (blocos): bloco da migration é o que o script gera da planilha", () => {
+  const sql = Deno.readTextFileSync(MIGRATION_BLOCOS);
+  const i = sql.indexOf(MARCA_BLOCOS_INICIO);
+  const j = sql.indexOf(MARCA_BLOCOS_FIM);
+  assert(i >= 0 && j > i, "marcas do bloco gerado não encontradas na migration");
+  assertEquals(sql.slice(i, j + MARCA_BLOCOS_FIM.length), gerarSeedBlocosSql(lerBlocosLegais(wb)));
+});
+
+Deno.test("import-spec (blocos): coluna a mais (procedimento ou campo novo) dá erro, não some", () => {
+  assertThrows(() => lerBlocosLegais(planilhaCom("Padrao_Lei", "G3", "leilao")), Error, "G3");
+  assertThrows(() => lerBlocosLegais(planilhaCom("Padrao_Lei", "G4", "Obrig. [alta]")), Error, "G4");
+  // Fora do intervalo da aba (A1:L59): o Excel amplia o !ref ao gravar; aqui amplia-se à mão.
+  const comM = (celulaM: string, v: string) => {
+    const c = planilhaCom("Padrao_Lei", celulaM, v);
+    c.Sheets["Padrao_Lei"]["!ref"] = "A1:M59";
+    return c;
+  };
+  assertThrows(() => lerBlocosLegais(comM("M28", "prazo_obs")), Error, "M28");
+  assertThrows(() => lerBlocosLegais(comM("M34", "x")), Error, "M34");
+});
+
+Deno.test("import-spec (blocos): linha em branco no meio das duas seções dá erro, não corta blocos", () => {
+  const apagar = (linha: number, ate: string) =>
+    [..."ABCDEFGHIJKL".slice(0, "ABCDEFGHIJKL".indexOf(ate) + 1)].map((c) =>
+      ["Padrao_Lei", `${c}${linha}`, null] as [string, string, null]
+    );
+  assertThrows(
+    () => lerBlocosLegais(planilhaComVarias([...apagar(15, "F"), ...apagar(40, "L")])),
+    Error,
+    "linha em branco",
+  );
+});
+
+Deno.test("import-spec (blocos): unidade com nome de propriedade herdada dá erro com a célula", () => {
+  assertThrows(
+    () => lerBlocosLegais(planilhaCom("Padrao_Lei", "C9", "Obrig. · 3 constructor antes abertura_sessao [alta]")),
+    Error,
+    "C9",
+  );
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Spec 0042: tarefas padrão por etapa NX
+// ---------------------------------------------------------------------------------------------------------------
+const MIGRATION_TENANT_NX = new URL(
+  "../../../supabase/migrations/20261109010000_nexor_tenant_novo.sql",
+  import.meta.url,
+);
+
+Deno.test("import-spec (0042 CA-7): 34 tarefas padrão nas etapas certas, apelidos na etapa NX", () => {
+  const et = lerEtapaTarefasPadrao(wb);
+  assertEquals(et.length, 34);
+  const etapaDe = (apelido: string) => [...new Set(et.filter((x) => x.apelido === apelido).map((x) => x.etapa_codigo))];
+  assertEquals(etapaDe("NX-T05"), ["A02"]);
+  assertEquals(etapaDe("NX-T16"), ["S10"]);
+  assertEquals(etapaDe("NX-T19"), ["R13"]);
+  assertEquals(et.filter((x) => x.apelido === "NX-T18").map((x) => x.tarefa_codigo), ["14133-F05-T01", "14133-F05-T02"]);
+  assertEquals(et.some((x) => x.apelido === "NX-T34"), false);
+  assertEquals(et.some((x) => x.etapa_codigo === "S08"), false);
+  assertEquals(
+    et.filter((x) => x.etapa_codigo === "A01").map((x) => x.apelido),
+    ["NX-T01", "NX-T02", "NX-T03", "NX-T27"],
+  );
+});
+
+Deno.test("import-spec (0042): Pipeline_Etapas e Tarefas_Default divergentes dão erro", () => {
+  // NX-T04 passa a Análise do edital na Tarefas_Default, mas a Pipeline_Etapas ainda a lista em Triagem
+  assertThrows(() => lerEtapaTarefasPadrao(planilhaCom("Tarefas_Default", "B5", "Análise do edital")), Error);
+});
+
+Deno.test("import-spec (0042): bloco da migration é o que o script gera da planilha", () => {
+  const sql = Deno.readTextFileSync(MIGRATION_TENANT_NX);
+  const i = sql.indexOf(MARCA_ETAPA_TAREFAS_INICIO);
+  const j = sql.indexOf(MARCA_ETAPA_TAREFAS_FIM);
+  assert(i >= 0 && j > i, "marcas do bloco gerado não encontradas na migration");
+  assertEquals(sql.slice(i, j + MARCA_ETAPA_TAREFAS_FIM.length), gerarSeedEtapaTarefasSql(lerEtapaTarefasPadrao(wb)));
 });

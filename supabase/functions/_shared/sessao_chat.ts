@@ -3,10 +3,13 @@
  * Usado pela rota manual `POST /api-disputa/sync-chat` e pela coleta agendada `sync-sessao-chat`.
  *
  * - K-1: grava em public.sessao_mensagens sem duplicar (chave_mensagem); nada é apagado nem sobrescrito.
- * - K-2: uma linha em private.integra_compras_run por consulta, com as chamadas por código HTTP
+ * - K-2: uma linha em private.integra_compras_run por consulta, com as chamadas por código HTTP, uma por página
  *   (200, 206 e 404 são cobrados) e a licitação de onde veio a chave (base da retenção, K-7).
  * - 403/502/timeout: registra o erro e para a compra (não consulta as diligências depois de uma falha).
  * Erro de banco sobe para o chamador, com o registro da execução fechado como erro.
+ * - K-5b (etapa 1b): as mensagens lidas passam pela detecção de convocação (`_shared/sessao_alertas.ts`). Falha na
+ *   geração não derruba a consulta (mensagens e chamadas cobradas ficam registradas): o run guarda o aviso, o
+ *   resultado traz alertas_gerados = null e a próxima leitura refaz (o alerta é idempotente).
  */
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import {
@@ -16,19 +19,24 @@ import {
   type MensagemIntegra,
   type ResultadoConsultaIntegra,
 } from "./serpro.ts";
+import { gerarAlertas } from "./sessao_alertas.ts";
 
 export interface ConsultasIntegra {
   consultarChat?: (chave: string) => Promise<ResultadoConsultaIntegra>;
   consultarDiligencias?: (chave: string) => Promise<ResultadoConsultaIntegra>;
+  /** Relógio injetável (janela de 24 h do alerta). */
+  agora?: () => number;
 }
 
 export interface ResultadoSincronizacao {
   ok: boolean;
   total_lidas: number;
   novas_inseridas: number;
+  /** Alertas de convocação gravados nesta consulta (K-5b); null = a geração falhou (ver erro). */
+  alertas_gerados: number | null;
   /** {"200": n, "404": n, "sem_resposta": n, ...} */
   chamadas: Record<string, number>;
-  /** Mensagem do erro da fonte (nunca o corpo da resposta). */
+  /** Mensagem do erro da fonte, ou aviso de leitura incompleta (nunca o corpo da resposta). */
   erro: string | null;
   /** Status HTTP do erro da fonte; null = sem resposta (timeout, rede). */
   status_erro: number | null;
@@ -100,7 +108,13 @@ function paraLinha(chaveCompra: string, m: MensagemIntegra) {
 /** Consulta chat e diligências de uma compra e grava mensagens novas e o registro da execução. */
 export async function sincronizarCompra(
   supabase: SupabaseClient,
-  alvo: { chaveCompra: string; licitacaoId: number; origem: "cron" | "usuario" },
+  alvo: {
+    chaveCompra: string;
+    licitacaoId: number;
+    origem: "cron" | "usuario";
+    /** Outras licitações com a mesma chave (fontes diferentes): também recebem o alerta (K-5b). */
+    outrasLicitacoes?: number[];
+  },
   consultas: ConsultasIntegra = {},
 ): Promise<ResultadoSincronizacao> {
   const { data: run, error: erroRun } = await supabase
@@ -122,13 +136,18 @@ export async function sincronizarCompra(
 
   const lidas: MensagemIntegra[] = [];
   let erroFonte: ErroIntegraCompras | null = null;
+  let aviso: string | null = null;
   for (const fn of [fnChat, fnDiligencias]) {
     try {
       const r = await fn(alvo.chaveCompra);
-      contar(r.status);
+      for (const st of r.statusPaginas ?? [r.status]) contar(st);
       lidas.push(...r.mensagens);
+      if (r.aviso) aviso = r.aviso;
     } catch (e) {
       if (!(e instanceof ErroIntegraCompras)) throw e;
+      // Páginas lidas antes da falha foram cobradas: conta e grava o que veio delas.
+      for (const st of e.statusPaginasAnteriores) contar(st);
+      lidas.push(...e.mensagensAnteriores);
       contar(e.status);
       erroFonte = e;
       break; // 403/502: registra e para a compra (K-3)
@@ -158,6 +177,32 @@ export async function sincronizarCompra(
     novas = (inseridas ?? []).length;
   }
 
+  let alertas: number | null = 0;
+  try {
+    alertas = await gerarAlertas(
+      supabase,
+      [alvo.licitacaoId, ...(alvo.outrasLicitacoes ?? [])],
+      lidas.map((m) => ({
+        chave_mensagem: m.chaveMensagem,
+        texto: m.texto,
+        identificador_item: m.identificadorItem,
+        tipo_remetente: m.tipoRemetente,
+        data_hora: m.dataHora,
+      })),
+      consultas.agora ? consultas.agora() : Date.now(),
+    );
+  } catch (e) {
+    alertas = null;
+    console.error(
+      "[sessao_chat] falha ao gerar alertas",
+      alvo.chaveCompra,
+      alvo.licitacaoId,
+      e instanceof Error ? e.message : String(e),
+    );
+  }
+  const avisoAlertas = alertas === null ? "alertas: falha ao gerar (a próxima leitura refaz)" : null;
+  const erroFinal = [erroFonte ? erroFonte.message : aviso, avisoAlertas].filter(Boolean).join("; ") || null;
+
   const { error: erroFim } = await supabase
     .schema("private")
     .from("integra_compras_run")
@@ -166,7 +211,7 @@ export async function sincronizarCompra(
       chamadas,
       mensagens_lidas: lidas.length,
       mensagens_novas: novas,
-      erro: erroFonte ? erroFonte.message : null,
+      erro: erroFinal,
     })
     .eq("id", run.id);
   if (erroFim) throw erroFim;
@@ -175,8 +220,9 @@ export async function sincronizarCompra(
     ok: erroFonte === null,
     total_lidas: lidas.length,
     novas_inseridas: novas,
+    alertas_gerados: alertas,
     chamadas,
-    erro: erroFonte ? erroFonte.message : null,
+    erro: erroFinal,
     status_erro: erroFonte ? erroFonte.status : null,
   };
 }

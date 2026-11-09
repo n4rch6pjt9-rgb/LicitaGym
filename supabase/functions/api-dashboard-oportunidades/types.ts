@@ -79,12 +79,40 @@ export interface AcompanhamentoActionParams {
   atualizar?: boolean;
 }
 
+/** Recorte aceito pelo resumo executivo: só catálogo/CATMAT, os mesmos parâmetros da action=list (spec 0048 K-2). */
+export interface RecorteResumo {
+  catmat_grupo?: number[];
+  catmat_classe?: number[];
+  catmat_pdm?: number[];
+  catmat_item?: number[];
+  catalogo?: boolean;
+}
+
+export interface ResumoExecutivoActionParams {
+  action: "resumo_executivo";
+  recorte: RecorteResumo;
+}
+
+/** Linha de public.dashboard_resumo_executivo (K-1). Somas null quando nenhuma linha tem valor_total. */
+export interface ResumoExecutivo {
+  leads_total: number;
+  monitoradas_total: number;
+  valor_potencial_total: number | null;
+  com_valor_total: number;
+  prazo_amanha_total: number;
+  prazo_amanha_valor: number | null;
+  prazo_7_dias_total: number;
+  prazo_7_dias_valor: number | null;
+  calculado_em: string | null;
+}
+
 export type ActionParams =
   | ObjetoCategoriasActionParams
   | ListActionParams
   | GetActionParams
   | ReadinessActionParams
-  | AcompanhamentoActionParams;
+  | AcompanhamentoActionParams
+  | ResumoExecutivoActionParams;
 
 export interface CompraMetadata {
   situacao: string | null;
@@ -206,6 +234,16 @@ export interface AcompanhamentoSection<T> {
   dados: T | null;
   total?: number;
   erro: string | null;
+  /**
+   * Ausente = dados do PNCP ao vivo. "copia_local" = o PNCP falhou (`erro` mantido) e `dados` vêm da cópia gravada
+   * pelo coletor (licitacao_itens / licitacao_documentos), de `copia_gravada_em`. Só Itens e Documentos têm cópia.
+   */
+  origem?: "copia_local";
+  /**
+   * Quando o coletor viu os dados no PNCP pela última vez (ISO). Documentos: maior last_seen_at. Itens: null, porque
+   * licitacao_itens não guarda essa data (desconhecida, não inventada).
+   */
+  copia_gravada_em?: string | null;
 }
 
 export type AcompanhamentoResponse =

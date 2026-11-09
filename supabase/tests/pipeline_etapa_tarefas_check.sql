@@ -1,3 +1,6 @@
+-- Spec 0042: tenant novo nasce NX; este check testa o modelo antigo (Konnen), então pede a semente antiga.
+select set_config('nexor.semente_pipeline', 'lei14133', false);
+
 -- Checagem da migration 20261011120000_pipeline_etapa_tarefas (spec 0018).
 --   (a) ACL e RLS (CA-11): pipeline_etapa_tarefas sem acesso para anon/authenticated; funções só service_role.
 --   (b) Regras (CA-1 a CA-8, CA-12 a CA-14, CA-16, CA-18 a CA-22), num sub-bloco que termina com exceção proposital:

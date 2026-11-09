@@ -17,7 +17,8 @@ import {
  * ativa, fora das etapas perdida e descartada, sem homologação e com o fim do recebimento de propostas (data_fim)
  * entre 30 dias atrás e 2 horas à frente.
  *
- * Custo (cada consulta = 2 chamadas cobradas, chat e diligências):
+ * Custo (cada consulta = no mínimo 2 chamadas cobradas, chat e diligências, mais 1 por página além da primeira;
+ * o chat vem em páginas de 20 mensagens):
  * - rodízio: a compra consultada há mais tempo (ou nunca) vem primeiro;
  * - compra consultada há menos de 55 min (por cron ou usuário) fica para a próxima rodada: com o cron a cada 30 min,
  *   cada compra é lida cerca de uma vez por hora;
@@ -39,6 +40,8 @@ const FUSO_BRASILIA_MS = 3 * 3600_000;
 
 export interface Alvo {
   licitacaoId: number;
+  /** Outras licitações com a mesma chave de compra (só quando há mais de uma); recebem o alerta (K-5b). */
+  outrasLicitacoes?: number[];
   chaveCompra: string;
   dataFim: string;
 }
@@ -107,9 +110,14 @@ export async function selecionarAlvos(supabase: SupabaseClient, agora: Date): Pr
     });
     if (!chave) continue;
     const atual = porChave.get(chave);
-    // Duas licitações com a mesma compra: uma consulta só, pela de menor id.
-    if (!atual || l.licitacao_id < atual.licitacaoId) {
+    // Duas licitações com a mesma compra: uma consulta só, pela de menor id; as outras recebem o alerta (K-5b).
+    if (!atual) {
       porChave.set(chave, { licitacaoId: l.licitacao_id, chaveCompra: chave, dataFim: new Date(fim).toISOString() });
+    } else {
+      const ids = [atual.licitacaoId, ...(atual.outrasLicitacoes ?? []), l.licitacao_id].sort((a, b) => a - b);
+      const menor = ids.shift()!;
+      const dataFim = menor === atual.licitacaoId ? atual.dataFim : new Date(fim).toISOString();
+      porChave.set(chave, { licitacaoId: menor, chaveCompra: chave, dataFim, outrasLicitacoes: ids });
     }
   }
   return [...porChave.values()].sort((a, b) => b.dataFim.localeCompare(a.dataFim) || a.licitacaoId - b.licitacaoId);
@@ -170,7 +178,12 @@ export async function handleRequest(req: Request, ctx: Contexto = {}): Promise<R
 
     const sincronizar = ctx.sincronizar ??
       ((s: SupabaseClient, a: Alvo) =>
-        sincronizarCompra(s, { chaveCompra: a.chaveCompra, licitacaoId: a.licitacaoId, origem: "cron" }));
+        sincronizarCompra(s, {
+          chaveCompra: a.chaveCompra,
+          licitacaoId: a.licitacaoId,
+          origem: "cron",
+          outrasLicitacoes: a.outrasLicitacoes,
+        }));
     const relogio = ctx.relogioMs ?? (() => Date.now());
     const inicioRodada = relogio();
 
@@ -203,6 +216,7 @@ export async function handleRequest(req: Request, ctx: Contexto = {}): Promise<R
           chave_compra: alvo.chaveCompra,
           ok: r.ok,
           novas_inseridas: r.novas_inseridas,
+          alertas_gerados: r.alertas_gerados,
           chamadas: r.chamadas,
           erro: r.erro,
         });

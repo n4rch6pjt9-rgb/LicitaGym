@@ -489,6 +489,55 @@ def test_produtos_escopo_filtra_nome_exato_tipo_e_pagina():
     assert len(prods) == 3 + 3 + 100 + 3
 
 
+def _classes_pedidas(slug: str, categorias=None) -> list[str]:
+    p = P.PortalParadigma(P.FONTES[slug], sessao=MagicMock(), delay=0)
+    pedidas = []
+
+    def ws(metodo, corpo):
+        if metodo == "PesquisarCatalogoProdutoClasses":
+            pedidas.append(corpo["dtoProduto"]["sDsProduto"])
+        return []
+    p._ws = ws
+    p.produtos_escopo(categorias)
+    return pedidas
+
+
+def test_categorias_do_catalogo_por_fonte():
+    # Nomes lidos no autocomplete de cada portal (estudo dos murais, 08/11/2026). Decisão do Marcelo (09/11/2026):
+    # sem gate, entra o que vier dessas categorias.
+    assert _classes_pedidas("fiems") == ["MATERIAIS ESPORTIVOS"]
+    fiemt = _classes_pedidas("fiemt")
+    assert set(fiemt) == {"25 - EQUIPAMENTOS ESPORTIVOS, ARTISTICOS E DE RECREACAO",
+                          "25 - MATERIAL ESPORTIVO E DE RECREACAO",
+                          "EQUIPAMENTOS ESPORTIVOS, ARTISTICOS E DE RECREACAO", "MATERIAL ESPORTIVO E DE RECREACAO"}
+    # as outras fontes não mudam
+    assert _classes_pedidas("sfiec") == P.CATEGORIAS_MAPEADAS
+    # --categorias explícito vence o mapeamento da fonte
+    assert _classes_pedidas("fiems", ["ESPORTIVO"]) == ["ESPORTIVO"]
+
+
+def test_fiemt_casa_classe_real_com_acento_virgula_e_prefixo_e_deixa_premiacao_fora(caplog):
+    # Classes como o autocomplete da FIEMT devolveu (08/11/2026): acento, vírgula, prefixo "25 -" e quebra de linha.
+    devolvidas = [{"nCdClasse": 9, "sDsClasse": "25 - EQUIPAMENTOS ESPORTIVOS, ARTÍSTICOS E DE RECREAÇÃO"},
+                  {"nCdClasse": 456, "sDsClasse": "PREMIAÇÕES \r\nEQUIPAMENTOS \r\nESPORTIVOS "}]
+    p = P.PortalParadigma(P.FONTES["fiemt"], sessao=MagicMock(), delay=0)
+    catalogo = []
+
+    def ws(metodo, corpo):
+        dto = corpo["dtoProduto"]
+        if metodo == "PesquisarCatalogoProdutoClasses":
+            return devolvidas if dto["sDsProduto"].startswith("25 - EQUIP") else []
+        catalogo.append(dto["nCdClasse"])
+        return [] if dto["dtoPaginacao"]["nPaginaDe"] > 1 else [{"nCdProduto": 1, "nCdClasse": dto["nCdClasse"]}]
+    p._ws = ws
+    with caplog.at_level("WARNING"):
+        prods = p.produtos_escopo()
+    assert set(catalogo) == {9}       # só a classe de nome exato; premiação não entra
+    assert list(prods) == [1]
+    # as 3 categorias que o portal falso não devolve geram aviso, em vez de catálogo vazio calado
+    assert sum("sem classe de nome exato" in r.message for r in caplog.records) == 3
+
+
 def test_mural_estatistico_leva_totais_para_licitacao():
     # linha real de PesquisarProcessosMuralEstatistico (HAR SFIEC, 26/09/2026), reduzida
     est = {"nCdProcesso": 32, "nCdOrigem": 32, "nCdModulo": 18, "nAnoFinalizacao": 2022,

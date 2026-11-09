@@ -234,7 +234,7 @@ Deno.test("agentePreco: casos 14575/11 e 18667/17 geram referência com proposta
     const finding = result.achados.find((a) => a.codigo === "preco.referencia_praticada");
     assertEquals(finding?.dados.n, 5);
     assertEquals(finding?.dados.mediana_centavos, 30000);
-    assertEquals(result.regra_versao, "2026-10-26.2");
+    assertEquals(result.regra_versao, "2026-11-08.1");
   }
 });
 

@@ -16,7 +16,10 @@
 // Fase 0, PR 2: etapas NX (Glossario 2a + Pipeline_Etapas), modelos NX (Tarefas_Default + Glossario 2b/3) e apelidos
 // NX-T/NX (de-para aprovado em specs/nexor-de-para-tarefas.md). Decisões em specs/nexor-fase0-mapa.md.
 //
+// Fase 0, PR 3b: blocos legais (Padrao_Lei, seção 1 = matriz bloco × procedimento; seção 2 = detalhe do pregão).
+//
 // Uso do bloco do PR 2: deno run --allow-read scripts/import-spec.ts [planilha] --bloco=modelos
+// Uso do bloco do PR 3b: deno run --allow-read scripts/import-spec.ts [planilha] --bloco=blocos
 
 import * as XLSX from "npm:xlsx@0.18.5";
 
@@ -756,17 +759,345 @@ export function gerarSeedModelosSql(
   ].join("\n");
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// PR 3b: blocos legais
+// ---------------------------------------------------------------------------------------------------------------
+export const MARCA_BLOCOS_INICIO =
+  "-- >>> gerado por scripts/import-spec.ts --bloco=blocos: não editar à mão";
+export const MARCA_BLOCOS_FIM = "-- <<< fim do bloco gerado (blocos legais)";
+
+export const PROCEDIMENTOS = [
+  "pregao",
+  "concorrencia",
+  "dispensa",
+  "inexigibilidade",
+  "credenciamento",
+] as const;
+export type Procedimento = typeof PROCEDIMENTOS[number];
+
+const STATUS_MATRIZ: Readonly<Record<string, string>> = {
+  "Obrig.": "obrigatorio",
+  "Cond.": "condicional",
+  "N/A": "nao_aplica",
+};
+const STATUS_DETALHE = new Set(["obrigatorio", "condicional", "nao_aplica"]);
+const UNIDADES: Readonly<Record<string, string>> = {
+  du: "du",
+  dc: "dc",
+  h: "h",
+  min: "min",
+  meses: "meses",
+  "ano(s)": "anos",
+};
+const CONFIANCAS = new Set(["alta", "media", "baixa"]);
+const PARTES = new Set(["orgao", "licitante"]);
+const ID_RE = /^[a-z0-9_]+$/;
+const CELULA_MATRIZ_RE =
+  /^(Obrig\.|Cond\.|N\/A)(?: · (\d+) (\S+) (antes|depois) ([a-z0-9_]+))? \[(alta|media|baixa)\]$/;
+
+export type BlocoLegal = {
+  regime_id: string;
+  procedimento: Procedimento;
+  bloco: string;
+  ordem: number;
+  status: string;
+  prazo_quantidade: number | null;
+  prazo_unidade: string | null;
+  prazo_sentido: string | null;
+  prazo_ancora: string | null;
+  confianca: string;
+  condicao: string | null;
+  base_legal: string | null;
+  parte_obrigada: string | null;
+  temas_rag: string[] | null;
+  variacoes: string | null;
+};
+
+function celula(linha: number, col: number): string {
+  return `${String.fromCharCode(65 + col)}${linha + 1}`;
+}
+
+/** Coluna a mais (procedimento ou campo novo) não pode ser descartada em silêncio. */
+function exigirSemColunaExtra(l: Linha, n: number, aba: string, i: number): void {
+  for (let k = n; k < l.length; k++) {
+    if (texto(l[k]) !== "") throw new Error(`${aba} ${celula(i, k)}: coluna fora do layout esperado`);
+  }
+}
+
+/** Linha em branco no meio da seção cortaria os blocos seguintes: o resto até a próxima seção tem de estar vazio. */
+function exigirLinhasVazias(ls: Linha[], de: number, ate: number, aba: string): void {
+  for (let i = de; i < ate; i++) {
+    if ((ls[i] ?? []).some((c) => texto(c) !== "")) {
+      throw new Error(`${aba} linha ${de + 1}: linha em branco no meio da seção (há dados na linha ${i + 1})`);
+    }
+  }
+}
+
+function proprio<T>(mapa: Readonly<Record<string, T>>, chave: string): T | undefined {
+  return Object.hasOwn(mapa, chave) ? mapa[chave] : undefined;
+}
+
+/**
+ * Padrao_Lei seção 1 (matriz bloco × procedimento) + seção 2 (detalhe do pregão). O regime vem do título da seção 2
+ * ("Lei 14.133"), nunca é adivinhado; a matriz do pregão tem de bater com o detalhe (status, prazo e confiança).
+ */
+export function lerBlocosLegais(wb: XLSX.WorkBook): BlocoLegal[] {
+  const aba = "Padrao_Lei";
+  const ls = linhas(wb, aba);
+  const t1 = achar(ls, 0, "1. MATRIZ BLOCO", aba);
+  exigirCabecalho(ls[t1 + 1] ?? [], 0, ["bloco", ...PROCEDIMENTOS], `${aba} seção 1`);
+  const N1 = 1 + PROCEDIMENTOS.length;
+  exigirSemColunaExtra(ls[t1 + 1] ?? [], N1, aba, t1 + 1);
+  const t2 = achar(ls, 0, "2. PREGÃO", aba);
+  const t3 = achar(ls, 0, "3. REGIMES", aba);
+  if (!texto(ls[t2][0]).includes("Lei 14.133")) {
+    throw new Error(`${aba} seção 2: título sem "Lei 14.133"; o regime dos blocos não é adivinhado`);
+  }
+  const regime_id = "lei_14133";
+  exigirCabecalho(ls[t2 + 1] ?? [], 0, [
+    "bloco",
+    "status",
+    "condicao",
+    "base_legal",
+    "prazo_qtd",
+    "unidade",
+    "sentido",
+    "ancora",
+    "parte_obrigada",
+    "temas_rag",
+    "variacoes (regime/UF)",
+    "confianca",
+  ], `${aba} seção 2`);
+  const N2 = 12;
+  exigirSemColunaExtra(ls[t2 + 1] ?? [], N2, aba, t2 + 1);
+
+  const out: BlocoLegal[] = [];
+  const ordemDe = new Map<string, number>();
+  for (let i = t1 + 2; i < t2; i++) {
+    const bloco = texto(ls[i][0]);
+    if (!bloco) {
+      exigirLinhasVazias(ls, i, t2, aba);
+      break;
+    }
+    exigirSemColunaExtra(ls[i], N1, aba, i);
+    if (!ID_RE.test(bloco)) throw new Error(`${aba} ${celula(i, 0)}: bloco inválido "${bloco}"`);
+    if (ordemDe.has(bloco)) throw new Error(`${aba} ${celula(i, 0)}: bloco repetido "${bloco}"`);
+    ordemDe.set(bloco, ordemDe.size + 1);
+    PROCEDIMENTOS.forEach((procedimento, k) => {
+      const ref = celula(i, k + 1);
+      const v = texto(ls[i][k + 1]);
+      const m = CELULA_MATRIZ_RE.exec(v);
+      if (!m) {
+        throw new Error(
+          `${aba} ${ref}: célula fora do padrão "Obrig.|Cond.|N/A [· n unidade antes|depois âncora] [confiança]": "${v}"`,
+        );
+      }
+      const unidade = m[3] === undefined ? null : proprio(UNIDADES, m[3]);
+      if (unidade === undefined) throw new Error(`${aba} ${ref}: unidade de prazo desconhecida "${m[3]}"`);
+      const status = proprio(STATUS_MATRIZ, m[1])!;
+      if (status === "nao_aplica" && m[2] !== undefined) throw new Error(`${aba} ${ref}: N/A com prazo`);
+      out.push({
+        regime_id,
+        procedimento,
+        bloco,
+        ordem: ordemDe.get(bloco)!,
+        status,
+        prazo_quantidade: m[2] === undefined ? null : Number(m[2]),
+        prazo_unidade: unidade,
+        prazo_sentido: m[4] ?? null,
+        prazo_ancora: m[5] ?? null,
+        confianca: m[6],
+        condicao: null,
+        base_legal: null,
+        parte_obrigada: null,
+        temas_rag: null,
+        variacoes: null,
+      });
+    });
+  }
+
+  const vistosDetalhe = new Set<string>();
+  for (let i = t2 + 2; i < t3; i++) {
+    const l = ls[i];
+    const bloco = texto(l[0]);
+    if (!bloco) {
+      exigirLinhasVazias(ls, i, t3, aba);
+      break;
+    }
+    exigirSemColunaExtra(l, N2, aba, i);
+    const alvo = out.find((x) => x.procedimento === "pregao" && x.bloco === bloco);
+    if (!alvo) throw new Error(`${aba} ${celula(i, 0)}: bloco "${bloco}" do detalhe não está na matriz`);
+    if (vistosDetalhe.has(bloco)) throw new Error(`${aba} ${celula(i, 0)}: bloco repetido no detalhe "${bloco}"`);
+    vistosDetalhe.add(bloco);
+    const qtdTxt = texto(l[4]);
+    const qtd = qtdTxt === "" ? null : Number(qtdTxt);
+    if (qtd !== null && (!Number.isInteger(qtd) || qtd < 0)) {
+      throw new Error(`${aba} ${celula(i, 4)}: prazo_qtd inválido "${qtdTxt}"`);
+    }
+    const unidadeTxt = texto(l[5]);
+    const unidade = unidadeTxt ? proprio(UNIDADES, unidadeTxt) : null;
+    if (unidade === undefined) throw new Error(`${aba} ${celula(i, 5)}: unidade desconhecida "${unidadeTxt}"`);
+    const sentido = texto(l[6]) || null;
+    const ancora = texto(l[7]) || null;
+    if (sentido !== null && sentido !== "antes" && sentido !== "depois") {
+      throw new Error(`${aba} ${celula(i, 6)}: sentido inválido "${sentido}"`);
+    }
+    if (ancora !== null && !ID_RE.test(ancora)) throw new Error(`${aba} ${celula(i, 7)}: âncora inválida "${ancora}"`);
+    if ((sentido === null) !== (ancora === null)) throw new Error(`${aba} linha ${i + 1}: sentido e âncora vêm juntos`);
+    if ((qtd === null) !== (unidade === null)) throw new Error(`${aba} linha ${i + 1}: prazo_qtd e unidade vêm juntos`);
+    if (qtd !== null && sentido === null) throw new Error(`${aba} linha ${i + 1}: prazo sem sentido e âncora`);
+    const status = texto(l[1]);
+    if (!STATUS_DETALHE.has(status)) throw new Error(`${aba} ${celula(i, 1)}: status inválido "${status}"`);
+    const parte = texto(l[8]);
+    if (!PARTES.has(parte)) throw new Error(`${aba} ${celula(i, 8)}: parte_obrigada inválida "${parte}"`);
+    const confianca = texto(l[11]);
+    if (!CONFIANCAS.has(confianca)) throw new Error(`${aba} ${celula(i, 11)}: confiança inválida "${confianca}"`);
+    const condicao = texto(l[2]);
+    const base_legal = texto(l[3]);
+    if (!condicao || !base_legal) throw new Error(`${aba} linha ${i + 1}: bloco "${bloco}" sem condição ou base legal`);
+    // Matriz (seção 1) e detalhe (seção 2) do pregão são a mesma informação: divergência é erro, não escolha.
+    const matriz = [alvo.status, alvo.prazo_quantidade, alvo.prazo_unidade, alvo.confianca];
+    const detalhe = [status, qtd, unidade, confianca];
+    if (JSON.stringify(matriz) !== JSON.stringify(detalhe)) {
+      throw new Error(
+        `${aba}: bloco "${bloco}" do pregão diverge entre a matriz ${JSON.stringify(matriz)} e o detalhe ${
+          JSON.stringify(detalhe)
+        }`,
+      );
+    }
+    if (qtd !== null && (alvo.prazo_sentido !== sentido || alvo.prazo_ancora !== ancora)) {
+      throw new Error(`${aba}: bloco "${bloco}" do pregão diverge no sentido/âncora entre a matriz e o detalhe`);
+    }
+    const temas = texto(l[9]).split(",").map((t) => t.trim()).filter(Boolean);
+    if (temas.some((t) => !ID_RE.test(t))) throw new Error(`${aba} ${celula(i, 9)}: tema inválido`);
+    if (temas.length === 0) throw new Error(`${aba} ${celula(i, 9)}: bloco "${bloco}" sem temas_rag`);
+    // Sem quantidade, o detalhe ainda pode dar sentido e âncora (ex.: proposta "até a abertura da sessão").
+    alvo.prazo_sentido = sentido;
+    alvo.prazo_ancora = ancora;
+    alvo.condicao = condicao;
+    alvo.base_legal = base_legal;
+    alvo.parte_obrigada = parte;
+    alvo.temas_rag = temas;
+    alvo.variacoes = texto(l[10]) || null;
+  }
+  const semDetalhe = [...ordemDe.keys()].filter((b) => !vistosDetalhe.has(b));
+  if (semDetalhe.length) throw new Error(`${aba} seção 2: blocos sem detalhe do pregão: ${semDetalhe.join(", ")}`);
+  return semVazioNemRepetido(out, (x) => `${x.procedimento}/${x.bloco}`, "blocos legais");
+}
+
+function numOuNull(n: number | null): string {
+  return n === null ? "null" : String(n);
+}
+
+function arrOuNull(a: string[] | null): string {
+  return a === null ? "null" : `array[${a.map(lit).join(", ")}]::text[]`;
+}
+
+// on conflict ... do update: a planilha versionada é a fonte. Bloco que sair da planilha não é apagado aqui.
+export function gerarSeedBlocosSql(blocos: BlocoLegal[]): string {
+  const v = blocos.map((x) =>
+    `  (${lit(x.regime_id)}, ${lit(x.procedimento)}, ${lit(x.bloco)}, ${x.ordem}, ${lit(x.status)}, ` +
+    `${numOuNull(x.prazo_quantidade)}, ${litOuNull(x.prazo_unidade)}, ${litOuNull(x.prazo_sentido)}, ` +
+    `${litOuNull(x.prazo_ancora)}, ${lit(x.confianca)}, ${litOuNull(x.condicao)}, ${litOuNull(x.base_legal)}, ` +
+    `${litOuNull(x.parte_obrigada)}, ${arrOuNull(x.temas_rag)}, ${litOuNull(x.variacoes)})`
+  ).join(",\n");
+  return [
+    MARCA_BLOCOS_INICIO,
+    "insert into public.blocos_legais (regime_id, procedimento, bloco, ordem, status, prazo_quantidade, prazo_unidade,",
+    "  prazo_sentido, prazo_ancora, confianca, condicao, base_legal, parte_obrigada, temas_rag, variacoes) values",
+    v,
+    "on conflict (regime_id, procedimento, bloco) do update set ordem = excluded.ordem, status = excluded.status,",
+    "  prazo_quantidade = excluded.prazo_quantidade, prazo_unidade = excluded.prazo_unidade,",
+    "  prazo_sentido = excluded.prazo_sentido, prazo_ancora = excluded.prazo_ancora, confianca = excluded.confianca,",
+    "  condicao = excluded.condicao, base_legal = excluded.base_legal, parte_obrigada = excluded.parte_obrigada,",
+    "  temas_rag = excluded.temas_rag, variacoes = excluded.variacoes, atualizado_em = now();",
+    MARCA_BLOCOS_FIM,
+  ].join("\n");
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Spec 0042: tarefas padrão por etapa NX (o que nasce no tenant novo)
+// ---------------------------------------------------------------------------------------------------------------
+export const MARCA_ETAPA_TAREFAS_INICIO =
+  "-- >>> gerado por scripts/import-spec.ts --bloco=etapa-tarefas: não editar à mão";
+export const MARCA_ETAPA_TAREFAS_FIM = "-- <<< fim do bloco gerado (tarefas padrão por etapa NX)";
+
+export type EtapaTarefa = {
+  etapa_codigo: string;
+  tarefa_codigo: string;
+  apelido: string;
+  ordem: number;
+};
+
+/**
+ * Tarefas_Default (etapa_gatilho de cada NX-T) + Pipeline_Etapas (tarefas_padrao de cada etapa, na ordem): as duas abas
+ * têm de listar as mesmas tarefas por etapa. O código vem do modelo NX ou, para os apelidos, do de-para aprovado com a
+ * 14.133 (NX-T18 = dois modelos). Código reservado não entra.
+ */
+export function lerEtapaTarefasPadrao(wb: XLSX.WorkBook): EtapaTarefa[] {
+  const { etapas, modelos } = lerModelosNx(wb);
+  const etapaPorNome = new Map(etapas.map((e) => [e.nome, e.codigo]));
+  const codigoNx = new Map(modelos.map((m) => [m.curto, m.codigo]));
+
+  const td = linhas(wb, "Tarefas_Default");
+  exigirCabecalho(td[0] ?? [], 0, ["codigo", "etapa_gatilho"], "Tarefas_Default");
+  const etapaDaTarefa = new Map<string, string>();
+  for (let i = 1; i < td.length && texto(td[i][0]); i++) {
+    const curto = texto(td[i][0]);
+    if (RESERVADOS.has(curto)) continue;
+    const etapa = etapaPorNome.get(texto(td[i][1]));
+    if (!etapa) throw new Error(`Tarefas_Default ${celula(i, 1)}: etapa "${texto(td[i][1])}" não está nas etapas NX`);
+    etapaDaTarefa.set(curto, etapa);
+  }
+
+  const pe = linhas(wb, "Pipeline_Etapas");
+  exigirCabecalho(pe[0] ?? [], 0, ["ordem", "grupo", "coluna_nova", "coluna_atual", "tarefas_padrao"], "Pipeline_Etapas");
+  const out: EtapaTarefa[] = [];
+  const vistas = new Set<string>();
+  for (let i = 1; i < pe.length && typeof pe[i][0] === "number"; i++) {
+    const etapa = etapaPorNome.get(texto(pe[i][2]));
+    if (!etapa) throw new Error(`Pipeline_Etapas ${celula(i, 2)}: etapa "${texto(pe[i][2])}" não está nas etapas NX`);
+    const lista = [...new Set(texto(pe[i][4]).match(/NX-T\d{2}/g) ?? [])].filter((c) => !RESERVADOS.has(c));
+    const daTd = [...etapaDaTarefa].filter(([, e]) => e === etapa).map(([c]) => c);
+    if ([...lista].sort().join() !== [...daTd].sort().join()) {
+      throw new Error(
+        `etapa ${etapa}: Pipeline_Etapas lista [${lista.join(", ")}] e Tarefas_Default tem [${daTd.join(", ")}]`,
+      );
+    }
+    lista.forEach((curto, k) => {
+      const codigos = DE_PARA_14133[curto] ?? [codigoNx.get(curto)];
+      codigos.forEach((tarefa_codigo, j) => {
+        if (!tarefa_codigo) throw new Error(`${curto}: sem modelo NX nem de-para 14.133`);
+        out.push({ etapa_codigo: etapa, tarefa_codigo, apelido: curto, ordem: (k + 1) * 10 + j });
+      });
+      vistas.add(curto);
+    });
+  }
+  const fora = [...etapaDaTarefa.keys()].filter((c) => !vistas.has(c));
+  if (fora.length) throw new Error(`tarefas sem etapa na Pipeline_Etapas: ${fora.join(", ")}`);
+  return semVazioNemRepetido(out, (x) => `${x.etapa_codigo}/${x.tarefa_codigo}`, "tarefas padrão por etapa");
+}
+
+// on conflict ... do update: a planilha é a fonte. Tarefa que sair da planilha não é apagada aqui.
+export function gerarSeedEtapaTarefasSql(linhasEt: EtapaTarefa[]): string {
+  const v = linhasEt.map((x) =>
+    `  (${lit(x.etapa_codigo)}, ${lit(x.tarefa_codigo)}, ${lit(x.apelido)}, ${x.ordem})`
+  ).join(",\n");
+  return [
+    MARCA_ETAPA_TAREFAS_INICIO,
+    "insert into public.nexor_etapa_tarefas_padrao (etapa_codigo, tarefa_codigo, apelido, ordem) values",
+    v,
+    "on conflict (etapa_codigo, tarefa_codigo) do update set apelido = excluded.apelido, ordem = excluded.ordem;",
+    MARCA_ETAPA_TAREFAS_FIM,
+  ].join("\n");
+}
+
 if (import.meta.main) {
+  const BLOCOS = ["--bloco=feriados", "--bloco=modelos", "--bloco=blocos", "--bloco=etapa-tarefas"];
   const flags = Deno.args.filter((a) => a.startsWith("--"));
-  const desconhecidas = flags.filter((f) =>
-    f !== "--bloco=modelos" && f !== "--bloco=feriados"
-  );
+  const desconhecidas = flags.filter((f) => !BLOCOS.includes(f));
   if (desconhecidas.length) {
-    console.error(
-      `opção desconhecida: ${
-        desconhecidas.join(" ")
-      } (use --bloco=feriados ou --bloco=modelos)`,
-    );
+    console.error(`opção desconhecida: ${desconhecidas.join(" ")} (use ${BLOCOS.join(", ")})`);
     Deno.exit(2);
   }
   const args = Deno.args.filter((a) => !a.startsWith("--"));
@@ -774,5 +1105,9 @@ if (import.meta.main) {
   const wb = lerPlanilha(caminho);
   if (flags.includes("--bloco=modelos")) {
     console.log(gerarSeedModelosSql(lerModelosNx(wb)));
+  } else if (flags.includes("--bloco=blocos")) {
+    console.log(gerarSeedBlocosSql(lerBlocosLegais(wb)));
+  } else if (flags.includes("--bloco=etapa-tarefas")) {
+    console.log(gerarSeedEtapaTarefasSql(lerEtapaTarefasPadrao(wb)));
   } else console.log(gerarSeedSql(lerFeriados(wb), lerRegimes(wb)));
 }

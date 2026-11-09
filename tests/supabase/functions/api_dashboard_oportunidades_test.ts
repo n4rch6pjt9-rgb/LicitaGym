@@ -26,6 +26,7 @@ import {
   OPORTUNIDADES_COLUMNS,
   OPORTUNIDADES_VIEW,
   PUBLIC_LICITACAO_COLUMNS,
+  RESUMO_CATEGORIAS_VALOR,
 } from "../../../supabase/functions/api-dashboard-oportunidades/index.ts";
 
 // Helper mock para testar montagem de query em applyLicitacaoFilters
@@ -2052,4 +2053,20 @@ Deno.test("0050 CA-5: resumo_executivo informa que o valor soma só os itens no 
   const body = await res.json();
   assertEquals(body.criterio_valor, "itens_no_escopo");
   assertEquals(body.categorias_valor, ["forte", "catmat", "borracha", "piso", "obra_piso"]);
+});
+
+Deno.test("0050 CA-5: categorias_valor da API são as mesmas que a última migration de dashboard_resumo_executivo soma", async () => {
+  const pasta = new URL("../../../supabase/migrations/", import.meta.url);
+  const nomes: string[] = [];
+  for await (const e of Deno.readDir(pasta)) if (e.isFile && /^\d{14}_.*\.sql$/.test(e.name)) nomes.push(e.name);
+  nomes.sort();
+  let ultima = "";
+  for (const nome of nomes) {
+    const sql = await Deno.readTextFile(new URL(nome, pasta));
+    if (/create or replace function public\.dashboard_resumo_executivo\(/i.test(sql)) ultima = sql;
+  }
+  const m = ultima.match(/categoria_escopo in \(([^)]*)\)/i);
+  if (!m) throw new Error("a última migration de dashboard_resumo_executivo não filtra categoria_escopo in (...)");
+  const doSql = m[1].split(",").map((s) => s.trim().replace(/^'|'$/g, "")).sort();
+  assertEquals(doSql, [...RESUMO_CATEGORIAS_VALOR].sort());
 });

@@ -238,8 +238,10 @@ begin
     end if;
     -- 0050 CA-1: as cinco categorias que contam.
     select * into r from public.dashboard_resumo_executivo(array[v_x4], v_agora);
-    if r.valor_potencial_total is distinct from 31.00::numeric then
-      raise exception '0050 CA-1 FALHOU: categorias que contam somaram % (esperado 31.00)', r.valor_potencial_total;
+    if r.valor_potencial_total is distinct from 31.00::numeric or r.monitoradas_total is distinct from 1::bigint
+       or r.com_valor_total is distinct from 1::bigint then
+      raise exception '0050 CA-1 FALHOU: categorias que contam somaram % (esperado 31.00; monitoradas % e com_valor % esperado 1)',
+        r.valor_potencial_total, r.monitoradas_total, r.com_valor_total;
     end if;
 
     -- 0050 CA-2: nenhum item que conta com valor -> soma null, com_valor 0, contagens inalteradas.
@@ -262,8 +264,10 @@ begin
     begin
       perform set_config('role', 'service_role', true);
       select * into r from public.dashboard_resumo_executivo(array[v_l1], v_agora);
-      if r.leads_total is distinct from 1::bigint then
-        raise exception 'CA-3 FALHOU: service_role não leu o lead de teste (leads_total=%)', r.leads_total;
+      -- 0050: com security invoker, o service_role também precisa ler licitacao_itens para somar o valor.
+      if r.leads_total is distinct from 1::bigint or r.valor_potencial_total is distinct from 1000.00::numeric then
+        raise exception 'CA-3 FALHOU: service_role não leu o lead/itens de teste (leads_total=%, valor=%)',
+          r.leads_total, r.valor_potencial_total;
       end if;
       perform set_config('role', 'none', true);
     end;

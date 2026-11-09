@@ -63,6 +63,8 @@ as $$
       from public.licitacao_itens i
       join escopo e on e.id = i.licitacao_id
      where i.categoria_escopo in ('forte', 'catmat', 'borracha', 'piso', 'obra_piso')
+       -- Sem este filtro, certame só com item sem valor geraria linha com soma NULL; com ele, não gera linha e
+       -- count(v.valor) conta só quem tem valor.
        and i.valor_total_estimado is not null
      group by i.licitacao_id
   )

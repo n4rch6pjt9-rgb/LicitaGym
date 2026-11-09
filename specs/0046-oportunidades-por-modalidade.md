@@ -42,6 +42,8 @@
   na coluna; a mesma informação não se repete em campos diferentes.
 - **A lista aproveita melhor a tabela:** entram colunas como UASG e valor previsto. Revê a decisão de 07/11/2026
   ("valor fica no detalhe", comentário em `OpportunityListView.tsx`).
+- **A coluna do código da unidade se chama "Unidade (código)", não "UASG"**: no PNCP o `unidade_codigo` só é UASG
+  quando a unidade é do SIASG.
 
 ## Problema
 
@@ -102,8 +104,8 @@ nem da view.
 | K-8 | Dashboard: Oportunidades com abas Credenciamento, Pregão, Dispensa, Histórico – Homologados; filtro de tipo de disputa dentro da aba; aba e filtro na URL; colunas da lista revistas (proposta abaixo) | resposta de K-2 e K-4 | estados carregando, vazio e erro explícitos por aba; valor ou código ausente aparece como "não informado", nunca zero | — | usuário autenticado |
 
 **Proposta de colunas (K-8), para o Marcelo validar (pergunta 6):** Nº (`numero_compra_rotulo`, com o processo no
-`title`) · Órgão licitante · Objeto (canônico, sem "CREDENCIAMENTO") · Valor previsto (`valor_total`) · UASG/código da
-unidade (`unidade_codigo`) · UF · Prazo · Pipeline. A coluna Modalidade sai (a aba já diz); em Pregão e Concorrência
+`title`) · Órgão licitante · Objeto (canônico, sem "CREDENCIAMENTO") · Valor previsto (`valor_total`) · Unidade (código)
+(`unidade_codigo`) · UF · Prazo · Pipeline. A coluna Modalidade sai (a aba já diz); em Pregão e Concorrência
 a forma (Eletrônico/Presencial) ou o tipo de disputa podem ocupar o lugar dela (pergunta 5). Celular: cards, como hoje.
 
 Contrato com o Dashboard: **muda** (parâmetros `aba` e `modo_disputa`; campos `modalidade_grupo`, `modo_disputa`,
@@ -122,7 +124,7 @@ Contrato com o Dashboard: **muda** (parâmetros `aba` e `modo_disputa`; campos `
 | CA-6 | K-2 | **Dado** `list` sem `aba`, **quando** chamada como hoje, **então** as linhas e o total são os atuais (leads+monitorar canônicas). Regressão do contrato. | Deno `tests/supabase/functions/api_dashboard_oportunidades_test.ts` |
 | CA-7 | K-4 | **Dado** (`numero`="6", `ano`="2026"), (`numero`="05/2025", `ano`="2025"), linha sem `numero_compra` com `numero_edital`="Pregão - Eletrônico nº 40 \| Processo 2587/2026", e linha sem nada, **quando** `rotuloNumeroCompra` roda, **então** devolve "6/2026", "05/2025", "40" e NULL; `numero_edital` não é alterado. Regressão do ano duplicado. | Deno `tests/supabase/functions/api_dashboard_oportunidades_rotulo_test.ts` |
 | CA-8 | K-5 | **Dado** objeto "CREDENCIAMENTO PARA AQUISIÇÃO DE MATERIAL DE EXPEDIENTE" (caso id 125), **quando** a migration roda e `objeto_reclassificar()` termina, **então** `objeto_categoria` deixa de ser `credenciamento` e a migration é idempotente (rodar duas vezes dá o mesmo resultado). | SQL `supabase/tests/oportunidades_modalidade_check.sql` + skill `validar-migrations` |
-| CA-9 | K-8 | **Dado** a tela de Oportunidades, **quando** o usuário abre a aba Credenciamento e escolhe um tipo de disputa, **então** a URL guarda os dois, a lista chama `aba=credenciamento&modo_disputa=...`, o rótulo mostra só o número, não há coluna Modalidade, valor e UASG ausentes aparecem como "não informado" e a aba vazia mostra estado vazio explícito. | vitest `src/test/oportunidades-abas-modalidade.test.tsx` (Dashboard) |
+| CA-9 | K-8 | **Dado** a tela de Oportunidades, **quando** o usuário abre a aba Credenciamento e escolhe um tipo de disputa, **então** a URL guarda os dois, a lista chama `aba=credenciamento&modo_disputa=...`, o rótulo mostra só o número, não há coluna Modalidade, a coluna do código se chama "Unidade (código)", valor e código ausentes aparecem como "não informado" e a aba vazia mostra estado vazio explícito. | vitest `src/test/oportunidades-abas-modalidade.test.tsx` (Dashboard) |
 
 Tenant: `licitacoes_externas` não tem `tenant_id` (dado público compartilhado); a spec não muda auth, ACL nem
 `service_role`. O CA negativo de acesso é o 401 do CA-5.
@@ -152,7 +154,7 @@ Tenant: `licitacoes_externas` não tem `tenant_id` (dado público compartilhado)
 - Apagar ou arquivar linhas depois de 90 dias: a janela é só da aba; banco e BI ficam como estão.
 - Regravar `numero_edital` no banco ou mudar a montagem do rótulo no coletor (o rótulo novo é derivado na API).
 - Abas para Inexigibilidade, Leilão e Pré-qualificação, salvo o que a pergunta 2 decidir.
-- UASG do Sistema S (não há código de unidade nessas fontes): aparece "não informado".
+- Código da unidade do Sistema S (não existe nessas fontes): aparece "não informado".
 - **Filtros inteligentes multirrota** (`api-metadados`, `src/filtros/`, FilterBar, visões salvas; consolidação de
   28/10/2026 citada pelo Marcelo): frente própria. Esta spec só acrescenta `aba` e `modo_disputa` ao filtro atual de
   Oportunidades, sem criar um sistema de filtros paralelo; se aquela frente já tiver `filtros_aplicados`/`ignorados[]`
@@ -186,11 +188,9 @@ Tenant: `licitacoes_externas` não tem `tenant_id` (dado público compartilhado)
    material vira oportunidade? Ou todo credenciamento entra?
 5. **Tipo de disputa:** o filtro usa o modo de disputa do PNCP (Aberto, Aberto-Fechado, Fechado-Aberto, Fechado,
    Dispensa Com Disputa, Não se aplica) ou a forma (Eletrônico/Presencial, hoje dentro do nome da modalidade)?
-6. **Colunas:** a proposta (Nº, Órgão, Objeto, Valor previsto, UASG/código da unidade, UF, Prazo, Pipeline) atende?
+6. **Colunas:** a proposta (Nº, Órgão, Objeto, Valor previsto, Unidade (código), UF, Prazo, Pipeline) atende?
    Algo mais entra (município, data de abertura, registro de preço)?
 7. **Objeto canônico:** desativar a categoria `credenciamento` vale para todas as 44 linhas (inclusive `historico`
    e NULL), mudando também o que o BI mostra como objeto?
-8. **UASG x código da unidade:** no PNCP, `unidade_codigo` só é UASG quando a unidade é do SIASG. A coluna se chama
-   "UASG" mesmo assim, ou "Unidade (código)"?
-9. **90 dias como decisão:** o código só cita uma regra antiga de 120 dias (`backfill_prioridade_pncp.py`, docstring,
+8. **90 dias como decisão:** o código só cita uma regra antiga de 120 dias (`backfill_prioridade_pncp.py`, docstring,
    já substituída). Registro os 90 dias como decisão nova de 09/11/2026?

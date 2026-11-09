@@ -19,7 +19,7 @@ Fornecedor de equipamentos de musculação que disputa licitações públicas. C
 
 | # | Módulo | O que entrega | Specs | Situação |
 |---|---|---|---|---|
-| 1 | Radar de oportunidades | licitações abertas aderentes ao catálogo de produtos do tenant, julgadas pelo texto do TR (CATMAT como apoio), com prioridade | 0006, 0023–0030 | no ar, em ajuste |
+| 1 | Radar de oportunidades | licitações abertas aderentes ao catálogo de produtos do tenant, julgadas pelo texto do TR (CATMAT como apoio), com prioridade | 0006, 0023–0030; 0040 e 0048 (marca NEXOR e números do painel calculados no servidor; exceção à regra de foco, 09/11) | no ar, em ajuste |
 | 2 | Pipeline e tarefas | etapas por tenant, tarefas padrão por etapa e por certame | 0017–0019 | no ar |
 | 3 | **Agentes na tarefa** | edital (com aderência), preço, jurídico dentro do cartão da tarefa | **0032** (fases 1–4); 0044 (legislação curada: corpus versionado e vigilância do texto oficial dos artigos citados; insumo da fase 4) | **agora** |
 | 4 | Proposta | marca, modelo e preço por item, guardados na etapa Proposta | (spec a criar) | próximo |
@@ -68,6 +68,7 @@ Detalhe em `AGENTS.md`.
 | 08/11 | **Legislação é corpus curado, não sync.** O sync semanal de legislação é aposentado (raspava páginas-índice e gravava links de navegação; ninguém consumia). O texto dos artigos que o jurídico cita (`norma_dispositivos`) é vigiado por um verificador trimestral no Cloud Run, só com aviso no log (spec 0044) |
 | 09/11 | Visões salvas de filtro são **por usuário** (substitui a decisão de 20/10) |
 | 09/11 | Órgãos e fornecedores continuam numa rota só (`/crm/organizacoes`), com revisão de código e design: o detalhe precisa levar ao certame (oportunidade e portal oficial) |
+| 09/11 | **Painel Executivo e marca NEXOR fora da regra de foco.** A 0040 sai de `parada` e a 0048 calcula no servidor os números do painel (KPIs, funil, prazos, leads). "Alta aderência" sai do painel até haver aderência pelo TR; o bloco de saúde é só para admin da plataforma |
 
 ## Decisões pendentes
 <!-- Itens que estavam como CONFIRMAR no CLAUDE.md antigo. Resolvido → vai para "Decisões registradas" e para

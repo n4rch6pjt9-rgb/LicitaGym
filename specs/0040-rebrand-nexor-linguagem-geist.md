@@ -1,6 +1,7 @@
 # 0040: Aplicar a marca NEXOR Licitações e a linguagem visual do Geist ao Dashboard
 
-- **Status:** parada (não alimenta fase da 0032; ver "Perguntas em aberto", P1)
+- **Status:** rascunho (saiu de `parada` por decisão do Marcelo em 09/11/2026: exceção à regra de foco; o painel
+  executivo segue na spec 0048)
 - **Alimenta:** nenhuma fase da 0032 e nenhum módulo de `docs/produto/ESCOPO.md` (linha proposta ao fim da spec)
 - **Repositório:** Dashboard (worktree `C:\Users\marce\dash-rebrand-nexor`, branch `feat/rebrand-nexor`, sem push)
 - **Issue:** nenhuma

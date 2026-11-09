@@ -1,9 +1,8 @@
 # 0049: Ler a busca do PNCP (editais e atas) como segunda rota do detalhe quando a Consulta cai
 
-- **Status:** rascunho
-- **Alimenta:** módulo 1 (Radar de oportunidades, "no ar, em ajuste") de `docs/produto/ESCOPO.md`. **Não** alimenta
-  fase da 0032: pela regra de foco fica `parada` até o Marcelo decidir se abre exceção, como fez com a 0040 e a 0048
-  (ver Perguntas em aberto).
+- **Status:** em implementação
+- **Alimenta:** módulo 1 (Radar de oportunidades, "no ar, em ajuste") de `docs/produto/ESCOPO.md`. Não é fase da
+  0032: exceção à regra de foco aprovada pelo Marcelo em 09/11/2026 (como 0040 e 0048).
 - **Repositório:** os dois (backend vai ao ar antes do front)
 - **Issue:** nenhuma
 - **Área:** pncp, edge-functions, dashboard-contrato, dashboard-tela
@@ -166,17 +165,13 @@ compra já está no Radar e com qual classificação. Isso é uma spec inteira (
 
 ## Decisões do Marcelo
 
-- (vazio)
+- 09/11/2026: spec aprovada como estava ("Aprovar e implementar"). Com isso:
+  1. Exceção à regra de foco: sim (implementar agora).
+  2. Até 2 tentativas na busca, só para queda de conexão sem HTTP, 5 s cada, só quando a 1ª fonte já falhou.
+  3. Atas pela busca aparecem sem fornecedor e sem valor, com o aviso de origem.
+  4. Campos aditivos sem parâmetro de ativação: o front antigo convive um ciclo (o `erro` do PNCP segue na seção).
+  5. Tela de pesquisa na sidebar: spec própria, `parada` (fora desta).
 
 ## Perguntas em aberto
 
-1. **Regra de foco:** abrir exceção para esta spec (como 0040/0048), ou fica `parada`?
-2. **Retry no caminho interativo:** o detalhe hoje faz 1 tentativa por endpoint (`PNCP_DETALHE_OPCOES`, para não
-   ocupar o lease). A busca cai ≈ 63 % das vezes; com 1 tentativa o fallback falharia na maioria. Aceita até 2
-   tentativas só para queda de conexão (sem HTTP), timeout de 5 s cada, só quando a Consulta já falhou?
-3. **Atas pela busca vêm sem fornecedor e sem valor.** Mostrar assim (com o aviso) ou manter Atas em erro quando a
-   `/api/pncp/v1` cai?
-4. **Front antigo por um ciclo:** entre o deploy do backend e o do Dashboard, o Resumo pode aparecer com dados da busca
-   sem o aviso de origem. Aceita, ou o backend só envia `origem="busca_pncp"` atrás de um parâmetro que o front novo
-   manda (`fontes=busca`)?
-5. **Tela de pesquisa na sidebar:** concorda com a recomendação (spec própria `parada`)?
+- (nenhuma)

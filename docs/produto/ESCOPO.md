@@ -19,7 +19,7 @@ Fornecedor de equipamentos de musculação que disputa licitações públicas. C
 
 | # | Módulo | O que entrega | Specs | Situação |
 |---|---|---|---|---|
-| 1 | Radar de oportunidades | licitações abertas aderentes ao catálogo de produtos do tenant, julgadas pelo texto do TR (CATMAT como apoio), com prioridade | 0006, 0023–0030; 0040 e 0048 (marca NEXOR e números do painel calculados no servidor; exceção à regra de foco, 09/11) | no ar, em ajuste |
+| 1 | Radar de oportunidades | licitações abertas aderentes ao catálogo de produtos do tenant, julgadas pelo texto do TR (CATMAT como apoio), com prioridade | 0006, 0023–0030; 0040 e 0048 (marca NEXOR e números do painel calculados no servidor; exceção à regra de foco, 09/11); 0049 (busca do PNCP como 2ª fonte do detalhe quando a Consulta cai; exceção, 09/11) | no ar, em ajuste |
 | 2 | Pipeline e tarefas | etapas por tenant, tarefas padrão por etapa e por certame | 0017–0019 | no ar |
 | 3 | **Agentes na tarefa** | edital (com aderência), preço, jurídico dentro do cartão da tarefa | **0032** (fases 1–4); 0044 (legislação curada: corpus versionado e vigilância do texto oficial dos artigos citados; insumo da fase 4) | **agora** |
 | 4 | Proposta | marca, modelo e preço por item, guardados na etapa Proposta | (spec a criar) | próximo |

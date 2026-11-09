@@ -154,6 +154,21 @@ const { data } = await supabase.storage.from(doc.bucket).createSignedUrl(doc.cam
 
 Migração: `supabase/migrations/20260929140000_documentos_no_licitagym.sql` (aplicada pela integração Supabase no merge) (bucket + policy de leitura para `authenticated`, colunas de histórico, `portal_visitante`, view e o cadastro das fontes Paradigma que faltavam em `fontes_externas`).
 
+## Catálogo de produtos Paradigma por categoria (08/11/2026)
+
+`coletor/catalogo_paradigma.py` exporta o catálogo público de um portal Paradigma (tela `CatalogoProdutos.aspx`) por
+categoria, com o **código interno da entidade** (`sCdProdutoEmpresa`, ex.: Sesc DN `310031041500001`). Usa o cliente
+`PortalParadigma` (mesmo intervalo, 429 com `Retry-After`, 401/403 encerram, faixas de até 100). Só leitura, sem login,
+sem gravar no banco. A categoria vai por código (`PT030`) ou nome exato; categoria inexistente dá erro.
+
+```bash
+python -m coletor.catalogo_paradigma --fonte sescdn --categorias "PT030;ES1205" --saida /fora/do/repo/catalogo.csv
+```
+
+Saída `.csv` (`;`, UTF-8 com BOM) ou `.json`, com `codigo_sesc`, `descricao`, `tipo`, `categoria`, `id_categoria`,
+`id_produto` e `fonte`. É dado de coleta: grave fora do repositório. Em 08/11/2026 o Sesc DN tinha 52 produtos em
+`PT030 - EQUIP CONDICIONAMENTO FISICO` e 79 em `ES1205 - EQUIP E MAT ESPORTIVO`.
+
 ## Coletor Sistema S — adaptador Paradigma (v15, 26/09/2026)
 
 Novidades sobre a v14 (validado ao vivo na SFIEC, PE000652022):

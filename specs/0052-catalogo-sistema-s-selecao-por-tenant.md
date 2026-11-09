@@ -2,7 +2,7 @@
 
 - **Status:** rascunho (plano; aguarda as respostas das perguntas em aberto)
 - **Alimenta:** spec-mãe 0032, fase 3 (agentes de edital e de preço ancorados no produto) e o filtro de oportunidades
-  do Sistema S. Estende a `specs/0050-catalogo-sistema-s-de-para-catmat.md` (K-1 e K-3 dela viram a base daqui) e usa
+  do Sistema S. Estende a `specs/0053-catalogo-sistema-s-de-para-catmat.md` (K-1 e K-3 dela viram a base daqui) e usa
   o estudo da `specs/0051-estudo-murais-sistema-s.md`.
 - **Repositório:** os dois (backend vai ao ar antes do front)
 - **Issue:** nenhuma
@@ -21,7 +21,7 @@ que vende.
 
 | # | Arquivo | Por quê |
 |---|---|---|
-| 1 | `specs/0050-catalogo-sistema-s-de-para-catmat.md`, `specs/0051-estudo-murais-sistema-s.md`, `specs/murais_sistema_s.xlsx` | tabelas de produto e de-para já desenhadas; o que cada mural expõe |
+| 1 | `specs/0053-catalogo-sistema-s-de-para-catmat.md`, `specs/0051-estudo-murais-sistema-s.md`, `specs/murais_sistema_s.xlsx` | tabelas de produto e de-para já desenhadas; o que cada mural expõe |
 | 2 | `supabase/migrations/20260930100000_catalogo_empresa_catmat.sql` | modelo a copiar: regra por nível, herança para baixo, `incluido = false` exclui nó herdado, `chave` gerada |
 | 3 | `supabase/functions/api-catmat/` | navegação da árvore e registro de nó pelo admin (padrão da API nova) |
 | 4 | `specs/0033-tenant-explicito.md` (Fora de escopo, item 6), `specs/0024-syncs-nacionais-catalogo-cron.md` (decisão 5) | `catalogo_empresa_catmat` sem `tenant_id` já está anotado como pendência |
@@ -40,10 +40,10 @@ que vende.
 | Com nome fixo, o catálogo de um portal some calado | FIEB: as categorias padrão "EQUIPAMENTOS ESPORTIVOS" e "ESPORTIVO" não existem lá; `produtos_escopo()` devolveu 0 produtos (o aviso do #494 apareceu). FIEMS e FIEMT ficaram com 0 pelo mesmo motivo até o #493 |
 | A árvore de cada portal é Classe → Produto, com id de classe próprio | FIEB, `PesquisarCatalogoProdutoClasses`: "ACADEMIA" → 226 EQUIPAMENTOS PARA ACADEMIA, 391 e 446 (manutenção/reforma); "ESPORT" → 401, 192 MATERIAL ESPORTIVO, 458 UNIFORMES |
 | Tamanho das classes varia muito | FIEB: classe 226 = 123 produtos (todos tipo produto), 192 = 1.031, 401 = 0 |
-| Cada portal tem a própria árvore | Sesc DN usa código de classe (`PT030`, `ES1205`; 131 produtos, 0050); FIEMS classe 20; FIEMT classes 9, 91, 172, 191 |
+| Cada portal tem a própria árvore | Sesc DN usa código de classe (`PT030`, `ES1205`; 131 produtos, 0053); FIEMS classe 20; FIEMT classes 9, 91, 172, 191 |
 | O item da licitação já aponta para o produto do catálogo | `licitacao_itens.raw.nCdProduto` nas fontes Paradigma: produtos distintos por fonte — fieb 420, sesc_senac_rs 293, fiergs 240, firjan 191, sescsp 170, sestsenat 120, sescba 114, sescrj 93, sfiec 84, fiesc 13, findes 0 (6 itens) |
 | O item não traz a classe | 0 itens com `raw.nCdClasse` em todas as fontes: a classe do item só sai do catálogo (pelo `nCdProduto`) |
-| O id do produto só vale dentro do portal | ids iguais entre portais são coincidência (0050, "Problema") |
+| O id do produto só vale dentro do portal | ids iguais entre portais são coincidência (0053, "Problema") |
 | Se o código interno (`sCdProdutoEmpresa`) tem hierarquia (prefixo = grupo) | não medido (FIEMS `003.00045`, FIEMT 15 dígitos, Sesc DN 15 dígitos sugerem que sim) |
 
 ## Modelo proposto (equivalência com o CATMAT)
@@ -52,8 +52,8 @@ que vende.
 |---|---|---|
 | Grupo | Portal (`fontes_externas.slug`) | já existe |
 | Classe | Classe do catálogo do portal (`nCdClasse`, `sDsClasse`) | K-1 (nova) |
-| PDM | não existe no Paradigma; o papel é feito pelo de-para com o PDM CATMAT | K-3 (0050) |
-| Item | Produto (`nCdProduto`, `sCdProdutoEmpresa`, descrição, tipo) | K-2 (0050 K-1, com FK para a classe) |
+| PDM | não existe no Paradigma; o papel é feito pelo de-para com o PDM CATMAT | K-3 (0053) |
+| Item | Produto (`nCdProduto`, `sCdProdutoEmpresa`, descrição, tipo) | K-2 (0053 K-1, com FK para a classe) |
 | `catalogo_empresa_catmat` | Seleção do tenant por nível (portal, classe, produto), com herança e exclusão | K-4 (nova) |
 
 ## Contrato
@@ -61,13 +61,13 @@ que vende.
 | ID | Contrato | Entrada | Saída | Erros | Quem |
 |---|---|---|---|---|---|
 | K-1 | Tabela `public.sistema_s_catalogo_classes` (migration) | — | uma linha por (`fonte`, `id_classe_fonte`): `nome`, `codigo` (quando o portal tem, ex. `PT030`), `primeira_coleta_em`, `ultima_coleta_em`, `qtd_produtos` da última coleta | — | RLS sem policy; só `service_role` |
-| K-2 | Tabela de produtos da 0050 (K-1 de lá) com FK (`fonte`, `id_classe_fonte`) para K-1 | — | como na 0050 | — | idem |
-| K-3 | De-para produto ↔ CATMAT (0050 K-3 e K-4) | — | como na 0050 | — | idem |
+| K-2 | Tabela de produtos da 0053 (K-1 de lá) com FK (`fonte`, `id_classe_fonte`) para K-1 | — | como na 0053 | — | idem |
+| K-3 | De-para produto ↔ CATMAT (0053 K-3 e K-4) | — | como na 0053 | — | idem |
 | K-4 | Tabela `public.catalogo_tenant_sistema_s` (migration) | — | regras por tenant: `tenant_id`, `nivel` (`portal`, `classe`, `produto`), `fonte`, `id_classe_fonte`, `id_produto_fonte`, `incluido`, `nome_snapshot`, `observacao`, autoria e datas; `chave` única por tenant | combinação de nível inválida → `check_violation` | RLS ligada; escrita e leitura só pela API (K-6) |
 | K-5 | Função `public.sistema_s_produtos_efetivos(p_tenant uuid)` | tenant | produtos incluídos pela herança (portal → classe → produto), descontadas as exclusões | tenant inexistente → erro | `service_role` |
 | K-6 | Edge Function `api-catalogo-sistema-s` (ações `arvore`, `registrar`, `remover`, `listar_regras`) | portal/classe para navegar; nó para registrar | árvore com contagem de produtos e marcação do tenant | sem vínculo ou empresa desativada → 403; papel `operacao` → 403 em `registrar`/`remover`; nó que não existe em K-1/K-2 → 400 | `await requireUserAuth` + `_shared/tenant.ts`; admin do tenant grava |
 | K-7 | Coletor: categorias por fonte vindas do banco | união das classes marcadas por algum tenant ativo (K-4) | `produtos_escopo` usa as classes de K-1 por **id**, não por nome; `CATEGORIAS_POR_FONTE` vira só semente da primeira carga | nenhuma classe marcada para a fonte → aviso e coleta só por texto (como hoje), nunca catálogo vazio calado | coletor (`service_role`) |
-| K-8 | Coleta da árvore (estende o `catalogo_paradigma.py` da 0050 K-2) | fonte | grava todas as classes (K-1) e os produtos das classes marcadas por algum tenant (K-2) | aviso de paginação → não grava (regra da 0050) | operador e, depois, cron semanal |
+| K-8 | Coleta da árvore (estende o `catalogo_paradigma.py` da 0053 K-2) | fonte | grava todas as classes (K-1) e os produtos das classes marcadas por algum tenant (K-2) | aviso de paginação → não grava (regra da 0053) | operador e, depois, cron semanal |
 | K-9 | Filtro de oportunidades do Sistema S por tenant | tenant | item de licitação entra quando (`fonte`, `raw.nCdProduto`) está em K-5; senão segue a regra de texto atual | — | `api-dashboard-oportunidades` (filtrando pela empresa de quem chama) |
 | K-10 | Tela "Catálogo Sistema S" no Dashboard (ao lado de `/catmat`) | — | navegar Portal → Classe → Produto, marcar/desmarcar, ver o de-para CATMAT sugerido | estados de carregando, vazio e erro | Dashboard |
 
@@ -202,7 +202,7 @@ compartilhada nem código de referência entre portais. A busca cruzada entre po
 3. **Coletor lê a seleção (K-7).** Some a lista fixa; a classe passa a ser buscada por id. Dry-run antes/depois por
    fonte no PR.
 4. **Filtro de oportunidades (K-9).** O item do Sistema S entra pelo produto; o texto continua como segunda regra.
-5. **De-para CATMAT (K-3, da 0050).** Sugestão determinística e confirmação por SQL.
+5. **De-para CATMAT (K-3, da 0053).** Sugestão determinística e confirmação por SQL.
 6. **Tela (K-10)** no Dashboard, depois do backend publicado.
 
 ## Fora de escopo

@@ -76,19 +76,58 @@ depois que a mudança é vista.
 | B. Supabase Realtime / gatilho no banco | reage a `insert`/`update` em tabela | instantâneo dentro do banco | não enxerga o PNCP; sozinho não resolve nada |
 | **C. Híbrido (proposta)** | (1) **cron de varredura por data de atualização**: a cada N horas, `GET /v1/contratacoes/atualizacao` com a janela desde a última varredura, uma chamada por modalidade e página (≤ 50 por página), e cruza com as compras do banco em `monitorar`; (2) **fila por evento**: compra conhecida que mudou, ou compra nova no escopo já encerrada, entra em `private.job_queue` como "buscar resultados"; (3) um consumidor da fila busca itens/resultados só dessas | custo proporcional ao que mudou, não ao total; acha compra desconhecida pela data de atualização; reaproveita a fila e o lease HTTP que existem | código novo no coletor; depende de o `/atualizacao` refletir a homologação (conferir no `/implement`) |
 
-**Proposta: opção C**, com cron a cada 3 horas entre 06:00 e 23:00 de Brasília (valor inicial, ajustável) para
-garantir D+1 mesmo com uma ou duas execuções falhando. Onde o cron roda (pg_cron chamando Edge Function, GitHub
-Actions ou Cloud Scheduler + Cloud Run Job) é a pergunta 2.
+**Decidido: opção C (híbrido)**, com varredura a cada 3 horas entre 06:00 e 23:00 de Brasília nos dias úteis e uma
+vez por dia no sábado e no domingo (ver "Fim de semana"). A janela de cada varredura começa onde a anterior terminou
+com sucesso, então uma execução que falha não perde nada: a seguinte cobre o mesmo intervalo.
+
+## Onde roda (critério do Marcelo: menor custo)
+
+Medido em 09/11/2026:
+- **pg_cron (Supabase)** já roda 20 jobs; 3 deles conferidos nos últimos 7 dias começaram no segundo agendado (7 de 7,
+  sem atraso). Chama Edge Function por `private.cron_chamar_edge` (timeout padrão 150 s), com o padrão "fila +
+  continuação" já usado em `licitagym-sync-pncp-pca-fila` e `-fila-continuacao` (a cada 10 min das 06h às 07h).
+  Custo marginal: invocações e tempo de Edge Function dentro da cota do plano do Supabase (uso da cota **não medido**).
+- **GitHub Actions:** o repositório é público, então os minutos do runner padrão não são cobrados. Mas o agendado
+  das 06:00 começa entre 12:30 e 16:00 (atraso de 6 a 10 h, medido nos runs de 31/10 a 08/11), o que sozinho já
+  quebra o D+1 de uma homologação da tarde.
+- **Cloud Run Job + Cloud Scheduler:** já existe o Job `coletor-precos`; cobra por uso de vCPU/memória e por job do
+  Scheduler acima da cota gratuita (valores **não medidos**; nenhum preço inventado aqui).
+
+**Proposta (menor custo com horário garantido):**
+1. **Varredura (K-1) e enfileiramento (K-2): Edge Function chamada por pg_cron.** São poucas chamadas HTTP por
+   execução (uma por modalidade e página do `/atualizacao`), cabem em 150 s com continuação, e não custam nada além
+   da cota. Código novo em TypeScript, porque hoje não existe varredura por `/atualizacao` em lugar nenhum.
+2. **Consumidor (K-3): o coletor Python que já existe (`_processar`)**, para não criar uma segunda implementação de
+   itens/resultados (regra do `AGENTS.md`). Roda no GitHub Actions (grátis), disparado por `workflow_dispatch` pela
+   própria Edge Function quando a fila tem job (o disparo manual não sofre o atraso do agendador; **não medido** o
+   tempo até começar), com um agendamento de reserva a cada 3 h.
+3. Se o disparo do GitHub não começar em minutos (medição do `/implement`), o consumidor vai para o Cloud Run Job,
+   aí com custo a medir antes.
+
+## Fim de semana
+
+Medido em 09/11/2026 nas compras PNCP do banco, últimos 365 dias, por dia da semana (horário de Brasília):
+
+| evento | seg | ter | qua | qui | sex | sáb | dom | sáb+dom |
+|---|---|---|---|---|---|---|---|---|
+| publicação (`data_publicacao`) | 553 | 718 | 794 | 842 | 681 | 11 | 11 | 22 de 3.610 (0,6%) |
+| homologação (`data_homologacao`) | 198 | 223 | 246 | 260 | 241 | 3 | 1 | 4 de 1.172 (0,3%) |
+| última atualização no PNCP (`pncp_data_atualizacao`) | 480 | 635 | 715 | 756 | 602 | 9 | 14 | 23 de 3.211 (0,7%) |
+
+Há publicação e homologação no fim de semana, poucas. Por isso: **uma varredura por dia no sábado e no domingo**
+(não a cada 3 h). Como a janela é contínua, nada se perde; o que cair no sábado fica no histórico de preço no
+domingo (D+1). Limite da medição: só compras que estão no banco, e `pncp_data_atualizacao` guarda só a última
+atualização.
 
 ## Contrato
 
 | ID | Contrato | Entrada | Saída | Erros | Quem |
 |---|---|---|---|---|---|
-| K-1 | Varredura por atualização (`coletor.pncp --varrer-atualizacoes --desde <ts>`, nome final no `/implement`) | janela `[desde, agora]`; modalidades do escopo; termos não entram | lista de compras alteradas na janela (id PNCP, `dataAtualizacao`); grava o fim da janela só se todas as páginas responderam | página com erro: a janela não avança (próxima execução repete); nunca vira "nada mudou" | job agendado, `service_role` do ambiente |
+| K-1 | Varredura por atualização (`coletor.pncp --varrer-atualizacoes --desde <ts>`, nome final no `/implement`) | janela `[desde, agora]`; modalidades do escopo; termos não entram | lista de compras alteradas na janela (id PNCP, `dataAtualizacao`); grava o fim da janela só se todas as páginas responderam | página com erro: a janela não avança (próxima execução repete); nunca vira "nada mudou" | Edge Function chamada por pg_cron (`requireCronAuth`) |
 | K-2 | Enfileirar "buscar resultados" | compra alterada que está no banco em `monitorar`/`leads`, ou compra nova no escopo com sinal de encerramento | uma linha em `private.job_queue` por compra (idempotente por compra + `dataAtualizacao`) | — | K-1 |
 | K-3 | Consumidor da fila | job "buscar resultados" | `_processar` da compra (itens + resultados + detalhe); resultado gravado em `licitacao_resultados`; prioridade e fase recalculadas como hoje | API fora: job volta para a fila com backoff (`Retry-After`), compra não é marcada "sem resultado" | job agendado |
 | K-4 | Saúde: `pncp_resultado_atraso` em `private.saude_operacional_resumo()` | compras com `data_homologacao` ≤ D-2 e sem resultado, e janela de K-1 parada há mais de 6 h | contagem + estado `ok`/`alerta`; entra em `SAUDE_VERIFICACOES_ESPERADAS` do `saude.yml` | — | `api-saude`, cron de saúde |
-| K-5 | Agendamento | — | execuções de K-1 e K-3 no horário da pergunta 2, com registro de execução (início, fim, páginas, compras, erros) | execução que estoura o tempo termina como falha visível | infraestrutura escolhida na pergunta 2 |
+| K-5 | Agendamento | — | execuções de K-1 (pg_cron: a cada 3 h das 06h às 23h nos dias úteis, uma vez no sábado e no domingo) e K-3 (disparo pela fila + reserva a cada 3 h), com registro de execução (início, fim, páginas, compras, erros) | execução que estoura o tempo termina como falha visível | pg_cron + GitHub Actions |
 
 ## Critérios de aceite
 
@@ -100,9 +139,11 @@ Actions ou Cloud Scheduler + Cloud Run Job) é a pergunta 2.
 | CA-4 | K-3 | **Dado** job de compra em `monitorar` cujo detalhe e resultados (gravados em fixture) mostram homologação, **quando** o consumidor roda, **então** `licitacao_resultados` recebe as linhas, a prioridade vai para `historico` e o job sai da fila. Regressão do atraso medido. | pytest `services/coletor-externo/tests/test_resultado_d1.py` |
 | CA-5 | K-3 | **Dado** a API de resultados respondendo 429 com `Retry-After`, **quando** o consumidor roda, **então** o job volta para a fila com espera ≥ `Retry-After`, nada é gravado como "sem resultado" e `DELAY_SEGUNDOS` ≥ 1 é respeitado. | pytest `.../test_resultado_d1.py` |
 | CA-6 | K-4 | **Dado** uma compra homologada em D-3 sem resultado, **quando** `saude_operacional_resumo()` roda, **então** `pncp_resultado_atraso` vem em `alerta` com contagem 1; e chamada da função por `anon`/`authenticated` é negada. | SQL `supabase/tests/saude_resultado_atraso_check.sql` |
-| CA-7 | K-1..K-5 | **Dado** 7 dias corridos depois do deploy, **quando** se mede como no Problema, **então** pelo menos 95% das compras PNCP homologadas no período e já conhecidas têm resultado até D+1 (antes: 64%), e o número das achadas depois de homologadas é reportado à parte. | consulta da skill `verificar-producao`, registrada no PR de fechamento |
+| CA-7 | K-1..K-5 | **Dado** 7 dias corridos depois do deploy, **quando** se reconcilia cada janela varrida com o banco, **então** toda compra no escopo que o `/atualizacao` mostrou com homologação na janela tem resultado gravado até o fim do dia seguinte (D+1); cada exceção aparece listada com o motivo (API fora, compra fora do escopo, PNCP sem resultado publicado), nunca como número médio. | consulta da skill `verificar-producao` + relatório de reconciliação no PR de fechamento |
 
-O 95% é proposta para o Marcelo validar (pergunta 3).
+**Meta (decisão do Marcelo, 09/11/2026):** não há percentual. A coleta é determinística por data: toda compra que o
+PNCP mostra como publicada ou atualizada numa janela é coletada nessa janela. Nada justifica um edital lançado hoje
+ficar fora do cron; se ficar, é defeito, e o caso aparece nominalmente na reconciliação.
 
 ## Skills e agentes por contrato
 
@@ -122,7 +163,7 @@ O 95% é proposta para o Marcelo validar (pergunta 3).
 
 ## Impacto em dados
 
-- **Migration:** provável, só se K-4 (saúde) ou o tipo de job da fila exigirem: `supabase/migrations/<timestamp>_pncp_resultado_d1.sql`,
+- **Migration:** sim: `cron.schedule` dos jobs novos (padrão `20260930180000_cron_sync_jobs.sql`); e, se K-4 (saúde) ou o tipo de job da fila exigirem: `supabase/migrations/<timestamp>_pncp_resultado_d1.sql`,
   aditiva e idempotente. Não medido se `private.job_queue` já aceita o tipo novo sem migration.
 - **Tabelas/views/funções tocadas:** `licitacao_resultados`, `licitacao_itens`, `licitacoes_externas` (escritas pelo
   coletor, como hoje); `private.job_queue`; `private.saude_operacional_resumo()`; registro da varredura (onde: no
@@ -130,8 +171,9 @@ O 95% é proposta para o Marcelo validar (pergunta 3).
 - **ACL/RLS:** nenhuma mudança esperada; função de saúde segue só para `service_role`.
 - **Backfill/reprocessamento:** sim, uma vez: as 6 homologadas sem resultado e as que estão em `monitorar` com
   homologação já publicada; contagem antes/depois no PR.
-- **Edge Functions republicadas no merge:** todas (merge na `main`); só muda função se o cron escolhido for pg_cron
-  chamando Edge Function.
+- **Edge Functions republicadas no merge:** todas (merge na `main`); função nova de varredura (nome no `/implement`).
+- **Segredo novo:** token do GitHub com permissão só de `actions:write` neste repositório, guardado como segredo da
+  Edge Function (nunca no código).
 - **Contrato com o Dashboard:** inalterado.
 - **Dado oficial x derivado:** resultado e data de homologação vêm do PNCP sem alteração; nada é estimado.
 - **Custo de chamadas ao PNCP:** proporcional ao número de compras alteradas por janela (não medido; o `/implement`
@@ -139,14 +181,14 @@ O 95% é proposta para o Marcelo validar (pergunta 3).
 
 ## Decisões do Marcelo
 
-- 09/11/2026: preço homologado no histórico até D+1 da homologação; avaliar cron x tempo real; spec própria.
+- 09/11/2026: preço homologado no histórico até D+1 da homologação; spec própria.
+- 09/11/2026: gatilho **híbrido** (opção C).
+- 09/11/2026: infraestrutura **onde o custo for menor** (proposta na seção "Onde roda").
+- 09/11/2026: **sem meta percentual**: a coleta é determinística por data; toda compra da janela é coletada.
+- 09/11/2026: fim de semana decidido pela medição (seção "Fim de semana").
 
 ## Perguntas em aberto
 
-1. **Gatilho:** a opção C (cron de varredura por data de atualização + fila por evento) atende? Como o PNCP não
-   avisa, tempo real puro (opção B) não é possível.
-2. **Onde roda o cron:** pg_cron chamando uma Edge Function, GitHub Actions (começa com horas de atraso, medido acima)
-   ou Cloud Scheduler + Cloud Run Job (`services/coletor-externo/` já é Cloud Run Job)?
-3. **Meta:** 95% até D+1 para compras já conhecidas está bom? Para compra que o sistema só acha depois de
-   homologada, qual a meta?
-4. **Fim de semana:** homologação publicada sexta à noite precisa estar no histórico no sábado (cron todos os dias)?
+1. **Proposta de infraestrutura:** varredura em Edge Function por pg_cron + consumidor Python no GitHub Actions
+   disparado por `workflow_dispatch` (Cloud Run só se o disparo demorar) atende ao "menor custo"? O token do GitHub
+   para o disparo fica como segredo da Edge Function: ok?

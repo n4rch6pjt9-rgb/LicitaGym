@@ -206,6 +206,16 @@ export interface AcompanhamentoSection<T> {
   dados: T | null;
   total?: number;
   erro: string | null;
+  /**
+   * Ausente = dados do PNCP ao vivo. "copia_local" = o PNCP falhou (`erro` mantido) e `dados` vêm da cópia gravada
+   * pelo coletor (licitacao_itens / licitacao_documentos), de `copia_gravada_em`. Só Itens e Documentos têm cópia.
+   */
+  origem?: "copia_local";
+  /**
+   * Quando o coletor viu os dados no PNCP pela última vez (ISO). Documentos: maior last_seen_at. Itens: null, porque
+   * licitacao_itens não guarda essa data (desconhecida, não inventada).
+   */
+  copia_gravada_em?: string | null;
 }
 
 export type AcompanhamentoResponse =

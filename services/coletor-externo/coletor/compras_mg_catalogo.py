@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import json
 import logging
 import sys
@@ -39,6 +38,7 @@ from pathlib import Path
 
 import requests
 
+from coletor.proveniencia import hash_payload
 from coletor.retry import espera_retry
 
 log = logging.getLogger(__name__)
@@ -71,8 +71,9 @@ class ErroColeta(RuntimeError):
 # --------------------------------------------------------------------------- HTTP
 
 def _requisitar(sessao, metodo: str, url: str, *, corpo: dict | None = None, base_backoff: float = 2.0,
-                dormir=time.sleep) -> dict:
+                dormir=time.sleep, contexto: str = "") -> dict:
     """Uma chamada com timeout, retry em 429/5xx/erro de rede (Retry-After ou backoff). Erro vira exceção."""
+    onde = f"{url} [{contexto}]" if contexto else url
     ultimo = None
     for tentativa in range(1, TENTATIVAS + 1):
         r = None
@@ -85,15 +86,15 @@ def _requisitar(sessao, metodo: str, url: str, *, corpo: dict | None = None, bas
                 try:
                     return r.json()
                 except ValueError as e:
-                    raise ErroColeta(f"{url}: resposta 200 não é JSON") from e
+                    raise ErroColeta(f"{onde}: resposta 200 não é JSON") from e
             if r.status_code != 429 and r.status_code < 500:
-                raise ErroColeta(f"{url}: HTTP {r.status_code}: {r.text[:300]}")
+                raise ErroColeta(f"{onde}: HTTP {r.status_code}: {r.text[:300]}")
             ultimo = f"HTTP {r.status_code}"
         if tentativa < TENTATIVAS:
             espera = espera_retry(r, tentativa, base_backoff)
-            log.warning("%s falhou (%s); tentativa %d/%d em %.1fs", url, ultimo, tentativa, TENTATIVAS, espera)
+            log.warning("%s falhou (%s); tentativa %d/%d em %.1fs", onde, ultimo, tentativa, TENTATIVAS, espera)
             dormir(espera)
-    raise ErroColeta(f"{url}: desistiu após {TENTATIVAS} tentativas ({ultimo})")
+    raise ErroColeta(f"{onde}: desistiu após {TENTATIVAS} tentativas ({ultimo})")
 
 
 # --------------------------------------------------------------------------- grupos
@@ -103,7 +104,14 @@ def resolver_grupos(iniciais: dict, codigos: list[int]) -> list[dict]:
     grupos = (iniciais or {}).get("grupos")
     if not isinstance(grupos, list) or not grupos:
         raise ErroColeta("recuperarDadosIniciais sem lista 'grupos' (contrato mudou?)")
-    por_codigo = {int(g["codigo"]): g for g in grupos if g.get("codigo") is not None and g.get("id") is not None}
+    por_codigo = {}
+    for g in grupos:
+        try:
+            por_codigo[int(g["codigo"])] = g
+        except (KeyError, TypeError, ValueError):
+            continue  # grupo sem código numérico não casa com nenhum pedido
+    por_codigo = {c: g for c, g in por_codigo.items() if g.get("id") is not None}
+    codigos = list(dict.fromkeys(codigos))  # --grupo repetido não coleta duas vezes
     faltando = [c for c in codigos if c not in por_codigo]
     if faltando:
         raise ErroColeta(f"grupo(s) {faltando} não existem no catálogo MG")
@@ -136,19 +144,26 @@ def coletar_grupo(sessao, grupo: dict, situacoes: list[str], *, tamanho: int = T
     pagina = 1
     while True:
         corpo = montar_corpo(grupo["id"], situacoes, pagina, tamanho, tipo)
-        resposta = _requisitar(sessao, "POST", URL_PESQUISAR, corpo=corpo, dormir=dormir)
-        resultado = (resposta or {}).get("resultado")
+        contexto = f"grupo {grupo['codigo']} pág {pagina}"
+        resposta = _requisitar(sessao, "POST", URL_PESQUISAR, corpo=corpo, dormir=dormir, contexto=contexto)
+        resultado = resposta.get("resultado") if isinstance(resposta, dict) else None
         if not isinstance(resultado, dict) or not isinstance(resultado.get("dados"), list):
-            raise ErroColeta(f"página {pagina}: resposta sem resultado.dados")
+            raise ErroColeta(f"{contexto}: resposta sem resultado.dados")
         if total is None:
-            total = int(resultado.get("total") or 0)
+            # total ausente ou inválido é contrato mudado, não grupo vazio
+            bruto = resultado.get("total")
+            if isinstance(bruto, bool) or not isinstance(bruto, int) or bruto < 0:
+                raise ErroColeta(f"{contexto}: resultado.total ausente ou inválido ({bruto!r})")
+            total = bruto
             log.info("grupo %s (id %s): total=%d", grupo["codigo"], grupo["id"], total)
         dados = resultado["dados"]
         if not dados:
             break
-        ids = [d.get("id") for d in dados]
+        ids = [d.get("id") if isinstance(d, dict) else None for d in dados]
+        if any(i is None for i in ids):
+            raise ErroColeta(f"{contexto}: item sem id")
         if all(i in vistos for i in ids):
-            raise ErroColeta(f"página {pagina} repetiu itens já coletados (paginação ignorada?)")
+            raise ErroColeta(f"{contexto}: repetiu itens já coletados (paginação ignorada?)")
         for d in dados:
             if d.get("id") not in vistos:
                 vistos.add(d.get("id"))
@@ -171,6 +186,16 @@ def _g(d, *caminho):
             return None
         d = d.get(chave)
     return d
+
+
+_INICIO_FORMULA = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _celula(v):
+    """Texto que o Excel leria como fórmula ganha um apóstrofo só no CSV (o JSON bruto fica intacto)."""
+    if isinstance(v, str) and v.startswith(_INICIO_FORMULA):
+        return "'" + v
+    return v
 
 
 def _bool(v):
@@ -213,8 +238,7 @@ def linha_csv(item: dict, prov: dict) -> dict:
         "eh_item_comum": _bool(item.get("ehItemComum")),
         "possui_ref_melhor_preco": _bool(item.get("possuiRefMelhorPreco")),
         "qtd_itens_similares": item.get("quantidadeItensSimilares"),
-        "payload_hash": hashlib.sha256(
-            json.dumps(item, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest(),
+        "payload_hash": hash_payload(item),
         **prov,
     }
 
@@ -224,14 +248,18 @@ def escrever_csv(caminho: Path, linhas: list[dict]) -> None:
     with caminho.open("w", encoding="utf-8-sig", newline="") as f:
         w = csv.DictWriter(f, fieldnames=COLUNAS, delimiter=";", quoting=csv.QUOTE_MINIMAL)
         w.writeheader()
-        w.writerows(linhas)
+        w.writerows({k: _celula(v) for k, v in linha.items()} for linha in linhas)
 
 
 # --------------------------------------------------------------------------- CLI
 
 def executar(codigos: list[int], situacoes: list[str], saida: Path, *, tamanho: int, delay: float,
-             sessao=None) -> dict:
-    sessao = sessao or requests.Session()
+             tipo: str = "MATERIAL", sessao=None, dormir=time.sleep) -> dict:
+    if sessao is None:
+        with requests.Session() as s:
+            return executar(codigos, situacoes, saida, tamanho=tamanho, delay=delay, tipo=tipo, sessao=s,
+                            dormir=dormir)
+    codigos = list(dict.fromkeys(codigos))
     iniciais = _requisitar(sessao, "GET", URL_INICIAIS)
     iniciais = iniciais.get("resultado", iniciais) if isinstance(iniciais, dict) else iniciais
     grupos = resolver_grupos(iniciais, codigos)
@@ -243,14 +271,21 @@ def executar(codigos: list[int], situacoes: list[str], saida: Path, *, tamanho: 
     linhas: list[dict] = []
     for i, grupo in enumerate(grupos):
         if i:
-            time.sleep(max(DELAY_MIN_S, delay))
-        itens, total = coletar_grupo(sessao, grupo, situacoes, tamanho=tamanho, delay=delay)
+            dormir(max(DELAY_MIN_S, delay))
+        try:
+            itens, total = coletar_grupo(sessao, grupo, situacoes, tamanho=tamanho, delay=delay, tipo=tipo,
+                                         dormir=dormir)
+        except ErroColeta:
+            if resumo["grupos"]:
+                log.warning("coleta parcial: JSON dos grupos %s gravados, CSV não gerado",
+                            [g["codigo"] for g in resumo["grupos"]])
+            raise
         bruto = saida / f"compras_mg_grupo{grupo['codigo']}_{carimbo}.json"
         bruto.write_text(json.dumps({
             "proveniencia": {
                 "fonte": FONTE, "url": URL_PESQUISAR, "tela": URL_TELA, "coletado_em": coletado_em,
                 "grupo": grupo, "situacoes": situacoes,
-                "corpo_exemplo": montar_corpo(grupo["id"], situacoes, 1, tamanho),
+                "corpo_exemplo": montar_corpo(grupo["id"], situacoes, 1, tamanho, tipo),
                 "total_api": total,
             },
             "itens": itens,
@@ -276,6 +311,7 @@ def main(argv=None) -> int:
     p.add_argument("--grupo", type=int, action="append", required=True, help="código do grupo (ex. 78); repetível")
     p.add_argument("--situacao", action="append", choices=SITUACOES_VALIDAS,
                    help="padrão: ATIVO (o mesmo da tela); repetível")
+    p.add_argument("--tipo", choices=TIPOS_GRUPO, default="MATERIAL", help="padrão: MATERIAL")
     p.add_argument("--tamanho", type=int, default=TAMANHO_PAGINA, help="itens por página (padrão 100)")
     p.add_argument("--delay", type=float, default=DELAY_MIN_S, help="segundos entre páginas (mínimo 1)")
     p.add_argument("--saida", type=Path, default=Path("var/compras_mg"), help="pasta de saída (fora do git)")
@@ -284,7 +320,8 @@ def main(argv=None) -> int:
     if not 1 <= a.tamanho <= 100:
         p.error("--tamanho entre 1 e 100")
     try:
-        resumo = executar(a.grupo, a.situacao or ["ATIVO"], a.saida, tamanho=a.tamanho, delay=a.delay)
+        resumo = executar(a.grupo, a.situacao or ["ATIVO"], a.saida, tamanho=a.tamanho, delay=a.delay,
+                          tipo=a.tipo)
     except ErroColeta as e:
         log.error("coleta falhou: %s", e)
         return 1

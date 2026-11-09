@@ -4,6 +4,7 @@ import csv
 import pytest
 
 from coletor import compras_mg_catalogo as mg
+from coletor.proveniencia import hash_payload
 
 INICIAIS = {"grupos": [
     {"id": 66, "codigo": 72, "descricao": "72 - ARTIGOS DOMESTICOS E COMERCIAIS"},
@@ -115,9 +116,12 @@ def test_resposta_sem_envelope_e_erro():
         mg.coletar_grupo(S([]), {"id": 72, "codigo": 78}, ["ATIVO"], dormir=lambda _: None)
 
 
-def test_executar_gera_json_e_csv(tmp_path, monkeypatch):
-    monkeypatch.setattr(mg.time, "sleep", lambda _: None)
-    resumo = mg.executar([78], ["ATIVO"], tmp_path, tamanho=100, delay=1, sessao=Sessao([_item(1), _item(2)]))
+def test_executar_gera_json_e_csv(tmp_path):
+    itens = [_item(1), _item(2)]
+    itens[1]["especificacaoCompleta"] = "=HYPERLINK(1)"
+    resumo = mg.executar([78, 78], ["ATIVO"], tmp_path, tamanho=100, delay=1, sessao=Sessao(itens),
+                         dormir=lambda _: None)
+    assert len(resumo["grupos"]) == 1  # grupo repetido coletado uma vez
     assert resumo["linhas_csv"] == 2 and resumo["grupos"][0]["total_api"] == 2
     with open(resumo["csv"], encoding="utf-8-sig", newline="") as f:
         linhas = list(csv.DictReader(f, delimiter=";"))
@@ -127,7 +131,11 @@ def test_executar_gera_json_e_csv(tmp_path, monkeypatch):
     assert l0["especificacao_complementar"] == "LINHA A\r\nLINHA B"  # texto da fonte intacto
     assert l0["sinonimos"] == "BOLA/ALCA; 10KG"
     assert l0["eh_generico"] == ""  # None não vira "nao"
-    assert len(l0["payload_hash"]) == 64
+    assert l0["payload_hash"] == hash_payload(_item(1))  # mesmo hash da proveniência do resto do coletor
+    assert linhas[1]["especificacao"] == "'=HYPERLINK(1)"  # sem fórmula no Excel
+    import json
+    bruto = json.loads(open(resumo["grupos"][0]["json"], encoding="utf-8").read())
+    assert bruto["itens"][1]["especificacaoCompleta"] == "=HYPERLINK(1)"  # JSON bruto intacto
 
 
 def test_erro_de_rede_esgota_tentativas_e_json_invalido():
@@ -145,3 +153,40 @@ def test_erro_de_rede_esgota_tentativas_e_json_invalido():
     s = Sessao([], falhas=[NaoJson(200)])
     with pytest.raises(mg.ErroColeta, match="não é JSON"):
         mg.coletar_grupo(s, {"id": 72, "codigo": 78}, ["ATIVO"], dormir=lambda _: None)
+
+
+def test_total_ausente_ou_invalido_e_erro():
+    for corpo in ({"resultado": {"dados": []}}, {"resultado": {"total": "abc", "dados": []}}):
+        class S(Sessao):
+            def request(self, *a, _c=corpo, **k):
+                return Resp(200, _c)
+        with pytest.raises(mg.ErroColeta, match="total ausente ou inválido"):
+            mg.coletar_grupo(S([]), {"id": 72, "codigo": 78}, ["ATIVO"], dormir=lambda _: None)
+
+
+def test_erro_na_pagina_intermediaria_nao_e_fim():
+    class S(Sessao):
+        def request(self, metodo, url, json=None, **k):
+            if json["page"] == 2:
+                return Resp(400, "falhou")
+            return super().request(metodo, url, json=json, **k)
+    s = S([_item(i) for i in range(1, 251)])
+    with pytest.raises(mg.ErroColeta, match=r"grupo 78 pág 2\]: HTTP 400"):
+        mg.coletar_grupo(s, {"id": 72, "codigo": 78}, ["ATIVO"], tamanho=100, dormir=lambda _: None)
+
+
+def test_repeticao_parcial_faz_contagem_nao_fechar():
+    class S(Sessao):
+        def request(self, metodo, url, json=None, **k):
+            # página 2 devolve metade da página 1 + metade nova; a página 3 vem vazia
+            p = json["page"]
+            dados = {1: self.itens[0:4], 2: self.itens[2:6]}.get(p, [])
+            return Resp(200, {"resultado": {"total": 8, "dados": dados}})
+    s = S([_item(i) for i in range(1, 9)])
+    with pytest.raises(mg.ErroColeta, match="coletados 6 de total 8"):
+        mg.coletar_grupo(s, {"id": 72, "codigo": 78}, ["ATIVO"], tamanho=4, dormir=lambda _: None)
+
+
+def test_grupo_sem_codigo_numerico_e_ignorado():
+    iniciais = {"grupos": [{"id": 9, "codigo": "7A"}, *INICIAIS["grupos"]]}
+    assert mg.resolver_grupos(iniciais, [78, 78]) == [INICIAIS["grupos"][1]]

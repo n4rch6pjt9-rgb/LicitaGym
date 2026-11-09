@@ -166,7 +166,10 @@ python -m coletor.catalogo_paradigma --fonte sescdn --categorias "PT030;ES1205" 
 ```
 
 Saída `.csv` (`;`, UTF-8 com BOM) ou `.json`, com `codigo_sesc`, `descricao`, `tipo`, `categoria`, `id_categoria`,
-`id_produto` e `fonte`. É dado de coleta: grave fora do repositório. Em 08/11/2026 o Sesc DN tinha 52 produtos em
+`id_produto` e `fonte` (no CSV, texto que o Excel leria como fórmula ganha `'` na frente; o JSON guarda o original).
+É dado de coleta: caminho dentro do repositório é recusado. Saída: 0 ok; 2 categoria inexistente ou ambígua, ou
+saída inválida; 3 catálogo possivelmente cortado (página repetida ou limite da paginação), sem gravar.
+Em 08/11/2026 o Sesc DN tinha 52 produtos em
 `PT030 - EQUIP CONDICIONAMENTO FISICO` e 79 em `ES1205 - EQUIP E MAT ESPORTIVO`.
 
 ## Coletor Sistema S — adaptador Paradigma (v15, 26/09/2026)

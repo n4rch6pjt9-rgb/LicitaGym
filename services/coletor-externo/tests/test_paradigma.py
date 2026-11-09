@@ -510,11 +510,32 @@ def test_categorias_do_catalogo_por_fonte():
     assert set(fiemt) == {"25 - EQUIPAMENTOS ESPORTIVOS, ARTISTICOS E DE RECREACAO",
                           "25 - MATERIAL ESPORTIVO E DE RECREACAO",
                           "EQUIPAMENTOS ESPORTIVOS, ARTISTICOS E DE RECREACAO", "MATERIAL ESPORTIVO E DE RECREACAO"}
-    assert not any("PREMIA" in c for c in fiemt)  # premiação (troféu, medalha) não é equipamento
     # as outras fontes não mudam
     assert _classes_pedidas("sfiec") == P.CATEGORIAS_MAPEADAS
     # --categorias explícito vence o mapeamento da fonte
     assert _classes_pedidas("fiems", ["ESPORTIVO"]) == ["ESPORTIVO"]
+
+
+def test_fiemt_casa_classe_real_com_acento_virgula_e_prefixo_e_deixa_premiacao_fora(caplog):
+    # Classes como o autocomplete da FIEMT devolveu (08/11/2026): acento, vírgula, prefixo "25 -" e quebra de linha.
+    devolvidas = [{"nCdClasse": 9, "sDsClasse": "25 - EQUIPAMENTOS ESPORTIVOS, ARTÍSTICOS E DE RECREAÇÃO"},
+                  {"nCdClasse": 456, "sDsClasse": "PREMIAÇÕES \r\nEQUIPAMENTOS \r\nESPORTIVOS "}]
+    p = P.PortalParadigma(P.FONTES["fiemt"], sessao=MagicMock(), delay=0)
+    catalogo = []
+
+    def ws(metodo, corpo):
+        dto = corpo["dtoProduto"]
+        if metodo == "PesquisarCatalogoProdutoClasses":
+            return devolvidas if dto["sDsProduto"].startswith("25 - EQUIP") else []
+        catalogo.append(dto["nCdClasse"])
+        return [] if dto["dtoPaginacao"]["nPaginaDe"] > 1 else [{"nCdProduto": 1, "nCdClasse": dto["nCdClasse"]}]
+    p._ws = ws
+    with caplog.at_level("WARNING"):
+        prods = p.produtos_escopo()
+    assert set(catalogo) == {9}       # só a classe de nome exato; premiação não entra
+    assert list(prods) == [1]
+    # as 3 categorias que o portal falso não devolve geram aviso, em vez de catálogo vazio calado
+    assert sum("sem classe de nome exato" in r.message for r in caplog.records) == 3
 
 
 def test_mural_estatistico_leva_totais_para_licitacao():

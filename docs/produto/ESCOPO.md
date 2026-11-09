@@ -61,10 +61,13 @@ Detalhe em `AGENTS.md`.
 | 20/10 | Produto multi-tenant, configurado por metadados na interface, não por código |
 | 20/10 | Catálogo do tenant por CSV de layout único (colunas aprovadas, atributos como `atr:<nome>`), em `/configuracoes/catalogo` |
 | 20/10 | Catálogo, escopo CATMAT e ficha de produto ficam em `/configuracoes` |
-| 20/10 | Visões salvas de filtro são da equipe do tenant |
+| 20/10 | ~~Visões salvas de filtro são da equipe do tenant~~ (revista em 09/11: por usuário) |
 | até 20/10 | Homologadas com documentos e chat da sessão são o núcleo do treino dos agentes |
 | 20/10 | **TR primeiro, CATMAT como suporte.** O catálogo CATMAT deixa de ser a fonte da verdade do escopo: os órgãos erram o enquadramento com frequência (evidência: Dispensa 311/2026 da BAvT, #2691). Divergência TR × CATMAT vira achado |
+| 28/10 | **Filtros inteligentes multirrota: um sistema único de filtros para todas as rotas**, em vez de filtros próprios em cada página. Backend: `api-metadados` serve opções, limites e rótulos; toda lista filtra no servidor e responde com `filtros_aplicados`, `ignorados[]` e `total` do recorte; datas como datas de calendário de Brasília. Dashboard: `src/filtros/` (um esquema por rota + `useFiltrosUrl`), `FilterBar` + `DataTable` com chips, busca com debounce, contagem por opção, visões salvas e painel de filtros no celular. Ordem: Oportunidades → PCA → Preços → Pipeline → Tarefas → CATMAT → CRM (órgãos e fornecedores) → Acompanhamento. Desenho em `FASE-1-FRONTEND.md` §4 e `BACKEND-CONFIGURACOES.md` §2.5–2.6 |
 | 08/11 | **Legislação é corpus curado, não sync.** O sync semanal de legislação é aposentado (raspava páginas-índice e gravava links de navegação; ninguém consumia). O texto dos artigos que o jurídico cita (`norma_dispositivos`) é vigiado por um verificador trimestral no Cloud Run, só com aviso no log (spec 0044) |
+| 09/11 | Visões salvas de filtro são **por usuário** (substitui a decisão de 20/10) |
+| 09/11 | Órgãos e fornecedores continuam numa rota só (`/crm/organizacoes`), com revisão de código e design: o detalhe precisa levar ao certame (oportunidade e portal oficial) |
 
 ## Decisões pendentes
 <!-- Itens que estavam como CONFIRMAR no CLAUDE.md antigo. Resolvido → vai para "Decisões registradas" e para

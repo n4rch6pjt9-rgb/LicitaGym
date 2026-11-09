@@ -87,8 +87,14 @@ Deno.test("api-syncs: sync desconhecido e sync sem função nem workflow não di
   assertEquals(SYNCS.every((s) => !s.disparavel || Boolean(s.funcao) || Boolean(s.github_workflow)), true);
 });
 
+ fix/api-syncs-nacionais-nao-disparaveis
 // Syncs presos por trava de ambiente (PNCP_NATIONAL_SYNC_ENABLED, IRP_SYNC_ENABLED) só respondem 423: a tela não
 // pode oferecer "Rodar agora" para eles, e o disparo responde 400 com o motivo, sem chamar a função.
+
+// Syncs presos por trava de ambiente (PNCP_NATIONAL_SYNC_ENABLED, IRP_SYNC_ENABLED) ou que dependem de um sync
+// travado: a tela não oferece "Rodar agora" e o disparo responde 400 com o motivo, sem chamar a função. Provisório:
+// a spec 0024 (decisão de 14/10, #363) troca a trava pelo catálogo e devolve o disparo manual; aí saem desta lista.
+ main
 const SYNCS_TRAVADOS = [
   "sync-pncp-contratacoes-editais",
   "sync-pncp-contratacoes-atas",

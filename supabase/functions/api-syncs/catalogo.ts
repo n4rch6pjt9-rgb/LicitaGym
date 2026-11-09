@@ -95,16 +95,6 @@ export const SYNCS: SyncCatalogo[] = [
     aviso: null,
   },
   {
-    slug: "sync-pncp-legislation",
-    funcao: "sync-pncp-legislation",
-    titulo: "Legislação",
-    faz: "PDFs oficiais de legislação.",
-    cron: "Segunda-feira às 05:27.",
-    corpo: {},
-    disparavel: true,
-    aviso: null,
-  },
-  {
     slug: "sync-pncp-catalogo",
     funcao: "sync-pncp-catalogo",
     titulo: "Catálogo PNCP",

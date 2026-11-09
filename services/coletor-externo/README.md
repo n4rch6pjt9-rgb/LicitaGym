@@ -387,6 +387,24 @@ no bucket e `roles/secretmanager.secretAccessor` no secret.
 Para rodar toda semana: Cloud Scheduler → `gcloud run jobs execute`.
 A coleta é idempotente (upsert + só baixa o que está `pendente`/`erro`).
 
+## Verificador de legislação (spec 0044, trimestral)
+
+`python -m coletor.verificar_legislacao` confere se o texto oficial das normas do corpus curado
+(`coletor/data/legislacao_corpus.json`) mudou e se os artigos de `norma_dispositivos` com `conferido_oficial = true`
+ainda são trecho literal do texto oficial. Só faz `select` em `norma_dispositivos`; não grava nada.
+O relatório sai no log (uma linha JSON por norma e por artigo que não confere, mais o resumo).
+Código de saída: 0 tudo igual; 1 norma mudou ou artigo divergente; 2 não verificado ou sem hash de referência.
+
+```bash
+gcloud run jobs deploy verificar-legislacao --source . --region $REGION   --command python --args="-m,coletor.verificar_legislacao"   --set-env-vars SUPABASE_URL=$SUPABASE_URL   --set-secrets SUPABASE_SERVICE_ROLE_KEY=supabase-service-key:latest   --task-timeout=10m --max-retries=0
+gcloud run jobs execute verificar-legislacao --region $REGION   # primeira execução: imprime os hashes atuais
+# Cloud Scheduler: dia 1 de jan/abr/jul/out, 09:00 BRT -> gcloud run jobs execute verificar-legislacao
+```
+
+Corpus sem hash (`sha256_texto_normalizado: null`) sai como `sem_referencia` com o `sha256_atual`: grave o hash e a
+data (`conferido_em`) num PR depois de conferir o texto. Norma que mudou: confira o texto novo, atualize
+`norma_dispositivos` por migration se algum artigo citado mudou, e só então grave o hash novo.
+
 ## Configuração
 
 | Variável | Padrão | Uso |

@@ -906,16 +906,33 @@ function numeroOuNull(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-/** Linha de K-1 com tipos estáveis: contagem ausente vira 0 (count nunca é null); soma ausente fica null. */
-function normalizarResumo(row: Record<string, unknown>): ResumoExecutivo {
+const CONTAGENS_RESUMO = [
+  "leads_total",
+  "monitoradas_total",
+  "com_valor_total",
+  "prazo_amanha_total",
+  "prazo_7_dias_total",
+] as const;
+
+/**
+ * Linha de K-1 com tipos estáveis. Somas podem ser null (nenhuma linha com valor). Contagem ausente ou não numérica
+ * (count nunca é null no SQL) é contrato quebrado: devolve null para o handler responder 500, nunca um 0 inventado.
+ */
+function normalizarResumo(row: Record<string, unknown>): ResumoExecutivo | null {
+  const contagens: Record<string, number> = {};
+  for (const campo of CONTAGENS_RESUMO) {
+    const n = numeroOuNull(row[campo]);
+    if (n === null) return null;
+    contagens[campo] = n;
+  }
   return {
-    leads_total: numeroOuNull(row.leads_total) ?? 0,
-    monitoradas_total: numeroOuNull(row.monitoradas_total) ?? 0,
+    leads_total: contagens.leads_total,
+    monitoradas_total: contagens.monitoradas_total,
     valor_potencial_total: numeroOuNull(row.valor_potencial_total),
-    com_valor_total: numeroOuNull(row.com_valor_total) ?? 0,
-    prazo_amanha_total: numeroOuNull(row.prazo_amanha_total) ?? 0,
+    com_valor_total: contagens.com_valor_total,
+    prazo_amanha_total: contagens.prazo_amanha_total,
     prazo_amanha_valor: numeroOuNull(row.prazo_amanha_valor),
-    prazo_7_dias_total: numeroOuNull(row.prazo_7_dias_total) ?? 0,
+    prazo_7_dias_total: contagens.prazo_7_dias_total,
     prazo_7_dias_valor: numeroOuNull(row.prazo_7_dias_valor),
     calculado_em: typeof row.calculado_em === "string" ? row.calculado_em : null,
   };
@@ -953,14 +970,19 @@ async function handleResumoExecutivo(
     }
 
     const { data, error } = await client.rpc(RESUMO_EXECUTIVO_RPC, { p_ids_filtro: ids }).single();
-    if (error || !data || typeof data !== "object") {
-      console.error("[api-dashboard-oportunidades] Erro em resumo_executivo:", error);
+    if (error && ehStatementTimeout(error)) {
+      console.error("[api-dashboard-oportunidades] Timeout em dashboard_resumo_executivo:", error);
+      return jsonResponse({ error: "resumo executivo indisponível" }, 503);
+    }
+    const resumo = !error && data && typeof data === "object" ? normalizarResumo(data as Record<string, unknown>) : null;
+    if (!resumo) {
+      console.error("[api-dashboard-oportunidades] Erro em resumo_executivo:", error ?? "linha fora do contrato K-1");
       return jsonResponse({ error: "Falha ao calcular o resumo executivo" }, 500);
     }
 
     return jsonResponse({
       action: "resumo_executivo",
-      resumo: normalizarResumo(data as Record<string, unknown>),
+      resumo,
       recorte: { aplicado: ids !== null, filtros: recorte, licitacoes_total: ids === null ? null : ids.length },
       fonte: OPORTUNIDADES_VIEW,
     });

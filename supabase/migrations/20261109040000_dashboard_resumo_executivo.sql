@@ -11,6 +11,8 @@
 --   - prazo_amanha_* = ativas com data_fim depois de p_agora e até 23:59:59 de amanhã (Brasília);
 --   - prazo_7_dias_* = idem até 23:59:59 do 7º dia depois de hoje (Brasília); _valor NULL quando nenhuma tem valor;
 --   - calculado_em = p_agora.
+-- As janelas usam o mesmo instante de prazo da view (normalizacoes -> raw.data_fim_vigencia em Brasília -> data_fim),
+-- porque data_fim pode estar deslocado (#339); assim a janela não diverge do rebaixamento leads -> monitorar.
 -- Sem "alta aderência" (decisão P-3 de 09/11: volta só com aderência pelo TR).
 -- p_ids_filtro NULL = todas as oportunidades; array vazio = nenhuma (recorte de catálogo/CATMAT sem resultado).
 --
@@ -45,8 +47,14 @@ as $$
       (((p_agora at time zone 'America/Sao_Paulo')::date + 8)::timestamp at time zone 'America/Sao_Paulo') as fim_7_dias
   ),
   escopo as (
-    select l.prioridade, l.valor_total, l.data_fim
+    -- prazo = o mesmo instante com que a view decide se o prazo passou (normalizado, senão bruto em Brasília,
+    -- senão data_fim), para a janela nunca divergir do rebaixamento leads -> monitorar.
+    select l.prioridade, l.valor_total,
+           coalesce(private.pncp_instante_brt(t.normalizacoes #>> '{data_fim,normalizado}'),
+                    private.pncp_instante_brt(t.raw ->> 'data_fim_vigencia'),
+                    l.data_fim) as prazo
       from public.licitacoes_externas_prioridade_efetiva l
+      join public.licitacoes_externas t on t.id = l.id
      where l.eh_canonica is true
        and l.prioridade in ('leads', 'monitorar')
        and (p_ids_filtro is null or l.id = any (p_ids_filtro))
@@ -56,10 +64,10 @@ as $$
     count(*),
     sum(e.valor_total),
     count(e.valor_total),
-    count(*) filter (where e.data_fim > p_agora and e.data_fim < lim.fim_amanha),
-    sum(e.valor_total) filter (where e.data_fim > p_agora and e.data_fim < lim.fim_amanha),
-    count(*) filter (where e.data_fim > p_agora and e.data_fim < lim.fim_7_dias),
-    sum(e.valor_total) filter (where e.data_fim > p_agora and e.data_fim < lim.fim_7_dias),
+    count(*) filter (where e.prazo > p_agora and e.prazo < lim.fim_amanha),
+    sum(e.valor_total) filter (where e.prazo > p_agora and e.prazo < lim.fim_amanha),
+    count(*) filter (where e.prazo > p_agora and e.prazo < lim.fim_7_dias),
+    sum(e.valor_total) filter (where e.prazo > p_agora and e.prazo < lim.fim_7_dias),
     p_agora
   -- Agregado sem GROUP BY: sempre uma linha, com contagens 0 e somas NULL quando o escopo é vazio.
   from escopo e

@@ -435,7 +435,7 @@ export function parseResumoExecutivoParams(source: Record<string, unknown>): Res
   if (fora.length > 0) {
     return {
       error: `A ação 'resumo_executivo' aceita só o recorte de catálogo/CATMAT (${PARAMETROS_RECORTE_RESUMO.join(", ")}). ` +
-        `Parâmetro não aceito: ${fora.sort().join(", ")}.`,
+        `Parâmetro não aceito: ${fora.sort().slice(0, 5).map((k) => k.slice(0, 40)).join(", ")}.`,
     };
   }
   const recorte: RecorteResumo = {};

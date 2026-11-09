@@ -11,6 +11,9 @@ declare
   v_fn regprocedure := to_regprocedure('public.dashboard_resumo_executivo(bigint[],timestamp with time zone)');
   v_agora constant timestamptz := '2099-03-10 12:00:00-03';
   v_l1 bigint; v_l2 bigint; v_l3 bigint; v_m1 bigint; v_h1 bigint; v_n1 bigint;
+  v_limites bigint[] := '{}';
+  v_id bigint;
+  f record;
   r record;
 begin
   if v_fn is null then
@@ -30,7 +33,7 @@ begin
     raise exception 'CA-3 FALHOU: dashboard_resumo_executivo deve ser security invoker';
   end if;
   if not exists (select 1 from pg_proc where oid = v_fn
-                    and exists (select 1 from unnest(coalesce(proconfig, '{}')) c where c like 'search_path=%')) then
+                    and 'search_path=pg_catalog, public, pg_temp' = any (coalesce(proconfig, '{}'))) then
     raise exception 'CA-3 FALHOU: dashboard_resumo_executivo sem search_path fixo';
   end if;
 
@@ -114,6 +117,47 @@ begin
         r.valor_potencial_total, r.com_valor_total;
     end if;
 
+    -- CA-2 (limites das janelas): p_agora = 10/03 12:00 BRT.
+    --   B1 hoje 20:00 (resto de hoje conta em amanhã e em 7 dias); B2 17/03 23:59 (último minuto dos 7 dias);
+    --   B3 18/03 00:00 (fora); B4 hoje 11:00 (já passou: fora); B5 sem prazo (fora);
+    --   B6 data_fim longe, mas o prazo normalizado é amanhã 20:00 (vale o instante da view, não data_fim).
+    for f in
+      select * from (values
+        ('B1', '2099-03-10 20:00:00-03'::timestamptz, null::jsonb),
+        ('B2', '2099-03-17 23:59:00-03', null),
+        ('B3', '2099-03-18 00:00:00-03', null),
+        ('B4', '2099-03-10 11:00:00-03', null),
+        ('B5', null, null),
+        ('B6', '2099-04-20 10:00:00-03', '{"data_fim": {"campo": "data_fim", "original": "2099-03-11T20:00:00",
+          "normalizado": "2099-03-11T20:00:00-03:00", "regra": "teste", "origem": "inferido"}}'::jsonb)
+      ) v(rotulo, data_fim, normalizacoes)
+    loop
+      insert into public.licitacoes_externas (fonte, codigo_externo, orgao_cnpj, numero_processo, numero_edital, data_fim,
+                                              valor_total, prioridade, normalizacoes)
+      values ('pncp', 'check-resumo-limite-' || f.rotulo || '/2099', '00000000000910', '0910-' || f.rotulo || '/2099',
+              'PE 910-' || f.rotulo, f.data_fim, 10.00, 'leads', coalesce(f.normalizacoes, '{}'::jsonb))
+      returning id into v_id;
+      v_limites := v_limites || v_id;
+    end loop;
+    if (select count(*) from public.licitacoes_externas_prioridade_efetiva
+         where id = any (v_limites) and prioridade = 'leads' and eh_canonica) <> 6 then
+      raise exception 'CA-2 FALHOU: fixtures de limite não ficaram como leads canônicos na view';
+    end if;
+    select * into r from public.dashboard_resumo_executivo(v_limites, v_agora);
+    if r.prazo_amanha_total is distinct from 2::bigint or r.prazo_amanha_valor is distinct from 20.00::numeric then
+      raise exception 'CA-2 FALHOU: limites de amanhã contaram % (esperado 2: B1 e B6)', r.prazo_amanha_total;
+    end if;
+    if r.prazo_7_dias_total is distinct from 3::bigint then
+      raise exception 'CA-2 FALHOU: limites de 7 dias contaram % (esperado 3: B1, B2 e B6)', r.prazo_7_dias_total;
+    end if;
+
+    -- p_ids_filtro NULL = todas: conta pelo menos os fixtures (e tudo o mais da base).
+    select * into r from public.dashboard_resumo_executivo(null, v_agora);
+    if r.leads_total < 3 or r.monitoradas_total < 4 or r.com_valor_total < 3 then
+      raise exception 'CA-1 FALHOU: p_ids_filtro null não contou todas (leads %, monitoradas %)',
+        r.leads_total, r.monitoradas_total;
+    end if;
+
     -- Recorte vazio: nenhuma linha (nunca "todas").
     select * into r from public.dashboard_resumo_executivo(array[]::bigint[], v_agora);
     if r.leads_total is distinct from 0::bigint or r.monitoradas_total is distinct from 0::bigint
@@ -143,9 +187,9 @@ begin
     exception when insufficient_privilege then null;
     end;
 
-    raise exception 'desfazer' using errcode = 'P0001', detail = 'rollback do savepoint';
-  exception when sqlstate 'P0001' then
-    if sqlerrm like 'CA-%' or sqlerrm like 'ACL CHECK FALHOU%' then raise; end if;
+    -- SQLSTATE próprio: só o "desfazer" é engolido; qualquer outro erro derruba a checagem.
+    raise exception 'desfazer' using errcode = 'LG001', detail = 'rollback do savepoint';
+  exception when sqlstate 'LG001' then null;
   end;
 
   raise notice 'SUCESSO: dashboard_resumo_executivo_check';

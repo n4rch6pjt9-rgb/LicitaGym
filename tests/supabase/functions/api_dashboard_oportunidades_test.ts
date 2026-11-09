@@ -1745,6 +1745,10 @@ interface ResumoMockConfig {
   /** Linha devolvida por dashboard_resumo_executivo. */
   resumoRow?: Record<string, unknown> | null;
   resumoError?: { message: string; code?: string } | null;
+  /** Falha de banco ao ler tenant_membros. */
+  membrosError?: { message: string } | null;
+  /** Erro da RPC do recorte CATMAT (ex.: statement_timeout 57014). */
+  catmatError?: { message: string; code?: string } | null;
 }
 
 /** Cliente falso para o resumo: grava as chamadas e responde por tabela/RPC. */
@@ -1769,7 +1773,8 @@ function criarClienteResumo(cfg: ResumoMockConfig) {
         const ids = porId ? (porId[1][1] as number[]) : ativas;
         data = ativas.filter((id) => ids.includes(id)).map((id) => ({ id }));
       }
-      return Promise.resolve({ data, error: null }).then(ok, ko);
+      const error = tabela === "tenant_membros" ? cfg.membrosError ?? null : null;
+      return Promise.resolve({ data: error ? null : data, error }).then(ok, ko);
     };
     return q;
   }
@@ -1782,7 +1787,10 @@ function criarClienteResumo(cfg: ResumoMockConfig) {
     rpc(fn: string, args: unknown) {
       calls.push({ method: "rpc", args: [fn, args] });
       const resultado = () => {
-        if (fn === CATMAT_RPC) return { data: { ids: cfg.idsCatmat ?? [], matches: [] }, error: null };
+        if (fn === CATMAT_RPC) {
+          if (cfg.catmatError) return { data: null, error: cfg.catmatError };
+          return { data: { ids: cfg.idsCatmat ?? [], matches: [] }, error: null };
+        }
         if (fn === "dashboard_resumo_executivo") {
           if (cfg.resumoError) return { data: null, error: cfg.resumoError };
           return { data: cfg.resumoRow ?? null, error: null };
@@ -1977,4 +1985,55 @@ Deno.test("CA-5: vínculo desligado recebe 403 mesmo com a empresa ativa", async
   const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario({ id: "u-4" }) });
   assertEquals(res.status, 403);
   assertEquals(rpcsChamadas(client.calls), []);
+});
+
+Deno.test("CA-4: linha da função K-1 sem contagem responde 500, nunca 0 inventado", async () => {
+  const { leads_total: _fora, ...semLeads } = RESUMO_ROW;
+  const client = criarClienteResumo({ membros: MEMBRO_ATIVO, ativas: [7], resumoRow: semLeads });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=resumo_executivo");
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario({ id: "u-1" }) });
+  assertEquals(res.status, 500);
+});
+
+Deno.test("CA-4: timeout da função K-1 ou do recorte CATMAT responde 503", async () => {
+  const timeout = { message: "canceling statement due to statement timeout", code: "57014" };
+  const casos: Array<[string, ResumoMockConfig]> = [
+    ["action=resumo_executivo", { resumoError: timeout }],
+    ["action=resumo_executivo&catalogo=true", { catmatError: timeout }],
+  ];
+  for (const [qs, extra] of casos) {
+    const client = criarClienteResumo({ membros: MEMBRO_ATIVO, ativas: [7], resumoRow: RESUMO_ROW, ...extra });
+    const req = new Request(`http://localhost/api-dashboard-oportunidades?${qs}`);
+    // deno-lint-ignore no-explicit-any
+    const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario({ id: "u-1" }) });
+    assertEquals(res.status, 503, qs);
+  }
+});
+
+Deno.test("CA-4: catalogo com valor inválido responde 400", async () => {
+  const client = criarClienteResumo({ membros: MEMBRO_ATIVO, ativas: [7], resumoRow: RESUMO_ROW });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=resumo_executivo&catalogo=xyz");
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario({ id: "u-1" }) });
+  assertEquals(res.status, 400);
+  assertEquals(rpcsChamadas(client.calls), []);
+});
+
+Deno.test("CA-5: falha de banco ao ler o vínculo responde 500 (erro não vira 403 nem resumo)", async () => {
+  const client = criarClienteResumo({ membrosError: { message: "connection reset" }, ativas: [7], resumoRow: RESUMO_ROW });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=resumo_executivo");
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario({ id: "u-5" }) });
+  assertEquals(res.status, 500);
+  assertEquals(rpcsChamadas(client.calls), []);
+});
+
+Deno.test("CA-5: admin da plataforma sem vínculo cai na única empresa ativa e calcula", async () => {
+  const client = criarClienteResumo({ membros: [], ativas: [7], resumoRow: RESUMO_ROW });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=resumo_executivo");
+  const admin = { id: "u-6", app_metadata: { licitagym_role: "admin" } };
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario(admin) });
+  assertEquals(res.status, 200);
 });

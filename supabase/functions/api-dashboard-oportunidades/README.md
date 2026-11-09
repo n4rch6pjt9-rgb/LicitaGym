@@ -390,6 +390,40 @@ A ação é somente leitura: não grava eventos nem gera tarefas. A automação 
 
 ---
 
+### 5. `resumo_executivo` (spec 0048)
+
+Números do Painel Executivo calculados no banco por `public.dashboard_resumo_executivo` (prioridade efetiva, só
+publicações canônicas, leads + monitorar), nunca por uma amostra da lista.
+
+- **Auth:** JWT de usuário (401 sem). Exige empresa ativa de quem chama (`_shared/tenant.ts`): sem vínculo, vínculo
+  desligado ou empresa desativada → 403, antes de qualquer consulta de dados.
+- **Parâmetros (GET ou POST):** só o recorte de catálogo/CATMAT da `list`: `catmat_grupo`, `catmat_classe`,
+  `catmat_pdm`, `catmat_item`, `catalogo`. Qualquer outro filtro (uf, busca, prioridade...) → 400.
+- **Recorte:** sem recorte, o resumo conta todas as oportunidades; recorte sem nenhuma licitação conta nenhuma
+  (zeros e somas `null`), nunca todas. Timeout ao resolver o recorte ou ao calcular → 503; linha da função fora do contrato → 500.
+
+```json
+{
+  "action": "resumo_executivo",
+  "resumo": {
+    "leads_total": 3, "monitoradas_total": 4,
+    "valor_potencial_total": 3300.5, "com_valor_total": 3,
+    "prazo_amanha_total": 1, "prazo_amanha_valor": 1000,
+    "prazo_7_dias_total": 3, "prazo_7_dias_valor": 3300.5,
+    "calculado_em": "2026-11-09T15:00:00+00:00"
+  },
+  "recorte": { "aplicado": true, "filtros": { "catalogo": true }, "licitacoes_total": 6 },
+  "fonte": "licitacoes_externas_prioridade_efetiva"
+}
+```
+
+- `valor_potencial_total`, `prazo_amanha_valor` e `prazo_7_dias_valor` são `null` quando nenhuma licitação contada
+  tem `valor_total` (a tela mostra "—", nunca 0).
+- `prazo_amanha_*`: prazo (o mesmo instante com que a view rebaixa leads: normalizado, senão `raw.data_fim_vigencia`, senão `data_fim`) depois de agora e até 23:59:59 de amanhã (Brasília); `prazo_7_dias_*`: até 23:59:59 do
+  7º dia depois de hoje. Sem "alta aderência" (volta só com aderência pelo TR, decisão de 09/11).
+- `recorte.licitacoes_total`: licitações do recorte (todas as prioridades, antes do escopo leads + monitorar); `null`
+  sem recorte.
+
 ## Tratamento de Erros
 
 As respostas de erro utilizam códigos de status HTTP apropriados e formato JSON com mensagens padronizadas:

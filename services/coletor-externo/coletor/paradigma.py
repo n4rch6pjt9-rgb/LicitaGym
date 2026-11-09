@@ -510,6 +510,13 @@ class PortalParadigma:
     def catalogo(self, classe: dict | None = None, tipo: str = "produto", descricao: str = "",
                  codigo: str = "") -> list[dict]:
         """PesquisarCatalogoProdutos com os filtros da tela Catálogo, em faixas de até 100."""
+        itens, _avisos = self.catalogo_com_avisos(classe, tipo, descricao, codigo)
+        return itens
+
+    def catalogo_com_avisos(self, classe: dict | None = None, tipo: str = "produto", descricao: str = "",
+                            codigo: str = "") -> tuple[list[dict], list[str]]:
+        """Como `catalogo`, mais os avisos de paginação (página repetida, limite de segurança): com aviso, a lista pode
+        estar cortada e o fim não foi confirmado."""
         def buscar(de: int, ate: int) -> Any:
             return self._ws("PesquisarCatalogoProdutos", {"dtoProduto": {
                 "sCdProduto": codigo, "sDsProduto": descricao, "nCdTipo": TIPOS_CATALOGO[tipo],
@@ -517,8 +524,7 @@ class PortalParadigma:
                 "sOrdenarPor": "SCDPRODUTOEMPRESA", "sOrdenarPorDirecao": "ASC",
                 "dtoPaginacao": {"nPaginaDe": de, "nPaginaAte": ate},
                 "dtoIdioma": {"nCdIdioma": 1}}})
-        itens, _avisos = paginar_intervalo(buscar, tamanho=TAMANHO_PAGINA, rotulo=f"catálogo {self.fonte.slug}")
-        return itens
+        return paginar_intervalo(buscar, tamanho=TAMANHO_PAGINA, rotulo=f"catálogo {self.fonte.slug}")
 
     def produtos_escopo(self, categorias: list[str] | None = None, tipo: str = "produto") -> dict[int, dict]:
         """nCdProduto -> {codigo, descricao, categoria, tipo} para as categorias mapeadas, filtradas por Tipo."""

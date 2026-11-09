@@ -53,7 +53,7 @@ import requests
 
 from .paginacao import TAMANHO_PAGINA_MAX, avaliar_pagina, clamp_tamanho, pagina_repetida
 from .perfil_item import normalizar_marca, perfil_item, texto_do_item
-from .escopo import ITEM_FORA, classificar, contexto_academia, e_peca, classificar_texto_item, interesse_borracha, interesse_borracha_item, normalizar, piso_item_fora, CATEGORIAS_PISO_VETAVEL
+from .escopo import ITEM_FORA, academia_ar_livre, brinquedo_infantil, classificar, contexto_academia, e_peca, classificar_texto_item, interesse_borracha, interesse_borracha_item, normalizar, piso_item_fora, CATEGORIAS_PISO_VETAVEL
 from .pncp import CATEGORIAS_SO_MATERIAL, fornece_produto
 from .portal import cnpj_ou_none, limpar, parse_data
 from .proveniencia import ORIGENS, campos_proveniencia
@@ -114,10 +114,13 @@ TIPOS_CATALOGO = {"todos": 0, "produto": 1, "servico": 2}
 # Casamento por nome exato (normalizado), porque o autocomplete devolve várias classes por prefixo.
 CATEGORIAS_MAPEADAS = ["EQUIPAMENTOS ESPORTIVOS", "ESPORTIVO"]
 # Portais cujo catálogo usa outros nomes. Todos os nomes abaixo foram devolvidos pelo autocomplete
-# PesquisarCatalogoProdutoClasses (termo "ESPORT") no estudo dos murais, 08/11/2026 (spec 0046): fiems classe 20;
+# PesquisarCatalogoProdutoClasses (termo "ESPORT") no estudo dos murais, 08/11/2026 (spec 0051): fiems classe 20;
 # fiemt classes 9, 91, 172 e 191 (com e sem o prefixo "25 -" são classes distintas). Decisão do Marcelo (09/11/2026):
 # sem gate, entra o que vier dessas categorias (material esportivo inclusive). Premiação (fiemt 456) fica de fora.
+# fieb: autocomplete com o termo "ACADEMIA" (09/11/2026) devolveu a classe 226, com 123 produtos. Decisão do Marcelo
+# (09/11/2026): só a 226; a 192 MATERIAL ESPORTIVO (1.031 produtos) fica fora. A lista fixa sai com a spec 0052.
 CATEGORIAS_POR_FONTE: dict[str, list[str]] = {
+    "fieb": ["EQUIPAMENTOS PARA ACADEMIA"],
     "fiems": ["MATERIAIS ESPORTIVOS"],
     "fiemt": ["25 - EQUIPAMENTOS ESPORTIVOS, ARTISTICOS E DE RECREACAO", "25 - MATERIAL ESPORTIVO E DE RECREACAO",
               "EQUIPAMENTOS ESPORTIVOS, ARTISTICOS E DE RECREACAO", "MATERIAL ESPORTIVO E DE RECREACAO"],
@@ -377,13 +380,15 @@ def classificar_item_detalhe(it: dict, produtos: dict[int, dict] | None = None,
                              contexto: bool = False) -> tuple[str | None, bool, str, str]:
     """(categoria_escopo, interesse_borracha, material_ou_servico, escopo_metodo) para um item Paradigma.
     `produtos`: nCdProduto -> produto do catálogo filtrado por Tipo+Categoria (ver PortalParadigma.produtos_escopo).
-    Ordem: serviço (gate) > ITEM_FORA (balança etc., mesmo estando na categoria) > catálogo > regras de texto."""
+    Ordem: serviço (gate) > ITEM_FORA (balança etc., mesmo estando na categoria) > catálogo > regras de texto.
+    Academia ao ar livre e brinquedo infantil não entram pelo catálogo: o texto do item decide (regra de negócio; uma
+    classe genérica como "EQUIPAMENTOS PARA ACADEMIA", da FIEB, pode ter ATI cadastrado)."""
     p = partes_item(it.get("sDsItem"))
     texto = " ".join(x for x in (p["categoria"], p["variacao"], p["descricao"]) if x)
     ms = "S" if e_servico(p["categoria"], p["descricao"]) else "M"
     if ms == "S":
         return None, False, ms, "regra"  # gate MATERIAL_SCOPE: serviço não é oportunidade de material
-    if produtos and it.get("nCdProduto") in produtos:
+    if produtos and it.get("nCdProduto") in produtos and not (academia_ar_livre(texto) or brinquedo_infantil(texto)):
         if ITEM_FORA.search(normalizar(texto)):
             return None, False, ms, "catalogo"
         cat = "manutencao" if e_peca(normalizar(texto)) else "forte"  # ex.: MOLA PARA TRAMPOLIM (peça)
@@ -1010,8 +1015,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="coleta só este processo (nCdOrigem), ex.: 32/18; pode repetir")
     ap.add_argument("--anos", help="busca no Mural estatístico (encerrados) destes anos, ex.: 2022,2023")
     ap.add_argument("--categorias", help="filtro Categoria do catálogo, separado por ';' "
-                                         f"(padrão: {'; '.join(CATEGORIAS_MAPEADAS)}; fiems e fiemt têm nomes "
-                                         "próprios em CATEGORIAS_POR_FONTE)")
+                                         f"(padrão: {'; '.join(CATEGORIAS_MAPEADAS)}; fieb, fiems e fiemt têm "
+                                         "nomes próprios em CATEGORIAS_POR_FONTE)")
     ap.add_argument("--tipo", choices=sorted(TIPOS_CATALOGO), default="produto", help="filtro Tipo do catálogo")
     ap.add_argument("--sem-catalogo", action="store_true", help="não usa o catálogo do portal (só regras de texto)")
     ap.add_argument("--sem-resultados", action="store_true")

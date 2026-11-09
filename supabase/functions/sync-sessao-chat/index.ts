@@ -204,6 +204,7 @@ export async function handleRequest(req: Request, ctx: Contexto = {}): Promise<R
           chave_compra: alvo.chaveCompra,
           ok: r.ok,
           novas_inseridas: r.novas_inseridas,
+          alertas_gerados: r.alertas_gerados,
           chamadas: r.chamadas,
           erro: r.erro,
         });

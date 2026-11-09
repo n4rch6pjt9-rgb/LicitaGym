@@ -104,6 +104,7 @@ const OK: ResultadoSincronizacao = {
   ok: true,
   total_lidas: 0,
   novas_inseridas: 0,
+  alertas_gerados: 0,
   chamadas: { "404": 2 },
   erro: null,
   status_erro: null,

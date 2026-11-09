@@ -44,6 +44,7 @@ function mock(banco: Record<string, Linha[]>) {
         select: () => b,
         eq: (c: string, v: unknown) => (filtros.push((r) => r[c] === v), b),
         is: (c: string, v: unknown) => (filtros.push((r) => (r[c] ?? null) === v), b),
+        in: (c: string, vs: unknown[]) => (filtros.push((r) => vs.includes(r[c])), b),
         order: (c: string, o?: { ascending?: boolean }) => ((ordem = { col: c, asc: o?.ascending ?? true }), b),
         limit: (n: number) => ((limite = n), b),
         update: (p: Linha) => ((patch = p), b),

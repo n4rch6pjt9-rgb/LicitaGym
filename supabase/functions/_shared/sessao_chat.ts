@@ -7,6 +7,8 @@
  *   (200, 206 e 404 são cobrados) e a licitação de onde veio a chave (base da retenção, K-7).
  * - 403/502/timeout: registra o erro e para a compra (não consulta as diligências depois de uma falha).
  * Erro de banco sobe para o chamador, com o registro da execução fechado como erro.
+ * - K-5b (etapa 1b): as mensagens lidas passam pela detecção de convocação (`_shared/sessao_alertas.ts`); o alerta é
+ *   idempotente, então falha aqui fecha a execução como erro e a consulta seguinte refaz.
  */
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import {
@@ -16,16 +18,21 @@ import {
   type MensagemIntegra,
   type ResultadoConsultaIntegra,
 } from "./serpro.ts";
+import { gerarAlertas } from "./sessao_alertas.ts";
 
 export interface ConsultasIntegra {
   consultarChat?: (chave: string) => Promise<ResultadoConsultaIntegra>;
   consultarDiligencias?: (chave: string) => Promise<ResultadoConsultaIntegra>;
+  /** Relógio injetável (janela de 24 h do alerta). */
+  agora?: () => number;
 }
 
 export interface ResultadoSincronizacao {
   ok: boolean;
   total_lidas: number;
   novas_inseridas: number;
+  /** Alertas de convocação gravados nesta consulta (K-5b). */
+  alertas_gerados: number;
   /** {"200": n, "404": n, "sem_resposta": n, ...} */
   chamadas: Record<string, number>;
   /** Mensagem do erro da fonte, ou aviso de leitura incompleta (nunca o corpo da resposta). */
@@ -163,6 +170,32 @@ export async function sincronizarCompra(
     novas = (inseridas ?? []).length;
   }
 
+  let alertas = 0;
+  try {
+    alertas = await gerarAlertas(
+      supabase,
+      alvo.licitacaoId,
+      lidas.map((m) => ({
+        chave_mensagem: m.chaveMensagem,
+        texto: m.texto,
+        identificador_item: m.identificadorItem,
+        data_hora: m.dataHora,
+      })),
+      consultas.agora ? consultas.agora() : Date.now(),
+    );
+  } catch (e) {
+    await supabase.schema("private").from("integra_compras_run")
+      .update({
+        terminado_em: new Date().toISOString(),
+        chamadas,
+        mensagens_lidas: lidas.length,
+        mensagens_novas: novas,
+        erro: "falha ao gerar alertas de convocação",
+      })
+      .eq("id", run.id);
+    throw e;
+  }
+
   const { error: erroFim } = await supabase
     .schema("private")
     .from("integra_compras_run")
@@ -180,6 +213,7 @@ export async function sincronizarCompra(
     ok: erroFonte === null,
     total_lidas: lidas.length,
     novas_inseridas: novas,
+    alertas_gerados: alertas,
     chamadas,
     erro: erroFonte ? erroFonte.message : aviso,
     status_erro: erroFonte ? erroFonte.status : null,

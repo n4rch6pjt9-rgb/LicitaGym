@@ -112,6 +112,18 @@ TIPOS_CATALOGO = {"todos": 0, "produto": 1, "servico": 2}
 # Filtro "Categoria" já mapeado (catálogo SFIEC, 26/09/2026): AI03 = EQUIPAMENTOS ESPORTIVOS; NE53 e MC06 = ESPORTIVO.
 # Casamento por nome exato (normalizado), porque o autocomplete devolve várias classes por prefixo.
 CATEGORIAS_MAPEADAS = ["EQUIPAMENTOS ESPORTIVOS", "ESPORTIVO"]
+# Portais cujo catálogo usa outros nomes (autocomplete lido no estudo dos murais, 08/11/2026). Decisão do Marcelo
+# (09/11/2026): sem gate, entra o que vier dessas categorias (material esportivo inclusive). Premiação fica de fora.
+CATEGORIAS_POR_FONTE: dict[str, list[str]] = {
+    "fiems": ["MATERIAIS ESPORTIVOS"],
+    "fiemt": ["25 - EQUIPAMENTOS ESPORTIVOS, ARTISTICOS E DE RECREACAO", "25 - MATERIAL ESPORTIVO E DE RECREACAO",
+              "EQUIPAMENTOS ESPORTIVOS, ARTISTICOS E DE RECREACAO", "MATERIAL ESPORTIVO E DE RECREACAO"],
+}
+
+
+def categorias_da_fonte(slug: str) -> list[str]:
+    """Categorias do catálogo usadas por padrão na fonte (sem --categorias)."""
+    return CATEGORIAS_POR_FONTE.get(slug, CATEGORIAS_MAPEADAS)
 # Regra de 03/10/2026: no máximo 100 itens por página.
 TAMANHO_PAGINA = TAMANHO_PAGINA_MAX
 # Teto contra laço infinito quando a API não devolve página vazia nem total.
@@ -529,7 +541,7 @@ class PortalParadigma:
     def produtos_escopo(self, categorias: list[str] | None = None, tipo: str = "produto") -> dict[int, dict]:
         """nCdProduto -> {codigo, descricao, categoria, tipo} para as categorias mapeadas, filtradas por Tipo."""
         produtos: dict[int, dict] = {}
-        for nome in categorias or CATEGORIAS_MAPEADAS:
+        for nome in categorias or categorias_da_fonte(self.fonte.slug):
             for c in self.classes_catalogo(nome):
                 for x in self.catalogo(c, tipo):
                     if isinstance(x.get("nCdProduto"), int):
@@ -968,7 +980,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="coleta só este processo (nCdOrigem), ex.: 32/18; pode repetir")
     ap.add_argument("--anos", help="busca no Mural estatístico (encerrados) destes anos, ex.: 2022,2023")
     ap.add_argument("--categorias", help="filtro Categoria do catálogo, separado por ';' "
-                                         f"(padrão: {'; '.join(CATEGORIAS_MAPEADAS)})")
+                                         f"(padrão: {'; '.join(CATEGORIAS_MAPEADAS)}; fiems e fiemt têm nomes "
+                                         "próprios em CATEGORIAS_POR_FONTE)")
     ap.add_argument("--tipo", choices=sorted(TIPOS_CATALOGO), default="produto", help="filtro Tipo do catálogo")
     ap.add_argument("--sem-catalogo", action="store_true", help="não usa o catálogo do portal (só regras de texto)")
     ap.add_argument("--sem-resultados", action="store_true")
@@ -1026,7 +1039,7 @@ def _executar(args, fonte: Fonte, portal: "PortalParadigma", sb, termos: list[st
         try:
             produtos = portal.produtos_escopo(cats, args.tipo)
             log.info("catálogo %s: %d produtos (tipo=%s, categorias=%s)", args.fonte, len(produtos), args.tipo,
-                     cats or CATEGORIAS_MAPEADAS)
+                     cats or categorias_da_fonte(args.fonte))
         except requests.RequestException as e:  # tenant sem catálogo público: segue só com regras de texto
             log.warning("catálogo %s indisponível: %s", args.fonte, e)
     forn = None if args.sem_fornecedores or args.sem_resultados else cadastro_fornecedores(sb, dry_run=args.dry_run)

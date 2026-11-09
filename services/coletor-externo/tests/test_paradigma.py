@@ -489,6 +489,34 @@ def test_produtos_escopo_filtra_nome_exato_tipo_e_pagina():
     assert len(prods) == 3 + 3 + 100 + 3
 
 
+def _classes_pedidas(slug: str, categorias=None) -> list[str]:
+    p = P.PortalParadigma(P.FONTES[slug], sessao=MagicMock(), delay=0)
+    pedidas = []
+
+    def ws(metodo, corpo):
+        if metodo == "PesquisarCatalogoProdutoClasses":
+            pedidas.append(corpo["dtoProduto"]["sDsProduto"])
+        return []
+    p._ws = ws
+    p.produtos_escopo(categorias)
+    return pedidas
+
+
+def test_categorias_do_catalogo_por_fonte():
+    # Nomes lidos no autocomplete de cada portal (estudo dos murais, 08/11/2026). Decisão do Marcelo (09/11/2026):
+    # sem gate, entra o que vier dessas categorias.
+    assert _classes_pedidas("fiems") == ["MATERIAIS ESPORTIVOS"]
+    fiemt = _classes_pedidas("fiemt")
+    assert set(fiemt) == {"25 - EQUIPAMENTOS ESPORTIVOS, ARTISTICOS E DE RECREACAO",
+                          "25 - MATERIAL ESPORTIVO E DE RECREACAO",
+                          "EQUIPAMENTOS ESPORTIVOS, ARTISTICOS E DE RECREACAO", "MATERIAL ESPORTIVO E DE RECREACAO"}
+    assert not any("PREMIA" in c for c in fiemt)  # premiação (troféu, medalha) não é equipamento
+    # as outras fontes não mudam
+    assert _classes_pedidas("sfiec") == P.CATEGORIAS_MAPEADAS
+    # --categorias explícito vence o mapeamento da fonte
+    assert _classes_pedidas("fiems", ["ESPORTIVO"]) == ["ESPORTIVO"]
+
+
 def test_mural_estatistico_leva_totais_para_licitacao():
     # linha real de PesquisarProcessosMuralEstatistico (HAR SFIEC, 26/09/2026), reduzida
     est = {"nCdProcesso": 32, "nCdOrigem": 32, "nCdModulo": 18, "nAnoFinalizacao": 2022,

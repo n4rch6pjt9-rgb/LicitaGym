@@ -744,8 +744,10 @@ Deno.test("acompanhamento: 503 do PNCP não repete a chamada no detalhe (uma vag
     for (const ep of ["compra", "itens", "atas", "historico", "arquivos"]) {
       assertEquals(contagem.get(ep), 1, `endpoint ${ep} chamado mais de uma vez`);
     }
+    // spec 0049: Atas em 503 → uma busca de atas no índice do PNCP (503 aqui), também sem repetição
+    assertEquals(contagem.get("outro"), 1, "busca do PNCP chamada mais de uma vez");
     // antes: 13 vagas do lease (1 req/s no host) = ~18 s de fila medidos em produção
-    assertEquals(slots.n, 5);
+    assertEquals(slots.n, 6);
   } finally {
     globalThis.fetch = originalFetch;
     clearAcompanhamentoCache();

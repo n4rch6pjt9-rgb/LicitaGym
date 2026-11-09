@@ -194,7 +194,7 @@ export function precisaDaCopia(secao: AcompanhamentoSection<unknown[]>): boolean
 export function aplicarCopiaLocal<T, S extends ComTotal<T[]>>(
   secao: S,
   copia: Copia<T> | null,
-): S & { origem?: "copia_local"; copia_gravada_em?: string | null } {
+): S & { origem?: "copia_local" | "busca_pncp"; copia_gravada_em?: string | null } {
   if (!precisaDaCopia(secao) || !copia || copia.dados.length === 0) return secao;
   return {
     ...secao,

@@ -127,6 +127,10 @@ export interface CompraMetadata {
     aberturaProposta: string | null;
     encerramentoProposta: string | null;
     inclusao: string | null;
+    /**
+     * Pela Consulta: `dataAtualizacaoGlobal` (senão `dataAtualizacao`), sem offset. Pela busca (spec 0049,
+     * `origem: "busca_pncp"`): `dataAtualizacao` da compra, em ISO -03:00. Não tratar como "global" sem olhar a origem.
+     */
     atualizacao: string | null;
   };
   linkSistemaOrigem: string | null;
@@ -204,6 +208,8 @@ export interface AtaAcompanhamento {
    * vigenciaFim (não dá para afirmar). Derivado em ataVigente.
    */
   vigente?: boolean | null;
+  /** Spec 0049: `permite_adesao` do índice de busca (só nas atas com `origem: "busca_pncp"`). */
+  permiteAdesao?: boolean | null;
 }
 
 export interface HistoricoEvento {
@@ -238,12 +244,32 @@ export interface AcompanhamentoSection<T> {
    * Ausente = dados do PNCP ao vivo. "copia_local" = o PNCP falhou (`erro` mantido) e `dados` vêm da cópia gravada
    * pelo coletor (licitacao_itens / licitacao_documentos), de `copia_gravada_em`. Só Itens e Documentos têm cópia.
    */
-  origem?: "copia_local";
+  origem?: "copia_local" | "busca_pncp";
   /**
    * Quando o coletor viu os dados no PNCP pela última vez (ISO). Documentos: maior last_seen_at. Itens: null, porque
    * licitacao_itens não guarda essa data (desconhecida, não inventada).
    */
   copia_gravada_em?: string | null;
+  /**
+   * Spec 0049. Com `origem: "busca_pncp"` (só Resumo e Atas): `data_atualizacao_pncp` do índice de busca do PNCP, em
+   * ISO -03:00 (Atas: a mais recente). null quando a busca não trouxe data.
+   */
+  busca_atualizado_em?: string | null;
+  /** Spec 0049. Com `origem: "copia_local"` e a busca respondendo: a compra mudou no PNCP depois da cópia? */
+  conferencia_busca?: ConferenciaBusca;
+}
+
+/**
+ * Atualização da compra no índice de busca × a gravada pelo coletor (`licitacoes_externas.pncp_data_atualizacao`).
+ * É a `dataAtualizacao` da compra, não a global: `compra_mudou: false` não prova que itens e documentos não mudaram.
+ */
+export interface ConferenciaBusca {
+  /** ISO -03:00; null quando a busca não trouxe data. */
+  pncp_atualizado_em: string | null;
+  /** ISO UTC; null quando o coletor não gravou a data. */
+  gravado_em: string | null;
+  /** Índice posterior à gravada (comparado em segundos inteiros); null quando falta uma das duas. */
+  compra_mudou: boolean | null;
 }
 
 export type AcompanhamentoResponse =

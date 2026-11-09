@@ -8,6 +8,7 @@ import { sincronizarPortalOficialEAtraso } from "./pncpAtraso.ts";
 import { estaNoPipeline } from "./portal.ts";
 import { UnifiedHttpClient } from "../_shared/http-client/index.ts";
 import { aplicarCopiaLocal, arquivosDaCopiaLocal, itensDaCopiaLocal, precisaDaCopia } from "./copiaLocal.ts";
+import { aplicarBuscaPncp, clearBuscaPncpCache } from "./buscaPncp.ts";
 import type {
   AcompanhamentoActionParams,
   AcompanhamentoResponse,
@@ -167,6 +168,7 @@ export function setCachedAcompanhamento(
 
 export function clearAcompanhamentoCache(): void {
   acompanhamentoCache.clear();
+  clearBuscaPncpCache();
 }
 
 /**
@@ -601,6 +603,8 @@ export const ACOMPANHAMENTO_LICITACAO_COLUMNS: readonly string[] = [
   "link_sistema_origem",
   "fase",
   "raw",
+  // spec 0049: conferência da cópia local com a atualização da compra no índice de busca do PNCP
+  "pncp_data_atualizacao",
 ];
 
 // -----------------------------------------------------------------------------
@@ -692,6 +696,16 @@ export function linkSistemaOrigemFromRaw(raw: unknown): string | null {
 
 const semTenant: TenantDoUsuario = () => Promise.resolve(null);
 
+/** Cliente HTTP do detalhe. Host lease usa private.acquire_http_slot via client.schema("private").rpc(...). */
+function httpClientDoDetalhe(client: SupabaseClient, ctx?: DashboardOportunidadesClientContext): UnifiedHttpClient {
+  if (ctx?.httpClient) return ctx.httpClient;
+  const hasPrivateRpc = typeof client.rpc === "function" && typeof client.schema === "function";
+  return new UnifiedHttpClient({
+    supabaseClient: hasPrivateRpc ? client : null,
+    hostLease: hasPrivateRpc ? undefined : null,
+  });
+}
+
 export async function handleAcompanhamento(
   params: AcompanhamentoActionParams,
   ctx?: DashboardOportunidadesClientContext,
@@ -741,12 +755,7 @@ export async function handleAcompanhamento(
     if (cached && cached.disponivel) {
       payload = cached;
     } else {
-    // Host lease usa private.acquire_http_slot via client.schema("private").rpc(...).
-    const hasPrivateRpc = typeof client.rpc === "function" && typeof client.schema === "function";
-    const httpClient = ctx?.httpClient ?? new UnifiedHttpClient({
-      supabaseClient: hasPrivateRpc ? client : null,
-      hostLease: hasPrivateRpc ? undefined : null,
-    });
+    const httpClient = httpClientDoDetalhe(client, ctx);
 
     // 5. Executa requisições em paralelo com tratamento individual de erros
     const [compraSettled, itensSettled, atasSettled, historicoSettled, arquivosSettled] =
@@ -826,11 +835,20 @@ export async function handleAcompanhamento(
         precisaDaCopia(disp.itens) ? itensDaCopiaLocal(client, Number(row.id)) : Promise.resolve(null),
         precisaDaCopia(disp.arquivos) ? arquivosDaCopiaLocal(client, Number(row.id), disp.pncp) : Promise.resolve(null),
       ]);
-      payload = {
-        ...disp,
+      const comCopia = {
+        compra: disp.compra,
+        atas: disp.atas,
         itens: aplicarCopiaLocal(disp.itens, copiaItens),
         arquivos: aplicarCopiaLocal(disp.arquivos, copiaArquivos),
       };
+      // Spec 0049: Resumo e Atas pela busca do PNCP e conferência da cópia, só quando alguma seção falhou.
+      const comBusca = await aplicarBuscaPncp(
+        comCopia,
+        disp.pncp.numero_controle_pncp,
+        row.pncp_data_atualizacao,
+        httpClientDoDetalhe(client, ctx),
+      );
+      payload = { ...disp, ...comBusca };
     }
 
     // PDM e unidade por item (CA-8 da spec 0009): lidos do banco a cada resposta, também quando o PNCP veio do cache.

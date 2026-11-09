@@ -1,4 +1,4 @@
--- Spec 0042 (K-1): aposentadoria do sync de legislação.
+-- Spec 0044 (K-1): aposentadoria do sync de legislação.
 --   CA-1: não existe cron.job 'licitagym-sync-pncp-legislation' (só confere onde há pg_cron; o validar-migrations
 --         roda sem pg_cron e a idempotência vem da reaplicação da migration).
 --   CA-2: pncp_sync_dias_sem_sucesso não olha mais 'legislacao'; com uma execução 'pca' concluída há 1 dia e
@@ -28,7 +28,7 @@ begin
     values ('pca', 'incremental', 'concluida', now() - interval '1 day', now() - interval '1 day'),
            ('orgaos', 'incremental', 'concluida', now() - interval '2 days', now() - interval '2 days'),
            ('compras_catmat', 'incremental', 'concluida', now() - interval '3 days', now() - interval '3 days'),
-           -- legislação parada há 40 dias: antes da 0042 seria o pior recurso
+           -- legislação parada há 40 dias: antes da 0044 seria o pior recurso
            ('legislacao', 'incremental', 'concluida', now() - interval '40 days', now() - interval '40 days');
 
     select r.detalhe, r.valor into v_detalhe, v_valor

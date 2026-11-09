@@ -1,6 +1,6 @@
--- LicitaGym: apaga do catálogo legislacao_* os documentos que não são norma (spec 0042, K-3)
+-- LicitaGym: apaga do catálogo legislacao_* os documentos que não são norma (spec 0044, K-3)
 --
--- Contexto: o sync-pncp-legislation (aposentado em 20261109000000) gravou como "vigente" links de navegação das
+-- Contexto: o sync-pncp-legislation (aposentado em 20261109020000) gravou como "vigente" links de navegação das
 -- páginas-índice: "GOV.BR", "Guia do Fornecedor", "Combate à Discriminação Racial", "Resoluções revogadas" etc.
 -- Medido em produção em 08/11/2026: 32 documentos, 27 versões, 27 alertas. As 11 normas vieram do seed
 -- 20260920142857 (tipo_norma preenchido, nenhuma versão); os outros 21 documentos vieram do sync (2 em 20/09, 19 em
@@ -66,7 +66,7 @@ end
 $fn$;
 
 comment on function private.legislacao_apagar_documentos(uuid[]) is
-  'Spec 0042 (K-3): apaga documentos-lixo do catálogo legislacao_* com versões, alertas e relações. Recusa norma '
+  'Spec 0044 (K-3): apaga documentos-lixo do catálogo legislacao_* com versões, alertas e relações. Recusa norma '
   '(tipo_norma preenchido ou ligada a compras_api_secao_legislacao). Só para migrations.';
 
 revoke all on function private.legislacao_apagar_documentos(uuid[]) from public, anon, authenticated, service_role;

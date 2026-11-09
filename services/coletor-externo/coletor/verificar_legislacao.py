@@ -1,4 +1,4 @@
-"""Verificador trimestral do corpus de legislação (spec 0042, K-5).
+"""Verificador trimestral do corpus de legislação (spec 0044, K-5).
 
 Para cada norma de `data/legislacao_corpus.json`, baixa o texto oficial, normaliza e compara o sha256 com o da última
 conferência. Para os artigos de `public.norma_dispositivos` com `conferido_oficial = true`, confere se o texto gravado

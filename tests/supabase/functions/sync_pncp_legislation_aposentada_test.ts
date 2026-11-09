@@ -1,4 +1,4 @@
-// Spec 0042, K-6: sync-pncp-legislation aposentada. Com auth de cron válida responde 410 sem abrir execução nem
+// Spec 0044, K-6: sync-pncp-legislation aposentada. Com auth de cron válida responde 410 sem abrir execução nem
 // chamar rede; sem auth continua 401 (a ordem auth → 410 não muda).
 import { assertEquals } from "jsr:@std/assert@1";
 import { handleRequest } from "../../../supabase/functions/sync-pncp-legislation/index.ts";
@@ -24,7 +24,7 @@ async function semRede<T>(fn: () => Promise<T>): Promise<{ resultado: T; chamada
 Deno.test("CA-3: com auth de cron válida responde 410 sem fetch nem execução", async () => {
   const { resultado, chamadas } = await semRede(() => Promise.resolve(handleRequest(post(), { validarCron: () => true })));
   assertEquals(resultado.status, 410);
-  assertEquals((await resultado.json()).error, "aposentada pela spec 0042");
+  assertEquals((await resultado.json()).error, "aposentada pela spec 0044");
   assertEquals(chamadas, 0);
 });
 
@@ -41,7 +41,7 @@ Deno.test("CA-3: o código não importa mais o cliente admin nem o lock do sync"
 
 Deno.test("CA-3: contexto padrão (requireCronAuth real) sem Bearer responde 401", async () => {
   const anterior = Deno.env.get("SYNC_CRON_SECRET");
-  Deno.env.set("SYNC_CRON_SECRET", "segredo-de-teste-0042");
+  Deno.env.set("SYNC_CRON_SECRET", "segredo-de-teste-0044");
   try {
     const { resultado, chamadas } = await semRede(() => Promise.resolve(handleRequest(post())));
     assertEquals(resultado.status, 401);

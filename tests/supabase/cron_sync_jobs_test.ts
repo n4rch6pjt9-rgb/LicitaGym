@@ -7,9 +7,9 @@ async function sql(): Promise<string> {
   return await Deno.readTextFile(MIGRATION);
 }
 
-const APOSENTA_LEGISLACAO = "./supabase/migrations/20261109000000_legislacao_aposenta_sync.sql";
+const APOSENTA_LEGISLACAO = "./supabase/migrations/20261109020000_legislacao_aposenta_sync.sql";
 
-// Jobs desagendados por migrations posteriores (ex.: spec 0042 tira a legislação).
+// Jobs desagendados por migrations posteriores (ex.: spec 0044 tira a legislação).
 async function jobsDesagendados(): Promise<Set<string>> {
   const nomes = new Set<string>();
   for await (const e of Deno.readDir("./supabase/migrations")) {
@@ -99,7 +99,7 @@ Deno.test("cron: agendamento idempotente, nomes únicos e helper sem EXECUTE par
   );
 });
 
-Deno.test("CA-1 (spec 0042): a migration desagenda a legislação por nome, sem depender do pg_cron existir", async () => {
+Deno.test("CA-1 (spec 0044): a migration desagenda a legislação por nome, sem depender do pg_cron existir", async () => {
   const t = await Deno.readTextFile(APOSENTA_LEGISLACAO);
   assert(t.includes("extname = 'pg_cron'"), "guarda para Postgres sem pg_cron (validar-migrations)");
   assert(

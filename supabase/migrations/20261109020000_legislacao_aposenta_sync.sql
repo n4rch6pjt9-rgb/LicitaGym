@@ -1,4 +1,4 @@
--- LicitaGym: aposenta o sync semanal de legislação (spec 0042, K-1; issue #245)
+-- LicitaGym: aposenta o sync semanal de legislação (spec 0044, K-1; issue #245)
 --
 -- Contexto: o job licitagym-sync-pncp-legislation (20260930180000) chamava a sync-pncp-legislation toda segunda.
 -- Ela raspava páginas-índice e gravava links de navegação como "vigente"; desde 12/10/2026 falha toda semana

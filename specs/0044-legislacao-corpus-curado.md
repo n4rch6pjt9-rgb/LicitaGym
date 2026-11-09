@@ -1,4 +1,4 @@
-# 0042: Tratar a legislação como corpus curado e aposentar o sync semanal
+# 0044: Tratar a legislação como corpus curado e aposentar o sync semanal
 
 - **Status:** em implementação (aprovada pelo Marcelo em 08/11/2026)
 - **Alimenta:** spec-mãe 0032, fase 4 (peça jurídica: "o artigo citado"). O insumo é a garantia de que o texto dos
@@ -75,7 +75,7 @@ A legislação de licitação muda raramente. Sync semanal de páginas-índice n
 | K-3 | Limpeza do catálogo `legislacao_*`: os documentos que não são norma são **apagados** (decisão de 08/11), junto com suas versões e alertas, por migration com lista explícita de `id` e contagem antes e depois. Os arquivos no bucket `pncp-legislation` desses documentos são apagados pela API de Storage num script de operação (`scripts/ops/legislacao_apagar_arquivos.py`, com `--dry-run`), não por `delete` em `storage.objects`. Os documentos de seed com norma ficam intactos | lista explícita de `id` (não por padrão de título) | documentos de norma intactos; lixo, versões, alertas e arquivos fora | migration falha se algum `id` da lista for de documento de seed (20/09) | migration (deploy) + script (Marcelo roda) |
 | K-4 | Corpus curado versionado `services/coletor-externo/coletor/data/legislacao_corpus.json` (ajuste da implementação: o Dockerfile do coletor só copia `coletor/`, e o arquivo precisa estar na imagem do Cloud Run): por norma, `norma` (ex.: `LEI_14133_2021`), título, URL oficial, `vigencia_inicio`, `revogada_em` (ou `null`), `sha256_texto_normalizado` e `conferido_em` da última conferência | — | arquivo no repositório, revisado em PR | — | quem edita: PR (Marcelo aprova) |
 | K-5 | Verificador **trimestral** no **Cloud Run Job** (GCP, onde os coletores já rodam): módulo `services/coletor-externo/coletor/verificar_legislacao.py` (`python -m coletor.verificar_legislacao`). Para cada norma da K-4, baixa o texto oficial, normaliza (mesma regra da `20261011100500`: decodificar Windows-1252 e colapsar espaços) e compara o hash. Para os artigos de `norma_dispositivos` com `conferido_oficial = true`, confere se o trecho ainda é substring literal. Agendamento pelo Cloud Scheduler (dia 1 de jan/abr/jul/out), configurado pelo Marcelo como os outros jobs | corpus da K-4 (dentro da imagem); `norma_dispositivos` (somente `select`, com as variáveis `SUPABASE_URL` e `SUPABASE_SERVICE_ROLE_KEY` que os coletores já usam) | por norma: `igual`, `mudou` ou `nao_verificado` (erro de rede ou HTTP); por artigo: `confere` ou `divergente`. Havendo `mudou` ou `divergente`, o job sai com código ≠ 0 e grava o relatório no log do Cloud Run; não abre issue (decisão P-8) | rede, timeout ou 4xx/5xx → `nao_verificado`, nunca `igual` nem `mudou` | Cloud Scheduler; nunca escreve no banco |
-| K-6 | `sync-pncp-legislation` aposentada: com auth de cron válida, responde `410` `{ "error": "aposentada pela spec 0042" }` sem abrir execução nem chamar rede | `POST` | `410` | sem auth → `401` (ordem de checagem atual mantida) | cron (já desagendado) |
+| K-6 | `sync-pncp-legislation` aposentada: com auth de cron válida, responde `410` `{ "error": "aposentada pela spec 0044" }` sem abrir execução nem chamar rede | `POST` | `410` | sem auth → `401` (ordem de checagem atual mantida) | cron (já desagendado) |
 
 ## Critérios de aceite
 
@@ -156,10 +156,10 @@ Esse texto é o que a minuta da fase 4 vai citar. Se o Planalto mudar o artigo, 
 
 | CA | Teste | Resultado local |
 |---|---|---|
-| CA-1 | `supabase/tests/legislacao_aposenta_sync_check.sql` + `tests/supabase/cron_sync_jobs_test.ts` ("CA-1 (spec 0042)") | passa (`validar-migrations`: Tudo OK; Deno ok) |
+| CA-1 | `supabase/tests/legislacao_aposenta_sync_check.sql` + `tests/supabase/cron_sync_jobs_test.ts` ("CA-1 (spec 0044)") | passa (`validar-migrations`: Tudo OK; Deno ok) |
 | CA-2 | `supabase/tests/legislacao_aposenta_sync_check.sql` | passa |
 | CA-3 | `tests/supabase/functions/sync_pncp_legislation_aposentada_test.ts` | passa |
-| CA-4 | `tests/supabase/functions/api_syncs_test.ts` ("CA-4 (spec 0042)") | passa |
+| CA-4 | `tests/supabase/functions/api_syncs_test.ts` ("CA-4 (spec 0044)") | passa |
 | CA-5 | `supabase/tests/legislacao_limpeza_catalogo_check.sql` (+ `tests/test_legislacao_apagar_arquivos.py` para o script de Storage) | passa |
 | CA-6 | `services/coletor-externo/tests/test_verificar_legislacao.py` (`test_ca6_*`) | passa |
 | CA-7 | idem (`test_ca7_*`) | passa |

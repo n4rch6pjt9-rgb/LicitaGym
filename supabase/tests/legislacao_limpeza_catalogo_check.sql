@@ -1,4 +1,4 @@
--- Spec 0042 (K-3, CA-5): limpeza do catálogo legislacao_* (migration 20261109000100_legislacao_limpeza_catalogo).
+-- Spec 0044 (K-3, CA-5): limpeza do catálogo legislacao_* (migration 20261109020100_legislacao_limpeza_catalogo).
 --   1. Nenhum dos 21 documentos-lixo da lista existe mais (documentos, versões, alertas).
 --   2. As normas do seed 20260920142857 (por url_canonica) que existirem continuam 'vigente'.
 --   3. private.legislacao_apagar_documentos(uuid[]): apaga documento sem tipo_norma com versões e alertas; recusa
@@ -58,27 +58,27 @@ begin
 
   begin
     insert into public.legislacao_documentos (tipo_norma, numero, ano, titulo, status, url_canonica)
-    values ('lei', '99999', 2099, 'Norma de teste (check 0042)', 'vigente', 'https://teste.invalid/norma-0042')
+    values ('lei', '99999', 2099, 'Norma de teste (check 0044)', 'vigente', 'https://teste.invalid/norma-0044')
     returning id into v_norma;
     insert into public.legislacao_documentos (titulo, status, url_canonica)
-    values ('GOV.BR (teste 0042)', 'vigente', 'https://teste.invalid/lixo-0042')
+    values ('GOV.BR (teste 0044)', 'vigente', 'https://teste.invalid/lixo-0044')
     returning id into v_lixo_teste;
     insert into public.legislacao_versoes (documento_id, numero_versao, storage_path, sha256)
-    values (v_lixo_teste, 1, v_lixo_teste::text || '/x/original.pdf', 'sha-teste-0042')
+    values (v_lixo_teste, 1, v_lixo_teste::text || '/x/original.pdf', 'sha-teste-0044')
     returning id into v_versao;
     update public.legislacao_documentos set versao_atual_id = v_versao where id = v_lixo_teste;
     insert into public.legislacao_alertas (documento_id, tipo_alerta, titulo)
-    values (v_lixo_teste, 'nova_versao', 'teste 0042');
+    values (v_lixo_teste, 'nova_versao', 'teste 0044');
     -- relação entre o lixo e a norma: sai junto (sem cascade na FK, a função apaga antes do documento)
     insert into public.legislacao_relacoes (documento_origem_id, documento_destino_id, tipo_relacao)
     values (v_lixo_teste, v_norma, 'referencia');
     -- documento sem tipo_norma mas ligado a uma seção da API do Compras: também é recusado
     insert into public.legislacao_documentos (titulo, status, url_canonica)
-    values ('Sem tipo, ligado a seção (teste 0042)', 'vigente', 'https://teste.invalid/secao-0042')
+    values ('Sem tipo, ligado a seção (teste 0044)', 'vigente', 'https://teste.invalid/secao-0044')
     returning id into v_lixo_secao;
-    insert into public.compras_api_secoes (codigo, nome) values ('T0042', 'teste 0042') on conflict do nothing;
+    insert into public.compras_api_secoes (codigo, nome) values ('T0044', 'teste 0044') on conflict do nothing;
     insert into public.compras_api_secao_legislacao (secao_codigo, documento_id, papel)
-    values ('T0042', v_lixo_secao, 'referencia');
+    values ('T0044', v_lixo_secao, 'referencia');
     begin
       perform private.legislacao_apagar_documentos(array[v_lixo_secao]);
       raise exception 'LIMPEZA CHECK FALHOU (CA-5): apagou documento ligado a compras_api_secao_legislacao';

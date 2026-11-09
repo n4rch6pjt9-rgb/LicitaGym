@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Apaga do bucket pncp-legislation os arquivos dos documentos-lixo do catálogo de legislação (spec 0042, K-3).
+"""Apaga do bucket pncp-legislation os arquivos dos documentos-lixo do catálogo de legislação (spec 0044, K-3).
 
-A migration 20261109000100_legislacao_limpeza_catalogo apaga as linhas; os arquivos ficam no Storage, que não se apaga
+A migration 20261109020100_legislacao_limpeza_catalogo apaga as linhas; os arquivos ficam no Storage, que não se apaga
 por SQL. Os caminhos são `<documento_id>/<sha16>/original.pdf`, então o script lista o bucket e apaga só o que está
 debaixo dos ids da migration. Sem --executar, só mostra o que apagaria (dry-run).
 
@@ -21,7 +21,7 @@ from pathlib import Path
 import requests
 
 BUCKET = "pncp-legislation"
-MIGRATION = Path(__file__).resolve().parents[2] / "supabase" / "migrations" / "20261109000100_legislacao_limpeza_catalogo.sql"
+MIGRATION = Path(__file__).resolve().parents[2] / "supabase" / "migrations" / "20261109020100_legislacao_limpeza_catalogo.sql"
 TIMEOUT_S = 30
 PAGINA = 100
 LOTE_APAGAR = 100

@@ -1,4 +1,4 @@
-"""Spec 0042, K-3: script que apaga do Storage os arquivos dos documentos-lixo (sem rede: sessão falsa)."""
+"""Spec 0044, K-3: script que apaga do Storage os arquivos dos documentos-lixo (sem rede: sessão falsa)."""
 import importlib.util
 from pathlib import Path
 

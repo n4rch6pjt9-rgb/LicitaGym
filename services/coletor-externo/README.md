@@ -387,7 +387,7 @@ no bucket e `roles/secretmanager.secretAccessor` no secret.
 Para rodar toda semana: Cloud Scheduler → `gcloud run jobs execute`.
 A coleta é idempotente (upsert + só baixa o que está `pendente`/`erro`).
 
-## Verificador de legislação (spec 0042, trimestral)
+## Verificador de legislação (spec 0044, trimestral)
 
 `python -m coletor.verificar_legislacao` confere se o texto oficial das normas do corpus curado
 (`coletor/data/legislacao_corpus.json`) mudou e se os artigos de `norma_dispositivos` com `conferido_oficial = true`

@@ -1,4 +1,4 @@
-"""Spec 0042, K-5: verificador trimestral do corpus de legislação (sem rede: o download é injetado)."""
+"""Spec 0044, K-5: verificador trimestral do corpus de legislação (sem rede: o download é injetado)."""
 from __future__ import annotations
 
 import hashlib

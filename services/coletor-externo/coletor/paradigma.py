@@ -112,8 +112,10 @@ TIPOS_CATALOGO = {"todos": 0, "produto": 1, "servico": 2}
 # Filtro "Categoria" já mapeado (catálogo SFIEC, 26/09/2026): AI03 = EQUIPAMENTOS ESPORTIVOS; NE53 e MC06 = ESPORTIVO.
 # Casamento por nome exato (normalizado), porque o autocomplete devolve várias classes por prefixo.
 CATEGORIAS_MAPEADAS = ["EQUIPAMENTOS ESPORTIVOS", "ESPORTIVO"]
-# Portais cujo catálogo usa outros nomes (autocomplete lido no estudo dos murais, 08/11/2026). Decisão do Marcelo
-# (09/11/2026): sem gate, entra o que vier dessas categorias (material esportivo inclusive). Premiação fica de fora.
+# Portais cujo catálogo usa outros nomes. Todos os nomes abaixo foram devolvidos pelo autocomplete
+# PesquisarCatalogoProdutoClasses (termo "ESPORT") no estudo dos murais, 08/11/2026 (spec 0046): fiems classe 20;
+# fiemt classes 9, 91, 172 e 191 (com e sem o prefixo "25 -" são classes distintas). Decisão do Marcelo (09/11/2026):
+# sem gate, entra o que vier dessas categorias (material esportivo inclusive). Premiação (fiemt 456) fica de fora.
 CATEGORIAS_POR_FONTE: dict[str, list[str]] = {
     "fiems": ["MATERIAIS ESPORTIVOS"],
     "fiemt": ["25 - EQUIPAMENTOS ESPORTIVOS, ARTISTICOS E DE RECREACAO", "25 - MATERIAL ESPORTIVO E DE RECREACAO",
@@ -542,7 +544,12 @@ class PortalParadigma:
         """nCdProduto -> {codigo, descricao, categoria, tipo} para as categorias mapeadas, filtradas por Tipo."""
         produtos: dict[int, dict] = {}
         for nome in categorias or categorias_da_fonte(self.fonte.slug):
-            for c in self.classes_catalogo(nome):
+            classes = self.classes_catalogo(nome)
+            if not classes:
+                # Categoria renomeada ou removida no portal: sem aviso, o catálogo encolhe calado (FIEMS/FIEMT
+                # ficaram meses com 0 produtos assim).
+                log.warning("catálogo %s: categoria %r sem classe de nome exato no portal", self.fonte.slug, nome)
+            for c in classes:
                 for x in self.catalogo(c, tipo):
                     if isinstance(x.get("nCdProduto"), int):
                         produtos[x["nCdProduto"]] = {"codigo": x.get("sCdProdutoEmpresa"), "descricao": x.get("sDsProduto"),

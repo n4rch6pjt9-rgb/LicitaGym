@@ -211,7 +211,10 @@ export interface AcompanhamentoSection<T> {
    * pelo coletor (licitacao_itens / licitacao_documentos), de `copia_gravada_em`. Só Itens e Documentos têm cópia.
    */
   origem?: "copia_local";
-  /** Maior updated_at das linhas da cópia local usadas (ISO); null = desconhecido. */
+  /**
+   * Quando o coletor viu os dados no PNCP pela última vez (ISO). Documentos: maior last_seen_at. Itens: null, porque
+   * licitacao_itens não guarda essa data (desconhecida, não inventada).
+   */
   copia_gravada_em?: string | null;
 }
 

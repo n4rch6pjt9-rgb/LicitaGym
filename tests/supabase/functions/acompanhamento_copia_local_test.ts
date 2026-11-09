@@ -22,17 +22,24 @@ const ROW_125 = {
   link_sistema_origem: "https://licitanet.com.br/sessao/198679",
 };
 
-/** DTO do /itens do PNCP como o coletor grava em licitacao_itens.raw (LICITANET numera 7932110...). */
-function dtoItem(numeroItem: number, extra: Record<string, unknown> = {}) {
+/**
+ * Linha de licitacao_itens como o coletor PNCP grava desde 04/10/2026: colunas estruturadas e raw NULL (o DTO vai
+ * para o GCS). LICITANET numera os itens 7932110, 7932111...
+ */
+function linhaItem(numero_item: number, extra: Record<string, unknown> = {}) {
   return {
-    numeroItem,
-    descricao: `ITEM ${numeroItem}`,
-    quantidade: 1,
-    unidadeMedida: "UND",
-    valorUnitarioEstimado: 14.83,
-    situacaoCompraItemNome: "Em andamento",
-    temResultado: false,
-    materialOuServico: "M",
+    numero_item,
+    descricao: `ITEM ${numero_item}`,
+    quantidade: "1.0",
+    unidade_medida: "UND",
+    valor_unitario_estimado: "14.83",
+    situacao: "Em andamento",
+    tem_resultado: false,
+    catalogo_codigo_item: null,
+    catalogo_id: null,
+    material_ou_servico: "M",
+    raw: null,
+    updated_at: "2026-10-01T14:56:33.956731+00:00",
     ...extra,
   };
 }
@@ -105,11 +112,17 @@ async function chamar(tabelas: Tabelas) {
   }
 }
 
-Deno.test("cópia local: PNCP em 503 mostra os itens gravados, com erro do PNCP, origem e data da cópia", async () => {
+Deno.test("cópia local: PNCP em 503 mostra os itens gravados (colunas, raw NULL), com erro do PNCP e origem", async () => {
   const { res, body } = await chamar({
     licitacao_itens: [
-      { numero_item: 7932110, raw: dtoItem(7932110), updated_at: "2026-10-01T14:56:33.956731+00:00" },
-      { numero_item: 7932111, raw: dtoItem(7932111, { temResultado: true }), updated_at: "2026-10-02T10:00:00+00:00" },
+      linhaItem(7932110),
+      // raw congelado com dado velho: vale a coluna, que o coletor atualiza a cada coleta
+      linhaItem(7932111, {
+        tem_resultado: true,
+        catalogo_codigo_item: "150012",
+        catalogo_id: 1,
+        raw: { numeroItem: 7932111, temResultado: false, valorUnitarioEstimado: 1 },
+      }),
     ],
     licitacao_documentos: [],
   });
@@ -117,12 +130,20 @@ Deno.test("cópia local: PNCP em 503 mostra os itens gravados, com erro do PNCP,
   // a falha do PNCP continua explícita
   assertEquals(body.itens.erro, "HTTP 503 on pncp.gov.br");
   assertEquals(body.itens.origem, "copia_local");
-  assertEquals(body.itens.copia_gravada_em, "2026-10-02T10:00:00+00:00");
+  // licitacao_itens não guarda quando a linha foi atualizada: data desconhecida, não o default do insert
+  assertEquals(body.itens.copia_gravada_em, null);
   assertEquals(body.itens.total, 2);
   assertEquals(body.itens.dados.map((i: { numeroItem: number }) => i.numeroItem), [7932110, 7932111]);
   assertEquals(body.itens.dados[0].unidade, "UND");
   assertEquals(body.itens.dados[0].valorUnitarioEstimado, 14.83);
+  assertEquals(body.itens.dados[0].quantidade, 1);
+  assertEquals(body.itens.dados[0].materialOuServico, "M");
   assertEquals(body.itens.dados[0].situacaoExibida, "Recebendo Propostas");
+  assertEquals(body.itens.dados[1].temResultado, true);
+  assertEquals(body.itens.dados[1].valorUnitarioEstimado, 14.83);
+  assertEquals(body.itens.dados[1].catalogoCodigoItem, "150012");
+  assertEquals(body.itens.dados[1].catalogoId, 1);
+  assertEquals(body.itens.dados[1].catalogoNome, null);
   // resultado não consultado não vira "sem vencedor"
   assertEquals(body.itens.dados[1].resultados, []);
   assertEquals(body.itens.dados[1].resultadosErro, RESULTADOS_NAO_CONSULTADOS);
@@ -142,20 +163,23 @@ Deno.test("cópia local: documentos do PNCP gravados aparecem; os de portal e os
     licitacao_documentos: [
       {
         id: 1,
+        secao: "processo",
         nome_original: "198679_editais_1787310691.zip",
         arquivo_origem: "pncp-1",
         data_documento: "2026-08-21T19:04:22+00:00",
         raw: { url: "https://pncp.gov.br/pncp-api/v1/orgaos/31710696000173/compras/2026/3/arquivos/1", tipo_documento: "Termo de Referência" },
         removido_do_portal_em: null,
-        updated_at: "2026-10-01T14:56:36.389691+00:00",
+        last_seen_at: "2026-11-08T16:13:56.918782+00:00",
       },
-      { id: 2, nome_original: "removido.pdf", arquivo_origem: "pncp-2", raw: {}, removido_do_portal_em: "2026-10-05T00:00:00Z", updated_at: "2026-10-05T00:00:00Z" },
-      { id: 3, nome_original: "do-portal.pdf", arquivo_origem: "paradigma", raw: {}, removido_do_portal_em: null, updated_at: "2026-10-06T00:00:00Z" },
+      { id: 2, secao: "processo", nome_original: "removido.pdf", arquivo_origem: "pncp-2", raw: {}, removido_do_portal_em: "2026-10-05T00:00:00Z", last_seen_at: "2026-11-09T00:00:00Z" },
+      { id: 3, secao: "processo", nome_original: "do-portal.pdf", arquivo_origem: "paradigma", raw: {}, removido_do_portal_em: null, last_seen_at: "2026-11-09T00:00:00Z" },
+      // outro coletor com nome "pncp-N" em outra seção não vira documento do PNCP
+      { id: 4, secao: "proposta", nome_original: "anexo.pdf", arquivo_origem: "pncp-3", raw: {}, removido_do_portal_em: null, last_seen_at: "2026-11-09T00:00:00Z" },
     ],
   });
   assertEquals(typeof body.arquivos.erro, "string");
   assertEquals(body.arquivos.origem, "copia_local");
-  assertEquals(body.arquivos.copia_gravada_em, "2026-10-01T14:56:36.389691+00:00");
+  assertEquals(body.arquivos.copia_gravada_em, "2026-11-08T16:13:56.918782+00:00");
   assertEquals(body.arquivos.total, 1);
   assertEquals(body.arquivos.dados[0].titulo, "198679_editais_1787310691.zip");
   assertEquals(body.arquivos.dados[0].tipo, "Termo de Referência");
@@ -176,6 +200,16 @@ Deno.test("cópia local: falha ao ler a cópia mantém a seção com o erro do P
   assertEquals(body.arquivos.origem, undefined);
 });
 
+Deno.test("cópia local: linha de item sem numero_item válido descarta a cópia (lista cortada não parece completa)", async () => {
+  const { body } = await chamar({
+    licitacao_itens: [linhaItem(1), linhaItem(2, { numero_item: null })],
+    licitacao_documentos: [],
+  });
+  assertEquals(body.itens.erro, "HTTP 503 on pncp.gov.br");
+  assertEquals(body.itens.origem, undefined);
+  assertEquals(body.itens.dados, []);
+});
+
 Deno.test("aplicarCopiaLocal: seção do PNCP sem erro nunca é trocada pela cópia", () => {
   const secao = { dados: [], total: 0, erro: null };
   const copia = { dados: [1, 2], gravadoEm: "2026-10-01T00:00:00Z" };
@@ -186,9 +220,7 @@ Deno.test("aplicarCopiaLocal: seção do PNCP sem erro nunca é trocada pela có
 
 Deno.test("itensDaCopiaLocal: lê em lotes até o lote incompleto (mais de um lote de itens)", async () => {
   const linhas = Array.from({ length: COPIA_LOTE + 3 }, (_, i) => ({
-    numero_item: i + 1,
-    raw: dtoItem(i + 1),
-    updated_at: "2026-10-01T00:00:00Z",
+  ...linhaItem(i + 1),
   }));
   const leituras: string[] = [];
   // deno-lint-ignore no-explicit-any

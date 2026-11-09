@@ -18,10 +18,11 @@ export interface SyncCatalogo {
 }
 
 /** Syncs nacionais do PNCP: a trava de escopo (_shared/pncp/licitagym-scope-gate.ts) responde 423 sem o override
- * PNCP_NATIONAL_SYNC_ENABLED, que não se liga (traria o PNCP inteiro, fora das classes 7830/7220). */
+ * PNCP_NATIONAL_SYNC_ENABLED. Provisório: a spec 0024 (#363) troca a trava pelo catálogo da empresa e liga cron e
+ * disparo manual; até lá, sem botão na tela. */
 const AVISO_NACIONAL =
-  "Desligado por escopo: baixa o PNCP nacional sem filtro de classe (7830/7220); sem o override " +
-  "PNCP_NATIONAL_SYNC_ENABLED a função responde HTTP 423.";
+  "Sem disparo pela tela: a função ainda usa a trava fixa 7830/7220 e, sem o override " +
+  "PNCP_NATIONAL_SYNC_ENABLED, responde HTTP 423. Volta com a spec 0024 (escopo pelo catálogo, cron e disparo manual).";
 
 export const SYNCS: SyncCatalogo[] = [
   {
@@ -177,8 +178,9 @@ export const SYNCS: SyncCatalogo[] = [
     faz: "Itens dos editais que ainda não têm item gravado.",
     cron: null,
     corpo: { limite: 50, so_sem_itens: true },
-    disparavel: true,
-    aviso: null,
+    disparavel: false,
+    aviso: "Sem disparo pela tela: completa itens de contratacoes_editais, que vem do sync nacional de editais " +
+      "(travado) e está parada desde 20/09/2026. Os itens das oportunidades vêm do Coletor PNCP. Volta com a spec 0024.",
   },
   {
     slug: "sync-pncp-irp",
@@ -188,8 +190,8 @@ export const SYNCS: SyncCatalogo[] = [
     cron: null,
     corpo: {},
     disparavel: false,
-    aviso: "Desligado: o endpoint de IRP da API de Consulta do PNCP ainda não foi verificado (trava IRP_SYNC_ENABLED, " +
-      "CLA-34). Disparar daqui só devolveria HTTP 423.",
+    aviso: "Sem disparo pela tela: o endpoint de IRP da API de Consulta do PNCP ainda não foi verificado (trava " +
+      "IRP_SYNC_ENABLED, CLA-34). Disparar daqui só devolveria HTTP 423. Volta com a spec 0024.",
   },
   {
     slug: "import-catmat-curadoria",

@@ -2,6 +2,7 @@ import { assertEquals } from "jsr:@std/assert@1";
 import {
   ACOMPANHAMENTO_LICITACAO_COLUMNS,
   buildAcompanhamentoUrl,
+  CACHE_ERRO_TTL_MS,
   clearAcompanhamentoCache,
   handleAcompanhamento,
   linkSistemaOrigemFromRaw,
@@ -739,6 +740,7 @@ Deno.test("acompanhamento: 503 do PNCP não repete a chamada no detalhe (uma vag
     assertEquals(body.itens.erro, "HTTP 503 on pncp.gov.br");
     assertEquals(typeof body.historico.erro, "string");
     assertEquals(typeof body.arquivos.erro, "string");
+    assertEquals(typeof body.atas.erro, "string");
     for (const ep of ["compra", "itens", "atas", "historico", "arquivos"]) {
       assertEquals(contagem.get(ep), 1, `endpoint ${ep} chamado mais de uma vez`);
     }
@@ -750,33 +752,93 @@ Deno.test("acompanhamento: 503 do PNCP não repete a chamada no detalhe (uma vag
   }
 });
 
-Deno.test("acompanhamento: resposta com seção em erro não vai para o cache (Tentar novamente consulta o PNCP de novo)", async () => {
+Deno.test("acompanhamento: resposta com seção em erro fica só no cache negativo curto (Tentar novamente volta ao PNCP)", async () => {
   clearAcompanhamentoCache();
   const contagem = new Map<string, number>();
   let saudavel = false;
   const originalFetch = globalThis.fetch;
   globalThis.fetch = pncp503(contagem, () => saudavel);
+  const realNow = Date.now;
   const row = { id: 125, fonte: "pncp", codigo_externo: "31710696000173-1-000003/2026" };
+  const cacheControl: string[] = [];
   const chamar = async () => {
     const res = await handleAcompanhamento(
       { action: "acompanhamento", id: 125 },
       { getClient: () => createMockSupabase(row) as any, httpClient: clienteComLease({ n: 0 }) },
     );
+    cacheControl.push(res.headers.get("Cache-Control") ?? "");
     return await res.json();
   };
   try {
     const primeira = await chamar();
     assertEquals(typeof primeira.itens.erro, "string");
+    assertEquals(cacheControl[0], "no-store");
 
+    // clique repetido dentro do cache negativo não ocupa o lease de novo
     saudavel = true;
+    await chamar();
+    assertEquals(contagem.get("itens"), 1);
+
+    // passado o cache negativo, o PNCP é consultado de novo
+    Date.now = () => realNow() + CACHE_ERRO_TTL_MS + 1;
     const segunda = await chamar();
     assertEquals(contagem.get("itens"), 2);
     assertEquals(segunda.itens.erro, null);
 
-    // resposta completa fica em cache: a terceira chamada não vai ao PNCP
+    assertEquals(cacheControl[2], "private, max-age=300");
+
+    // resposta completa fica no cache de 5 min: a próxima chamada não vai ao PNCP
     await chamar();
     assertEquals(contagem.get("itens"), 2);
   } finally {
+    Date.now = realNow;
+    globalThis.fetch = originalFetch;
+    clearAcompanhamentoCache();
+  }
+});
+
+Deno.test("acompanhamento: 503 em /resultados de um item conta como resposta incompleta (cache negativo e no-store)", async () => {
+  clearAcompanhamentoCache();
+  const realNow = Date.now;
+  let resultadosOk = false;
+  let chamadasResultados = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (input: RequestInfo | URL) => {
+    const urlStr = String(input);
+    if (urlStr.includes("/api/consulta/v1/")) {
+      return Promise.resolve(new Response(JSON.stringify({ situacaoCompraNome: "Homologada" }), { status: 200 }));
+    }
+    if (urlStr.includes("/resultados")) {
+      chamadasResultados++;
+      if (!resultadosOk) return Promise.resolve(new Response("Service Unavailable", { status: 503 }));
+      return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
+    }
+    if (urlStr.includes("/itens?")) {
+      return Promise.resolve(new Response(JSON.stringify([
+        { numeroItem: 1, descricao: "MESA DE TÊNIS DE MESA", temResultado: true },
+      ]), { status: 200 }));
+    }
+    return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
+  };
+  const row = { id: 125, fonte: "pncp", codigo_externo: "31710696000173-1-000003/2026" };
+  const chamar = () =>
+    handleAcompanhamento(
+      { action: "acompanhamento", id: 125 },
+      { getClient: () => createMockSupabase(row) as any, httpClient: clienteComLease({ n: 0 }) },
+    );
+  try {
+    const res = await chamar();
+    const body = await res.json();
+    assertEquals(body.itens.erro, null);
+    assertEquals(typeof body.itens.dados[0].resultadosErro, "string");
+    assertEquals(res.headers.get("Cache-Control"), "no-store");
+
+    resultadosOk = true;
+    Date.now = () => realNow() + CACHE_ERRO_TTL_MS + 1;
+    await (await chamar()).json();
+    assertEquals(chamadasResultados, 2);
+  } finally {
+    Date.now = realNow;
     globalThis.fetch = originalFetch;
     clearAcompanhamentoCache();
   }

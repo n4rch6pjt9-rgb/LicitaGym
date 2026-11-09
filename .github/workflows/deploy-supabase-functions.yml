@@ -8,6 +8,11 @@
 #    curl -fsSL https://github.com/supabase/cli/releases/download/v<versao>/checksums.txt)
 # 3. Localize o hash sha256 correspondente a `supabase_<versao>_linux_amd64.tar.gz`
 # 4. Atualize SUPABASE_CLI_VERSION (sem o prefixo 'v') e SUPABASE_CLI_SHA256 simultaneamente abaixo.
+# 5. Atualize também SUPABASE_CLI_NPM_SHA256 (fonte alternativa, usada quando o GitHub Releases responde 5xx):
+#    curl -fsSL -o cli.tgz https://registry.npmjs.org/@supabase/cli-linux-x64/-/cli-linux-x64-<versao>.tgz
+#    confira que `openssl dgst -sha512 -binary cli.tgz | base64 -w0` é igual ao `dist.integrity` de
+#    `npm view @supabase/cli-linux-x64@<versao> dist.integrity`, e grave `sha256sum cli.tgz`.
+#    O binário bin/supabase desse pacote é o mesmo do tar.gz da release (conferido em 09/11/2026 na 2.118.0).
 
 name: Deploy Supabase Edge Functions
 
@@ -27,6 +32,7 @@ jobs:
       PROJECT_ID: ifaiagegyicjzlpskafh
       SUPABASE_CLI_VERSION: "2.118.0"
       SUPABASE_CLI_SHA256: "f6089a86fb9d9221c958193a277338daddd6822f706929943812fa32e106c86d"
+      SUPABASE_CLI_NPM_SHA256: "43992b1cd10872fa8078695fb71db93fbf6ace4f21c34a96a27544076b0d42a3"
 
     steps:
       - name: Checkout repository
@@ -41,12 +47,24 @@ jobs:
 
       - name: Install Supabase CLI
         run: |
+          set -euo pipefail
+          # Fonte 1: release do GitHub. Fonte 2 (GitHub Releases fora, ex.: 504 em 09/11/2026): o mesmo binário no
+          # pacote npm @supabase/cli-linux-x64. Cada fonte tem o próprio SHA-256 fixado; nada roda sem conferir.
           CLI_URL="https://github.com/supabase/cli/releases/download/v${SUPABASE_CLI_VERSION}/supabase_linux_amd64.tar.gz"
-          curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -o /tmp/supabase-cli.tgz "$CLI_URL"
-          echo "${SUPABASE_CLI_SHA256}  /tmp/supabase-cli.tgz" | sha256sum -c -
+          NPM_URL="https://registry.npmjs.org/@supabase/cli-linux-x64/-/cli-linux-x64-${SUPABASE_CLI_VERSION}.tgz"
           mkdir -p /tmp/supabase-cli
-          tar -xzf /tmp/supabase-cli.tgz -C /tmp/supabase-cli
-          sudo install -m 755 /tmp/supabase-cli/supabase /usr/local/bin/supabase
+          if curl -fsSL --retry 3 --retry-delay 10 --retry-all-errors -o /tmp/supabase-cli.tgz "$CLI_URL"; then
+            echo "${SUPABASE_CLI_SHA256}  /tmp/supabase-cli.tgz" | sha256sum -c -
+            tar -xzf /tmp/supabase-cli.tgz -C /tmp/supabase-cli
+            BIN=/tmp/supabase-cli/supabase
+          else
+            echo "::warning::GitHub Releases indisponível; usando o pacote npm @supabase/cli-linux-x64@${SUPABASE_CLI_VERSION}."
+            curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -o /tmp/supabase-cli-npm.tgz "$NPM_URL"
+            echo "${SUPABASE_CLI_NPM_SHA256}  /tmp/supabase-cli-npm.tgz" | sha256sum -c -
+            tar -xzf /tmp/supabase-cli-npm.tgz -C /tmp/supabase-cli
+            BIN=/tmp/supabase-cli/package/bin/supabase
+          fi
+          sudo install -m 755 "$BIN" /usr/local/bin/supabase
           supabase --version
 
       - name: Link project

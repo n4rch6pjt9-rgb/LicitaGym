@@ -5,7 +5,7 @@
   da spec-mãe 0032; o Marcelo autorizou em 09/11/2026 que entre agora, fora da "regra de foco".
 - **Repositório:** os dois (backend vai ao ar antes do front)
 - **Issue:** nenhuma
-- **Área:** migrations, edge-functions (`api-dashboard-oportunidades`), coletor (resultados), dashboard-contrato,
+- **Área:** migrations, edge-functions (`api-dashboard-oportunidades`), coletor (só teste), dashboard-contrato,
   dashboard-tela, regras de produto
 - **Depende do ok do Marcelo:** sim (migration, reclassificação do objeto canônico, decisão de produto, revogação de regra)
 - **Substitui:** spec 0045 (`parada`). A 0045 tirava credenciamento do escopo; o Marcelo decidiu o contrário em 09/11/2026.
@@ -23,7 +23,7 @@
 | 7 | `supabase/migrations/20261026000000_varredura_certames_historico.sql` | definição atual da view `licitacoes_externas_prioridade_efetiva` (colunas novas vão no fim) | não: ler |
 | 8 | `supabase/migrations/20261004140000_objeto_canonico.sql` | catálogo `objeto_categorias` (slug `credenciamento`, ordem 10) e `objeto_reclassificar()` | não: ler |
 | 9 | `supabase/functions/api-dashboard-oportunidades/README.md`, `query.ts` (`applyLicitacaoFilters`, `applyOportunidadesScope`), `validation.ts`, `types.ts` | filtro `modalidade` já existe; recorte padrão leads+monitorar; `historico` só do BI | não: ler |
-| 10 | `services/coletor-externo/coletor/pncp.py` (montagem de `numero_edital` ~1322, gravação ~1484, coleta de resultados) e `escopo.py` (`servico_sem_material`) | rótulo "Modalidade nº N/ANO"; o que tira credenciamento de serviço do escopo; quando o resultado homologado é gravado | não: ler |
+| 10 | `services/coletor-externo/coletor/pncp.py` (montagem de `numero_edital` ~1322, gravação ~1484) e `escopo.py` (`servico_sem_material`) | rótulo "Modalidade nº N/ANO"; o que tira credenciamento de serviço do escopo | não: ler |
 | 11 | `supabase/functions/api-fornecedores-homologados/index.ts` e a view `homologacoes_itens` | de onde o histórico de preço lê o homologado | não: ler |
 | 12 | Dashboard: `src/components/opportunities/OpportunityListView.tsx` (colunas, decisão de 07/11/2026), `filtrosUrl.ts`, `src/data/providers/supabaseProvider.ts` (`numero_edital_rotulo`) | colunas e filtros atuais | não: ler |
 | 13 | `docs/pncp/schemas-consultas-pncp.md` e `docs/pncp/openapi/pncp-consulta-v3-api-docs-2026-10-09.json` (`modoDisputaId`, `modoDisputaNome`, `codigoModoDisputa`) | campos oficiais de modalidade, modo de disputa, número, ano e unidade | não: ler |
@@ -33,8 +33,9 @@
 ## Decisões do Marcelo (09/11/2026)
 
 - Oportunidades é organizada pela **modalidade da contratação** (dado oficial), não por palavra do objeto. Abas:
-  **Credenciamento**, **Pregão**, **Concorrência**, **Dispensa** e **Histórico – Homologados** (singular,
-  substituindo "Credenciamentos", "Pregões", "Dispensas", "Histórico").
+  **Credenciamento**, **Pregão**, **Concorrência**, **Dispensa**, **Outras** (Inexigibilidade, Pré-qualificação e o
+  que não couber nas anteriores) e **Histórico – Homologados** (singular, substituindo "Credenciamentos", "Pregões",
+  "Dispensas", "Histórico").
 - **Credenciamento vira oportunidade** na sua aba. Revoga "credenciamento nunca vira lead" de
   `regras-negocio.md` e tira "credenciamento" da linha "Contrato de serviço" do `ESCOPO.md`. **Credenciamento de
   serviço de pessoas** (oficineiros, aulas, instrutores) **continua fora** do escopo, como hoje.
@@ -44,7 +45,7 @@
   aba e continua no banco e no BI; nada é apagado; `get` individual continua funcionando (links do BI, decisão de
   30/09/2026). Compra `historico` sem `data_homologacao` (encerrada, cancelada, deserta) não entra nesta aba.
 - **O preço homologado alimenta o histórico de preço no mesmo dia ou no dia seguinte (D+1) da homologação**,
-  independente dos 90 dias da aba.
+  independente dos 90 dias da aba. Vira spec própria (0047), com a escolha do gatilho (cron ou tempo real).
 - **Rótulo do edital só com o número** ("6/2026", não "Credenciamento nº 6/2026"): a modalidade já está na aba e
   na coluna; a mesma informação não se repete em campos diferentes.
 - **A lista aproveita melhor a tabela:** entram valor previsto e UASG. Revê a decisão de 07/11/2026 ("valor fica no
@@ -52,6 +53,8 @@
 - **A coluna do código da unidade se chama "UASG"** (decisão final de 09/11, revendo "Unidade (código)" do mesmo
   dia). Como no PNCP o `unidade_codigo` só é UASG quando a unidade é do SIASG, a dica da coluna (`title`) diz "Código
   da unidade compradora no PNCP".
+- **Colunas:** a proposta da seção "Colunas da lista" foi aprovada. **Tipo de disputa:** a definição da seção
+  "Tipo de disputa" foi aprovada (forma Eletrônico/Presencial é coluna, não filtro).
 - **Objeto canônico:** a categoria `credenciamento` sai do catálogo para todas as linhas. O BI não pesa na decisão:
   o Marcelo não tem BI entregue nem definição do frontend do BI (ver Fora de escopo).
 
@@ -139,15 +142,14 @@ O valor do exemplo não é um dado: é marcador de formato.
 
 | ID | Contrato | Entrada | Saída | Erros | Quem |
 |---|---|---|---|---|---|
-| K-1 | Migration: view `licitacoes_externas_prioridade_efetiva` ganha no fim `modalidade_grupo` (`credenciamento` \| `pregao` \| `concorrencia` \| `dispensa` \| `outras`), `forma` (`eletronica` \| `presencial` \| NULL, do nome da modalidade), `modo_disputa` (`raw->>'modo_disputa_nome'`), `numero_compra` (`raw->>'numero'`), `ano_compra` (`raw->>'ano'`) e `unidade_codigo` (`raw->>'unidade_codigo'`); NULL quando ausente | linhas de `licitacoes_externas` | colunas novas; colunas existentes inalteradas | — | `service_role` (ACL da view inalterada) |
-| K-2 | `api-dashboard-oportunidades` `action=list` (e contagem) com `aba` e `modo_disputa[]` | `aba` ∈ `credenciamento`, `pregao`, `concorrencia`, `dispensa`, `historico` | aba de modalidade: canônicas, `modalidade_grupo = aba`, prioridade `leads`/`monitorar`; aba `historico`: prioridade efetiva `historico` com `data_homologacao` nos últimos 90 dias (calendário de Brasília). Sem `aba`: igual a hoje | 400 `aba` ou `modo_disputa` inválido; 401 sem token | usuário autenticado (`requireUserAuth`) |
+| K-1 | Migration: view `licitacoes_externas_prioridade_efetiva` ganha no fim `modalidade_grupo` (`credenciamento` \| `pregao` \| `concorrencia` \| `dispensa` \| `outras`; Leilão também cai em `outras`), `forma` (`eletronica` \| `presencial` \| NULL, do nome da modalidade), `modo_disputa` (`raw->>'modo_disputa_nome'`), `numero_compra` (`raw->>'numero'`), `ano_compra` (`raw->>'ano'`) e `unidade_codigo` (`raw->>'unidade_codigo'`); NULL quando ausente | linhas de `licitacoes_externas` | colunas novas; colunas existentes inalteradas | — | `service_role` (ACL da view inalterada) |
+| K-2 | `api-dashboard-oportunidades` `action=list` (e contagem) com `aba` e `modo_disputa[]` | `aba` ∈ `credenciamento`, `pregao`, `concorrencia`, `dispensa`, `outras`, `historico` | aba de modalidade: canônicas, `modalidade_grupo = aba`, prioridade `leads`/`monitorar`; aba `historico`: prioridade efetiva `historico` com `data_homologacao` nos últimos 90 dias (calendário de Brasília). Sem `aba`: igual a hoje | 400 `aba` ou `modo_disputa` inválido; 401 sem token | usuário autenticado (`requireUserAuth`) |
 | K-3 | `api-dashboard-oportunidades` `action=get` | id | inalterado: devolve a linha mesmo fora da janela de 90 dias | 404 / 401 | usuário autenticado |
 | K-4 | Rótulo do número: função pura `rotuloNumeroCompra(linha)` na API; campo novo `numero_compra_rotulo` na linha da lista | `numero_compra`, `ano_compra`, `numero_edital` | `"{numero}/{ano}"`, sem repetir o ano quando `numero` já termina em `/{ano}`; sem `numero_compra`: `numero_edital` sem o prefixo "Modalidade nº" e sem "\| Processo ..."; nada disponível: NULL ("s/n" na tela). `numero_edital` gravado **não muda** | — | API |
 | K-5 | Migration: objeto canônico sem a categoria `credenciamento` (`ativo = false` no catálogo + `objeto_reclassificar()`) | 44 linhas com `objeto_categoria = 'credenciamento'` | cada uma recebe a próxima categoria que casa, ou `outros` | — | migration |
-| K-6 | Regra de produto | — | `regras-negocio.md` e `ESCOPO.md` atualizados: credenciamento de material entra; abas por modalidade; Histórico 90 dias da homologação; preço até D+1 | — | PR do backend |
+| K-6 | Regra de produto | — | `regras-negocio.md` e `ESCOPO.md` atualizados: credenciamento de material entra; abas por modalidade; Histórico 90 dias da homologação | — | PR do backend |
 | K-7 | Coletor: credenciamento de material no escopo; de serviço de pessoas fora (`servico_sem_material`) | compra PNCP | sem mudança de código (comportamento atual); só teste que trava a regra | — | coletor |
-| K-8 | Preço homologado até D+1: o resultado da compra homologada é gravado em `licitacao_resultados` (e aparece em `homologacoes_itens`) até o fim do dia seguinte à `data_homologacao` | compras PNCP em `monitorar` | resultado gravado em D ou D+1; atraso acima disso aparece em `private.saude_operacional_resumo()` | falha de API não vira "sem resultado" | coletor PNCP (Cloud Run Job) |
-| K-9 | Dashboard: abas Credenciamento, Pregão, Concorrência, Dispensa, Histórico – Homologados; filtro de tipo de disputa dentro da aba; aba e filtro na URL; colunas da seção acima | resposta de K-2 e K-4 | estados carregando, vazio e erro explícitos por aba; valor ou UASG ausente aparece como "não informado", nunca zero | — | usuário autenticado |
+| K-8 | Dashboard: abas Credenciamento, Pregão, Concorrência, Dispensa, Outras, Histórico – Homologados; filtro de tipo de disputa dentro da aba; aba e filtro na URL; colunas da seção acima | resposta de K-2 e K-4 | estados carregando, vazio e erro explícitos por aba; valor ou UASG ausente aparece como "não informado", nunca zero | — | usuário autenticado |
 
 Contrato com o Dashboard: **muda** (parâmetros `aba` e `modo_disputa`; campos `modalidade_grupo`, `forma`,
 `modo_disputa`, `numero_compra_rotulo`, `unidade_codigo`, `valor_total` na linha da lista). Backend vai ao ar antes do
@@ -164,8 +166,7 @@ front. Sem `aba`, a lista responde como hoje (compatível); campos novos são s�
 | CA-5 | K-2 | **Dado** `list` sem `aba`, **quando** chamada como hoje, **então** as linhas e o total são os atuais (leads+monitorar canônicas). Regressão do contrato. | Deno `tests/supabase/functions/api_dashboard_oportunidades_test.ts` |
 | CA-6 | K-4 | **Dado** (`numero`="6", `ano`="2026"), (`numero`="05/2025", `ano`="2025"), linha sem `numero_compra` com `numero_edital`="Pregão - Eletrônico nº 40 \| Processo 2587/2026", e linha sem nada, **quando** `rotuloNumeroCompra` roda, **então** devolve "6/2026", "05/2025", "40" e NULL; `numero_edital` não é alterado. Regressão do ano duplicado. | Deno `tests/supabase/functions/api_dashboard_oportunidades_rotulo_test.ts` |
 | CA-7 | K-5, K-7 | **Dado** objeto "CREDENCIAMENTO PARA AQUISIÇÃO DE MATERIAL DE EXPEDIENTE" (caso id 125), **quando** a migration roda duas vezes, **então** `objeto_categoria` deixa de ser `credenciamento` e o resultado é o mesmo nas duas; e, no coletor, credenciamento de oficineiros (caso Angatuba, id 229) continua com categoria `None`. | SQL `supabase/tests/oportunidades_modalidade_check.sql` + skill `validar-migrations`; pytest `services/coletor-externo/tests/test_escopo_servicos.py` |
-| CA-8 | K-8 | **Dado** compra em `monitorar` cujo detalhe no PNCP passa a ter homologação e resultado no dia D, **quando** o coletor roda em D ou D+1, **então** `licitacao_resultados` tem as linhas da compra; e, se a API de resultados falhar, a compra não é marcada como "sem resultado" e o atraso aparece na saúde operacional. | pytest `services/coletor-externo/tests/test_resultado_d1.py` + consulta da skill `verificar-producao` (percentual até D+1 no PR, antes e depois) |
-| CA-9 | K-9 | **Dado** a tela de Oportunidades, **quando** o usuário abre a aba Credenciamento e escolhe um tipo de disputa, **então** a URL guarda os dois, a lista chama `aba=credenciamento&modo_disputa=...`, o rótulo mostra só o número, não há coluna Modalidade, a coluna "UASG" tem a dica "Código da unidade compradora no PNCP", valor e UASG ausentes aparecem como "não informado" e a aba vazia mostra estado vazio explícito. | vitest `src/test/oportunidades-abas-modalidade.test.tsx` (Dashboard) |
+| CA-8 | K-8 | **Dado** a tela de Oportunidades, **quando** o usuário abre a aba Credenciamento e escolhe um tipo de disputa, **então** a URL guarda os dois, a lista chama `aba=credenciamento&modo_disputa=...`, o rótulo mostra só o número, não há coluna Modalidade, a coluna "UASG" tem a dica "Código da unidade compradora no PNCP", valor e UASG ausentes aparecem como "não informado" e a aba vazia mostra estado vazio explícito. | vitest `src/test/oportunidades-abas-modalidade.test.tsx` (Dashboard) |
 
 Tenant: `licitacoes_externas` não tem `tenant_id` (dado público compartilhado); a spec não muda auth, ACL nem
 `service_role`. O CA negativo de acesso é o 401 do CA-4.
@@ -177,25 +178,25 @@ Tenant: `licitacoes_externas` não tem `tenant_id` (dado público compartilhado)
 | K-1, K-5 | `/spec` | skill `nova-migration` | skill `validar-migrations` + `_check.sql` | `revisor-migration` + `revisor-seguranca` (view `security_invoker`) | `verificar-producao` + `get_advisors` |
 | K-2, K-3, K-4 | `/spec` | `/implement` (TDD) | Deno | `revisor-codigo` + `revisor-seguranca` | `verificar-producao` |
 | K-6 | `/spec` | no PR do backend | — | `revisor-codigo` | skill `ciclo-janelas` |
-| K-7, K-8 | `/spec` | `/implement` (TDD) | pytest do coletor | `revisor-codigo` | `verificar-producao` (percentual até D+1) |
-| K-9 | `/spec` | agente `frontend-dashboard` | vitest | `revisor-codigo` + `revisor-seguranca` (pela sessão orquestradora) + agente `ux-ui-licitagym` | skill `run-dashboard` (claro, escuro, celular) antes; `deploy-dashboard` depois |
+| K-7 | `/spec` | `/implement` (TDD) | pytest do coletor | `revisor-codigo` | — |
+| K-8 | `/spec` | agente `frontend-dashboard` | vitest | `revisor-codigo` + `revisor-seguranca` (pela sessão orquestradora) + agente `ux-ui-licitagym` | skill `run-dashboard` (claro, escuro, celular) antes; `deploy-dashboard` depois |
 
 ## Dry-run (contagem antes/depois, no PR)
 
 - Abas: as 18+3 compras Credenciamento em leads/monitorar passam a aparecer na aba Credenciamento; Concorrência
   (77+10) ganha aba; o total de leads+monitorar não muda (nenhuma prioridade é regravada). Inexigibilidade (2 em
-  monitorar) e Pré-qualificação (1 lead) ficam sem aba (pergunta 2).
+  monitorar) e Pré-qualificação (1 lead) vão para a aba Outras.
 - Objeto canônico (K-5): antes, 44 linhas com `objeto_categoria = 'credenciamento'`. Depois: **não medido** (o papel
   do MCP não executa `objeto_classificar`); o `/implement` roda a contagem por categoria nova no Supabase Preview e
   anexa ao PR.
 - Rótulo (K-4): antes, 2.013 com modalidade no rótulo, 70 com ano duplicado, 31 com "| Processo". Depois: 0 nos três
   (campo novo; `numero_edital` intacto).
-- Preço até D+1 (K-8): antes, 220 de 702 (31%). Depois: medido 7 dias após o deploy do coletor.
 
 ## Fora de escopo
 
+- **Preço homologado até D+1:** spec 0047.
 - **BI:** não há BI entregue nem definição do frontend do BI (fala do Marcelo, 09/11/2026). Esta spec só garante o
-  dado (Histórico na API, preço até D+1, `get` estável). Definir o BI é frente própria.
+  dado (Histórico na API e `get` estável; preço até D+1 na 0047). Definir o BI é frente própria.
 - Apagar ou arquivar linhas depois de 90 dias: a janela é só da aba.
 - Regravar `numero_edital` no banco ou mudar a montagem do rótulo no coletor (o rótulo novo é derivado na API).
 - UASG do Sistema S (não existe nessas fontes): aparece "não informado".
@@ -211,22 +212,15 @@ Tenant: `licitacoes_externas` não tem `tenant_id` (dado público compartilhado)
   `supabase/tests/oportunidades_modalidade_check.sql`.
 - **Tabelas/views/funções tocadas:** view `licitacoes_externas_prioridade_efetiva` (lida por
   `api-dashboard-oportunidades` com `service_role`); `objeto_categorias` e `licitacoes_externas.objeto_categoria`
-  (K-5); `licitacao_resultados` escrita pelo coletor (K-8, mais cedo; sem mudança de schema). Prioridade não muda.
+  (K-5). Prioridade não muda.
 - **ACL/RLS:** nenhum grant novo; view segue `security_invoker = true`.
 - **Backfill/reprocessamento:** sim, só `objeto_categoria` (K-5), com contagem antes/depois no PR.
-- **Edge Functions republicadas no merge:** todas (merge na `main`); muda `api-dashboard-oportunidades`. O coletor
-  só muda depois do deploy do Cloud Run Job.
-- **Contrato com o Dashboard:** muda (K-2, K-4, K-9); backend primeiro, sem `aba` continua compatível.
-- **Dado oficial x derivado:** `modalidade`, `modo_disputa_nome`, `numero`, `ano`, `unidade_codigo`, `valor_total` e
-  resultados vêm do PNCP sem alteração; `modalidade_grupo`, `forma`, `numero_compra_rotulo` e `objeto_categoria` são
+- **Edge Functions republicadas no merge:** todas (merge na `main`); muda `api-dashboard-oportunidades`.
+- **Contrato com o Dashboard:** muda (K-2, K-4, K-8); backend primeiro, sem `aba` continua compatível.
+- **Dado oficial x derivado:** `modalidade`, `modo_disputa_nome`, `numero`, `ano`, `unidade_codigo` e `valor_total`
+  vêm do PNCP sem alteração; `modalidade_grupo`, `forma`, `numero_compra_rotulo` e `objeto_categoria` são
   derivados por regra escrita e testada (CA-1, CA-6, CA-7). Nada inventado; ausente aparece como "não informado".
 
 ## Perguntas em aberto
 
-1. **Colunas:** a proposta da seção "Colunas da lista" atende? Algo mais entra (município, data de abertura,
-   registro de preço)?
-2. **Inexigibilidade e Pré-qualificação:** hoje 2 em monitorar e 1 lead. Ficam sem aba, ou ganham uma aba "Outras"?
-3. **Tipo de disputa:** a definição da seção "Tipo de disputa" (modo de disputa do PNCP, art. 56) está certa? A forma
-   Eletrônico/Presencial fica como coluna e não como filtro?
-4. **K-8 na mesma spec:** o preço até D+1 mexe no coletor e pode virar uma spec própria se a causa do atraso for
-   grande. Mantém aqui?
+- Nenhuma. Respondidas pelo Marcelo em 09/11/2026 (ver Decisões).

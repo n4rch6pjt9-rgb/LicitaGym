@@ -87,6 +87,29 @@ Deno.test("api-syncs: sync desconhecido e sync sem função nem workflow não di
   assertEquals(SYNCS.every((s) => !s.disparavel || Boolean(s.funcao) || Boolean(s.github_workflow)), true);
 });
 
+// Syncs presos por trava de ambiente (PNCP_NATIONAL_SYNC_ENABLED, IRP_SYNC_ENABLED) só respondem 423: a tela não
+// pode oferecer "Rodar agora" para eles, e o disparo responde 400 com o motivo, sem chamar a função.
+const SYNCS_TRAVADOS = [
+  "sync-pncp-contratacoes-editais",
+  "sync-pncp-contratacoes-atas",
+  "sync-pncp-contratacoes-contratos",
+  "sync-pncp-irp",
+];
+
+Deno.test("api-syncs: syncs travados por escopo não são disparáveis e não chamam a função", async () => {
+  let chamou = false;
+  const c = ctx({ fetchFn: () => { chamou = true; return Promise.resolve(new Response("{}")); } });
+  for (const slug of SYNCS_TRAVADOS) {
+    const item = SYNCS.find((s) => s.slug === slug);
+    assertEquals(item?.disparavel, false, slug);
+    assertEquals(Boolean(item?.aviso), true, `${slug} precisa dizer por que está desligado`);
+    const res = await handleRequest(post({ action: "rodar", sync: slug }), c);
+    assertEquals(res.status, 400, slug);
+    assertEquals((await res.json()).error, item?.aviso);
+  }
+  assertEquals(chamou, false);
+});
+
 Deno.test("CA-6 (spec 0023): rodar manda origem manual no corpo da função disparada", async () => {
   let enviado = "";
   const c = ctx({

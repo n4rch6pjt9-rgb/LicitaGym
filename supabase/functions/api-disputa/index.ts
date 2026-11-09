@@ -110,7 +110,8 @@ export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Prom
       if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) {
         return jsonResponse({ erro: "Informe o id do alerta (inteiro positivo)." }, 400);
       }
-      const marcado = await marcarAlertaLido(supabase, tenantId, id, user!.id, ctx?.agora ? ctx.agora() : Date.now());
+      if (!user) return jsonResponse({ erro: "Não autenticado." }, 401);
+      const marcado = await marcarAlertaLido(supabase, tenantId, id, user.id, ctx?.agora ? ctx.agora() : Date.now());
       if (!marcado) return jsonResponse({ erro: "Alerta não encontrado." }, 404);
       return jsonResponse({ ok: true });
     }

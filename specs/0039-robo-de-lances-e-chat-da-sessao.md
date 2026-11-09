@@ -127,12 +127,24 @@ Base: 163 mensagens reais de 2 compras (lidas em 08/11). Sem tabela oficial de `
   vencido. A convocação de anexos teve 2 h de prazo no exemplo e é o caso que o alerta resolve. Encurtar o atraso é
   assunto da medição (pergunta 3) e da extensão (etapa 2).
 - Geração idempotente: a cada consulta, as mensagens lidas (não só as novas) passam pela detecção e o insert ignora
-  duplicata por `(tenant_id, chave_mensagem)`. Falha na geração não perde o alerta: a consulta seguinte refaz.
+  duplicata por `(tenant_id, chave_mensagem)`. Falha na geração não derruba a consulta (mensagens e chamadas cobradas
+  ficam registradas, o run guarda o aviso e `alertas_gerados` volta `null`); a leitura seguinte refaz.
+- Só mensagem do Sistema (`tipo_remetente = "0"`, mapa deduzido) vira alerta: o mesmo texto escrito por licitante
+  ou pregoeiro no chat não vira (revisão de segurança de 08/11: um concorrente poderia forjar uma convocação).
+- Variações aceitas: "Sr." ou "Sr(a).", com ou sem acento, "convocado(a)", CNPJ com ou sem máscara e alfanumérico
+  (Receita, jul/2026). Convocação com cabeçalho desconhecido vira alerta sem fornecedor (não se perde).
+- Convocado por CPF (pessoa física): o alerta nasce sem nome nem documento.
+- Retenção (K-7): razão social e CNPJ do alerta somem junto com o texto bruto da mensagem (90 dias depois da
+  homologação), na mesma rotina `private.sessao_mensagens_retencao()`.
+- Mesma compra em duas licitações (fontes diferentes): a consulta é uma só, e cada tenant recebe o alerta ligado à
+  licitação do pipeline dele.
+- Limite conhecido também: quando o teto diário de chamadas (300) é atingido, nenhuma compra é lida até a meia-noite
+  de Brasília, e uma convocação nesse intervalo não vira alerta a tempo.
 
 | ID | Contrato | Entrada | Saída | Erros | Quem |
 |---|---|---|---|---|---|
 | K-5a | Tabela `public.sessao_alertas` (por tenant, RLS ligada, sem policy) | — | `tenant_id`, `licitacao_id`, `chave_mensagem` (único por tenant), `tipo`, `identificador_item`, `fornecedor_razao_social`, `fornecedor_cnpj`, `da_empresa`, `prazo`, `mensagem_em`, `criado_em`, `lido_em`, `lido_por` | — | escrita e leitura só `service_role` |
-| K-5b | Detecção e geração em `_shared/sessao_alertas.ts`, chamada por `sincronizarCompra` | mensagens lidas da compra, licitação, agora | alertas gravados para cada tenant destino | erro de banco sobe (consulta registrada como erro) | coleta (cron e rota manual) |
+| K-5b | Detecção e geração em `_shared/sessao_alertas.ts`, chamada por `sincronizarCompra`; destinos em `private.sessao_alertas_destinos(bigint[])` | mensagens lidas da compra, licitações com a mesma chave, agora | alertas gravados para cada tenant destino | erro de banco não derruba a consulta: aviso no run e `alertas_gerados = null` | coleta (cron e rota manual) |
 | K-5c | `GET /api-disputa/alertas` | `?nao_lidos=true` opcional | alertas do tenant, do mais novo para o mais velho (até 50), com `vencido` | 401 / 403 | membro do tenant |
 | K-5d | `POST /api-disputa/alertas/lido` | `{ "id": n }` | `{ ok: true }`, grava `lido_em` e `lido_por` | 400 id inválido; 404 alerta de outro tenant ou inexistente | membro do tenant |
 

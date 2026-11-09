@@ -14,6 +14,7 @@ import { extrairChaveCompra17Digitos, sincronizarCompra } from "../_shared/sessa
 import { pisoTenantCentavos, unidadeNorm } from "../_shared/agentes/preco.ts";
 import { recomendar, type RecomendacaoLance } from "../_shared/recomendacao.ts";
 import { listarSessoes } from "./sessoes.ts";
+import { listarAlertas, marcarAlertaLido } from "./alertas.ts";
 
 /** Intervalo mínimo entre consultas manuais da mesma compra (cada chamada ao Integra Compras é cobrada). */
 const INTERVALO_MINIMO_USUARIO_MS = 5 * 60_000;
@@ -88,6 +89,31 @@ export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Prom
     if (req.method === "GET" && caminho === "sessoes") {
       const sessoes = await listarSessoes(supabase, tenantId, ctx?.agora ? ctx.agora() : Date.now());
       return jsonResponse({ ok: true, fonte: "integra_compras", sessoes });
+    }
+
+    // 0b. Alertas de convocação do chat (spec 0039, etapa 1b, K-5c e K-5d). Só do tenant de quem chama.
+    if (req.method === "GET" && caminho === "alertas") {
+      const alertas = await listarAlertas(supabase, tenantId, {
+        naoLidos: url.searchParams.get("nao_lidos") === "true",
+        agoraMs: ctx?.agora ? ctx.agora() : Date.now(),
+      });
+      return jsonResponse({ ok: true, alertas });
+    }
+    if (req.method === "POST" && caminho === "alertas/lido") {
+      let corpo: unknown = null;
+      try {
+        corpo = await req.json();
+      } catch {
+        return jsonResponse({ erro: "Corpo JSON inválido." }, 400);
+      }
+      const id = (corpo as { id?: unknown } | null)?.id;
+      if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) {
+        return jsonResponse({ erro: "Informe o id do alerta (inteiro positivo)." }, 400);
+      }
+      if (!user) return jsonResponse({ erro: "Não autenticado." }, 401);
+      const marcado = await marcarAlertaLido(supabase, tenantId, id, user.id, ctx?.agora ? ctx.agora() : Date.now());
+      if (!marcado) return jsonResponse({ erro: "Alerta não encontrado." }, 404);
+      return jsonResponse({ ok: true });
     }
 
     // 1. GET /api-disputa/estrategia?licitacao_id=...
@@ -459,11 +485,18 @@ export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Prom
           erro: `Integra Compras indisponível (HTTP ${r.status_erro ?? "sem resposta"}). Nada foi apagado.`,
           total_lidas: r.total_lidas,
           novas_inseridas: r.novas_inseridas,
+          alertas_gerados: r.alertas_gerados,
           chamadas: r.chamadas,
         }, 502);
       }
 
-      return jsonResponse({ ok: true, total_lidas: r.total_lidas, novas_inseridas: r.novas_inseridas, chamadas: r.chamadas });
+      return jsonResponse({
+        ok: true,
+        total_lidas: r.total_lidas,
+        novas_inseridas: r.novas_inseridas,
+        alertas_gerados: r.alertas_gerados,
+        chamadas: r.chamadas,
+      });
     }
 
     return jsonResponse({ erro: "Rota não encontrada." }, 404);

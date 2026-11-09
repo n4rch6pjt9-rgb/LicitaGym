@@ -102,7 +102,60 @@ tenant. A etapa 1 corrige esse código em vez de criar outro:
 - Aba Sessão (pedido do Marcelo em 08/11/2026): `GET /api-disputa/sessoes` lista as compras do pipeline da empresa
   com a situação da coleta (mesma janela de `private.sessao_chat_alvos`), a última consulta e o total de mensagens.
   Só lê, não chama o Integra Compras. A tela no Dashboard usa essa rota, `GET /chat` e `POST /sync-chat`.
-- Fica para depois: o alerta (K-5, CA-7), que precisa de um sino de notificações que ainda não existe.
+- Alerta de convocação (K-5): ver "Etapa 1b" abaixo. O sino do Dashboard vem num PR do Dashboard depois do backend.
+
+### Etapa 1b: alerta de convocação (K-5), decisões de 08/11/2026
+
+Base: 163 mensagens reais de 2 compras (lidas em 08/11). Sem tabela oficial de `categoria`, a detecção é pelo texto
+(`docs/compras-gov/integra-compras.md`, "Em aberto"). Os dois textos do sistema que viram alerta nesta entrega:
+
+| Tipo | Texto do sistema (exemplo real, CNPJ mascarado) | O que o alerta guarda |
+|---|---|---|
+| `convocacao_anexos` | "Sr. Fornecedor JULIO CESAR GASPARINI JUNIOR LTDA, CNPJ NN.NNN.NNN/NNNN-NN, você foi convocado para enviar anexos para o item G1. Prazo para encerrar o envio: 12:12:00 do dia 14/10/2026." | item, razão social e CNPJ de quem foi convocado, `da_empresa` (CNPJ igual ao do tenant), prazo |
+| `etapa_fechada` | "A etapa fechada foi iniciada para o item G2. Fornecedores convocados poderão enviar um lance único e fechado até às 08:54:46 do dia 14/10/2026." | item, prazo |
+
+- Toda convocação vira alerta, inclusive de outro fornecedor, com a razão social (decisão de 08/11).
+- Canal: só o sino do Dashboard nesta entrega; e-mail e push ficam para depois (decisão de 08/11).
+- Prazo: hora de Brasília do texto (UTC−3) convertida para timestamptz. Texto sem prazo legível: `prazo = null`
+  (nunca inventado). `vencido` é calculado na leitura (prazo < agora).
+- Só mensagem com `data_hora` nas últimas 24 h vira alerta: a primeira leitura de uma compra traz o histórico
+  inteiro, e convocação antiga não é alerta.
+- Destino: cada tenant ativo com a licitação no pipeline, fora das etapas perdida e descartada (mesma regra de
+  `private.sessao_chat_alvos`).
+- Limite conhecido: na etapa fechada o prazo é de cerca de 5 minutos (exemplo real: mensagem às 11:49:46 UTC, prazo
+  11:54:46 UTC). Com a coleta a cada 30 min e cerca de 1 leitura por hora por compra, esse alerta quase sempre chega
+  vencido. A convocação de anexos teve 2 h de prazo no exemplo e é o caso que o alerta resolve. Encurtar o atraso é
+  assunto da medição (pergunta 3) e da extensão (etapa 2).
+- Geração idempotente: a cada consulta, as mensagens lidas (não só as novas) passam pela detecção e o insert ignora
+  duplicata por `(tenant_id, chave_mensagem)`. Falha na geração não derruba a consulta (mensagens e chamadas cobradas
+  ficam registradas, o run guarda o aviso e `alertas_gerados` volta `null`); a leitura seguinte refaz.
+- Só mensagem do Sistema (`tipo_remetente = "0"`, mapa deduzido) vira alerta: o mesmo texto escrito por licitante
+  ou pregoeiro no chat não vira (revisão de segurança de 08/11: um concorrente poderia forjar uma convocação).
+- Variações aceitas: "Sr." ou "Sr(a).", com ou sem acento, "convocado(a)", CNPJ com ou sem máscara e alfanumérico
+  (Receita, jul/2026). Convocação com cabeçalho desconhecido vira alerta sem fornecedor (não se perde).
+- Convocado por CPF (pessoa física): o alerta nasce sem nome nem documento.
+- Retenção (K-7): razão social e CNPJ do alerta somem junto com o texto bruto da mensagem (90 dias depois da
+  homologação), na mesma rotina `private.sessao_mensagens_retencao()`.
+- Mesma compra em duas licitações (fontes diferentes): a consulta é uma só, e cada tenant recebe o alerta ligado à
+  licitação do pipeline dele.
+- Limite conhecido também: quando o teto diário de chamadas (300) é atingido, nenhuma compra é lida até a meia-noite
+  de Brasília, e uma convocação nesse intervalo não vira alerta a tempo.
+
+| ID | Contrato | Entrada | Saída | Erros | Quem |
+|---|---|---|---|---|---|
+| K-5a | Tabela `public.sessao_alertas` (por tenant, RLS ligada, sem policy) | — | `tenant_id`, `licitacao_id`, `chave_mensagem` (único por tenant), `tipo`, `identificador_item`, `fornecedor_razao_social`, `fornecedor_cnpj`, `da_empresa`, `prazo`, `mensagem_em`, `criado_em`, `lido_em`, `lido_por` | — | escrita e leitura só `service_role` |
+| K-5b | Detecção e geração em `_shared/sessao_alertas.ts`, chamada por `sincronizarCompra`; destinos em `private.sessao_alertas_destinos(bigint[])` | mensagens lidas da compra, licitações com a mesma chave, agora | alertas gravados para cada tenant destino | erro de banco não derruba a consulta: aviso no run e `alertas_gerados = null` | coleta (cron e rota manual) |
+| K-5c | `GET /api-disputa/alertas` | `?nao_lidos=true` opcional | alertas do tenant, do mais novo para o mais velho (até 50), com `vencido` | 401 / 403 | membro do tenant |
+| K-5d | `POST /api-disputa/alertas/lido` | `{ "id": n }` | `{ ok: true }`, grava `lido_em` e `lido_por` | 400 id inválido; 404 alerta de outro tenant ou inexistente | membro do tenant |
+
+| CA | Contrato | Dado / Quando / Então | Teste |
+|---|---|---|---|
+| CA-7a | K-5b | **Dado** o texto real de convocação de anexos, **quando** a detecção roda, **então** devolve `convocacao_anexos`, item `G1`, a razão social, o CNPJ com 14 dígitos e prazo `2026-10-14T15:12:00Z`. Texto sem prazo legível devolve `prazo = null`; mensagem comum devolve nada. | Deno `tests/supabase/functions/_shared/sessao_alertas_test.ts` |
+| CA-7b | K-5b | **Dado** o texto real de etapa fechada, **quando** a detecção roda, **então** devolve `etapa_fechada`, item `G2` e prazo `2026-10-14T11:54:46Z`. | idem |
+| CA-7c | K-5b | **Dado** uma convocação nova nas últimas 24 h numa licitação do pipeline de dois tenants (um com o CNPJ convocado), **quando** a consulta grava, **então** nasce um alerta por tenant, com `da_empresa` verdadeiro só no dono do CNPJ; rodar de novo não duplica; convocação com mais de 24 h não vira alerta. | idem + `sync_sessao_chat_test.ts` |
+| CA-7d | K-5c | **Dado** alertas de dois tenants, **quando** o membro do tenant A lista, **então** vê só os do A, com `vencido` correto; sem vínculo com tenant ativo, 403 (CA negativo de acesso). | Deno `tests/supabase/functions/api_disputa_alertas_test.ts` |
+| CA-7e | K-5d | **Dado** um alerta do tenant B, **quando** o membro do tenant A marca como lido, **então** recebe 404 e o alerta continua não lido; o do próprio tenant grava `lido_em` e `lido_por`. | idem |
+| CA-7f | K-5a | **Dado** a migration, **quando** `anon` ou `authenticated` leem ou escrevem `sessao_alertas`, **então** recebem erro de permissão; RLS ligada. | SQL `supabase/tests/sessao_alertas_check.sql` |
 
 | CA | Teste |
 |---|---|
@@ -112,7 +165,7 @@ tenant. A etapa 1 corrige esse código em vez de criar outro:
 | CA-4 | `serpro_test.ts` ("CA-4: ...") |
 | CA-5 | `serpro_test.ts` e `api_disputa_test.ts` ("CA-5: ...") |
 | CA-6 | coberto por `lerTenantDoUsuario` (`_shared/tenant.ts`), sem teste novo |
-| CA-7 | pendente (sino de notificações) |
+| CA-7 | backend: CA-7a a CA-7f (Etapa 1b); sino: PR do Dashboard |
 | CA-8 | `supabase/tests/sessao_chat_cron_retencao_check.sql` |
 | CA-9 | Dashboard `src/test/sessao.test.tsx`; lista em `tests/supabase/functions/api_disputa_sessoes_test.ts` |
 | K-3 agendado | `tests/supabase/functions/sync_sessao_chat_test.ts` |
@@ -198,6 +251,8 @@ Só a etapa 1 tem CAs completos. As etapas 2 a 4 ganham CAs na revisão desta sp
 - 07/11/2026: mudança de layout do portal é detectada pela própria extensão (K-11), com alerta para a equipe;
   correção sugerida por modelo só entra por PR revisado.
 - 08/11/2026: retenção do texto bruto do chat (K-7) = 90 dias depois da homologação; a avaliação fica, sem dado pessoal.
+- 08/11/2026: alerta (K-5) para convocação de anexos e início da etapa fechada; toda convocação vira alerta, com a
+  razão social de quem foi convocado; canal só o sino do Dashboard nesta entrega.
 
 ## Perguntas em aberto
 

@@ -1730,3 +1730,251 @@ Deno.test("get por codigo_externo e por orgao_cnpj + processo_norm não filtram 
     assertEquals(mockClient.calls.some((c) => c.method === "eq" && c.args[0] === "eh_canonica"), false, qs);
   }
 });
+
+// --------------------------------------------------------------------------
+// Spec 0048 K-2: action=resumo_executivo (CA-4 e CA-5)
+// --------------------------------------------------------------------------
+
+interface ResumoMockConfig {
+  /** Vínculos do usuário em tenant_membros. */
+  membros?: Array<{ tenant_id: number; papel: string; ativo: boolean }>;
+  /** Empresas ativas (tenants.ativo = true). */
+  ativas?: number[];
+  /** Ids devolvidos por licitacoes_ids_por_catmat_unica. */
+  idsCatmat?: number[];
+  /** Linha devolvida por dashboard_resumo_executivo. */
+  resumoRow?: Record<string, unknown> | null;
+  resumoError?: { message: string; code?: string } | null;
+}
+
+/** Cliente falso para o resumo: grava as chamadas e responde por tabela/RPC. */
+function criarClienteResumo(cfg: ResumoMockConfig) {
+  const calls: Array<{ method: string; args: unknown[] }> = [];
+  function consulta(tabela: string) {
+    const filtros: Array<[string, unknown[]]> = [];
+    const q: Record<string, unknown> = {};
+    for (const m of ["select", "eq", "in", "order", "limit"]) {
+      q[m] = (...args: unknown[]) => {
+        filtros.push([m, args]);
+        calls.push({ method: `${tabela}.${m}`, args });
+        return q;
+      };
+    }
+    q.then = (ok?: (v: unknown) => unknown, ko?: (e: unknown) => unknown) => {
+      let data: unknown[] = [];
+      if (tabela === "tenant_membros") data = cfg.membros ?? [];
+      if (tabela === "tenants") {
+        const ativas = cfg.ativas ?? [];
+        const porId = filtros.find(([m]) => m === "in");
+        const ids = porId ? (porId[1][1] as number[]) : ativas;
+        data = ativas.filter((id) => ids.includes(id)).map((id) => ({ id }));
+      }
+      return Promise.resolve({ data, error: null }).then(ok, ko);
+    };
+    return q;
+  }
+  const client = {
+    calls,
+    from(tabela: string) {
+      calls.push({ method: "from", args: [tabela] });
+      return consulta(tabela);
+    },
+    rpc(fn: string, args: unknown) {
+      calls.push({ method: "rpc", args: [fn, args] });
+      const resultado = () => {
+        if (fn === CATMAT_RPC) return { data: { ids: cfg.idsCatmat ?? [], matches: [] }, error: null };
+        if (fn === "dashboard_resumo_executivo") {
+          if (cfg.resumoError) return { data: null, error: cfg.resumoError };
+          return { data: cfg.resumoRow ?? null, error: null };
+        }
+        return { data: null, error: { message: `rpc inesperada: ${fn}` } };
+      };
+      return {
+        single: () => Promise.resolve(resultado()),
+        then: (ok?: (v: unknown) => unknown, ko?: (e: unknown) => unknown) => Promise.resolve(resultado()).then(ok, ko),
+      };
+    },
+  };
+  return client;
+}
+
+const RESUMO_ROW = {
+  leads_total: 3,
+  monitoradas_total: 4,
+  valor_potencial_total: "150000.50",
+  com_valor_total: 2,
+  prazo_amanha_total: 1,
+  prazo_amanha_valor: "100000.00",
+  prazo_7_dias_total: 2,
+  prazo_7_dias_valor: "150000.50",
+  calculado_em: "2026-11-09T15:00:00+00:00",
+};
+
+/** requireAuth falso que anexa o usuário em req.user, como o requireUserAuth. */
+function authComUsuario(user: { id: string; app_metadata?: Record<string, unknown> } | null) {
+  return (r: Request) => {
+    if (!user) return new Response(JSON.stringify({ error: "Não autenticado" }), { status: 401 });
+    (r as unknown as { user: unknown }).user = user;
+    return null;
+  };
+}
+
+const MEMBRO_ATIVO = [{ tenant_id: 7, papel: "operacao", ativo: true }];
+
+function rpcsChamadas(calls: Array<{ method: string; args: unknown[] }>): string[] {
+  return calls.filter((c) => c.method === "rpc").map((c) => String(c.args[0]));
+}
+
+Deno.test("CA-4: resumo_executivo calcula K-1 só sobre os ids do recorte de catálogo da lista", async () => {
+  const client = criarClienteResumo({ membros: MEMBRO_ATIVO, ativas: [7], idsCatmat: [11, 12, 13], resumoRow: RESUMO_ROW });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=resumo_executivo&catalogo=true");
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario({ id: "u-1" }) });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.action, "resumo_executivo");
+  assertEquals(body.fonte, "licitacoes_externas_prioridade_efetiva");
+  assertEquals(body.resumo, {
+    leads_total: 3,
+    monitoradas_total: 4,
+    valor_potencial_total: 150000.5,
+    com_valor_total: 2,
+    prazo_amanha_total: 1,
+    prazo_amanha_valor: 100000,
+    prazo_7_dias_total: 2,
+    prazo_7_dias_valor: 150000.5,
+    calculado_em: "2026-11-09T15:00:00+00:00",
+  });
+  assertEquals(body.recorte, { aplicado: true, filtros: { catalogo: true }, licitacoes_total: 3 });
+  const chamada = client.calls.find((c) => c.method === "rpc" && c.args[0] === "dashboard_resumo_executivo");
+  assertEquals(chamada?.args[1], { p_ids_filtro: [11, 12, 13] });
+  // O recorte usa a mesma RPC da action=list
+  const catmat = client.calls.find((c) => c.method === "rpc" && c.args[0] === CATMAT_RPC);
+  assertEquals((catmat?.args[1] as Record<string, unknown>).p_somente_catalogo, true);
+});
+
+Deno.test("CA-4: resumo_executivo sem recorte calcula sobre todas as oportunidades (p_ids_filtro null)", async () => {
+  const client = criarClienteResumo({ membros: MEMBRO_ATIVO, ativas: [7], resumoRow: RESUMO_ROW });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=resumo_executivo");
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario({ id: "u-1" }) });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.recorte, { aplicado: false, filtros: {}, licitacoes_total: null });
+  const chamada = client.calls.find((c) => c.method === "rpc" && c.args[0] === "dashboard_resumo_executivo");
+  assertEquals(chamada?.args[1], { p_ids_filtro: null });
+  assertEquals(rpcsChamadas(client.calls).includes(CATMAT_RPC), false);
+});
+
+Deno.test("CA-4: recorte vazio calcula sobre nenhum id, nunca sobre todas (p_ids_filtro [])", async () => {
+  const client = criarClienteResumo({
+    membros: MEMBRO_ATIVO,
+    ativas: [7],
+    idsCatmat: [],
+    resumoRow: {
+      ...RESUMO_ROW,
+      leads_total: 0,
+      monitoradas_total: 0,
+      valor_potencial_total: null,
+      com_valor_total: 0,
+      prazo_amanha_total: 0,
+      prazo_amanha_valor: null,
+      prazo_7_dias_total: 0,
+      prazo_7_dias_valor: null,
+    },
+  });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=resumo_executivo&catmat_pdm=99999");
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario({ id: "u-1" }) });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  const chamada = client.calls.find((c) => c.method === "rpc" && c.args[0] === "dashboard_resumo_executivo");
+  assertEquals(chamada?.args[1], { p_ids_filtro: [] });
+  assertEquals(body.resumo.valor_potencial_total, null);
+  assertEquals(body.resumo.prazo_amanha_valor, null);
+  assertEquals(body.recorte.licitacoes_total, 0);
+});
+
+Deno.test("CA-4: resumo_executivo sem JWT responde 401 e não consulta o banco", async () => {
+  const client = criarClienteResumo({ membros: MEMBRO_ATIVO, ativas: [7], resumoRow: RESUMO_ROW });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=resumo_executivo");
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario(null) });
+  assertEquals(res.status, 401);
+  assertEquals(client.calls.length, 0);
+});
+
+Deno.test("CA-4: resumo_executivo recusa filtro fora do recorte de catálogo/CATMAT com 400", async () => {
+  for (const qs of ["uf=SP", "prioridade=leads", "busca=esteira", "catmat_pdm=abc"]) {
+    const client = criarClienteResumo({ membros: MEMBRO_ATIVO, ativas: [7], resumoRow: RESUMO_ROW });
+    const req = new Request(`http://localhost/api-dashboard-oportunidades?action=resumo_executivo&${qs}`);
+    // deno-lint-ignore no-explicit-any
+    const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario({ id: "u-1" }) });
+    assertEquals(res.status, 400, qs);
+    assertEquals(rpcsChamadas(client.calls), [], qs);
+  }
+});
+
+Deno.test("CA-4: resumo_executivo por POST aceita o mesmo recorte", async () => {
+  const client = criarClienteResumo({ membros: MEMBRO_ATIVO, ativas: [7], idsCatmat: [5], resumoRow: RESUMO_ROW });
+  const req = new Request("http://localhost/api-dashboard-oportunidades", {
+    method: "POST",
+    body: JSON.stringify({ action: "resumo_executivo", catmat_classe: [7830] }),
+  });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario({ id: "u-1" }) });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.recorte, { aplicado: true, filtros: { catmat_classe: [7830] }, licitacoes_total: 1 });
+});
+
+Deno.test("CA-4: falha da função K-1 responde 500 sem detalhe interno", async () => {
+  const client = criarClienteResumo({
+    membros: MEMBRO_ATIVO,
+    ativas: [7],
+    resumoError: { message: "relation private.segredo does not exist", code: "42P01" },
+  });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=resumo_executivo");
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario({ id: "u-1" }) });
+  assertEquals(res.status, 500);
+  const texto = await res.text();
+  assertEquals(texto.includes("segredo"), false);
+  assertEquals(texto.includes("42P01"), false);
+});
+
+Deno.test("CA-5: usuário sem vínculo com empresa recebe 403 e nada é calculado", async () => {
+  const client = criarClienteResumo({ membros: [], ativas: [7], idsCatmat: [1], resumoRow: RESUMO_ROW });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=resumo_executivo&catalogo=true");
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario({ id: "u-2" }) });
+  assertEquals(res.status, 403);
+  assertEquals(rpcsChamadas(client.calls), []);
+});
+
+Deno.test("CA-5: usuário ligado só a empresa desativada recebe 403, nunca cai na outra empresa ativa", async () => {
+  const client = criarClienteResumo({
+    membros: [{ tenant_id: 3, papel: "admin", ativo: true }],
+    ativas: [7],
+    idsCatmat: [1],
+    resumoRow: RESUMO_ROW,
+  });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=resumo_executivo&catalogo=true");
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario({ id: "u-3" }) });
+  assertEquals(res.status, 403);
+  assertEquals(rpcsChamadas(client.calls), []);
+});
+
+Deno.test("CA-5: vínculo desligado recebe 403 mesmo com a empresa ativa", async () => {
+  const client = criarClienteResumo({
+    membros: [{ tenant_id: 7, papel: "operacao", ativo: false }],
+    ativas: [7],
+    resumoRow: RESUMO_ROW,
+  });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=resumo_executivo");
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario({ id: "u-4" }) });
+  assertEquals(res.status, 403);
+  assertEquals(rpcsChamadas(client.calls), []);
+});

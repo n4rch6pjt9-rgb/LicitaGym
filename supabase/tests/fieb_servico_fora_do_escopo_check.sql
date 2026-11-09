@@ -9,7 +9,7 @@ declare
 begin
   select count(*) into n
     from public.licitacoes_externas
-   where raw ? 'reclassificacao_escopo'
+   where raw->'reclassificacao_escopo'->>'origem' = 'migration 20261109160000_fieb_servico_fora_do_escopo'
      and (categoria_escopo is not null
           or escopo_estado is distinct from 'OUT_OF_SCOPE'
           or not (raw->'reclassificacao_escopo' ? 'anterior')
@@ -20,7 +20,7 @@ begin
 
   select count(*) into n
     from public.licitacao_itens
-   where raw ? 'reclassificacao_escopo'
+   where raw->'reclassificacao_escopo'->>'origem' = 'migration 20261109160000_fieb_servico_fora_do_escopo'
      and (categoria_escopo is not null
           or escopo_estado is distinct from 'OUT_OF_SCOPE'
           or material_ou_servico is distinct from 'S'

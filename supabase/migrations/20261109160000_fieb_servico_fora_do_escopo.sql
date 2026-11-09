@@ -43,13 +43,13 @@
 --      set categoria_escopo = raw->'reclassificacao_escopo'->>'anterior',
 --          escopo_estado = raw->'reclassificacao_escopo'->>'estado_anterior',
 --          raw = raw - 'reclassificacao_escopo'
---    where fonte = 'fieb' and raw ? 'reclassificacao_escopo';
+--    where fonte = 'fieb' and raw->'reclassificacao_escopo'->>'origem' = 'migration 20261109160000_fieb_servico_fora_do_escopo';
 --   update licitacao_itens
 --      set categoria_escopo = raw->'reclassificacao_escopo'->>'anterior',
 --          escopo_estado = raw->'reclassificacao_escopo'->>'estado_anterior',
 --          material_ou_servico = raw->'reclassificacao_escopo'->>'material_anterior',
 --          raw = raw - 'reclassificacao_escopo'
---    where raw ? 'reclassificacao_escopo';
+--    where raw->'reclassificacao_escopo'->>'origem' = 'migration 20261109160000_fieb_servico_fora_do_escopo';
 --
 -- Idempotente: só toca licitação que ainda tem categoria e item que ainda é 'M'; a segunda execução não acha nada.
 -- Checagem: supabase/tests/fieb_servico_fora_do_escopo_check.sql.

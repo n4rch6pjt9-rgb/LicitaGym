@@ -99,14 +99,14 @@ O que o usuário vê (texto final é do agente `ux-ui-licitagym`; o conteúdo é
 
 | ID | Contrato | Dado / Quando / Então | Teste que prova |
 |---|---|---|---|
-| CA-1 | K-1 | **Dado** a busca devolvendo 2 itens para `q="…118/2026"`, um deles `…113/2026`, **quando** `buscarCompraPorControle` roda, **então** devolve só o item de controle idêntico; com nenhum idêntico, devolve `null`. | Deno `tests/supabase/functions/_shared/pncp/search_client_busca_test.ts` (fetch falso) |
+| CA-1 | K-1 | **Dado** a busca devolvendo 2 itens para `q="…118/2026"`, um deles `…113/2026`, **quando** `buscarCompraPorControle` roda, **então** devolve só o item de controle idêntico; com nenhum idêntico, devolve `null`. | Deno `tests/supabase/functions/_shared/pncp/search_client_busca_test.ts` (fetch falso) ✅ |
 | CA-2 | K-1 | **Dado** a 1ª tentativa com conexão derrubada e a 2ª com 200, **quando** busca, **então** devolve o item; **dado** 2 quedas, **então** lança erro (não `null`, não lista vazia); **dado** 200 com `items` não-array, **então** lança erro. | idem |
 | CA-3 | K-2 | **Dado** o item medido da 118 (fixture copiada da doc, sem dado pessoal), **quando** `compraDaBusca`, **então** `valorEstimado=222420.95`, `valorHomologado=232620.82`, `encerramentoProposta="2026-07-15T08:00:00-03:00"`, `processo=null`, `linkSistemaOrigem=null`; `data_fim_recebimento_propostas=""` não vira data. | Deno `tests/supabase/functions/acompanhamento_busca_pncp_test.ts` |
 | CA-4 | K-3 | **Dado** Consulta 503 e busca 200, **quando** `acompanhamento` da #1892 (fixture), **então** `compra.origem="busca_pncp"`, `compra.erro` contém `503`, `compra.dados.objeto` preenchido e `busca_atualizado_em="2026-08-25T10:26:11-03:00"`; `atas.dados` tem 10 atas com `origem="busca_pncp"`. | idem |
 | CA-5 | K-3 | **Dado** Consulta 200, **quando** `acompanhamento`, **então** a busca **não** é chamada (contador do fetch falso = 0) e nenhuma seção tem `origem="busca_pncp"` (regressão do caminho normal). | idem |
-| CA-6 | K-4 | **Dado** itens da cópia local e busca com `data_atualizacao_pncp` igual a `pncp_data_atualizacao`, **então** `conferencia_busca.compra_mudou=false`; **dado** posterior, **então** `true`; **dado** `pncp_data_atualizacao` nulo ou busca falhou, **então** `compra_mudou=null` ou campo ausente, respectivamente. | idem |
+| CA-6 | K-4 | **Dado** itens da cópia local e busca com `data_atualizacao_pncp` igual a `pncp_data_atualizacao`, **então** `conferencia_busca.compra_mudou=false`; **dado** posterior, **então** `true`; **dado** índice anterior à cópia (defasado), **então** `null` (revisão); **dado** `pncp_data_atualizacao` nulo ou busca falhou, **então** `compra_mudou=null` ou campo ausente, respectivamente. | idem |
 | CA-7 | K-5 | **Dado** resposta com seção vinda da busca, **então** `Cache-Control: no-store` e `acompanhamentoCompleto(payload)=false` (regressão do #501). | idem |
-| CA-8 | K-3 | **Dado** requisição sem JWT (ou JWT inválido), **quando** `acompanhamento`, **então** 401 como hoje (`requireUserAuth`) e o fetch falso da busca registra 0 chamadas. A busca não lê tabela com `tenant_id` (só `licitacoes_externas`, sem tenant): não há caso de outro tenant a cobrir. | Deno `tests/supabase/functions/api_dashboard_oportunidades_test.ts` (caso novo) |
+| CA-8 | K-3 | **Dado** requisição sem JWT (ou JWT inválido), **quando** `acompanhamento`, **então** 401 como hoje (`requireUserAuth`) e o fetch falso da busca registra 0 chamadas. A busca não lê tabela com `tenant_id` (só `licitacoes_externas`, sem tenant): não há caso de outro tenant a cobrir. | Deno `tests/supabase/functions/acompanhamento_busca_pncp_test.ts` ("CA-8: ..."; ficou junto do fetch falso da busca) |
 | CA-9 | K-6 | **Dado** `compra.origem="busca_pncp"` e `atas.origem="busca_pncp"`, **quando** o detalhe renderiza, **então** aparece o aviso com a data do índice e "Itens, documentos e histórico não vêm por esta rota"; com `conferencia_busca.compra_mudou=true`, o aviso da cópia diz "posterior à cópia". | vitest `src/test/detalhe-busca-pncp.test.tsx` (Dashboard) |
 
 ## Skills e agentes por contrato
@@ -162,6 +162,15 @@ compra já está no Radar e com qual classificação. Isso é uma spec inteira (
   novo: aceitável por um ciclo? ver perguntas)
 - **Dado oficial x derivado:** tudo da busca é dado oficial do PNCP, exibido como vem (inclusive homologado > estimado
   na 118); derivado é só `compra_mudou` (comparação de duas datas oficiais) e a conversão do fuso
+
+## Andamento (09/11/2026)
+
+- CA-1 a CA-8: Deno, verdes (`search_client_busca_test.ts` e `acompanhamento_busca_pncp_test.ts`); suíte
+  `tests/supabase` 1304 passed, 0 failed; `deno check` de `api-dashboard-oportunidades` e `sync-pncp-pca` ok.
+- CA-9 (K-6, tela): pendente, PR do Dashboard depois deste ir ao ar.
+- Revisão: `revisor-codigo` (2 IMPORTANTES corrigidos: espera de 500 ms antes da 2ª tentativa; `compra_mudou`
+  null com índice atrás da cópia) e `revisor-seguranca` (sem achado; sugestão de cache curto aplicada: resultado da
+  busca por controle guardado 15 s).
 
 ## Decisões do Marcelo
 

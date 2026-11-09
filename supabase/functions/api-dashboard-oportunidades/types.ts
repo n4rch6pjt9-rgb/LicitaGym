@@ -127,6 +127,10 @@ export interface CompraMetadata {
     aberturaProposta: string | null;
     encerramentoProposta: string | null;
     inclusao: string | null;
+    /**
+     * Pela Consulta: `dataAtualizacaoGlobal` (senão `dataAtualizacao`), sem offset. Pela busca (spec 0049,
+     * `origem: "busca_pncp"`): `dataAtualizacao` da compra, em ISO -03:00. Não tratar como "global" sem olhar a origem.
+     */
     atualizacao: string | null;
   };
   linkSistemaOrigem: string | null;

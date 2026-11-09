@@ -131,7 +131,8 @@ function gravadoEm(v: unknown): string | null {
 
 /**
  * Compara a atualização da compra no índice com a gravada. Segundos inteiros: a busca traz fração e o banco guarda
- * o segundo. `compra_mudou` = índice posterior ao gravado; null quando falta uma das duas.
+ * o segundo. `compra_mudou`: true = índice posterior ao gravado; false = mesma data; null = falta uma das duas ou o
+ * índice está atrás da cópia (não dá para afirmar nada: o índice pode estar defasado).
  */
 export function conferenciaDaBusca(edital: BuscaPncpItem, pncpDataAtualizacao: unknown): ConferenciaBusca {
   const pncp = dataDaBusca(edital.data_atualizacao_pncp);
@@ -141,10 +142,39 @@ export function conferenciaDaBusca(edital: BuscaPncpItem, pncpDataAtualizacao: u
   return {
     pncp_atualizado_em: pncp,
     gravado_em: gravado,
-    compra_mudou: tPncp === null || tGravado === null
-      ? null
-      : Math.floor(tPncp / 1000) > Math.floor(tGravado / 1000),
+    compra_mudou: compraMudou(tPncp, tGravado),
   };
+}
+
+function compraMudou(tPncp: number | null, tGravado: number | null): boolean | null {
+  if (tPncp === null || tGravado === null) return null;
+  const pncp = Math.floor(tPncp / 1000);
+  const gravado = Math.floor(tGravado / 1000);
+  if (pncp === gravado) return false;
+  return pncp > gravado ? true : null;
+}
+
+/**
+ * Resultado da busca por controle e tipo, por CACHE_BUSCA_TTL_MS (o mesmo cache negativo de 15 s do detalhe).
+ * Enquanto o PNCP está fora, abrir o detalhe de novo ou "Tentar novamente" não ocupa mais vagas do lease de
+ * pncp.gov.br (compartilhado com os coletores). Falha também fica guardada: repetir em seguida cairia igual.
+ */
+export const CACHE_BUSCA_TTL_MS = 15_000;
+const cacheBusca = new Map<string, { expira: number; resultado: Promise<unknown> }>();
+
+export function clearBuscaPncpCache(): void {
+  cacheBusca.clear();
+}
+
+function comCache<T>(chave: string, buscar: () => Promise<T>): Promise<T> {
+  const agora = Date.now();
+  const guardado = cacheBusca.get(chave);
+  if (guardado && guardado.expira > agora) return guardado.resultado as Promise<T>;
+  const resultado = buscar();
+  cacheBusca.set(chave, { expira: agora + CACHE_BUSCA_TTL_MS, resultado });
+  // evita "unhandled rejection" do valor guardado; quem chama trata o erro
+  resultado.catch(() => {});
+  return resultado;
 }
 
 type Secao<T> = AcompanhamentoSection<T>;
@@ -178,14 +208,16 @@ export async function aplicarBuscaPncp<I, R>(
   if (!controle || (!precisaCompra && !precisaAtas && !precisaConferencia)) return secoes;
 
   const [editalRes, atasRes] = await Promise.allSettled([
-    precisaCompra || precisaConferencia ? busca.buscarCompraPorControle(controle) : Promise.resolve(null),
-    precisaAtas ? busca.buscarAtasDaCompra(controle) : Promise.resolve(null),
+    precisaCompra || precisaConferencia
+      ? comCache(`edital:${controle}`, () => busca.buscarCompraPorControle(controle))
+      : Promise.resolve(null),
+    precisaAtas ? comCache(`ata:${controle}`, () => busca.buscarAtasDaCompra(controle)) : Promise.resolve(null),
   ]);
   if (editalRes.status === "rejected") {
-    console.warn("[api-dashboard-oportunidades] busca PNCP (edital) falhou:", errorDetail(editalRes.reason));
+    console.warn(`[api-dashboard-oportunidades] busca PNCP (edital ${controle}) falhou:`, errorDetail(editalRes.reason));
   }
   if (atasRes.status === "rejected") {
-    console.warn("[api-dashboard-oportunidades] busca PNCP (atas) falhou:", errorDetail(atasRes.reason));
+    console.warn(`[api-dashboard-oportunidades] busca PNCP (atas ${controle}) falhou:`, errorDetail(atasRes.reason));
   }
   const edital = editalRes.status === "fulfilled" ? editalRes.value : null;
   const atas = atasRes.status === "fulfilled" ? atasRes.value : null;

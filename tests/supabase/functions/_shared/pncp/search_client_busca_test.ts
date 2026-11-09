@@ -107,20 +107,33 @@ Deno.test("CA-1: controle fora do formato não chama a busca", async () => {
   assertEquals(urls.length, 0);
 });
 
-Deno.test("CA-2: queda de conexão na 1ª tentativa e 200 na 2ª devolve o item", async () => {
+function semEspera(esperas: number[]) {
+  return (ms: number) => {
+    esperas.push(ms);
+    return Promise.resolve();
+  };
+}
+
+Deno.test("CA-2: queda de conexão na 1ª tentativa e 200 na 2ª devolve o item, com espera antes da 2ª", async () => {
+  const esperas: number[] = [];
   const { r, urls } = await comFetch(
     [queda(), json({ total: 1, items: [edital(CONTROLE)] })],
-    () => new PncpSearchClient(undefined, http()).buscarCompraPorControle(CONTROLE),
+    () => new PncpSearchClient(undefined, http()).withSleep(semEspera(esperas)).buscarCompraPorControle(CONTROLE),
   );
   assertEquals(r?.numero_controle_pncp, CONTROLE);
   assertEquals(urls.length, 2);
+  assertEquals(esperas, [500]);
 });
 
 Deno.test("CA-2: duas quedas de conexão lançam erro (não null, não lista vazia)", async () => {
+  const esperas: number[] = [];
   const { urls } = await comFetch([queda(), queda(), queda()], async () => {
-    await assertRejects(() => new PncpSearchClient(undefined, http()).buscarCompraPorControle(CONTROLE));
+    await assertRejects(() =>
+      new PncpSearchClient(undefined, http()).withSleep(semEspera(esperas)).buscarCompraPorControle(CONTROLE)
+    );
   });
   assertEquals(urls.length, 2);
+  assertEquals(esperas, [500]);
 });
 
 Deno.test("CA-2: 503 não é repetido (só queda de conexão tem 2ª tentativa)", async () => {

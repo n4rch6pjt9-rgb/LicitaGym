@@ -42,7 +42,7 @@ export type PcaSearchPeriodSummary = {
 export type BuscaPncpItem = Record<string, unknown> & { numero_controle_pncp?: unknown };
 
 /** Detalhe da oportunidade (caminho interativo): 2 tentativas só para queda de conexão, 5 s cada (spec 0049). */
-export const BUSCA_DETALHE = { tentativas: 2, attemptTimeoutMs: 5_000 } as const;
+export const BUSCA_DETALHE = { tentativas: 2, attemptTimeoutMs: 5_000, esperaAntesDaRepeticaoMs: 500 } as const;
 const BUSCA_EDITAL_TAM_PAGINA = 10;
 /** Janela da busca: pagina × tam_pagina ≤ 10000; 500 é o maior valor sem ganho medido acima. */
 const BUSCA_ATA_TAM_PAGINA = 500;
@@ -102,6 +102,14 @@ export class PncpSearchClient {
 
   withHttpClient(client: UnifiedHttpClient): this {
     this.httpClient = client;
+    return this;
+  }
+
+  /** Espera antes da 2ª tentativa da busca do detalhe (injetável: teste sem sleep real). */
+  private esperar: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  withSleep(sleep: (ms: number) => Promise<void>): this {
+    this.esperar = sleep;
     return this;
   }
 
@@ -255,6 +263,7 @@ export class PncpSearchClient {
       } catch (err) {
         ultimoErro = err;
         if (!quedaDeConexao(err)) throw err;
+        if (tentativa < BUSCA_DETALHE.tentativas) await this.esperar(BUSCA_DETALHE.esperaAntesDaRepeticaoMs);
       }
     }
     throw ultimoErro;

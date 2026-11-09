@@ -8,7 +8,7 @@ import { sincronizarPortalOficialEAtraso } from "./pncpAtraso.ts";
 import { estaNoPipeline } from "./portal.ts";
 import { UnifiedHttpClient } from "../_shared/http-client/index.ts";
 import { aplicarCopiaLocal, arquivosDaCopiaLocal, itensDaCopiaLocal, precisaDaCopia } from "./copiaLocal.ts";
-import { aplicarBuscaPncp } from "./buscaPncp.ts";
+import { aplicarBuscaPncp, clearBuscaPncpCache } from "./buscaPncp.ts";
 import type {
   AcompanhamentoActionParams,
   AcompanhamentoResponse,
@@ -168,6 +168,7 @@ export function setCachedAcompanhamento(
 
 export function clearAcompanhamentoCache(): void {
   acompanhamentoCache.clear();
+  clearBuscaPncpCache();
 }
 
 /**

@@ -300,6 +300,15 @@ Deno.test("CA-6: busca com atualização posterior à gravada → compra_mudou=t
   assertEquals(body.itens.conferencia_busca.compra_mudou, true);
 });
 
+Deno.test("CA-6: índice atrás da cópia (defasado) → compra_mudou=null, nunca 'a mesma'", async () => {
+  const { body } = await chamar({ consulta: "ok", pncpV1: "fora", busca: "ok" }, {
+    ...ROW_1892,
+    pncp_data_atualizacao: "2026-08-26 13:00:00+00",
+  }, { licitacao_itens: [linhaItem(1)] });
+  assertEquals(body.itens.conferencia_busca.compra_mudou, null);
+  assertEquals(body.itens.conferencia_busca.pncp_atualizado_em, "2026-08-25T10:26:11-03:00");
+});
+
 Deno.test("CA-6: sem pncp_data_atualizacao gravada → compra_mudou=null; busca fora → sem conferência", async () => {
   const semData = await chamar({ consulta: "ok", pncpV1: "fora", busca: "ok" }, {
     ...ROW_1892,
@@ -313,6 +322,28 @@ Deno.test("CA-6: sem pncp_data_atualizacao gravada → compra_mudou=null; busca 
   });
   assertEquals(buscaFora.body.itens.origem, "copia_local");
   assertEquals(buscaFora.body.itens.conferencia_busca, undefined);
+});
+
+Deno.test("revisão: com o PNCP fora, abrir o detalhe de novo em 15 s não repete a busca (lease)", async () => {
+  clearAcompanhamentoCache();
+  const buscas: string[] = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = fetchFalso({ consulta: "fora", pncpV1: "fora", busca: "ok" }, buscas);
+  try {
+    for (let i = 0; i < 2; i++) {
+      const res = await handleAcompanhamento(
+        { action: "acompanhamento", id: 1892 },
+        // deno-lint-ignore no-explicit-any
+        { getClient: () => mockSupabase(ROW_1892, {}) as any, httpClient: httpClient() },
+      );
+      const body = await res.json();
+      assertEquals(body.compra.origem, "busca_pncp");
+    }
+  } finally {
+    globalThis.fetch = original;
+    clearAcompanhamentoCache();
+  }
+  assertEquals(buscas.sort(), ["ata", "edital"]);
 });
 
 Deno.test("CA-7: resposta com seção da busca não é completa: no-store (regressão do #501)", async () => {

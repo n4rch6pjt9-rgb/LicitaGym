@@ -266,6 +266,11 @@ Obtém o painel de acompanhamento em tempo real para uma oportunidade, consultan
 - URLs seguras derivadas na leitura: `url_edital` (só link do edital; Sistema S/Paradigma sem link da origem = null), `url_portal` (mural público do portal Paradigma da fonte, não é o edital; null nas outras fontes) e `url_acompanhamento` (redirecionamento Comprasnet `https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/landing?destino=acompanhamento-compra&compra={idCompra}` quando `idCompra` tem 17 dígitos válidos).
 - Cache em memória de ~5 minutos (`Cache-Control: private, max-age=300`).
 - Isolamento de falhas parciais: falha em uma seção não inviabiliza as demais; cada seção possui seu campo `erro`.
+- **PNCP fora: fontes em ordem por seção.** O `erro` da 1ª fonte fica sempre na seção, e a resposta com seção em erro é `no-store`.
+  - Itens e Documentos com erro e sem dados vêm da cópia gravada pelo coletor (`origem: "copia_local"`, `copia_gravada_em`; PR #501).
+  - **Spec 0049.** Resumo (`compra`) e Atas com erro e sem dados vêm do índice de busca do PNCP (`/api/search/`), casado pelo `numero_controle_pncp` exato: `origem: "busca_pncp"` e `busca_atualizado_em`, a `data_atualizacao_pncp` do índice em ISO `-03:00` (Atas: a mais recente). O que a busca não traz fica `null`: `processo`, `linkSistemaOrigem`, `datas.inclusao`. Atas sem fornecedor e sem valor, com `permiteAdesao`.
+  - Itens/Documentos da cópia ganham `conferencia_busca: { pncp_atualizado_em, gravado_em, compra_mudou }`, que compara a atualização da compra no índice com `licitacoes_externas.pncp_data_atualizacao`. A comparação usa a `dataAtualizacao` da compra, não a global: `compra_mudou: false` não prova que os itens não mudaram.
+  - A busca falhando (2 tentativas só para queda de conexão, 5 s cada) deixa a seção como estava. Contrato medido da busca: `docs/pncp/schemas-consultas-pncp.md`, seção 6.
 
 Requer autenticação JWT do usuário (`401` se não autenticado).
 

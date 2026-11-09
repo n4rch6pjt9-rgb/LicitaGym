@@ -2037,3 +2037,19 @@ Deno.test("CA-5: admin da plataforma sem vínculo cai na única empresa ativa e 
   const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario(admin) });
   assertEquals(res.status, 200);
 });
+
+// --------------------------------------------------------------------------
+// Spec 0050 K-2: o resumo diz com que critério o valor foi somado (CA-5). O 403 de outro tenant segue nos testes
+// "CA-5: ..." da 0048 acima (CA-6 da 0050).
+// --------------------------------------------------------------------------
+
+Deno.test("0050 CA-5: resumo_executivo informa que o valor soma só os itens no escopo e quais categorias contam", async () => {
+  const client = criarClienteResumo({ membros: MEMBRO_ATIVO, ativas: [7], resumoRow: RESUMO_ROW });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=resumo_executivo");
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario({ id: "u-1" }) });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.criterio_valor, "itens_no_escopo");
+  assertEquals(body.categorias_valor, ["forte", "catmat", "borracha", "piso", "obra_piso"]);
+});

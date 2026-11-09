@@ -4,6 +4,12 @@
 --       em Brasília (00:00 do dia seguinte já não entra).
 -- CA-3: EXECUTE só para service_role (anon e authenticated recebem erro de permissão); security invoker;
 --       search_path fixo.
+-- Spec 0050 (migration 20261109060000_dashboard_resumo_valor_itens_escopo):
+-- 0050 CA-1: o valor soma só licitacao_itens.valor_total_estimado das categorias forte, catmat, borracha, piso e
+--            obra_piso; fraco e item sem categoria ficam fora (edital de 1 mi com item forte de 10 mil -> 10 mil).
+-- 0050 CA-2: sem item que conta com valor -> soma null e com_valor_total 0; contagens não mudam.
+-- 0050 CA-3: prazo_amanha_valor e prazo_7_dias_valor somam só os itens no escopo.
+-- 0050 CA-4: é o CA-3 da 0048 abaixo (ACL inalterada).
 -- As linhas de teste ficam num bloco desfeito no fim (nada fica gravado). Prazos em 2099 para a view não rebaixar
 -- os leads pelo relógio real; a janela de prazo da função usa p_agora.
 do $$
@@ -11,6 +17,7 @@ declare
   v_fn regprocedure := to_regprocedure('public.dashboard_resumo_executivo(bigint[],timestamp with time zone)');
   v_agora constant timestamptz := '2099-03-10 12:00:00-03';
   v_l1 bigint; v_l2 bigint; v_l3 bigint; v_m1 bigint; v_h1 bigint; v_n1 bigint;
+  v_x1 bigint; v_x2 bigint; v_x3 bigint; v_x4 bigint;
   v_limites bigint[] := '{}';
   v_id bigint;
   f record;
@@ -78,6 +85,18 @@ begin
             '2099-03-11 09:00:00-03', 9999.00, 'leads', '2099-03-01 10:00:00-03')
     returning id into v_h1;
 
+    -- Spec 0050: o valor vem dos itens no escopo (forte, catmat, borracha, piso, obra_piso). Os fixtures da 0048
+    -- ganham itens com o mesmo valor do certame, para as somas da 0048 continuarem as mesmas; o `fraco` e o item sem
+    -- categoria de L1 não podem entrar.
+    insert into public.licitacao_itens (licitacao_id, numero_item, descricao, valor_total_estimado, categoria_escopo)
+    values (v_l1, 1, 'item teste forte', 1000.00, 'forte'),
+           (v_l1, 2, 'item teste fraco', 777.00, 'fraco'),
+           (v_l1, 3, 'item teste sem categoria', 555.00, null),
+           (v_n1, 1, 'item teste forte', 500000.00, 'forte'),
+           (v_l2, 1, 'item teste forte', 2000.50, 'forte'),
+           (v_m1, 1, 'item teste piso', 300.00, 'piso'),
+           (v_h1, 1, 'item teste forte', 9999.00, 'forte');
+
     -- Pré-condição dos fixtures na view.
     if (select count(*) from public.licitacoes_externas_prioridade_efetiva
          where id in (v_l1, v_l2, v_l3) and prioridade = 'leads' and eh_canonica) <> 3
@@ -137,6 +156,8 @@ begin
       values ('pncp', 'check-resumo-limite-' || f.rotulo || '/2099', '00000000000910', '0910-' || f.rotulo || '/2099',
               'PE 910-' || f.rotulo, f.data_fim, 10.00, 'leads', coalesce(f.normalizacoes, '{}'::jsonb))
       returning id into v_id;
+      insert into public.licitacao_itens (licitacao_id, numero_item, descricao, valor_total_estimado, categoria_escopo)
+      values (v_id, 1, 'item teste forte', 10.00, 'forte');
       v_limites := v_limites || v_id;
     end loop;
     if (select count(*) from public.licitacoes_externas_prioridade_efetiva
@@ -163,6 +184,78 @@ begin
     if r.leads_total is distinct from 0::bigint or r.monitoradas_total is distinct from 0::bigint
        or r.valor_potencial_total is not null then
       raise exception 'CA-2 FALHOU: recorte vazio contou % leads', r.leads_total;
+    end if;
+
+    -- Spec 0050 ------------------------------------------------------------------------------------------------------
+    -- X1: edital de 1.000.000 com um item forte de 10.000, um sem categoria de 900.000 e um fraco de 90.000.
+    -- X2: lead só com item fraco, item sem categoria e item forte sem valor.
+    -- X3: lead com prazo amanhã (BRT): obra_piso 300 e fraco 7.700.
+    -- X4: uma de cada categoria que conta (catmat 1, borracha 2, piso 4, obra_piso 8, forte 16 = 31).
+    insert into public.licitacoes_externas (fonte, codigo_externo, orgao_cnpj, numero_processo, numero_edital, data_fim,
+                                            valor_total, prioridade)
+    values ('pncp', 'check-resumo-00000000000920-1-000001/2099', '00000000000920', '0920/2099', 'PE 920/2099',
+            '2099-04-01 10:00:00-03', 1000000.00, 'leads')
+    returning id into v_x1;
+    insert into public.licitacoes_externas (fonte, codigo_externo, orgao_cnpj, numero_processo, numero_edital, data_fim,
+                                            valor_total, prioridade)
+    values ('pncp', 'check-resumo-00000000000921-1-000001/2099', '00000000000921', '0921/2099', 'PE 921/2099',
+            '2099-04-01 10:00:00-03', 5000.00, 'leads')
+    returning id into v_x2;
+    insert into public.licitacoes_externas (fonte, codigo_externo, orgao_cnpj, numero_processo, numero_edital, data_fim,
+                                            valor_total, prioridade)
+    values ('pncp', 'check-resumo-00000000000922-1-000001/2099', '00000000000922', '0922/2099', 'PE 922/2099',
+            '2099-03-11 15:00:00-03', 8000.00, 'leads')
+    returning id into v_x3;
+    insert into public.licitacoes_externas (fonte, codigo_externo, orgao_cnpj, numero_processo, numero_edital, data_fim,
+                                            valor_total, prioridade)
+    values ('pncp', 'check-resumo-00000000000923-1-000001/2099', '00000000000923', '0923/2099', 'PE 923/2099',
+            '2099-04-01 10:00:00-03', 99.00, 'monitorar')
+    returning id into v_x4;
+    insert into public.licitacao_itens (licitacao_id, numero_item, descricao, valor_total_estimado, categoria_escopo)
+    values (v_x1, 1, 'item teste forte', 10000.00, 'forte'),
+           (v_x1, 2, 'item teste sem categoria', 900000.00, null),
+           (v_x1, 3, 'item teste fraco', 90000.00, 'fraco'),
+           (v_x2, 1, 'item teste fraco', 5000.00, 'fraco'),
+           (v_x2, 2, 'item teste sem categoria', 100.00, null),
+           (v_x2, 3, 'item teste forte sem valor', null, 'forte'),
+           (v_x3, 1, 'item teste obra_piso', 300.00, 'obra_piso'),
+           (v_x3, 2, 'item teste fraco', 7700.00, 'fraco'),
+           (v_x4, 1, 'item teste catmat', 1.00, 'catmat'),
+           (v_x4, 2, 'item teste borracha', 2.00, 'borracha'),
+           (v_x4, 3, 'item teste piso', 4.00, 'piso'),
+           (v_x4, 4, 'item teste obra_piso', 8.00, 'obra_piso'),
+           (v_x4, 5, 'item teste forte', 16.00, 'forte');
+    if (select count(*) from public.licitacoes_externas_prioridade_efetiva
+         where id in (v_x1, v_x2, v_x3, v_x4) and prioridade in ('leads', 'monitorar') and eh_canonica) <> 4 then
+      raise exception '0050 CA-1 FALHOU: fixtures X1..X4 não ficaram ativos e canônicos na view';
+    end if;
+
+    -- 0050 CA-1: soma só o item forte do edital de 1 mi.
+    select * into r from public.dashboard_resumo_executivo(array[v_x1], v_agora);
+    if r.valor_potencial_total is distinct from 10000.00::numeric or r.com_valor_total is distinct from 1::bigint then
+      raise exception '0050 CA-1 FALHOU: valor_potencial_total=% com_valor_total=% (esperado 10000.00 e 1)',
+        r.valor_potencial_total, r.com_valor_total;
+    end if;
+    -- 0050 CA-1: as cinco categorias que contam.
+    select * into r from public.dashboard_resumo_executivo(array[v_x4], v_agora);
+    if r.valor_potencial_total is distinct from 31.00::numeric then
+      raise exception '0050 CA-1 FALHOU: categorias que contam somaram % (esperado 31.00)', r.valor_potencial_total;
+    end if;
+
+    -- 0050 CA-2: nenhum item que conta com valor -> soma null, com_valor 0, contagens inalteradas.
+    select * into r from public.dashboard_resumo_executivo(array[v_x2], v_agora);
+    if r.valor_potencial_total is not null or r.com_valor_total is distinct from 0::bigint
+       or r.leads_total is distinct from 1::bigint or r.monitoradas_total is distinct from 1::bigint then
+      raise exception '0050 CA-2 FALHOU: valor=% com_valor=% leads=% monitoradas=% (esperado null, 0, 1, 1)',
+        r.valor_potencial_total, r.com_valor_total, r.leads_total, r.monitoradas_total;
+    end if;
+
+    -- 0050 CA-3: a janela de amanhã soma só o item no escopo, não o valor do certame.
+    select * into r from public.dashboard_resumo_executivo(array[v_x3], v_agora);
+    if r.prazo_amanha_total is distinct from 1::bigint or r.prazo_amanha_valor is distinct from 300.00::numeric
+       or r.prazo_7_dias_valor is distinct from 300.00::numeric then
+      raise exception '0050 CA-3 FALHOU: prazo_amanha_total=% prazo_amanha_valor=% prazo_7_dias_valor=% (esperado 1, 300.00, 300.00)',
+        r.prazo_amanha_total, r.prazo_amanha_valor, r.prazo_7_dias_valor;
     end if;
 
     -- CA-3: execução real por papel.

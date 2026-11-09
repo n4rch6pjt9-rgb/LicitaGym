@@ -13,6 +13,10 @@ function bancoBase(): Record<string, Linha[]> {
   return {
     tenant_membros: [{ tenant_id: 1, user_id: "user-uuid-1", papel: "operacao", ativo: true }],
     tenants: [{ id: 1, ativo: true }, { id: 2, ativo: true }],
+    licitacoes_externas: [
+      { id: 2430, objeto: "Aquisição de equipamentos de musculação", orgao_nome: "Universidade Federal X", uf: "SP" },
+      { id: 157, objeto: "Esteiras ergométricas", orgao_nome: "Prefeitura Y", uf: "RS" },
+    ],
     sessao_alertas: [
       { id: 1, tenant_id: 1, licitacao_id: 2430, tipo: "convocacao_anexos", identificador_item: "G1",
         fornecedor_razao_social: "EMPRESA A LTDA", fornecedor_cnpj: "11222333000181", da_empresa: true,
@@ -119,4 +123,20 @@ Deno.test("CA-7e: marcar o próprio grava lido_em e lido_por; id inválido 400",
   assertEquals(a.lido_por, "user-uuid-1");
   assertEquals((await handleRequest(lido({ id: "1; drop" }), ctx(bancoBase()))).status, 400);
   assertEquals((await handleRequest(lido({}), ctx(bancoBase()))).status, 400);
+});
+
+Deno.test("CA-7d (revisão de UX): cada alerta identifica a compra com órgão, UF e objeto", async () => {
+  const body = await (await handleRequest(get(), ctx(bancoBase()))).json();
+  const porId = Object.fromEntries(body.alertas.map((a: Linha) => [a.id, a]));
+  assertEquals([porId[1].orgao_nome, porId[1].uf, porId[1].objeto],
+    ["Universidade Federal X", "SP", "Aquisição de equipamentos de musculação"]);
+  assertEquals([porId[3].orgao_nome, porId[3].uf], ["Prefeitura Y", "RS"]);
+});
+
+Deno.test("CA-7d (revisão de UX): licitação sem cadastro aparece com órgão, UF e objeto nulos, sem inventar", async () => {
+  const banco = bancoBase();
+  banco.licitacoes_externas = [];
+  const body = await (await handleRequest(get(), ctx(banco))).json();
+  assertEquals(body.alertas[0].orgao_nome, null);
+  assertEquals(body.alertas[0].objeto, null);
 });

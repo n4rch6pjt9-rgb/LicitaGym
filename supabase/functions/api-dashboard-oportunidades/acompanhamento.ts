@@ -179,6 +179,24 @@ async function mapConcurrent<T, R>(
   return results;
 }
 
+/**
+ * Opções das chamadas ao PNCP no detalhe (caminho interativo: o usuário espera a resposta).
+ * Uma tentativa só, sem retry: o host pncp.gov.br passa pelo lease global (private.acquire_http_slot,
+ * 1 requisição/s, concorrência 1, compartilhado com os coletores), e cada nova tentativa ocupa mais uma vaga
+ * da fila. Em 09/11/2026 (id 125) o PNCP devolvia 503 em 0,3 s e o detalhe levava 17 a 32 s: 13 vagas do lease
+ * (5 endpoints, 3 tentativas cada nos que falhavam) somaram 18,1 s de 19,5 s. A seção que falha volta com
+ * `erro` explícito e o botão "Tentar novamente" consulta de novo (resposta com erro não vai para o cache).
+ * Timeout de 10 s por tentativa: o detalhe não fica 20 s preso num PNCP que não responde.
+ */
+export const PNCP_DETALHE_OPCOES = { attemptTimeoutMs: 10_000, maxAttempts: 1 } as const;
+
+/** Resposta com alguma seção em erro não vai para o cache (senão o "Tentar novamente" repete o erro por 5 min). */
+export function acompanhamentoCompleto(payload: AcompanhamentoResponse): boolean {
+  if (!payload.disponivel) return false;
+  return [payload.compra, payload.itens, payload.atas, payload.historico, payload.arquivos]
+    .every((secao) => secao.erro === null);
+}
+
 // -----------------------------------------------------------------------------
 // Clientes e Normalizadores de Endpoints PNCP
 // -----------------------------------------------------------------------------
@@ -195,7 +213,7 @@ async function fetchCompraMetadata(
       headers: { Accept: "application/json" },
     }, {
       endpoint: "/api/consulta/v1/orgaos/{cnpj}/compras/{ano}/{seq}",
-      attemptTimeoutMs: 20_000,
+      ...PNCP_DETALHE_OPCOES,
     });
 
     if (res.status === 204 || !res.body || typeof res.body !== "object") {
@@ -304,7 +322,7 @@ async function fetchItensComResultados(
       }, {
         endpoint: "/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/itens",
         pagina,
-        attemptTimeoutMs: 20_000,
+        ...PNCP_DETALHE_OPCOES,
       });
 
       if (res.status === 204 || !res.body) break;
@@ -337,7 +355,7 @@ async function fetchItensComResultados(
           headers: { Accept: "application/json" },
         }, {
           endpoint: "/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/itens/{n}/resultados",
-          attemptTimeoutMs: 20_000,
+          ...PNCP_DETALHE_OPCOES,
         });
 
         if (resResult.status === 204 || !resResult.body) {
@@ -395,7 +413,7 @@ async function fetchAtas(
       }, {
         endpoint: "/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/atas",
         pagina,
-        attemptTimeoutMs: 20_000,
+        ...PNCP_DETALHE_OPCOES,
       });
 
       if (res.status === 204 || !res.body) break;
@@ -448,7 +466,7 @@ async function fetchHistorico(
       }, {
         endpoint: "/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/historico",
         pagina,
-        attemptTimeoutMs: 20_000,
+        ...PNCP_DETALHE_OPCOES,
       });
 
       if (res.status === 204 || !res.body) break;
@@ -504,7 +522,7 @@ async function fetchArquivos(
       headers: { Accept: "application/json" },
     }, {
       endpoint: "/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/arquivos",
-      attemptTimeoutMs: 20_000,
+      ...PNCP_DETALHE_OPCOES,
     });
 
     if (res.status === 204 || !res.body) {
@@ -781,7 +799,7 @@ export async function handleAcompanhamento(
       portal: null,
     };
 
-    setCachedAcompanhamento(cacheKey, payload);
+    if (acompanhamentoCompleto(payload)) setCachedAcompanhamento(cacheKey, payload);
     }
 
     const linkPortal = (typeof row.link_sistema_origem === "string" ? row.link_sistema_origem : null) ??

@@ -94,6 +94,8 @@ const SYNCS_TRAVADOS = [
   "sync-pncp-contratacoes-atas",
   "sync-pncp-contratacoes-contratos",
   "sync-pncp-irp",
+  // depende de contratacoes_editais, alimentada só pelo sync nacional de editais (travado)
+  "sync-pncp-contratacoes-itens",
 ];
 
 Deno.test("api-syncs: syncs travados por escopo não são disparáveis e não chamam a função", async () => {

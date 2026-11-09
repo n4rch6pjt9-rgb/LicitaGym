@@ -177,8 +177,9 @@ export const SYNCS: SyncCatalogo[] = [
     faz: "Itens dos editais que ainda não têm item gravado.",
     cron: null,
     corpo: { limite: 50, so_sem_itens: true },
-    disparavel: true,
-    aviso: null,
+    disparavel: false,
+    aviso: "Desligado: completa itens de contratacoes_editais, que vem do sync nacional de editais (desligado por " +
+      "escopo) e está parada desde 20/09/2026. Os itens das oportunidades vêm do Coletor PNCP.",
   },
   {
     slug: "sync-pncp-irp",

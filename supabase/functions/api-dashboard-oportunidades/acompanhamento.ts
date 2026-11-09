@@ -7,6 +7,7 @@ import { diaBrasilia } from "../_shared/portal-compras.ts";
 import { sincronizarPortalOficialEAtraso } from "./pncpAtraso.ts";
 import { estaNoPipeline } from "./portal.ts";
 import { UnifiedHttpClient } from "../_shared/http-client/index.ts";
+import { aplicarCopiaLocal, arquivosDaCopiaLocal, itensDaCopiaLocal, precisaDaCopia } from "./copiaLocal.ts";
 import type {
   AcompanhamentoActionParams,
   AcompanhamentoResponse,
@@ -817,6 +818,21 @@ export async function handleAcompanhamento(
     const linkPortal = (typeof row.link_sistema_origem === "string" ? row.link_sistema_origem : null) ??
       (payload.disponivel ? payload.compra.dados?.linkSistemaOrigem : null) ??
       linkSistemaOrigemFromRaw(row.raw);
+    // PNCP fora (itens/documentos com erro e sem dados): cópia gravada pelo coletor, com o erro do PNCP mantido.
+    // Fora do cache: a cópia é do banco e não pode prender o "Tentar novamente".
+    if (payload.disponivel) {
+      const disp = payload;
+      const [copiaItens, copiaArquivos] = await Promise.all([
+        precisaDaCopia(disp.itens) ? itensDaCopiaLocal(client, Number(row.id)) : Promise.resolve(null),
+        precisaDaCopia(disp.arquivos) ? arquivosDaCopiaLocal(client, Number(row.id), disp.pncp) : Promise.resolve(null),
+      ]);
+      payload = {
+        ...disp,
+        itens: aplicarCopiaLocal(disp.itens, copiaItens),
+        arquivos: aplicarCopiaLocal(disp.arquivos, copiaArquivos),
+      };
+    }
+
     // PDM e unidade por item (CA-8 da spec 0009): lidos do banco a cada resposta, também quando o PNCP veio do cache.
     const itensDoPayload = payload.disponivel && Array.isArray(payload.itens.dados) ? payload.itens.dados : [];
     const [portal, itensComPreco] = await Promise.all([

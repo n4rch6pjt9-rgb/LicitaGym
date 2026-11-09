@@ -4,6 +4,8 @@ import type {
   GetActionParams,
   LicitacaoFiltros,
   ListActionParams,
+  RecorteResumo,
+  ResumoExecutivoActionParams,
   SortField,
   SortOrder,
 } from "./types.ts";
@@ -420,6 +422,36 @@ export function parseAcompanhamentoParams(
   return { action: "acompanhamento", id, atualizar: atualizarRaw === true || atualizarRaw === "true" };
 }
 
+/** Parâmetros que o resumo executivo aceita além de `action`: só o recorte de catálogo/CATMAT. */
+export const PARAMETROS_RECORTE_RESUMO = ["catmat_grupo", "catmat_classe", "catmat_pdm", "catmat_item", "catalogo"] as const;
+
+/**
+ * Spec 0048 K-2: o resumo conta todas as oportunidades (leads + monitorar) do recorte de catálogo/CATMAT. Outro
+ * filtro da lista (uf, busca, prioridade...) responde 400 em vez de ser ignorado em silêncio.
+ */
+export function parseResumoExecutivoParams(source: Record<string, unknown>): ResumoExecutivoActionParams | { error: string } {
+  const aceitos = new Set<string>(["action", ...PARAMETROS_RECORTE_RESUMO]);
+  const fora = Object.keys(source).filter((k) => !aceitos.has(k));
+  if (fora.length > 0) {
+    return {
+      error: `A ação 'resumo_executivo' aceita só o recorte de catálogo/CATMAT (${PARAMETROS_RECORTE_RESUMO.join(", ")}). ` +
+        `Parâmetro não aceito: ${fora.sort().join(", ")}.`,
+    };
+  }
+  const recorte: RecorteResumo = {};
+  for (const campo of ["catmat_grupo", "catmat_classe", "catmat_pdm", "catmat_item"] as const) {
+    const r = sanitizeCodigoList(source[campo], campo);
+    if (r && !Array.isArray(r)) return { error: r.error };
+    if (r) recorte[campo] = r;
+  }
+  if (source.catalogo !== undefined && source.catalogo !== null && source.catalogo !== "") {
+    const catalogo = sanitizeBoolean(source.catalogo);
+    if (catalogo === undefined) return { error: "Parâmetro 'catalogo' deve ser true ou false." };
+    if (catalogo) recorte.catalogo = true;
+  }
+  return { action: "resumo_executivo", recorte };
+}
+
 export function parseActionFromUrl(url: URL): ActionParams | { error: string } {
   const actionParam = url.searchParams.get("action") ?? "list";
 
@@ -455,7 +487,15 @@ export function parseActionFromUrl(url: URL): ActionParams | { error: string } {
     return { action: "objeto_categorias" };
   }
 
-  return { error: `Ação inválida: '${actionParam}'. Use 'list', 'get', 'readiness', 'acompanhamento' ou 'objeto_categorias'.` };
+  if (actionParam === "resumo_executivo") {
+    const raw: Record<string, unknown> = {};
+    for (const [key, value] of url.searchParams.entries()) {
+      raw[key] = value;
+    }
+    return parseResumoExecutivoParams(raw);
+  }
+
+  return { error: `Ação inválida: '${actionParam}'. Use 'list', 'get', 'readiness', 'acompanhamento', 'objeto_categorias' ou 'resumo_executivo'.` };
 }
 
 export function parseActionFromBody(
@@ -487,5 +527,9 @@ export function parseActionFromBody(
     return parseAcompanhamentoParams(body.id, body.atualizar);
   }
 
-  return { error: `Ação inválida: '${action}'. Use 'list', 'get', 'readiness', 'acompanhamento' ou 'objeto_categorias'.` };
+  if (action === "resumo_executivo") {
+    return parseResumoExecutivoParams(body);
+  }
+
+  return { error: `Ação inválida: '${action}'. Use 'list', 'get', 'readiness', 'acompanhamento', 'objeto_categorias' ou 'resumo_executivo'.` };
 }

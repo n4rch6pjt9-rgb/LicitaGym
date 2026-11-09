@@ -1,3 +1,6 @@
+-- Spec 0042: tenant novo nasce NX; este check testa o modelo antigo (Konnen), então pede a semente antiga.
+select set_config('nexor.semente_pipeline', 'lei14133', false);
+
 -- Checagem da migration 20261021130200_agente_execucoes_envio (spec 0035: K-3, K-4, K-15, R-7 a R-9; CA-6, CA-7,
 -- CA-9, CA-24, CA-29, CA-30).
 --   ACL; envio liga a tarefa aberta do mesmo agente na etapa atual; segundo envio dá LG003; outra empresa não acha a

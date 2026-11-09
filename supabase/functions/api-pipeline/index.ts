@@ -108,12 +108,19 @@ export async function handleRequest(req: Request, ctx: ApiPipelineContext = {}):
       }
 
       case "catalogo_listar":
-        return jsonResponse({ action: params.action, tarefas: await repo.listarCatalogo() });
+        return jsonResponse({ action: params.action, tarefas: await repo.listarCatalogo(tenant) });
 
       case "etapa_tarefas_listar": {
         const tarefas = await repo.listarModelo(tenant, params.etapa_id);
         if (!tarefas) return jsonResponse({ error: "Etapa não encontrada." }, 404);
-        return jsonResponse({ action: params.action, etapa_id: params.etapa_id, tarefas, ...(await repo.listarAgentes(tenant, params.etapa_id)) });
+        return jsonResponse({
+          action: params.action,
+          etapa_id: params.etapa_id,
+          // Spec 0042 (K-6): etapa NX que esta etapa representa; o seletor do catálogo abre nela. null fora do NX.
+          fase_codigo: await repo.faseDaEtapa(tenant, params.etapa_id),
+          tarefas,
+          ...(await repo.listarAgentes(tenant, params.etapa_id)),
+        });
       }
 
       case "etapa_tarefas_salvar": {

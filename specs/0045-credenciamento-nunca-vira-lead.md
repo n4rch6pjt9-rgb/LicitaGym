@@ -1,6 +1,7 @@
 # 0045: Tirar credenciamento de leads (regra "credenciamento nunca vira lead")
 
-- **Status:** rascunho
+- **Status:** parada (09/11/2026: o Marcelo decidiu que credenciamento vira oportunidade numa aba própria; substituída
+  pela spec 0046. As medições abaixo seguem válidas como registro.)
 - **Alimenta:** módulo 1 de `docs/produto/ESCOPO.md` (Radar de oportunidades, "no ar, em ajuste"). Não alimenta fase
   da spec-mãe 0032. Pela "regra de foco" do `ESCOPO.md`, o Marcelo decide se entra como correção de regra já decidida
   ou fica `parada` (ver Perguntas em aberto).

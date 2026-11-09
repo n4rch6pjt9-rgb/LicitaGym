@@ -900,6 +900,13 @@ async function handleList(
 /** Spec 0048 K-1: função SQL do resumo executivo (EXECUTE só service_role). */
 export const RESUMO_EXECUTIVO_RPC = "dashboard_resumo_executivo";
 
+/**
+ * Spec 0050 K-2: com que critério a função soma os valores. Espelha o filtro de categoria_escopo da migration
+ * 20261109060000_dashboard_resumo_valor_itens_escopo (mudar uma exige mudar a outra).
+ */
+export const RESUMO_CRITERIO_VALOR = "itens_no_escopo";
+export const RESUMO_CATEGORIAS_VALOR = ["forte", "catmat", "borracha", "piso", "obra_piso", "manutencao"] as const;
+
 function numeroOuNull(v: unknown): number | null {
   if (v === null || v === undefined || v === "") return null;
   const n = Number(v);
@@ -985,6 +992,8 @@ async function handleResumoExecutivo(
       resumo,
       recorte: { aplicado: ids !== null, filtros: recorte, licitacoes_total: ids === null ? null : ids.length },
       fonte: OPORTUNIDADES_VIEW,
+      criterio_valor: RESUMO_CRITERIO_VALOR,
+      categorias_valor: [...RESUMO_CATEGORIAS_VALOR],
     });
   } catch (err: unknown) {
     console.error("[api-dashboard-oportunidades] Exceção em resumo_executivo:", err);

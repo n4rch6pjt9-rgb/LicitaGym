@@ -193,7 +193,7 @@ Lista oportunidades com suporte a paginação, ordenação configurável e múlt
 | `modalidade` | string / string[] | Modalidade única ou lista separada por vírgula / array |
 | `situacao` | string | Situação da licitação |
 | `fase` | string | Fase da licitação |
-| `categoria_escopo` | string | Categoria (`catmat`, `borracha`, `piso`, `obra_piso`, `forte`, `fraco`) |
+| `categoria_escopo` | string | Categoria (`catmat`, `borracha`, `piso`, `obra_piso`, `forte`, `fraco`, `manutencao`) |
 | `interesse_borracha` | boolean | Filtrar oportunidades de interesse em borracha (`true`/`false`) |
 | `fonte` | string | Fonte dos dados (`pncp`, `sestsenat`, etc.) |
 | `data_publicacao_inicio` | string | Início da publicação (`>= data_publicacao_inicio`) |
@@ -395,7 +395,7 @@ A ação é somente leitura: não grava eventos nem gera tarefas. A automação 
 
 ---
 
-### 5. `resumo_executivo` (spec 0048)
+### 5. `resumo_executivo` (specs 0048 e 0050)
 
 Números do Painel Executivo calculados no banco por `public.dashboard_resumo_executivo` (prioridade efetiva, só
 publicações canônicas, leads + monitorar), nunca por uma amostra da lista.
@@ -418,12 +418,17 @@ publicações canônicas, leads + monitorar), nunca por uma amostra da lista.
     "calculado_em": "2026-11-09T15:00:00+00:00"
   },
   "recorte": { "aplicado": true, "filtros": { "catalogo": true }, "licitacoes_total": 6 },
-  "fonte": "licitacoes_externas_prioridade_efetiva"
+  "fonte": "licitacoes_externas_prioridade_efetiva",
+  "criterio_valor": "itens_no_escopo",
+  "categorias_valor": ["forte", "catmat", "borracha", "piso", "obra_piso", "manutencao"]
 }
 ```
 
-- `valor_potencial_total`, `prazo_amanha_valor` e `prazo_7_dias_valor` são `null` quando nenhuma licitação contada
-  tem `valor_total` (a tela mostra "—", nunca 0).
+- **Valores (spec 0050, "Valor no escopo"):** `valor_potencial_total`, `prazo_amanha_valor` e `prazo_7_dias_valor`
+  somam `licitacao_itens.valor_total_estimado` só dos itens com `categoria_escopo` em `categorias_valor`; `fraco` e
+  item sem categoria ficam fora. Não somam mais o `valor_total` do certame. `com_valor_total` conta as licitações
+  com pelo menos um desses itens com valor. A categoria vem do coletor (CATMAT e termos), não do TR.
+- Os valores são `null` quando nenhum item que conta tem valor (a tela mostra "—", nunca 0).
 - `prazo_amanha_*`: prazo (o mesmo instante com que a view rebaixa leads: normalizado, senão `raw.data_fim_vigencia`, senão `data_fim`) depois de agora e até 23:59:59 de amanhã (Brasília); `prazo_7_dias_*`: até 23:59:59 do
   7º dia depois de hoje. Sem "alta aderência" (volta só com aderência pelo TR, decisão de 09/11).
 - `recorte.licitacoes_total`: licitações do recorte (todas as prioridades, antes do escopo leads + monitorar); `null`

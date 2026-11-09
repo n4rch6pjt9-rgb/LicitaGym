@@ -26,6 +26,7 @@ import {
   OPORTUNIDADES_COLUMNS,
   OPORTUNIDADES_VIEW,
   PUBLIC_LICITACAO_COLUMNS,
+  RESUMO_CATEGORIAS_VALOR,
 } from "../../../supabase/functions/api-dashboard-oportunidades/index.ts";
 
 // Helper mock para testar montagem de query em applyLicitacaoFilters
@@ -2036,4 +2037,36 @@ Deno.test("CA-5: admin da plataforma sem vínculo cai na única empresa ativa e 
   // deno-lint-ignore no-explicit-any
   const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario(admin) });
   assertEquals(res.status, 200);
+});
+
+// --------------------------------------------------------------------------
+// Spec 0050 K-2: o resumo diz com que critério o valor foi somado (CA-5). O 403 de outro tenant segue nos testes
+// "CA-5: ..." da 0048 acima (CA-6 da 0050).
+// --------------------------------------------------------------------------
+
+Deno.test("0050 CA-5: resumo_executivo informa que o valor soma só os itens no escopo e quais categorias contam", async () => {
+  const client = criarClienteResumo({ membros: MEMBRO_ATIVO, ativas: [7], resumoRow: RESUMO_ROW });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=resumo_executivo");
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario({ id: "u-1" }) });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.criterio_valor, "itens_no_escopo");
+  assertEquals(body.categorias_valor, ["forte", "catmat", "borracha", "piso", "obra_piso", "manutencao"]);
+});
+
+Deno.test("0050 CA-5: categorias_valor da API são as mesmas que a última migration de dashboard_resumo_executivo soma", async () => {
+  const pasta = new URL("../../../supabase/migrations/", import.meta.url);
+  const nomes: string[] = [];
+  for await (const e of Deno.readDir(pasta)) if (e.isFile && /^\d{14}_.*\.sql$/.test(e.name)) nomes.push(e.name);
+  nomes.sort();
+  let ultima = "";
+  for (const nome of nomes) {
+    const sql = await Deno.readTextFile(new URL(nome, pasta));
+    if (/create or replace function public\.dashboard_resumo_executivo\(/i.test(sql)) ultima = sql;
+  }
+  const m = ultima.match(/categoria_escopo in \(([^)]*)\)/i);
+  if (!m) throw new Error("a última migration de dashboard_resumo_executivo não filtra categoria_escopo in (...)");
+  const doSql = m[1].split(",").map((s) => s.trim().replace(/^'|'$/g, "")).sort();
+  assertEquals(doSql, [...RESUMO_CATEGORIAS_VALOR].sort());
 });

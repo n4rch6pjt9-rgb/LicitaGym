@@ -93,7 +93,10 @@ export interface ResumoExecutivoActionParams {
   recorte: RecorteResumo;
 }
 
-/** Linha de public.dashboard_resumo_executivo (K-1). Somas null quando nenhuma linha tem valor_total. */
+/**
+ * Linha de public.dashboard_resumo_executivo (K-1). Desde a spec 0050, os valores somam só os itens no escopo
+ * (categorias forte, catmat, borracha, piso, obra_piso e manutencao); null quando nenhum desses itens tem valor.
+ */
 export interface ResumoExecutivo {
   leads_total: number;
   monitoradas_total: number;

@@ -1,6 +1,6 @@
 # 0048: Calcular no servidor os números do Painel Executivo (Dashboard Executivo V2)
 
-- **Status:** aprovada (Marcelo, 09/11/2026)
+- **Status:** em implementação (backend K-1 e K-2 no branch `claude/0048-resumo-backend`; Dashboard K-3 a K-5 a seguir). Aprovada pelo Marcelo em 09/11/2026
 - **Alimenta:** spec 0040 (marca NEXOR e linguagem Geist), contrato K-5 ("`ExecutiveDashboard` enxuto") e K-7 ("saúde e
   aderência sem dado inventado"). Por decisão do Marcelo de 09/11/2026 ("ligado à 0040"), é exceção à regra de foco do
   `ESCOPO.md` (não alimenta fase da 0032). Ver P-1.
@@ -68,11 +68,11 @@ Medido em 09/11/2026 (05:39 UTC), por consulta somente leitura no MCP do Supabas
 
 | ID | Contrato | Dado / Quando / Então | Teste que prova |
 |---|---|---|---|
-| CA-1 | K-1 | **Dado** licitações de teste (2 leads com valor, 1 lead sem valor, 1 monitorar, 1 histórico, 1 não canônica), **quando** a função roda, **então** `leads_total = 3`, `monitoradas_total = 4`, `com_valor_total` e a soma contam só as ativas canônicas com valor; histórico e não canônica ficam fora. | SQL `supabase/tests/dashboard_resumo_executivo_check.sql` |
-| CA-2 | K-1 | **Dado** ativas sem nenhum `valor_total`, **quando** a função roda, **então** `valor_potencial_total` é null (não 0) e `com_valor_total = 0`. Prazo às 23:59 de amanhã (Brasília) entra em "amanhã"; 00:00 do dia seguinte, não. | idem |
-| CA-3 | K-1 | **Dado** a migration, **quando** `anon` ou `authenticated` executam a função, **então** recebem erro de permissão; `service_role` executa. | idem |
-| CA-4 | K-2 | **Dado** um usuário com tenant ativo, **quando** chama `resumo_executivo` com o mesmo recorte de catálogo da lista, **então** recebe K-1 calculado só sobre os ids do recorte; sem JWT, 401. | Deno `tests/supabase/functions/api_dashboard_oportunidades_test.ts` |
-| CA-5 | K-2 | **Negativo. Dado** um usuário sem vínculo com tenant ativo, ou de outro tenant, **quando** chama `resumo_executivo`, **então** recebe 403 e o recorte nunca usa o catálogo de outra empresa. | idem |
+| CA-1 | K-1 | **Dado** licitações de teste (2 leads com valor, 1 lead sem valor, 1 monitorar, 1 histórico, 1 não canônica), **quando** a função roda, **então** `leads_total = 3`, `monitoradas_total = 4`, `com_valor_total` e a soma contam só as ativas canônicas com valor; histórico e não canônica ficam fora. | SQL `supabase/tests/dashboard_resumo_executivo_check.sql` (bloco "CA-1") |
+| CA-2 | K-1 | **Dado** ativas sem nenhum `valor_total`, **quando** a função roda, **então** `valor_potencial_total` é null (não 0) e `com_valor_total = 0`. Prazo às 23:59 de amanhã (Brasília) entra em "amanhã"; 00:00 do dia seguinte, não. | idem (blocos "CA-2": soma null, janelas e recorte vazio) |
+| CA-3 | K-1 | **Dado** a migration, **quando** `anon` ou `authenticated` executam a função, **então** recebem erro de permissão; `service_role` executa. | idem (bloco "CA-3": privilégios, `security invoker`, `search_path` e execução por papel) |
+| CA-4 | K-2 | **Dado** um usuário com tenant ativo, **quando** chama `resumo_executivo` com o mesmo recorte de catálogo da lista, **então** recebe K-1 calculado só sobre os ids do recorte; sem JWT, 401. | Deno `tests/supabase/functions/api_dashboard_oportunidades_test.ts`: testes "CA-4: ..." (recorte, sem recorte, recorte vazio, 401, 400 fora do recorte, POST, 500 sem detalhe) |
+| CA-5 | K-2 | **Negativo. Dado** um usuário sem vínculo com tenant ativo, ou de outro tenant, **quando** chama `resumo_executivo`, **então** recebe 403 e o recorte nunca usa o catálogo de outra empresa. | idem: testes "CA-5: ..." (sem vínculo, empresa desativada com outra ativa, vínculo desligado; nenhuma RPC chamada). Hoje `catalogo_empresa_catmat` não tem `tenant_id` (catálogo único): a garantia é o 403 antes de qualquer consulta |
 | CA-6 | K-3 | **Dado** o resumo com 1079 leads e valor null, **quando** o painel renderiza, **então** mostra 1079 e "—" no valor, sem o texto "ainda não é calculada no servidor"; com erro da API, mostra "Tentar de novo" e nenhum número. | vitest `src/test/painel-resumo-servidor.test.tsx` |
 | CA-7 | K-4 | **Regressão P0 (0040 CA-6/CA-8). Dado** o painel, **quando** renderiza sem fonte de preço e com oportunidade só com CATMAT casado, **então** não aparece "Processando base histórica..." nem "Alta aderência". | vitest `src/test/painel-dados-honestos.test.tsx` |
 | CA-8 | K-5 | **Negativo (0040 CA-9). Dado** um membro que não é admin, **quando** o painel abre, **então** o bloco de saúde não aparece (nem chama a `api-saude`); com a `api-saude` falhando para admin, o bloco mostra "Não verificada", nunca "OK". | vitest `src/test/painel-dados-honestos.test.tsx` |

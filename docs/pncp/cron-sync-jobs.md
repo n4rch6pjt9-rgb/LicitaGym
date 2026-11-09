@@ -20,7 +20,7 @@ Todas as `sync-*` e a `link-catmat-pca` autenticam com `validateCronAuth`: **`Au
 | `sync-pncp-irp` | `orgaos` | | | **não agendar**: gate `IRP_SYNC_ENABLED` (CLA-34) |
 | `sync-comprasgov-consulta` | | | | **não agendar**: placeholder, os 77 endpoints não estão ligados |
 | `import-catmat-curadoria` | JSON de curadoria | | | manual |
-| `sync-pncp-contratacoes-itens` | `limite` | | | **não agendar**: não entra no deploy e depende do sync nacional de editais, que responde 423 |
+| `sync-pncp-contratacoes-itens` | `limite`, `so_sem_itens`, `edital_id` | | pncp.gov.br (integração) | **não agendar**: depende de `contratacoes_editais`, alimentada só pelo sync nacional de editais (423). Fora da lista do workflow de deploy, mas publicada pelo deploy geral do merge (v224 ativa em 09/11/2026). Base parada desde 20/09/2026: 8 editais ativos, 80 itens em 4 editais, nenhum com código. Sem disparo pela tela (`api-syncs`, disparavel false). Importa `_shared_prod`. |
 | `link-pca-edital` | `janela_dias`, `limite`, `dry_run`, `classes` | até 150 s | nenhuma (só banco) | **agendar em dry_run**: versionada no repo. Casa `contratacoes_editais` e `licitacoes_externas`. O job `licitagym-link-pca-edital` (04:33 BRT) nasce com `dry_run: true` |
 
 ## 3. Plano de agendamento

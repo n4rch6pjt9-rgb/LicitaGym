@@ -1,6 +1,6 @@
 # 0048: Calcular no servidor os números do Painel Executivo (Dashboard Executivo V2)
 
-- **Status:** rascunho
+- **Status:** aprovada (Marcelo, 09/11/2026)
 - **Alimenta:** spec 0040 (marca NEXOR e linguagem Geist), contrato K-5 ("`ExecutiveDashboard` enxuto") e K-7 ("saúde e
   aderência sem dado inventado"). Por decisão do Marcelo de 09/11/2026 ("ligado à 0040"), é exceção à regra de foco do
   `ESCOPO.md` (não alimenta fase da 0032). Ver P-1.
@@ -61,8 +61,8 @@ Medido em 09/11/2026 (05:39 UTC), por consulta somente leitura no MCP do Supabas
 | K-1 | Migration `<timestamp>_dashboard_resumo_executivo.sql`: `public.dashboard_resumo_executivo(p_ids_filtro bigint[] default null, p_agora timestamptz default now())`, sobre `licitacoes_externas_prioridade_efetiva` com `eh_canonica` | recorte opcional de ids; instante | uma linha: `leads_total`, `monitoradas_total` (leads + monitorar), `valor_potencial_total` (soma de `valor_total` das ativas; **null se nenhuma tem valor**, nunca 0 inventado), `com_valor_total`, `prazo_amanha_total`/`_valor`, `prazo_7_dias_total`/`_valor` (janelas em Brasília), `calculado_em`. **Sem "alta aderência"** (P-3) | — | `security invoker`, `search_path` fixo, EXECUTE só `service_role` |
 | K-2 | `api-dashboard-oportunidades` `action=resumo_executivo` | mesmos filtros de recorte da `action=list` (catálogo/CATMAT do tenant) | `{ resumo: K-1, recorte: {...}, fonte: "licitacoes_externas_prioridade_efetiva" }` | 400 filtro inválido; 401 sem JWT; 403 sem tenant ativo; 500 sem detalhe interno | membro do tenant |
 | K-3 | Dashboard `ExecutiveDashboard`: KPIs e prazos lidos de K-2 | — | total de leads, monitoradas, valor potencial (ou "—" quando null), prazos de amanhã e 7 dias; o aviso "ainda não é calculada no servidor" sai | erro com "Tentar de novo"; nunca número de amostra rotulado como total | membro do tenant |
-| K-4 | Blocos do painel | decisão P-2 | só os blocos aprovados; nenhum estado fixo (`status="processing"`, "OK" sem leitura) | ausente aparece como "—" ou "Não verificada" | membro do tenant |
-| K-5 | Saúde no painel | decisão P-4 | admin da plataforma: resumo da `api-saude` como está; membro comum: o bloco não aparece (ou "Não verificada", P-4) | leitura falha: "Não verificada", nunca "OK" | admin / membro |
+| K-4 | Blocos do painel | decisão P-2: KPIs, funil, prazos e leads do radar (estrutura da `main`) | só esses blocos; nenhum estado fixo (`status="processing"`, "OK" sem leitura); sem "alta aderência" (P-3) | ausente aparece como "—" ou "Não verificada" | membro do tenant |
+| K-5 | Saúde no painel | decisão P-4 | admin da plataforma: resumo da `api-saude` como está; membro comum: o bloco não aparece | leitura falha: "Não verificada", nunca "OK" | admin / membro |
 
 ## Critérios de aceite
 
@@ -75,7 +75,7 @@ Medido em 09/11/2026 (05:39 UTC), por consulta somente leitura no MCP do Supabas
 | CA-5 | K-2 | **Negativo. Dado** um usuário sem vínculo com tenant ativo, ou de outro tenant, **quando** chama `resumo_executivo`, **então** recebe 403 e o recorte nunca usa o catálogo de outra empresa. | idem |
 | CA-6 | K-3 | **Dado** o resumo com 1079 leads e valor null, **quando** o painel renderiza, **então** mostra 1079 e "—" no valor, sem o texto "ainda não é calculada no servidor"; com erro da API, mostra "Tentar de novo" e nenhum número. | vitest `src/test/painel-resumo-servidor.test.tsx` |
 | CA-7 | K-4 | **Regressão P0 (0040 CA-6/CA-8). Dado** o painel, **quando** renderiza sem fonte de preço e com oportunidade só com CATMAT casado, **então** não aparece "Processando base histórica..." nem "Alta aderência". | vitest `src/test/painel-dados-honestos.test.tsx` |
-| CA-8 | K-5 | **Negativo (0040 CA-9). Dado** um membro que não é admin, **quando** o painel abre, **então** nenhum pilar de saúde mostra "OK"; com a `api-saude` falhando para admin, o bloco mostra "Não verificada". | vitest `src/test/painel-dados-honestos.test.tsx` |
+| CA-8 | K-5 | **Negativo (0040 CA-9). Dado** um membro que não é admin, **quando** o painel abre, **então** o bloco de saúde não aparece (nem chama a `api-saude`); com a `api-saude` falhando para admin, o bloco mostra "Não verificada", nunca "OK". | vitest `src/test/painel-dados-honestos.test.tsx` |
 
 ## Skills e agentes por contrato
 
@@ -113,19 +113,15 @@ Ordem: PR do LicitaGym (K-1, K-2) mergeado e publicado antes do PR do Dashboard 
 ## Decisões do Marcelo
 
 - 09/11/2026: o Dashboard Executivo V2 fica ligado à 0040, como exceção à regra de foco.
+- 09/11/2026 (P-1): a 0040 sai de `parada`.
+- 09/11/2026 (P-2): blocos do painel = estrutura da `main` (KPIs, funil, prazos, leads do radar) com os números do
+  servidor. Os blocos do branch do rebrand (`ActionCenter`, `PriorityLeads`, `CriticalDeadlines`, `PriceIntelligence`,
+  `IntelligenceInsights`, `StrategicKpis`) não entram nesta spec.
+- 09/11/2026 (P-3): "alta aderência" sai do painel até existir aderência pelo TR.
+- 09/11/2026 (P-4): o bloco de saúde aparece só para admin da plataforma; o membro comum não vê bloco de saúde.
+- 09/11/2026 (P-5): o rascunho sem commit é portado para um branch novo saído da `main`; o checkout principal é limpo
+  depois.
 
 ## Perguntas em aberto
 
-- **P-1 (0040):** a 0040 está `parada` (P1 dela, foco). Com a decisão de 09/11, a 0040 sai de `parada`, ou só esta 0048
-  entra como exceção? Linha proposta no `ESCOPO.md` (módulo 1, Radar): "0048: números do painel calculados no servidor
-  (exceção à regra de foco, 09/11)".
-- **P-2 (blocos):** quais blocos do painel ficam? Proposta: os da `main` (KPIs, funil, prazos, leads do radar) com os
-  números do servidor. Do branch do rebrand, `ActionCenter`, `PriorityLeads`, `CriticalDeadlines` e `PriceIntelligence`
-  entram, saem, ou ficam para depois? `IntelligenceInsights` e `StrategicKpis` mostravam dado sem fonte na 0040.
-- **P-3 (aderência):** "alta aderência" sai do painel até existir aderência pelo TR (proposta), ou aparece com o rótulo
-  explícito "por CATMAT, não verificada no TR"?
-- **P-4 (saúde):** o membro comum vê algum bloco de saúde? Hoje a `api-saude` é só admin. Proposta: o bloco aparece só
-  para admin da plataforma; para o cliente, nada (ou uma spec própria de "saúde do cliente" com verificações reais).
-- **P-5 (rascunho):** o rascunho sem commit no checkout principal (migration, ação e testes) é ponto de partida desta
-  spec. Ao implementar, ele é portado para um branch novo saído da `main` e o checkout principal é limpo depois (passo 3
-  da normalização combinada em 08/11)?
+- (nenhuma)

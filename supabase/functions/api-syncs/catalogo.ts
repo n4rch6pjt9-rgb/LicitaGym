@@ -17,6 +17,12 @@ export interface SyncCatalogo {
   refazer_cron?: boolean;
 }
 
+/** Syncs nacionais do PNCP: a trava de escopo (_shared/pncp/licitagym-scope-gate.ts) responde 423 sem o override
+ * PNCP_NATIONAL_SYNC_ENABLED, que não se liga (traria o PNCP inteiro, fora das classes 7830/7220). */
+const AVISO_NACIONAL =
+  "Desligado por escopo: baixa o PNCP nacional sem filtro de classe (7830/7220), e a trava " +
+  "PNCP_NATIONAL_SYNC_ENABLED responde HTTP 423.";
+
 export const SYNCS: SyncCatalogo[] = [
   {
     slug: "coletor-pncp",
@@ -141,8 +147,8 @@ export const SYNCS: SyncCatalogo[] = [
     faz: "Publicações nacionais em contratacoes_editais. Não grava a lista de oportunidades.",
     cron: null,
     corpo: {},
-    disparavel: true,
-    aviso: "Sem PNCP_NATIONAL_SYNC_ENABLED a função responde 423.",
+    disparavel: false,
+    aviso: AVISO_NACIONAL + " As oportunidades vêm do Coletor PNCP.",
   },
   {
     slug: "sync-pncp-contratacoes-atas",
@@ -151,8 +157,8 @@ export const SYNCS: SyncCatalogo[] = [
     faz: "Atas de registro de preço.",
     cron: null,
     corpo: {},
-    disparavel: true,
-    aviso: "Sem PNCP_NATIONAL_SYNC_ENABLED a função responde 423.",
+    disparavel: false,
+    aviso: AVISO_NACIONAL + " As atas do escopo vêm do coletor de ARP do Compras.gov (atas_rp_itens).",
   },
   {
     slug: "sync-pncp-contratacoes-contratos",
@@ -161,8 +167,8 @@ export const SYNCS: SyncCatalogo[] = [
     faz: "Contratos publicados no PNCP.",
     cron: null,
     corpo: {},
-    disparavel: true,
-    aviso: "Sem PNCP_NATIONAL_SYNC_ENABLED a função responde 423.",
+    disparavel: false,
+    aviso: AVISO_NACIONAL,
   },
   {
     slug: "sync-pncp-contratacoes-itens",
@@ -181,8 +187,9 @@ export const SYNCS: SyncCatalogo[] = [
     faz: "Intenção de registro de preço.",
     cron: null,
     corpo: {},
-    disparavel: true,
-    aviso: "Só segue se IRP_SYNC_ENABLED=true.",
+    disparavel: false,
+    aviso: "Desligado: o endpoint de IRP da API de Consulta do PNCP ainda não foi verificado (trava IRP_SYNC_ENABLED, " +
+      "CLA-34). Disparar daqui só devolveria HTTP 423.",
   },
   {
     slug: "import-catmat-curadoria",

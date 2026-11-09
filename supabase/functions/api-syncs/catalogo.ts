@@ -20,8 +20,8 @@ export interface SyncCatalogo {
 /** Syncs nacionais do PNCP: a trava de escopo (_shared/pncp/licitagym-scope-gate.ts) responde 423 sem o override
  * PNCP_NATIONAL_SYNC_ENABLED, que não se liga (traria o PNCP inteiro, fora das classes 7830/7220). */
 const AVISO_NACIONAL =
-  "Desligado por escopo: baixa o PNCP nacional sem filtro de classe (7830/7220), e a trava " +
-  "PNCP_NATIONAL_SYNC_ENABLED responde HTTP 423.";
+  "Desligado por escopo: baixa o PNCP nacional sem filtro de classe (7830/7220); sem o override " +
+  "PNCP_NATIONAL_SYNC_ENABLED a função responde HTTP 423.";
 
 export const SYNCS: SyncCatalogo[] = [
   {

@@ -95,7 +95,7 @@ export interface ResumoExecutivoActionParams {
 
 /**
  * Linha de public.dashboard_resumo_executivo (K-1). Desde a spec 0050, os valores somam só os itens no escopo
- * (categorias forte, catmat, borracha, piso e obra_piso); null quando nenhum desses itens tem valor.
+ * (categorias forte, catmat, borracha, piso, obra_piso e manutencao); null quando nenhum desses itens tem valor.
  */
 export interface ResumoExecutivo {
   leads_total: number;

@@ -2052,7 +2052,7 @@ Deno.test("0050 CA-5: resumo_executivo informa que o valor soma só os itens no 
   assertEquals(res.status, 200);
   const body = await res.json();
   assertEquals(body.criterio_valor, "itens_no_escopo");
-  assertEquals(body.categorias_valor, ["forte", "catmat", "borracha", "piso", "obra_piso"]);
+  assertEquals(body.categorias_valor, ["forte", "catmat", "borracha", "piso", "obra_piso", "manutencao"]);
 });
 
 Deno.test("0050 CA-5: categorias_valor da API são as mesmas que a última migration de dashboard_resumo_executivo soma", async () => {

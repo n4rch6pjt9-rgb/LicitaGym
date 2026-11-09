@@ -193,7 +193,7 @@ Lista oportunidades com suporte a paginação, ordenação configurável e múlt
 | `modalidade` | string / string[] | Modalidade única ou lista separada por vírgula / array |
 | `situacao` | string | Situação da licitação |
 | `fase` | string | Fase da licitação |
-| `categoria_escopo` | string | Categoria (`catmat`, `borracha`, `piso`, `obra_piso`, `forte`, `fraco`) |
+| `categoria_escopo` | string | Categoria (`catmat`, `borracha`, `piso`, `obra_piso`, `forte`, `fraco`, `manutencao`) |
 | `interesse_borracha` | boolean | Filtrar oportunidades de interesse em borracha (`true`/`false`) |
 | `fonte` | string | Fonte dos dados (`pncp`, `sestsenat`, etc.) |
 | `data_publicacao_inicio` | string | Início da publicação (`>= data_publicacao_inicio`) |
@@ -420,7 +420,7 @@ publicações canônicas, leads + monitorar), nunca por uma amostra da lista.
   "recorte": { "aplicado": true, "filtros": { "catalogo": true }, "licitacoes_total": 6 },
   "fonte": "licitacoes_externas_prioridade_efetiva",
   "criterio_valor": "itens_no_escopo",
-  "categorias_valor": ["forte", "catmat", "borracha", "piso", "obra_piso"]
+  "categorias_valor": ["forte", "catmat", "borracha", "piso", "obra_piso", "manutencao"]
 }
 ```
 

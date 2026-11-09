@@ -905,7 +905,7 @@ export const RESUMO_EXECUTIVO_RPC = "dashboard_resumo_executivo";
  * 20261109060000_dashboard_resumo_valor_itens_escopo (mudar uma exige mudar a outra).
  */
 export const RESUMO_CRITERIO_VALOR = "itens_no_escopo";
-export const RESUMO_CATEGORIAS_VALOR = ["forte", "catmat", "borracha", "piso", "obra_piso"] as const;
+export const RESUMO_CATEGORIAS_VALOR = ["forte", "catmat", "borracha", "piso", "obra_piso", "manutencao"] as const;
 
 function numeroOuNull(v: unknown): number | null {
   if (v === null || v === undefined || v === "") return null;

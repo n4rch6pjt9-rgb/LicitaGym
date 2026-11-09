@@ -7,7 +7,8 @@
 --
 -- O que muda (mesma assinatura e mesmas colunas da 0048; create or replace, sem drop):
 --   - valor_potencial_total = soma de licitacao_itens.valor_total_estimado dos itens das ativas cuja categoria_escopo
---     está em (forte, catmat, borracha, piso, obra_piso). fraco e item sem categoria ficam fora (decisão P-2 de 09/11);
+--     está em (forte, catmat, borracha, piso, obra_piso, manutencao). fraco e item sem categoria ficam fora (decisões
+--     P-2 e P-6 de 09/11);
 --   - com_valor_total = ativas com pelo menos um desses itens com valor;
 --   - prazo_amanha_valor e prazo_7_dias_valor no mesmo critério (P-5);
 --   - somas NULL quando nenhum item conta (nunca 0 inventado). Contagens de leads, monitoradas e prazos inalteradas.
@@ -62,7 +63,7 @@ as $$
     select i.licitacao_id, sum(i.valor_total_estimado) as valor
       from public.licitacao_itens i
       join escopo e on e.id = i.licitacao_id
-     where i.categoria_escopo in ('forte', 'catmat', 'borracha', 'piso', 'obra_piso')
+     where i.categoria_escopo in ('forte', 'catmat', 'borracha', 'piso', 'obra_piso', 'manutencao')
        -- Sem este filtro, certame só com item sem valor geraria linha com soma NULL; com ele, não gera linha e
        -- count(v.valor) conta só quem tem valor.
        and i.valor_total_estimado is not null
@@ -87,7 +88,7 @@ $$;
 comment on function public.dashboard_resumo_executivo(bigint[], timestamptz) is
   'Specs 0048 K-1 e 0050 K-1: números do painel executivo sobre licitacoes_externas_prioridade_efetiva (canônicas, '
   'leads + monitorar). Valores = soma de licitacao_itens.valor_total_estimado das categorias forte, catmat, '
-  'borracha, piso e obra_piso (fraco e sem categoria fora); NULL quando nenhum item conta. Janelas de prazo em '
+  'borracha, piso, obra_piso e manutencao (fraco e sem categoria fora); NULL quando nenhum item conta. Janelas de prazo em '
   'Brasília. p_ids_filtro NULL = todas; vazio = nenhuma. EXECUTE só service_role.';
 
 revoke all on function public.dashboard_resumo_executivo(bigint[], timestamptz) from public, anon, authenticated;

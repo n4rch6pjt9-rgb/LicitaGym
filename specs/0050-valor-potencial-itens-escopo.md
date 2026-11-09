@@ -1,6 +1,7 @@
 # 0050: Somar no "valor potencial" do painel só o valor dos itens no escopo
 
-- **Status:** aprovada (perguntas P-1 a P-5 respondidas pelo Marcelo em 09/11/2026)
+- **Status:** em implementação (aprovada em 09/11/2026, P-1 a P-6; backend no branch `claude/0050-valor-no-escopo` do
+  LicitaGym, Dashboard no branch de mesmo nome)
 - **Alimenta:** módulo 1 de `docs/produto/ESCOPO.md` (Radar de oportunidades), como correção da spec 0048 (números do
   painel calculados no servidor). Entra na mesma exceção à regra de foco de 09/11 da 0048 (P-1, decisão do Marcelo
   de 09/11).
@@ -56,7 +57,7 @@ abaixo usam a **prioridade gravada** em `public.licitacoes_externas` (`leads` + 
 
 | ID | Contrato | Entrada | Saída | Erros | Quem |
 |---|---|---|---|---|---|
-| K-1 | Migration `<timestamp>_dashboard_resumo_valor_itens_escopo.sql`: `create or replace` de `public.dashboard_resumo_executivo(bigint[], timestamptz)` com a **mesma assinatura e as mesmas colunas** | igual à 0048 | `valor_potencial_total` = soma de `licitacao_itens.valor_total_estimado` dos itens das ativas cuja `categoria_escopo` está em (`forte`, `catmat`, `borracha`, `piso`, `obra_piso`) (P-2; `fraco` e null fora); `com_valor_total` = ativas com pelo menos um desses itens com valor; `prazo_amanha_valor` e `prazo_7_dias_valor` no mesmo critério. Contagens de leads, monitoradas e prazos inalteradas. Somas null quando nenhum item conta (nunca 0 inventado) | — | `security invoker`, `search_path` fixo, EXECUTE só `service_role` (inalterado) |
+| K-1 | Migration `<timestamp>_dashboard_resumo_valor_itens_escopo.sql`: `create or replace` de `public.dashboard_resumo_executivo(bigint[], timestamptz)` com a **mesma assinatura e as mesmas colunas** | igual à 0048 | `valor_potencial_total` = soma de `licitacao_itens.valor_total_estimado` dos itens das ativas cuja `categoria_escopo` está em (`forte`, `catmat`, `borracha`, `piso`, `obra_piso`, `manutencao`) (P-2 e P-6; `fraco` e null fora); `com_valor_total` = ativas com pelo menos um desses itens com valor; `prazo_amanha_valor` e `prazo_7_dias_valor` no mesmo critério. Contagens de leads, monitoradas e prazos inalteradas. Somas null quando nenhum item conta (nunca 0 inventado) | — | `security invoker`, `search_path` fixo, EXECUTE só `service_role` (inalterado) |
 | K-2 | `api-dashboard-oportunidades` `action=resumo_executivo` | igual à 0048 | igual à 0048, mais `criterio_valor: "itens_no_escopo"` e `categorias_valor: [...]` (as de P-2), para a tela rotular o número | igual à 0048 (400/401/403/500) | membro do tenant |
 | K-3 | Dashboard `ExecutiveDashboard`: KPI "Valor potencial" passa a "Valor no escopo" (P-4) | K-2 | título "Valor no escopo"; a nota diz que é a soma dos itens no escopo ("N de M com item no escopo valorado"; texto final pelo `ux-ui-licitagym`); "—" quando null | erro com "Tentar de novo" (inalterado) | membro do tenant |
 
@@ -68,7 +69,7 @@ abaixo usam a **prioridade gravada** em `public.licitacoes_externas` (`leads` + 
 | CA-2 | K-1 | **Dado** ativas cujos itens não têm nenhuma categoria que conta (ou não têm valor), **quando** a função roda, **então** `valor_potencial_total` é null e `com_valor_total` = 0; `leads_total` e `monitoradas_total` não mudam. | idem ("0050 CA-2") |
 | CA-3 | K-1 | **Dado** um lead com item que conta e prazo amanhã (Brasília), **quando** a função roda, **então** `prazo_amanha_valor` soma só o valor desse item, não o `valor_total` do certame. | idem ("0050 CA-3") |
 | CA-4 | K-1 | **Negativo. Dado** a migration aplicada, **quando** `anon` ou `authenticated` executam a função, **então** recebem erro de permissão; `service_role` executa (CA-3 da 0048 continua passando). | idem (bloco "CA-3" da 0048, sem mudança) |
-| CA-5 | K-2 | **Dado** usuário com tenant ativo, **quando** chama `resumo_executivo`, **então** a resposta traz `criterio_valor = "itens_no_escopo"` e `categorias_valor = ["forte", "catmat", "borracha", "piso", "obra_piso"]`. | Deno `tests/supabase/functions/api_dashboard_oportunidades_test.ts` ("0050 CA-5") |
+| CA-5 | K-2 | **Dado** usuário com tenant ativo, **quando** chama `resumo_executivo`, **então** a resposta traz `criterio_valor = "itens_no_escopo"` e `categorias_valor = ["forte", "catmat", "borracha", "piso", "obra_piso", "manutencao"]`. | Deno `tests/supabase/functions/api_dashboard_oportunidades_test.ts` ("0050 CA-5") |
 | CA-6 | K-2 | **Negativo (outro tenant). Dado** usuário sem vínculo ativo ou de empresa desativada, **quando** chama `resumo_executivo`, **então** 403 e nenhuma RPC é chamada (testes CA-5 da 0048 continuam passando). | idem (testes "CA-5: ..." da 0048) |
 | CA-7 | K-3 | **Dado** resposta com `valor_potencial_total` 52.482.275 e `com_valor_total` 853 de 1465, **quando** o painel renderiza, **então** mostra o valor sob o título "Valor no escopo" (o texto "Valor potencial" não aparece) e a nota com 853 de 1465; com valor null, "—". | vitest `src/test/painel-resumo-servidor.test.tsx` (casos novos "0050") |
 
@@ -118,6 +119,8 @@ novos), então o painel atual continua funcionando entre um merge e outro, só c
 - 09/11/2026 (P-1): a 0050 entra na exceção à regra de foco da 0048.
 - 09/11/2026 (P-2): contam os itens `forte`, `catmat`, `borracha`, `piso` e `obra_piso`; `fraco` e item sem categoria
   ficam fora ("sem fraco"; R$ 237,3 mi na base gravada, sem recorte de catálogo).
+- 09/11/2026 (P-6): itens `manutencao` (peças de reposição de aparelho; categoria do coletor) também contam.
+  Em 09/11 eram 291 itens (R$ 603.351), nenhum em certame `leads`/`monitorar`.
 - 09/11/2026 (P-3): vale somar pela `categoria_escopo` do coletor (CATMAT e termos), desde que o rótulo do KPI deixe o
   critério claro. Volta a ser revisto quando houver aderência pelo TR (0032).
 - 09/11/2026 (P-4): o KPI passa a se chamar "Valor no escopo" (no lugar de "Valor potencial").

@@ -6,7 +6,7 @@
 --       search_path fixo.
 -- Spec 0050 (migration 20261109060000_dashboard_resumo_valor_itens_escopo):
 -- 0050 CA-1: o valor soma só licitacao_itens.valor_total_estimado das categorias forte, catmat, borracha, piso e
---            obra_piso; fraco e item sem categoria ficam fora (edital de 1 mi com item forte de 10 mil -> 10 mil).
+--            obra_piso e manutencao; fraco e item sem categoria ficam fora (edital de 1 mi com item forte de 10 mil -> 10 mil).
 -- 0050 CA-2: sem item que conta com valor -> soma null e com_valor_total 0; contagens não mudam.
 -- 0050 CA-3: prazo_amanha_valor e prazo_7_dias_valor somam só os itens no escopo.
 -- 0050 CA-4: é o CA-3 da 0048 abaixo (ACL inalterada).
@@ -85,7 +85,7 @@ begin
             '2099-03-11 09:00:00-03', 9999.00, 'leads', '2099-03-01 10:00:00-03')
     returning id into v_h1;
 
-    -- Spec 0050: o valor vem dos itens no escopo (forte, catmat, borracha, piso, obra_piso). Os fixtures da 0048
+    -- Spec 0050: o valor vem dos itens no escopo (forte, catmat, borracha, piso, obra_piso, manutencao). Os fixtures da 0048
     -- ganham itens com o mesmo valor do certame, para as somas da 0048 continuarem as mesmas; o `fraco` e o item sem
     -- categoria de L1 não podem entrar.
     insert into public.licitacao_itens (licitacao_id, numero_item, descricao, valor_total_estimado, categoria_escopo)
@@ -190,7 +190,8 @@ begin
     -- X1: edital de 1.000.000 com um item forte de 10.000, um sem categoria de 900.000 e um fraco de 90.000.
     -- X2: lead só com item fraco, item sem categoria e item forte sem valor.
     -- X3: lead com prazo amanhã (BRT): obra_piso 300 e fraco 7.700.
-    -- X4: uma de cada categoria que conta (catmat 1, borracha 2, piso 4, obra_piso 8, forte 16 = 31).
+    -- X4: uma de cada categoria que conta (catmat 1, borracha 2, piso 4, obra_piso 8, forte 16,
+    --     manutencao 32 = 63).
     insert into public.licitacoes_externas (fonte, codigo_externo, orgao_cnpj, numero_processo, numero_edital, data_fim,
                                             valor_total, prioridade)
     values ('pncp', 'check-resumo-00000000000920-1-000001/2099', '00000000000920', '0920/2099', 'PE 920/2099',
@@ -224,7 +225,8 @@ begin
            (v_x4, 2, 'item teste borracha', 2.00, 'borracha'),
            (v_x4, 3, 'item teste piso', 4.00, 'piso'),
            (v_x4, 4, 'item teste obra_piso', 8.00, 'obra_piso'),
-           (v_x4, 5, 'item teste forte', 16.00, 'forte');
+           (v_x4, 5, 'item teste forte', 16.00, 'forte'),
+           (v_x4, 6, 'item teste manutencao', 32.00, 'manutencao');
     if (select count(*) from public.licitacoes_externas_prioridade_efetiva
          where id in (v_x1, v_x2, v_x3, v_x4) and prioridade in ('leads', 'monitorar') and eh_canonica) <> 4 then
       raise exception '0050 CA-1 FALHOU: fixtures X1..X4 não ficaram ativos e canônicos na view';
@@ -238,9 +240,9 @@ begin
     end if;
     -- 0050 CA-1: as cinco categorias que contam.
     select * into r from public.dashboard_resumo_executivo(array[v_x4], v_agora);
-    if r.valor_potencial_total is distinct from 31.00::numeric or r.monitoradas_total is distinct from 1::bigint
+    if r.valor_potencial_total is distinct from 63.00::numeric or r.monitoradas_total is distinct from 1::bigint
        or r.com_valor_total is distinct from 1::bigint then
-      raise exception '0050 CA-1 FALHOU: categorias que contam somaram % (esperado 31.00; monitoradas % e com_valor % esperado 1)',
+      raise exception '0050 CA-1 FALHOU: categorias que contam somaram % (esperado 63.00; monitoradas % e com_valor % esperado 1)',
         r.valor_potencial_total, r.monitoradas_total, r.com_valor_total;
     end if;
 

@@ -54,6 +54,7 @@ import requests
 from .paginacao import TAMANHO_PAGINA_MAX, avaliar_pagina, clamp_tamanho, pagina_repetida
 from .perfil_item import normalizar_marca, perfil_item, texto_do_item
 from .escopo import ITEM_FORA, academia_ar_livre, brinquedo_infantil, classificar, contexto_academia, e_peca, classificar_texto_item, interesse_borracha, interesse_borracha_item, normalizar, piso_item_fora, CATEGORIAS_PISO_VETAVEL
+from .pncp import CATEGORIAS_SO_MATERIAL, fornece_produto
 from .portal import cnpj_ou_none, limpar, parse_data
 from .proveniencia import ORIGENS, campos_proveniencia
 from .retry import retry_after_s
@@ -356,9 +357,23 @@ def partes_item(s_ds_item: str | None) -> dict:
     return {"sequencial": seq, "categoria": categoria, "variacao": variacao, "descricao": texto or None}
 
 
+# Item que só nomeia uma atividade de serviço, sem produto (09/11/2026, FIEB): "GINASTICA LABORAL", "ATENDIMENTO DE
+# GINÁSTICA LABORAL" (aula/atendimento sob demanda) e "REINSTALAÇÃO DE UMA ESTEIRA ..." saíam material e "forte".
+# Só o item que COMEÇA pela atividade: "BOLA ... PARA GINÁSTICA LABORAL" continua material.
+ITEM_ATIVIDADE_SERVICO = re.compile(
+    r"^\W*((atendimentos?|aulas?|sess(ao|oes))\s+(de|em)\s+)?ginastica\s+laboral\b|^\W*reinstalac", re.I)
+
+
+# Objeto de serviço que cita piso/borracha/grama não passa pela trava de compra só de serviço (avaliar_processo): a
+# regra de piso/borracha decide sozinha. Ex.: SESC SP 1248/m18 "Substituição do piso de madeira por placas de
+# borracha da sala de Ginástica" (itens "EXECUÇÃO SERVIÇOS CIVIS") continua como estava.
+OBJETO_CITA_PISO = re.compile(r"\bpisos?\b|borracha|emborrachad|\bgram(a|ado)s?\b", re.I)
+
+
 def e_servico(categoria: str | None, descricao: str | None) -> bool:
     t = normalizar(f"{categoria or ''} {(descricao or '')[:200]}")
-    return bool(re.search(r"\bservicos?\b|manutencao|instalacao e|locacao|assistencia tecnica|consultoria|credenciamento", t))
+    return bool(re.search(r"\bservicos?\b|manutencao|instalacao e|locacao|assistencia tecnica|consultoria|credenciamento", t)
+                or ITEM_ATIVIDADE_SERVICO.search(normalizar(categoria or "")))
 
 
 def classificar_item_detalhe(it: dict, produtos: dict[int, dict] | None = None,
@@ -766,15 +781,23 @@ def avaliar_processo(d: dict, itens: list[dict], produtos: dict[int, dict] | Non
     """Categoria da compra: melhor categoria entre objeto e itens (itens mandam; objeto de cotação é genérico)."""
     ordem = ["catmat", "borracha", "obra_piso", "piso", "forte", "fraco", "manutencao"]
     ctx = contexto_academia(d.get("sDsObjeto"))
-    cats = [classificar_item(it, produtos, ctx)[0] for it in itens]
+    classes = [classificar_item(it, produtos, ctx) for it in itens]
+    cats = [c[0] for c in classes]
     cat_obj = classificar(d.get("sDsObjeto") or "")
+    # Compra só de serviço (todos os itens 'S'): o objeto ("prestação de serviços de manutenção dos equipamentos de
+    # musculação", "serviço de ginástica laboral") não vira forte/fraco sem fornecer o produto. Mesma trava do PNCP
+    # (pncp.avaliar, 02/10/2026); piso/obra_piso/borracha seguem valendo (interesse na borracha). FIEB, 09/11/2026.
+    t_obj = normalizar(d.get("sDsObjeto") or "")
+    if (classes and all(c[2] == "S" for c in classes) and cat_obj in CATEGORIAS_SO_MATERIAL
+            and not fornece_produto(t_obj) and not OBJETO_CITA_PISO.search(t_obj)):
+        cat_obj = None
     candidatas = [c for c in cats + [cat_obj] if c]
     if not candidatas:
         return None, False
     cats_itens = {c for c in cats if c}
     # Compra só de peças ("CABO DE AÇO ... PARA EQUIPAMENTO DE ACADEMIA"): o objeto cita academia, mas os itens mandam.
     melhor = "manutencao" if cats_itens == {"manutencao"} else min(candidatas, key=ordem.index)
-    borr = any(classificar_item(it, produtos, ctx)[1] for it in itens) or interesse_borracha(d.get("sDsObjeto") or "", cat_obj)
+    borr = any(c[1] for c in classes) or interesse_borracha(d.get("sDsObjeto") or "", cat_obj)
     return melhor, borr
 
 

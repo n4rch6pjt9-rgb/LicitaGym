@@ -1,11 +1,18 @@
 -- Checagem da migration 20261109230000_fontes_externas_paradigmabs_registro.
--- Os portais paradigmabs que o coletor coleta todo dia aparecem como 'automatico' no cadastro. Num banco sem as
--- linhas (stub), a checagem passa.
+-- Os portais paradigmabs que o coletor coleta todo dia aparecem como 'automatico' no cadastro. As 5 linhas vêm das
+-- migrations 20260925120000 e 20260929140000; linha ausente também falha.
 
 do $$
 declare
   n int;
 begin
+  select count(*) into n
+    from public.fontes_externas
+   where slug in ('sescsp', 'sesc_senac_rs', 'sescdn', 'sescrj', 'sescba');
+  if n <> 5 then
+    raise exception 'CHECK FALHOU: esperadas 5 fontes paradigmabs em fontes_externas, achadas %', n;
+  end if;
+
   select count(*) into n
     from public.fontes_externas
    where slug in ('sescsp', 'sesc_senac_rs', 'sescdn', 'sescrj', 'sescba')

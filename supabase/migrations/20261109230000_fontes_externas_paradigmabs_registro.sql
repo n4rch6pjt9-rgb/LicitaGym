@@ -33,7 +33,9 @@ update public.fontes_externas
                     'confirmada em 09/11/2026; FONTES_MURAL_AUTORIZADO)',
        updated_at = now()
  where slug in ('sescsp', 'sesc_senac_rs', 'sescrj', 'sescba')
-   and (modo_coleta, robots_permite) is distinct from ('automatico', false);
+   and (modo_coleta, robots_permite, observacao) is distinct from
+       ('automatico', false, 'robots.txt com Disallow: /; coletado pelo webservice público do mural (decisão de '
+                             '05/10/2026, confirmada em 09/11/2026; FONTES_MURAL_AUTORIZADO)');
 
 update public.fontes_externas
    set modo_coleta = 'automatico',
@@ -41,6 +43,7 @@ update public.fontes_externas
        observacao = 'Webservice público; robots.txt ausente (404, conferido em 09/11/2026)',
        updated_at = now()
  where slug = 'sescdn'
-   and (modo_coleta, robots_permite) is distinct from ('automatico', null::boolean);
+   and (modo_coleta, robots_permite, observacao) is distinct from
+       ('automatico', null::boolean, 'Webservice público; robots.txt ausente (404, conferido em 09/11/2026)');
 
 commit;

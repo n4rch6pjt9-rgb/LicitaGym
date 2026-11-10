@@ -22,8 +22,8 @@ Métodos usados (todos públicos no mural):
 Acesso (decisão de 09/11/2026, revoga a de 05/10/2026): robots.txt não se contorna. egov.paradigmabs.com.br
 (Sesc/Senac RS, Sesc RJ, Sesc BA) e scr360.paradigmabs.com.br (Sesc SP) têm `Disallow: /`: essas fontes não coletam,
 nem com autorizado=True (FONTES_MURAL_AUTORIZADO vazio). egov-br.paradigmabs.com.br (Sesc DN) não tem robots.txt
-(404, conferido em 09/11/2026) e coleta como os self-hosted. Só anexos públicos: o cadastro de visitante não é usado
-(11/10/2026). 401/403 de qualquer host para a coleta na hora, sem nova tentativa; 429 respeita Retry-After. Bloqueio de WAF continua respeitado: a FIEMG (403 do Cloudflare para cliente
+(404, conferido em 09/11/2026) e coleta como os self-hosted. Cadastro de visitante (VISITANTE_*) liberado em
+09/11/2026 nas fontes que coletam; captcha só por pessoa na UI. 401/403 de qualquer host para a coleta na hora, sem nova tentativa; 429 respeita Retry-After. Bloqueio de WAF continua respeitado: a FIEMG (403 do Cloudflare para cliente
 automatizado) fica de fora e não se contorna.
 
 Paginação (regra de 03/10/2026): cada faixa pede no máximo 100 itens (`nPaginaDe`/`nPaginaAte`).
@@ -1086,14 +1086,10 @@ def _executar(args, fonte: Fonte, portal: "PortalParadigma", sb, termos: list[st
         arm = None if args.dry_run else Armazenamento.do_ambiente()
         if arm is not None and not arm.dentro_do_saas:
             raise SystemExit("Defina SUPABASE_STORAGE_BUCKET: os documentos precisam ficar dentro do LicitaGym.")
-        # Decisão de 11/10/2026: nas fontes autorizadas pelo mural (paradigmabs), só anexos públicos; o cadastro de
-        # visitante (dados da empresa) não é usado. Documento que exige cadastro fica pendente.
-        if fonte.slug in FONTES_MURAL_AUTORIZADO:
-            visitante = None
-            log.info("%s: só anexos públicos (sem cadastro de visitante; decisão de 11/10/2026)", fonte.slug)
-        else:
-            visitante = VisitanteInstitucional.do_ambiente()
-        if visitante is None and fonte.slug not in FONTES_MURAL_AUTORIZADO:
+        # Decisão de 09/11/2026 (revoga a de 11/10): o cadastro de visitante (dados da empresa, informados na UI) vale
+        # em toda fonte que coleta. Sem VISITANTE_*, documento que exige cadastro fica pendente.
+        visitante = VisitanteInstitucional.do_ambiente()
+        if visitante is None:
             log.warning("VISITANTE_* não configurado: documentos que exigem cadastro ficam registrados como pendentes")
         docs = DocumentosParadigma(portal, sb, arm, visitante, int(float(env("MAX_MB", "50")) * 1048576), args.dry_run)
     return coletar(portal, sb, termos, args.paginas, args.dry_run, not args.sem_resultados, produtos, forn, processos,

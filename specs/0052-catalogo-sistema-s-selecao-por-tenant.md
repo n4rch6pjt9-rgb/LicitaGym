@@ -188,11 +188,12 @@ Ressalvas:
   serviço) não funciona nesse portal;
 - fiergs e sfiec ficam sem veredito.
 - **Robots (09/11/2026, depois da medição):** os hosts SaaS `egov.paradigmabs.com.br` (sesc_senac_rs, sescba,
-  sescrj) e `scr360.paradigmabs.com.br` (sescsp) têm `Disallow: /` no robots.txt, e o coletor marca o sescdn
-  (`egov-br`) como bloqueado. A fase 0 baixou o catálogo desses cinco pelo override do mural (05/10). Pela decisão do
-  Marcelo de 09/11 (não contornar robots), os arquivos desses cinco foram apagados e eles **não entram** no catálogo.
-  O veredito acima fica como registro; o catálogo da fase 1 cobre só os portais sem bloqueio (fieb, fiems, fiemt,
-  fiesc, findes, firjan, sestsenat; sfiec quando o endpoint responder).
+  sescrj) e `scr360.paradigmabs.com.br` (sescsp) têm `Disallow: /` no robots.txt. A fase 0 baixou o catálogo desses
+  quatro pelo override do mural (05/10). Pela decisão do Marcelo de 09/11 (não contornar robots), os arquivos desses
+  quatro foram apagados e eles **não entram** no catálogo. O `egov-br.paradigmabs.com.br` (sescdn) **não tem**
+  robots.txt (404), nem `X-Robots-Tag` nem meta robots em `/sescdn/Default.aspx` (conferido em 09/11): o Sesc DN não
+  está bloqueado e entra. O veredito acima fica como registro; o catálogo da fase 1 cobre os 8 portais sem bloqueio
+  (fieb, fiems, fiemt, fiesc, findes, firjan, sescdn, sestsenat; sfiec quando o endpoint responder).
 
 **Veredito: todos os 12 portais medidos são `independente`. Modelo de K-1/K-2: por portal**, sem tabela de origem
 compartilhada nem código de referência entre portais. A busca cruzada entre portais fica com o de-para CATMAT
@@ -235,7 +236,7 @@ compartilhada nem código de referência entre portais. A busca cruzada entre po
 - **Dado oficial × derivado:** classe, produto e código interno vêm do catálogo público do portal, com data da coleta.
   A seleção é escolha do tenant. O de-para CATMAT é derivado e fica `sugerido` até alguém confirmar.
 - **Volume e custo (09/11/2026):** banco hoje 1.791 MB (`licitacao_itens` 598 MB / 284 mil linhas, medido). Catálogo
-  dos 7 portais sem bloqueio de robots = 298.316 produtos (medido; 505.141 com os 5 SaaS, que ficam fora); só colunas, sem `raw`: estimado 150 a 200 MB (não medido). Embedding
+  dos 8 portais sem bloqueio de robots = 320.647 produtos (medido; 505.141 com os 4 bloqueados, que ficam fora); só colunas, sem `raw`: estimado 150 a 200 MB (não medido). Embedding
   só sob demanda (decisão de 09/11): custo de vetor e de Vertex AI proporcional ao catálogo do cliente, não ao
   catálogo inteiro.
 
@@ -252,7 +253,8 @@ compartilhada nem código de referência entre portais. A busca cruzada entre po
   catálogo de um cliente (seleção do tenant), na hora em que a seleção é feita. O catálogo completo (505.141 produtos
   nos 12 portais medidos) fica só em colunas, sem vetor.
 - 09/11/2026 (pergunta 1): **não contornar robots.txt** nem resolver captcha, no catálogo e em qualquer coleta nova.
-  Os cinco hosts SaaS (sescsp, sesc_senac_rs, sescdn, sescrj, sescba) ficam fora do catálogo.
+  Os quatro portais em hosts com `Disallow: /` (sescsp, sesc_senac_rs, sescrj, sescba) ficam fora do catálogo; o
+  sescdn (`egov-br`, sem robots.txt) entra.
 - 09/11/2026 (pergunta 2): **sem herança** pelo CATMAT. O de-para serve de **referência de preço homologado entre os
   catálogos** e aparece na oportunidade relacionada: na aba Itens, a coluna CATMAT do item do Sistema S (hoje "—")
   mostra o CATMAT do de-para, marcado como derivado.

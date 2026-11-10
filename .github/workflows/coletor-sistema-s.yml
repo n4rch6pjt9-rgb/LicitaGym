@@ -3,7 +3,9 @@
 # Grava em licitacoes_externas, licitacao_itens e licitacao_resultados com proveniência `ingestao_origem = cron|manual` (spec 0023).
 # Pré-requisitos (secrets do repositório): SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY.
 # Roda com `--sem-documentos` no runner (mesmo padrão do Coletor PNCP).
-# Fontes ativas no runner: 12 portais que respondem ao WebService público (fiemg fica de fora por WAF 403;
+# Fontes ativas no runner: 8 portais que respondem ao WebService público. sescsp, sesc_senac_rs, sescrj e sescba saíram
+# em 09/11/2026: robots.txt dos hosts egov/scr360.paradigmabs.com.br tem `Disallow: /`, e robots não se contorna
+# (sescdn, em egov-br sem robots.txt, segue). (fiemg fica de fora por WAF 403;
 # fiergs saiu do lote padrão em 08/11/2026 porque o host passou a responder HTTP 403 ao runner, e bloqueio não se
 # contorna: segue disponível só por disparo manual, para conferir se voltou).
 # fiems voltou ao lote em 09/11/2026: dry-run no runner (run 42553195374) leu 12 processos, 6 no escopo, sem erro.

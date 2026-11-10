@@ -1039,7 +1039,8 @@ def test_mural_403_no_construtor_recusa(monkeypatch):
     sessao.get.return_value.status_code = 403
     monkeypatch.setattr(P.requests, "Session", lambda: sessao)
     with pytest.raises(PermissionError):
-        P.PortalParadigma(P.FONTES["sescsp"], autorizado=True)
+        P.PortalParadigma(P.FONTES["fiesc"])
+    sessao.get.assert_called_once()  # o 403 vem do GET do mural, não da checagem de robots
 
 
 def test_fiemg_nao_libera_nem_com_autorizado():

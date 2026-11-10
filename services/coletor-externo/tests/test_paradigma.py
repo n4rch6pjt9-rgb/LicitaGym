@@ -277,14 +277,25 @@ def test_modulo_de_sentinela_e_ausente():
     assert P.modulo_de({}) == 59 and P.modulo_de(None) == 59
 
 
-def test_tenants_paradigmabs_autorizados_pelo_mural_e_fiemg_bloqueada():
-    for slug in ("sescdn", "sescrj", "sescba", "sescsp", "sesc_senac_rs"):
+def test_tenants_paradigmabs_autorizados_pelo_mural_sescdn_sem_robots_e_fiemg_bloqueada():
+    """Decisão de 05/10/2026, confirmada em 09/11/2026: os 4 portais com `Disallow: /` coletam pelo mural.
+
+    Regressão (09/11/2026): sescdn (egov-br, sem robots.txt) coleta como os self-hosted, sem depender do override.
+    """
+    assert P.FONTES_MURAL_AUTORIZADO == frozenset({"sescsp", "sesc_senac_rs", "sescrj", "sescba"})
+    for slug in ("sescrj", "sescba", "sescsp", "sesc_senac_rs"):
         assert P.FONTES[slug].coleta_automatica is False
         assert P.autorizado_para_coleta(P.FONTES[slug]) is True
         assert "paradigmabs.com.br" in P.FONTES[slug].base
         P.PortalParadigma(P.FONTES[slug], autorizado=True, sessao=MagicMock())
+        with pytest.raises(PermissionError):
+            P.PortalParadigma(P.FONTES[slug], sessao=MagicMock())  # sem autorizado=True, não coleta
+    assert P.FONTES["sescdn"].coleta_automatica is True
+    P.PortalParadigma(P.FONTES["sescdn"], sessao=MagicMock())
     assert P.FONTES["fiemg"].coleta_automatica is False  # Cloudflare bloqueia cliente automatizado
     assert P.autorizado_para_coleta(P.FONTES["fiemg"]) is False
+    with pytest.raises(PermissionError):
+        P.PortalParadigma(P.FONTES["fiemg"], autorizado=True, sessao=MagicMock())
     for slug in ("firjan", "fiergs", "findes", "fieb", "fiems", "fiemt", "sfiec"):
         assert P.FONTES[slug].coleta_automatica is True
 
@@ -992,7 +1003,7 @@ def test_ws_403_para_na_primeira_chamada(monkeypatch):
     monkeypatch.setattr(P.time, "sleep", lambda _s: None)
     s = MagicMock()
     s.post.return_value.status_code = 403
-    p = P.PortalParadigma(P.FONTES["sescsp"], delay=0, autorizado=True, sessao=s)
+    p = P.PortalParadigma(P.FONTES["fiesc"], delay=0, sessao=s)
     with pytest.raises(PermissionError):
         p.listar("academia")
     assert s.post.call_count == 1
@@ -1015,7 +1026,8 @@ def test_mural_403_no_construtor_recusa(monkeypatch):
     sessao.get.return_value.status_code = 403
     monkeypatch.setattr(P.requests, "Session", lambda: sessao)
     with pytest.raises(PermissionError):
-        P.PortalParadigma(P.FONTES["sescsp"], autorizado=True)
+        P.PortalParadigma(P.FONTES["fiesc"])
+    sessao.get.assert_called_once()  # o 403 vem do GET do mural, não da checagem de robots
 
 
 def test_fiemg_nao_libera_nem_com_autorizado():

@@ -65,11 +65,11 @@ que vende.
 | K-3 | De-para produto ↔ CATMAT (0053 K-3 e K-4) | — | como na 0053 | — | idem |
 | K-4 | Tabela `public.catalogo_tenant_sistema_s` (migration) | — | regras por tenant: `tenant_id`, `nivel` (`portal`, `classe`, `produto`), `fonte`, `id_classe_fonte`, `id_produto_fonte`, `incluido`, `nome_snapshot`, `observacao`, autoria e datas; `chave` única por tenant | combinação de nível inválida → `check_violation` | RLS ligada; escrita e leitura só pela API (K-6) |
 | K-5 | Função `public.sistema_s_produtos_efetivos(p_tenant uuid)` | tenant | produtos incluídos pela herança (portal → classe → produto), descontadas as exclusões | tenant inexistente → erro | `service_role` |
-| K-6 | Edge Function `api-catalogo-sistema-s` (ações `arvore`, `registrar`, `remover`, `listar_regras`) | portal/classe para navegar; nó para registrar | árvore com contagem de produtos e marcação do tenant | sem vínculo ou empresa desativada → 403; papel `operacao` → 403 em `registrar`/`remover`; nó que não existe em K-1/K-2 → 400 | `await requireUserAuth` + `_shared/tenant.ts`; admin do tenant grava |
+| K-6 | Edge Function `api-catalogo-sistema-s` (ações `buscar_classes`, `produtos_da_classe`, `registrar`, `remover`, `listar_regras`) | portal + texto da busca (classe); classe para abrir os produtos; nó para registrar | só as classes que casam com a busca (nunca a lista inteira do portal), com contagem de produtos e marcação do tenant; as classes já marcadas pelo tenant aparecem sempre | sem vínculo ou empresa desativada → 403; papel `operacao` → 403 em `registrar`/`remover`; nó que não existe em K-1/K-2 → 400 | `await requireUserAuth` + `_shared/tenant.ts`; admin do tenant grava |
 | K-7 | Coletor: categorias por fonte vindas do banco | união das classes marcadas por algum tenant ativo (K-4) | `produtos_escopo` usa as classes de K-1 por **id**, não por nome; `CATEGORIAS_POR_FONTE` vira só semente da primeira carga | nenhuma classe marcada para a fonte → aviso e coleta só por texto (como hoje), nunca catálogo vazio calado | coletor (`service_role`) |
 | K-8 | Coleta da árvore (estende o `catalogo_paradigma.py` da 0053 K-2) | fonte | grava todas as classes (K-1) e os produtos das classes marcadas por algum tenant (K-2) | aviso de paginação → não grava (regra da 0053) | operador e, depois, cron semanal |
 | K-9 | Filtro de oportunidades do Sistema S por tenant | tenant | item de licitação entra quando (`fonte`, `raw.nCdProduto`) está em K-5; senão segue a regra de texto atual | — | `api-dashboard-oportunidades` (filtrando pela empresa de quem chama) |
-| K-10 | Tela "Catálogo Sistema S" no Dashboard (ao lado de `/catmat`) | — | navegar Portal → Classe → Produto, marcar/desmarcar, ver o de-para CATMAT sugerido | estados de carregando, vazio e erro | Dashboard |
+| K-10 | Tela "Catálogo Sistema S" no Dashboard (ao lado de `/catmat`) | — | escolher o portal, **pesquisar a classe por texto** e só então ver e marcar a classe e os produtos dela; ver o de-para CATMAT sugerido. A tela não lista o catálogo inteiro | estados de carregando, vazio e erro | Dashboard |
 
 ## Critérios de aceite
 
@@ -286,6 +286,9 @@ Testes em `services/coletor-externo/tests/test_catalogo_paradigma.py`.
 - 09/11/2026 (pergunta 5): **funciona como o CATMAT.** O catálogo do portal fica completo no banco; a sincronização
   traz só as oportunidades que têm itens do catálogo parametrizado pelo tenant.
 - 09/11/2026 (pergunta 6): classes de serviço (FIEB 391 e 446) ficam fora; serviço nunca vira lead.
+- 10/11/2026: **carga total no banco** (catálogo inteiro de cada portal, `--tudo --gravar`), **mas na UI só aparecem as
+  classes que forem chamadas na pesquisa** para seleção (K-6 `buscar_classes`, K-10). A tela nunca lista o catálogo
+  inteiro; as classes já marcadas pelo tenant aparecem na lista de regras.
 
 ## Perguntas em aberto
 

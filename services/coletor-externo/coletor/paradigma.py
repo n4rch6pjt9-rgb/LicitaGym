@@ -103,11 +103,6 @@ FONTES: dict[str, Fonte] = {
 FONTES_MURAL_AUTORIZADO: frozenset[str] = frozenset()
 
 
-# Decisão de 11/10/2026: nos portais do SaaS paradigmabs.com.br, só anexos públicos; o cadastro de visitante (dados da
-# empresa) não é usado. Independe do override de robots (revogado em 09/11/2026): o sescdn coleta e segue sem visitante.
-FONTES_SEM_VISITANTE = frozenset({"sescsp", "sesc_senac_rs", "sescdn", "sescrj", "sescba"})
-
-
 def autorizado_para_coleta(fonte: Fonte) -> bool:
     """Override do bloqueio de robots.txt. Vazio desde 09/11/2026; nunca cobre bloqueio de WAF."""
     return fonte.slug in FONTES_MURAL_AUTORIZADO
@@ -1091,14 +1086,14 @@ def _executar(args, fonte: Fonte, portal: "PortalParadigma", sb, termos: list[st
         arm = None if args.dry_run else Armazenamento.do_ambiente()
         if arm is not None and not arm.dentro_do_saas:
             raise SystemExit("Defina SUPABASE_STORAGE_BUCKET: os documentos precisam ficar dentro do LicitaGym.")
-        # Decisão de 11/10/2026: nos portais paradigmabs (FONTES_SEM_VISITANTE), só anexos públicos; o cadastro de
+        # Decisão de 11/10/2026: nas fontes autorizadas pelo mural (paradigmabs), só anexos públicos; o cadastro de
         # visitante (dados da empresa) não é usado. Documento que exige cadastro fica pendente.
-        if fonte.slug in FONTES_SEM_VISITANTE:
+        if fonte.slug in FONTES_MURAL_AUTORIZADO:
             visitante = None
             log.info("%s: só anexos públicos (sem cadastro de visitante; decisão de 11/10/2026)", fonte.slug)
         else:
             visitante = VisitanteInstitucional.do_ambiente()
-        if visitante is None and fonte.slug not in FONTES_SEM_VISITANTE:
+        if visitante is None and fonte.slug not in FONTES_MURAL_AUTORIZADO:
             log.warning("VISITANTE_* não configurado: documentos que exigem cadastro ficam registrados como pendentes")
         docs = DocumentosParadigma(portal, sb, arm, visitante, int(float(env("MAX_MB", "50")) * 1048576), args.dry_run)
     return coletar(portal, sb, termos, args.paginas, args.dry_run, not args.sem_resultados, produtos, forn, processos,

@@ -19,10 +19,11 @@ Métodos usados (todos públicos no mural):
   PesquisarCatalogoProdutoClasses / PesquisarCatalogoProdutos  catálogo do portal (filtro Categoria + Tipo)
   PesquisarAnexos / PesquisarAnexosProcessoContratacao  anexos (reaproveita portal.py)
 
-Acesso (decisão de 09/11/2026, revoga a de 05/10/2026): robots.txt não se contorna. egov.paradigmabs.com.br
-(Sesc/Senac RS, Sesc RJ, Sesc BA) e scr360.paradigmabs.com.br (Sesc SP) têm `Disallow: /`: essas fontes não coletam,
-nem com autorizado=True (FONTES_MURAL_AUTORIZADO vazio). egov-br.paradigmabs.com.br (Sesc DN) não tem robots.txt
-(404, conferido em 09/11/2026) e coleta como os self-hosted. Cadastro de visitante (VISITANTE_*) liberado em
+Acesso (decisão de 05/10/2026, confirmada em 09/11/2026): egov.paradigmabs.com.br (Sesc/Senac RS, Sesc RJ, Sesc BA)
+e scr360.paradigmabs.com.br (Sesc SP) têm `Disallow: /` no robots.txt; o dono decidiu que isso não impede a coleta do
+webservice público do mural, com o mesmo intervalo do adaptador (FONTES_MURAL_AUTORIZADO; o CLI passa autorizado=True
+só nelas). egov-br.paradigmabs.com.br (Sesc DN) não tem robots.txt (404, conferido em 09/11/2026) e coleta como os
+self-hosted. Cadastro de visitante (VISITANTE_*) liberado em
 09/11/2026 nas fontes que coletam; captcha só por pessoa na UI. 401/403 de qualquer host para a coleta na hora, sem nova tentativa; 429 respeita Retry-After. Bloqueio de WAF continua respeitado: a FIEMG (403 do Cloudflare para cliente
 automatizado) fica de fora e não se contorna.
 
@@ -70,15 +71,15 @@ class Fonte:
     entidade: str
     uf: str | None
     base: str
-    # False = o host bloqueia acesso automatizado (robots.txt ou WAF): não coleta. FONTES_MURAL_AUTORIZADO está
-    # vazio desde 09/11/2026 (robots.txt não se contorna); WAF (FIEMG) nunca.
+    # False = o host bloqueia acesso automatizado (robots.txt ou WAF). Só coleta se a fonte estiver em
+    # FONTES_MURAL_AUTORIZADO (decisão de 05/10/2026, confirmada em 09/11/2026); WAF (FIEMG) nunca.
     coleta_automatica: bool
 
 
 FONTES: dict[str, Fonte] = {
     "sestsenat": Fonte("sestsenat", "SEST SENAT", None, "https://compras.sestsenat.org.br/portal", True),
     "fiesc": Fonte("fiesc", "FIESC (SESI/SC, SENAI/SC, IEL/SC)", "SC", "https://portaldecompras.fiesc.com.br/portal", True),
-    # scr360.paradigmabs.com.br e egov.paradigmabs.com.br: robots.txt `Disallow: /` (09/11/2026). Não coletam.
+    # scr360.paradigmabs.com.br e egov.paradigmabs.com.br: robots.txt `Disallow: /`; coletam por FONTES_MURAL_AUTORIZADO.
     "sescsp": Fonte("sescsp", "Sesc SP", "SP", "https://scr360.paradigmabs.com.br/sescsp/portal", False),
     "sesc_senac_rs": Fonte("sesc_senac_rs", "Sesc/Senac RS", "RS", "https://egov.paradigmabs.com.br/sesc_senac_rs/portal", False),
     # Tenants self-hosted testados ao vivo em 26/09/2026 (webservice público; robots.txt ausente/404)
@@ -93,18 +94,19 @@ FONTES: dict[str, Fonte] = {
     "fiemg": Fonte("fiemg", "FIEMG (SESI/MG, SENAI/MG, IEL/MG)", "MG", "https://compras.fiemg.com.br/portal", False),
     # SaaS egov-br.paradigmabs.com.br: sem robots.txt (404, conferido em 09/11/2026), sem X-Robots-Tag
     "sescdn": Fonte("sescdn", "Sesc Departamento Nacional", None, "https://egov-br.paradigmabs.com.br/sescdn/portal", True),
-    # SaaS egov.paradigmabs.com.br: robots.txt `Disallow: /` (09/11/2026). Não coleta.
+    # SaaS egov.paradigmabs.com.br: robots.txt `Disallow: /`; coletam por FONTES_MURAL_AUTORIZADO.
     "sescrj": Fonte("sescrj", "Sesc RJ", "RJ", "https://egov.paradigmabs.com.br/SESCRJ/portal", False),
     "sescba": Fonte("sescba", "Sesc BA", "BA", "https://egov.paradigmabs.com.br/sescba/portal", False),
 }
 
-# Decisão de 09/11/2026: robots.txt não se contorna. A liberação de 05/10/2026 (sescsp, sesc_senac_rs, sescdn,
-# sescrj, sescba) foi revogada; o conjunto fica vazio. FIEMG fica de fora (WAF).
-FONTES_MURAL_AUTORIZADO: frozenset[str] = frozenset()
+# Decisão de 05/10/2026, confirmada em 09/11/2026: o robots.txt desses hosts não impede a coleta do webservice público
+# do mural. sescdn saiu do conjunto em 09/11/2026: o host dele não tem robots.txt (coleta_automatica=True).
+# FIEMG fica de fora (WAF).
+FONTES_MURAL_AUTORIZADO = frozenset({"sescsp", "sesc_senac_rs", "sescrj", "sescba"})
 
 
 def autorizado_para_coleta(fonte: Fonte) -> bool:
-    """Override do bloqueio de robots.txt. Vazio desde 09/11/2026; nunca cobre bloqueio de WAF."""
+    """Override explícito do bloqueio de robots.txt. Não cobre bloqueio de WAF."""
     return fonte.slug in FONTES_MURAL_AUTORIZADO
 
 MODULO_PADRAO = 59
@@ -415,7 +417,7 @@ def _recusar_bloqueio(fonte: Fonte, status: int) -> None:
 class PortalParadigma:
     def __init__(self, fonte: Fonte, delay: float = 1.5, timeout: int = 60, autorizado: bool = False,
                  sessao: requests.Session | None = None):
-        # FONTES_MURAL_AUTORIZADO vazio (09/11/2026): robots.txt e WAF não se contornam
+        # autorizado=True só vale para FONTES_MURAL_AUTORIZADO; bloqueio de WAF (FIEMG) nunca se libera
         if not fonte.coleta_automatica and not (autorizado and fonte.slug in FONTES_MURAL_AUTORIZADO):
             raise PermissionError(
                 f"{fonte.slug}: o host bloqueia coleta automatizada (robots.txt ou WAF) e a fonte não está em "

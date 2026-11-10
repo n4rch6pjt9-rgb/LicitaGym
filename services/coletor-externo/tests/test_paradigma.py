@@ -300,6 +300,12 @@ def test_robots_disallow_nao_se_contorna_sescdn_sem_robots_coleta_e_fiemg_bloque
         assert P.FONTES[slug].coleta_automatica is True
 
 
+def test_sescdn_continua_sem_cadastro_de_visitante():
+    """Regressão (revisão de segurança, 09/11/2026): revogar o override de robots não liga o visitante no sescdn."""
+    assert "sescdn" in P.FONTES_SEM_VISITANTE
+    assert all("paradigmabs.com.br" in P.FONTES[s].base for s in P.FONTES_SEM_VISITANTE)
+
+
 def test_workflow_sistema_s_nao_agenda_fonte_com_robots_disallow():
     wf = (Path(__file__).resolve().parents[3] / ".github/workflows/coletor-sistema-s.yml").read_text(encoding="utf-8")
     for slug in ("sescsp", "sesc_senac_rs", "sescrj", "sescba"):

@@ -187,6 +187,12 @@ Ressalvas:
 - sescsp marca todo produto com o tipo "Solicitação de cadastro de produto": o filtro por tipo (produto ×
   serviço) não funciona nesse portal;
 - fiergs e sfiec ficam sem veredito.
+- **Robots (09/11/2026, depois da medição):** os hosts SaaS `egov.paradigmabs.com.br` (sesc_senac_rs, sescba,
+  sescrj) e `scr360.paradigmabs.com.br` (sescsp) têm `Disallow: /` no robots.txt, e o coletor marca o sescdn
+  (`egov-br`) como bloqueado. A fase 0 baixou o catálogo desses cinco pelo override do mural (05/10). Pela decisão do
+  Marcelo de 09/11 (não contornar robots), os arquivos desses cinco foram apagados e eles **não entram** no catálogo.
+  O veredito acima fica como registro; o catálogo da fase 1 cobre só os portais sem bloqueio (fieb, fiems, fiemt,
+  fiesc, findes, firjan, sestsenat; sfiec quando o endpoint responder).
 
 **Veredito: todos os 12 portais medidos são `independente`. Modelo de K-1/K-2: por portal**, sem tabela de origem
 compartilhada nem código de referência entre portais. A busca cruzada entre portais fica com o de-para CATMAT
@@ -229,7 +235,7 @@ compartilhada nem código de referência entre portais. A busca cruzada entre po
 - **Dado oficial × derivado:** classe, produto e código interno vêm do catálogo público do portal, com data da coleta.
   A seleção é escolha do tenant. O de-para CATMAT é derivado e fica `sugerido` até alguém confirmar.
 - **Volume e custo (09/11/2026):** banco hoje 1.791 MB (`licitacao_itens` 598 MB / 284 mil linhas, medido). Catálogo
-  completo dos 12 portais = 505.141 produtos (medido); só colunas, sem `raw`: estimado 250 a 350 MB (não medido). Embedding
+  dos 7 portais sem bloqueio de robots = 298.316 produtos (medido; 505.141 com os 5 SaaS, que ficam fora); só colunas, sem `raw`: estimado 150 a 200 MB (não medido). Embedding
   só sob demanda (decisão de 09/11): custo de vetor e de Vertex AI proporcional ao catálogo do cliente, não ao
   catálogo inteiro.
 
@@ -245,19 +251,17 @@ compartilhada nem código de referência entre portais. A busca cruzada entre po
 - 09/11/2026: **embedding sob demanda, nunca do catálogo inteiro.** Só ganham vetor os produtos do Sistema S ligados ao
   catálogo de um cliente (seleção do tenant), na hora em que a seleção é feita. O catálogo completo (505.141 produtos
   nos 12 portais medidos) fica só em colunas, sem vetor.
+- 09/11/2026 (pergunta 1): **não contornar robots.txt** nem resolver captcha, no catálogo e em qualquer coleta nova.
+  Os cinco hosts SaaS (sescsp, sesc_senac_rs, sescdn, sescrj, sescba) ficam fora do catálogo.
+- 09/11/2026 (pergunta 2): **sem herança** pelo CATMAT. O de-para serve de **referência de preço homologado entre os
+  catálogos** e aparece na oportunidade relacionada: na aba Itens, a coluna CATMAT do item do Sistema S (hoje "—")
+  mostra o CATMAT do de-para, marcado como derivado.
+- 09/11/2026 (perguntas 3 e 4): sem nível "grupo" por prefixo (a fase 0 mostrou máscara própria por portal); só o
+  admin do tenant marca.
+- 09/11/2026 (pergunta 5): **funciona como o CATMAT.** O catálogo do portal fica completo no banco; a sincronização
+  traz só as oportunidades que têm itens do catálogo parametrizado pelo tenant.
+- 09/11/2026 (pergunta 6): classes de serviço (FIEB 391 e 446) ficam fora; serviço nunca vira lead.
 
 ## Perguntas em aberto
 
-1. **Robots dos hosts SaaS no catálogo:** a decisão de 05/10/2026 libera o **mural** de sescsp, sesc_senac_rs, sescdn,
-   sescrj e sescba. A varredura de classes da fase 0, umas 36 chamadas por portal, também vale para o **catálogo**
-   desses hosts? O catálogo do Sesc DN já foi extraído no #490.
-2. **Herança pelo CATMAT:** produto do Sistema S cujo de-para **confirmado** cai num PDM ou item que o tenant já marcou
-   no CATMAT entra sozinho na seleção do Sistema S? (Menos trabalho para o tenant; depende da fase 5.)
-3. **Nível "grupo" pelo prefixo do código interno** (`003.00045` → grupo `003`): vale medir na fase 1 e, se o
-   prefixo for estável, oferecer como nível entre portal e classe?
-4. **Quem marca:** só o admin do tenant (como no `/catmat`) ou também `operacao`?
-5. **Coleta de produtos:** só das classes marcadas por algum tenant (menos carga nos portais) ou de todas as classes
-   (árvore completa para navegar antes de marcar)? A proposta acima coleta todas as **classes** e só os **produtos**
-   das marcadas.
-6. **Classes vizinhas de academia** (FIEB 391 e 446, manutenção e reforma): ficam fora por regra de negócio (serviço
-   nunca vira lead) ou o tenant pode marcar?
+Nenhuma: as seis foram respondidas em 09/11/2026 (ver "Decisões do Marcelo").

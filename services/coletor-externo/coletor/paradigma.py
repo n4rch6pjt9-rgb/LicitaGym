@@ -194,7 +194,8 @@ def _itens_e_total(resp: Any, *, rotulo: str) -> tuple[list, dict]:
 
 
 def paginar_intervalo(buscar, *, tamanho: int = TAMANHO_PAGINA, max_paginas: int | None = None,
-                      max_itens: int | None = None, rotulo: str = "paradigma") -> tuple[list, list[str]]:
+                      max_itens: int | None = None, rotulo: str = "paradigma",
+                      limite_seguranca: int | None = None) -> tuple[list, list[str]]:
     """Percorre faixas inclusivas de no máximo 100 itens.
 
     `buscar(de, ate)` devolve a página. Sem total, só uma página vazia encerra; página
@@ -205,11 +206,12 @@ def paginar_intervalo(buscar, *, tamanho: int = TAMANHO_PAGINA, max_paginas: int
     da página: `totalPaginas` e `paginasRestantes` não encerram mais. Segue
     `totalRegistros`/`total` (pelo acumulado) ou uma página vazia.
     `max_paginas` e `max_itens` são tetos opcionais (avisam se cortarem antes do fim).
-    Sem eles, o corte é `MAX_PAGINAS_SEGURANCA` ou página de conteúdo repetido: os dois
+    Sem eles, o corte é `limite_seguranca` (padrão `MAX_PAGINAS_SEGURANCA`) ou página de conteúdo repetido: os dois
     param com aviso e não são fim confirmado. A faixa seguinte começa depois do último
     item recebido, para uma página curta não pular o que a API não devolveu.
     """
     tamanho = clamp_tamanho(tamanho, padrao=TAMANHO_PAGINA, minimo=1, maximo=TAMANHO_PAGINA_MAX)
+    limite_seguranca = limite_seguranca or MAX_PAGINAS_SEGURANCA
     if max_paginas is not None and max_paginas < 1:
         raise ValueError("max_paginas deve ser >= 1")
     if max_itens is not None and max_itens < 1:
@@ -229,9 +231,9 @@ def paginar_intervalo(buscar, *, tamanho: int = TAMANHO_PAGINA, max_paginas: int
         log.warning("%s", msg)
 
     while True:
-        if pagina > MAX_PAGINAS_SEGURANCA:
-            _aviso(f"{rotulo}: limite de segurança de {MAX_PAGINAS_SEGURANCA} páginas "
-                   f"(até {MAX_PAGINAS_SEGURANCA * tamanho} itens pedidos); interrompendo")
+        if pagina > limite_seguranca:
+            _aviso(f"{rotulo}: limite de segurança de {limite_seguranca} páginas "
+                   f"(até {limite_seguranca * tamanho} itens pedidos); interrompendo")
             break
         if max_paginas is not None and pagina > max_paginas:
             _aviso(f"{rotulo}: teto opcional de {max_paginas} páginas atingido sem o total confirmar o fim")
@@ -551,9 +553,10 @@ class PortalParadigma:
         return itens
 
     def catalogo_com_avisos(self, classe: dict | None = None, tipo: str = "produto", descricao: str = "",
-                            codigo: str = "") -> tuple[list[dict], list[str]]:
+                            codigo: str = "", limite_seguranca: int | None = None) -> tuple[list[dict], list[str]]:
         """Como `catalogo`, mais os avisos de paginação (página repetida, limite de segurança): com aviso, a lista pode
-        estar cortada e o fim não foi confirmado."""
+        estar cortada e o fim não foi confirmado. `limite_seguranca` sobe só para o catálogo inteiro (FIEB tem ~1.400
+        páginas de 100)."""
         def buscar(de: int, ate: int) -> Any:
             return self._ws("PesquisarCatalogoProdutos", {"dtoProduto": {
                 "sCdProduto": codigo, "sDsProduto": descricao, "nCdTipo": TIPOS_CATALOGO[tipo],
@@ -561,7 +564,8 @@ class PortalParadigma:
                 "sOrdenarPor": "SCDPRODUTOEMPRESA", "sOrdenarPorDirecao": "ASC",
                 "dtoPaginacao": {"nPaginaDe": de, "nPaginaAte": ate},
                 "dtoIdioma": {"nCdIdioma": 1}}})
-        return paginar_intervalo(buscar, tamanho=TAMANHO_PAGINA, rotulo=f"catálogo {self.fonte.slug}")
+        return paginar_intervalo(buscar, tamanho=TAMANHO_PAGINA, rotulo=f"catálogo {self.fonte.slug}",
+                                 limite_seguranca=limite_seguranca)
 
     def produtos_escopo(self, categorias: list[str] | None = None, tipo: str = "produto") -> dict[int, dict]:
         """nCdProduto -> {codigo, descricao, categoria, tipo} para as categorias mapeadas, filtradas por Tipo."""

@@ -1,6 +1,6 @@
 # 0052: Estruturar o catálogo do Sistema S como o CATMAT e deixar cada tenant escolher os itens
 
-- **Status:** rascunho (plano; aguarda as respostas das perguntas em aberto)
+- **Status:** em implementação (fase 1; aprovada pelo Marcelo em 10/11/2026: "Sim, /implement fase 1")
 - **Alimenta:** spec-mãe 0032, fase 3 (agentes de edital e de preço ancorados no produto) e o filtro de oportunidades
   do Sistema S. Estende a `specs/0053-catalogo-sistema-s-de-para-catmat.md` (K-1 e K-3 dela viram a base daqui) e usa
   o estudo da `specs/0051-estudo-murais-sistema-s.md`.
@@ -211,6 +211,28 @@ compartilhada nem código de referência entre portais. A busca cruzada entre po
 4. **Filtro de oportunidades (K-9).** O item do Sistema S entra pelo produto; o texto continua como segunda regra.
 5. **De-para CATMAT (K-3, da 0053).** Sugestão determinística e confirmação por SQL.
 6. **Tela (K-10)** no Dashboard, depois do backend publicado.
+
+### Fase 1: o que foi implementado e os testes (10/11/2026)
+
+- Migration `supabase/migrations/20261110100000_sistema_s_catalogo.sql`: `sistema_s_catalogo_classes` (K-1) e
+  `sistema_s_catalogo_produtos` (K-2, com FK composta (`fonte`, `id_classe_fonte`) para K-1). Sem tenant: não pede
+  branch Supabase sob demanda (a RLS de tenant entra na fase 2).
+- `python -m coletor.catalogo_paradigma --fonte <slug> --tudo --gravar` (K-8 manual): baixa o catálogo inteiro
+  (`nCdClasse 0`, único jeito de listar todas as classes) e grava classes e produtos. `--categorias` continua valendo
+  para gravar só algumas classes. A carga roda depois do merge, pelo operador, com a contagem por fonte no PR.
+- Pela decisão da pergunta 5 (catálogo completo no banco), a carga da fase 1 é do catálogo inteiro de cada portal, não
+  só das classes de academia listadas no item 1 acima.
+
+| CA | O que prova | Teste |
+|---|---|---|
+| CA-1 (K-1, K-2; mesma regra da 0053 CA-1) | RLS ligada sem policy; `anon`/`authenticated` sem privilégio; `service_role` com select, insert e update, sem delete; chave única e FK por portal | `supabase/tests/sistema_s_catalogo_check.sql` |
+| CA-3 da 0053 (K-2) | gravar duas vezes não duplica nem muda `payload_hash`; só o produto alterado muda | `test_ca3_gravar_duas_vezes_nao_duplica_nem_muda_hash_e_so_o_produto_alterado_muda` |
+| CA-4 da 0053 (K-2, regressão do #490) | aviso de paginação com `--gravar`: sai 3 e nada é gravado | `test_ca4_aviso_de_paginacao_com_gravar_sai_3_e_nao_grava_nada` |
+| K-1 | classe com nome, código (`PT030`) ou nulo, contagem; classes antes dos produtos | `test_ca_k1_grava_classes_antes_dos_produtos_com_codigo_e_contagem` |
+| K-2 | produto sem `nCdProduto` fica fora e é contado | `test_ca_k2_produto_sem_id_nao_e_gravado_e_conta_no_resumo` |
+| K-8 | `--tudo` pede a classe 0 e grava todas as classes | `test_ca_k8_catalogo_inteiro_usa_classe_zero_e_grava_todas_as_classes` |
+
+Testes em `services/coletor-externo/tests/test_catalogo_paradigma.py`.
 
 ## Fora de escopo
 

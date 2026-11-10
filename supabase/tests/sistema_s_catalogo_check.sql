@@ -30,6 +30,17 @@ begin
         raise exception 'CHECK FALHOU: anon/authenticated possui % em %', v_priv, v_obj;
       end if;
     end loop;
+    -- GRANT por coluna não aparece em has_table_privilege
+    foreach v_priv in array array['SELECT','INSERT','UPDATE','REFERENCES'] loop
+      if has_any_column_privilege('anon', v_obj, v_priv) or has_any_column_privilege('authenticated', v_obj, v_priv) then
+        raise exception 'CHECK FALHOU: anon/authenticated possui % em coluna de %', v_priv, v_obj;
+      end if;
+    end loop;
+    -- sequence da identity
+    if has_sequence_privilege('anon', pg_get_serial_sequence(v_obj, 'id'), 'USAGE,SELECT,UPDATE')
+       or has_sequence_privilege('authenticated', pg_get_serial_sequence(v_obj, 'id'), 'USAGE,SELECT,UPDATE') then
+      raise exception 'CHECK FALHOU: anon/authenticated possui privilégio na sequence de %', v_obj;
+    end if;
     foreach v_priv in array array['SELECT','INSERT','UPDATE'] loop
       if not has_table_privilege('service_role', v_obj, v_priv) then
         raise exception 'CHECK FALHOU: service_role sem % em %', v_priv, v_obj;

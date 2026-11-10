@@ -84,6 +84,27 @@ begin
         raise exception 'CHECK FALHOU: classe de fonte inexistente aceita';
       exception when foreign_key_violation then null;
       end;
+      -- Como o coletor grava: service_role, upsert pelo alvo (fonte, id_*_fonte), identity sem privilégio extra.
+      set local role service_role;
+      insert into public.sistema_s_catalogo_classes (fonte, id_classe_fonte, nome) values (v_fonte, -3, null)
+        on conflict (fonte, id_classe_fonte) do update set nome = excluded.nome;
+      insert into public.sistema_s_catalogo_produtos (fonte, id_produto_fonte, id_classe_fonte, descricao, payload_hash)
+        values (v_fonte, -1, -3, 'CHECK NOVO', 'h3')
+        on conflict (fonte, id_produto_fonte) do update
+          set id_classe_fonte = excluded.id_classe_fonte, descricao = excluded.descricao, payload_hash = excluded.payload_hash;
+      -- produto sem classe informada pelo portal é aceito (FK MATCH SIMPLE)
+      insert into public.sistema_s_catalogo_produtos (fonte, id_produto_fonte, id_classe_fonte, payload_hash)
+        values (v_fonte, -4, null, 'h4');
+      if (select count(*) from public.sistema_s_catalogo_produtos where fonte = v_fonte and id_produto_fonte in (-1, -4)) <> 2
+         or (select payload_hash from public.sistema_s_catalogo_produtos where fonte = v_fonte and id_produto_fonte = -1) <> 'h3' then
+        raise exception 'CHECK FALHOU: upsert do service_role duplicou ou não atualizou o produto';
+      end if;
+      begin
+        delete from public.sistema_s_catalogo_produtos where fonte = v_fonte and id_produto_fonte = -4;
+        raise exception 'CHECK FALHOU: service_role conseguiu apagar produto do catálogo';
+      exception when insufficient_privilege then null;
+      end;
+      reset role;
       raise exception using errcode = 'P0001', message = 'ROLLBACK_CHECK';
     exception when sqlstate 'P0001' then
       if sqlerrm <> 'ROLLBACK_CHECK' then

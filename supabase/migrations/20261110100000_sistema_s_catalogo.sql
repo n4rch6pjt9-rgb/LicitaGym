@@ -79,7 +79,7 @@ grant select, insert, update on table public.sistema_s_catalogo_classes, public.
   to service_role;
 
 revoke all on sequence public.sistema_s_catalogo_classes_id_seq, public.sistema_s_catalogo_produtos_id_seq
-  from anon, authenticated, PUBLIC;
+  from anon, authenticated, PUBLIC, service_role;
 grant usage, select on sequence public.sistema_s_catalogo_classes_id_seq, public.sistema_s_catalogo_produtos_id_seq
   to service_role;
 

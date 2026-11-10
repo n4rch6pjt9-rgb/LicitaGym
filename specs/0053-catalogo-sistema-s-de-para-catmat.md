@@ -49,6 +49,11 @@
 | K-4 | `python -m coletor.catalogo_sistema_s_catmat` (sugestão) | produtos de K-1 e espelho `catalogo_itens` | sugestões determinísticas (mesmo texto → mesma sugestão). Regra principal (decisão de 08/11): no PDM 2640, casar o nome do produto com o atributo **"TIPO:"** da descrição do item CATMAT (ex.: 460540 "TIPO: FLEXORA DEITADA"); com um item, `nivel = catmat_item`; com vários itens do mesmo TIPO, `nivel = pdm` com os itens candidatos na evidência; demais PDMs pelo casamento de texto de `catmat_ancoras.py`. Nunca grava `confirmado`; não sobrescreve linha `confirmado` ou `rejeitado` | espelho CATMAT vazio: erro, nunca "sem sugestão" | operador |
 | K-5 | Matriz de uso do catálogo (`python -m coletor.matriz_catalogo_sistema_s`, saída CSV fora do repositório) | itens de certames homologados ou encerrados dos portais Paradigma no banco + catálogo de cada portal (K-2) | por fonte e unidade compradora: `nCdProduto`, código interno, descrição do item, nº de certames; resumo de quantos produtos são compartilhados entre unidades do mesmo portal e quantos códigos internos se repetem entre portais com a mesma descrição | fonte sem catálogo coletado: marcada "sem catálogo", nunca "zero em comum" | operador; leitura com `service_role` |
 
+> **Nota de 10/11/2026 (spec 0052 fase 1):** K-1 foi implementado como duas tabelas, `sistema_s_catalogo_classes` e
+> `sistema_s_catalogo_produtos` (migration `20261110100000_sistema_s_catalogo.sql`). As colunas `categoria_codigo`,
+> `categoria_nome` e `id_categoria` saíram do produto e ficaram na tabela de classes (`codigo`, `nome`,
+> `id_classe_fonte`), ligada ao produto por FK composta. O código interno da entidade ficou em `codigo_entidade`.
+
 ## Critérios de aceite
 
 | ID | Contrato | Dado / Quando / Então | Teste que prova |

@@ -163,19 +163,21 @@ class Supabase:
             log.warning("licitacao_match: %s pendência(s) após %s lotes", restantes, max_lotes)
         return restantes
 
-    def upsert(self, tabela: str, linhas: list[dict] | dict, conflito: str) -> list[dict]:
+    def upsert(self, tabela: str, linhas: list[dict] | dict, conflito: str, retornar: bool = True) -> list[dict]:
+        """`retornar=False` pede return=minimal (carga grande que não usa as linhas de volta) e devolve []."""
+        retorno = "representation" if retornar else "minimal"
         r = requests.post(
             f"{self.base}/{tabela}",
             params={"on_conflict": conflito},
             json=linhas,
-            headers={**self.h, "Prefer": "resolution=merge-duplicates,return=representation"},
+            headers={**self.h, "Prefer": f"resolution=merge-duplicates,return={retorno}"},
             timeout=60,
         )
         if r.status_code >= 300:
             raise RuntimeError(f"Supabase {tabela}: {r.status_code} {r.text[:500]}")
         if tabela in TABELAS_TEXTO_CATMAT:
             self._contar_textos(tabela, len(linhas) if isinstance(linhas, list) else 1)
-        return r.json()
+        return r.json() if retornar else []
 
     def atualizar(self, tabela: str, id_: int, campos: dict) -> None:
         r = requests.patch(

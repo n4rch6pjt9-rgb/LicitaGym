@@ -1,6 +1,7 @@
 """Testes offline do adaptador Paradigma com respostas reais do portal FIESC (capturadas em 24/09/2026)."""
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -277,16 +278,33 @@ def test_modulo_de_sentinela_e_ausente():
     assert P.modulo_de({}) == 59 and P.modulo_de(None) == 59
 
 
-def test_tenants_paradigmabs_autorizados_pelo_mural_e_fiemg_bloqueada():
-    for slug in ("sescdn", "sescrj", "sescba", "sescsp", "sesc_senac_rs"):
+def test_robots_disallow_nao_se_contorna_sescdn_sem_robots_coleta_e_fiemg_bloqueada():
+    """Regressão (decisão de 09/11/2026): o override de robots de 05/10 foi revogado.
+
+    egov.paradigmabs.com.br e scr360.paradigmabs.com.br têm `Disallow: /`: nenhuma fonte desses hosts coleta, nem com
+    autorizado=True. egov-br.paradigmabs.com.br (sescdn) não tem robots.txt e coleta como os self-hosted.
+    """
+    assert P.FONTES_MURAL_AUTORIZADO == frozenset()
+    for slug in ("sescsp", "sesc_senac_rs", "sescrj", "sescba"):
         assert P.FONTES[slug].coleta_automatica is False
-        assert P.autorizado_para_coleta(P.FONTES[slug]) is True
-        assert "paradigmabs.com.br" in P.FONTES[slug].base
-        P.PortalParadigma(P.FONTES[slug], autorizado=True, sessao=MagicMock())
+        assert P.autorizado_para_coleta(P.FONTES[slug]) is False
+        with pytest.raises(PermissionError):
+            P.PortalParadigma(P.FONTES[slug], autorizado=True, sessao=MagicMock())
+    assert P.FONTES["sescdn"].coleta_automatica is True
+    P.PortalParadigma(P.FONTES["sescdn"], sessao=MagicMock())
     assert P.FONTES["fiemg"].coleta_automatica is False  # Cloudflare bloqueia cliente automatizado
     assert P.autorizado_para_coleta(P.FONTES["fiemg"]) is False
+    with pytest.raises(PermissionError):
+        P.PortalParadigma(P.FONTES["fiemg"], autorizado=True, sessao=MagicMock())
     for slug in ("firjan", "fiergs", "findes", "fieb", "fiems", "fiemt", "sfiec"):
         assert P.FONTES[slug].coleta_automatica is True
+
+
+def test_workflow_sistema_s_nao_agenda_fonte_com_robots_disallow():
+    wf = (Path(__file__).resolve().parents[3] / ".github/workflows/coletor-sistema-s.yml").read_text(encoding="utf-8")
+    for slug in ("sescsp", "sesc_senac_rs", "sescrj", "sescba"):
+        assert f'"{slug}"' not in wf and f"|{slug}" not in wf and f"| {slug}" not in wf
+    assert '"sescdn"' in wf
 
 
 def test_itens_academia_formato_codigo_sfiec():
@@ -992,7 +1010,7 @@ def test_ws_403_para_na_primeira_chamada(monkeypatch):
     monkeypatch.setattr(P.time, "sleep", lambda _s: None)
     s = MagicMock()
     s.post.return_value.status_code = 403
-    p = P.PortalParadigma(P.FONTES["sescsp"], delay=0, autorizado=True, sessao=s)
+    p = P.PortalParadigma(P.FONTES["fiesc"], delay=0, sessao=s)
     with pytest.raises(PermissionError):
         p.listar("academia")
     assert s.post.call_count == 1

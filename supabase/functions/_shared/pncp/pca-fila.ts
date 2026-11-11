@@ -4,6 +4,7 @@ import { BudgetExhaustedError, type RequestBudget } from "./retry.ts";
 import { RateLimitPauseError, SAFE_EDGE_MARGIN_MS } from "../http-client/index.ts";
 import { storeSourceRecord } from "./supabase-admin.ts";
 import { hashPayload, sha256Hex } from "./hash.ts";
+import { normalizePcaItem } from "./normalize.ts";
 
 function ePerdaDePosse(error: unknown): boolean {
   return error instanceof ReservaPcaPerdidaError ||
@@ -197,19 +198,19 @@ export async function descobrirPlanos(
   return res;
 }
 
-type ItemFila = {
+export type ItemFila = {
   id_pca_pncp: string;
   orgao_cnpj: string;
   ano: number;
   sequencial: number;
-  motivo: "novo" | "alterado" | "backfill" | "reconciliacao" | "ausente";
+  motivo: "novo" | "alterado" | "backfill" | "reconciliacao" | "ausente" | "impressao";
   plano: Row | null;
   classes: string[];
   data_atualizacao_fonte: string | null;
   chain_id: string;
 };
 
-async function enfileirar(client: SupabaseClient, itens: ItemFila[]): Promise<number> {
+export async function enfileirar(client: SupabaseClient, itens: ItemFila[]): Promise<number> {
   let total = 0;
   for (let i = 0; i < itens.length; i += 500) {
     const { data, error } = await client.schema("private").rpc("pca_fila_enfileirar", {
@@ -453,16 +454,7 @@ export async function lerItensPlano(
           `integração ${cnpj}/${ano}/${sequencial} página ${pagina}: numeroItem repetido (${numero})`,
         );
       }
-      // Classificação desconhecida não comprova que o item saiu do escopo.
-      const classe = item?.classificacaoSuperiorCodigo;
-      // Grupos de servico (tipo 2) podem ter tres digitos no payload oficial.
-      // Sem tipo confirmado, manter a validacao anterior para evitar falsa ausencia.
-      const servico = item?.classificacaoCatalogoId === 2 || item?.classificacaoCatalogoId === "2";
-      const codigoValido = /^\d{4}$/.test(String(classe)) ||
-        (servico && /^\d{3}$/.test(String(classe)));
-      if ((typeof classe !== "string" && typeof classe !== "number") || !codigoValido) {
-        throw new Error(`integração ${cnpj}/${ano}/${sequencial} página ${pagina}: classificacaoSuperiorCodigo inválida`);
-      }
+      // A classe é conferida na carga (classeDesconhecida): classe fora do padrão não derruba a leitura (spec 0056).
       numeros.add(numero);
       itens.push(item as Row);
     }
@@ -497,6 +489,19 @@ function inteiroDaIntegracao(valor: unknown): number | null {
 }
 
 /**
+ * Classe do item fora do padrão (erro da administração, medido em 11/11/2026: "Não se aplica.", código de item no
+ * lugar da classe, texto livre). Material: 4 dígitos. Serviço (`classificacaoCatalogoId = 2`): 2 a 4 dígitos.
+ * Devolve o valor original quando a classe é desconhecida; `null` quando é válida.
+ */
+export function classeDesconhecida(item: Row): { valor: unknown } | null {
+  const classe = item?.classificacaoSuperiorCodigo;
+  if (typeof classe !== "string" && typeof classe !== "number") return { valor: classe ?? null };
+  const servico = item?.classificacaoCatalogoId === 2 || item?.classificacaoCatalogoId === "2";
+  const texto = String(classe);
+  return /^\d{4}$/.test(texto) || (servico && /^\d{2,4}$/.test(texto)) ? null : { valor: classe };
+}
+
+/**
  * Item da integração no formato da consulta, que é o que o normalizador lê. Nomes que mudam (medido em 09/10/2026 no
  * plano do Galeão, com valores iguais): quantidade → quantidadeEstimada, descricao → descricaoItem,
  * nomeClassificacao → nomeClassificacaoCatalogo. Os demais campos têm o mesmo nome.
@@ -522,17 +527,68 @@ async function inativarItensAusentes(
   planoId: string,
   numerosVindos: Set<number>,
   classes: string[],
+  foraDoEscopo: Map<number, Row> = new Map(),
 ): Promise<number> {
   const ativos = (await selectIn(client, "pca_itens", "id, numero_item, ativo", "pca_plano_id", [planoId], {
     column: "classe_material_servico",
     values: classes,
   })).filter((r) => r.ativo !== false && !numerosVindos.has(Number(r.numero_item)));
-  for (let i = 0; i < ativos.length; i += 100) {
+  const sumiram = ativos.filter((r) => !foraDoEscopo.has(Number(r.numero_item)));
+  for (let i = 0; i < sumiram.length; i += 100) {
     const { error } = await client.from("pca_itens").update({ ativo: false })
-      .in("id", ativos.slice(i, i + 100).map((r) => r.id));
+      .in("id", sumiram.slice(i, i + 100).map((r) => r.id));
+    if (error) throw error;
+  }
+  // Saiu do escopo (spec 0056, K-4): grava o estado lido (classe nova e hash) junto com a inativação. O trigger
+  // registra saiu_escopo pela troca de classe; se o item voltar ao escopo, o hash diferente reativa com entrou_escopo.
+  for (const r of ativos.filter((x) => foraDoEscopo.has(Number(x.numero_item)))) {
+    const lido = foraDoEscopo.get(Number(r.numero_item))!;
+    const linha = { ...normalizePcaItem(itemIntegracaoParaConsulta(lido), {}), pca_plano_id: planoId };
+    const { error } = await client.from("pca_itens")
+      .update({ ...linha, payload_hash: await hashPayload(linha), ativo: false }).eq("id", r.id);
     if (error) throw error;
   }
   return ativos.length;
+}
+
+/** Quantidade da impressão (camada 1) diferente da leitura: erro do plano, antes de gravar ou inativar (CA-5). */
+async function conferirImpressao(client: SupabaseClient, linha: Row, lidos: number) {
+  const { data, error } = await client.schema("private").from("pca_impressao_plano").select("quantidade")
+    .eq("orgao_cnpj", String(linha.orgao_cnpj)).eq("ano", Number(linha.ano))
+    .eq("sequencial", Number(linha.sequencial)).maybeSingle();
+  if (error) throw error;
+  const quantidade = (data as Row | null)?.quantidade;
+  if (quantidade == null) return;
+  if (Number(quantidade) !== lidos) {
+    throw new Error(
+      `a impressão do plano tem ${quantidade} itens e a integração devolveu ${lidos}: nada gravado nem inativado`,
+    );
+  }
+}
+
+/** Item de classe desconhecida que já estava gravado como do escopo: o plano não é carregado (K-3). */
+async function recusarDesconhecidoDoEscopo(
+  client: SupabaseClient,
+  idPca: string,
+  desconhecidos: Row[],
+  classes: string[],
+) {
+  const planoId = await idDoPlano(client, idPca);
+  if (!planoId) return;
+  const gravados = new Set(
+    (await selectIn(client, "pca_itens", "id, numero_item, ativo", "pca_plano_id", [planoId], {
+      column: "classe_material_servico",
+      values: classes,
+    })).filter((r) => r.ativo !== false).map((r) => Number(r.numero_item)),
+  );
+  const conflito = desconhecidos.find((it) => gravados.has(Number(it.numeroItem)));
+  if (conflito) {
+    throw new Error(
+      `classe desconhecida no item ${conflito.numeroItem} (${
+        JSON.stringify(classeDesconhecida(conflito)?.valor)
+      }), que está gravado como do escopo: plano não carregado`,
+    );
+  }
 }
 
 /**
@@ -541,7 +597,7 @@ async function inativarItensAusentes(
  * 7220). Se o plano continua ativo, o contador de ausência zera: ele não tem mais item do escopo, e a ausência
  * medida pela descoberta dessas classes não diz nada sobre as outras.
  */
-async function inativarAusenteNoEscopo(
+export async function inativarAusenteNoEscopo(
   client: SupabaseClient,
   planoId: string,
   classes: string[],
@@ -574,7 +630,7 @@ export class ReservaPcaPerdidaError extends Error {
 async function marcarFila(client: SupabaseClient, linha: Row, ok: boolean, erro: string | null) {
   const agora = new Date().toISOString();
   const patch: Row = ok
-    ? { status: "feito", erro: null, processado_em: agora, atualizado_em: agora }
+    ? { status: "feito", erro: erro ? erro.slice(0, 500) : null, processado_em: agora, atualizado_em: agora }
     : {
       status: "erro",
       erro: (erro ?? "erro").slice(0, 500),
@@ -693,8 +749,23 @@ export async function processarFila(
           .select("id").eq("id", linha.id).eq("status", "processando").eq("reserva_token", linha.reserva_token);
         if (ePosse) throw ePosse;
         if (!Array.isArray(posse) || posse.length !== 1) throw new ReservaPcaPerdidaError();
-        const escopo = todos.filter((it) => doEscopo.has(String(it.classificacaoSuperiorCodigo ?? "")));
+        await conferirImpressao(clientPlano, linha, todos.length);
+        // Classe desconhecida: fica fora do escopo e não conta para ausência; o valor original vai no aviso (e na
+        // resposta bruta já arquivada em source_record). Só derruba o plano se o item já estava gravado no escopo.
+        const desconhecidos = todos.filter((it) => classeDesconhecida(it) !== null);
+        const conhecidos = todos.filter((it) => classeDesconhecida(it) === null);
+        const avisos = desconhecidos.map((it) =>
+          `classe desconhecida no item ${it.numeroItem} (${JSON.stringify(classeDesconhecida(it)!.valor).slice(0, 80)})`
+        );
+        if (desconhecidos.length > 0) await recusarDesconhecidoDoEscopo(clientPlano, idPca, desconhecidos, classes);
+        const escopo = conhecidos.filter((it) => doEscopo.has(String(it.classificacaoSuperiorCodigo ?? "")));
         const numeros = new Set(escopo.map((it) => Number(it.numeroItem)));
+        // Item lido com classe conhecida fora do escopo: se estava gravado no escopo, saiu dele (não foi removido).
+        const foraDoEscopo = new Map(
+          conhecidos.filter((it) => !doEscopo.has(String(it.classificacaoSuperiorCodigo ?? "")))
+            .map((it) => [Number(it.numeroItem), it] as const),
+        );
+        const aviso = () => avisos.length ? `aviso: ${avisos.join("; ")}` : null;
 
         let r: LoteStats;
         let planoId: string | null;
@@ -712,7 +783,7 @@ export async function processarFila(
             const r0 = await inativarAusenteNoEscopo(clientPlano, planoId, classes);
             stats.itens_inativados += r0.itens;
             if (r0.plano) stats.planos_inativados++;
-            await marcarFila(clientPlano, linha, true, null);
+            await marcarFila(clientPlano, linha, true, aviso());
             stats.planos_feitos++;
             continue;
           }
@@ -743,8 +814,18 @@ export async function processarFila(
           await marcarFila(clientPlano, linha, false, `${r.erros} erro(s) na gravação em lote`);
           continue;
         }
-        stats.itens_inativados += await inativarItensAusentes(clientPlano, planoId, numeros, classes);
-        await marcarFila(clientPlano, linha, true, null);
+        stats.itens_inativados += await inativarItensAusentes(clientPlano, planoId, numeros, classes, foraDoEscopo);
+        avisos.push(...(r.avisos ?? []));
+        if (avisos.length) {
+          console.warn(JSON.stringify({
+            evento: "pca_fila_aviso",
+            id_pca_pncp: idPca,
+            total: avisos.length,
+            avisos: avisos.slice(0, 20).map((a) => a.slice(0, 200)),
+            runId: opts.runId,
+          }));
+        }
+        await marcarFila(clientPlano, linha, true, aviso());
         stats.planos_feitos++;
       } catch (error) {
         if (ePerdaDePosse(error)) {

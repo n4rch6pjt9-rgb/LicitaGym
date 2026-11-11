@@ -27,6 +27,7 @@ import { gravarPaginaPcaEmLote } from "../_shared/pncp/pca-lote.ts";
 import { PcaPersistenciaError } from "../_shared/pncp/pca-atomico.ts";
 import { PncpIntegracaoClient } from "../_shared/pncp/integracao-client.ts";
 import { handleRotinaFila, type RotinaBody } from "./rotina-fila.ts";
+import { handleRotinaImpressao } from "./rotina-impressao.ts";
 
 type SyncBody = {
   ano?: number;
@@ -292,7 +293,21 @@ export async function handleRequest(req: Request, deps: DependenciasSyncPca = {}
 
   // Spec 0012, PR 2: sync por fila de planos (descoberta pela consulta, itens pela integração por plano).
   // Sem `rotina`, segue o fluxo antigo abaixo; os crons novos nascem desligados.
-  if ((body as RotinaBody).rotina !== undefined) {
+  // Spec 0056: camadas 0 (descoberta de CNPJ novo) e 1 (impressão por órgão), com lock próprio.
+  const rotinaPedida = (body as RotinaBody).rotina;
+  if (rotinaPedida === "impressao" || rotinaPedida === "descoberta") {
+    return await handleRotinaImpressao({
+      client,
+      consulta,
+      integracao: new PncpIntegracaoClient(undefined, httpClient),
+      body: body as RotinaBody,
+      ano,
+      classes: codigosClassificacao,
+      tamanhoPagina,
+      isAsync,
+    });
+  }
+  if (rotinaPedida !== undefined) {
     return await handleRotinaFila({
       client,
       clientDaReserva: (token, runId) => criarClient({ "x-pca-reserva": token, "x-pca-run-id": runId }),

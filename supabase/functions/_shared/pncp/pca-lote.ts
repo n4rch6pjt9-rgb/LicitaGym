@@ -13,7 +13,8 @@ import { persistirLoteAtomico, type UnidadePcaAtomica } from "./pca-atomico.ts";
  * Diferenças conhecidas em relação ao caminho item a item:
  * - chave repetida na página (a paginação da consulta repete itens na fronteira) é gravada uma vez, com a última
  *   ocorrência. `recebidos` conta todas as ocorrências; o caminho antigo gravava duas vezes (novo + inalterado).
- * - falha na leitura do catálogo (`catmat_pdms`, `catalogo_itens`) conta em `erros` e não vincula.
+ * - falha na leitura do catálogo (`catmat_pdms`, `catalogo_itens`) é aviso (spec 0056, decisão de 11/11/2026): não
+ *   vincula, não conta em `erros` e vai para `avisos` com a tabela e a mensagem do PostgREST.
  * - falha da RPC é propagada sem fallback; blocos anteriores podem já ter sido confirmados.
  */
 
@@ -23,6 +24,8 @@ export type LoteStats = {
   alterados: number;
   inalterados: number;
   erros: number;
+  /** Falhas que não invalidam a gravação (vínculo com o catálogo): "tabela: mensagem". */
+  avisos?: string[];
 };
 
 type Row = Record<string, unknown>;
@@ -233,12 +236,13 @@ async function gravarItensEmLote(
   stats.alterados += rItens.alterados;
   stats.inalterados += rItens.inalterados;
 
-  stats.erros += await vincularOrigemEmLote(client, itensPorChave, rItens.ids, now, runId);
+  const avisos = await vincularOrigemEmLote(client, itensPorChave, rItens.ids, now, runId);
+  if (avisos.length) stats.avisos = [...(stats.avisos ?? []), ...avisos];
 }
 
 /**
- * Equivalente em lote de `linkPcaItemOrigemCodes` (pca-origem-link.ts). Devolve o número de leituras do catálogo
- * que falharam: o item fica sem vínculo, a falha entra em `erros` e o sync segue.
+ * Equivalente em lote de `linkPcaItemOrigemCodes` (pca-origem-link.ts). Devolve as leituras do catálogo que
+ * falharam ("tabela: mensagem"): o item fica sem vínculo, a falha é aviso e o sync segue.
  */
 async function vincularOrigemEmLote(
   client: SupabaseClient,
@@ -246,8 +250,9 @@ async function vincularOrigemEmLote(
   ids: Map<string, string>,
   now: string,
   runId: string,
-): Promise<number> {
-  let erros = 0;
+): Promise<string[]> {
+  const avisos: string[] = [];
+  const mensagem = (error: unknown) => String((error as { message?: string })?.message ?? error);
   const comPdm: { id: string; pdm: number }[] = [];
   const comCodigo: { id: string; codigo: string }[] = [];
   for (const [chave, row] of itens) {
@@ -276,7 +281,7 @@ async function vincularOrigemEmLote(
       );
     } catch (error) {
       avisarFalha("catmat_pdms", "select", comPdm.length, runId, error as { message?: string });
-      erros++;
+      avisos.push(`catmat_pdms: ${mensagem(error)}`);
     }
     const linhas = existentes
       ? comPdm.filter((x) => existentes!.has(x.pdm)).map((x) => ({
@@ -311,7 +316,7 @@ async function vincularOrigemEmLote(
       }
     } catch (error) {
       avisarFalha("catalogo_itens", "select", comCodigo.length, runId, error as { message?: string });
-      erros++;
+      avisos.push(`catalogo_itens: ${mensagem(error)}`);
       porCodigo = null;
     }
     const vistos = new Set<string>();
@@ -338,5 +343,5 @@ async function vincularOrigemEmLote(
       avisarFalha("catalogo_ponte", "upsert", linhas.length, runId, error);
     }
   }
-  return erros;
+  return avisos;
 }

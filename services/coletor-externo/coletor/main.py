@@ -36,7 +36,7 @@ import sys
 
 import json
 
-from . import compras_itens_contratacao, compras_precos, perfil_precos
+from . import compras_itens_contratacao, compras_pgc, compras_precos, perfil_precos
 from .destino import Armazenamento, Supabase, drenar_licitacao_match, env, parece_html, sha256
 from .proveniencia import ORIGENS
 from .portal import (SECOES_CONTRATACAO, ArquivoGrande, PortalSestSenat, encerrado, no_escopo_fitness,
@@ -250,9 +250,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dry-run", action="store_true", help="só consulta as fontes; não grava nada")
     ap.add_argument("--origem", choices=list(ORIGENS), default="manual",
                     help="origem da ingestão gravada em cada linha (spec 0023): cron ou manual (padrão)")
-    ap.add_argument("--coleta", default="todas", choices=["sestsenat", "precos", "todas", "perfil-precos"],
-                    help="o que rodar: sestsenat, precos (Pesquisa de Preço, modo catálogo), todas (padrão) ou "
-                         "perfil-precos (spec 0037: rótulo 'fora do perfil'; não entra em 'todas')")
+    ap.add_argument("--coleta", default="todas", choices=["sestsenat", "precos", "todas", "perfil-precos", "pgc"],
+                    help="o que rodar: sestsenat, precos (Pesquisa de Preço, modo catálogo), todas (padrão), "
+                         "perfil-precos (spec 0037: rótulo 'fora do perfil'; não entra em 'todas') ou "
+                         "pgc (spec 0057: PCA do PGC, ano corrente e seguinte; não entra em 'todas')")
     # Rodada pontual de preços. nargs="+" porque o gcloud separa --args por vírgula:
     #   --args="--coleta,precos,--pdms,6762,3672"  =>  --pdms 6762 3672
     ap.add_argument("--pdms", nargs="+", type=int, help="Pesquisa de Preço só destes PDMs (em vez do catálogo)")
@@ -282,6 +283,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.coleta == "perfil-precos":
         return 0 if coletar_perfil_precos(args) else 1
+    if args.coleta == "pgc":
+        return compras_pgc.executar(["--dry-run"] if args.dry_run else [])
 
     roda_sestsenat = args.coleta in ("sestsenat", "todas")
     roda_precos = args.coleta in ("precos", "todas")

@@ -3,7 +3,16 @@
 <!-- Documento guarda-chuva. Toda spec nova aponta para uma fase daqui. Mudança neste arquivo exige ok do Marcelo. -->
 
 - **Dono:** Marcelo Rosas
-- **Spec-mãe em execução:** `specs/0032-agentes-dentro-da-tarefa.md`
+- **Situação:** **em revisão desde 11/11/2026** (ok do Marcelo). O produto passa a se organizar em coleta → trilhas →
+  Sala de agentes (`docs/produto/TRILHAS-E-INFORME.md`), e a tabela de módulos e a regra de foco abaixo não refletem
+  isso. Até a revisão terminar:
+  - **suspensa:** a regra de foco (spec nova só se alimentar a 0032). Spec nova diz qual etapa de
+    `TRILHAS-E-INFORME.md` alimenta;
+  - **continua valendo:** objetivo, "Fora de escopo", "Fontes de dados" e "Decisões registradas";
+  - **a revisar:** a spec-mãe (proposta: `TRILHAS-E-INFORME.md` como documento-mãe, com a 0032 como a sala "Leitura do
+    edital"), a tabela de módulos (por sala e etapa), a regra de foco nova e o trecho do `CLAUDE.md` que cita a 0032
+    como spec-mãe.
+- **Spec-mãe em execução:** `specs/0032-agentes-dentro-da-tarefa.md` (em revisão, ver acima)
 - **Revisão:** a cada spec fechada (skill `ciclo-janelas`)
 
 ## Objetivo final
@@ -30,7 +39,7 @@ Fornecedor de equipamentos de musculação que disputa licitações públicas. C
 | 9 | Preços e BI | preço, marca e fornecedor de compra homologada | 0009, 0014, 0031 (citada na 0032; o arquivo ainda não está na `main`) | no ar; a 0031 alimenta a fase 3 da 0032 |
 | 10 | Robô de lances | extensão no navegador do operador logado; lance por regra determinística dentro do piso, com o valor final mínimo nativo como rede de segurança | 0039 (`parada`) | depois da fase 3 da 0032 |
 
-**Regra de foco:** enquanto a 0032 não terminar a fase 3, spec nova só entra se alimentar uma fase da 0032.
+**Regra de foco (suspensa em 11/11/2026, ver "Situação"):** enquanto a 0032 não terminar a fase 3, spec nova só entra se alimentar uma fase da 0032.
 As outras ficam com status `parada` e uma linha nesta tabela.
 
 ## Evidência da decisão "TR primeiro" (20/10)
@@ -58,6 +67,7 @@ Detalhe em `AGENTS.md`.
 | 19/10 | Agentes só no botão "Analisar"; admin e operação aprovam; caso de aceite #3558 (controle #3641) |
 | 20/10 | Academia ao ar livre fora de escopo (confirmado); "ar livre" desqualifica o item pelo texto do TR/edital |
 | até 20/10 | Portal oficial é a fonte primária; PNCP é alternativa |
+| 11/11 | `ESCOPO.md` em revisão; regra de foco suspensa; produto organizado por `TRILHAS-E-INFORME.md` (coleta → trilhas → Sala de agentes). Informe só na tela, na atividade da Sala de agentes |
 | 20/10 | Produto multi-tenant, configurado por metadados na interface, não por código |
 | 20/10 | Catálogo do tenant por CSV de layout único (colunas aprovadas, atributos como `atr:<nome>`), em `/configuracoes/catalogo` |
 | 20/10 | Catálogo, escopo CATMAT e ficha de produto ficam em `/configuracoes` |

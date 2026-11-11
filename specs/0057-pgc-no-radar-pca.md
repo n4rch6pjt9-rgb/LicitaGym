@@ -1,6 +1,6 @@
 # 0057: Pôr o PGC no ar e mostrar seus dados no radar da rota PCA
 
-- **Status:** aprovada (11/11/2026)
+- **Status:** em implementação (aprovada em 11/11/2026)
 - **Alimenta:** etapa 1 (coleta) de `docs/produto/TRILHAS-E-INFORME.md`; módulo 1 de `docs/produto/ESCOPO.md` (Radar de
   oportunidades: demanda planejada). O `ESCOPO.md` está em revisão desde 11/11/2026 com a regra de foco suspensa.
   Complementa a spec 0056 (PCA em camadas, lado PNCP); não depende dela.
@@ -81,8 +81,8 @@ Medido em 11/11/2026 (API ao vivo e banco de produção, só leitura):
 | CA-1 | K-1 | **Dado** uma página da API com a mesma chave em três linhas (`dataHoraAtualizacaoItem` 09/05, 12/06 e 12/06 com artefato mais novo) e outra chave única, **quando** o coletor grava, **então** envia 2 linhas ao upsert, a escolhida é a de artefato mais novo, e a execução registra 2 gravados e 2 repetidos descartados (regressão do lote que falharia) | pytest `services/coletor-externo/tests/test_compras_pgc.py` |
 | CA-2 | K-1 | **Dado** `--coleta pgc` sem `--anos` em 11/11/2026, **quando** o Job roda com a API simulada, **então** consulta 2026 e 2027 nas classes 7830 e 7220 com `tipo=Material` (nunca `M`), e uma resposta 400 de uma classe faz o Job sair com código 1 e registrar o erro da classe | pytest `test_compras_pgc.py` |
 | CA-3 | K-2 | **Dado** os papéis `anon` e `authenticated`, **quando** leem `v_bi_pca_radar` por PostgREST, **então** recebem erro de permissão; `service_role` lê; o índice `orgaos (cnpj)` existe; a migration roda duas vezes sem erro | SQL `supabase/tests/pca_radar_pgc_campos_check.sql` |
-| CA-4 | K-2 | **Dado** um item do PGC gravado duas vezes com DFDs diferentes e um item do PNCP que também está no PGC, **quando** se lê a view, **então** o primeiro aparece uma vez com `titulo_projeto`, `objeto_dfd`, `unidade_fornecimento` e `data_inicio_processo` iguais aos gravados, e o segundo aparece uma vez (fonte PNCP, regra atual) | SQL `pca_radar_pgc_campos_check.sql` |
-| CA-5 | K-3 | **Dado** um usuário de outra empresa cujo catálogo não tem o PDM do item, ou uma chamada sem sessão, **quando** pede o radar, **então** o item não vem (outra empresa) e a chamada sem sessão recebe 401 antes de qualquer cliente `service_role` | Deno `tests/supabase/functions/api_pncp_pca_radar_test.ts` |
+| CA-4 | K-2 | **Dado** um item do PGC gravado duas vezes com DFDs diferentes e um item do PNCP que também está no PGC, **quando** se lê a view, **então** o primeiro aparece uma vez com `titulo_projeto`, `objeto_dfd`, `unidade_fornecimento` e `data_inicio_processo` iguais aos gravados, e o segundo aparece uma vez, com fonte PGC (regra atual: o PGC prevalece) | SQL `pca_radar_pgc_campos_check.sql` |
+| CA-5 | K-3 | **Dado** uma chamada sem sessão válida, **quando** pede o radar com os parâmetros novos (`data_base`), **então** recebe 401 antes de qualquer cliente `service_role` (o radar não filtra por empresa: escopo global de `catalogo_catmat_pdms_efetivos()`, PCA é dado público) | Deno `tests/supabase/functions/api_pncp_pca_radar_test.ts` |
 | CA-6 | K-3 | **Dado** um item com formalização em 2026-04 e início do processo em 2026-11, **quando** o radar é chamado com `mes_de=2026-11` e `data_base=inicio_processo`, **então** o item vem; com `data_base=formalizacao` (ou sem o parâmetro), não vem; `data_base=xyz` responde 400 | Deno `api_pncp_pca_radar_test.ts` |
 | CA-7 | K-4 | **Dado** a última execução com sucesso de `compras_pgc` há 9 dias, **quando** se lê a saúde, **então** `pgc_dias_sem_coleta = 9` e o nível é crítico | SQL `supabase/tests/saude_pgc_check.sql` |
 | CA-8 | K-5 | **Dado** o radar devolvendo um item PGC com quantidade 20 e unidade `M2`, **quando** a tela renderiza, **então** a linha mostra "20 M2", o título do projeto, o nome do PDM e a janela do processo, o objeto do DFD aparece só
@@ -148,6 +148,8 @@ no detalhe expandido e nenhum status de execução aparece; o seletor de ano ofe
   detalhe expandido. Status de execução não aparece (P-2).
 
 - 11/11/2026: spec aprovada ("Aprovo, abre PR").
+- 11/11/2026, na implementação: CA-4 corrigido (o PGC prevalece, como a view atual já faz) e CA-5 sem a parte "outra
+  empresa" (o radar não filtra por tenant; filtro por empresa vira spec própria).
 
 ## Perguntas em aberto
 

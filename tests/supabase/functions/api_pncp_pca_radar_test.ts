@@ -358,3 +358,66 @@ Deno.test("CA-3: mes_de filtra a partir do mês (inclusive) e deixa de fora item
   assertEquals(body.itens.map((i: Linha) => i.numero_item_pncp), [1]);
   assertEquals(body.total, 1);
 });
+
+// Spec specs/0057-pgc-no-radar-pca.md (K-3): campos de retorno do PGC e data_base.
+const PGC = [
+  linha({
+    fonte: "pgc", numero_item_pncp: 21, data_prevista: "2026-04-30", mes_previsto: "2026-04",
+    data_formalizacao_demanda: "2026-04-30", data_inicio_processo: "2026-11-18", mes_inicio_processo: "2026-11",
+    data_fim_processo: "2026-12-16", duracao_processo_dias: 28, titulo_projeto: "Aquisição de Piso Sintético",
+    objeto_dfd: "Piso sintético", unidade_fornecimento: "M2", nome_pdm: "PISO SINTÉTICO", status_execucao_codigo: "11",
+  }),
+  linha({ fonte: "pncp", numero_item_pncp: 22, data_prevista: "2026-12-01", mes_previsto: "2026-12",
+          mes_inicio_processo: null }),
+];
+
+Deno.test("0057 CA-5: sem sessão, a chamada com data_base recebe 401 antes de qualquer cliente service_role", async () => {
+  const [r, u] = req("&ano=2026&mes_de=2026-11&data_base=inicio_processo");
+  let clientes = 0;
+  const res = await responderRadar(r, u, {
+    requireAuth: () => Promise.resolve(new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 })),
+    criarCliente: () => {
+      clientes++;
+      return criarFake(PGC).client;
+    },
+  });
+  assertEquals(res.status, 401);
+  assertEquals(clientes, 0);
+});
+
+Deno.test("0057 CA-6: data_base=inicio_processo filtra pelo início do processo; padrão é a formalização", async () => {
+  const inicio = await chamar("&ano=2026&mes_de=2026-11&data_base=inicio_processo", PGC);
+  assertEquals(inicio.res.status, 200);
+  assertEquals(inicio.body.itens.map((i: Linha) => i.numero_item_pncp), [21]);
+  assert(inicio.chamadas.some((c) => c.metodo === "gte" && c.args[0] === "mes_inicio_processo"));
+
+  const padrao = await chamar("&ano=2026&mes_de=2026-11", PGC);
+  assertEquals(padrao.body.itens.map((i: Linha) => i.numero_item_pncp), [22]);
+  const formal = await chamar("&ano=2026&mes_de=2026-11&data_base=formalizacao", PGC);
+  assertEquals(formal.body.itens.map((i: Linha) => i.numero_item_pncp), [22]);
+
+  const mes = await chamar("&ano=2026&mes=2026-11&data_base=inicio_processo", PGC);
+  assertEquals(mes.body.itens.map((i: Linha) => i.numero_item_pncp), [21]);
+});
+
+Deno.test("0057 CA-6: data_base inválido responde 400 com mensagem", async () => {
+  const { res, body, clientes } = await chamar("&ano=2026&data_base=xyz", PGC);
+  assertEquals(res.status, 400);
+  assert(String(body.error).includes("data_base"));
+  assertEquals(clientes, 0);
+});
+
+Deno.test("0057 K-3: o radar devolve os campos de retorno do PGC e o status só como código", async () => {
+  const { body, chamadas } = await chamar("&ano=2026&fonte=pgc", PGC);
+  const sel = String(chamadas.find((c) => c.metodo === "select" && String(c.args[0]).includes("fonte"))?.args[0]);
+  for (const col of ["nome_pdm", "nome_classe", "unidade_fornecimento", "titulo_projeto", "descricao_projeto",
+    "objeto_dfd", "data_formalizacao_demanda", "data_inicio_processo", "data_fim_processo", "duracao_processo_dias",
+    "artefato", "atualizado_na_fonte_em", "status_execucao_codigo", "mes_inicio_processo"]) {
+    assert(sel.includes(col), `select sem ${col}`);
+  }
+  const item = body.itens[0];
+  assertEquals(item.titulo_projeto, "Aquisição de Piso Sintético");
+  assertEquals(item.unidade_fornecimento, "M2");
+  assertEquals(item.status_execucao_codigo, "11");
+  assertEquals(item.status_execucao_rotulo, undefined);
+});

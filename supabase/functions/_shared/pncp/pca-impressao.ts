@@ -1,5 +1,7 @@
 import { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { enfileirar, inativarAusenteNoEscopo, type ItemFila, type OpcoesHttp } from "./pca-fila.ts";
+import { BudgetExhaustedError } from "./retry.ts";
+import { RateLimitPauseError } from "../http-client/index.ts";
 
 /**
  * Spec 0056, camada 1: impressão digital de cada plano, lida por órgão em
@@ -11,7 +13,10 @@ import { enfileirar, inativarAusenteNoEscopo, type ItemFila, type OpcoesHttp } f
  *   404 numa página depois de uma página cheia é o fim da lista (medido em 11/11/2026).
  * - Plano gravado que não veio numa leitura completa do órgão: na primeira vez, aviso `pca_removido` "a confirmar";
  *   na segunda leitura seguida, inativa os itens do escopo (e o plano, se não sobrar item ativo). P-4.
- * - Exceção na requisição (429, 5xx depois das tentativas, orçamento) é pausa: a leitura para sem marcar o órgão.
+ * - Cota (429) ou fim do orçamento: pausa, a leitura para sem marcar o órgão. 5xx persistente de um órgão: erro do
+ *   órgão e a rotina segue; três órgãos seguidos com exceção são tratados como queda geral (pausa).
+ * - Órgão com exatamente 50, 100… planos nunca conta ausência: a página seguinte responde 404 e a lista não é
+ *   tomada como completa.
  */
 
 type Row = Record<string, unknown>;
@@ -148,12 +153,28 @@ function mesmoNumero(a: unknown, b: unknown): boolean {
   return x === null || y === null ? x === y : Math.abs(x - y) < 0.005;
 }
 
-/** Plano sem impressão anterior ou com data, quantidade ou valor diferente (CA-4). */
+/**
+ * Plano sem impressão anterior, com data, quantidade ou valor diferente (CA-4), ou que estava ausente: o plano que volta
+ * depois de inativado por ausência precisa ser recarregado mesmo sem mudança na fonte.
+ */
 export function planoMudou(anterior: Row | undefined, lido: PlanoImpresso): boolean {
   return !anterior || (anterior.quantidade == null && anterior.data_atualizacao == null) ||
+    Number(anterior.ausente_leituras ?? 0) > 0 ||
     !mesmoInstante(anterior.data_atualizacao, lido.data_atualizacao) ||
     !mesmoNumero(anterior.quantidade, lido.quantidade) ||
     !mesmoNumero(anterior.valor_total, lido.valor_total);
+}
+
+/** Lê todas as linhas de uma consulta, em páginas de 1.000 (max-rows do PostgREST). */
+async function lerPaginado(consulta: (de: number, ate: number) => PromiseLike<{ data: unknown; error: unknown }>) {
+  const linhas: Row[] = [];
+  for (let de = 0;; de += PAGINA_BANCO) {
+    const { data, error } = await consulta(de, de + PAGINA_BANCO - 1);
+    if (error) throw error;
+    const pagina = (data ?? []) as Row[];
+    linhas.push(...pagina);
+    if (pagina.length < PAGINA_BANCO) return linhas;
+  }
 }
 
 /** CNPJs distintos dos planos gravados no ano. */
@@ -178,10 +199,11 @@ function inicioDoDiaBrasilia(agora = new Date()): number {
 
 /** Ordem de leitura: órgão nunca lido primeiro, depois a leitura mais antiga; quem já foi lido hoje fica de fora. */
 async function ordenarOrgaos(client: SupabaseClient, ano: number, cnpjs: string[], pularLidosHoje: boolean) {
-  const { data, error } = await client.schema("private").from("pca_impressao_orgao")
-    .select("orgao_cnpj, lido_em").eq("ano", ano);
-  if (error) throw error;
-  const lidoEm = new Map(((data ?? []) as Row[]).map((r) => [String(r.orgao_cnpj), Date.parse(String(r.lido_em))]));
+  const linhas = await lerPaginado((de, ate) =>
+    client.schema("private").from("pca_impressao_orgao").select("orgao_cnpj, lido_em").eq("ano", ano)
+      .order("orgao_cnpj").range(de, ate)
+  );
+  const lidoEm = new Map(linhas.map((r) => [String(r.orgao_cnpj), Date.parse(String(r.lido_em))]));
   const hoje = inicioDoDiaBrasilia();
   return cnpjs
     .filter((c) => !pularLidosHoje || !(Number(lidoEm.get(c)) >= hoje))
@@ -205,11 +227,13 @@ async function processarOrgao(
 ) {
   const { ano, classes, runId } = opts;
   const agora = new Date().toISOString();
-  const { data: ant, error: eAnt } = await client.schema("private").from("pca_impressao_plano")
-    .select("sequencial, quantidade, valor_total, data_atualizacao, ausente_leituras")
-    .eq("orgao_cnpj", cnpj).eq("ano", ano);
-  if (eAnt) throw eAnt;
-  const anteriores = new Map(((ant ?? []) as Row[]).map((r) => [Number(r.sequencial), r]));
+  const ant = await lerPaginado((de, ate) =>
+    client.schema("private").from("pca_impressao_plano")
+      .select("sequencial, quantidade, valor_total, data_atualizacao, numero_controle_pncp, ausente_leituras, lido_em")
+      .eq("orgao_cnpj", cnpj).eq("ano", ano).order("sequencial").range(de, ate)
+  );
+  const anteriores = new Map(ant.map((r) => [Number(r.sequencial), r]));
+  const hoje = inicioDoDiaBrasilia();
 
   const fila: ItemFila[] = planos.filter((p) => planoMudou(anteriores.get(p.sequencial), p)).map((p) => ({
     id_pca_pncp: p.numero_controle_pncp,
@@ -224,13 +248,21 @@ async function processarOrgao(
   }));
 
   // Ausentes: planos ativos gravados do órgão que não vieram nesta leitura completa.
-  const { data: gravados, error: eGrav } = await client.from("pca_planos")
-    .select("id, id_pca_pncp, numero_plano, ativo").eq("orgao_cnpj", cnpj).eq("ano_exercicio", ano);
-  if (eGrav) throw eGrav;
+  const gravados = await lerPaginado((de, ate) =>
+    client.from("pca_planos").select("id, id_pca_pncp, numero_plano, ativo").eq("orgao_cnpj", cnpj)
+      .eq("ano_exercicio", ano).order("id").range(de, ate)
+  );
   const lidos = new Set(planos.map((p) => p.sequencial));
-  // Só leitura terminada numa página parcial prova ausência (erro nunca vira vazio).
-  const ausentes = !completa ? [] : ((gravados ?? []) as Row[])
-    .filter((p) => p.ativo !== false && numero(p.numero_plano) !== null && !lidos.has(Number(p.numero_plano)));
+  // Só leitura terminada numa página parcial prova ausência (erro nunca vira vazio), e só para plano que já apareceu
+  // numa impressão: plano que a rota nunca listou não é tomado como removido (a cobertura da rota frente à consulta
+  // /v1/pca/ só foi medida num órgão).
+  const ausentes = !completa ? [] : gravados.filter((p) => {
+    if (p.ativo === false || numero(p.numero_plano) === null || lidos.has(Number(p.numero_plano))) return false;
+    const anterior = anteriores.get(Number(p.numero_plano));
+    if (!anterior?.numero_controle_pncp) return false;
+    // Ausência já contada hoje (releitura do mesmo dia depois de falha no meio): não conta de novo (P-4).
+    return !(Number(anterior.ausente_leituras ?? 0) > 0 && Date.parse(String(anterior.lido_em)) >= hoje);
+  });
 
   const impressoes: Row[] = planos.map((p) => ({
     orgao_cnpj: cnpj,
@@ -247,13 +279,14 @@ async function processarOrgao(
     sync_run_id: runId,
   }));
 
-  // Impressão antes da fila: a carga confere a quantidade lida com a impressão gravada (CA-5).
+  // Fila antes da impressão: se a gravação da impressão falhar, a releitura ainda vê a mudança e enfileira de novo
+  // (o enfileiramento é idempotente). O contrário perderia a mudança.
+  if (fila.length > 0) stats.enfileirados += await enfileirar(client, fila);
   for (let i = 0; i < impressoes.length; i += 500) {
     const { error } = await client.schema("private").from("pca_impressao_plano")
       .upsert(impressoes.slice(i, i + 500), { onConflict: "orgao_cnpj,ano,sequencial" });
     if (error) throw error;
   }
-  if (fila.length > 0) stats.enfileirados += await enfileirar(client, fila);
 
   for (const p of ausentes) {
     const sequencial = Number(p.numero_plano);
@@ -321,14 +354,22 @@ export async function executarImpressao(
   const candidatos = opts.orgaos ?? await orgaosDoAno(client, opts.ano);
   const orgaos = await ordenarOrgaos(client, opts.ano, candidatos, opts.orgaos === undefined);
   let i = 0;
+  let excecoesSeguidas = 0;
   for (; i < orgaos.length && i < opts.limiteOrgaos && !opts.prazoEsgotado(); i++) {
     const cnpj = orgaos[i];
     let leitura: Awaited<ReturnType<typeof lerImpressaoOrgao>>;
     try {
       leitura = await lerImpressaoOrgao(integracao, cnpj, opts.ano, { ...opts.http, syncRunId: opts.runId });
+      excecoesSeguidas = 0;
     } catch (error) {
-      stats.pausa = `${cnpj}: ${error instanceof Error ? error.message : String(error)}`.slice(0, 500);
-      break;
+      const mensagem = `${cnpj}: ${error instanceof Error ? error.message : String(error)}`.slice(0, 500);
+      // Cota, orçamento ou queda geral (três órgãos seguidos): pausa sem marcar o órgão; o próximo disparo retoma.
+      if (error instanceof RateLimitPauseError || error instanceof BudgetExhaustedError || ++excecoesSeguidas >= 3) {
+        stats.pausa = mensagem;
+        break;
+      }
+      // Um órgão com 5xx persistente vira erro dele e a rotina segue (CA-3): não trava os demais.
+      leitura = { ok: false, erro: mensagem };
     }
     if (!leitura.ok) {
       await registrarOrgao(client, {

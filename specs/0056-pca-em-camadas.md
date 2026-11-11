@@ -221,3 +221,18 @@ Como ficou cada ponto que a spec deixou ao código:
   reconciliação mensal ficam com `active = false` (rollback: religar).
 - **Testes antigos ajustados ao contrato novo:** `REG-PCA-misto` (classe de 3 dígitos sem tipo de serviço agora é
   aviso, o plano segue) e os dois de falha de leitura do catálogo em `sync_pncp_pca_lote_test.ts` (aviso, não erro).
+- **Depois dos revisores (11/11/2026):**
+  - um órgão com 5xx persistente vira erro dele e a rotina segue; três órgãos seguidos com exceção são queda geral
+    (pausa);
+  - a fila é gravada antes da impressão, para uma falha não apagar a mudança;
+  - plano que volta depois de ausente é sempre reenfileirado;
+  - a ausência só conta uma vez por dia, só para plano que já apareceu numa impressão e só com lista terminada em
+    página parcial (404 depois de página cheia ou página 1 vazia não provam ausência).
+- **Primeira impressão = recarga P-5 inteira:** sem impressão anterior, todo plano dos órgãos conhecidos entra na fila
+  no primeiro disparo (05:00 UTC do dia seguinte ao merge), não em fatias. A continuação da carga processa 60 planos
+  por execução.
+- **Pendente de ok do Marcelo (desvios do texto da spec):**
+  - K-3 pede "classe desconhecida gravada com o valor original": o valor vai no aviso da fila (até 500 caracteres) e
+    inteiro em `source_record`, não numa coluna;
+  - K-1 diz "leitura só `service_role`" para as colunas novas, mas `public.pca_alteracoes` e `public.pca_itens` já são
+    legíveis por `authenticated` (policy `using (true)`). As colunas novas (dado público de PCA) seguem a tabela.

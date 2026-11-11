@@ -2,7 +2,7 @@
 // CA-2 (paginação), CA-3 (404 na página 1 é erro do órgão), CA-4 (o que entra na fila; removido "a confirmar"),
 // CA-8 (consulta /v1/pca/ fora do ar não para a impressão) e CA-9 (sem token de cron = 401).
 // Valores fictícios; CNPJs sintéticos.
-import { assert, assertEquals } from "jsr:@std/assert@1";
+import { assert, assertEquals, assertRejects } from "jsr:@std/assert@1";
 import { FakePostgrest } from "./_shared/pncp/_fake_postgrest.ts";
 import {
   cabecalhoDaImpressao,
@@ -154,6 +154,7 @@ Deno.test("0056 CA-4: entram na fila só o plano novo e os alterados (data ou va
     quantidade: 10,
     valor_total: 1000,
     data_atualizacao: "2026-10-01T10:00:00",
+    numero_controle_pncp: `${ORGAO_A}-0-${String(seq).padStart(6, "0")}/${ANO}`,
     ausente_leituras: 0,
     ...extra,
   });
@@ -201,7 +202,8 @@ Deno.test("0056 CA-4 (P-4): fora em duas leituras seguidas inativa o plano e os 
     { orgao_cnpj: ORGAO_A, ano: ANO, sequencial: 1, quantidade: 10, valor_total: 1000,
       data_atualizacao: "2026-10-01T10:00:00", ausente_leituras: 0 },
     { orgao_cnpj: ORGAO_A, ano: ANO, sequencial: 9, quantidade: 10, valor_total: 1000,
-      data_atualizacao: "2026-10-01T10:00:00", ausente_leituras: 1 },
+      data_atualizacao: "2026-10-01T10:00:00", ausente_leituras: 1, lido_em: "2026-01-01T08:00:00Z",
+      numero_controle_pncp: `${ORGAO_A}-0-000009/${ANO}` },
   ]);
   db.rows("pca_itens").push({
     id: "item-9",
@@ -315,4 +317,86 @@ Deno.test("0056: página 1 vazia não marca os planos gravados como ausentes", a
   });
   assertEquals(s.removidos_a_confirmar, 0);
   assertEquals(db.rows("pca_alteracoes").length, 0);
+});
+
+const opcoes = { ano: ANO, classes: ["7830"], limiteOrgaos: 10, prazoEsgotado: nunca, runId: RUN };
+
+Deno.test("0056 CA-3: órgão com 5xx persistente vira erro dele e a rotina lê o próximo", async () => {
+  const db = banco([plano(ORGAO_A, 1), plano(ORGAO_B, 1)]);
+  const base = integracaoFake({ [ORGAO_B]: [linhaImpressao(ORGAO_B, 1)] });
+  const integ = {
+    getPcaConsolidadoUnidades: (cnpj: string, ano: number, pagina: number, tamanho: number) =>
+      cnpj === ORGAO_A
+        ? Promise.reject(new Error("PNCP integração HTTP 503"))
+        : base.getPcaConsolidadoUnidades(cnpj, ano, pagina, tamanho),
+  };
+  const s = await executarImpressao(db as never, integ, opcoes);
+  assertEquals([s.orgaos_erro, s.orgaos_lidos, s.pausa], [1, 1, null]);
+  assert(String(db.rows("pca_impressao_orgao").find((r) => r.orgao_cnpj === ORGAO_A)?.erro).includes("503"));
+  assertEquals(db.rows("pca_plano_fila").length, 1);
+});
+
+Deno.test("0056: três órgãos seguidos com exceção é queda geral: pausa sem marcar o terceiro", async () => {
+  const c = ["99000003000103", "99000004000104", "99000005000105"];
+  const db = banco(c.map((x) => plano(x, 1)));
+  const integ = { getPcaConsolidadoUnidades: () => Promise.reject(new Error("PNCP integração HTTP 503")) };
+  const s = await executarImpressao(db as never, integ, opcoes);
+  assert(s.pausa?.includes("503"));
+  assertEquals(s.orgaos_erro, 2);
+  assertEquals(s.restantes, 1);
+});
+
+Deno.test("0056: plano inativado por ausência que volta igual entra de novo na fila", async () => {
+  const db = banco([plano(ORGAO_A, 1)], [{
+    orgao_cnpj: ORGAO_A, ano: ANO, sequencial: 1, quantidade: 10, valor_total: 1000,
+    data_atualizacao: "2026-10-01T10:00:00", numero_controle_pncp: `${ORGAO_A}-0-000001/${ANO}`,
+    ausente_leituras: 2, lido_em: "2026-01-01T08:00:00Z",
+  }]);
+  const s = await executarImpressao(db as never, integracaoFake({ [ORGAO_A]: [linhaImpressao(ORGAO_A, 1)] }), opcoes);
+  assertEquals(s.enfileirados, 1);
+  assertEquals(db.rows("pca_impressao_plano")[0].ausente_leituras, 0);
+});
+
+Deno.test("0056: falha ao enfileirar não grava a impressão; a releitura enfileira de novo", async () => {
+  const db = banco([plano(ORGAO_A, 1)]);
+  const enfileirarOk = db.rpcs.pca_fila_enfileirar;
+  db.rpcs.pca_fila_enfileirar = () => {
+    throw new Error("timeout");
+  };
+  const integ = integracaoFake({ [ORGAO_A]: [linhaImpressao(ORGAO_A, 1), linhaImpressao(ORGAO_A, 2)] });
+  await assertRejects(() => executarImpressao(db as never, integ, opcoes));
+  assertEquals(db.rows("pca_impressao_plano").length, 0);
+  db.rpcs.pca_fila_enfileirar = enfileirarOk;
+  const s = await executarImpressao(db as never, integ, opcoes);
+  assertEquals(s.enfileirados, 2);
+});
+
+Deno.test("0056 (P-4): releitura no mesmo dia não conta a ausência de novo nem inativa", async () => {
+  const db = banco([plano(ORGAO_A, 1), plano(ORGAO_A, 9)], [{
+    orgao_cnpj: ORGAO_A, ano: ANO, sequencial: 9, quantidade: 10, valor_total: 1000,
+    data_atualizacao: "2026-10-01T10:00:00", numero_controle_pncp: `${ORGAO_A}-0-000009/${ANO}`,
+    ausente_leituras: 1, lido_em: new Date().toISOString(),
+  }]);
+  db.rows("pca_itens").push({
+    id: "item-9", pca_plano_id: `plano-${ORGAO_A}-9`, numero_item: 1, classe_material_servico: "7830", ativo: true,
+  });
+  const s = await executarImpressao(db as never, integracaoFake({ [ORGAO_A]: [linhaImpressao(ORGAO_A, 1)] }), opcoes);
+  assertEquals([s.removidos_a_confirmar, s.itens_inativados], [0, 0]);
+  assertEquals(db.rows("pca_itens")[0].ativo, true);
+});
+
+Deno.test("0056: plano que nunca apareceu numa impressão não é tomado como removido", async () => {
+  const db = banco([plano(ORGAO_A, 1), plano(ORGAO_A, 9)]);
+  const s = await executarImpressao(db as never, integracaoFake({ [ORGAO_A]: [linhaImpressao(ORGAO_A, 1)] }), opcoes);
+  assertEquals(s.removidos_a_confirmar, 0);
+  assertEquals(db.rows("pca_alteracoes").length, 0);
+});
+
+Deno.test("0056: órgão lido hoje fica de fora do disparo seguinte", async () => {
+  const db = banco([plano(ORGAO_A, 1), plano(ORGAO_B, 1)]);
+  db.rows("pca_impressao_orgao").push({ orgao_cnpj: ORGAO_A, ano: ANO, lido_em: new Date().toISOString() });
+  const integ = integracaoFake({ [ORGAO_A]: [linhaImpressao(ORGAO_A, 1)], [ORGAO_B]: [linhaImpressao(ORGAO_B, 1)] });
+  const s = await executarImpressao(db as never, integ, opcoes);
+  assertEquals(s.orgaos_lidos, 1);
+  assertEquals(integ.chamadas, [`${ORGAO_B}/2026/1`]);
 });

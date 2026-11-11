@@ -9,7 +9,7 @@ import { numeroOuAusente } from "../_shared/pcaLeading.ts";
 
 export const RADAR_VIEW = "v_bi_pca_radar";
 
-const COLUNAS = [
+const COLUNAS_BASE = [
   "fonte",
   "orgao_cnpj",
   "codigo_uasg",
@@ -28,13 +28,34 @@ const COLUNAS = [
   "numero_item_pncp",
   "casamento_confirmado",
   "metodo_identificacao",
-].join(", ");
+];
+
+// spec 0057: campos de retorno do PGC (nulos no PNCP quando a fonte não tem; status só como código, sem rótulo)
+const COLUNAS_PGC = [
+  "nome_pdm",
+  "nome_classe",
+  "unidade_fornecimento",
+  "titulo_projeto",
+  "descricao_projeto",
+  "objeto_dfd",
+  "data_formalizacao_demanda",
+  "data_inicio_processo",
+  "data_fim_processo",
+  "duracao_processo_dias",
+  "artefato",
+  "atualizado_na_fonte_em",
+  "status_execucao_codigo",
+  "mes_inicio_processo",
+];
+
+const COLUNAS = [...COLUNAS_BASE, ...COLUNAS_PGC].join(", ");
 
 /**
- * Desempate por TODAS as colunas da resposta (a view não tem id). Duas linhas que empatam em tudo são idênticas, então
- * trocar uma pela outra entre execuções não muda nem a página nem a soma.
+ * Desempate por todas as colunas base da resposta (a view não tem id). Elas incluem órgão, UASG, ano, item e número do
+ * item no PNCP, a chave do item nas duas fontes; duas linhas que empatam nelas são a mesma linha, então trocar uma pela
+ * outra entre execuções não muda nem a página nem a soma. As colunas da spec 0057 dependem dessa chave e não entram.
  */
-export const DESEMPATE = COLUNAS.split(", ").filter((c) => c !== "data_prevista" && c !== "valor_total");
+export const DESEMPATE = COLUNAS_BASE.filter((c) => c !== "data_prevista" && c !== "valor_total");
 
 const LIMIT_PADRAO = 20;
 const LIMIT_MAX = 100;
@@ -64,6 +85,8 @@ export interface RadarDeps {
 }
 
 type Ordem = "data" | "valor";
+/** Data usada por mes / mes_de: formalização da demanda (padrão, coluna mes_previsto) ou início do processo. */
+type DataBase = "formalizacao" | "inicio_processo";
 
 /** Erro de domínio que pode ir ao cliente (resultado não verificado). Qualquer outro erro vira mensagem genérica. */
 export class RadarNaoVerificado extends Error {}
@@ -79,6 +102,7 @@ interface RadarParams {
   valorMin: number | null;
   soConfirmados: boolean;
   ordem: Ordem;
+  dataBase: DataBase;
   page: number;
   limit: number;
 }
@@ -155,6 +179,11 @@ export function parseRadarParams(url: URL): RadarParams | { error: string } {
     return { error: "ordem inválida: use data ou valor" };
   }
 
+  const dataBaseRaw = q("data_base");
+  if (!vazio(dataBaseRaw) && !["formalizacao", "inicio_processo"].includes(dataBaseRaw!.trim())) {
+    return { error: "data_base inválida: use formalizacao ou inicio_processo" };
+  }
+
   const pageRaw = q("page");
   if (!vazio(pageRaw) && !/^[1-9]\d{0,5}$/.test(pageRaw!.trim())) return { error: "page inválida: use 1 ou mais" };
   const limitRaw = q("limit");
@@ -176,6 +205,7 @@ export function parseRadarParams(url: URL): RadarParams | { error: string } {
     valorMin: vazio(valorRaw) ? null : Number(valorRaw!.trim()),
     soConfirmados: !vazio(confRaw) && confRaw!.trim() === "true",
     ordem: vazio(ordemRaw) ? "data" : ordemRaw!.trim() as Ordem,
+    dataBase: vazio(dataBaseRaw) ? "formalizacao" : dataBaseRaw!.trim() as DataBase,
     page: vazio(pageRaw) ? 1 : Number(pageRaw!.trim()),
     limit: vazio(limitRaw) ? LIMIT_PADRAO : Number(limitRaw!.trim()),
   };
@@ -183,9 +213,11 @@ export function parseRadarParams(url: URL): RadarParams | { error: string } {
 
 function aplicarFiltros(q: RadarQuery, p: RadarParams): RadarQuery {
   q = q.eq("ano_pca", p.ano);
-  if (p.mes) q = q.eq("mes_previsto", p.mes);
-  // a partir do mês (inclusive); item sem mês previsto fica de fora quando o filtro está ativo
-  if (p.mesDe) q = q.gte("mes_previsto", p.mesDe);
+  // spec 0057: inicio_processo só existe no PGC; item sem a data fica de fora quando o filtro está ativo
+  const colMes = p.dataBase === "inicio_processo" ? "mes_inicio_processo" : "mes_previsto";
+  if (p.mes) q = q.eq(colMes, p.mes);
+  // a partir do mês (inclusive); item sem mês fica de fora quando o filtro está ativo
+  if (p.mesDe) q = q.gte(colMes, p.mesDe);
   if (p.pdm !== null) q = q.eq("codigo_pdm", p.pdm);
   if (p.orgaoCnpj) q = q.eq("orgao_cnpj", p.orgaoCnpj);
   if (p.orgaoNome) q = q.ilike("orgao_nome", `%${p.orgaoNome}%`);

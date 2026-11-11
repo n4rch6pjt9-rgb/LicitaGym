@@ -3,6 +3,7 @@
 // status da execução), CA-8 (inativação por plano; erro não inativa), CA-10 (ausente).
 import { assert, assertEquals, assertRejects } from "jsr:@std/assert@1";
 import { FakePostgrest } from "./_shared/pncp/_fake_postgrest.ts";
+import { instalarEventosPca } from "./_shared/pncp/_fake_pca_eventos.ts";
 import {
   ausenciaNoEscopo,
   descobrirPlanos,
@@ -2368,3 +2369,147 @@ for (const tipo of [1, undefined, null, 3, true]) {
     assertEquals(db.rows("pca_plano_fila")[0].status, "erro");
   });
 }
+
+// --- Spec 0056: conferência com a impressão, eventos (K-4), grupo de contratação, classe e vínculo como aviso ---
+
+const PLANO_KEY = `${CNPJ}/2026/4`;
+const optsCarga = { ano: ANO, limite: 10, prazoEsgotado: nunca, runId: RUN };
+const eventos = (db: FakePostgrest, desde = 0) =>
+  db.rows("pca_alteracoes").slice(desde).filter((a) => a.evento != null).map((a) => ({
+    evento: a.evento,
+    numero: (a.dados_novos as Row)?.numero_item ?? null,
+    campos: a.campos_alterados ?? null,
+    data_fonte: a.data_fonte ?? null,
+  }));
+
+async function bancoComItens(itens: Row[]) {
+  const db = banco();
+  instalarEventosPca(db);
+  await gravarPaginaPcaEmLote(db as never, [{ ...cabecalho(), itens: itens.map(itemIntegracaoParaConsulta) }], {
+    ano: ANO,
+    runId: "00000000-0000-0000-0000-000000000010",
+  });
+  return db;
+}
+
+Deno.test("0056 CA-5: quantidade da impressão diferente da leitura deixa o plano em erro, sem inativar nada", async () => {
+  const db = await bancoComItens([itemIntegracao(1), itemIntegracao(2)]);
+  db.rows("pca_impressao_plano").push({ orgao_cnpj: CNPJ, ano: ANO, sequencial: 4, quantidade: 629 });
+  enfileirarPlano(db, ID, 4, { motivo: "impressao" });
+  const desde = db.rows("pca_alteracoes").length;
+  // 628 itens, sem o 2; /itens/quantidade concorda com a leitura (628), a impressão não (629).
+  const lidos = Array.from({ length: 628 }, (_, i) => itemIntegracao(i + 3));
+  const s = await processarFila(db as never, integracaoFake({ [PLANO_KEY]: lidos }), optsCarga);
+  assertEquals([s.planos_feitos, s.planos_erro, s.itens_inativados], [0, 1, 0]);
+  const fila = db.rows("pca_plano_fila")[0];
+  assertEquals(fila.status, "erro");
+  assert(String(fila.erro).includes("629"), `erro sem a quantidade da impressão: ${fila.erro}`);
+  assertEquals(db.rows("pca_itens").filter((r) => r.ativo !== false).length, 2);
+  assertEquals(eventos(db, desde), []);
+});
+
+Deno.test("0056 CA-6: item atualizado (campos e data da fonte), detectado e removido; grupo gravado literal", async () => {
+  const item7 = { ...itemIntegracao(7), valorTotal: 1000, dataAtualizacao: "2026-10-01T10:00:00" };
+  const db = await bancoComItens([item7, itemIntegracao(9)]);
+  enfileirarPlano(db);
+  const desde = db.rows("pca_alteracoes").length;
+  const s = await processarFila(db as never, integracaoFake({
+    [PLANO_KEY]: [
+      { ...item7, valorTotal: 1200, dataAtualizacao: "2026-11-05T09:00:00" },
+      { ...itemIntegracao(8), grupoContratacaoCodigo: "158141-5/2026", grupoContratacaoNome: "Grupo de teste" },
+    ],
+  }), optsCarga);
+  assertEquals([s.planos_feitos, s.planos_erro], [1, 0]);
+  const ev = eventos(db, desde);
+  assertEquals(ev.filter((e) => e.evento === "item_atualizado"), [
+    { evento: "item_atualizado", numero: 7, campos: ["valor_total_estimado"], data_fonte: "2026-11-05T09:00:00" },
+  ]);
+  assertEquals(ev.filter((e) => e.evento === "item_detectado").map((e) => e.numero), [8]);
+  assertEquals(ev.filter((e) => e.evento === "item_removido").map((e) => e.numero), [9]);
+  assertEquals(ev.length, 3);
+  const itens = db.rows("pca_itens");
+  assertEquals(itens.find((r) => r.numero_item === 8)?.grupo_contratacao_codigo, "158141-5/2026");
+  assertEquals(itens.find((r) => r.numero_item === 8)?.grupo_contratacao_nome, "Grupo de teste");
+  assertEquals(itens.find((r) => r.numero_item === 7)?.grupo_contratacao_codigo, null);
+});
+
+Deno.test("0056 CA-7: saiu_escopo e entrou_escopo; classe '09' de serviço e 'Não se aplica.' não derrubam o plano", async () => {
+  const db = await bancoComItens([itemIntegracao(7), itemIntegracao(8)]);
+  // Leitura A: o item 8 sai do escopo (7830 → 7520).
+  enfileirarPlano(db);
+  const desdeA = db.rows("pca_alteracoes").length;
+  await processarFila(db as never, integracaoFake({
+    [PLANO_KEY]: [itemIntegracao(7), itemIntegracao(8, "7520")],
+  }), optsCarga);
+  assertEquals(eventos(db, desdeA).map((e) => [e.evento, e.numero]), [["saiu_escopo", 8]]);
+
+  // Leitura B: o 7 sai, o 8 volta; um item de serviço com classe "09" e um de material com "Não se aplica.".
+  enfileirarPlano(db);
+  const desdeB = db.rows("pca_alteracoes").length;
+  const s = await processarFila(db as never, integracaoFake({
+    [PLANO_KEY]: [
+      itemIntegracao(7, "7520"),
+      itemIntegracao(8),
+      { ...itemIntegracao(10, "09"), classificacaoCatalogoId: 2, nomeClassificacao: "Serviço" },
+      { ...itemIntegracao(11), classificacaoSuperiorCodigo: "Não se aplica." },
+    ],
+  }), optsCarga);
+  assertEquals([s.planos_feitos, s.planos_erro], [1, 0]);
+  const ev = eventos(db, desdeB).map((e) => [e.evento, e.numero]);
+  assertEquals(ev.sort(), [["entrou_escopo", 8], ["saiu_escopo", 7]]);
+  assertEquals(db.rows("pca_alteracoes").some((a) => a.evento === "item_removido"), false);
+  const fila = db.rows("pca_plano_fila").at(-1)!;
+  assertEquals(fila.status, "feito");
+  assert(String(fila.erro).startsWith("aviso:"), `sem aviso da classe desconhecida: ${fila.erro}`);
+  assert(String(fila.erro).includes("classe desconhecida") && String(fila.erro).includes("Não se aplica."));
+  assertEquals(db.rows("pca_itens").some((r) => r.numero_item === 10 || r.numero_item === 11), false);
+});
+
+Deno.test("0056 CA-7: classe desconhecida num item gravado como do escopo derruba o plano sem inativar", async () => {
+  const db = await bancoComItens([itemIntegracao(7), itemIntegracao(8)]);
+  enfileirarPlano(db);
+  const desde = db.rows("pca_alteracoes").length;
+  const s = await processarFila(db as never, integracaoFake({
+    [PLANO_KEY]: [itemIntegracao(7), { ...itemIntegracao(8), classificacaoSuperiorCodigo: "Não se aplica." }],
+  }), optsCarga);
+  assertEquals([s.planos_feitos, s.planos_erro, s.itens_inativados], [0, 1, 0]);
+  assertEquals(db.rows("pca_plano_fila")[0].status, "erro");
+  assert(String(db.rows("pca_plano_fila")[0].erro).includes("classe desconhecida"));
+  assertEquals(eventos(db, desde).filter((e) => e.evento === "item_removido" || e.evento === "saiu_escopo"), []);
+});
+
+Deno.test("0056 CA-10: catmat_pdms lido por codigo_pdm vincula o PDM e o plano termina 'feito' (regressão dos 140)", async () => {
+  const db = banco();
+  // "column catmat_pdms.id does not exist": qualquer ordenação por outra coluna que não codigo_pdm falha.
+  const from = db.from.bind(db);
+  db.from = ((t: string) => {
+    const b = from(t);
+    if (t === "catmat_pdms") {
+      const ordenar = b.order.bind(b);
+      b.order = (c: string) => {
+        if (c !== "codigo_pdm") db.falhas.push({ table: "catmat_pdms", op: "select" });
+        return ordenar(c);
+      };
+    }
+    return b;
+  }) as typeof db.from;
+  enfileirarPlano(db);
+  const s = await processarFila(db as never, integracaoFake({ [PLANO_KEY]: [itemIntegracao(1)] }), optsCarga);
+  assertEquals([s.planos_feitos, s.planos_erro], [1, 0]);
+  assertEquals(db.rows("pca_plano_fila")[0].erro ?? null, null);
+  assertEquals(db.rows("pca_item_pdm").length, 1);
+});
+
+Deno.test("0056 CA-10: falha na leitura do catálogo é aviso: plano 'feito' e a fila guarda tabela e mensagem", async () => {
+  const db = banco();
+  db.falhas.push({ table: "catmat_pdms", op: "select" });
+  enfileirarPlano(db);
+  const s = await processarFila(db as never, integracaoFake({ [PLANO_KEY]: [itemIntegracao(1)] }), optsCarga);
+  assertEquals([s.planos_feitos, s.planos_erro], [1, 0]);
+  const fila = db.rows("pca_plano_fila")[0];
+  assertEquals(fila.status, "feito");
+  assert(String(fila.erro).startsWith("aviso:"), `sem aviso: ${fila.erro}`);
+  assert(String(fila.erro).includes("catmat_pdms") && String(fila.erro).includes("falha injetada"));
+  assert(!String(fila.erro).includes("erro(s) na gravação em lote"));
+  assertEquals(db.rows("pca_itens").length, 1);
+});

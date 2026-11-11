@@ -31,6 +31,8 @@ export class FakePostgrest {
   falhas: Falha[] = [];
   /** linha que o banco rejeita: qualquer instrução que a escreva falha por inteiro. */
   falhaLinha: ((table: string, row: Row) => boolean) | null = null;
+  /** Imita um trigger AFTER UPDATE: chamado por linha alterada, com a linha antes e depois (spec 0056). */
+  aposUpdate: ((table: string, antes: Row, depois: Row) => void) | null = null;
   /** max-rows do PostgREST: limite de linhas por resposta de select. */
   maxRows = 1000;
   private seq = 0;
@@ -135,7 +137,11 @@ export class FakePostgrest {
       const alvo = all.filter(casa);
       const r = rejeita(alvo.map((x) => ({ ...x, ...(b.payload as Row) })));
       if (r) return r;
-      for (const r of alvo) Object.assign(r, structuredClone(b.payload as Row));
+      for (const r of alvo) {
+        const antes = structuredClone(r);
+        Object.assign(r, structuredClone(b.payload as Row));
+        this.aposUpdate?.(table, antes, r);
+      }
       return b.colunas ? this.formato(b, alvo.map((r) => projetar(r, b.colunas))) : { data: null, error: null };
     }
     // upsert

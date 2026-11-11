@@ -442,6 +442,24 @@ Flags: `--ids`, `--de/--ate`, `--modulo` (59 = pregão eletrônico), `--todos`
 qualquer parte (inclusive de uma linha do detalhe) faz o Job sair com código 1. Para um agendamento só de preços:
 `--args="--coleta,precos"`. A saúde operacional (`precos_dias_sem_coleta`) fica crítica com 8 dias sem gravar preço.
 
+**PGC no mesmo Job (spec 0057).** `--coleta pgc` roda `coletor.compras_pgc` (não entra em `todas`): PCA do
+Compras.gov (`2_consultarPgcDetalheCatalogo`, `tipo=Material`; o manual diz `M`, mas a API só aceita `Material`)
+do ano corrente e do seguinte, classes 7830 e 7220. Cada (ano, classe) é lido inteiro, deduplicado pela chave do
+upsert (a API repete a mesma chave em várias linhas; fica a de `dataHoraAtualizacaoItem` mais recente) e só então
+gravado em `public.pca_pgc_itens`. Classe com erro de leitura não grava nada e o Job sai com código 1; HTTP 400 não é
+repetido. `statusContratacaoExecucao` é código opaco (sem dicionário oficial), gravado como texto. A saúde
+(`pgc_dias_sem_coleta`) fica crítica com 8 dias sem gravar. Agendamento diário (do Marcelo), depois do primeiro
+`--dry-run` conferido:
+
+```bash
+gcloud run jobs execute coletor-precos --region $REGION --args="--coleta,pgc,--dry-run"   # conferir o resumo
+gcloud scheduler jobs create http coletor-pgc-diario --location $REGION --schedule "30 5 * * *" \
+  --time-zone "America/Sao_Paulo" \
+  --uri "https://run.googleapis.com/v2/projects/$PROJECT/locations/$REGION/jobs/coletor-precos:run" \
+  --http-method POST --oauth-service-account-email $SA \
+  --message-body '{"overrides":{"containerOverrides":[{"args":["--coleta","pgc"]}]}}'
+```
+
 ## Volume observado (piloto)
 
 Um pregão de registro de preços grande (8453-4/2025) tem 32 arquivos no processo

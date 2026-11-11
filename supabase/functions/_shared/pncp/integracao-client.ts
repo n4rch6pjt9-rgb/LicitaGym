@@ -114,6 +114,24 @@ export class PncpIntegracaoClient {
     );
   }
 
+  /**
+   * Planos do órgão no ano, um por unidade (spec 0056, camada 1). Pagina: a página depois da última responde 404
+   * "CNPJ do Órgão/Entidade inválido." (medido em 11/11/2026), por isso o status chega a quem chama.
+   */
+  async getPcaConsolidadoUnidades(
+    cnpj: string,
+    ano: number,
+    pagina: number,
+    tamanhoPagina: number,
+    options: UnifiedFetchOptions = {},
+  ) {
+    const params = new URLSearchParams({ pagina: String(pagina), tamanhoPagina: String(tamanhoPagina) });
+    return this.getJsonComStatus(
+      `/orgaos/${normalizeIntegracaoCnpj(cnpj)}/pca/${ano}/consolidado/unidades?${params}`,
+      { ...options, pagina },
+    );
+  }
+
   async getOrgao(cnpj: string) {
     return this.getJson(`/orgaos/${cnpj}`);
   }

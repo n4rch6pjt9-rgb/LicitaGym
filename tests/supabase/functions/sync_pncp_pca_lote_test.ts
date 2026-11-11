@@ -356,12 +356,14 @@ Deno.test("max-rows menor que o pedido preserva dados, vinculos e historico comp
   assertEquals(dadosPersistidos(b), dadosPersistidos(a));
   assertHistoricoRpc(b, antes, RUN);
 });
-Deno.test("falha na leitura do catálogo conta erro, não vincula e não aborta a página", async () => {
+// Spec 0056 (decisão de 11/11/2026): falha de vínculo com o catálogo é aviso, não erro de gravação.
+Deno.test("falha na leitura do catálogo vira aviso, não vincula e não aborta a página", async () => {
   const db = bancoInicial();
   db.falhas.push({ table: "catmat_pdms", op: "select" });
   const s = await gravarPaginaPcaEmLote(db as never, paginaSintetica(1, 4), { ano: 2026, runId: RUN });
   assertEquals(s.novos, 1 + 4);
-  assertEquals(s.erros, 1);
+  assertEquals(s.erros, 0);
+  assertEquals(s.avisos, ["catmat_pdms: falha injetada catmat_pdms.select"]);
   assertEquals(db.rows("pca_item_pdm").length, 0);
   assert(db.rows("catalogo_ponte").length > 0);
 });
@@ -495,7 +497,8 @@ Deno.test("REG-PDM-chave: falha em pagina intermediaria nao vira ausencia nem vi
   (pagina[0].itens as Row[])[1].pdmCodigo = "2641";
   const stats = await gravarPaginaPcaEmLote(db as never, pagina, { ano: 2026, runId: RUN });
   assert(segundaPaginaAtingida, "a falha deve ocorrer na segunda pagina, apos a primeira leitura valida");
-  assertEquals(stats.erros, 1);
+  assertEquals(stats.erros, 0);
+  assertEquals(stats.avisos, ["catmat_pdms: falha injetada na segunda pagina PDM"]);
   assertEquals(db.rows("pca_itens").length, 2);
   assertEquals(db.rows("pca_item_pdm"), []);
 });

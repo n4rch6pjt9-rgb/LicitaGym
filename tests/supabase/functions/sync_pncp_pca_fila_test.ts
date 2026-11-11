@@ -2355,18 +2355,25 @@ for (const tipo of [2, "2"]) {
 }
 
 for (const tipo of [1, undefined, null, 3, true]) {
-  Deno.test(`REG-PCA-misto: tres digitos sem tipo servico confirmado (${String(tipo)}) preserva dados`, async () => {
+  // Spec 0056 (K-3): classe fora do padrão vira "classe desconhecida" (aviso com o valor original) e o plano segue;
+  // antes da 0056 o plano inteiro caía em erro (39 planos parados em 11/11/2026).
+  Deno.test(`REG-PCA-misto: tres digitos sem tipo servico confirmado (${String(tipo)}) vira classe desconhecida`, async () => {
     const db = banco();
     await gravarPaginaPcaEmLote(db as never, [{ ...cabecalho(), itens: [itemConsulta(52)] }], { ano: ANO, runId: RUN });
-    const antes = structuredClone(db.rows("pca_itens"));
+    const antes = structuredClone(db.rows("pca_itens")).map(({ last_synced_at: _l, last_seen_sync_id: _s, ...r }) => r);
     enfileirarPlano(db);
     const invalido = { ...itemIntegracao(30, "546"), classificacaoCatalogoId: tipo };
     const stats = await processarFila(db as never, integracaoFake({
       [`${CNPJ}/2026/4`]: [invalido, itemIntegracao(52)],
     }), { ano: ANO, limite: 1, prazoEsgotado: nunca, runId: RUN });
-    assertEquals([stats.planos_feitos, stats.planos_erro], [0, 1]);
-    assertEquals(db.rows("pca_itens"), antes);
-    assertEquals(db.rows("pca_plano_fila")[0].status, "erro");
+    assertEquals([stats.planos_feitos, stats.planos_erro], [1, 0]);
+    assertEquals(
+      db.rows("pca_itens").map(({ last_synced_at: _l, last_seen_sync_id: _s, ...r }) => r),
+      antes,
+    );
+    const fila = db.rows("pca_plano_fila")[0];
+    assertEquals(fila.status, "feito");
+    assert(String(fila.erro).includes("classe desconhecida no item 30") && String(fila.erro).includes("546"));
   });
 }
 

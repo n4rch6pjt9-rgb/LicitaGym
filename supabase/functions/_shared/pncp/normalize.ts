@@ -291,7 +291,17 @@ export function normalizePcaItem(
     status: item.status ? String(item.status) : null,
     pdm_codigo_origem: item.pdmCodigo != null ? String(item.pdmCodigo).trim() || null : null,
     codigo_item_origem: item.codigoItem != null ? String(item.codigoItem).trim() || null : null,
+    // Spec 0056: literal do DTO (nulo quando ausente; nunca derivado). Chave plano → compra da 0013.
+    grupo_contratacao_codigo: textoOuNulo(item.grupoContratacaoCodigo),
+    grupo_contratacao_nome: textoOuNulo(item.grupoContratacaoNome),
+    data_atualizacao_origem: textoOuNulo(item.dataAtualizacao),
   };
+}
+
+function textoOuNulo(v: unknown): string | null {
+  if (v == null) return null;
+  const t = String(v).trim();
+  return t || null;
 }
 
 /**
@@ -356,8 +366,18 @@ export function normalizePcaItemLegacyV1(
 export function normalizePcaItemLegacyV2(
   item: Record<string, unknown>,
   plan: Record<string, unknown>,
-): Omit<ReturnType<typeof normalizePcaItem>, "classificacao_catalogo_id"> {
-  const { classificacao_catalogo_id: _omit, ...legacy } = normalizePcaItem(item, plan);
+): Omit<
+  ReturnType<typeof normalizePcaItem>,
+  "classificacao_catalogo_id" | "grupo_contratacao_codigo" | "grupo_contratacao_nome" | "data_atualizacao_origem"
+> {
+  // Spec 0056 acrescentou grupo e data da fonte ao normalizador atual; a versão legada continua sem eles.
+  const {
+    classificacao_catalogo_id: _omit,
+    grupo_contratacao_codigo: _g,
+    grupo_contratacao_nome: _n,
+    data_atualizacao_origem: _d,
+    ...legacy
+  } = normalizePcaItem(item, plan);
   return legacy;
 }
 
@@ -365,7 +385,7 @@ export function normalizePcaItemLegacyV2(
 export function normalizePcaItemLegacy(
   item: Record<string, unknown>,
   plan: Record<string, unknown>,
-): Omit<ReturnType<typeof normalizePcaItem>, "classificacao_catalogo_id"> {
+): ReturnType<typeof normalizePcaItemLegacyV2> {
   return normalizePcaItemLegacyV2(item, plan);
 }
 

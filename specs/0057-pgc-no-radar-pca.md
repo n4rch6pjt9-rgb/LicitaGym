@@ -1,6 +1,6 @@
 # 0057: Pôr o PGC no ar e mostrar seus dados no radar da rota PCA
 
-- **Status:** em implementação (aprovada em 11/11/2026)
+- **Status:** entregue (11/11/2026: LicitaGym #519, #520, #521; Dashboard #126, #127, #128; 1ª coleta do PGC manual)
 - **Alimenta:** etapa 1 (coleta) de `docs/produto/TRILHAS-E-INFORME.md`; módulo 1 de `docs/produto/ESCOPO.md` (Radar de
   oportunidades: demanda planejada). O `ESCOPO.md` está em revisão desde 11/11/2026 com a regra de foco suspensa.
   Complementa a spec 0056 (PCA em camadas, lado PNCP); não depende dela.
@@ -86,7 +86,7 @@ Medido em 11/11/2026 (API ao vivo e banco de produção, só leitura):
 | CA-6 | K-3 | **Dado** um item com formalização em 2026-04 e início do processo em 2026-11, **quando** o radar é chamado com `mes_de=2026-11` e `data_base=inicio_processo`, **então** o item vem; com `data_base=formalizacao` (ou sem o parâmetro), não vem; `data_base=xyz` responde 400 | Deno `api_pncp_pca_radar_test.ts` (`0057 CA-6`, 2 testes; `0057 K-3`) ✅ |
 | CA-7 | K-4 | **Dado** a última gravação do PGC (`last_synced_at`) há 9 dias, **quando** se lê a saúde, **então** `pgc_dias_sem_coleta = 9` e o nível é crítico | SQL `supabase/tests/saude_pgc_check.sql` ✅ |
 | CA-8 | K-5 | **Dado** o radar devolvendo um item PGC com quantidade 20 e unidade `M2`, **quando** a tela renderiza, **então** a linha mostra "20 M2", o título do projeto, o nome do PDM e a janela do processo, o objeto do DFD aparece só
-no detalhe expandido e nenhum status de execução aparece; o seletor de ano oferece 2026 e 2027; e com a saúde do PGC crítica e fonte PGC, mostra o aviso de coleta ausente em vez de "0" | vitest `src/test/PcaRadarView.test.tsx` |
+no detalhe expandido e nenhum status de execução aparece; o seletor de ano oferece 2026 e 2027; e com a saúde do PGC crítica e fonte PGC, mostra o aviso de coleta ausente em vez de "0" | vitest `src/test/PcaPgc0057.test.tsx` (Dashboard #126; 14 testes) ✅ |
 
 ## Skills e agentes por contrato
 
@@ -157,3 +157,16 @@ no detalhe expandido e nenhum status de execução aparece; o seletor de ano ofe
 ## Perguntas em aberto
 
 - Nenhuma.
+
+## Entrega (11/11/2026)
+
+- Backend: #520 (merge `e6ed4b1`), publicado em 11/11 15:22 UTC depois de trocar o token do Actions; migration
+  `20261111120000_pca_radar_pgc_campos` aplicada.
+- Tela: Dashboard #126 (merge `c048403`), no ar em 11/11 depois de trocar o build token do Workers Builds; #127 fixa o
+  `account_id` da conta de produção no `wrangler.jsonc`; #128 mostra o link do PCA no PNCP também nos itens do PGC.
+- Achado na entrega: o resumo executivo do painel (spec 0050) estourava 8 s ao ir ao ar junto; #521 criou o índice
+  parcial `licitacao_itens_escopo_valor_idx` (10,15 s → 2,33 s).
+- Primeira coleta do PGC rodada à mão (faturamento do GCP `licitagym` desativado): 1.795 itens (2026: 1.412; 2027:
+  383); radar com 795 itens do PGC em 2026 e 163 em 2027; `pgc_dias_sem_coleta` ok.
+- Pendente fora desta spec: reativar o faturamento do GCP e agendar a coleta diária (#187); ordenar o radar pelo
+  início da compra (backend); dicionário do status de execução (chamado ao Compras.gov).

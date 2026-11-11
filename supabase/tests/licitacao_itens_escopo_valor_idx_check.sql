@@ -22,7 +22,7 @@ begin
     raise exception 'licitacao_itens_escopo_valor_idx_check A: índice ausente';
   end if;
 
-  if v_def !~* 'INCLUDE \(valor_total_estimado\)'
+  if v_def !~* '\(licitacao_id\) INCLUDE \(valor_total_estimado\)'
      or v_def !~* 'valor_total_estimado IS NOT NULL'
      or v_def !~* '''forte''' or v_def !~* '''catmat''' or v_def !~* '''borracha'''
      or v_def !~* '''piso''' or v_def !~* '''obra_piso''' or v_def !~* '''manutencao''' then

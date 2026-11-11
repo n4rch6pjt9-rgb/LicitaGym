@@ -12,9 +12,10 @@
 -- MESMO predicado do CTE valor_itens (categoria_escopo nas 6 categorias que contam + valor não nulo). O CTE passa a
 -- ler só as entradas do escopo. Nada mais muda (função, ACL e dados intactos).
 -- Lock: create index sem concurrently (concurrently não roda dentro de transação de migration) pega SHARE em
--- licitacao_itens: bloqueia escrita (coletores) enquanto o índice é construído; o índice é pequeno (~16 mil entradas).
--- lock_timeout curto para não ficar na fila atrás de escrita longa: se não conseguir o lock, a migration falha inteira
--- e é reaplicada depois.
+-- licitacao_itens: bloqueia INSERT/UPDATE/DELETE (coletores) até o commit. A construção varre a tabela inteira
+-- (~290 mil linhas), então a escrita fica parada por alguns segundos, embora o índice final seja pequeno (~16 mil
+-- entradas). lock_timeout de 10 s limita só a espera pelo lock (escritas novas ficam na fila atrás dela): se estourar,
+-- a migration falha inteira e precisa ser reaplicada. Preferir o merge fora do horário de coleta.
 -- Quem lê: dashboard_resumo_executivo (service_role, via api-dashboard-oportunidades).
 -- Idempotente. Verificação: supabase/tests/licitacao_itens_escopo_valor_idx_check.sql.
 

@@ -262,7 +262,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--limite", type=int, default=None,
                     help="perfil-precos: quantas compras rotular na amostra (padrão 50)")
     ap.add_argument("--compras", nargs="+", help="perfil-precos: só estas compras (id_compra de 17 dígitos)")
-    args = ap.parse_args(argv)
+    args, resto = ap.parse_known_args(argv)
+    # --anos/--classes (e o que mais o coletor PGC aceitar) seguem para ele; nas outras coletas é erro como antes
+    if resto and args.coleta != "pgc":
+        ap.error(f"argumentos não reconhecidos: {' '.join(resto)}")
     if args.itens and args.coleta != "precos":
         ap.error("--itens só vale com --coleta precos")
     if args.pdms and args.coleta not in ("precos", "perfil-precos"):
@@ -284,7 +287,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.coleta == "perfil-precos":
         return 0 if coletar_perfil_precos(args) else 1
     if args.coleta == "pgc":
-        return compras_pgc.executar(["--dry-run"] if args.dry_run else [])
+        return compras_pgc.executar((["--dry-run"] if args.dry_run else []) + resto)
 
     roda_sestsenat = args.coleta in ("sestsenat", "todas")
     roda_precos = args.coleta in ("precos", "todas")

@@ -160,3 +160,53 @@ def test_ca1_item_sem_chave_completa_nao_entra_no_upsert(valor):
     res = compras_pgc.coletar(cliente, sb, classes=[7830], anos=[2026])
     assert sb.upsert.call_count == 0
     assert res["total_gravados"] == 0
+    assert res["sem_chave"] == 1
+
+
+def test_ca1_mesma_chave_em_paginas_diferentes_vira_uma_linha():
+    """CA-1: a deduplicação é por (ano, classe) inteiro: chave repetida em outra página não regrava a linha mais velha."""
+    nova = _item(dataHoraAtualizacaoItem="2026-06-12T09:00:00", statusContratacaoExecucao=4)
+    velha = _item(dataHoraAtualizacaoItem="2026-05-09T10:08:00", statusContratacaoExecucao=1)
+    pag1 = [nova] + [_item(numeroItemPncp=200 + i, codigoItemCatalogo=str(500000 + i)) for i in range(99)]
+    cliente = _Cliente({
+        (7830, 2026, 1): {"resultado": pag1, "totalRegistros": 101, "totalPaginas": 2},
+        (7830, 2026, 2): {"resultado": [velha], "totalRegistros": 101, "totalPaginas": 2},
+    })
+    sb = MagicMock()
+    res = compras_pgc.coletar(cliente, sb, classes=[7830], anos=[2026])
+    gravadas = [ln for c in sb.upsert.call_args_list for ln in c[0][1]]
+    alvo = [ln for ln in gravadas if ln["numero_item_pncp"] == 136]
+    assert len(alvo) == 1 and alvo[0]["status_contratacao_execucao"] == "4"
+    assert res["repetidos_descartados"] == 1
+    assert res["total_gravados"] == 100
+
+
+def test_ca2_leitura_parcial_da_classe_nao_grava_nada():
+    """CA-2: página 1 ok e página 2 com erro → nada da classe é gravado e a execução conta 1 erro."""
+    pag1 = [_item(numeroItemPncp=300 + i, codigoItemCatalogo=str(600000 + i)) for i in range(100)]
+
+    class _ClienteFalha(_Cliente):
+        def consultar_classe(self, classe, ano, pagina=1, tamanho_pagina=100):
+            if pagina == 2:
+                raise RuntimeError("HTTP 503 esgotado em PGC classe 7830")
+            return super().consultar_classe(classe, ano, pagina, tamanho_pagina)
+
+    cliente = _ClienteFalha({(7830, 2026, 1): {"resultado": pag1, "totalRegistros": 150, "totalPaginas": 2}})
+    sb = MagicMock()
+    res = compras_pgc.coletar(cliente, sb, classes=[7830], anos=[2026])
+    assert sb.upsert.call_count == 0
+    assert res["erros"] == 1 and res["sucesso"] is False
+
+
+def test_ca2_job_repassa_anos_e_classes_ao_coletor_pgc(monkeypatch):
+    """CA-2: --coleta pgc --anos 2027 pelo Job chega ao coletor PGC (reprocessar um ano)."""
+    chamado = {}
+    monkeypatch.setattr(compras_pgc, "executar", lambda argv: chamado.setdefault("argv", argv) and 0)
+    coletor_main.main(["--coleta", "pgc", "--anos", "2027", "--classes", "7220"])
+    assert chamado["argv"] == ["--anos", "2027", "--classes", "7220"]
+
+
+def test_ca2_argumento_desconhecido_em_outra_coleta_continua_erro():
+    """Regressão: fora do PGC, argumento desconhecido segue rejeitado."""
+    with pytest.raises(SystemExit):
+        coletor_main.main(["--coleta", "precos", "--anos", "2027"])

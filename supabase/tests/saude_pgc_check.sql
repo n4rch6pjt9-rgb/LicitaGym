@@ -1,6 +1,6 @@
 -- Spec specs/0057-pgc-no-radar-pca.md, K-4 (CA-7): pgc_dias_sem_coleta em private.saude_operacional_resumo().
---   1. tem limiar em private.saude_limiares (atenção 1,5 dia; crítico 8 dias; sem dado = crítico);
---   2. sem nenhuma linha do PGC: crítico (sem dado);
+--   1. tem limiar em private.saude_limiares (atenção 1,5 dia; crítico 8 dias; sem dado = atenção, antes da 1ª coleta);
+--   2. sem nenhuma linha do PGC: atenção (sem dado), sem abrir alerta crítico;
 --   3. última gravação (max(last_synced_at) de pca_pgc_itens) há 9 dias: crítico com valor 9.0;
 --   4. última gravação há 1 dia: ok;
 --   5. o invólucro public (api-saude) traz a verificação.
@@ -18,7 +18,7 @@ begin
   if not found then
     raise exception 'CHECK FALHOU: private.saude_limiares sem a verificação pgc_dias_sem_coleta';
   end if;
-  if r.critico is distinct from 8 or r.sem_dado is distinct from 'critico' or not r.ativo then
+  if r.critico is distinct from 8 or r.sem_dado is distinct from 'atencao' or not r.ativo then
     raise exception 'CHECK FALHOU: limiar de pgc_dias_sem_coleta: critico=% sem_dado=% ativo=%',
       r.critico, r.sem_dado, r.ativo;
   end if;
@@ -33,8 +33,8 @@ begin
   if not found then
     raise exception 'CHECK FALHOU: pgc_dias_sem_coleta ausente do resumo';
   end if;
-  if r.status <> 'critico' or r.valor is not null then
-    raise exception 'CHECK FALHOU: sem PGC gravado deveria ser crítico sem valor (status=% valor=%)', r.status, r.valor;
+  if r.status <> 'atencao' or r.valor is not null then
+    raise exception 'CHECK FALHOU: sem PGC gravado deveria ser atenção sem valor (status=% valor=%)', r.status, r.valor;
   end if;
 
   insert into public.pca_pgc_itens (codigo_uasg, orgao_cnpj, ano_pca_projeto_compra, numero_item_pncp,

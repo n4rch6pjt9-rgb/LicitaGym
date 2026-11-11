@@ -15,7 +15,8 @@
 --     artefato, atualizado_na_fonte_em, status_execucao_codigo (código opaco, sem rótulo) e mes_inicio_processo.
 --     Do lado PNCP, nome_pdm vem do catálogo oficial (catmat_pdms) e unidade_fornecimento de pca_itens.unidade_medida;
 --     o resto fica nulo (nada derivado);
---   * private.saude_limiares ganha 'pgc_dias_sem_coleta' (atenção 1,5 dia; crítico 8 dias; sem dado = crítico) e
+--   * private.saude_limiares ganha 'pgc_dias_sem_coleta' (atenção 1,5 dia; crítico 8 dias; sem dado = atenção: a tabela
+--     está vazia até a primeira coleta, e só crítico abre a issue alerta-operacional) e
 --     private.saude_operacional_resumo() mede max(last_synced_at) de pca_pgc_itens. O resto da função é cópia fiel
 --     de 20261109020000.
 -- Quem lê: api-pncp-pca (service_role) e api-saude (service_role). Quem escreve pca_pgc_itens: coletor compras_pgc.
@@ -27,10 +28,6 @@
 begin;
 
 set local lock_timeout = '10s';
-
--- nome próprio: orgaos_cnpj_idx foi o índice ÚNICO antigo, removido em 20260930130000 (vários códigos de órgão
--- compartilham CNPJ); compras_orgaos_uasgs_check garante que esse nome não volte. Este é btree comum, não único.
-create index if not exists orgaos_cnpj_btree_idx on public.orgaos using btree (cnpj);
 
 create or replace view public.v_bi_pca_radar
 with (security_invoker = true) as
@@ -70,8 +67,9 @@ pgc_normalizado as (
     p.data_fim_processo_compra as data_fim_processo,
     p.duracao_processo_compra as duracao_processo_dias,
     nullif(p.descricao_artefato, '') as artefato,
-    p.data_hora_atualizacao_item::timestamptz as atualizado_na_fonte_em,
-    p.status_contratacao_execucao::text as status_execucao_codigo,
+    p.data_hora_atualizacao_item as atualizado_na_fonte_em,
+    -- mesmo dado de status, com nome explícito de código opaco (spec 0057, P-2)
+    p.status_contratacao_execucao as status_execucao_codigo,
     to_char(p.data_inicio_processo_compra, 'YYYY-MM') as mes_inicio_processo
   from public.pca_pgc_itens p
   -- orgaos tem uma linha por unidade: pega UM nome por CNPJ (com nome primeiro, ativo primeiro, ordem estável)
@@ -181,8 +179,15 @@ select * from pncp_itens_norm;
 revoke all on public.v_bi_pca_radar from anon, authenticated, PUBLIC;
 grant select on public.v_bi_pca_radar to service_role;
 
+-- Índice depois da view: o create or replace view espera as leituras em curso; com o índice antes, o SHARE lock em
+-- orgaos ficaria preso durante essa espera (bloqueando o sync de órgãos).
+-- nome próprio: orgaos_cnpj_idx foi o índice ÚNICO antigo, removido em 20260930130000 (vários códigos de órgão
+-- compartilham CNPJ); compras_orgaos_uasgs_check garante que esse nome não volte. Este é btree comum, não único.
+create index if not exists orgaos_cnpj_btree_idx on public.orgaos using btree (cnpj);
+
+
 insert into private.saude_limiares (verificacao, descricao, unidade, atencao, critico, sem_dado) values
-  ('pgc_dias_sem_coleta', 'Dias desde a última coleta do PGC (PCA do Compras.gov)', 'dias', 1.5, 8, 'critico')
+  ('pgc_dias_sem_coleta', 'Dias desde a última coleta do PGC (PCA do Compras.gov)', 'dias', 1.5, 8, 'atencao')
 on conflict (verificacao) do nothing;
 
 create or replace function private.saude_operacional_resumo()
@@ -280,7 +285,7 @@ begin
 
   if to_regclass('public.pca_pgc_itens') is not null then
     -- PGC (spec 0057): dias desde a última gravação do coletor compras_pgc. O upsert regrava last_synced_at de toda
-    -- linha lida; uma coleta que falha inteira não move a data. Nenhuma linha = sem dado (crítico).
+    -- linha lida; uma coleta que falha inteira não move a data. Nenhuma linha = sem dado (atenção, pelo limiar).
     select round((extract(epoch from now() - max(p.last_synced_at)) / 86400)::numeric, 1),
            jsonb_build_object('ultima_coleta', max(p.last_synced_at), 'linhas', count(*))
       into v, d

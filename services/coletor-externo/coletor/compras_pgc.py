@@ -22,6 +22,7 @@ import logging
 import sys
 import time
 from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 from typing import Any
 
 import requests
@@ -316,7 +317,7 @@ def coletar(
                 for k in range(0, len(unicas), LOTE_UPSERT):
                     lote = unicas[k:k + LOTE_UPSERT]
                     try:
-                        sb.upsert("pca_pgc_itens", lote, conflito=CONFLITO)
+                        sb.upsert("pca_pgc_itens", lote, conflito=CONFLITO, retornar=False)
                         total_gravados += len(lote)
                     except Exception as e:
                         log.error("Erro no upsert de %d linhas PGC: %s", len(lote), e)
@@ -344,12 +345,16 @@ def executar(argv: list[str] | None = None, hoje: date | None = None,
     ap.add_argument("--delay", type=float, default=1.0, help="Delay mínimo em segundos entre requisições (mínimo 1.0)")
     ap.add_argument("--dry-run", action="store_true", help="Não grava no banco; mostra resumo e amostras")
     args = ap.parse_args(argv)
+    if args.limite and not args.dry_run:
+        # leitura parcial nunca vira gravação: --limite é para amostra
+        log.info("--limite implica --dry-run (amostra não grava)")
+        args.dry_run = True
 
     classes = [int(c.strip()) for c in args.classes.split(",") if c.strip()]
     if args.anos:
         anos = [int(a.strip()) for a in args.anos.split(",") if a.strip()]
     else:
-        anos = anos_padrao(hoje or datetime.now(timezone.utc).date())
+        anos = anos_padrao(hoje or datetime.now(ZoneInfo("America/Sao_Paulo")).date())
 
     cliente = ClienteComprasPGC(delay=args.delay, sessao=sessao)
     sb = None

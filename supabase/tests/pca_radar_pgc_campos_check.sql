@@ -8,6 +8,8 @@
 --   CA-4 E) o item só do PNCP não sair com os campos que o PNCP não tem como nulos (nada derivado);
 --   CA-4 F) mes_inicio_processo não refletir data_inicio_processo.
 -- Fixtures fictícias (grupo 99, PDM 999957, CNPJ 99000057000100, ano 2099); termina em rollback.
+-- "Gravado duas vezes com DFDs diferentes" (CA-4) não chega à view: a unicidade vem de uq_pca_pgc_item (mesma chave do
+-- upsert) e da deduplicação do coletor (pytest test_compras_pgc.py, CA-1). Aqui basta uma linha por chave.
 -- Saída esperada: "SUCESSO: pca_radar_pgc_campos_check".
 
 begin;

@@ -154,6 +154,24 @@ const { data } = await supabase.storage.from(doc.bucket).createSignedUrl(doc.cam
 
 Migração: `supabase/migrations/20260929140000_documentos_no_licitagym.sql` (aplicada pela integração Supabase no merge) (bucket + policy de leitura para `authenticated`, colunas de histórico, `portal_visitante`, view e o cadastro das fontes Paradigma que faltavam em `fontes_externas`).
 
+## Catálogo de produtos Paradigma por categoria (08/11/2026)
+
+`coletor/catalogo_paradigma.py` exporta o catálogo público de um portal Paradigma (tela `CatalogoProdutos.aspx`) por
+categoria, com o **código interno da entidade** (`sCdProdutoEmpresa`, ex.: Sesc DN `310031041500001`). Usa o cliente
+`PortalParadigma` (mesmo intervalo, 429 com `Retry-After`, 401/403 encerram, faixas de até 100). Só leitura, sem login,
+sem gravar no banco. A categoria vai por código (`PT030`) ou nome exato; categoria inexistente dá erro.
+
+```bash
+python -m coletor.catalogo_paradigma --fonte sescdn --categorias "PT030;ES1205" --saida /fora/do/repo/catalogo.csv
+```
+
+Saída `.csv` (`;`, UTF-8 com BOM) ou `.json`, com `codigo_sesc`, `descricao`, `tipo`, `categoria`, `id_categoria`,
+`id_produto` e `fonte` (no CSV, texto que o Excel leria como fórmula ganha `'` na frente; o JSON guarda o original).
+É dado de coleta: caminho dentro do repositório é recusado. Saída: 0 ok; 2 categoria inexistente ou ambígua, ou
+saída inválida; 3 catálogo possivelmente cortado (página repetida ou limite da paginação), sem gravar.
+Em 08/11/2026 o Sesc DN tinha 52 produtos em
+`PT030 - EQUIP CONDICIONAMENTO FISICO` e 79 em `ES1205 - EQUIP E MAT ESPORTIVO`.
+
 ## Coletor Sistema S — adaptador Paradigma (v15, 26/09/2026)
 
 Novidades sobre a v14 (validado ao vivo na SFIEC, PE000652022):
@@ -180,7 +198,7 @@ python3 -m coletor.paradigma --fonte fiesc --dry-run --paginas 1        # só li
 python3 -m coletor.paradigma --fonte fiesc                                # grava licitação + itens + ranking
 python3 -m coletor.paradigma --fonte sestsenat --termos "academia;esporte e lazer"
 ```
-Decisão de 05/10/2026: quando o `robots.txt` bloqueia o portal, a coleta segue. Sesc SP (`sescsp`), Sesc/Senac RS (`sesc_senac_rs`), Sesc DN (`sescdn`), Sesc RJ (`sescrj`) e Sesc BA (`sescba`), em paradigmabs.com.br, entram pelo webservice público do mural, com o mesmo intervalo do adaptador. A decisão antiga (recusar e esperar aviso de fornecedor) não vale mais para esses hosts. Bloqueio de WAF continua fora: FIEMG responde 403 de desafio Cloudflare e não entra por esse caminho. O CLI passa `autorizado=True` só nessas cinco, e o próprio `PortalParadigma` recusa `autorizado=True` em qualquer outra fonte: `fiemg` continua em `PermissionError`. Decisão de 11/10/2026: nessas cinco, só anexos públicos; o cadastro de visitante (dados da empresa) não é usado, e documento que exige cadastro fica pendente. Resposta 401/403 de qualquer host para a coleta na hora, sem nova tentativa; 429 respeita `Retry-After`.
+Decisão de 05/10/2026, confirmada em 09/11/2026: quando o `robots.txt` bloqueia o portal, a coleta segue. Sesc SP (`sescsp`, scr360.paradigmabs.com.br), Sesc/Senac RS (`sesc_senac_rs`), Sesc RJ (`sescrj`) e Sesc BA (`sescba`), em egov.paradigmabs.com.br, têm `Disallow: /` e entram pelo webservice público do mural, com o mesmo intervalo do adaptador (`FONTES_MURAL_AUTORIZADO`; o CLI passa `autorizado=True` só nelas, e o `PortalParadigma` recusa `autorizado=True` em qualquer outra fonte). Sesc DN (`sescdn`, egov-br.paradigmabs.com.br) não tem `robots.txt` (404, conferido em 09/11/2026) e coleta como os self-hosted. Bloqueio de WAF continua fora: FIEMG responde 403 de desafio Cloudflare e fica em `PermissionError`. Decisão de 09/11/2026 (revoga a de 11/10/2026): o cadastro de visitante (`VISITANTE_*`, dados da empresa informados pelo usuário na UI) pode ser usado em toda fonte que coleta; captcha é resolvido por pessoa na UI espelhada, nunca por resolvedor automático. Resposta 401/403 de qualquer host para a coleta na hora, sem nova tentativa; 429 respeita `Retry-After`.
 
 ---
 
@@ -387,6 +405,24 @@ no bucket e `roles/secretmanager.secretAccessor` no secret.
 Para rodar toda semana: Cloud Scheduler → `gcloud run jobs execute`.
 A coleta é idempotente (upsert + só baixa o que está `pendente`/`erro`).
 
+## Verificador de legislação (spec 0044, trimestral)
+
+`python -m coletor.verificar_legislacao` confere se o texto oficial das normas do corpus curado
+(`coletor/data/legislacao_corpus.json`) mudou e se os artigos de `norma_dispositivos` com `conferido_oficial = true`
+ainda são trecho literal do texto oficial. Só faz `select` em `norma_dispositivos`; não grava nada.
+O relatório sai no log (uma linha JSON por norma e por artigo que não confere, mais o resumo).
+Código de saída: 0 tudo igual; 1 norma mudou ou artigo divergente; 2 não verificado ou sem hash de referência.
+
+```bash
+gcloud run jobs deploy verificar-legislacao --source . --region $REGION   --command python --args="-m,coletor.verificar_legislacao"   --set-env-vars SUPABASE_URL=$SUPABASE_URL   --set-secrets SUPABASE_SERVICE_ROLE_KEY=supabase-service-key:latest   --task-timeout=10m --max-retries=0
+gcloud run jobs execute verificar-legislacao --region $REGION   # primeira execução: imprime os hashes atuais
+# Cloud Scheduler: dia 1 de jan/abr/jul/out, 09:00 BRT -> gcloud run jobs execute verificar-legislacao
+```
+
+Corpus sem hash (`sha256_texto_normalizado: null`) sai como `sem_referencia` com o `sha256_atual`: grave o hash e a
+data (`conferido_em`) num PR depois de conferir o texto. Norma que mudou: confira o texto novo, atualize
+`norma_dispositivos` por migration se algum artigo citado mudou, e só então grave o hash novo.
+
 ## Configuração
 
 | Variável | Padrão | Uso |
@@ -405,6 +441,24 @@ Flags: `--ids`, `--de/--ate`, `--modulo` (59 = pregão eletrônico), `--todos`
 `2_consultarMaterialDetalhe` só para as linhas sem descrição detalhada, gravando `detalhe_sincronizado_em`. Falha de
 qualquer parte (inclusive de uma linha do detalhe) faz o Job sair com código 1. Para um agendamento só de preços:
 `--args="--coleta,precos"`. A saúde operacional (`precos_dias_sem_coleta`) fica crítica com 8 dias sem gravar preço.
+
+**PGC no mesmo Job (spec 0057).** `--coleta pgc` roda `coletor.compras_pgc` (não entra em `todas`): PCA do
+Compras.gov (`2_consultarPgcDetalheCatalogo`, `tipo=Material`; o manual diz `M`, mas a API só aceita `Material`)
+do ano corrente e do seguinte, classes 7830 e 7220. Cada (ano, classe) é lido inteiro, deduplicado pela chave do
+upsert (a API repete a mesma chave em várias linhas; fica a de `dataHoraAtualizacaoItem` mais recente) e só então
+gravado em `public.pca_pgc_itens`. Classe com erro de leitura não grava nada e o Job sai com código 1; HTTP 400 não é
+repetido. `statusContratacaoExecucao` é código opaco (sem dicionário oficial), gravado como texto. A saúde
+(`pgc_dias_sem_coleta`) fica crítica com 8 dias sem gravar. Agendamento diário (do Marcelo), depois do primeiro
+`--dry-run` conferido:
+
+```bash
+gcloud run jobs execute coletor-precos --region $REGION --args="--coleta,pgc,--dry-run"   # conferir o resumo
+gcloud scheduler jobs create http coletor-pgc-diario --location $REGION --schedule "30 5 * * *" \
+  --time-zone "America/Sao_Paulo" \
+  --uri "https://run.googleapis.com/v2/projects/$PROJECT/locations/$REGION/jobs/coletor-precos:run" \
+  --http-method POST --oauth-service-account-email $SA \
+  --message-body '{"overrides":{"containerOverrides":[{"args":["--coleta","pgc"]}]}}'
+```
 
 ## Volume observado (piloto)
 

@@ -19,9 +19,9 @@ Fornecedor de equipamentos de musculação que disputa licitações públicas. C
 
 | # | Módulo | O que entrega | Specs | Situação |
 |---|---|---|---|---|
-| 1 | Radar de oportunidades | licitações abertas aderentes ao catálogo de produtos do tenant, julgadas pelo texto do TR (CATMAT como apoio), com prioridade | 0006, 0023–0030 | no ar, em ajuste |
+| 1 | Radar de oportunidades | licitações abertas aderentes ao catálogo de produtos do tenant, julgadas pelo texto do TR (CATMAT como apoio), com prioridade | 0006, 0023–0030; 0040 e 0048 (marca NEXOR e números do painel calculados no servidor; exceção à regra de foco, 09/11); 0049 (busca do PNCP como 2ª fonte do detalhe quando a Consulta cai; exceção, 09/11) | no ar, em ajuste |
 | 2 | Pipeline e tarefas | etapas por tenant, tarefas padrão por etapa e por certame | 0017–0019 | no ar |
-| 3 | **Agentes na tarefa** | edital (com aderência), preço, jurídico dentro do cartão da tarefa | **0032** (fases 1–4) | **agora** |
+| 3 | **Agentes na tarefa** | edital (com aderência), preço, jurídico dentro do cartão da tarefa | **0032** (fases 1–4); 0044 (legislação curada: corpus versionado e vigilância do texto oficial dos artigos citados; insumo da fase 4) | **agora** |
 | 4 | Proposta | marca, modelo e preço por item, guardados na etapa Proposta | (spec a criar) | próximo |
 | 5 | Alerta de disputa | aviso da convocação para lance fechado: push no celular, e-mail, navegador; extensão no operador | 0039 (`parada`) | próximo |
 | 6 | Sessão do certame | chat da sessão do Compras.gov como aba do certame (fonte: Integra Compras, Serpro) | 0039 (`parada`) | próximo |
@@ -61,9 +61,14 @@ Detalhe em `AGENTS.md`.
 | 20/10 | Produto multi-tenant, configurado por metadados na interface, não por código |
 | 20/10 | Catálogo do tenant por CSV de layout único (colunas aprovadas, atributos como `atr:<nome>`), em `/configuracoes/catalogo` |
 | 20/10 | Catálogo, escopo CATMAT e ficha de produto ficam em `/configuracoes` |
-| 20/10 | Visões salvas de filtro são da equipe do tenant |
+| 20/10 | ~~Visões salvas de filtro são da equipe do tenant~~ (revista em 09/11: por usuário) |
 | até 20/10 | Homologadas com documentos e chat da sessão são o núcleo do treino dos agentes |
 | 20/10 | **TR primeiro, CATMAT como suporte.** O catálogo CATMAT deixa de ser a fonte da verdade do escopo: os órgãos erram o enquadramento com frequência (evidência: Dispensa 311/2026 da BAvT, #2691). Divergência TR × CATMAT vira achado |
+| 28/10 | **Filtros inteligentes multirrota: um sistema único de filtros para todas as rotas**, em vez de filtros próprios em cada página. Backend: `api-metadados` serve opções, limites e rótulos; toda lista filtra no servidor e responde com `filtros_aplicados`, `ignorados[]` e `total` do recorte; datas como datas de calendário de Brasília. Dashboard: `src/filtros/` (um esquema por rota + `useFiltrosUrl`), `FilterBar` + `DataTable` com chips, busca com debounce, contagem por opção, visões salvas e painel de filtros no celular. Ordem: Oportunidades → PCA → Preços → Pipeline → Tarefas → CATMAT → CRM (órgãos e fornecedores) → Acompanhamento. Desenho em `FASE-1-FRONTEND.md` §4 e `BACKEND-CONFIGURACOES.md` §2.5–2.6 |
+| 08/11 | **Legislação é corpus curado, não sync.** O sync semanal de legislação é aposentado (raspava páginas-índice e gravava links de navegação; ninguém consumia). O texto dos artigos que o jurídico cita (`norma_dispositivos`) é vigiado por um verificador trimestral no Cloud Run, só com aviso no log (spec 0044) |
+| 09/11 | Visões salvas de filtro são **por usuário** (substitui a decisão de 20/10) |
+| 09/11 | Órgãos e fornecedores continuam numa rota só (`/crm/organizacoes`), com revisão de código e design: o detalhe precisa levar ao certame (oportunidade e portal oficial) |
+| 09/11 | **Painel Executivo e marca NEXOR fora da regra de foco.** A 0040 sai de `parada` e a 0048 calcula no servidor os números do painel (KPIs, funil, prazos, leads). "Alta aderência" sai do painel até haver aderência pelo TR; o bloco de saúde é só para admin da plataforma |
 
 ## Decisões pendentes
 <!-- Itens que estavam como CONFIRMAR no CLAUDE.md antigo. Resolvido → vai para "Decisões registradas" e para

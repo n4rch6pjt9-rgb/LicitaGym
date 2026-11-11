@@ -1,0 +1,101 @@
+[
+  {
+    "norma": "LEI_14133_2021",
+    "titulo": "Lei nº 14.133/2021 - Licitações e Contratos Administrativos",
+    "url_oficial": "https://www.planalto.gov.br/ccivil_03/_ato2019-2022/2021/lei/l14133.htm",
+    "vigencia_inicio": null,
+    "revogada_em": null,
+    "sha256_texto_normalizado": null,
+    "conferido_em": null
+  },
+  {
+    "norma": "LEI_8666_1993",
+    "titulo": "Lei nº 8.666/1993 - Licitações e Contratos (legado)",
+    "url_oficial": "https://www.planalto.gov.br/ccivil_03/leis/l8666cons.htm",
+    "vigencia_inicio": null,
+    "revogada_em": null,
+    "sha256_texto_normalizado": null,
+    "conferido_em": null
+  },
+  {
+    "norma": "LC_123_2006",
+    "titulo": "Lei Complementar nº 123/2006 - Microempresas e EPP",
+    "url_oficial": "https://www.planalto.gov.br/ccivil_03/leis/lcp/lcp123.htm",
+    "vigencia_inicio": null,
+    "revogada_em": null,
+    "sha256_texto_normalizado": null,
+    "conferido_em": null
+  },
+  {
+    "norma": "LEI_12527_2011",
+    "titulo": "Lei nº 12.527/2011 - Lei de Acesso à Informação",
+    "url_oficial": "https://www.planalto.gov.br/ccivil_03/_ato2011-2014/2011/lei/l12527.htm",
+    "vigencia_inicio": null,
+    "revogada_em": null,
+    "sha256_texto_normalizado": null,
+    "conferido_em": null
+  },
+  {
+    "norma": "LEI_13709_2018",
+    "titulo": "Lei nº 13.709/2018 - LGPD",
+    "url_oficial": "https://www.planalto.gov.br/ccivil_03/_ato2015-2018/2018/lei/l13709.htm",
+    "vigencia_inicio": null,
+    "revogada_em": null,
+    "sha256_texto_normalizado": null,
+    "conferido_em": null
+  },
+  {
+    "norma": "DECRETO_10947_2022",
+    "titulo": "Decreto nº 10.947/2022 - Plano de Contratações Anual",
+    "url_oficial": "https://www.planalto.gov.br/ccivil_03/_ato2019-2022/2022/decreto/d10947.htm",
+    "vigencia_inicio": null,
+    "revogada_em": null,
+    "sha256_texto_normalizado": null,
+    "conferido_em": null
+  },
+  {
+    "norma": "DECRETO_11462_2023",
+    "titulo": "Decreto nº 11.462/2023 - Sistema de Registro de Preços",
+    "url_oficial": "https://www.planalto.gov.br/ccivil_03/_ato2023-2026/2023/decreto/d11462.htm",
+    "vigencia_inicio": null,
+    "revogada_em": null,
+    "sha256_texto_normalizado": null,
+    "conferido_em": null
+  },
+  {
+    "norma": "DECRETO_12807_2025",
+    "titulo": "Decreto nº 12.807/2025 - Valores vigentes Lei 14.133",
+    "url_oficial": "https://www.planalto.gov.br/ccivil_03/_ato2023-2026/2025/decreto/d12807.htm",
+    "vigencia_inicio": null,
+    "revogada_em": null,
+    "sha256_texto_normalizado": null,
+    "conferido_em": null
+  },
+  {
+    "norma": "IN_SEGES_65_2021",
+    "titulo": "IN SEGES/ME nº 65/2021 - Pesquisa de preços",
+    "url_oficial": "https://www.gov.br/compras/pt-br/acesso-a-informacao/legislacao/instrucoes-normativas/instrucao-normativa-seges-me-no-65-de-7-de-julho-de-2021",
+    "vigencia_inicio": null,
+    "revogada_em": null,
+    "sha256_texto_normalizado": null,
+    "conferido_em": null
+  },
+  {
+    "norma": "IN_SEGES_73_2022",
+    "titulo": "IN SEGES/ME nº 73/2022 - Menor preço ou maior desconto",
+    "url_oficial": "https://www.gov.br/compras/pt-br/acesso-a-informacao/legislacao/instrucoes-normativas/instrucao-normativa-seges-me-no-73-de-30-de-setembro-de-2022",
+    "vigencia_inicio": null,
+    "revogada_em": null,
+    "sha256_texto_normalizado": null,
+    "conferido_em": null
+  },
+  {
+    "norma": "IN_SEGES_81_2022",
+    "titulo": "IN SEGES/ME nº 81/2022 - Termo de Referência",
+    "url_oficial": "https://www.gov.br/compras/pt-br/acesso-a-informacao/legislacao/instrucoes-normativas/instrucao-normativa-seges-me-no-81-de-25-de-novembro-de-2022",
+    "vigencia_inicio": null,
+    "revogada_em": null,
+    "sha256_texto_normalizado": null,
+    "conferido_em": null
+  }
+]

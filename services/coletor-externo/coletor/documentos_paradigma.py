@@ -11,7 +11,7 @@ Fluxo, igual ao do mural do portal (HAR SFIEC PE000652022, 26/09/2026):
      storage_uri, sha256, tamanho e tipo.
 
 Histórico: nada é apagado. Documento novo no portal ganha first_seen_at; documento que some do portal
-ganha removido_do_portal_em (o arquivo já baixado continua no LicitaGym). Assim o processo aberto
+não é marcado como removido automaticamente: ausência na coleta não comprova remoção do portal. O histórico permanece preservado até reconciliação autoritativa. Assim o processo aberto
 acumula tudo o que foi anexado e o fechado fica com o dossiê completo para análise.
 """
 from __future__ import annotations
@@ -22,7 +22,6 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
 
 import requests
 
@@ -104,10 +103,14 @@ class DocumentosParadigma:
     # ---------------- portal ----------------
     def listar(self, d: dict) -> list[dict]:
         if not d.get("nCdAnexo"):
-            return []
+            raise RuntimeError("PesquisarAnexos inconclusivo: nCdAnexo ausente")
         r = self.portal._ws("PesquisarAnexos", {"dtoAnexo": {
             "nCdAnexo": d["nCdAnexo"], "sNmLocalAnexo": LOCAL_ANEXOS, "nCdModulo": d.get("nCdModulo") or 59,
-            "nCdOrigem": d.get("nCdOrigem") or d["nCdProcesso"], "bFlPublico": 1}}) or []
+            "nCdOrigem": d.get("nCdOrigem") or d["nCdProcesso"], "bFlPublico": 1}})
+        if not isinstance(r, list):
+            raise RuntimeError("PesquisarAnexos inconclusivo: resposta não é lista")
+        if any(not isinstance(a, dict) for a in r):
+            raise RuntimeError("PesquisarAnexos inconclusivo: anexo inválido")
         return [a for a in r if a.get("sNmArquivo") and a.get("sDsParametroCriptografado")]
 
     def _identificar(self, anexo: dict, d: dict) -> bool:
@@ -170,7 +173,6 @@ class DocumentosParadigma:
             "data_documento": parse_data(anexo.get("tDtAnexo")),
             "origem_portal": anexo.get("sDsOrigem"),
             "last_seen_at": agora,
-            "removido_do_portal_em": None,
             "raw": {k: v for k, v in anexo.items() if k != "sDsParametroCriptografado"},
         }
 
@@ -189,44 +191,102 @@ class DocumentosParadigma:
             "licitacao_documentos", select="id,arquivo_origem,status_processamento,sha256,removido_do_portal_em",
             licitacao_id=f"eq.{lic_id}", secao=f"eq.{SECAO_PROCESSO}")}
         linhas = [self.linha(lic_id, a, agora) for a in anexos]
-        resumo["novos"] = sum(1 for l in linhas if l["arquivo_origem"] not in existentes)
-        salvos = {s["arquivo_origem"]: s for s in (self.sb.upsert("licitacao_documentos", linhas,
-                                                                 "licitacao_id,secao,arquivo_origem") if linhas else [])}
-        # Some do portal: marca, não apaga (o arquivo baixado continua no LicitaGym)
-        for arq, r in existentes.items():
-            if arq not in salvos and not r.get("removido_do_portal_em"):
-                self.sb.atualizar("licitacao_documentos", r["id"], {"removido_do_portal_em": agora})
-                resumo["removidos_do_portal"] += 1
+        novas = [
+            linha for linha in linhas
+            if linha["arquivo_origem"] not in existentes
+        ]
+        resumo["novos"] = len(novas)
 
-        ja: dict[str, str] = {}
+        inseridos = (
+            self.sb.upsert(
+                "licitacao_documentos",
+                novas,
+                "licitacao_id,secao,arquivo_origem",
+            )
+            if novas else []
+        )
+
+        salvos = dict(existentes)
+        salvos.update({
+            s["arquivo_origem"]: s
+            for s in inseridos
+        })
+
+        if not {a["sNmArquivo"] for a in anexos}.issubset(salvos):
+            raise RuntimeError(
+                "Supabase não retornou todos os documentos novos"
+            )
+        # P0.1: ausência na coleta não comprova remoção do portal.
+        # Preservar o histórico até existir reconciliação autoritativa.
+        # Não atualizar removido_do_portal_em neste fluxo.
+
+        from .versionamento import processar_versao
+
         for a in anexos:
             doc = salvos[a["sNmArquivo"]]
-            if doc.get("status_processamento") not in ("pendente", "erro") and doc.get("sha256"):
-                continue
+            anterior = existentes.get(a["sNmArquivo"], {})
+            confirmado = (
+                anterior.get("status_processamento") == "baixado"
+                and bool(anterior.get("sha256"))
+            )
+
             try:
                 if not self._identificar(a, d):
                     resumo["aguardando_cadastro"] += 1
-                    self.sb.atualizar("licitacao_documentos", doc["id"], {
-                        "status_processamento": "pendente",
-                        "erro": "portal exige cadastro de visitante: configure VISITANTE_* (CNPJ da empresa)"})
+                    if not confirmado:
+                        self.sb.atualizar("licitacao_documentos", doc["id"], {
+                            "status_processamento": "pendente",
+                            "erro": "portal exige cadastro de visitante: configure VISITANTE_* (CNPJ da empresa)",
+                        })
                     continue
+
                 conteudo, ctype = self._baixar(a)
-                h = sha256(conteudo)
-                uri = ja.get(h)
-                if not uri:
-                    nome = re.sub(r"[^A-Za-z0-9._-]", "_", a["sNmArquivo"])
-                    uri = self.arm.salvar(f"{caminho_base}/{SECAO_PROCESSO}/{nome}", conteudo, ctype)
-                    ja[h] = uri
-                self.sb.atualizar("licitacao_documentos", doc["id"], {
-                    "storage_uri": uri, "mime_type": ctype, "tamanho_bytes": len(conteudo), "sha256": h,
-                    "baixado_em": datetime.now(timezone.utc).isoformat(),
-                    "status_processamento": "baixado", "erro": None})
+                digest = sha256(conteudo)
+
+                versao, criada = processar_versao(
+                    sb=self.sb,
+                    arm=self.arm,
+                    documento_id=doc["id"],
+                    caminho_base=caminho_base,
+                    secao=SECAO_PROCESSO,
+                    conteudo=conteudo,
+                    mime_type=ctype,
+                )
+
+                if versao.get("sha256") != digest:
+                    raise RuntimeError("Versão registrada com SHA-256 divergente")
+
+                if not versao.get("storage_uri"):
+                    raise RuntimeError("Versão registrada sem storage_uri")
+
+                if not confirmado or anterior["sha256"] != digest:
+                    self.sb.atualizar("licitacao_documentos", doc["id"], {
+                        "storage_uri": versao["storage_uri"],
+                        "mime_type": ctype,
+                        "tamanho_bytes": len(conteudo),
+                        "sha256": digest,
+                        "baixado_em": datetime.now(timezone.utc).isoformat(),
+                        "status_processamento": "baixado",
+                        "erro": None,
+                    })
+
                 resumo["baixados"] += 1
+
             except ArquivoGrande as e:
                 resumo["ignorados"] += 1
-                self.sb.atualizar("licitacao_documentos", doc["id"], {"status_processamento": "ignorado", "erro": str(e)})
-            except Exception as e:  # um arquivo com erro não derruba o processo
+                if not confirmado:
+                    self.sb.atualizar("licitacao_documentos", doc["id"], {
+                        "status_processamento": "ignorado",
+                        "erro": str(e),
+                    })
+
+            except Exception as e:
                 resumo["erros"] += 1
                 log.warning("documento %s: %s", a.get("sDsAnexo"), e)
-                self.sb.atualizar("licitacao_documentos", doc["id"], {"status_processamento": "erro", "erro": str(e)[:500]})
+                if not confirmado:
+                    self.sb.atualizar("licitacao_documentos", doc["id"], {
+                        "status_processamento": "erro",
+                        "erro": str(e)[:500],
+                    })
+
         return resumo

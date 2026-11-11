@@ -36,7 +36,7 @@ import sys
 
 import json
 
-from . import compras_itens_contratacao, compras_precos, perfil_precos
+from . import compras_itens_contratacao, compras_pgc, compras_precos, perfil_precos
 from .destino import Armazenamento, Supabase, drenar_licitacao_match, env, parece_html, sha256
 from .proveniencia import ORIGENS
 from .portal import (SECOES_CONTRATACAO, ArquivoGrande, PortalSestSenat, encerrado, no_escopo_fitness,
@@ -250,9 +250,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dry-run", action="store_true", help="só consulta as fontes; não grava nada")
     ap.add_argument("--origem", choices=list(ORIGENS), default="manual",
                     help="origem da ingestão gravada em cada linha (spec 0023): cron ou manual (padrão)")
-    ap.add_argument("--coleta", default="todas", choices=["sestsenat", "precos", "todas", "perfil-precos"],
-                    help="o que rodar: sestsenat, precos (Pesquisa de Preço, modo catálogo), todas (padrão) ou "
-                         "perfil-precos (spec 0037: rótulo 'fora do perfil'; não entra em 'todas')")
+    ap.add_argument("--coleta", default="todas", choices=["sestsenat", "precos", "todas", "perfil-precos", "pgc"],
+                    help="o que rodar: sestsenat, precos (Pesquisa de Preço, modo catálogo), todas (padrão), "
+                         "perfil-precos (spec 0037: rótulo 'fora do perfil'; não entra em 'todas') ou "
+                         "pgc (spec 0057: PCA do PGC, ano corrente e seguinte; não entra em 'todas')")
     # Rodada pontual de preços. nargs="+" porque o gcloud separa --args por vírgula:
     #   --args="--coleta,precos,--pdms,6762,3672"  =>  --pdms 6762 3672
     ap.add_argument("--pdms", nargs="+", type=int, help="Pesquisa de Preço só destes PDMs (em vez do catálogo)")
@@ -261,7 +262,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--limite", type=int, default=None,
                     help="perfil-precos: quantas compras rotular na amostra (padrão 50)")
     ap.add_argument("--compras", nargs="+", help="perfil-precos: só estas compras (id_compra de 17 dígitos)")
+    ap.add_argument("--anos", help="pgc: anos do PCA separados por vírgula (padrão: corrente e seguinte)")
+    ap.add_argument("--classes", help="pgc: classes separadas por vírgula (padrão: 7830,7220)")
     args = ap.parse_args(argv)
+    if (args.anos or args.classes) and args.coleta != "pgc":
+        ap.error("--anos/--classes só valem com --coleta pgc")
     if args.itens and args.coleta != "precos":
         ap.error("--itens só vale com --coleta precos")
     if args.pdms and args.coleta not in ("precos", "perfil-precos"):
@@ -282,6 +287,13 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.coleta == "perfil-precos":
         return 0 if coletar_perfil_precos(args) else 1
+    if args.coleta == "pgc":
+        repasse = ["--dry-run"] if args.dry_run else []
+        if args.anos:
+            repasse += ["--anos", args.anos]
+        if args.classes:
+            repasse += ["--classes", args.classes]
+        return compras_pgc.executar(repasse)
 
     roda_sestsenat = args.coleta in ("sestsenat", "todas")
     roda_precos = args.coleta in ("precos", "todas")

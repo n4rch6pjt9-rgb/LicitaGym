@@ -6,7 +6,7 @@ applyTo: "**/*.sql,supabase/migrations/**,supabase/seeds/**,supabase/sql/**"
 Documentação em Markdown descreve a arquitetura desejada — **não prova** o schema implantado. Confira migrations anteriores, constraints, índices, FKs, views, RPCs e consumidores (Edge Functions e Python).
 
 ## Alto — deploy e destrutivo
-- PR em `supabase/migrations/**` é alto risco: merge na `main` aplica em produção pela integração Supabase ↔ GitHub. Não há staging.
+- PR em `supabase/migrations/**` é alto risco: merge na `main` aplica em produção pela integração Supabase ↔ GitHub. Antes disso, a branch de preview do PR (check Supabase Preview) aplica as migrations num banco real: merge só com o preview verde.
 - Timestamp da migration nova tem de ser maior que a última já na `main`. Migration com timestamp repetido ou anterior, ou aplicada só em produção e ausente no git, quebra o deploy.
 - Idempotente: `IF NOT EXISTS`, `CREATE OR REPLACE`, guarda em policy/índice. Reaplicar não pode falhar.
 - `DROP` ou `DELETE` destrutivo sem backup citado e sem o aviso no texto do PR.

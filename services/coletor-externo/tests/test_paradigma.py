@@ -277,14 +277,25 @@ def test_modulo_de_sentinela_e_ausente():
     assert P.modulo_de({}) == 59 and P.modulo_de(None) == 59
 
 
-def test_tenants_paradigmabs_autorizados_pelo_mural_e_fiemg_bloqueada():
-    for slug in ("sescdn", "sescrj", "sescba", "sescsp", "sesc_senac_rs"):
+def test_tenants_paradigmabs_autorizados_pelo_mural_sescdn_sem_robots_e_fiemg_bloqueada():
+    """Decisão de 05/10/2026, confirmada em 09/11/2026: os 4 portais com `Disallow: /` coletam pelo mural.
+
+    Regressão (09/11/2026): sescdn (egov-br, sem robots.txt) coleta como os self-hosted, sem depender do override.
+    """
+    assert P.FONTES_MURAL_AUTORIZADO == frozenset({"sescsp", "sesc_senac_rs", "sescrj", "sescba"})
+    for slug in ("sescrj", "sescba", "sescsp", "sesc_senac_rs"):
         assert P.FONTES[slug].coleta_automatica is False
         assert P.autorizado_para_coleta(P.FONTES[slug]) is True
         assert "paradigmabs.com.br" in P.FONTES[slug].base
         P.PortalParadigma(P.FONTES[slug], autorizado=True, sessao=MagicMock())
+        with pytest.raises(PermissionError):
+            P.PortalParadigma(P.FONTES[slug], sessao=MagicMock())  # sem autorizado=True, não coleta
+    assert P.FONTES["sescdn"].coleta_automatica is True
+    P.PortalParadigma(P.FONTES["sescdn"], sessao=MagicMock())
     assert P.FONTES["fiemg"].coleta_automatica is False  # Cloudflare bloqueia cliente automatizado
     assert P.autorizado_para_coleta(P.FONTES["fiemg"]) is False
+    with pytest.raises(PermissionError):
+        P.PortalParadigma(P.FONTES["fiemg"], autorizado=True, sessao=MagicMock())
     for slug in ("firjan", "fiergs", "findes", "fieb", "fiems", "fiemt", "sfiec"):
         assert P.FONTES[slug].coleta_automatica is True
 
@@ -444,6 +455,36 @@ def test_catalogo_classifica_por_produto_e_respeita_item_fora():
     assert sem[2241]["catalogo_codigo_item"] == "AI0300075"  # código lido da descrição mesmo sem catálogo
 
 
+def test_catalogo_nao_traz_academia_ar_livre_nem_brinquedo_infantil():
+    # Regressão (09/11/2026): a classe 226 da FIEB ("EQUIPAMENTOS PARA ACADEMIA") é genérica; produto do catálogo com
+    # texto de academia ao ar livre ou brinquedo infantil não vira "forte" pelo catálogo, o texto decide.
+    produtos = {1: {"codigo": "X"}}
+    for texto in ("MULTI ESTACAO ACADEMIA AO AR LIVRE EM ACO GALVANIZADO", "PISCINA DE BOLINHAS INFANTIL"):
+        cat, _, _, metodo = P.classificar_item_detalhe({"sDsItem": texto, "nCdProduto": 1}, produtos)
+        assert cat is None and metodo != "catalogo", texto
+    # o resto da classe continua entrando pelo catálogo
+    assert P.classificar_item_detalhe({"sDsItem": "CADEIRA ABDUTORA", "nCdProduto": 1}, produtos)[::3] == ("forte", "catalogo")
+
+
+def test_fieb_casa_classe_real_da_academia():
+    # Resposta real do autocomplete da FIEB para "EQUIPAMENTOS PARA ACADEMIA" (09/11/2026), com as classes vizinhas
+    # de serviço que o prefixo também devolve: só a 226, de nome exato, vai ao catálogo.
+    devolvidas = [{"nCdClasse": 226, "sDsClasse": "EQUIPAMENTOS PARA ACADEMIA"},
+                  {"nCdClasse": 391, "sDsClasse": "MANUTENÇÃO DE EQUIPAMENTO DE ACADEMIA"}]
+    p = P.PortalParadigma(P.FONTES["fieb"], sessao=MagicMock(), delay=0)
+    catalogo = []
+
+    def ws(metodo, corpo):
+        dto = corpo["dtoProduto"]
+        if metodo == "PesquisarCatalogoProdutoClasses":
+            return devolvidas
+        catalogo.append(dto["nCdClasse"])
+        return [] if dto["dtoPaginacao"]["nPaginaDe"] > 1 else [{"nCdProduto": 7, "nCdClasse": dto["nCdClasse"]}]
+    p._ws = ws
+    assert list(p.produtos_escopo()) == [7]
+    assert set(catalogo) == {226}
+
+
 def test_lances_corpo_da_requisicao():
     p = P.PortalParadigma(P.FONTES["sfiec"], sessao=MagicMock(), delay=0)
     p._ws = MagicMock(return_value=[])
@@ -487,6 +528,58 @@ def test_produtos_escopo_filtra_nome_exato_tipo_e_pagina():
     assert (74, 1, 101) in chamadas                       # paginou a categoria cheia (100) e a curta seguinte
     assert (74, 1, 104) in chamadas                       # página vazia encerra
     assert len(prods) == 3 + 3 + 100 + 3
+
+
+def _classes_pedidas(slug: str, categorias=None) -> list[str]:
+    p = P.PortalParadigma(P.FONTES[slug], sessao=MagicMock(), delay=0)
+    pedidas = []
+
+    def ws(metodo, corpo):
+        if metodo == "PesquisarCatalogoProdutoClasses":
+            pedidas.append(corpo["dtoProduto"]["sDsProduto"])
+        return []
+    p._ws = ws
+    p.produtos_escopo(categorias)
+    return pedidas
+
+
+def test_categorias_do_catalogo_por_fonte():
+    # Nomes lidos no autocomplete de cada portal (estudo dos murais, 08/11/2026). Decisão do Marcelo (09/11/2026):
+    # sem gate, entra o que vier dessas categorias.
+    assert _classes_pedidas("fiems") == ["MATERIAIS ESPORTIVOS"]
+    # FIEB (09/11/2026): sem esta entrada, as categorias padrão não existem no portal e o catálogo dava 0 produtos.
+    # Classe 226 (123 produtos); 192 MATERIAL ESPORTIVO fica fora por decisão do Marcelo.
+    assert _classes_pedidas("fieb") == ["EQUIPAMENTOS PARA ACADEMIA"]
+    fiemt = _classes_pedidas("fiemt")
+    assert set(fiemt) == {"25 - EQUIPAMENTOS ESPORTIVOS, ARTISTICOS E DE RECREACAO",
+                          "25 - MATERIAL ESPORTIVO E DE RECREACAO",
+                          "EQUIPAMENTOS ESPORTIVOS, ARTISTICOS E DE RECREACAO", "MATERIAL ESPORTIVO E DE RECREACAO"}
+    # as outras fontes não mudam
+    assert _classes_pedidas("sfiec") == P.CATEGORIAS_MAPEADAS
+    # --categorias explícito vence o mapeamento da fonte
+    assert _classes_pedidas("fiems", ["ESPORTIVO"]) == ["ESPORTIVO"]
+
+
+def test_fiemt_casa_classe_real_com_acento_virgula_e_prefixo_e_deixa_premiacao_fora(caplog):
+    # Classes como o autocomplete da FIEMT devolveu (08/11/2026): acento, vírgula, prefixo "25 -" e quebra de linha.
+    devolvidas = [{"nCdClasse": 9, "sDsClasse": "25 - EQUIPAMENTOS ESPORTIVOS, ARTÍSTICOS E DE RECREAÇÃO"},
+                  {"nCdClasse": 456, "sDsClasse": "PREMIAÇÕES \r\nEQUIPAMENTOS \r\nESPORTIVOS "}]
+    p = P.PortalParadigma(P.FONTES["fiemt"], sessao=MagicMock(), delay=0)
+    catalogo = []
+
+    def ws(metodo, corpo):
+        dto = corpo["dtoProduto"]
+        if metodo == "PesquisarCatalogoProdutoClasses":
+            return devolvidas if dto["sDsProduto"].startswith("25 - EQUIP") else []
+        catalogo.append(dto["nCdClasse"])
+        return [] if dto["dtoPaginacao"]["nPaginaDe"] > 1 else [{"nCdProduto": 1, "nCdClasse": dto["nCdClasse"]}]
+    p._ws = ws
+    with caplog.at_level("WARNING"):
+        prods = p.produtos_escopo()
+    assert set(catalogo) == {9}       # só a classe de nome exato; premiação não entra
+    assert list(prods) == [1]
+    # as 3 categorias que o portal falso não devolve geram aviso, em vez de catálogo vazio calado
+    assert sum("sem classe de nome exato" in r.message for r in caplog.records) == 3
 
 
 def test_mural_estatistico_leva_totais_para_licitacao():
@@ -930,7 +1023,7 @@ def test_ws_403_para_na_primeira_chamada(monkeypatch):
     monkeypatch.setattr(P.time, "sleep", lambda _s: None)
     s = MagicMock()
     s.post.return_value.status_code = 403
-    p = P.PortalParadigma(P.FONTES["sescsp"], delay=0, autorizado=True, sessao=s)
+    p = P.PortalParadigma(P.FONTES["fiesc"], delay=0, sessao=s)
     with pytest.raises(PermissionError):
         p.listar("academia")
     assert s.post.call_count == 1
@@ -953,7 +1046,8 @@ def test_mural_403_no_construtor_recusa(monkeypatch):
     sessao.get.return_value.status_code = 403
     monkeypatch.setattr(P.requests, "Session", lambda: sessao)
     with pytest.raises(PermissionError):
-        P.PortalParadigma(P.FONTES["sescsp"], autorizado=True)
+        P.PortalParadigma(P.FONTES["fiesc"])
+    sessao.get.assert_called_once()  # o 403 vem do GET do mural, não da checagem de robots
 
 
 def test_fiemg_nao_libera_nem_com_autorizado():

@@ -9,20 +9,23 @@ import {
   jsonResponse,
 } from "../_shared/http.ts";
 import { ErroTenantAcesso, lerTenantDoUsuario } from "../_shared/tenant.ts";
-import {
-  consultarChatSerpro,
-  consultarDiligenciasSerpro,
-  type MensagemSerpro,
-} from "../_shared/serpro.ts";
+import type { ResultadoConsultaIntegra } from "../_shared/serpro.ts";
+import { extrairChaveCompra17Digitos, sincronizarCompra } from "../_shared/sessao_chat.ts";
 import { pisoTenantCentavos, unidadeNorm } from "../_shared/agentes/preco.ts";
 import { recomendar, type RecomendacaoLance } from "../_shared/recomendacao.ts";
+import { listarSessoes } from "./sessoes.ts";
+import { listarAlertas, marcarAlertaLido } from "./alertas.ts";
+
+/** Intervalo mínimo entre consultas manuais da mesma compra (cada chamada ao Integra Compras é cobrada). */
+const INTERVALO_MINIMO_USUARIO_MS = 5 * 60_000;
 
 export interface ApiDisputaContext {
   getSupabase?: () => SupabaseClient;
   getUser?: (req: Request) => Promise<AuthenticatedUser | null>;
   isCron?: (req: Request) => boolean;
-  consultarChat?: (chave: string) => Promise<MensagemSerpro[]>;
-  consultarDiligencias?: (chave: string) => Promise<MensagemSerpro[]>;
+  consultarChat?: (chave: string) => Promise<ResultadoConsultaIntegra>;
+  consultarDiligencias?: (chave: string) => Promise<ResultadoConsultaIntegra>;
+  agora?: () => number;
 }
 
 function getDefaultServiceClient(): SupabaseClient {
@@ -34,48 +37,7 @@ function getDefaultServiceClient(): SupabaseClient {
   return createClient(url, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } });
 }
 
-/** Extrai estritamente a chaveCompra oficial de 17 dígitos do Compras.gov.br. */
-export function extrairChaveCompra17Digitos(licitacao: {
-  codigo_externo?: string | null;
-  link_sistema_origem?: string | null;
-  raw?: Record<string, unknown> | null;
-}): string | null {
-  const COMPRAS_KEY_RE = /^\d{17}$/;
-  const rawObj = (licitacao.raw && typeof licitacao.raw === "object") ? licitacao.raw : {};
-
-  // 1. Campo explícito em raw (chaveCompra, chave_compra, idCompra, id_compra, compra)
-  const rawCands = [rawObj.chaveCompra, rawObj.chave_compra, rawObj.idCompra, rawObj.id_compra, rawObj.compra];
-  for (const c of rawCands) {
-    if (typeof c === "string" && COMPRAS_KEY_RE.test(c.trim())) {
-      return c.trim();
-    }
-  }
-
-  // 2. codigo_externo (ex: "COMPRASGOV-PP-15300005000012026" ou direto "15300005000012026")
-  if (typeof licitacao.codigo_externo === "string") {
-    const cod = licitacao.codigo_externo.trim();
-    if (COMPRAS_KEY_RE.test(cod)) return cod;
-    if (cod.startsWith("COMPRASGOV-PP-")) {
-      const semPrefixo = cod.slice("COMPRASGOV-PP-".length).trim();
-      if (COMPRAS_KEY_RE.test(semPrefixo)) return semPrefixo;
-    }
-  }
-
-  // 3. link_sistema_origem (ex: https://cnetmobile.estaleiro.serpro.gov.br/...compra=15300005000012026)
-  if (typeof licitacao.link_sistema_origem === "string") {
-    try {
-      const url = new URL(licitacao.link_sistema_origem);
-      const compraParam = url.searchParams.get("compra");
-      if (compraParam && COMPRAS_KEY_RE.test(compraParam.trim())) {
-        return compraParam.trim();
-      }
-    } catch {
-      // Ignora erro de parsing de URL
-    }
-  }
-
-  return null;
-}
+export { extrairChaveCompra17Digitos };
 
 export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Promise<Response> {
   // CORS Preflight
@@ -121,6 +83,37 @@ export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Prom
         isLicitagymAdmin(user)
       );
       tenantId = tenantRes.tenant;
+    }
+
+    // 0. GET /api-disputa/sessoes: compras do pipeline com o estado do chat da sessão (tela "Sessão").
+    if (req.method === "GET" && caminho === "sessoes") {
+      const sessoes = await listarSessoes(supabase, tenantId, ctx?.agora ? ctx.agora() : Date.now());
+      return jsonResponse({ ok: true, fonte: "integra_compras", sessoes });
+    }
+
+    // 0b. Alertas de convocação do chat (spec 0039, etapa 1b, K-5c e K-5d). Só do tenant de quem chama.
+    if (req.method === "GET" && caminho === "alertas") {
+      const alertas = await listarAlertas(supabase, tenantId, {
+        naoLidos: url.searchParams.get("nao_lidos") === "true",
+        agoraMs: ctx?.agora ? ctx.agora() : Date.now(),
+      });
+      return jsonResponse({ ok: true, alertas });
+    }
+    if (req.method === "POST" && caminho === "alertas/lido") {
+      let corpo: unknown = null;
+      try {
+        corpo = await req.json();
+      } catch {
+        return jsonResponse({ erro: "Corpo JSON inválido." }, 400);
+      }
+      const id = (corpo as { id?: unknown } | null)?.id;
+      if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) {
+        return jsonResponse({ erro: "Informe o id do alerta (inteiro positivo)." }, 400);
+      }
+      if (!user) return jsonResponse({ erro: "Não autenticado." }, 401);
+      const marcado = await marcarAlertaLido(supabase, tenantId, id, user.id, ctx?.agora ? ctx.agora() : Date.now());
+      if (!marcado) return jsonResponse({ erro: "Alerta não encontrado." }, 404);
+      return jsonResponse({ ok: true });
     }
 
     // 1. GET /api-disputa/estrategia?licitacao_id=...
@@ -305,6 +298,7 @@ export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Prom
     }
 
     // 3. GET /api-disputa/chat?licitacao_id=... (consumido pelo Dashboard)
+    //    O chat é global (uma cópia por compra); o acesso é amarrado ao pipeline do tenant.
     if (req.method === "GET" && caminho === "chat") {
       const licitacaoIdStr = url.searchParams.get("licitacao_id");
       if (!licitacaoIdStr) {
@@ -315,7 +309,6 @@ export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Prom
         return jsonResponse({ erro: "licitacao_id inválido." }, 400);
       }
 
-      // Verifica se a licitação pertence ao pipeline do tenant
       const { data: pipelineRow, error: erroPipeline } = await supabase
         .from("pipeline_oportunidades")
         .select("licitacao_id")
@@ -328,20 +321,66 @@ export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Prom
         return jsonResponse({ erro: "Oportunidade não encontrada no pipeline do tenant." }, 404);
       }
 
-      const { data: mensagens, error } = await supabase
-        .from("disputa_mensagens")
-        .select("*")
-        .eq("tenant_id", tenantId)
-        .eq("licitacao_id", licitacaoId)
-        .order("data_hora_oficial", { ascending: true });
+      const { data: licitacao, error: erroLic } = await supabase
+        .from("licitacoes_externas")
+        .select("id, codigo_externo, link_sistema_origem, raw")
+        .eq("id", licitacaoId)
+        .maybeSingle();
+      if (erroLic) throw erroLic;
 
+      const chaveCompra = licitacao ? extrairChaveCompra17Digitos(licitacao) : null;
+      if (!chaveCompra) {
+        // Estado explícito: sem chave oficial não há como consultar o chat (nunca lista vazia disfarçada).
+        return jsonResponse({
+          ok: true,
+          fonte: "integra_compras",
+          chave_compra: null,
+          motivo: "sem_chave_compra",
+          ultima_consulta: null,
+          mensagens: [],
+        });
+      }
+
+      const { data: mensagens, error } = await supabase
+        .from("sessao_mensagens")
+        .select(
+          "chave_mensagem, tipo, identificador_item, categoria, tipo_remetente, texto, data_hora, data_hora_fonte, fonte, coletado_em",
+        )
+        .eq("chave_compra", chaveCompra)
+        .order("data_hora", { ascending: true })
+        .order("id", { ascending: true });
       if (error) throw error;
-      return jsonResponse({ ok: true, mensagens: mensagens || [] });
+
+      const { data: ultimaRun, error: erroRun } = await supabase
+        .schema("private")
+        .from("integra_compras_run")
+        .select("iniciado_em, terminado_em, erro")
+        .eq("chave_compra", chaveCompra)
+        .order("iniciado_em", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (erroRun) throw erroRun;
+
+      return jsonResponse({
+        ok: true,
+        fonte: "integra_compras",
+        chave_compra: chaveCompra,
+        motivo: null,
+        ultima_consulta: ultimaRun
+          ? { iniciado_em: ultimaRun.iniciado_em, terminado_em: ultimaRun.terminado_em, com_erro: Boolean(ultimaRun.erro) }
+          : null,
+        mensagens: mensagens || [],
+      });
     }
 
-    // 4. POST /api-disputa/sync-chat (sincroniza com o Serpro sob demanda ou por cron)
+    // 4. POST /api-disputa/sync-chat (consulta o Integra Compras sob demanda ou por cron)
     if (req.method === "POST" && caminho === "sync-chat") {
-      const body = await req.json();
+      let body: Record<string, unknown>;
+      try {
+        body = await req.json();
+      } catch {
+        return jsonResponse({ erro: "Corpo JSON inválido." }, 400);
+      }
       const { licitacao_id, chave_compra } = body;
 
       if (!licitacao_id) {
@@ -353,9 +392,7 @@ export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Prom
         return jsonResponse({ erro: "licitacao_id inválido." }, 400);
       }
 
-      let tenantsAlvo: number[] = [];
-
-      // Se for acionado por cron, resolve todos os tenants com essa licitação no pipeline (ou valida o tenant informado)
+      // Só compras que estão no pipeline de algum tenant são consultadas (cada chamada é cobrada).
       if (isCron) {
         const tenantParam = body.tenant_id ? parseInt(String(body.tenant_id), 10) : null;
         if (tenantParam && !isNaN(tenantParam)) {
@@ -369,7 +406,6 @@ export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Prom
           if (!pipe) {
             return jsonResponse({ erro: "Licitação não vinculada ao tenant informado no pipeline." }, 404);
           }
-          tenantsAlvo = [tenantParam];
         } else {
           const { data: pipes, error: ePipe } = await supabase
             .from("pipeline_oportunidades")
@@ -379,10 +415,8 @@ export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Prom
           if (!pipes || pipes.length === 0) {
             return jsonResponse({ erro: "Licitação não vinculada a nenhum tenant ativo no pipeline." }, 404);
           }
-          tenantsAlvo = Array.from(new Set(pipes.map((p) => p.tenant_id)));
         }
       } else {
-        // Para usuário autenticado, verifica se a licitação pertence ao seu tenant
         const { data: pipelineRow, error: erroPipeline } = await supabase
           .from("pipeline_oportunidades")
           .select("licitacao_id")
@@ -394,10 +428,9 @@ export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Prom
         if (!pipelineRow) {
           return jsonResponse({ erro: "Oportunidade não encontrada no pipeline do tenant." }, 404);
         }
-        tenantsAlvo = [tenantId];
       }
 
-      // Validação de segurança (K-3 / Anti-Proxy): amarra a chave_compra estritamente ao registro oficial
+      // A chave consultada vem sempre do registro oficial da licitação, nunca do corpo da requisição.
       const { data: licitacao, error: erroLic } = await supabase
         .from("licitacoes_externas")
         .select("id, codigo_externo, link_sistema_origem, raw")
@@ -416,50 +449,54 @@ export async function handleRequest(req: Request, ctx?: ApiDisputaContext): Prom
         }, 400);
       }
 
-      // Rejeita estritamente qualquer tentativa de proxy com chave alheia
       if (typeof chave_compra === "string" && chave_compra.trim() && chave_compra.trim() !== chaveOficial) {
         return jsonResponse({ erro: "Chave de compra não corresponde ao registro oficial da licitação." }, 400);
       }
 
-      const chaveFinal = chaveOficial;
-
-      // Consulta mensagens e diligências no Integra Compras
-      const fnChat = ctx?.consultarChat ?? consultarChatSerpro;
-      const fnDiligencias = ctx?.consultarDiligencias ?? consultarDiligenciasSerpro;
-
-      const [mensagensChat, diligencias] = await Promise.all([
-        fnChat(chaveFinal),
-        fnDiligencias(chaveFinal),
-      ]);
-
-      const todas: MensagemSerpro[] = [...mensagensChat, ...diligencias];
-      let inseridas = 0;
-
-      for (const tId of tenantsAlvo) {
-        for (const m of todas) {
-          const { error: erroUpsert } = await supabase.from("disputa_mensagens").upsert(
-            {
-              tenant_id: tId,
-              licitacao_id: licitacaoId,
-              chave_compra: chaveFinal,
-              item_numero: m.item ?? null,
-              categoria: m.categoria.toLowerCase(),
-              remetente: m.remetente,
-              mensagem: m.texto,
-              data_hora_oficial: new Date(m.dataHora).toISOString(),
-            },
-            { onConflict: "tenant_id,chave_compra,data_hora_oficial,mensagem" }
-          );
-
-          if (erroUpsert) {
-            console.error(`[api-disputa] Falha ao persistir mensagem Serpro para tenant ${tId}:`, erroUpsert);
-            throw erroUpsert;
-          }
-          inseridas++;
+      // Cada consulta é cobrada: pedido manual repetido na mesma compra espera o intervalo mínimo.
+      if (!isCron) {
+        const { data: recente, error: erroRecente } = await supabase
+          .schema("private")
+          .from("integra_compras_run")
+          .select("iniciado_em")
+          .eq("chave_compra", chaveOficial)
+          .order("iniciado_em", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (erroRecente) throw erroRecente;
+        const ultima = recente?.iniciado_em ? new Date(String(recente.iniciado_em)).getTime() : NaN;
+        if (Number.isFinite(ultima) && Date.now() - ultima < INTERVALO_MINIMO_USUARIO_MS) {
+          return jsonResponse({
+            erro: "Esta compra foi consultada há pouco. Aguarde alguns minutos para consultar de novo.",
+            ultima_consulta: recente!.iniciado_em,
+          }, 429);
         }
       }
 
-      return jsonResponse({ ok: true, total_lidas: todas.length, novas_inseridas: inseridas });
+      const r = await sincronizarCompra(
+        supabase,
+        { chaveCompra: chaveOficial, licitacaoId, origem: isCron ? "cron" : "usuario" },
+        { consultarChat: ctx?.consultarChat, consultarDiligencias: ctx?.consultarDiligencias },
+      );
+
+      if (!r.ok) {
+        return jsonResponse({
+          ok: false,
+          erro: `Integra Compras indisponível (HTTP ${r.status_erro ?? "sem resposta"}). Nada foi apagado.`,
+          total_lidas: r.total_lidas,
+          novas_inseridas: r.novas_inseridas,
+          alertas_gerados: r.alertas_gerados,
+          chamadas: r.chamadas,
+        }, 502);
+      }
+
+      return jsonResponse({
+        ok: true,
+        total_lidas: r.total_lidas,
+        novas_inseridas: r.novas_inseridas,
+        alertas_gerados: r.alertas_gerados,
+        chamadas: r.chamadas,
+      });
     }
 
     return jsonResponse({ erro: "Rota não encontrada." }, 404);

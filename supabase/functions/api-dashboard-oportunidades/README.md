@@ -193,7 +193,7 @@ Lista oportunidades com suporte a paginação, ordenação configurável e múlt
 | `modalidade` | string / string[] | Modalidade única ou lista separada por vírgula / array |
 | `situacao` | string | Situação da licitação |
 | `fase` | string | Fase da licitação |
-| `categoria_escopo` | string | Categoria (`catmat`, `borracha`, `piso`, `obra_piso`, `forte`, `fraco`) |
+| `categoria_escopo` | string | Categoria (`catmat`, `borracha`, `piso`, `obra_piso`, `forte`, `fraco`, `manutencao`) |
 | `interesse_borracha` | boolean | Filtrar oportunidades de interesse em borracha (`true`/`false`) |
 | `fonte` | string | Fonte dos dados (`pncp`, `sestsenat`, etc.) |
 | `data_publicacao_inicio` | string | Início da publicação (`>= data_publicacao_inicio`) |
@@ -266,6 +266,11 @@ Obtém o painel de acompanhamento em tempo real para uma oportunidade, consultan
 - URLs seguras derivadas na leitura: `url_edital` (só link do edital; Sistema S/Paradigma sem link da origem = null), `url_portal` (mural público do portal Paradigma da fonte, não é o edital; null nas outras fontes) e `url_acompanhamento` (redirecionamento Comprasnet `https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/landing?destino=acompanhamento-compra&compra={idCompra}` quando `idCompra` tem 17 dígitos válidos).
 - Cache em memória de ~5 minutos (`Cache-Control: private, max-age=300`).
 - Isolamento de falhas parciais: falha em uma seção não inviabiliza as demais; cada seção possui seu campo `erro`.
+- **PNCP fora: fontes em ordem por seção.** O `erro` da 1ª fonte fica sempre na seção, e a resposta com seção em erro é `no-store`.
+  - Itens e Documentos com erro e sem dados vêm da cópia gravada pelo coletor (`origem: "copia_local"`, `copia_gravada_em`; PR #501).
+  - **Spec 0049.** Resumo (`compra`) e Atas com erro e sem dados vêm do índice de busca do PNCP (`/api/search/`), casado pelo `numero_controle_pncp` exato: `origem: "busca_pncp"` e `busca_atualizado_em`, a `data_atualizacao_pncp` do índice em ISO `-03:00` (Atas: a mais recente). O que a busca não traz fica `null`: `processo`, `linkSistemaOrigem`, `datas.inclusao`. Atas sem fornecedor e sem valor, com `permiteAdesao`.
+  - Itens/Documentos da cópia ganham `conferencia_busca: { pncp_atualizado_em, gravado_em, compra_mudou }`, que compara a atualização da compra no índice com `licitacoes_externas.pncp_data_atualizacao`. A comparação usa a `dataAtualizacao` da compra, não a global: `compra_mudou: false` não prova que os itens não mudaram.
+  - A busca falhando (2 tentativas só para queda de conexão, 5 s cada) deixa a seção como estava. Contrato medido da busca: `docs/pncp/schemas-consultas-pncp.md`, seção 6.
 
 Requer autenticação JWT do usuário (`401` se não autenticado).
 
@@ -389,6 +394,45 @@ A ação é somente leitura: não grava eventos nem gera tarefas. A automação 
 ```
 
 ---
+
+### 5. `resumo_executivo` (specs 0048 e 0050)
+
+Números do Painel Executivo calculados no banco por `public.dashboard_resumo_executivo` (prioridade efetiva, só
+publicações canônicas, leads + monitorar), nunca por uma amostra da lista.
+
+- **Auth:** JWT de usuário (401 sem). Exige empresa ativa de quem chama (`_shared/tenant.ts`): sem vínculo, vínculo
+  desligado ou empresa desativada → 403, antes de qualquer consulta de dados.
+- **Parâmetros (GET ou POST):** só o recorte de catálogo/CATMAT da `list`: `catmat_grupo`, `catmat_classe`,
+  `catmat_pdm`, `catmat_item`, `catalogo`. Qualquer outro filtro (uf, busca, prioridade...) → 400.
+- **Recorte:** sem recorte, o resumo conta todas as oportunidades; recorte sem nenhuma licitação conta nenhuma
+  (zeros e somas `null`), nunca todas. Timeout ao resolver o recorte ou ao calcular → 503; linha da função fora do contrato → 500.
+
+```json
+{
+  "action": "resumo_executivo",
+  "resumo": {
+    "leads_total": 3, "monitoradas_total": 4,
+    "valor_potencial_total": 3300.5, "com_valor_total": 3,
+    "prazo_amanha_total": 1, "prazo_amanha_valor": 1000,
+    "prazo_7_dias_total": 3, "prazo_7_dias_valor": 3300.5,
+    "calculado_em": "2026-11-09T15:00:00+00:00"
+  },
+  "recorte": { "aplicado": true, "filtros": { "catalogo": true }, "licitacoes_total": 6 },
+  "fonte": "licitacoes_externas_prioridade_efetiva",
+  "criterio_valor": "itens_no_escopo",
+  "categorias_valor": ["forte", "catmat", "borracha", "piso", "obra_piso", "manutencao"]
+}
+```
+
+- **Valores (spec 0050, "Valor no escopo"):** `valor_potencial_total`, `prazo_amanha_valor` e `prazo_7_dias_valor`
+  somam `licitacao_itens.valor_total_estimado` só dos itens com `categoria_escopo` em `categorias_valor`; `fraco` e
+  item sem categoria ficam fora. Não somam mais o `valor_total` do certame. `com_valor_total` conta as licitações
+  com pelo menos um desses itens com valor. A categoria vem do coletor (CATMAT e termos), não do TR.
+- Os valores são `null` quando nenhum item que conta tem valor (a tela mostra "—", nunca 0).
+- `prazo_amanha_*`: prazo (o mesmo instante com que a view rebaixa leads: normalizado, senão `raw.data_fim_vigencia`, senão `data_fim`) depois de agora e até 23:59:59 de amanhã (Brasília); `prazo_7_dias_*`: até 23:59:59 do
+  7º dia depois de hoje. Sem "alta aderência" (volta só com aderência pelo TR, decisão de 09/11).
+- `recorte.licitacoes_total`: licitações do recorte (todas as prioridades, antes do escopo leads + monitorar); `null`
+  sem recorte.
 
 ## Tratamento de Erros
 

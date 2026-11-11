@@ -7,6 +7,8 @@ import { diaBrasilia } from "../_shared/portal-compras.ts";
 import { sincronizarPortalOficialEAtraso } from "./pncpAtraso.ts";
 import { estaNoPipeline } from "./portal.ts";
 import { UnifiedHttpClient } from "../_shared/http-client/index.ts";
+import { aplicarCopiaLocal, arquivosDaCopiaLocal, itensDaCopiaLocal, precisaDaCopia } from "./copiaLocal.ts";
+import { aplicarBuscaPncp, clearBuscaPncpCache } from "./buscaPncp.ts";
 import type {
   AcompanhamentoActionParams,
   AcompanhamentoResponse,
@@ -126,6 +128,11 @@ interface CacheEntry {
 
 const acompanhamentoCache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 5 * 60 * 1000;
+/**
+ * Cache negativo: resposta com seção em erro fica pouco tempo, para o "Tentar novamente" voltar a consultar o
+ * PNCP logo e, ao mesmo tempo, cliques seguidos não ocuparem o lease de pncp.gov.br (compartilhado com os coletores).
+ */
+export const CACHE_ERRO_TTL_MS = 15 * 1000;
 const MAX_CACHE_ENTRIES = 200;
 
 export function getCachedAcompanhamento(key: string): AcompanhamentoResponse | null {
@@ -138,7 +145,11 @@ export function getCachedAcompanhamento(key: string): AcompanhamentoResponse | n
   return entry.data;
 }
 
-export function setCachedAcompanhamento(key: string, data: AcompanhamentoResponse): void {
+export function setCachedAcompanhamento(
+  key: string,
+  data: AcompanhamentoResponse,
+  ttlMs: number = CACHE_TTL_MS,
+): void {
   if (acompanhamentoCache.size >= MAX_CACHE_ENTRIES) {
     const now = Date.now();
     for (const [k, v] of acompanhamentoCache.entries()) {
@@ -150,13 +161,14 @@ export function setCachedAcompanhamento(key: string, data: AcompanhamentoRespons
     }
   }
   acompanhamentoCache.set(key, {
-    expiresAt: Date.now() + CACHE_TTL_MS,
+    expiresAt: Date.now() + ttlMs,
     data,
   });
 }
 
 export function clearAcompanhamentoCache(): void {
   acompanhamentoCache.clear();
+  clearBuscaPncpCache();
 }
 
 /**
@@ -179,6 +191,27 @@ async function mapConcurrent<T, R>(
   return results;
 }
 
+/**
+ * Opções das chamadas ao PNCP no detalhe (caminho interativo: o usuário espera a resposta).
+ * Uma tentativa só, sem retry: o host pncp.gov.br passa pelo lease global (private.acquire_http_slot,
+ * 1 requisição/s, concorrência 1, compartilhado com os coletores), e cada nova tentativa ocupa mais uma vaga
+ * da fila. Em 09/11/2026 (id 125) o PNCP devolvia 503 em 0,3 s e o detalhe levava 17 a 32 s: 13 vagas do lease
+ * (5 endpoints, 3 tentativas cada nos que falhavam) somaram 18,1 s de 19,5 s. A seção que falha volta com
+ * `erro` explícito e o botão "Tentar novamente" consulta de novo (resposta com erro fica só 15 s no cache).
+ * Timeout de 10 s por tentativa: o detalhe não fica 20 s preso num PNCP que não responde.
+ */
+export const PNCP_DETALHE_OPCOES = { attemptTimeoutMs: 10_000, maxAttempts: 1 } as const;
+
+/** Resposta sem seção em erro (cache de 5 min); com erro, só o cache negativo de 15 s (CACHE_ERRO_TTL_MS). */
+export function acompanhamentoCompleto(payload: AcompanhamentoResponse): boolean {
+  if (!payload.disponivel) return false;
+  const secoesOk = [payload.compra, payload.itens, payload.atas, payload.historico, payload.arquivos]
+    .every((secao) => secao.erro === null);
+  // falha em /itens/{n}/resultados fica no item (resultadosErro), não na seção
+  const resultadosOk = (payload.itens.dados ?? []).every((item) => !item.resultadosErro);
+  return secoesOk && resultadosOk;
+}
+
 // -----------------------------------------------------------------------------
 // Clientes e Normalizadores de Endpoints PNCP
 // -----------------------------------------------------------------------------
@@ -195,7 +228,7 @@ async function fetchCompraMetadata(
       headers: { Accept: "application/json" },
     }, {
       endpoint: "/api/consulta/v1/orgaos/{cnpj}/compras/{ano}/{seq}",
-      attemptTimeoutMs: 20_000,
+      ...PNCP_DETALHE_OPCOES,
     });
 
     if (res.status === 204 || !res.body || typeof res.body !== "object") {
@@ -304,7 +337,7 @@ async function fetchItensComResultados(
       }, {
         endpoint: "/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/itens",
         pagina,
-        attemptTimeoutMs: 20_000,
+        ...PNCP_DETALHE_OPCOES,
       });
 
       if (res.status === 204 || !res.body) break;
@@ -337,7 +370,7 @@ async function fetchItensComResultados(
           headers: { Accept: "application/json" },
         }, {
           endpoint: "/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/itens/{n}/resultados",
-          attemptTimeoutMs: 20_000,
+          ...PNCP_DETALHE_OPCOES,
         });
 
         if (resResult.status === 204 || !resResult.body) {
@@ -395,7 +428,7 @@ async function fetchAtas(
       }, {
         endpoint: "/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/atas",
         pagina,
-        attemptTimeoutMs: 20_000,
+        ...PNCP_DETALHE_OPCOES,
       });
 
       if (res.status === 204 || !res.body) break;
@@ -448,7 +481,7 @@ async function fetchHistorico(
       }, {
         endpoint: "/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/historico",
         pagina,
-        attemptTimeoutMs: 20_000,
+        ...PNCP_DETALHE_OPCOES,
       });
 
       if (res.status === 204 || !res.body) break;
@@ -504,7 +537,7 @@ async function fetchArquivos(
       headers: { Accept: "application/json" },
     }, {
       endpoint: "/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/arquivos",
-      attemptTimeoutMs: 20_000,
+      ...PNCP_DETALHE_OPCOES,
     });
 
     if (res.status === 204 || !res.body) {
@@ -570,6 +603,8 @@ export const ACOMPANHAMENTO_LICITACAO_COLUMNS: readonly string[] = [
   "link_sistema_origem",
   "fase",
   "raw",
+  // spec 0049: conferência da cópia local com a atualização da compra no índice de busca do PNCP
+  "pncp_data_atualizacao",
 ];
 
 // -----------------------------------------------------------------------------
@@ -661,6 +696,16 @@ export function linkSistemaOrigemFromRaw(raw: unknown): string | null {
 
 const semTenant: TenantDoUsuario = () => Promise.resolve(null);
 
+/** Cliente HTTP do detalhe. Host lease usa private.acquire_http_slot via client.schema("private").rpc(...). */
+function httpClientDoDetalhe(client: SupabaseClient, ctx?: DashboardOportunidadesClientContext): UnifiedHttpClient {
+  if (ctx?.httpClient) return ctx.httpClient;
+  const hasPrivateRpc = typeof client.rpc === "function" && typeof client.schema === "function";
+  return new UnifiedHttpClient({
+    supabaseClient: hasPrivateRpc ? client : null,
+    hostLease: hasPrivateRpc ? undefined : null,
+  });
+}
+
 export async function handleAcompanhamento(
   params: AcompanhamentoActionParams,
   ctx?: DashboardOportunidadesClientContext,
@@ -710,12 +755,7 @@ export async function handleAcompanhamento(
     if (cached && cached.disponivel) {
       payload = cached;
     } else {
-    // Host lease usa private.acquire_http_slot via client.schema("private").rpc(...).
-    const hasPrivateRpc = typeof client.rpc === "function" && typeof client.schema === "function";
-    const httpClient = ctx?.httpClient ?? new UnifiedHttpClient({
-      supabaseClient: hasPrivateRpc ? client : null,
-      hostLease: hasPrivateRpc ? undefined : null,
-    });
+    const httpClient = httpClientDoDetalhe(client, ctx);
 
     // 5. Executa requisições em paralelo com tratamento individual de erros
     const [compraSettled, itensSettled, atasSettled, historicoSettled, arquivosSettled] =
@@ -781,12 +821,36 @@ export async function handleAcompanhamento(
       portal: null,
     };
 
-    setCachedAcompanhamento(cacheKey, payload);
+    setCachedAcompanhamento(cacheKey, payload, acompanhamentoCompleto(payload) ? CACHE_TTL_MS : CACHE_ERRO_TTL_MS);
     }
 
     const linkPortal = (typeof row.link_sistema_origem === "string" ? row.link_sistema_origem : null) ??
       (payload.disponivel ? payload.compra.dados?.linkSistemaOrigem : null) ??
       linkSistemaOrigemFromRaw(row.raw);
+    // PNCP fora (itens/documentos com erro e sem dados): cópia gravada pelo coletor, com o erro do PNCP mantido.
+    // Fora do cache: a cópia é do banco e não pode prender o "Tentar novamente".
+    if (payload.disponivel) {
+      const disp = payload;
+      const [copiaItens, copiaArquivos] = await Promise.all([
+        precisaDaCopia(disp.itens) ? itensDaCopiaLocal(client, Number(row.id)) : Promise.resolve(null),
+        precisaDaCopia(disp.arquivos) ? arquivosDaCopiaLocal(client, Number(row.id), disp.pncp) : Promise.resolve(null),
+      ]);
+      const comCopia = {
+        compra: disp.compra,
+        atas: disp.atas,
+        itens: aplicarCopiaLocal(disp.itens, copiaItens),
+        arquivos: aplicarCopiaLocal(disp.arquivos, copiaArquivos),
+      };
+      // Spec 0049: Resumo e Atas pela busca do PNCP e conferência da cópia, só quando alguma seção falhou.
+      const comBusca = await aplicarBuscaPncp(
+        comCopia,
+        disp.pncp.numero_controle_pncp,
+        row.pncp_data_atualizacao,
+        httpClientDoDetalhe(client, ctx),
+      );
+      payload = { ...disp, ...comBusca };
+    }
+
     // PDM e unidade por item (CA-8 da spec 0009): lidos do banco a cada resposta, também quando o PNCP veio do cache.
     const itensDoPayload = payload.disponivel && Array.isArray(payload.itens.dados) ? payload.itens.dados : [];
     const [portal, itensComPreco] = await Promise.all([
@@ -841,7 +905,8 @@ export async function handleAcompanhamento(
         : payload,
       200,
       {
-        "Cache-Control": "private, max-age=300",
+        // Resposta com seção em erro não fica no navegador: o "Tentar novamente" precisa chegar à função.
+        "Cache-Control": acompanhamentoCompleto(payload) ? "private, max-age=300" : "no-store",
       },
     );
   } catch (err: unknown) {

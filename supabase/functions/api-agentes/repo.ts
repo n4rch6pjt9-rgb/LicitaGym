@@ -24,6 +24,8 @@ export interface Dossie {
   dispositivos: Dispositivo[];
   /** Portal oficial da disputa (link de origem, derivado ou só o nome). Ausente em dossiê montado à mão. */
   portal_oficial?: PortalOficial;
+  /** Datas de `public.feriados_nacionais` (spec 0041). Ausente: prazo de impugnação `nao_calculado`. */
+  feriados?: string[];
 }
 
 export interface Execucao {
@@ -434,6 +436,12 @@ export function createSupabaseRepo(client: SupabaseClient): AgentesRepo {
         .eq("norma", NORMA);
       if (eDisp) throw new Error(eDisp.message);
 
+      const { data: feriados, error: eFer } = await client
+        .from("feriados_nacionais")
+        .select("data")
+        .order("data", { ascending: true });
+      if (eFer) throw new Error(eFer.message);
+
       const chunksEdital = (chunks ?? []) as ChunkEdital[];
       return {
         // licitacoes_externas ainda não registra uma data inequívoca de sessão pública.
@@ -447,6 +455,7 @@ export function createSupabaseRepo(client: SupabaseClient): AgentesRepo {
         dispositivos: ((dispositivos ?? []) as Dispositivo[]),
         // Rota do portal: link de origem, depois portal mapeado ou indicado no edital (com o trecho).
         portal_oficial: resolverPortalOficial(lic as Record<string, unknown>, chunksEdital),
+        feriados: ((feriados ?? []) as { data: string }[]).map((f) => f.data),
       };
     },
 

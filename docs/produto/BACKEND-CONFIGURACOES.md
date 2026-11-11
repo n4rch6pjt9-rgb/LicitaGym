@@ -8,7 +8,7 @@ Base: repositório `n4rch6pjt9-rgb/LicitaGym` (`main`, commit `8436bdd`), banco 
 1. Colunas do CSV do catálogo aprovadas, inclusive o formato `atr:<nome>` para atributos.
 2. Catálogo, escopo CATMAT e ficha de produto saem de "Descoberta" e vão para `/configuracoes`.
 3. Usuários & RBAC e Modelo de Dados (hoje só na demo): levantar o backend dentro da estrutura proposta (este documento).
-4. Visões salvas de filtro são **da equipe** (compartilhadas no tenant).
+4. Visões salvas de filtro são **da equipe** (compartilhadas no tenant). *Revista em 09/11: por usuário (ver `ESCOPO.md`).*
 
 ## 1. Estado de cada página de `/configuracoes`
 

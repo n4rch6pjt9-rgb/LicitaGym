@@ -99,7 +99,9 @@ export async function handleRotinaImpressao(params: {
         erroPrincipal: s.pausa ?? undefined,
         parametros: { ...body, ano, resumo },
       });
-      return jsonResponse({ status, sync_id: runId, ...resumo });
+      // Só contadores na resposta; mensagens (pausa, erro da consulta) ficam em pncp_sync_run.
+      const { pausa: _p, ...contadores } = s;
+      return jsonResponse({ status, sync_id: runId, rotina, ano, impressao: contadores });
     } catch (error) {
       const mensagem = error instanceof Error ? error.message : String(error);
       await finishSyncRun(client, runId, {

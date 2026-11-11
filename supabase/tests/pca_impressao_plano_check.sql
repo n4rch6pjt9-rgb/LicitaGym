@@ -9,8 +9,9 @@
 --         de grupo/data → evento nulo; inativação com a classe trocada → saiu_escopo; inativação → item_removido;
 --         reativação com a classe trocada → entrou_escopo; insert de plano → pca_novo; evento explícito (aviso
 --         'pca_removido') preservado;
---   CRON  (só com pg_cron) os jobs de impressão e descoberta não existirem ou os três jobs antigos da fila
---         continuarem ativos.
+--   CRON  (só com pg_cron) os jobs de impressão e descoberta não existirem ativos, o incremental pela consulta
+--         (licitagym-sync-pncp-pca-fila) ou a reconciliação continuarem ativos, ou a continuação não cobrir 06–08 UTC.
+--   EVT   também: update com troca de classe entre classes do escopo → item_atualizado (não entrou_escopo).
 -- Fixtures fictícias (ano 2093, CNPJ 99000001000101); tudo termina em rollback. Rodar no banco descartável.
 begin;
 
@@ -27,7 +28,9 @@ begin
       v_falhas := v_falhas || format('RLS desligada em %s', t);
     end if;
     if has_table_privilege('anon', t, 'select') or has_table_privilege('authenticated', t, 'select')
-      or has_table_privilege('anon', t, 'insert') or has_table_privilege('authenticated', t, 'insert') then
+      or has_table_privilege('anon', t, 'insert') or has_table_privilege('authenticated', t, 'insert')
+      or has_table_privilege('anon', t, 'update') or has_table_privilege('authenticated', t, 'update')
+      or has_table_privilege('anon', t, 'delete') or has_table_privilege('authenticated', t, 'delete') then
       v_falhas := v_falhas || format('anon/authenticated com acesso a %s', t);
     end if;
     if not (has_table_privilege('service_role', t, 'select') and has_table_privilege('service_role', t, 'insert')
@@ -96,6 +99,10 @@ begin
       jsonb_build_object('numero_item', 7, 'classe_material_servico', '7830', 'ativo', true));
   insert into public.pca_alteracoes (pca_plano_id, tipo_operacao, evento, dados_novos)
     values (v_plano, 'aviso', 'pca_removido', jsonb_build_object('situacao', 'a_confirmar'));
+  insert into public.pca_alteracoes (pca_plano_id, pca_item_id, tipo_operacao, dados_anteriores, dados_novos)
+    values (v_plano, v_item, 'update',
+      jsonb_build_object('numero_item', 7, 'classe_material_servico', '7830', 'ativo', true),
+      jsonb_build_object('numero_item', 7, 'classe_material_servico', '7220', 'ativo', true));
 
   -- Inativação pelo trigger da tabela: com a classe trocada (saiu do escopo) e sem troca (removido).
   update public.pca_itens set ativo = false, classe_material_servico = '7520' where id = v_item;
@@ -115,14 +122,16 @@ begin
       or (v_r.n = 4 and v_r.evento is not null)
       or (v_r.n = 5 and v_r.evento is distinct from 'entrou_escopo')
       or (v_r.n = 6 and v_r.evento is distinct from 'pca_removido')
-      or (v_r.n = 7 and v_r.evento is distinct from 'saiu_escopo')
-      or (v_r.n = 8 and v_r.evento is distinct from 'item_removido') then
+      or (v_r.n = 7 and (v_r.evento is distinct from 'item_atualizado'
+        or v_r.campos_alterados is distinct from array['classe_material_servico']::text[]))
+      or (v_r.n = 8 and v_r.evento is distinct from 'saiu_escopo')
+      or (v_r.n = 9 and v_r.evento is distinct from 'item_removido') then
       raise exception 'EVT: linha % com evento % (campos %, data_fonte %)', v_r.n, v_r.evento, v_r.campos_alterados,
         v_r.data_fonte;
     end if;
   end loop;
-  if (select count(*) from public.pca_alteracoes where pca_plano_id = v_plano) <> 8 then
-    raise exception 'EVT: esperava 8 linhas de alteração';
+  if (select count(*) from public.pca_alteracoes where pca_plano_id = v_plano) <> 9 then
+    raise exception 'EVT: esperava 9 linhas de alteração';
   end if;
 
   begin
@@ -143,12 +152,17 @@ begin
     raise notice 'pca_impressao_plano_check: pg_cron ausente, parte CRON pulada';
     return;
   end if;
-  if (select count(*) from cron.job where jobname in ('licitagym-sync-pncp-pca-impressao',
+  if (select count(*) from cron.job where active and jobname in ('licitagym-sync-pncp-pca-impressao',
       'licitagym-sync-pncp-pca-descoberta')) <> 2 then
-    raise exception 'CRON: jobs de impressão/descoberta ausentes';
+    raise exception 'CRON: jobs de impressão/descoberta ausentes ou inativos';
   end if;
-  if exists (select 1 from cron.job where active and jobname in ('licitagym-sync-pncp-pca-reconciliacao')) then
-    raise exception 'CRON: reconciliação antiga continua ativa';
+  if exists (select 1 from cron.job where active and jobname in ('licitagym-sync-pncp-pca-fila',
+      'licitagym-sync-pncp-pca-reconciliacao')) then
+    raise exception 'CRON: incremental pela consulta ou reconciliação continua ativo';
+  end if;
+  if exists (select 1 from cron.job where jobname = 'licitagym-sync-pncp-pca-fila-continuacao'
+      and schedule <> '*/10 6-8 * * *') then
+    raise exception 'CRON: continuação da carga fora da janela 06–08 UTC';
   end if;
 end;
 $cron$;

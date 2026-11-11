@@ -94,9 +94,10 @@ create index if not exists pca_alteracoes_evento_idx on public.pca_alteracoes (e
 --   plano: insert → pca_novo; inativacao → pca_removido; update/reativacao com campo de negócio mudado →
 --          pca_atualizado; senão nulo.
 --   item:  insert → item_detectado; inativacao com classe trocada → saiu_escopo, senão item_removido;
---          update/reativacao com classe trocada → entrou_escopo (só itens do escopo são gravados);
---          reativacao → item_detectado; update com campo de negócio mudado → item_atualizado, senão nulo.
---   Evento já informado (aviso) é mantido. Campos de sync, chave, situação, grupo e data da fonte não contam como
+--          reativacao com classe trocada → entrou_escopo (a carga grava a classe nova quando o item sai do escopo);
+--          reativacao → item_detectado; update com campo de negócio mudado (inclusive classe entre duas classes do
+--          escopo, e status) → item_atualizado, senão nulo.
+--   Evento já informado (aviso) é mantido. Campos de sync, chave, ativo, grupo e data da fonte não contam como
 --   mudança de negócio. data_fonte = data_atualizacao_origem do snapshot novo (ou do anterior).
 create or replace function private.pca_alteracoes_classificar_evento()
 returns trigger language plpgsql security invoker set search_path = ''
@@ -112,12 +113,8 @@ begin
   new.detectado_em := coalesce(new.detectado_em, now());
 
   v_texto := nullif(coalesce(v_nov ->> 'data_atualizacao_origem', v_ant ->> 'data_atualizacao_origem'), '');
-  if new.data_fonte is null and v_texto is not null then
-    begin
-      new.data_fonte := v_texto::timestamptz;
-    exception when others then
-      new.data_fonte := null;
-    end;
+  if new.data_fonte is null and v_texto is not null and pg_input_is_valid(v_texto, 'timestamptz') then
+    new.data_fonte := v_texto::timestamptz;
   end if;
 
   if new.evento is not null then
@@ -148,7 +145,7 @@ begin
       when new.tipo_operacao = 'insert' then 'item_detectado'
       when new.tipo_operacao = 'inativacao' then
         case when v_classe_mudou then 'saiu_escopo' else 'item_removido' end
-      when new.tipo_operacao in ('update', 'reativacao') and v_classe_mudou then 'entrou_escopo'
+      when new.tipo_operacao = 'reativacao' and v_classe_mudou then 'entrou_escopo'
       when new.tipo_operacao = 'reativacao' then 'item_detectado'
       when new.tipo_operacao = 'update' and v_campos is not null then 'item_atualizado'
     end;

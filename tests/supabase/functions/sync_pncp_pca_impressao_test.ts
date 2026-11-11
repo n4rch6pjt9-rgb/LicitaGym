@@ -259,7 +259,10 @@ Deno.test("0056 CA-8: consulta /v1/pca/ com 503 em tudo não impede a impressão
 for (const rotina of ["impressao", "descoberta"]) {
   Deno.test(`0056 CA-9: rotina ${rotina} sem token de cron recebe 401 e nada é gravado`, async () => {
     let criou = false;
-    for (const auth of [undefined, "Bearer eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoiYXV0aGVudGljYXRlZCJ9.x"]) {
+    const anterior = Deno.env.get("SYNC_CRON_SECRET");
+    Deno.env.set("SYNC_CRON_SECRET", "segredo-de-teste");
+    try {
+      for (const auth of [undefined, "Bearer token-de-usuario", "Bearer outro-segredo"]) {
       const res = await handleRequest(
         new Request("http://local/sync-pncp-pca", {
           method: "POST",
@@ -275,7 +278,41 @@ for (const rotina of ["impressao", "descoberta"]) {
       );
       assertEquals(res.status, 401);
       await res.body?.cancel();
+      }
+    } finally {
+      if (anterior === undefined) Deno.env.delete("SYNC_CRON_SECRET");
+      else Deno.env.set("SYNC_CRON_SECRET", anterior);
     }
     assertEquals(criou, false);
   });
 }
+
+Deno.test("0056: lista que termina em 404 depois de página cheia não conta ausência (pode estar truncada)", async () => {
+  const db = banco([plano(ORGAO_A, 1), plano(ORGAO_A, 99)]);
+  const integ = integracaoFake({
+    [ORGAO_A]: Array.from({ length: 50 }, (_, i) => linhaImpressao(ORGAO_A, i + 1)),
+  });
+  const s = await executarImpressao(db as never, integ, {
+    ano: ANO,
+    classes: ["7830"],
+    limiteOrgaos: 10,
+    prazoEsgotado: nunca,
+    runId: RUN,
+  });
+  assertEquals([s.orgaos_lidos, s.removidos_a_confirmar], [1, 0]);
+  assertEquals(db.rows("pca_alteracoes").length, 0);
+});
+
+Deno.test("0056: página 1 vazia não marca os planos gravados como ausentes", async () => {
+  const db = banco([plano(ORGAO_A, 1)]);
+  const integ = integracaoFake({}, { [`${ORGAO_A}/1`]: { status: 200, body: [] } });
+  const s = await executarImpressao(db as never, integ, {
+    ano: ANO,
+    classes: ["7830"],
+    limiteOrgaos: 10,
+    prazoEsgotado: nunca,
+    runId: RUN,
+  });
+  assertEquals(s.removidos_a_confirmar, 0);
+  assertEquals(db.rows("pca_alteracoes").length, 0);
+});

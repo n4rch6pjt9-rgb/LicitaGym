@@ -52,8 +52,7 @@ export function classificarEvento(alt: Row): Row {
       : null;
   } else if (tipo === "insert") evento = "item_detectado";
   else if (tipo === "inativacao") evento = classeMudou ? "saiu_escopo" : "item_removido";
-  else if (classeMudou) evento = "entrou_escopo";
-  else if (tipo === "reativacao") evento = "item_detectado";
+  else if (tipo === "reativacao") evento = classeMudou ? "entrou_escopo" : "item_detectado";
   else evento = campos.length ? "item_atualizado" : null;
   return {
     ...alt,

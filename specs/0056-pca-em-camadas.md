@@ -181,3 +181,43 @@ conhecem.
 ## Perguntas em aberto
 
 - Nenhuma (P-1 a P-6 respondidas em 11/11/2026, ver "Decisões do Marcelo").
+
+## Implementação (11/11/2026, branch `claude/0056-pca-camadas`)
+
+Cobertura dos CAs (todos passando na suíte Deno local, 1.325 testes):
+
+| CA | Teste |
+|---|---|
+| CA-1 | `supabase/tests/pca_impressao_plano_check.sql` (ACL, colunas, classificação de eventos no Postgres real) |
+| CA-2 | `sync_pncp_pca_impressao_test.ts`: "0056 CA-2" (2 testes) |
+| CA-3 | `sync_pncp_pca_impressao_test.ts`: "0056 CA-3" |
+| CA-4 | `sync_pncp_pca_impressao_test.ts`: "0056 CA-4" e "0056 CA-4 (P-4)" |
+| CA-5 | `sync_pncp_pca_fila_test.ts`: "0056 CA-5" |
+| CA-6 | `sync_pncp_pca_fila_test.ts`: "0056 CA-6" |
+| CA-7 | `sync_pncp_pca_fila_test.ts`: "0056 CA-7" (2 testes) |
+| CA-8 | `sync_pncp_pca_impressao_test.ts`: "0056 CA-8" |
+| CA-9 | `sync_pncp_pca_impressao_test.ts`: "0056 CA-9" (impressao e descoberta) |
+| CA-10 | `sync_pncp_pca_fila_test.ts`: "0056 CA-10" (2 testes; o primeiro já passava no Red, guarda da correção do #457) |
+
+Como ficou cada ponto que a spec deixou ao código:
+
+- **Eventos (K-4)** são classificados por um trigger `BEFORE INSERT` em `pca_alteracoes`, a partir de `tipo_operacao` e
+  dos snapshots que a RPC de persistência e o trigger de inativação já gravam (nenhum dos dois mudou). Os testes Deno
+  usam um espelho da regra (`tests/supabase/functions/_shared/pncp/_fake_pca_eventos.ts`); a regra real é provada no
+  check SQL.
+- **`entrou_escopo`** só é detectável para item que já esteve gravado: a carga grava só o escopo, então item que nunca
+  foi do escopo e passa a ser aparece como `item_detectado`. Quando o item sai do escopo, a carga grava a classe nova
+  (e o hash) junto com a inativação; se ele voltar, a troca de classe gera `entrou_escopo`.
+- **"Classe desconhecida" com o valor original guardado:** o item não é gravado em `pca_itens` (fica fora do escopo);
+  o valor original vai no aviso da fila (`erro` começa com `aviso:` e o plano termina `feito`) e na resposta bruta,
+  que já é arquivada em `source_record` antes de qualquer conferência.
+- **Hash dos itens:** `normalizePcaItem` passou a incluir `grupo_contratacao_codigo`, `grupo_contratacao_nome` e
+  `data_atualizacao_origem`. Na primeira carga depois do merge, cada item lido grava `update` em `pca_alteracoes` com
+  `evento` nulo (esses campos não contam como mudança de negócio). É a recarga de P-5.
+- **Ausência (P-4):** o contador `ausente_leituras` fica na impressão do plano. Só leitura completa do órgão conta;
+  erro do órgão (CA-3) e pausa não contam.
+- **Crons:** impressão a cada 10 min das 05:00 às 05:50 UTC (cada disparo lê os órgãos ainda não lidos no dia),
+  descoberta aos domingos 04:13 UTC, continuação da carga das 06:00 às 08:50 UTC. O incremental pela consulta e a
+  reconciliação mensal ficam com `active = false` (rollback: religar).
+- **Testes antigos ajustados ao contrato novo:** `REG-PCA-misto` (classe de 3 dígitos sem tipo de serviço agora é
+  aviso, o plano segue) e os dois de falha de leitura do catálogo em `sync_pncp_pca_lote_test.ts` (aviso, não erro).

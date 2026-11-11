@@ -755,7 +755,7 @@ export async function processarFila(
         const desconhecidos = todos.filter((it) => classeDesconhecida(it) !== null);
         const conhecidos = todos.filter((it) => classeDesconhecida(it) === null);
         const avisos = desconhecidos.map((it) =>
-          `classe desconhecida no item ${it.numeroItem} (${JSON.stringify(classeDesconhecida(it)!.valor)})`
+          `classe desconhecida no item ${it.numeroItem} (${JSON.stringify(classeDesconhecida(it)!.valor).slice(0, 80)})`
         );
         if (desconhecidos.length > 0) await recusarDesconhecidoDoEscopo(clientPlano, idPca, desconhecidos, classes);
         const escopo = conhecidos.filter((it) => doEscopo.has(String(it.classificacaoSuperiorCodigo ?? "")));
@@ -817,7 +817,13 @@ export async function processarFila(
         stats.itens_inativados += await inativarItensAusentes(clientPlano, planoId, numeros, classes, foraDoEscopo);
         avisos.push(...(r.avisos ?? []));
         if (avisos.length) {
-          console.warn(JSON.stringify({ evento: "pca_fila_aviso", id_pca_pncp: idPca, avisos, runId: opts.runId }));
+          console.warn(JSON.stringify({
+            evento: "pca_fila_aviso",
+            id_pca_pncp: idPca,
+            total: avisos.length,
+            avisos: avisos.slice(0, 20).map((a) => a.slice(0, 200)),
+            runId: opts.runId,
+          }));
         }
         await marcarFila(clientPlano, linha, true, aviso());
         stats.planos_feitos++;

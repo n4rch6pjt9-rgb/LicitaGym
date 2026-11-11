@@ -89,7 +89,7 @@ export async function lerImpressaoOrgao(
   cnpj: string,
   ano: number,
   http: OpcoesHttp = {},
-): Promise<{ ok: true; planos: PlanoImpresso[] } | { ok: false; erro: string }> {
+): Promise<{ ok: true; planos: PlanoImpresso[]; completa: boolean } | { ok: false; erro: string }> {
   const planos: PlanoImpresso[] = [];
   const vistos = new Set<number>();
   for (let pagina = 1; pagina <= MAX_PAGINAS_IMPRESSAO; pagina++) {
@@ -101,7 +101,8 @@ export async function lerImpressaoOrgao(
       http,
     );
     // Só se chega à página > 1 depois de uma página cheia: 404/204 aqui é o fim da lista.
-    if (pagina > 1 && (status === 404 || status === 204)) return { ok: true, planos };
+    // `completa: false`: a lista pode estar truncada (404 passageiro depois de página cheia); não prova ausência.
+    if (pagina > 1 && (status === 404 || status === 204)) return { ok: true, planos, completa: false };
     if (status !== 200 || !Array.isArray(body)) {
       return { ok: false, erro: `consolidado/unidades página ${pagina}: HTTP ${status}${mensagemDoCorpo(body)}` };
     }
@@ -128,7 +129,8 @@ export async function lerImpressaoOrgao(
         cabecalho: cabecalhoDaImpressao(l),
       });
     }
-    if (body.length < TAMANHO_PAGINA_IMPRESSAO) return { ok: true, planos };
+    // Página parcial e não vazia: fim natural da lista. Página 1 vazia não prova que o órgão não tem plano.
+    if (body.length < TAMANHO_PAGINA_IMPRESSAO) return { ok: true, planos, completa: body.length > 0 };
   }
   return { ok: false, erro: `consolidado/unidades: mais de ${MAX_PAGINAS_IMPRESSAO} páginas` };
 }
@@ -199,6 +201,7 @@ async function processarOrgao(
   planos: PlanoImpresso[],
   stats: ImpressaoStats,
   opts: { ano: number; classes: string[]; runId: string },
+  completa: boolean,
 ) {
   const { ano, classes, runId } = opts;
   const agora = new Date().toISOString();
@@ -225,7 +228,8 @@ async function processarOrgao(
     .select("id, id_pca_pncp, numero_plano, ativo").eq("orgao_cnpj", cnpj).eq("ano_exercicio", ano);
   if (eGrav) throw eGrav;
   const lidos = new Set(planos.map((p) => p.sequencial));
-  const ausentes = ((gravados ?? []) as Row[])
+  // Só leitura terminada numa página parcial prova ausência (erro nunca vira vazio).
+  const ausentes = !completa ? [] : ((gravados ?? []) as Row[])
     .filter((p) => p.ativo !== false && numero(p.numero_plano) !== null && !lidos.has(Number(p.numero_plano)));
 
   const impressoes: Row[] = planos.map((p) => ({
@@ -337,7 +341,7 @@ export async function executarImpressao(
       stats.orgaos_erro++;
       continue;
     }
-    await processarOrgao(client, cnpj, leitura.planos, stats, opts);
+    await processarOrgao(client, cnpj, leitura.planos, stats, opts, leitura.completa);
   }
   stats.restantes = orgaos.length - i;
   return stats;

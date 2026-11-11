@@ -1,6 +1,6 @@
 # 0056: Sincronizar o PCA em camadas: impressão digital por órgão, carga só do que mudou e eventos
 
-- **Status:** rascunho (perguntas respondidas; aguarda aprovação)
+- **Status:** em implementação (aprovada pelo Marcelo em 11/11/2026)
 - **Alimenta:** etapa 1 (coleta) de `docs/produto/TRILHAS-E-INFORME.md`; módulo 1 de `docs/produto/ESCOPO.md` (Radar
   de oportunidades). A regra de foco da 0032 está suspensa desde 11/11/2026 (`ESCOPO.md` em revisão)
 - **Repositório:** LicitaGym
@@ -44,7 +44,7 @@ produção e GET público no PNCP):
   da classe 7830 falha, nenhum plano entra na fila, nem os planos de órgãos que o sistema já conhece. São 946 planos
   ativos de 2026, de 329 órgãos, em `pca_planos`.
 - **A fila acumula erro.** `private.pca_plano_fila`: 838 `feito` e 200 `erro`. Os erros: "1 erro(s) na gravação em lote"
-  (140, causa **não diagnosticada**), "HTTP 503 on pncp.gov.br" (21) e "classificacaoSuperiorCodigo inválida" (39: um
+  (140, causa diagnosticada em 11/11/2026 no `/implement`, ver abaixo), "HTTP 503 on pncp.gov.br" (21) e "classificacaoSuperiorCodigo inválida" (39: um
   único item com código de classe fora do padrão faz o plano inteiro falhar, por decisão de não inativar item sem
   prova).
 - **O código "inválido" tem duas origens** (6 dos 39 planos lidos em 11/11/2026 por `/itens`, 355 itens fora do padrão):
@@ -66,7 +66,16 @@ produção e GET público no PNCP):
   data da fonte e sem os campos alterados.
 - **A chave plano → compra não é gravada.** `pca_itens` não tem `grupo_contratacao_codigo`, que a 0013 usa para achar a
   compra (formato `UASG-N/ANO`, provado na USP em 10/11: 113 grupos ligados).
-- Não medido: quantos órgãos têm plano alterado por dia; a causa dos 140 "erros na gravação em lote".
+- **Os 140 "erros na gravação em lote" (P-3, diagnosticado em 11/11/2026, só leitura):** todos de 2026, `motivo =
+  'alterado'`, `tentativas = 5`, de 82 órgãos, entre 27/10 07:10 e 01/11 07:50 UTC. Log real (01/11):
+  `{"evento":"pca_lote_falha","table":"catmat_pdms","op":"select","erro":"column catmat_pdms.id does not exist"}`.
+  `selectIn` (`pca-lote.ts`) ordenava por `id`, coluna que `catmat_pdms` não tem; falhava só em plano com item de
+  `pdmCodigo` numérico, **depois** de gravar os itens (1.168 itens gravados; faltou o vínculo em `pca_item_pdm`). Já
+  corrigido em 02/11 (#457, `664b39a`, teste em `sync_pncp_pca_lote_test.ts`); desde então 617 planos concluíram sem
+  esse erro. Os 140 continuam em `erro` porque esgotaram as tentativas. O detalhe do Postgres só foi para o log
+  (retenção curta): a coluna `erro` da fila guardou só "1 erro(s) na gravação em lote".
+- Não medido: quantos órgãos têm plano alterado por dia; os outros 60 planos em `erro` com mensagens diferentes
+  (21 HTTP 503 e 39 classe inválida, tratados em K-3).
 
 ## Contrato
 
@@ -100,6 +109,7 @@ conhecem.
 | CA-6 | K-3, K-4 | **Dado** um plano já gravado com o item 7 do escopo (R$ 1.000) e uma leitura completa em que o item 7 vale R$ 1.200, o item 8 do escopo é novo e o item 9 do escopo sumiu, **quando** a carga roda, **então** há exatamente um `item_atualizado` (item 7, `campos_alterados = {valor_total_estimado}`, `data_fonte` = `dataAtualizacao` do item), um `item_detectado` (item 8) e um `item_removido` (item 9); e o item com `grupoContratacaoCodigo = "158141-5/2026"` é gravado com esse valor literal, enquanto o item sem o campo fica com `grupo_contratacao_codigo` nulo | Deno `sync_pncp_pca_fila_test.ts` (0056 CA-6) |
 | CA-7 | K-3, K-4 | **Dado** um item cuja classe passa de 7830 (escopo) para 7520 (fora), e outro que passa de fora para 7830, **quando** a carga roda, **então** sai `saiu_escopo` para o primeiro e `entrou_escopo` para o segundo; e, no mesmo plano, um item de serviço com classe "09" e um item de material com classe "Não se aplica." (casos reais de 11/11/2026) não fazem o plano falhar: o primeiro fica fora do escopo, o segundo vira "classe desconhecida" com o valor original guardado, e nenhum dos dois gera `item_removido` | Deno `sync_pncp_pca_fila_test.ts` (0056 CA-7, regressão dos 39 planos em erro) |
 | CA-8 | K-5 | **Dado** a consulta `/v1/pca/` respondendo 503 em todas as tentativas (o incidente de 07/11), **quando** os crons do dia rodam, **então** a rotina `impressao` lê os órgãos conhecidos e enfileira os planos alterados normalmente | Deno `sync_pncp_pca_impressao_test.ts` (0056 CA-8, regressão do incidente de 07/11) |
+| CA-10 | K-3 | **Dado** um plano da fila cuja integração devolve itens do escopo com `pdmCodigo` numérico e um banco em que a leitura de `catmat_pdms` por outra coluna que não `codigo_pdm` falha com "column catmat_pdms.id does not exist" (regressão de 27/10–01/11), **quando** `processarFila` roda, **então** o plano termina `feito`, sem erro, com o vínculo em `pca_item_pdm`; e, se a leitura do catálogo falhar por outro motivo, o plano **também termina `feito`** (falha de vínculo é aviso, decisão de 11/11) e a coluna `erro` da fila guarda `aviso:` com a tabela e a mensagem do PostgREST, nunca só "N erro(s) na gravação em lote" | Deno `sync_pncp_pca_fila_test.ts` (0056 CA-10, regressão dos 140 planos) |
 | CA-9 | K-2, K-5 | **Dado** uma chamada a `sync-pncp-pca` com `rotina = "impressao"` ou `"descoberta"` sem o token de cron (anônima ou com JWT de usuário), **quando** chega à função, **então** recebe 401 e nada é gravado | Deno `sync_pncp_pca_impressao_test.ts` (0056 CA-9) |
 
 ## Skills e agentes por contrato
@@ -160,6 +170,13 @@ conhecem.
   for erro nosso, ajustar o modelo. A investigação do mesmo dia achou os dois (ver "Problema"): a regra passa a aceitar
   o código de serviço de 2 a 4 dígitos (erro nosso) e trata o resto como "classe desconhecida" (erro da
   administração), conforme K-3 e CA-7.
+
+- 11/11/2026: spec aprovada ("Aprovo a 0056").
+- 11/11/2026 (P-3, depois do diagnóstico): falha de **vínculo com o catálogo** (`pca_item_pdm`, `catalogo_ponte`) vira
+  **aviso**: o plano conclui `feito` com os itens gravados, a falha fica registrada (tabela e mensagem) e o vínculo é
+  refeito na próxima carga do plano.
+- 11/11/2026: os 140 planos travados (`tentativas = 5`) são reabertos com `recuperar_esgotados` (2 lotes de até 100)
+  **depois do merge** desta spec, com o ok já dado.
 
 ## Perguntas em aberto
 

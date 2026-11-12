@@ -43,7 +43,7 @@ begin
   v_ok := false;
   begin
     insert into public.portal_visitante (fonte, n_cd_visitante, tipo_documento, cnpj, documento_hash)
-    values ('__check_cnpj', 1, 'CNPJ', '24608949000137', repeat('a', 64));
+    values ('__check_cnpj', 1, 'CNPJ', '11222333000181', repeat('a', 64));
   exception when check_violation then v_ok := true;
   end;
   if not v_ok then raise exception 'CHECK FALHOU: linha CNPJ aceitou documento_hash'; end if;
@@ -62,6 +62,11 @@ begin
       raise exception 'ACL CHECK FALHOU: portal_visitante com % para anon/authenticated', v_priv;
     end if;
   end loop;
+
+  if not has_table_privilege('service_role', 'public.portal_visitante', 'INSERT')
+     or not has_table_privilege('service_role', 'public.portal_visitante', 'UPDATE') then
+    raise exception 'ACL CHECK FALHOU: service_role sem INSERT/UPDATE em portal_visitante (o coletor grava aqui)';
+  end if;
 
   raise notice 'SUCESSO: portal_visitante guarda CPF só como hash e segue restrita a service_role';
 end $$;

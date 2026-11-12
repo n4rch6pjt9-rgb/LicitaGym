@@ -38,6 +38,7 @@ log = logging.getLogger("coletor.documentos")
 
 SECAO_PROCESSO = "processo"
 LOCAL_ANEXOS = "EditalAnexos"
+TAMANHO_MINIMO_CHAVE_HASH = 32
 
 
 class ArquivoGrande(Exception):
@@ -90,9 +91,12 @@ class VisitanteInstitucional:
         faltam = [k for k in exigidos + (("VISITANTE_HASH_CHAVE",) if tipo == "CPF" else ()) if not env(k)]
         if faltam:
             raise SystemExit(f"Cadastro de visitante incompleto: {', '.join(faltam)}")
+        if tipo == "CPF" and len(env("VISITANTE_HASH_CHAVE")) < TAMANHO_MINIMO_CHAVE_HASH:
+            # Chave curta se adivinha, e com ela o HMAC volta a ser força bruta sobre 10^9 CPFs.
+            raise SystemExit(f"VISITANTE_HASH_CHAVE curta: use ao menos {TAMANHO_MINIMO_CHAVE_HASH} caracteres aleatórios.")
         return cls(d, env(campo_nome), env("VISITANTE_EMAIL"), re.sub(r"\D", "", env("VISITANTE_TELEFONE")),
                    env("VISITANTE_UF").upper()[:2], env("VISITANTE_CONTATO") or "", tipo,
-                   env("VISITANTE_HASH_CHAVE") or "" if tipo == "CPF" else "")
+                   (env("VISITANTE_HASH_CHAVE") or "") if tipo == "CPF" else "")
 
     def dto(self, n_cd_visitante: int, anexo: dict, d: dict) -> dict:
         """dtoVisitante no formato do formulário do portal (documento do tipo CNPJ ou CPF)."""
@@ -125,7 +129,8 @@ class DocumentosParadigma:
         # portal_visitante guarda o CNPJ, ou só o HMAC do CPF (dado pessoal); sem chave de cadastro, não há cache.
         self._chave = visitante.chave_cadastro() if visitante is not None else None
         if sb is not None and self._chave is not None and not dry_run:
-            filtro = {"cnpj": f"eq.{self._chave['cnpj']}"} if self._chave["cnpj"] else                 {"documento_hash": f"eq.{self._chave['documento_hash']}"}
+            filtro = ({"cnpj": f"eq.{self._chave['cnpj']}"} if self._chave["cnpj"]
+                      else {"documento_hash": f"eq.{self._chave['documento_hash']}"})
             try:
                 rows = sb.selecionar("portal_visitante", select="n_cd_visitante",
                                      fonte=f"eq.{portal.fonte.slug}", **filtro)

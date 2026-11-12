@@ -238,7 +238,7 @@ def test_caminho_destino_da_migracao():
 
 # ---------------- Visitante por CPF (decisão do Marcelo, 12/11/2026) ----------------
 CPF_TESTE = "52998224725"  # CPF de exemplo com dígito verificador válido, usado em documentação de validação
-CHAVE_TESTE = "chave-hmac-de-teste"
+CHAVE_TESTE = "chave-hmac-de-teste-com-32-caracteres!!"
 VIS_CPF = DP.VisitanteInstitucional(CPF_TESTE, "PESSOA TESTE", "p@e.test", "8540000000", "CE", tipo="CPF",
                                     chave_hash=CHAVE_TESTE)
 
@@ -256,6 +256,8 @@ def test_visitante_do_ambiente_aceita_cpf_valido_com_nome(monkeypatch):
     assert (v.tipo, v.documento, v.nome) == ("CPF", CPF_TESTE, "PESSOA TESTE")
     with pytest.raises(SystemExit):                                               # sem chave, o hash é reversível
         _ambiente(monkeypatch, {k: x for k, x in base.items() if k != "VISITANTE_HASH_CHAVE"})
+    with pytest.raises(SystemExit):                                               # chave curta se adivinha
+        _ambiente(monkeypatch, {**base, "VISITANTE_HASH_CHAVE": "123"})
     with pytest.raises(SystemExit):
         _ambiente(monkeypatch, {**base, "VISITANTE_CPF": "529.982.247-24"})          # dígito verificador
     with pytest.raises(SystemExit):

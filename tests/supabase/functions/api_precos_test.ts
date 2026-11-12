@@ -269,6 +269,7 @@ Deno.test("CA-2: resumo confere o catálogo, chama a função do banco com o per
   assertEquals(body.fonte, FONTE);
   assertEquals(body.filtro, {
     pdm: 2640, item: 480144, meses: 24, uf: "PR", unidade: null, municipio: null, uasg: null, objeto: null, q: null,
+    escopo_catalogo: "item",
   });
   assertEquals(body.periodo_inicio, "2024-10-10");
   assertEquals(body.periodo_fim, "2026-10-09");
@@ -303,6 +304,7 @@ Deno.test("CA-2: meses padrão é 12; sem item e sem UF vão null para o banco",
   });
   assertEquals(body.filtro, {
     pdm: 2640, item: null, meses: 12, uf: null, unidade: null, municipio: null, uasg: null, objeto: null, q: null,
+    escopo_catalogo: "pdm",
   });
 });
 

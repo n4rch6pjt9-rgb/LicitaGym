@@ -85,8 +85,17 @@ def test_disparo_manual_aceita_lista_de_processos_validada():
 def test_coleta_recebe_o_visitante_dos_secrets():
     """12/11/2026: sem VISITANTE_* no ambiente, os 71 documentos do teste da FIEB ficaram pendentes."""
     coleta = _texto().split("- name: Coleta", 1)[1]
-    for nome in ("CNPJ", "CPF", "NOME", "RAZAO_SOCIAL", "EMAIL", "TELEFONE", "UF", "CONTATO", "CONSENTIMENTO_LGPD"):
+    for nome in ("CNPJ", "CPF", "NOME", "RAZAO_SOCIAL", "EMAIL", "TELEFONE", "CONTATO", "HASH_CHAVE"):
         assert f"VISITANTE_{nome}: ${{{{ secrets.VISITANTE_{nome} }}}}" in coleta, nome
+
+
+def test_consentimento_e_uf_vem_de_variavel_e_nao_de_secret():
+    """12/11/2026, run 43324762704: o secret VISITANTE_CONSENTIMENTO_LGPD=1 fez o Actions esconder todo "1" do log
+    (datas e contadores viraram ***), e a UF esconderia a sigla em todo lugar. Nenhum dos dois é dado sensível."""
+    coleta = _texto().split("- name: Coleta", 1)[1]
+    for nome in ("UF", "CONSENTIMENTO_LGPD"):
+        assert f"VISITANTE_{nome}: ${{{{ vars.VISITANTE_{nome} }}}}" in coleta, nome
+        assert f"secrets.VISITANTE_{nome}" not in coleta, nome
 
 
 def test_cpf_so_com_digitos_tambem_e_mascarado_no_log():

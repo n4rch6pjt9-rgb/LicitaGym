@@ -62,6 +62,11 @@ from .retry import retry_after_s
 
 log = logging.getLogger("coletor.paradigma")
 
+
+class TempoEsgotado(BaseException):
+    """SIGTERM do limite da etapa (timeout interno do workflow). BaseException: nenhum `except Exception` da coleta a
+    engole, e main fecha o registro como `incompleta`."""
+
 UA = "LicitaGym-Coletor/1.1 (pesquisa de licitações públicas)"
 
 
@@ -449,19 +454,28 @@ class PortalParadigma:
                 _recusar_bloqueio(self.fonte, r.status_code)   # 401/403: bloqueio do host, sem nova tentativa
                 if r.status_code == 429 and tentativa < 3:
                     espera = retry_after_s(r)
-                    time.sleep(espera if espera is not None else 2 ** tentativa * 2)
+                    espera = espera if espera is not None else 2 ** tentativa * 2
+                    self._avisar_tentativa(metodo, tentativa, f"HTTP {r.status_code}", espera)
+                    time.sleep(espera)
                     continue
                 if r.status_code >= 500 and tentativa < 3:
+                    self._avisar_tentativa(metodo, tentativa, f"HTTP {r.status_code}", 2 ** tentativa * 2)
                     time.sleep(2 ** tentativa * 2)
                     continue
                 r.raise_for_status()
             except requests.HTTPError:
                 raise   # 4xx definitivo (o 429 e o 5xx esgotados também chegam aqui só na última tentativa)
-            except requests.RequestException:
+            except requests.RequestException as e:
                 if tentativa == 3:
                     raise
+                self._avisar_tentativa(metodo, tentativa, type(e).__name__, 2 ** tentativa * 2)
                 time.sleep(2 ** tentativa * 2)
         raise RuntimeError(f"{metodo}: sem resposta após 4 tentativas")  # nunca devolve vazio em silêncio
+
+    def _avisar_tentativa(self, metodo: str, tentativa: int, motivo: str, espera: float) -> None:
+        # 12/11/2026: sem esta linha, uma hora de espera do WAF ou do portal não deixava rastro no log.
+        log.warning("%s %s: tentativa %s/4 falhou (%s), nova em %ss", self.fonte.slug, metodo, tentativa + 1, motivo,
+                    espera)
 
     # ------------ listagem ------------
     def listar(self, texto: str = "", pagina_de: int = 1, pagina_ate: int = TAMANHO_PAGINA) -> list[dict]:
@@ -909,11 +923,18 @@ def processar_processo(portal: "PortalParadigma", sb, pid: int, mod: int, resumo
 def coletar(portal: "PortalParadigma", sb, termos: list[str], paginas: int | None, dry_run: bool,
             com_resultados: bool = True, produtos: dict[int, dict] | None = None, fornecedores=None,
             processos: list[tuple[int, int]] | None = None, anos: list[int] | None = None, documentos=None,
-            origem: str = "manual") -> dict:
-    resumo = {"listados": 0, "processos": 0, "no_escopo": 0, "itens_escopo": 0, "itens_catalogo": 0,
-              "resultados": 0, "itens_com_vencedor": 0, "alertas": 0, "erros": 0,
-              "participantes": 0, "fornecedores_consultados": 0, "fornecedores_em_cache": 0,
-              "fornecedores_erros": 0, "paginacao_avisos": []}
+            origem: str = "manual", resumo: dict | None = None) -> dict:
+    """`resumo`, quando vem de quem chama, é preenchido no lugar: interrompida pelo limite da etapa (SIGTERM), a
+    coleta ainda deixa os contadores do que já gravou."""
+    base = {"listados": 0, "processos": 0, "no_escopo": 0, "itens_escopo": 0, "itens_catalogo": 0,
+            "resultados": 0, "itens_com_vencedor": 0, "alertas": 0, "erros": 0,
+            "participantes": 0, "fornecedores_consultados": 0, "fornecedores_em_cache": 0,
+            "fornecedores_erros": 0, "paginacao_avisos": []}
+    if resumo is None:
+        resumo = base
+    else:
+        for chave, valor in base.items():
+            resumo.setdefault(chave, valor)
     vistos: dict[tuple[int, int], dict] = {}
     if processos:
         vistos = {p: {} for p in processos}
@@ -1053,26 +1074,38 @@ def main(argv: list[str] | None = None) -> int:
     # (coleta_externa_dias_sem_sucesso, pior fonte). Disparo manual de uma fonte fora do lote agendado deixaria a
     # métrica crítica para sempre. Fonte bloqueada no construtor do portal (ex.: fiemg) nem chega aqui.
     registro = RegistroColeta(sb if args.origem == "cron" else None, fonte.slug, modo_registro(anos, processos), termos)
-    # Timeout do runner manda SIGTERM: vira SystemExit para fechar o registro como falha em vez de deixá-lo aberto.
-    sigterm_anterior = signal.signal(signal.SIGTERM, lambda _sig, _frame: sys.exit(143))
+    # Limite da etapa (timeout interno do workflow) manda SIGTERM: vira TempoEsgotado e o registro fecha como
+    # `incompleta`, com os contadores do que já foi gravado, em vez de ficar aberto ou zerado como falha.
+    parcial: dict = {}
+
+    def _tempo_esgotado(_sig, _frame):
+        raise TempoEsgotado()
+
+    sigterm_anterior = signal.signal(signal.SIGTERM, _tempo_esgotado)
     try:
-        r = _executar(args, fonte, portal, sb, termos, processos, anos, CadastroFornecedores)
-    except KeyboardInterrupt:
-        registro.finalizar("cancelada", erro="interrompida (KeyboardInterrupt)")
-        raise
-    except BaseException as e:
-        registro.finalizar("falhou", erro=f"{type(e).__name__}: {e}")
-        raise
+        try:
+            r = _executar(args, fonte, portal, sb, termos, processos, anos, CadastroFornecedores, resumo=parcial)
+        except TempoEsgotado:
+            registro.finalizar("incompleta", parcial, erro="interrompida por SIGTERM (limite da etapa)")
+            raise SystemExit(143) from None
+        except KeyboardInterrupt:
+            registro.finalizar("cancelada", erro="interrompida (KeyboardInterrupt)")
+            raise
+        except BaseException as e:
+            registro.finalizar("falhou", erro=f"{type(e).__name__}: {e}")
+            raise
+        status = status_final(r)
+        registro.finalizar(status, r)
     finally:
+        # Só depois de fechar o registro: um SIGTERM durante a RPC final não pode matar o processo com ele aberto.
         signal.signal(signal.SIGTERM, sigterm_anterior)
-    status = status_final(r)
-    registro.finalizar(status, r)
     print(json.dumps(r, ensure_ascii=False))
     return 1 if status == "falhou" else 0
 
 
 def _executar(args, fonte: Fonte, portal: "PortalParadigma", sb, termos: list[str],
-              processos: list[tuple[int, int]] | None, anos: list[int] | None, cadastro_fornecedores) -> dict:
+              processos: list[tuple[int, int]] | None, anos: list[int] | None, cadastro_fornecedores,
+              resumo: dict | None = None) -> dict:
     from .destino import env
 
     produtos = None
@@ -1099,7 +1132,7 @@ def _executar(args, fonte: Fonte, portal: "PortalParadigma", sb, termos: list[st
             log.warning("VISITANTE_* não configurado: documentos que exigem cadastro ficam registrados como pendentes")
         docs = DocumentosParadigma(portal, sb, arm, visitante, int(float(env("MAX_MB", "50")) * 1048576), args.dry_run)
     return coletar(portal, sb, termos, args.paginas, args.dry_run, not args.sem_resultados, produtos, forn, processos,
-                   anos, docs, origem=args.origem)
+                   anos, docs, origem=args.origem, resumo=resumo)
 
 
 if __name__ == "__main__":

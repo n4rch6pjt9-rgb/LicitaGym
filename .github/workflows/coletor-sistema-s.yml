@@ -147,6 +147,8 @@ jobs:
           VISITANTE_UF: ${{ secrets.VISITANTE_UF }}
           VISITANTE_CONTATO: ${{ secrets.VISITANTE_CONTATO }}
           VISITANTE_CONSENTIMENTO_LGPD: ${{ secrets.VISITANTE_CONSENTIMENTO_LGPD }}
+          # Com CPF: chave do HMAC que identifica o cadastro em portal_visitante (o CPF não vai para o banco).
+          VISITANTE_HASH_CHAVE: ${{ secrets.VISITANTE_HASH_CHAVE }}
         run: |
           # O Actions só mascara o valor exato do secret; o coletor usa o CPF só com dígitos. Mascara as duas formas.
           if [ -n "${VISITANTE_CPF:-}" ]; then

@@ -53,6 +53,7 @@ import io
 import json
 import logging
 import os
+import random
 import re
 import threading
 import time
@@ -268,58 +269,65 @@ class ArquivoRaw:
         return f"gs://{BUCKET}/{objeto}"
 
     def _gravar_supabase(self, objeto: str, dados: bytes) -> str:
-        http = self._http or requests
         base = f"{self._supabase_url}/storage/v1/object"
         auth = {"Authorization": f"Bearer {self._supabase_chave}", "apikey": self._supabase_chave}
         cabecalhos = {**auth, "Content-Type": "application/gzip", "x-upsert": "false"}
-        ultimo = ""
-        for tentativa in range(TENTATIVAS_SUPABASE):
-            try:
-                # Sem redirecionamento: o requests tira o Authorization ao mudar de host, mas não o apikey.
-                r = http.post(f"{base}/{BUCKET_SUPABASE}/{objeto}", data=dados, headers=cabecalhos,
-                              timeout=TIMEOUT_SUPABASE, allow_redirects=False)
-            except requests.RequestException as e:
-                ultimo = f"rede: {e}"
-                self._dormir(min(60, 5 * 2 ** tentativa))
-                continue
-            texto = (getattr(r, "text", "") or "").lower()
-            duplicado = r.status_code in (400, 409) and ("duplicate" in texto or "already exists" in texto)
-            if r.status_code == 200 or duplicado:
-                # Duplicate: o objeto já existe (reenvio depois de timeout, ou caminho repetido). Só vale se o
-                # conteúdo no bucket for o mesmo: a conferência decide.
-                self._conferir_supabase(base, auth, objeto, dados, existia=duplicado)
-                return f"supabase://{BUCKET_SUPABASE}/{objeto}"
-            if r.status_code == 429 or r.status_code >= 500:
-                ultimo = f"HTTP {r.status_code}"
-                espera = _retry_after(r)
-                self._dormir(espera if espera is not None else min(60, 5 * 2 ** tentativa))
-                continue
+        r = self._pedir_supabase("upload", objeto, lambda http: http.post(
+            f"{base}/{BUCKET_SUPABASE}/{objeto}", data=dados, headers=cabecalhos,
+            timeout=TIMEOUT_SUPABASE, allow_redirects=False), aceita_duplicado=True)
+        texto = (getattr(r, "text", "") or "").lower()
+        if r.status_code != 200 and not _duplicado(r):
             raise ArquivoRawErro(
                 f"upload do raw no Supabase Storage recusado ({objeto}): HTTP {r.status_code} {texto[:200]}. "
                 "Coleta interrompida (fail closed).")
-        raise ArquivoRawErro(
-            f"upload do raw no Supabase Storage falhou ({objeto}) após {TENTATIVAS_SUPABASE} tentativas: "
-            f"{ultimo}. Coleta interrompida (fail closed).")
+        # Duplicate: o objeto já existe (reenvio depois de timeout, ou caminho repetido). Só vale se o conteúdo no
+        # bucket for o mesmo: a conferência decide.
+        self._conferir_supabase(base, auth, objeto, dados, existia=_duplicado(r))
+        return f"supabase://{BUCKET_SUPABASE}/{objeto}"
 
     def _conferir_supabase(self, base: str, auth: dict[str, str], objeto: str, dados: bytes, *,
                            existia: bool) -> None:
-        http = self._http or requests
-        try:
-            r = http.get(f"{base}/authenticated/{BUCKET_SUPABASE}/{objeto}", headers=auth,
-                         timeout=TIMEOUT_SUPABASE, allow_redirects=False)
-        except requests.RequestException as e:
-            raise ArquivoRawErro(
-                f"conferência do raw no Supabase Storage falhou ({objeto}): {e}. Coleta interrompida (fail closed)."
-            ) from e
+        # identity: o objeto é baixado como foi gravado (sem o servidor ou o CDN descomprimir o gzip no caminho).
+        cabecalhos = {**auth, "Accept-Encoding": "identity"}
+        r = self._pedir_supabase("conferência", objeto, lambda http: http.get(
+            f"{base}/authenticated/{BUCKET_SUPABASE}/{objeto}", headers=cabecalhos,
+            timeout=TIMEOUT_SUPABASE, allow_redirects=False))
         if r.status_code != 200:
             raise ArquivoRawErro(
                 f"conferência do raw no Supabase Storage: HTTP {r.status_code} ({objeto}). "
                 "Coleta interrompida (fail closed).")
         local = hashlib.md5(dados).hexdigest()
-        if hashlib.md5(r.content).hexdigest() != local:
+        recebido = r.content
+        if hashlib.md5(recebido).hexdigest() != local and recebido != gzip.decompress(dados):
             motivo = ("o objeto já existia com outro conteúdo e não é sobrescrito" if existia
                       else "md5 do objeto baixado não confere com o gerado")
             raise ArquivoRawErro(f"{motivo} ({objeto}; md5 local {local}). Coleta interrompida (fail closed).")
+
+    def _pedir_supabase(self, etapa: str, objeto: str, chamar: Callable[[Any], Any], *,
+                        aceita_duplicado: bool = False) -> Any:
+        """Chamada ao Storage com retry: rede, 429 e 5xx esperam (Retry-After ou backoff com jitter, até 60 s) e
+        tentam de novo, com log de cada tentativa; o resto volta para quem chamou decidir (fail closed)."""
+        http = self._http or requests
+        ultimo = ""
+        for tentativa in range(TENTATIVAS_SUPABASE):
+            try:
+                r = chamar(http)
+            except requests.RequestException as e:
+                r, ultimo = None, f"rede: {type(e).__name__}"
+            else:
+                if not (r.status_code == 429 or r.status_code >= 500) or (aceita_duplicado and _duplicado(r)):
+                    return r
+                ultimo = f"HTTP {r.status_code}"
+            if tentativa == TENTATIVAS_SUPABASE - 1:
+                break
+            espera = _retry_after(r) if r is not None else None
+            espera = min(60.0, espera if espera is not None else 5 * 2 ** tentativa + random.uniform(0, 1))
+            log.warning("raw supabase %s %s: tentativa %s/%s, %s, espera %.0fs", etapa, objeto, tentativa + 1,
+                        TENTATIVAS_SUPABASE, ultimo, espera)
+            self._dormir(espera)
+        raise ArquivoRawErro(
+            f"{etapa} do raw no Supabase Storage falhou ({objeto}) após {TENTATIVAS_SUPABASE} tentativas: "
+            f"{ultimo}. Coleta interrompida (fail closed).")
 
     def _cliente_gcs(self) -> Any:
         if self._cliente is None:
@@ -336,6 +344,12 @@ def _destino() -> str:
     if valor not in DESTINOS:
         raise ArquivoRawErro(f"ARQUIVO_RAW_DESTINO inválido: {valor!r} (use gcs, supabase ou local)")
     return valor
+
+
+def _duplicado(resposta: Any) -> bool:
+    """O Storage responde objeto existente com 409, ou 400 com statusCode 409 e error "Duplicate" no corpo."""
+    texto = (getattr(resposta, "text", "") or "").lower()
+    return resposta.status_code in (400, 409) and ("duplicate" in texto or "already exists" in texto)
 
 
 def _retry_after(resposta: Any) -> float | None:

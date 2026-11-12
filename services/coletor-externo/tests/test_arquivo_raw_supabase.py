@@ -36,14 +36,18 @@ class _Storage:
     def __init__(self):
         self.objetos: dict[str, bytes] = {}
         self.chamadas: list[tuple] = []
-        self.respostas_post: list[_Resp] = []
+        self.respostas_post: list = []
+        self.respostas_get: list = []
         self.corromper_download = False
+        self.descomprimir_download = False
 
     def post(self, url, data=None, headers=None, timeout=None, allow_redirects=True):
         assert allow_redirects is False
         self.chamadas.append(("POST", url, dict(headers or {}), timeout))
         if self.respostas_post:
             r = self.respostas_post.pop(0)
+            if isinstance(r, Exception):
+                raise r
             if r.status_code == 200:
                 self.objetos[url.split("/object/arquivo-raw/", 1)[1]] = data
             return r
@@ -56,10 +60,18 @@ class _Storage:
     def get(self, url, headers=None, timeout=None, allow_redirects=True):
         assert allow_redirects is False
         self.chamadas.append(("GET", url, dict(headers or {}), timeout))
+        if self.respostas_get:
+            r = self.respostas_get.pop(0)
+            if isinstance(r, Exception):
+                raise r
+            if r is not None:
+                return r
         caminho = url.split("/object/authenticated/arquivo-raw/", 1)[1]
         if caminho not in self.objetos:
             return _Resp(404, b'{"error":"not_found"}')
         dados = self.objetos[caminho]
+        if self.descomprimir_download:  # servidor/CDN que entrega com Content-Encoding: gzip já decodificado
+            return _Resp(200, gzip.decompress(dados))
         return _Resp(200, b"x" + dados if self.corromper_download else dados)
 
 
@@ -204,3 +216,75 @@ def test_raw_de_precos_tira_cpf_e_nome_de_pessoa_fisica():
     assert raw_arquivado(pf) == {"idCompra": "1", "marca": "X"}
     pj = {"idCompra": "1", "niFornecedor": "04372852000160", "nomeFornecedor": "W.E.V COMERCIAL LTDA"}
     assert raw_arquivado(pj) == pj
+
+
+def test_get_da_conferencia_tambem_tenta_de_novo(destino_supabase):
+    import requests  # noqa: PLC0415
+    storage = _Storage()
+    storage.respostas_get = [_Resp(503, b"x"), requests.ConnectionError("caiu"), None]
+    esperas = []
+    arq = ArquivoRaw("licitacao_itens", "pncp", execucao_id=EID, relogio=lambda: QUANDO, http=storage,
+                     dormir=esperas.append)
+    arq.adicionar({"licitacao_id": 1, "numero_item": 1}, {"x": 1})
+    (man,) = arq.fechar()
+    assert man["uri"].startswith("supabase://")
+    assert len(esperas) == 2 and all(e <= 60 for e in esperas)
+    get = [c for c in storage.chamadas if c[0] == "GET"]
+    assert get[0][2]["Accept-Encoding"] == "identity"
+
+
+def test_get_404_para_na_hora_sem_retry(destino_supabase):
+    storage = _Storage()
+    storage.respostas_get = [_Resp(404, b'{"error":"not_found"}')]
+    esperas = []
+    arq = ArquivoRaw("licitacao_itens", "pncp", execucao_id=EID, relogio=lambda: QUANDO, http=storage,
+                     dormir=esperas.append)
+    arq.adicionar({"licitacao_id": 1, "numero_item": 1}, {"x": 1})
+    with pytest.raises(ArquivoRawErro, match="HTTP 404"):
+        arq.fechar()
+    assert esperas == []
+
+
+def test_erro_de_rede_no_post_tenta_de_novo_e_nao_dorme_depois_da_ultima(destino_supabase):
+    import requests  # noqa: PLC0415
+    storage = _Storage()
+    storage.respostas_post = [requests.ConnectionError("x")] * 10
+    esperas = []
+    arq = ArquivoRaw("licitacao_itens", "pncp", execucao_id=EID, relogio=lambda: QUANDO, http=storage,
+                     dormir=esperas.append)
+    arq.adicionar({"licitacao_id": 1, "numero_item": 1}, {"x": 1})
+    with pytest.raises(ArquivoRawErro, match="rede"):
+        arq.fechar()
+    assert len(esperas) == 4  # 5 tentativas, 4 esperas: nada de dormir depois da última
+
+
+def test_duplicado_como_http_409_com_mesmo_conteudo_e_aceito(destino_supabase):
+    from coletor.arquivo_raw import _jsonl_gz  # noqa: PLC0415
+    storage = _Storage()
+    arq = _arq(storage)
+    arq.adicionar({"licitacao_id": 1, "numero_item": 1}, {"x": 1})
+    storage.objetos[OBJETO] = _jsonl_gz([arq._registro({"licitacao_id": 1, "numero_item": 1}, {"x": 1})])
+    storage.respostas_post = [_Resp(409, b'{"error":"Duplicate","message":"The resource already exists"}')]
+    (man,) = arq.fechar()
+    assert man["uri"] == f"supabase://arquivo-raw/{OBJETO}"
+
+
+def test_download_ja_descomprimido_pelo_servidor_confere(destino_supabase):
+    storage = _Storage()
+    storage.descomprimir_download = True
+    arq = _arq(storage)
+    arq.adicionar({"licitacao_id": 1, "numero_item": 1}, {"x": 1})
+    (man,) = arq.fechar()
+    assert man["md5"] == hashlib.md5(storage.objetos[OBJETO]).hexdigest()
+
+
+def test_cpf_com_mascara_tambem_sai_do_raw_de_precos():
+    from coletor.compras_precos import raw_arquivado  # noqa: PLC0415
+    assert raw_arquivado({"niFornecedor": "123.456.789-01", "nomeFornecedor": "FULANO", "x": 1}) == {"x": 1}
+
+
+def test_coletor_de_precos_passa_o_raw_pela_regra_antes_de_arquivar():
+    import inspect  # noqa: PLC0415
+
+    from coletor import compras_precos  # noqa: PLC0415
+    assert "raw_arquivado(bruto)" in inspect.getsource(compras_precos._coletar_precos)

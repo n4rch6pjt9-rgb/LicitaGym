@@ -163,7 +163,9 @@ def raw_arquivado(bruto: dict) -> dict:
     """Raw que vai para o arquivo imutável (arquivo_raw): fornecedor pessoa física (CPF) sai sem NI e sem nome, a mesma
     regra do PNCP (pncp._raw_resultado). CNPJ continua: é público e é o que identifica o fornecedor."""
     ni = bruto.get("niFornecedor")
-    if tipo_ni(ni.strip() if isinstance(ni, str) else None) != "cpf":
+    # Só os dígitos: CPF com máscara ("123.456.789-01") também é pessoa física.
+    digitos = re.sub(r"\D", "", ni) if isinstance(ni, str) else None
+    if tipo_ni(digitos) != "cpf":
         return bruto
     return {k: v for k, v in bruto.items() if k not in ("niFornecedor", "nomeFornecedor")}
 

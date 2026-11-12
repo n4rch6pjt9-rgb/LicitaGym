@@ -74,8 +74,10 @@ MCP do Supabase é somente leitura. Exceção: o que o Marcelo fizer à mão, de
    nenhuma, fica `parada` (ver `docs/produto/ESCOPO.md`).
 2. Marcelo aprova (sempre que houver migration, decisão de produto ou dado de produção).
 3. `/implement specs/NNNN-slug.md`: testes dos critérios de aceite primeiro, depois o código, até PR em draft.
-4. Antes de pedir merge: agentes `revisor-codigo` e `revisor-seguranca` (e `revisor-migration` se houver migration),
-   mesmo que a CI e o revisor externo tenham passado. O PR registra o resultado.
+4. Antes de pedir merge: agentes `revisor-codigo` e `revisor-seguranca` (e `revisor-migration` se houver migration,
+   `revisor-tenant` se tocar `api-*` ou tabela com `tenant_id`), mesmo que a CI e o revisor externo tenham passado.
+   O PR registra o resultado. Mudança de classificação: o usuário roda a skill `dry-run-classificacao` e anexa a
+   contagem ao PR (ela só é chamada por ele).
 5. Fechamento e início de ciclo (issues dos dois repos, aviso às outras janelas): skill `ciclo-janelas`.
 
 ## Skills e agentes (`.claude/`)
@@ -86,7 +88,10 @@ MCP do Supabase é somente leitura. Exceção: o que o Marcelo fizer à mão, de
 | skill `verificar-producao` | depois de merge, ou para investigar incidente |
 | skill `merge-pilha` | merge de PRs empilhados, a pedido do usuário |
 | skill `ciclo-janelas` | fim e início de ciclo (regras R2 a R4) |
+| skill `dry-run-classificacao` | PR que muda regra de classificação (escopo, CATMAT, objeto, tipo de órgão, marca, prioridade): monta a contagem antes/depois |
 | agentes `revisor-codigo`, `revisor-migration`, `revisor-seguranca` | revisão antes do PR |
+| agente `revisor-tenant` | diff em `api-*`, `_shared/tenant.ts` ou policy de tabela com `tenant_id`: isolamento entre empresas |
+| hooks `bloquear-destrutivo` (antes) e `lint-pos-edicao` (depois de editar `.ts`/`.py`) | automáticos; quem dispara cada automação: `docs/operacao/matriz-automacoes.md` |
 
 ## Observabilidade
 - Saúde: `private.saude_operacional_resumo()` via `api-saude`; `saude.yml` abre issue `alerta-operacional`.

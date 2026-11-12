@@ -48,6 +48,14 @@
           { "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/bloquear-destrutivo.mjs\"" }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          { "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/lint-pos-edicao.mjs\"" }
+        ]
+      }
     ]
   }
 }

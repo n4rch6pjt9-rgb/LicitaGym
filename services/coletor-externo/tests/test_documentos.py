@@ -232,3 +232,60 @@ def test_caminho_destino_da_migracao():
     assert caminho_destino("gs://bucket/sestsenat/59/58/processo/b.zip") == "sestsenat/59/58/processo/b.zip"
     with pytest.raises(ValueError):
         caminho_destino("/tmp/solto.pdf")
+
+
+# ---------------- Visitante por CPF (decisão do Marcelo, 12/11/2026) ----------------
+CPF_TESTE = "52998224725"  # CPF de exemplo com dígito verificador válido, usado em documentação de validação
+VIS_CPF = DP.VisitanteInstitucional(CPF_TESTE, "PESSOA TESTE", "p@e.test", "8540000000", "CE", tipo="CPF")
+
+
+def _ambiente(monkeypatch, vals):
+    monkeypatch.setattr(DP, "env", lambda n, padrao=None, obrigatorio=False: vals.get(n, padrao))
+    return DP.VisitanteInstitucional.do_ambiente()
+
+
+def test_visitante_do_ambiente_aceita_cpf_valido_com_nome(monkeypatch):
+    base = {"VISITANTE_CPF": "529.982.247-25", "VISITANTE_NOME": "PESSOA TESTE", "VISITANTE_EMAIL": "p@e.test",
+            "VISITANTE_TELEFONE": "(85) 4000-0000", "VISITANTE_UF": "ce", "VISITANTE_CONSENTIMENTO_LGPD": "1"}
+    v = _ambiente(monkeypatch, base)
+    assert (v.tipo, v.documento, v.nome) == ("CPF", CPF_TESTE, "PESSOA TESTE")
+    with pytest.raises(SystemExit):
+        _ambiente(monkeypatch, {**base, "VISITANTE_CPF": "529.982.247-24"})          # dígito verificador
+    with pytest.raises(SystemExit):
+        _ambiente(monkeypatch, {**base, "VISITANTE_CPF": "111.111.111-11"})          # repetido
+    with pytest.raises(SystemExit):
+        _ambiente(monkeypatch, {k: x for k, x in base.items() if k != "VISITANTE_NOME"})
+    with pytest.raises(SystemExit):
+        _ambiente(monkeypatch, {k: x for k, x in base.items() if k != "VISITANTE_CONSENTIMENTO_LGPD"})
+
+
+def test_visitante_com_cnpj_e_cpf_ao_mesmo_tempo_e_ambiguo(monkeypatch):
+    with pytest.raises(SystemExit):
+        _ambiente(monkeypatch, {"VISITANTE_CNPJ": "24.608.949/0001-37", "VISITANTE_CPF": "529.982.247-25",
+                                "VISITANTE_CONSENTIMENTO_LGPD": "1"})
+
+
+def test_baixa_com_visitante_cpf_preenche_cpf_e_nao_guarda_o_cpf_no_banco():
+    p, chamadas = portal_fake()
+    sb, arm = sb_fake(), MagicMock()
+    r = DP.DocumentosParadigma(p, sb, arm, VIS_CPF).sincronizar(10, DET, "paradigma/sfiec/18/32")
+    assert r["baixados"] == 2 and r["erros"] == 0
+    salvar = [c for c in chamadas if c[0] == "SalvarVisitante"]
+    dto = salvar[0][1]["dtoVisitante"]
+    assert salvar[1][1]["dtoVisitante"]["nCdVisitante"] == 5209     # mesma execução: reaproveita o cadastro
+    assert dto["sDsTipoDocumento"] == "CPF" and dto["sDsCpf"] == CPF_TESTE and dto["sDsCnpj"] == ""
+    assert dto["sNmVisitante"] == "PESSOA TESTE"
+    tabelas = [c.args[0] for c in sb.upsert.call_args_list] + [c.args[0] for c in sb.selecionar.call_args_list]
+    assert "portal_visitante" not in tabelas                   # CPF é dado pessoal: não fica no banco
+
+
+def test_erro_do_salvar_visitante_nao_grava_o_corpo_da_resposta():
+    """Revisor de segurança, 12/11/2026: o corpo pode ecoar CPF formatado, nome, e-mail; o erro vai para o banco."""
+    p, _ = portal_fake()
+    p._ws = lambda m, payload: {"ValidarSalvarVisitante": 1}.get(
+        m, {"sDsCpf": "529.982.247-25", "sNmVisitante": "PESSOA TESTE"})
+    dp = DP.DocumentosParadigma(p, sb_fake(), MagicMock(), VIS_CPF)
+    with pytest.raises(RuntimeError) as erro:
+        dp._identificar({"nCdAnexo": 1, "nSqAnexo": 1}, DET)
+    assert "529" not in str(erro.value) and "PESSOA" not in str(erro.value)
+    assert "sDsCpf" in str(erro.value)                         # só as chaves, para diagnóstico

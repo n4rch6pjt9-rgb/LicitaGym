@@ -3,9 +3,11 @@
 Fluxo, igual ao do mural do portal (HAR SFIEC PE000652022, 26/09/2026):
   1. PesquisarAnexos (sNmLocalAnexo=EditalAnexos) -> lista do processo: edital, erratas, avisos, relatório final...
   2. ValidarSalvarVisitante -> 1 quando o portal exige identificação do visitante para baixar
-  3. SalvarVisitante -> cadastro do visitante. O LicitaGym se identifica com o CNPJ da empresa
-     (VISITANTE_* no ambiente). Nunca com CPF de pessoa. Sem cadastro configurado, o documento fica
-     registrado como pendente e NÃO é baixado (o coletor não contorna a exigência do portal).
+  3. SalvarVisitante -> cadastro do visitante, com o CNPJ da empresa (VISITANTE_CNPJ) ou, por decisão do dono em
+     12/11/2026, com o CPF de uma pessoa (VISITANTE_CPF + VISITANTE_NOME), sempre com VISITANTE_CONSENTIMENTO_LGPD=1.
+     O CPF é dado pessoal: não vai para o banco (portal_visitante só guarda CNPJ) nem para log ou erro.
+     Sem cadastro configurado, o documento fica registrado como pendente e NÃO é baixado (o coletor não
+     contorna a exigência do portal).
   4. AnexoExiste -> Download.aspx?q=<sDsParametroCriptografado>
   5. O arquivo vai para o Supabase Storage (bucket privado) e a linha de licitacao_documentos guarda
      storage_uri, sha256, tamanho e tipo.
@@ -26,7 +28,7 @@ from datetime import datetime, timezone
 import requests
 
 from .destino import Armazenamento, env, parece_html, sha256
-from .fornecedores import cnpj_valido
+from .fornecedores import cnpj_valido, cpf_valido
 from .portal import parse_data
 
 log = logging.getLogger("coletor.documentos")
@@ -41,39 +43,51 @@ class ArquivoGrande(Exception):
 
 @dataclass(frozen=True)
 class VisitanteInstitucional:
-    """Identificação do LicitaGym nos portais (pessoa jurídica). Lida do ambiente/segredo do coletor."""
-    cnpj: str
-    razao_social: str
+    """Identificação do LicitaGym nos portais: CNPJ da empresa ou CPF de uma pessoa. Lida do ambiente/segredo."""
+    documento: str      # só dígitos, DV conferido
+    nome: str           # razão social (CNPJ) ou nome da pessoa (CPF)
     email: str
     telefone: str
     uf: str
     contato: str = ""
+    tipo: str = "CNPJ"  # "CNPJ" ou "CPF"
+
+    @property
+    def cnpj(self) -> str | None:
+        return self.documento if self.tipo == "CNPJ" else None
 
     @classmethod
     def do_ambiente(cls) -> "VisitanteInstitucional | None":
-        """None quando não configurado. Exige VISITANTE_CONSENTIMENTO_LGPD=1 (decisão explícita da empresa)."""
-        cnpj = env("VISITANTE_CNPJ")
-        if not cnpj:
+        """None quando não configurado. Exige VISITANTE_CONSENTIMENTO_LGPD=1 (decisão explícita de quem se cadastra)."""
+        cnpj, cpf = env("VISITANTE_CNPJ"), env("VISITANTE_CPF")
+        if not cnpj and not cpf:
             return None
-        d = cnpj_valido(cnpj)
+        if cnpj and cpf:
+            raise SystemExit("Defina VISITANTE_CNPJ ou VISITANTE_CPF, não os dois.")
+        if cnpj:
+            tipo, d, campo_nome = "CNPJ", cnpj_valido(cnpj), "VISITANTE_RAZAO_SOCIAL"
+        else:
+            tipo, d, campo_nome = "CPF", cpf_valido(cpf), "VISITANTE_NOME"
         if not d:
-            raise SystemExit("VISITANTE_CNPJ inválido (dígito verificador).")
+            raise SystemExit(f"VISITANTE_{tipo} inválido (dígito verificador).")
         if (env("VISITANTE_CONSENTIMENTO_LGPD") or "") != "1":
             raise SystemExit("Defina VISITANTE_CONSENTIMENTO_LGPD=1: o cadastro de visitante no portal exige o aceite.")
-        faltam = [k for k in ("VISITANTE_RAZAO_SOCIAL", "VISITANTE_EMAIL", "VISITANTE_TELEFONE", "VISITANTE_UF") if not env(k)]
+        faltam = [k for k in (campo_nome, "VISITANTE_EMAIL", "VISITANTE_TELEFONE", "VISITANTE_UF") if not env(k)]
         if faltam:
-            raise SystemExit(f"Cadastro institucional incompleto: {', '.join(faltam)}")
-        return cls(d, env("VISITANTE_RAZAO_SOCIAL"), env("VISITANTE_EMAIL"), re.sub(r"\D", "", env("VISITANTE_TELEFONE")),
-                   env("VISITANTE_UF").upper()[:2], env("VISITANTE_CONTATO") or "")
+            raise SystemExit(f"Cadastro de visitante incompleto: {', '.join(faltam)}")
+        return cls(d, env(campo_nome), env("VISITANTE_EMAIL"), re.sub(r"\D", "", env("VISITANTE_TELEFONE")),
+                   env("VISITANTE_UF").upper()[:2], env("VISITANTE_CONTATO") or "", tipo)
 
     def dto(self, n_cd_visitante: int, anexo: dict, d: dict) -> dict:
-        """dtoVisitante no formato do formulário do portal, com documento do tipo CNPJ."""
+        """dtoVisitante no formato do formulário do portal (documento do tipo CNPJ ou CPF)."""
+        cpf = self.tipo == "CPF"
         return {
             "nCdVisitante": n_cd_visitante or 0, "nCdEndereco": 0, "nCdEmpresa": 0,
-            "sDsCpf": "", "sDsCnpj": self.cnpj, "sDsRg": "", "sNmVisitante": self.razao_social,
+            "sDsCpf": self.documento if cpf else "", "sDsCnpj": "" if cpf else self.documento, "sDsRg": "",
+            "sNmVisitante": self.nome,
             "sDsEmail": self.email, "sDsTelefone": self.telefone, "sDsEndereco": "", "sNrEndereco": "",
             "sDsComplemento": "", "sNmBairro": "", "sCdCep": "", "sCdPais": "BR", "sCdEstado": self.uf,
-            "nCdCidade": "0", "sDsTipoDocumento": "CNPJ", "bFlInteresseCertame": "1", "sNmContato": self.contato,
+            "nCdCidade": "0", "sDsTipoDocumento": self.tipo, "bFlInteresseCertame": "1", "sNmContato": self.contato,
             "bFlConsentimentoLGPD": 1,
             "dtoAnexo": {"nCdAnexo": anexo["nCdAnexo"], "nSqAnexo": anexo["nSqAnexo"]},
             "dtoEdital": {"nCdEdital": d["nCdProcesso"], "nCdOrigem": d.get("nCdOrigem") or d["nCdProcesso"]},
@@ -92,7 +106,8 @@ class DocumentosParadigma:
         self.max_bytes = max_bytes
         self.dry_run = dry_run
         self.n_cd_visitante: int | None = None  # código do visitante no portal (reaproveitado entre execuções)
-        if sb is not None and visitante is not None and not dry_run:
+        # Só o CNPJ fica em portal_visitante; com CPF o cadastro é refeito a cada execução (dado pessoal fora do banco).
+        if sb is not None and visitante is not None and visitante.cnpj and not dry_run:
             try:
                 rows = sb.selecionar("portal_visitante", select="n_cd_visitante",
                                      fonte=f"eq.{portal.fonte.slug}", cnpj=f"eq.{visitante.cnpj}")
@@ -125,8 +140,10 @@ class DocumentosParadigma:
         r = self.portal._ws("SalvarVisitante", {"dtoVisitante": self.visitante.dto(self.n_cd_visitante or 0, anexo, d)})
         cod = (r or {}).get("nCdCodigo") if isinstance(r, dict) else None
         if not isinstance(cod, int) or cod <= 0:
-            raise RuntimeError(f"SalvarVisitante não devolveu código ({str(r)[:120]})")
-        if cod != self.n_cd_visitante and self.sb is not None and not self.dry_run:
+            # Só a forma da resposta: o corpo pode ecoar documento, nome, e-mail ou telefone, e o erro vai para o banco.
+            forma = f"chaves {sorted(r)[:10]}" if isinstance(r, dict) else type(r).__name__
+            raise RuntimeError(f"SalvarVisitante não devolveu código (resposta: {forma})")
+        if cod != self.n_cd_visitante and self.visitante.cnpj and self.sb is not None and not self.dry_run:
             self.sb.upsert("portal_visitante", {"fonte": self.portal.fonte.slug, "n_cd_visitante": cod,
                                                 "cnpj": self.visitante.cnpj}, "fonte")
         novo = cod != self.n_cd_visitante or not getattr(self, "_cookie_ok", False)
@@ -236,7 +253,7 @@ class DocumentosParadigma:
                     if not confirmado:
                         self.sb.atualizar("licitacao_documentos", doc["id"], {
                             "status_processamento": "pendente",
-                            "erro": "portal exige cadastro de visitante: configure VISITANTE_* (CNPJ da empresa)",
+                            "erro": "portal exige cadastro de visitante: configure VISITANTE_* (CNPJ ou CPF)",
                         })
                     continue
 

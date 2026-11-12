@@ -80,3 +80,15 @@ def test_disparo_manual_aceita_lista_de_processos_validada():
     assert re.search(r'"\$\{FONTE\}" = "todas"', texto), (
         "lista de processos exige uma fonte só"
     )
+
+
+def test_coleta_recebe_o_visitante_dos_secrets():
+    """12/11/2026: sem VISITANTE_* no ambiente, os 71 documentos do teste da FIEB ficaram pendentes."""
+    coleta = _texto().split("- name: Coleta", 1)[1]
+    for nome in ("CNPJ", "CPF", "NOME", "RAZAO_SOCIAL", "EMAIL", "TELEFONE", "UF", "CONTATO", "CONSENTIMENTO_LGPD"):
+        assert f"VISITANTE_{nome}: ${{{{ secrets.VISITANTE_{nome} }}}}" in coleta, nome
+
+
+def test_cpf_so_com_digitos_tambem_e_mascarado_no_log():
+    coleta = _texto().split("- name: Coleta", 1)[1]
+    assert 'echo "::add-mask::${VISITANTE_CPF//[!0-9]/}"' in coleta

@@ -135,7 +135,23 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SUPABASE_STORAGE_BUCKET: ${{ secrets.SUPABASE_STORAGE_BUCKET }}
+          # Cadastro de visitante nos portais (decisões de 09/11 e 12/11/2026): CNPJ + razão social da empresa, ou
+          # CPF + nome de uma pessoa, sempre com VISITANTE_CONSENTIMENTO_LGPD=1. Sem os secrets, documento que exige
+          # cadastro fica pendente. Só tem efeito com documentos habilitados.
+          VISITANTE_CNPJ: ${{ secrets.VISITANTE_CNPJ }}
+          VISITANTE_RAZAO_SOCIAL: ${{ secrets.VISITANTE_RAZAO_SOCIAL }}
+          VISITANTE_CPF: ${{ secrets.VISITANTE_CPF }}
+          VISITANTE_NOME: ${{ secrets.VISITANTE_NOME }}
+          VISITANTE_EMAIL: ${{ secrets.VISITANTE_EMAIL }}
+          VISITANTE_TELEFONE: ${{ secrets.VISITANTE_TELEFONE }}
+          VISITANTE_UF: ${{ secrets.VISITANTE_UF }}
+          VISITANTE_CONTATO: ${{ secrets.VISITANTE_CONTATO }}
+          VISITANTE_CONSENTIMENTO_LGPD: ${{ secrets.VISITANTE_CONSENTIMENTO_LGPD }}
         run: |
+          # O Actions só mascara o valor exato do secret; o coletor usa o CPF só com dígitos. Mascara as duas formas.
+          if [ -n "${VISITANTE_CPF:-}" ]; then
+            echo "::add-mask::${VISITANTE_CPF//[!0-9]/}"
+          fi
           ARGS=(--fonte "${FONTE}" --origem "${ORIGEM}")
           if [ "${DOCUMENTOS_HABILITADOS}" != "true" ]; then
             ARGS+=(--sem-documentos)

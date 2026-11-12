@@ -66,6 +66,18 @@ def cnpj_valido(v: Any) -> str | None:
     return d if dv(d[:12]) == int(d[12]) and dv(d[:13]) == int(d[13]) else None
 
 
+def cpf_valido(v: Any) -> str | None:
+    """11 dígitos com DV correto -> dígitos; senão None."""
+    d = so_digitos(v)
+    if len(d) != 11 or d == d[0] * 11:
+        return None
+    for n in (9, 10):
+        r = sum(int(c) * p for c, p in zip(d[:n], range(n + 1, 1, -1))) * 10 % 11
+        if (0 if r == 10 else r) != int(d[n]):
+            return None
+    return d
+
+
 def _data(v: Any) -> str | None:
     return v if isinstance(v, str) and re.match(r"^\d{4}-\d{2}-\d{2}$", v) else None
 

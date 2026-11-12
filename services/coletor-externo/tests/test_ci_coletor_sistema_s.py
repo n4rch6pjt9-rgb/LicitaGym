@@ -72,7 +72,8 @@ def test_disparo_manual_aceita_lista_de_processos_validada():
         assert "${{ github.event.inputs.processos" not in bloco, (
             "a entrada não entra direto no script"
         )
-    assert re.search(r"\^\[0-9\]\+\(/\[0-9\]\+\)\?\$", texto), (
+    assert "set -f" in texto, "glob desligado antes do laço"
+    assert re.search(r"\^\[1-9\]\[0-9\]\*\(/\[1-9\]\[0-9\]\*\)\?\$", texto), (
         "cada processo validado como ID ou ID/MODULO"
     )
     assert 'ARGS+=(--processo "${p}")' in texto

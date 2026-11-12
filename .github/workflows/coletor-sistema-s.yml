@@ -148,8 +148,9 @@ jobs:
           fi
           # Camada 3 sob demanda: só estes processos, sem a listagem por termo. Cada ID é validado antes de virar
           # argumento (a entrada vem do disparo manual e só chega aqui pela variável de ambiente).
+          set -f   # sem expansão de glob: um '*' na entrada não vira nome de arquivo antes da validação
           for p in ${PROCESSOS}; do
-            if ! [[ "${p}" =~ ^[0-9]+(/[0-9]+)?$ ]]; then
+            if ! [[ "${p}" =~ ^[1-9][0-9]*(/[1-9][0-9]*)?$ ]]; then
               echo "Processo inválido: ${p} (use nCdOrigem ou nCdOrigem/MODULO)" >&2
               exit 1
             fi

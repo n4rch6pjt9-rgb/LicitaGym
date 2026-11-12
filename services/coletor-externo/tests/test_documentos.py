@@ -318,3 +318,19 @@ def test_erro_do_salvar_visitante_nao_grava_o_corpo_da_resposta():
         dp._identificar({"nCdAnexo": 1, "nSqAnexo": 1}, DET)
     assert "529" not in str(erro.value) and "PESSOA" not in str(erro.value)
     assert "sDsCpf" in str(erro.value)                         # só as chaves, para diagnóstico
+
+
+def test_erro_do_salvar_visitante_traz_o_motivo_do_portal_sem_dado_pessoal():
+    """Run 43324762704 (12/11/2026): o portal recusou o cadastro por CPF e o motivo (sDsConteudo) não chegou ao log.
+    O erro passa a trazer nCdCodigo e a mensagem, com os dados do visitante mascarados em qualquer formato."""
+    p, _ = portal_fake()
+    mensagem = ("Visitante PESSOA TESTE (Pessoa Teste) CPF 529.982.247-25 / 52998224725, p@e.test, "
+                "(85) 4000-0000: tipo de documento inválido")
+    p._ws = lambda m, payload: {"ValidarSalvarVisitante": 1}.get(m, {"nCdCodigo": -1, "sDsConteudo": mensagem})
+    dp = DP.DocumentosParadigma(p, sb_fake(), MagicMock(), VIS_CPF)
+    with pytest.raises(RuntimeError) as erro:
+        dp._identificar({"nCdAnexo": 1, "nSqAnexo": 1}, DET)
+    texto = str(erro.value)
+    assert "nCdCodigo=-1" in texto and "tipo de documento inválido" in texto
+    for dado in ("529", "52998224725", "PESSOA", "Pessoa Teste", "p@e.test", "4000-0000", "8540000000"):
+        assert dado not in texto, dado

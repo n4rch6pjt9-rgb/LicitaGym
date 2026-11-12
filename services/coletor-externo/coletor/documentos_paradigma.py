@@ -61,6 +61,16 @@ class VisitanteInstitucional:
     def cnpj(self) -> str | None:
         return self.documento if self.tipo == "CNPJ" else None
 
+    def mascarar(self, texto: str) -> str:
+        """Tira do texto os dados do visitante em qualquer formato: nome, e-mail, contato e qualquer sequência de
+        8+ dígitos (documento e telefone, com ou sem pontuação)."""
+        for valor in (self.nome, self.contato, self.email):
+            if valor:
+                texto = re.sub(re.escape(valor), "***", texto, flags=re.IGNORECASE)
+        texto = re.sub(r"[\w.+-]+@[\w-]+(\.[\w-]+)+", "***", texto)
+        return re.sub(r"\(?\d[\d.\-/() ]{6,}\d", lambda m: "***" if len(re.sub(r"\D", "", m.group())) >= 8
+                      else m.group(), texto)
+
     def chave_cadastro(self) -> dict | None:
         """Como o visitante é identificado em portal_visitante. CPF só como HMAC-SHA256 com chave secreta: sem a
         chave, um hash puro de CPF é reversível por força bruta (são 10^9 possibilidades). Sem chave, sem cache."""
@@ -163,8 +173,13 @@ class DocumentosParadigma:
         r = self.portal._ws("SalvarVisitante", {"dtoVisitante": self.visitante.dto(self.n_cd_visitante or 0, anexo, d)})
         cod = (r or {}).get("nCdCodigo") if isinstance(r, dict) else None
         if not isinstance(cod, int) or cod <= 0:
-            # Só a forma da resposta: o corpo pode ecoar documento, nome, e-mail ou telefone, e o erro vai para o banco.
-            forma = f"chaves {sorted(r)[:10]}" if isinstance(r, dict) else type(r).__name__
+            # O erro vai para o banco e para o log: só a forma da resposta, o código e a mensagem do portal com os
+            # dados do visitante mascarados (o corpo pode ecoar documento, nome, e-mail ou telefone).
+            if isinstance(r, dict):
+                motivo = self.visitante.mascarar(str(r.get("sDsConteudo") or ""))[:200]
+                forma = f"chaves {sorted(r)[:10]}; nCdCodigo={self.visitante.mascarar(str(cod))[:20]}; motivo: {motivo}"
+            else:
+                forma = type(r).__name__
             raise RuntimeError(f"SalvarVisitante não devolveu código (resposta: {forma})")
         if cod != self.n_cd_visitante and self._chave is not None and self.sb is not None and not self.dry_run:
             self.sb.upsert("portal_visitante", {"fonte": self.portal.fonte.slug, "n_cd_visitante": cod,

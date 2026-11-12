@@ -25,6 +25,7 @@ import json
 import logging
 import re
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -62,14 +63,26 @@ class VisitanteInstitucional:
         return self.documento if self.tipo == "CNPJ" else None
 
     def mascarar(self, texto: str) -> str:
-        """Tira do texto os dados do visitante em qualquer formato: nome, e-mail, contato e qualquer sequência de
-        8+ dígitos (documento e telefone, com ou sem pontuação)."""
-        for valor in (self.nome, self.contato, self.email):
-            if valor:
-                texto = re.sub(re.escape(valor), "***", texto, flags=re.IGNORECASE)
+        """Tira do texto os dados do visitante em qualquer formato, para erro e log: caracteres de controle (o texto do
+        portal não pode injetar comando `::` no Actions), cada palavra do nome e do contato com 3+ letras (com
+        ou sem acento), e-mails e toda sequência de 8+ dígitos (documento e telefone, com qualquer pontuação)."""
+        texto = re.sub(r"[\x00-\x1f\x7f]", " ", texto)
+        palavras = {p for v in (self.nome, self.contato) for p in re.findall(r"\w{3,}", self._sem_acento(v or ""))}
+        for palavra in sorted(palavras, key=len, reverse=True):
+            texto = re.sub(rf"\b{self._qualquer_acento(palavra)}\b", "***", texto, flags=re.IGNORECASE)
         texto = re.sub(r"[\w.+-]+@[\w-]+(\.[\w-]+)+", "***", texto)
-        return re.sub(r"\(?\d[\d.\-/() ]{6,}\d", lambda m: "***" if len(re.sub(r"\D", "", m.group())) >= 8
-                      else m.group(), texto)
+        return re.sub(r"\+?\(?\d[\d.\-/() _,–—+]{6,}\d",
+                      lambda m: "***" if len(re.sub(r"\D", "", m.group())) >= 8 else m.group(), texto)
+
+    @staticmethod
+    def _qualquer_acento(palavra: str) -> str:
+        """Regex da palavra que casa com ou sem acento ("Jose" acha "JOSÉ")."""
+        variantes = {"a": "aàáâãä", "e": "eèéêë", "i": "iìíîï", "o": "oòóôõö", "u": "uùúûü", "c": "cç", "n": "nñ"}
+        return "".join(f"[{variantes[c.lower()]}]" if c.lower() in variantes else re.escape(c) for c in palavra)
+
+    @staticmethod
+    def _sem_acento(texto: str) -> str:
+        return "".join(c for c in unicodedata.normalize("NFKD", texto) if not unicodedata.combining(c))
 
     def chave_cadastro(self) -> dict | None:
         """Como o visitante é identificado em portal_visitante. CPF só como HMAC-SHA256 com chave secreta: sem a

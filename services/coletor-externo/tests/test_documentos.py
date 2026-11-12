@@ -334,3 +334,13 @@ def test_erro_do_salvar_visitante_traz_o_motivo_do_portal_sem_dado_pessoal():
     assert "nCdCodigo=-1" in texto and "tipo de documento inválido" in texto
     for dado in ("529", "52998224725", "PESSOA", "Pessoa Teste", "p@e.test", "4000-0000", "8540000000"):
         assert dado not in texto, dado
+
+
+def test_mascara_do_visitante_pega_nome_parcial_sem_acento_e_comando_do_actions():
+    """Revisor de segurança (#534): nome parcial ou sem acento, CPF com outros separadores e quebra de linha que viraria
+    comando `::` do Actions."""
+    v = DP.VisitanteInstitucional(CPF_TESTE, "JOSÉ DA SILVA", "j@e.test", "8540000000", "BA", tipo="CPF")
+    texto = v.mascarar("Jose recusado; silva; CPF 529_982_247,25 / 529 982 247 25\n::stop-commands::x\r::error::y")
+    assert "Jose" not in texto and "silva" not in texto and "529" not in texto
+    assert "\n" not in texto and "\r" not in texto
+    assert "recusado" in texto and "::" in texto                # mensagem preservada, sem a quebra de linha

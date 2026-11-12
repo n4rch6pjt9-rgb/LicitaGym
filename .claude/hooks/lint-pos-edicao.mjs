@@ -24,7 +24,7 @@ export function arquivoParaLint(entrada, raiz) {
   const rel = relative(raiz, resolve(entrada.cwd || raiz, alvo)).split(sep).join("/");
   if (rel === "" || rel === ".." || rel.startsWith("../") || isAbsolute(rel)) return null; // fora do repositório
   if (rel.split("/").pop().startsWith("-")) return null; // nunca vira opção do script
-  if (/^supabase\/functions\/[^/]+\/_shared_prod\//.test(rel)) return null; // cópia antiga, a eliminar
+  if (/^supabase\/functions\/.+\/_shared_prod\//.test(rel)) return null; // cópia antiga, a eliminar (o `*` do case do script atravessa "/")
   if (/^(supabase\/functions|tests\/supabase)\/.+\.tsx?$/.test(rel)) return rel;
   if (/\.py$/.test(rel)) return rel;
   return null;

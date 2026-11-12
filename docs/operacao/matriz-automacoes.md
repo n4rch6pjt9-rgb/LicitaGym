@@ -27,7 +27,7 @@ Legenda da coluna **Quem dispara**:
 | Antes do PR, diff muda regra de classificação (ver seção 3) | skill `dry-run-classificacao` | 👤 **novo** (só você chama) |
 | PR aberto ou atualizado | CI `pr-quality` (typecheck, lint, testes, migrations, casos dos dois hooks) | 🤖 |
 | PR com migration ou Edge Function | check Supabase Preview (branch de banco do PR) | 🤖 |
-| PR toca `_shared/pncp/**` ou `sync-pncp-pca/**` | CI `pca-harness` | 🤖 |
+| PR toca `_shared/pncp/**`, `sync-pncp-pca/**`, `tests/supabase/functions/**` ou o próprio workflow | CI `pca-harness` (também manual, `workflow_dispatch`) | 🤖 |
 | Você aprova o merge na `main` | merge (nada disso o Claude faz sozinho) | 👤 |
 | Merge na `main` | migrations aplicadas e **todas** as Edge Functions republicadas | 🤖 |
 | Merge toca `supabase/functions/**` | workflow `deploy-supabase-functions` (deploy explícito de um subconjunto + smoke test) | 🤖 |
@@ -42,7 +42,7 @@ Legenda da coluna **Quem dispara**:
 | `saude.yml` (saúde operacional; abre issue `alerta-operacional`) | a cada 30 min (minutos 7 e 37) | 🤖 |
 | `sentinela-observador.yml` (confere se o `saude.yml` está rodando) | a cada 30 min (minutos 17 e 47) | 🤖 |
 | `coletor-pncp.yml` | todo dia, 06:00 em Brasília | 🤖; manual com `workflow_dispatch` (`modo`, `dry_run`, `rapido`) |
-| `coletor-sistema-s.yml` | todo dia, 06:30 em Brasília | 🤖; manual com `workflow_dispatch` (`fonte`, `paginas`) |
+| `coletor-sistema-s.yml` | todo dia, 06:30 em Brasília | 🤖; manual com `workflow_dispatch` (`fonte`, `paginas`, `documentos`, `dry_run`) |
 | `coletor-precos.yml` | segunda e quinta, 07:00 em Brasília | 🤖; manual com `workflow_dispatch` (`modo`, `dry_run`, `limite`) |
 | `supabase-auth-check.yml` | só manual | 👤 |
 

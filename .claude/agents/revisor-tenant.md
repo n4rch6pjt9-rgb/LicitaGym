@@ -21,8 +21,8 @@ desativada → 403, nunca cai em outra empresa.
   `sessao_mensagens`. Confirme antes de reportar: a tabela é tenant-scoped se tiver a coluna `tenant_id`.
   Lista atual: `grep -rln "tenant_id" supabase/migrations` e abra a migration que cria a tabela. Tenant-scoped hoje:
   pipeline (`pipeline_*`), tarefas (`tarefas_equipe`), agentes (`agente_*`, `recomendacao_decisoes`), catálogo do cliente
-  (`catalogo_produtos`, `catalogo_de_para`, `contrato_familia_pdm`, `edital_analise_familia`), disputa
-  (`disputa_*`, `sessao_alertas`), `decisoes_comerciais`, e as `tenant_*`.
+  (`catalogo_produtos`, `catalogo_de_para`), disputa (`disputa_*`, `sessao_alertas`), `decisoes_comerciais`, e as
+  `tenant_*`. Essa lista é um ponto de partida; o `grep` acima manda.
 
 ## Antes de revisar
 1. Leia `supabase/functions/_shared/tenant.ts` inteiro: `lerTenantDoUsuario`, `resolverTenantDoUsuario`, `ErroTenantAcesso`.

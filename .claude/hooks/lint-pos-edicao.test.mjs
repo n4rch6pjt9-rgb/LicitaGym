@@ -16,6 +16,7 @@ const recorte = [
   [edicao("supabase/functions/api-tenant/index.ts"), "supabase/functions/api-tenant/index.ts"], // caminho relativo ao cwd
   [edicao("../functions/_shared/http.ts", "Edit", "/repo/supabase/tests"), "supabase/functions/_shared/http.ts"],
   [edicao("/repo/supabase/functions/api-x/_shared_prod/http.ts"), null],
+  [edicao("/repo/supabase/functions/a/b/_shared_prod/x.ts"), null], // o case do script atravessa "/"
   [edicao("/repo/supabase/migrations/20261112000000_x.sql"), null],
   [edicao("/repo/docs/operacao/matriz.md"), null],
   [edicao("/repo/README.md"), null],

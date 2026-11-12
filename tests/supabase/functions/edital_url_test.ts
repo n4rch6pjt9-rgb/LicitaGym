@@ -411,6 +411,8 @@ Deno.test("host SaaS compartilhado do Paradigma: só tenant do Sistema S e da pr
     "https://egov.paradigmabs.com.br/sescba/x",
   );
 });
+ fix/url-edital-hosts-paradigma
+
 
 Deno.test("portal: cada fonte Paradigma do coletor aponta para o próprio mural (url_portal)", async () => {
   const fontes = await fontesParadigma();
@@ -433,3 +435,4 @@ Deno.test("portal: cada fonte Paradigma do coletor aponta para o próprio mural 
     "https://compras.fiemg.com.br/portal/Mural.aspx",
   );
 });
+ main

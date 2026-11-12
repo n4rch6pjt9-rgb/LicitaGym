@@ -1,5 +1,4 @@
 import { parsePortalProcessoUrl } from "./portal-compras.ts";
-
 /**
  * Função pura e segura para derivação de url_edital a partir dos dados de licitacoes_externas.
  *
@@ -28,8 +27,10 @@ import { parsePortalProcessoUrl } from "./portal-compras.ts";
  * - Hosts conhecidos autorizados para URLs construídas: `pncp.gov.br`, `compras.gov.br`, `cnetmobile.estaleiro.serpro.gov.br`.
  * - Para o domínio vindo de `linkSistemaOrigem` (dado coletado de terceiros), aceita somente https
  *   e host em `ALLOWED_ORIGEM_HOSTS`: qualquer `*.gov.br` e os portais Paradigma do Sistema S.
+ fix/url-edital-hosts-paradigma
  * - Portal de Compras Públicas (issue #266): host exato `portaldecompraspublicas.com.br` ou `www`,
  *   caminho `/processos/{UF}/{comprador}/{processo}`. Subdomínio da API e outros portais não entram.
+ main
  * - Retorna null quando não for possível construir URL válida ou segura.
  */
 
@@ -48,6 +49,29 @@ export const ALLOWED_STATIC_HOSTS = new Set([
  * services/coletor-externo/coletor/paradigma.py (teste garante que a lista acompanha o coletor).
  * Os hosts SaaS `*.paradigmabs.com.br` são compartilhados entre clientes do Paradigma: o cliente é o primeiro
  * segmento do caminho. Neles só vale o host exato + um tenant de `PARADIGMA_SAAS_TENANTS`.
+ fix/url-edital-hosts-paradigma
+ */
+export const PARADIGMA_HOSTS = [
+  "compras.sestsenat.org.br",
+  "portaldecompras.fiesc.com.br",
+  "portaldecompras.firjan.com.br",
+  "compras.sistemafiergs.org.br",
+  "portaldecompras.findes.org.br",
+  "compras.fieb.org.br",
+  "compras.fiems.com.br",
+  "compras.sfiemt.ind.br",
+  "portaldecompras.sfiec.org.br",
+  "compras.fiemg.com.br",
+] as const;
+
+/** Host SaaS -> tenant (1º segmento do caminho, minúsculo) -> `fonte` do coletor Paradigma. */
+export const PARADIGMA_SAAS_TENANTS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  "scr360.paradigmabs.com.br": { sescsp: "sescsp" },
+  "egov.paradigmabs.com.br": { sesc_senac_rs: "sesc_senac_rs", sescrj: "sescrj", sescba: "sescba" },
+  "egov-br.paradigmabs.com.br": { sescdn: "sescdn" },
+};
+
+
  */
 export const PARADIGMA_HOSTS = [
   "compras.sestsenat.org.br",
@@ -80,11 +104,16 @@ export const PORTAIS_COMPRAS_REGIONAL_HOSTS = [
   "bnc.org.br",
 ] as const;
 
+ main
 export const ALLOWED_ORIGEM_HOSTS = new Set([
   ...ALLOWED_STATIC_HOSTS,
   "gov.br",
   ...PARADIGMA_HOSTS,
   ...Object.keys(PARADIGMA_SAAS_TENANTS),
+ fix/url-edital-hosts-paradigma
+]);
+
+
   ...PORTAIS_COMPRAS_REGIONAL_HOSTS,
 ]);
 
@@ -137,6 +166,7 @@ export function ehFonteSistemaS(fonte?: string | null): boolean {
   return f === "sistema_s" || FONTES_SISTEMA_S.has(f);
 }
 
+ main
 /** Domínio dos hosts SaaS compartilhados do Paradigma. */
 const PARADIGMA_SAAS_DOMINIO = "paradigmabs.com.br";
 
@@ -235,14 +265,19 @@ function parseHttpsUrl(
  * Paradigma, tenant da própria `fonte` da linha (link do Sesc RJ não vale numa linha de outra fonte).
  */
 function validarLinkOrigem(rawUrl: unknown, fonte: string): string | null {
+ fix/url-edital-hosts-paradigma
+
   const portal = parsePortalProcessoUrl(rawUrl);
   if (portal) return portal.pagina;
+ main
   const parsed = parseHttpsUrl(rawUrl, true, ALLOWED_ORIGEM_HOSTS);
   if (!parsed) return null;
   const donoSaas = tenantParadigmaSaas(parsed);
   if (donoSaas !== null && donoSaas !== fonte) return null;
   return parsed.toString();
 }
+
+ fix/url-edital-hosts-paradigma
 
 /** Host do Compras.gov.br (Comprasnet) usado no acompanhamento público da compra. */
 const COMPRASNET_HOST = "cnetmobile.estaleiro.serpro.gov.br";
@@ -293,6 +328,7 @@ export function buildOrigemUrl(linkSistemaOrigem: unknown, fonte: unknown = "pnc
   return { url, host: new URL(url).hostname.toLowerCase() };
 }
 
+ main
 /**
  * Normaliza CNPJ removendo caracteres não numéricos.
  */

@@ -254,7 +254,12 @@ def _deduplicar(secao: str, itens: Iterable[dict]) -> list[Arquivo]:
     return list(por_arquivo.values())
 
 
+ fix/url-edital-hosts-paradigma
+def processo_para_linha(d: dict, modulo: int) -> dict:
+    d = {**d, "linkSistemaOrigem": f"{BASE}/Mural.aspx?nCdModulo={modulo}&nCdProcesso={d['nCdProcesso']}&tmpTipoMuralProcesso=0&nNmTela=E"}  # portal oficial; PNCP não disponibiliza o link do mural
+
 def processo_para_linha(d: dict, modulo: int, origem: str = "manual", agora: datetime | None = None) -> dict:
+ main
     return {
         **campos_proveniencia(d, origem, agora),  # spec 0023
         "fonte": "sestsenat",

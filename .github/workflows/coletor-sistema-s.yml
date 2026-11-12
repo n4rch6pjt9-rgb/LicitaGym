@@ -78,7 +78,7 @@ jobs:
     needs: plano
     name: coletar (${{ matrix.fonte }})
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 75   # fieb leva 54 a 56 min (medido em 12/11/2026); a coleta tem o seu limite de 70 min
     strategy:
       fail-fast: false
       max-parallel: 3
@@ -138,5 +138,5 @@ jobs:
           if [ "${DOCUMENTOS_HABILITADOS}" = "true" ] && [ -z "${SUPABASE_STORAGE_BUCKET:-}" ]; then
             echo "SUPABASE_STORAGE_BUCKET ausente."; exit 1
           fi
-          # 55 min + 2 min de folga ficam abaixo dos 60 do job: o SIGTERM chega ao Python, que fecha o registro.
-          timeout --kill-after=2m "${LIMITE_ETAPA:-55m}" python3 -m coletor.paradigma "${ARGS[@]}"
+          # 70 min + 2 min de folga ficam abaixo dos 75 do job: o SIGTERM chega ao Python, que fecha o registro.
+          timeout --kill-after=2m "${LIMITE_ETAPA:-70m}" python3 -m coletor.paradigma "${ARGS[@]}"

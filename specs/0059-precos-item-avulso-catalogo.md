@@ -78,6 +78,12 @@ api-precos não lê dado de tenant.
     do catálogo, a referência mostra o motivo.
   - CAs: CA-1, CA-2, CA-4, CA-5, CA-7, CA-8, CA-9 e CA-10.
   - No CA-9, a referência secundária usa o `resumo` do PDM como ele é hoje.
+  - Ainda na fase 1 (revisão de 12/11/2026):
+    - `action=itens` confere só o PDM, porque a lista ignora o item.
+    - Com item de exceção num PDM excluído, `resumo.item_mais_amostras` vem `null`.
+    - `filtro.itens_catalogo` fica para a fase 2.
+    - "Ver amostras" não aparece quando o PDM está fora do catálogo, porque o seletor de item da /precos depende do
+      modo `itens` da fase 2.
 - **Fase 2 (com migration):**
   - K-2, K-3 e `catalogo_estrito` na referência secundária.
   - CAs: CA-3, CA-6 e CA-11.

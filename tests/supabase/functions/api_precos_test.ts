@@ -629,7 +629,7 @@ Deno.test("CA-1 (0059): item sem regra num PDM incluído é aceito; sem item o e
   assert(!semItem.chamadas.some((c) => c.alvo === "catalogo_empresa_catmat"), "sem item não lê regra de item");
 });
 
-Deno.test("CA-5 (0059): erro ao ler a regra de item é 500 genérico, nunca 200 nem lista vazia", async () => {
+Deno.test("0059: erro ao ler a regra de item é 500 genérico, nunca 200 nem lista vazia", async () => {
   const { res, body, chamadas } = await chamar("action=resumo&pdm=6827&item=623742", {
     catalogo: [2640],
     regras: [regraItem(6827, 623742, true)],
@@ -637,5 +637,35 @@ Deno.test("CA-5 (0059): erro ao ler a regra de item é 500 genérico, nunca 200 
   });
   assertEquals(res.status, 500);
   assertEquals(body.error, "Falha ao ler os preços.");
+  assert(!chamouPreco(chamadas));
+});
+
+Deno.test("0059 (revisor): action=itens com item de exceção confere só o PDM e não abre o PDM excluído", async () => {
+  const { res, body, chamadas } = await chamar("action=itens&pdm=6827&item=623742", {
+    catalogo: [2640],
+    regras: [regraItem(6827, 623742, true)],
+  });
+  assertEquals(res.status, 400);
+  assertEquals(body.codigo, "pdm_fora_do_catalogo");
+  assert(!chamouPreco(chamadas));
+});
+
+Deno.test("0059 (revisor): resumo de item de exceção num PDM excluído não aponta item_mais_amostras", async () => {
+  const { res, body } = await chamar("action=resumo&pdm=6827&item=623742", {
+    catalogo: [2640],
+    regras: [regraItem(6827, 623742, true)],
+    resumo: [resumoLinha({ item_mais_codigo: 30104, item_mais_descricao: "OUTRO ITEM", item_mais_n: 40 })],
+  });
+  assertEquals(res.status, 200);
+  assertEquals(body.item_mais_amostras, null);
+});
+
+Deno.test("0059 (revisor): regra de item malformada é 500 não verificado, nunca liberação", async () => {
+  const { res, body, chamadas } = await chamar("action=resumo&pdm=2640&item=480149", {
+    catalogo: [2640],
+    regras: [{ nivel: "item", codigo_pdm: 2640, codigo_item: 480149, incluido: null }],
+  });
+  assertEquals(res.status, 500);
+  assertEquals(body.error, "Não verificado: regra de item sem código ou sem incluído.");
   assert(!chamouPreco(chamadas));
 });

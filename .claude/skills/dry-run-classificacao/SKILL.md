@@ -1,6 +1,6 @@
 ---
 name: dry-run-classificacao
-description: Monta a contagem antes/depois (dry-run) que todo PR de mudança de classificação precisa trazer: termos de escopo, padrões e exclusões CATMAT, categorias de objeto, tipo de órgão, marca, regra de prioridade. Só leitura. Use antes de abrir o PR, quando o diff tocar essas regras.
+description: "Monta a contagem antes/depois (dry-run) que todo PR de mudança de classificação precisa trazer: termos de escopo, padrões e exclusões CATMAT, categorias de objeto, tipo de órgão, marca, regra de prioridade. Só leitura. Use antes de abrir o PR, quando o diff tocar essas regras."
 disable-model-invocation: true
 ---
 

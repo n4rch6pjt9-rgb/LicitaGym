@@ -39,6 +39,10 @@ on:
         description: "true = só consulta, não grava"
         default: "false"
         required: false
+      processos:
+        description: "Só estes processos (nCdOrigem ou nCdOrigem/MODULO, separados por espaço), sem listar os termos; exige uma fonte"
+        default: ""
+        required: false
 
 permissions:
   contents: read
@@ -58,7 +62,13 @@ jobs:
         id: fontes
         env:
           FONTE: ${{ github.event.inputs.fonte || 'todas' }}
+          PROCESSOS: ${{ github.event.inputs.processos || '' }}
         run: |
+          # Lista de processos é de uma fonte só: o nCdOrigem não identifica processo entre portais.
+          if [ -n "${PROCESSOS}" ] && { [ "${FONTE}" = "todas" ] || [ -z "${FONTE}" ]; }; then
+            echo "A entrada processos exige uma fonte (não 'todas')." >&2
+            exit 1
+          fi
           case "${FONTE}" in
             todas|"")
               FONTES='["sestsenat","fiesc","firjan","findes","fieb","fiems","sfiec","sescsp","sescdn","sescrj","sescba"]'
@@ -92,6 +102,7 @@ jobs:
       DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
       DOCUMENTOS_HABILITADOS: ${{ github.event_name == 'workflow_dispatch' && inputs.documentos == true }}
       ORIGEM: ${{ github.event_name == 'schedule' && 'cron' || 'manual' }}
+      PROCESSOS: ${{ github.event.inputs.processos || '' }}
     steps:
       - name: Checkout (git, sem actions de terceiros)
         run: |
@@ -135,6 +146,16 @@ jobs:
           if [ "${DRY_RUN}" = "true" ]; then
             ARGS+=(--dry-run)
           fi
+          # Camada 3 sob demanda: só estes processos, sem a listagem por termo. Cada ID é validado antes de virar
+          # argumento (a entrada vem do disparo manual e só chega aqui pela variável de ambiente).
+          set -f   # sem expansão de glob: um '*' na entrada não vira nome de arquivo antes da validação
+          for p in ${PROCESSOS}; do
+            if ! [[ "${p}" =~ ^[1-9][0-9]*(/[1-9][0-9]*)?$ ]]; then
+              echo "Processo inválido: ${p} (use nCdOrigem ou nCdOrigem/MODULO)" >&2
+              exit 1
+            fi
+            ARGS+=(--processo "${p}")
+          done
           if [ "${DOCUMENTOS_HABILITADOS}" = "true" ] && [ -z "${SUPABASE_STORAGE_BUCKET:-}" ]; then
             echo "SUPABASE_STORAGE_BUCKET ausente."; exit 1
           fi

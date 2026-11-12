@@ -38,6 +38,12 @@
 // + 1 dia) até hoje, inclusive. Só entra preço > 0 (nulo ou zero não é preço), nas duas actions.
 // Catálogo: PDM fora de catalogo_catmat_pdms_efetivos() é 400 com codigo "pdm_fora_do_catalogo" (decisão: o front
 // só oferece PDMs do catálogo, então um PDM de fora é erro de chamada, não "sem preço").
+// Com `item` (spec 0059, fase 1: a aba Preços da oportunidade avalia o item, não o PDM), vale a regra de item do
+// catálogo (catalogo_empresa_catmat nivel 'item'), que é correção humana e vence a do PDM: item incluído é aceito
+// mesmo com o PDM excluído (exceção); item excluído é 400 "item_fora_do_catalogo" mesmo com o PDM incluído; item sem
+// regra segue o PDM (PDM fora: "item_fora_do_catalogo" se o PDM tiver outro item incluído, senão
+// "pdm_fora_do_catalogo"). filtro.escopo_catalogo diz o que foi conferido: "item" ou "pdm" (action=itens confere
+// só o PDM, porque a lista ignora o item). Com item de exceção num PDM excluído, resumo.item_mais_amostras vai null.
 // Arredondamento: média e percentis com 2 casas, meio para longe do zero (round(numeric, 2) no banco, a mesma regra
 // de centavos() em api-pncp-pca/radar.ts); mín, máx e preço unitário como vieram da fonte.
 // Segurança: o cliente service_role só é criado DEPOIS de requireUserAuth. Parâmetro inválido é 400; erro de banco
@@ -56,6 +62,7 @@ export const LINK_PNCP_BASE = "https://pncp.gov.br/app/editais";
 export const LINK_COMPRAS_GOV_BASE =
   "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/acompanhamento-compra?compra=";
 export const RPC_CATALOGO = "catalogo_catmat_pdms_efetivos";
+export const TABELA_CATALOGO = "catalogo_empresa_catmat";
 export const ARREDONDAMENTO =
   "Média e percentis (p25, mediana, p75) com 2 casas, meio para longe do zero; percentil por interpolação linear " +
   "(definição do percentile_cont). Mínimo, máximo e preço unitário como vieram da fonte.";
@@ -384,6 +391,55 @@ async function pdmNoCatalogo(client: PrecosClient, pdm: number): Promise<boolean
   return data.length > 0;
 }
 
+/** Regras de item do catálogo para o PDM: código do item -> incluído. */
+async function regrasDeItem(client: PrecosClient, pdm: number): Promise<Map<number, boolean>> {
+  const { data, error } = await client.from(TABELA_CATALOGO).select("codigo_item,incluido")
+    .eq("nivel", "item").eq("codigo_pdm", pdm);
+  if (error) throw error;
+  if (!Array.isArray(data)) throw new PrecosNaoVerificado("Não verificado: leitura das regras de item sem resposta.");
+  const regras = new Map<number, boolean>();
+  for (const r of data) {
+    const codigo = inteiro(r.codigo_item);
+    if (codigo === null || typeof r.incluido !== "boolean") {
+      throw new PrecosNaoVerificado("Não verificado: regra de item sem código ou sem incluído.");
+    }
+    regras.set(codigo, r.incluido);
+  }
+  return regras;
+}
+
+type BloqueioCatalogo = "pdm_fora_do_catalogo" | "item_fora_do_catalogo";
+
+/**
+ * Confere o catálogo (spec 0059, fase 1). bloqueio null = liberado; senão, o código do 400. pdmIncluido diz se o PDM
+ * está no catálogo efetivo (false com bloqueio null = item de exceção num PDM excluído).
+ */
+async function conferirCatalogo(
+  client: PrecosClient,
+  pdm: number,
+  item: number | null,
+): Promise<{ bloqueio: BloqueioCatalogo | null; pdmIncluido: boolean }> {
+  if (item === null) {
+    const pdmIncluido = await pdmNoCatalogo(client, pdm);
+    return { bloqueio: pdmIncluido ? null : "pdm_fora_do_catalogo", pdmIncluido };
+  }
+  const [pdmIncluido, regras] = await Promise.all([pdmNoCatalogo(client, pdm), regrasDeItem(client, pdm)]);
+  const regra = regras.get(item);
+  if (regra === true) return { bloqueio: null, pdmIncluido };
+  if (regra === false) return { bloqueio: "item_fora_do_catalogo", pdmIncluido };
+  if (pdmIncluido) return { bloqueio: null, pdmIncluido };
+  const outroIncluido = [...regras.values()].some((incluido) => incluido);
+  return { bloqueio: outroIncluido ? "item_fora_do_catalogo" : "pdm_fora_do_catalogo", pdmIncluido };
+}
+
+/**
+ * item_mais_amostras é calculado sem o filtro de item, no PDM inteiro: com um item de exceção num PDM excluído, ele
+ * poderia apontar um item fora do catálogo. Fica null até a fase 2 da spec 0059 (recorte restrito aos itens incluídos).
+ */
+function semItemDeFora<T extends { item_mais_amostras: unknown }>(corpo: T, pdmIncluido: boolean): T {
+  return pdmIncluido ? corpo : { ...corpo, item_mais_amostras: null };
+}
+
 /** Filtros do recorte comum (sem item, que cada action trata) no formato dos parâmetros das funções do banco. */
 function argsRecorte(p: PrecosParams, periodo: { inicio: string; fim: string }): Record<string, unknown> {
   return {
@@ -520,11 +576,15 @@ export async function responderPrecos(req: Request, url: URL, deps: PrecosDeps =
   const periodo = periodoDe((deps.hoje ?? hojeBrasilia)(), p.meses);
   try {
     const client = (deps.criarCliente ?? criarClienteServico)();
-    if (!(await pdmNoCatalogo(client, p.pdm))) {
-      return jsonResponse({
-        error: `pdm ${p.pdm} fora do catálogo da empresa`,
-        codigo: "pdm_fora_do_catalogo",
-      }, 400);
+    // action=itens ignora o filtro de item (lista para escolher o item): confere só o PDM, senão um item de exceção
+    // abriria a lista do PDM excluído inteiro (spec 0059: liberar o PDM inteiro está proibido).
+    const itemConferido = p.action === "itens" ? null : p.item;
+    const { bloqueio, pdmIncluido } = await conferirCatalogo(client, p.pdm, itemConferido);
+    if (bloqueio === "pdm_fora_do_catalogo") {
+      return jsonResponse({ error: `pdm ${p.pdm} fora do catálogo da empresa`, codigo: bloqueio }, 400);
+    }
+    if (bloqueio === "item_fora_do_catalogo") {
+      return jsonResponse({ error: `item ${p.item} fora do catálogo da empresa`, codigo: bloqueio }, 400);
     }
     const base = {
       fonte: FONTE,
@@ -538,12 +598,13 @@ export async function responderPrecos(req: Request, url: URL, deps: PrecosDeps =
         uasg: p.uasg,
         objeto: p.objeto,
         q: p.q,
+        escopo_catalogo: itemConferido === null ? "pdm" : "item",
       },
       periodo_inicio: periodo.inicio,
       periodo_fim: periodo.fim,
     };
     const corpo = p.action === "resumo"
-      ? await resumo(client, p, periodo)
+      ? semItemDeFora(await resumo(client, p, periodo), pdmIncluido)
       : p.action === "itens"
       ? await itens(client, p, periodo)
       : p.action === "municipios"

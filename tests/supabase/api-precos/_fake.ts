@@ -28,8 +28,11 @@ export function fake(
     return q;
   };
   const client = {
-    from() {
-      throw new Error("a api-precos não lê tabela direto (spec 0031)");
+    from(tabela: string) {
+      // Preço só pelas funções do banco (spec 0031); a única tabela lida direto é a das regras de item do catálogo
+      // (spec 0059, fase 1), aqui sem regra nenhuma.
+      if (tabela === "catalogo_empresa_catmat") return pronto([]);
+      throw new Error("a api-precos não lê tabela de preço direto (spec 0031)");
     },
     rpc(funcao: string, args?: Record<string, unknown>) {
       rpcs.push({ funcao, args: args ?? {} });

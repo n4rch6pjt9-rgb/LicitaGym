@@ -24,12 +24,21 @@ begin
     raise exception 'CHECK FALHOU: tipos aceitos do bucket arquivo-raw esperados {application/gzip}, veio %', v_tipos;
   end if;
 
+  -- "Sem policy = sem acesso" só vale com RLS ligada em storage.objects.
+  if not exists (select 1 from pg_class c join pg_namespace n on n.oid = c.relnamespace
+                  where n.nspname = 'storage' and c.relname = 'objects' and c.relrowsecurity) then
+    raise exception 'CHECK FALHOU: RLS desligada em storage.objects';
+  end if;
+
+  -- Policy que cita o bucket, ou policy de anon/authenticated/public sem filtro de bucket_id (abriria todos os buckets).
   select count(*) into v_policies
     from pg_policies
    where schemaname = 'storage' and tablename = 'objects'
-     and (coalesce(qual, '') || coalesce(with_check, '')) like '%arquivo-raw%';
+     and ((coalesce(qual, '') || coalesce(with_check, '')) like '%arquivo-raw%'
+          or (roles && array['anon', 'authenticated', 'public']::name[]
+              and (coalesce(qual, '') || coalesce(with_check, '')) not like '%bucket_id%'));
   if v_policies > 0 then
-    raise exception 'CHECK FALHOU: % policy(ies) em storage.objects citam o bucket arquivo-raw', v_policies;
+    raise exception 'CHECK FALHOU: % policy(ies) em storage.objects abrem ou citam o bucket arquivo-raw', v_policies;
   end if;
 
   raise notice 'SUCESSO: bucket arquivo-raw privado, só gzip, sem policy para anon/authenticated';

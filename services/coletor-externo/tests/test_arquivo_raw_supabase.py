@@ -39,7 +39,8 @@ class _Storage:
         self.respostas_post: list[_Resp] = []
         self.corromper_download = False
 
-    def post(self, url, data=None, headers=None, timeout=None):
+    def post(self, url, data=None, headers=None, timeout=None, allow_redirects=True):
+        assert allow_redirects is False
         self.chamadas.append(("POST", url, dict(headers or {}), timeout))
         if self.respostas_post:
             r = self.respostas_post.pop(0)
@@ -52,7 +53,8 @@ class _Storage:
         self.objetos[caminho] = data
         return _Resp(200, json.dumps({"Key": f"arquivo-raw/{caminho}"}).encode())
 
-    def get(self, url, headers=None, timeout=None):
+    def get(self, url, headers=None, timeout=None, allow_redirects=True):
+        assert allow_redirects is False
         self.chamadas.append(("GET", url, dict(headers or {}), timeout))
         caminho = url.split("/object/authenticated/arquivo-raw/", 1)[1]
         if caminho not in self.objetos:
@@ -172,3 +174,33 @@ def test_dry_run_continua_local_com_destino_supabase(destino_supabase, tmp_path)
     (man,) = arq.fechar()
     assert storage.chamadas == []
     assert man["uri"].startswith("file://")
+
+
+def test_supabase_exige_https(monkeypatch):
+    monkeypatch.setenv("ARQUIVO_RAW_DESTINO", "supabase")
+    monkeypatch.setenv("SUPABASE_URL", "http://projeto.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", CHAVE)
+    with pytest.raises(ArquivoRawErro, match="https"):
+        ArquivoRaw("licitacao_itens", "pncp", execucao_id=EID)
+
+
+@pytest.mark.parametrize("respostas", [
+    [_Resp(403, b'{"error":"Unauthorized","message":"invalid signature"}')],
+    [_Resp(503, b"x")] * 10,
+])
+def test_erro_nao_expoe_a_chave(destino_supabase, respostas):
+    storage = _Storage()
+    storage.respostas_post = list(respostas)
+    arq = _arq(storage)
+    arq.adicionar({"licitacao_id": 1, "numero_item": 1}, {"x": 1})
+    with pytest.raises(ArquivoRawErro) as erro:
+        arq.fechar()
+    assert CHAVE not in str(erro.value)
+
+
+def test_raw_de_precos_tira_cpf_e_nome_de_pessoa_fisica():
+    from coletor.compras_precos import raw_arquivado  # noqa: PLC0415
+    pf = {"idCompra": "1", "niFornecedor": "12345678901", "nomeFornecedor": "FULANO DE TAL", "marca": "X"}
+    assert raw_arquivado(pf) == {"idCompra": "1", "marca": "X"}
+    pj = {"idCompra": "1", "niFornecedor": "04372852000160", "nomeFornecedor": "W.E.V COMERCIAL LTDA"}
+    assert raw_arquivado(pj) == pj

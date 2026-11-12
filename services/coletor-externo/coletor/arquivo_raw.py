@@ -156,6 +156,8 @@ class ArquivoRaw:
             if not self._supabase_url or not self._supabase_chave:
                 raise ArquivoRawErro(
                     "ARQUIVO_RAW_DESTINO=supabase exige SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY (fail closed).")
+            if not self._supabase_url.startswith("https://"):
+                raise ArquivoRawErro("SUPABASE_URL tem de ser https:// (a service role não vai em texto puro).")
         self._diretorio = Path(diretorio) if diretorio is not None else Path(
             os.environ.get("ARQUIVO_RAW_DIR") or "arquivo-raw")
         self._cliente = cliente
@@ -273,8 +275,9 @@ class ArquivoRaw:
         ultimo = ""
         for tentativa in range(TENTATIVAS_SUPABASE):
             try:
+                # Sem redirecionamento: o requests tira o Authorization ao mudar de host, mas não o apikey.
                 r = http.post(f"{base}/{BUCKET_SUPABASE}/{objeto}", data=dados, headers=cabecalhos,
-                              timeout=TIMEOUT_SUPABASE)
+                              timeout=TIMEOUT_SUPABASE, allow_redirects=False)
             except requests.RequestException as e:
                 ultimo = f"rede: {e}"
                 self._dormir(min(60, 5 * 2 ** tentativa))
@@ -303,7 +306,7 @@ class ArquivoRaw:
         http = self._http or requests
         try:
             r = http.get(f"{base}/authenticated/{BUCKET_SUPABASE}/{objeto}", headers=auth,
-                         timeout=TIMEOUT_SUPABASE)
+                         timeout=TIMEOUT_SUPABASE, allow_redirects=False)
         except requests.RequestException as e:
             raise ArquivoRawErro(
                 f"conferência do raw no Supabase Storage falhou ({objeto}): {e}. Coleta interrompida (fail closed)."

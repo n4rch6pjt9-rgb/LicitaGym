@@ -25,7 +25,8 @@ values (
   array['application/gzip']
 )
 on conflict (id) do update
-  set public = false,
+  set name = excluded.name,
+      public = false,
       file_size_limit = excluded.file_size_limit,
       allowed_mime_types = excluded.allowed_mime_types;
 

@@ -159,6 +159,15 @@ def total_zero_declarado(corpo: dict[str, Any]) -> str | None:
     return None
 
 
+def raw_arquivado(bruto: dict) -> dict:
+    """Raw que vai para o arquivo imutável (arquivo_raw): fornecedor pessoa física (CPF) sai sem NI e sem nome, a mesma
+    regra do PNCP (pncp._raw_resultado). CNPJ continua: é público e é o que identifica o fornecedor."""
+    ni = bruto.get("niFornecedor")
+    if tipo_ni(ni.strip() if isinstance(ni, str) else None) != "cpf":
+        return bruto
+    return {k: v for k, v in bruto.items() if k not in ("niFornecedor", "nomeFornecedor")}
+
+
 def tipo_ni(ni: str | None) -> str | None:
     """'cnpj' (14 dígitos), 'cpf' (11), 'outro' ou None. Pessoa física fica gravada, mas fora do ranking de marcas
     (v_marca_ocorrencias.entra_ranking só aceita CNPJ)."""
@@ -477,7 +486,7 @@ def _coletar_precos(
             if linhas_norm and (dry_run or sb is not None):
                 for ln, bruto in zip(linhas_norm, brutos):
                     arquivo.adicionar(
-                        {"id_compra": ln["id_compra"], "id_item_compra": ln["id_item_compra"]}, bruto)
+                        {"id_compra": ln["id_compra"], "id_item_compra": ln["id_item_compra"]}, raw_arquivado(bruto))
             if not dry_run and sb is not None and linhas_norm:
                 for lote in lotes_upsert(linhas_norm):
                     try:

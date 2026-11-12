@@ -5,7 +5,8 @@ Fluxo, igual ao do mural do portal (HAR SFIEC PE000652022, 26/09/2026):
   2. ValidarSalvarVisitante -> 1 quando o portal exige identificação do visitante para baixar
   3. SalvarVisitante -> cadastro do visitante, com o CNPJ da empresa (VISITANTE_CNPJ) ou, por decisão do dono em
      12/11/2026, com o CPF de uma pessoa (VISITANTE_CPF + VISITANTE_NOME), sempre com VISITANTE_CONSENTIMENTO_LGPD=1.
-     O CPF é dado pessoal: não vai para o banco (portal_visitante só guarda CNPJ) nem para log ou erro.
+     O CPF é dado pessoal: portal_visitante guarda só o HMAC-SHA256 dele (chave em VISITANTE_HASH_CHAVE, que não
+     fica no banco), e ele não vai para log nem para erro.
      Sem cadastro configurado, o documento fica registrado como pendente e NÃO é baixado (o coletor não
      contorna a exigência do portal).
   4. AnexoExiste -> Download.aspx?q=<sDsParametroCriptografado>
@@ -18,11 +19,13 @@ acumula tudo o que foi anexado e o fechado fica com o dossiê completo para aná
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 import requests
@@ -44,17 +47,28 @@ class ArquivoGrande(Exception):
 @dataclass(frozen=True)
 class VisitanteInstitucional:
     """Identificação do LicitaGym nos portais: CNPJ da empresa ou CPF de uma pessoa. Lida do ambiente/segredo."""
-    documento: str      # só dígitos, DV conferido
-    nome: str           # razão social (CNPJ) ou nome da pessoa (CPF)
-    email: str
-    telefone: str
-    uf: str
-    contato: str = ""
+    documento: str = field(repr=False)  # só dígitos, DV conferido; fora do repr (CPF é dado pessoal)
+    nome: str = field(repr=False)       # razão social (CNPJ) ou nome da pessoa (CPF)
+    email: str = field(repr=False)
+    telefone: str = field(repr=False)
+    uf: str = ""
+    contato: str = field(default="", repr=False)
     tipo: str = "CNPJ"  # "CNPJ" ou "CPF"
+    chave_hash: str = field(default="", repr=False)  # chave do HMAC do CPF (VISITANTE_HASH_CHAVE)
 
     @property
     def cnpj(self) -> str | None:
         return self.documento if self.tipo == "CNPJ" else None
+
+    def chave_cadastro(self) -> dict | None:
+        """Como o visitante é identificado em portal_visitante. CPF só como HMAC-SHA256 com chave secreta: sem a
+        chave, um hash puro de CPF é reversível por força bruta (são 10^9 possibilidades). Sem chave, sem cache."""
+        if self.tipo == "CNPJ":
+            return {"tipo_documento": "CNPJ", "cnpj": self.documento, "documento_hash": None}
+        if not self.chave_hash:
+            return None
+        digest = hmac.new(self.chave_hash.encode(), f"cpf:{self.documento}".encode(), hashlib.sha256).hexdigest()
+        return {"tipo_documento": "CPF", "cnpj": None, "documento_hash": digest}
 
     @classmethod
     def do_ambiente(cls) -> "VisitanteInstitucional | None":
@@ -72,11 +86,13 @@ class VisitanteInstitucional:
             raise SystemExit(f"VISITANTE_{tipo} inválido (dígito verificador).")
         if (env("VISITANTE_CONSENTIMENTO_LGPD") or "") != "1":
             raise SystemExit("Defina VISITANTE_CONSENTIMENTO_LGPD=1: o cadastro de visitante no portal exige o aceite.")
-        faltam = [k for k in (campo_nome, "VISITANTE_EMAIL", "VISITANTE_TELEFONE", "VISITANTE_UF") if not env(k)]
+        exigidos = (campo_nome, "VISITANTE_EMAIL", "VISITANTE_TELEFONE", "VISITANTE_UF")
+        faltam = [k for k in exigidos + (("VISITANTE_HASH_CHAVE",) if tipo == "CPF" else ()) if not env(k)]
         if faltam:
             raise SystemExit(f"Cadastro de visitante incompleto: {', '.join(faltam)}")
         return cls(d, env(campo_nome), env("VISITANTE_EMAIL"), re.sub(r"\D", "", env("VISITANTE_TELEFONE")),
-                   env("VISITANTE_UF").upper()[:2], env("VISITANTE_CONTATO") or "", tipo)
+                   env("VISITANTE_UF").upper()[:2], env("VISITANTE_CONTATO") or "", tipo,
+                   env("VISITANTE_HASH_CHAVE") or "" if tipo == "CPF" else "")
 
     def dto(self, n_cd_visitante: int, anexo: dict, d: dict) -> dict:
         """dtoVisitante no formato do formulário do portal (documento do tipo CNPJ ou CPF)."""
@@ -106,11 +122,13 @@ class DocumentosParadigma:
         self.max_bytes = max_bytes
         self.dry_run = dry_run
         self.n_cd_visitante: int | None = None  # código do visitante no portal (reaproveitado entre execuções)
-        # Só o CNPJ fica em portal_visitante; com CPF o cadastro é refeito a cada execução (dado pessoal fora do banco).
-        if sb is not None and visitante is not None and visitante.cnpj and not dry_run:
+        # portal_visitante guarda o CNPJ, ou só o HMAC do CPF (dado pessoal); sem chave de cadastro, não há cache.
+        self._chave = visitante.chave_cadastro() if visitante is not None else None
+        if sb is not None and self._chave is not None and not dry_run:
+            filtro = {"cnpj": f"eq.{self._chave['cnpj']}"} if self._chave["cnpj"] else                 {"documento_hash": f"eq.{self._chave['documento_hash']}"}
             try:
                 rows = sb.selecionar("portal_visitante", select="n_cd_visitante",
-                                     fonte=f"eq.{portal.fonte.slug}", cnpj=f"eq.{visitante.cnpj}")
+                                     fonte=f"eq.{portal.fonte.slug}", **filtro)
                 self.n_cd_visitante = rows[0]["n_cd_visitante"] if rows else None
             except Exception as e:
                 log.info("portal_visitante indisponível (%s): cadastra de novo nesta execução", e)
@@ -143,9 +161,9 @@ class DocumentosParadigma:
             # Só a forma da resposta: o corpo pode ecoar documento, nome, e-mail ou telefone, e o erro vai para o banco.
             forma = f"chaves {sorted(r)[:10]}" if isinstance(r, dict) else type(r).__name__
             raise RuntimeError(f"SalvarVisitante não devolveu código (resposta: {forma})")
-        if cod != self.n_cd_visitante and self.visitante.cnpj and self.sb is not None and not self.dry_run:
+        if cod != self.n_cd_visitante and self._chave is not None and self.sb is not None and not self.dry_run:
             self.sb.upsert("portal_visitante", {"fonte": self.portal.fonte.slug, "n_cd_visitante": cod,
-                                                "cnpj": self.visitante.cnpj}, "fonte")
+                                                **self._chave}, "fonte")
         novo = cod != self.n_cd_visitante or not getattr(self, "_cookie_ok", False)
         self.n_cd_visitante = cod
         if not novo:

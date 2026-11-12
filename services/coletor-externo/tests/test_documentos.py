@@ -135,6 +135,8 @@ def test_baixa_com_visitante_institucional_e_guarda_no_storage():
     assert linhas[1]["nome_original"].startswith("Relatorio de Justificativa") and linhas[1]["origem_portal"] == "Processo"
     assert all("sDsParametroCriptografado" not in l["raw"] for l in linhas)
     assert sb.upsert.call_args_list[-1].args[0] == "portal_visitante"
+    assert sb.upsert.call_args_list[-1].args[1] == {"fonte": "sfiec", "n_cd_visitante": 5209, "tipo_documento": "CNPJ",
+                                                    "cnpj": "24608949000137", "documento_hash": None}
 
 
 def test_sem_cadastro_configurado_nao_baixa_e_fica_pendente():
@@ -236,7 +238,9 @@ def test_caminho_destino_da_migracao():
 
 # ---------------- Visitante por CPF (decisão do Marcelo, 12/11/2026) ----------------
 CPF_TESTE = "52998224725"  # CPF de exemplo com dígito verificador válido, usado em documentação de validação
-VIS_CPF = DP.VisitanteInstitucional(CPF_TESTE, "PESSOA TESTE", "p@e.test", "8540000000", "CE", tipo="CPF")
+CHAVE_TESTE = "chave-hmac-de-teste"
+VIS_CPF = DP.VisitanteInstitucional(CPF_TESTE, "PESSOA TESTE", "p@e.test", "8540000000", "CE", tipo="CPF",
+                                    chave_hash=CHAVE_TESTE)
 
 
 def _ambiente(monkeypatch, vals):
@@ -246,9 +250,12 @@ def _ambiente(monkeypatch, vals):
 
 def test_visitante_do_ambiente_aceita_cpf_valido_com_nome(monkeypatch):
     base = {"VISITANTE_CPF": "529.982.247-25", "VISITANTE_NOME": "PESSOA TESTE", "VISITANTE_EMAIL": "p@e.test",
-            "VISITANTE_TELEFONE": "(85) 4000-0000", "VISITANTE_UF": "ce", "VISITANTE_CONSENTIMENTO_LGPD": "1"}
+            "VISITANTE_TELEFONE": "(85) 4000-0000", "VISITANTE_UF": "ce", "VISITANTE_CONSENTIMENTO_LGPD": "1",
+            "VISITANTE_HASH_CHAVE": CHAVE_TESTE}
     v = _ambiente(monkeypatch, base)
     assert (v.tipo, v.documento, v.nome) == ("CPF", CPF_TESTE, "PESSOA TESTE")
+    with pytest.raises(SystemExit):                                               # sem chave, o hash é reversível
+        _ambiente(monkeypatch, {k: x for k, x in base.items() if k != "VISITANTE_HASH_CHAVE"})
     with pytest.raises(SystemExit):
         _ambiente(monkeypatch, {**base, "VISITANTE_CPF": "529.982.247-24"})          # dígito verificador
     with pytest.raises(SystemExit):
@@ -265,7 +272,7 @@ def test_visitante_com_cnpj_e_cpf_ao_mesmo_tempo_e_ambiguo(monkeypatch):
                                 "VISITANTE_CONSENTIMENTO_LGPD": "1"})
 
 
-def test_baixa_com_visitante_cpf_preenche_cpf_e_nao_guarda_o_cpf_no_banco():
+def test_baixa_com_visitante_cpf_preenche_cpf_e_guarda_so_o_hash_no_banco():
     p, chamadas = portal_fake()
     sb, arm = sb_fake(), MagicMock()
     r = DP.DocumentosParadigma(p, sb, arm, VIS_CPF).sincronizar(10, DET, "paradigma/sfiec/18/32")
@@ -275,8 +282,28 @@ def test_baixa_com_visitante_cpf_preenche_cpf_e_nao_guarda_o_cpf_no_banco():
     assert salvar[1][1]["dtoVisitante"]["nCdVisitante"] == 5209     # mesma execução: reaproveita o cadastro
     assert dto["sDsTipoDocumento"] == "CPF" and dto["sDsCpf"] == CPF_TESTE and dto["sDsCnpj"] == ""
     assert dto["sNmVisitante"] == "PESSOA TESTE"
-    tabelas = [c.args[0] for c in sb.upsert.call_args_list] + [c.args[0] for c in sb.selecionar.call_args_list]
-    assert "portal_visitante" not in tabelas                   # CPF é dado pessoal: não fica no banco
+    import hashlib
+    import hmac
+    esperado = hmac.new(CHAVE_TESTE.encode(), f"cpf:{CPF_TESTE}".encode(), hashlib.sha256).hexdigest()
+    consulta = [c for c in sb.selecionar.call_args_list if c.args[0] == "portal_visitante"]
+    assert consulta and consulta[0].kwargs["documento_hash"] == f"eq.{esperado}"
+    assert "cnpj" not in consulta[0].kwargs
+    linha = [c.args[1] for c in sb.upsert.call_args_list if c.args[0] == "portal_visitante"][0]
+    assert linha == {"fonte": "sfiec", "n_cd_visitante": 5209, "tipo_documento": "CPF", "cnpj": None,
+                     "documento_hash": esperado}
+    assert CPF_TESTE not in str(linha)                         # CPF é dado pessoal: no banco, só o HMAC
+
+
+def test_cadastro_cpf_reaproveitado_entre_execucoes():
+    p, chamadas = portal_fake()
+    sb = sb_fake()
+    sb.selecionar.side_effect = lambda tabela, **k: [{"n_cd_visitante": 77}] if tabela == "portal_visitante" else []
+    DP.DocumentosParadigma(p, sb, MagicMock(), VIS_CPF).sincronizar(10, DET, "x")
+    assert [c for c in chamadas if c[0] == "SalvarVisitante"][0][1]["dtoVisitante"]["nCdVisitante"] == 77
+
+
+def test_cpf_nao_aparece_na_representacao_do_visitante():
+    assert CPF_TESTE not in repr(VIS_CPF) and CHAVE_TESTE not in repr(VIS_CPF)
 
 
 def test_erro_do_salvar_visitante_nao_grava_o_corpo_da_resposta():

@@ -18,6 +18,7 @@ interface Erros {
   catalogo?: { message: string };
   resumo?: { message: string };
   amostras?: { message: string };
+  regras?: { message: string };
 }
 
 function cmp(a: unknown, b: unknown): number {
@@ -50,6 +51,8 @@ function criarFake(opts: {
   resumo?: Linha[];
   linhas?: Linha[];
   itens?: Linha[];
+  /** Regras de catalogo_empresa_catmat (spec 0059). */
+  regras?: Linha[];
   erros?: Erros;
 }) {
   const chamadas: Chamada[] = [];
@@ -129,6 +132,7 @@ function criarFake(opts: {
   const client = {
     from(tabela: string) {
       chamadas.push({ alvo: tabela, metodo: "from", args: [] });
+      if (tabela === "catalogo_empresa_catmat") return builder(tabela, () => opts.regras ?? [], opts.erros?.regras);
       return builder(tabela, () => opts.linhas ?? [], opts.erros?.amostras);
     },
     rpc(funcao: string, args?: Record<string, unknown>) {
@@ -548,4 +552,88 @@ Deno.test("CA-3: CPF de pessoa física não é exibido (LGPD); CNPJ mantido; NI 
     assertEquals(por[id].ni_tipo, null, id);
   }
   assertEquals(por.C.nome_fornecedor, "EMPRESA X");
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Spec 0059, fase 1: checagem de catálogo pelo item (caso de Alagoas: oportunidade 2541, item 623742 do PDM 6827).
+
+function regraItem(codigo_pdm: number, codigo_item: number, incluido: boolean): Linha {
+  return { nivel: "item", codigo_pdm, codigo_item, incluido };
+}
+
+const chamouPreco = (chamadas: Chamada[]) =>
+  chamadas.some((c) => c.metodo === "rpc" && String(c.alvo).startsWith("precos_praticados_"));
+
+Deno.test("CA-1 (0059): item incluído como exceção num PDM excluído dá 200 e filtra o item no banco", async () => {
+  const { res, body, chamadas } = await chamar("action=resumo&pdm=6827&item=623742", {
+    catalogo: [2640],
+    regras: [regraItem(6827, 623742, true)],
+    resumo: [resumoLinha()],
+  });
+  assertEquals(res.status, 200);
+  assertEquals(body.filtro.escopo_catalogo, "item");
+  const rpc = chamadas.find((c) => c.alvo === "precos_praticados_resumo");
+  assertEquals((rpc?.args[0] as Record<string, unknown>).p_item, 623742);
+});
+
+Deno.test("CA-2 (0059): item excluído num PDM incluído dá 400 item_fora_do_catalogo e não lê preço", async () => {
+  const { res, body, chamadas } = await chamar("action=resumo&pdm=2640&item=480149", {
+    catalogo: [2640],
+    regras: [regraItem(2640, 480149, false)],
+    resumo: [resumoLinha()],
+  });
+  assertEquals(res.status, 400);
+  assertEquals(body.codigo, "item_fora_do_catalogo");
+  assert(!chamouPreco(chamadas));
+});
+
+Deno.test("CA-2 (0059): item sem regra num PDM com só outro item avulso dá 400 item_fora_do_catalogo", async () => {
+  const { res, body, chamadas } = await chamar("action=amostras&pdm=6827&item=30104", {
+    catalogo: [2640],
+    regras: [regraItem(6827, 623742, true)],
+  });
+  assertEquals(res.status, 400);
+  assertEquals(body.codigo, "item_fora_do_catalogo");
+  assert(!chamouPreco(chamadas));
+});
+
+Deno.test("CA-4 (0059): PDM fora do catálogo sem item segue 400 pdm_fora_do_catalogo, mesmo com item avulso", async () => {
+  const { res, body, chamadas } = await chamar("action=resumo&pdm=6827", {
+    catalogo: [2640],
+    regras: [regraItem(6827, 623742, true)],
+  });
+  assertEquals(res.status, 400);
+  assertEquals(body.codigo, "pdm_fora_do_catalogo");
+  assert(!chamouPreco(chamadas));
+});
+
+Deno.test("CA-4 (0059): PDM sem regra nenhuma, com item, dá 400 pdm_fora_do_catalogo", async () => {
+  const { res, body } = await chamar("action=resumo&pdm=9999&item=1", { catalogo: [2640], regras: [] });
+  assertEquals(res.status, 400);
+  assertEquals(body.codigo, "pdm_fora_do_catalogo");
+});
+
+Deno.test("CA-1 (0059): item sem regra num PDM incluído é aceito; sem item o escopo é o PDM", async () => {
+  const comItem = await chamar("action=resumo&pdm=2640&item=480149", {
+    catalogo: [2640],
+    regras: [],
+    resumo: [resumoLinha()],
+  });
+  assertEquals(comItem.res.status, 200);
+  assertEquals(comItem.body.filtro.escopo_catalogo, "item");
+  const semItem = await chamar("action=resumo&pdm=2640", { catalogo: [2640], resumo: [resumoLinha()] });
+  assertEquals(semItem.res.status, 200);
+  assertEquals(semItem.body.filtro.escopo_catalogo, "pdm");
+  assert(!semItem.chamadas.some((c) => c.alvo === "catalogo_empresa_catmat"), "sem item não lê regra de item");
+});
+
+Deno.test("CA-5 (0059): erro ao ler a regra de item é 500 genérico, nunca 200 nem lista vazia", async () => {
+  const { res, body, chamadas } = await chamar("action=resumo&pdm=6827&item=623742", {
+    catalogo: [2640],
+    regras: [regraItem(6827, 623742, true)],
+    erros: { regras: { message: "boom" } },
+  });
+  assertEquals(res.status, 500);
+  assertEquals(body.error, "Falha ao ler os preços.");
+  assert(!chamouPreco(chamadas));
 });

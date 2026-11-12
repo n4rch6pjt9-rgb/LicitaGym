@@ -255,3 +255,25 @@ def test_modo_registro(anos, processos, esperado):
 )
 def test_mascarar_segredos(texto, esperado):
     assert P.mascarar_segredos(texto) == esperado
+
+
+def test_sigterm_no_meio_da_coleta_fecha_incompleta_com_o_parcial(sb, monkeypatch):
+    """12/11/2026: no limite da etapa (timeout interno do workflow) o coletor recebe SIGTERM. O que já foi gravado
+    conta: o registro fecha como `incompleta`, com os contadores até ali, e não como `falhou` zerado."""
+    import signal as sinal
+
+    def coleta_cortada(*a, resumo=None, **k):
+        resumo.update({"listados": 40, "processos": 12, "no_escopo": 5, "erros": 0})
+        sinal.raise_signal(sinal.SIGTERM)  # no Windows, os.kill(SIGTERM) mataria o pytest
+        raise AssertionError("o SIGTERM devia ter interrompido a coleta")
+
+    monkeypatch.setattr(P, "coletar", coleta_cortada)
+    anterior = sinal.getsignal(sinal.SIGTERM)
+    with pytest.raises(SystemExit) as saida:
+        P.main(ARGS_BASE)
+    assert saida.value.code == 143
+    fim = _finalizacao(sb)
+    assert fim["p_status"] == "incompleta"
+    assert (fim["p_listados"], fim["p_processos"], fim["p_no_escopo"]) == (40, 12, 5)
+    assert "SIGTERM" in fim["p_detalhe_erros"]["erro"]
+    assert sinal.getsignal(sinal.SIGTERM) is anterior

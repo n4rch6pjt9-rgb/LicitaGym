@@ -26,6 +26,9 @@ def test_coleta_termina_antes_do_limite_do_job_para_fechar_o_registro():
     m = re.search(r'timeout --kill-after=(\d+)m "\$\{LIMITE_ETAPA:-(\d+)m\}" python3 -m coletor\.paradigma', texto)
     assert m, "a coleta tem de rodar sob timeout interno (SIGTERM fecha o registro como falha)"
     assert int(m.group(2)) + int(m.group(1)) < job
+    # Regressão (revisor, 12/11/2026): o fieb leva de 54 a 60 min (runs de 03 a 12/11). Limite menor cortaria a
+    # maioria das execuções que hoje concluem e congelaria a saúde dele.
+    assert int(m.group(2)) >= 60
 
 
 def test_sesc_senac_rs_fora_do_lote_agendado_mas_disponivel_a_mao():

@@ -130,12 +130,15 @@ Todo processo Paradigma no escopo, aberto ou fechado, tem os anexos (edital, err
 - documento que some do portal → `removido_do_portal_em` (o arquivo continua no LicitaGym);
 - a view `v_licitacao_documentos` dá, por licitação, contagens e a lista completa (`documentos` jsonb com `bucket` e `caminho`).
 
-**Cadastro de visitante:** o portal exige identificação para baixar. O coletor se identifica com o **CNPJ da empresa** (nunca CPF). Sem estas variáveis, os documentos ficam `pendente` e nada é baixado:
+**Cadastro de visitante:** o portal exige identificação para baixar. O coletor se identifica com o **CNPJ da empresa** ou, desde 12/11/2026, com o **CPF de uma pessoa** (`VISITANTE_CPF` + `VISITANTE_NOME` no lugar de `VISITANTE_CNPJ` + `VISITANTE_RAZAO_SOCIAL`; os dois juntos é erro). O CPF não vai para o banco: com CPF, o cadastro no portal é refeito a cada execução. Sem estas variáveis, os documentos ficam `pendente` e nada é baixado:
 
 ```
 SUPABASE_STORAGE_BUCKET=licitacao-documentos
 VISITANTE_CNPJ=00.000.000/0000-00
 VISITANTE_RAZAO_SOCIAL=...
+# ou, por pessoa física:
+# VISITANTE_CPF=000.000.000-00
+# VISITANTE_NOME=...
 VISITANTE_EMAIL=...            # e-mail institucional
 VISITANTE_TELEFONE=...
 VISITANTE_UF=CE

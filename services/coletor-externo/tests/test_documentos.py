@@ -270,8 +270,22 @@ def test_baixa_com_visitante_cpf_preenche_cpf_e_nao_guarda_o_cpf_no_banco():
     sb, arm = sb_fake(), MagicMock()
     r = DP.DocumentosParadigma(p, sb, arm, VIS_CPF).sincronizar(10, DET, "paradigma/sfiec/18/32")
     assert r["baixados"] == 2 and r["erros"] == 0
-    dto = [c for c in chamadas if c[0] == "SalvarVisitante"][0][1]["dtoVisitante"]
+    salvar = [c for c in chamadas if c[0] == "SalvarVisitante"]
+    dto = salvar[0][1]["dtoVisitante"]
+    assert salvar[1][1]["dtoVisitante"]["nCdVisitante"] == 5209     # mesma execução: reaproveita o cadastro
     assert dto["sDsTipoDocumento"] == "CPF" and dto["sDsCpf"] == CPF_TESTE and dto["sDsCnpj"] == ""
     assert dto["sNmVisitante"] == "PESSOA TESTE"
     tabelas = [c.args[0] for c in sb.upsert.call_args_list] + [c.args[0] for c in sb.selecionar.call_args_list]
     assert "portal_visitante" not in tabelas                   # CPF é dado pessoal: não fica no banco
+
+
+def test_erro_do_salvar_visitante_nao_grava_o_corpo_da_resposta():
+    """Revisor de segurança, 12/11/2026: o corpo pode ecoar CPF formatado, nome, e-mail; o erro vai para o banco."""
+    p, _ = portal_fake()
+    p._ws = lambda m, payload: {"ValidarSalvarVisitante": 1}.get(
+        m, {"sDsCpf": "529.982.247-25", "sNmVisitante": "PESSOA TESTE"})
+    dp = DP.DocumentosParadigma(p, sb_fake(), MagicMock(), VIS_CPF)
+    with pytest.raises(RuntimeError) as erro:
+        dp._identificar({"nCdAnexo": 1, "nSqAnexo": 1}, DET)
+    assert "529" not in str(erro.value) and "PESSOA" not in str(erro.value)
+    assert "sDsCpf" in str(erro.value)                         # só as chaves, para diagnóstico

@@ -140,8 +140,9 @@ class DocumentosParadigma:
         r = self.portal._ws("SalvarVisitante", {"dtoVisitante": self.visitante.dto(self.n_cd_visitante or 0, anexo, d)})
         cod = (r or {}).get("nCdCodigo") if isinstance(r, dict) else None
         if not isinstance(cod, int) or cod <= 0:
-            resposta = str(r)[:120].replace(self.visitante.documento, "***")   # o erro vai para o banco
-            raise RuntimeError(f"SalvarVisitante não devolveu código ({resposta})")
+            # Só a forma da resposta: o corpo pode ecoar documento, nome, e-mail ou telefone, e o erro vai para o banco.
+            forma = f"chaves {sorted(r)[:10]}" if isinstance(r, dict) else type(r).__name__
+            raise RuntimeError(f"SalvarVisitante não devolveu código (resposta: {forma})")
         if cod != self.n_cd_visitante and self.visitante.cnpj and self.sb is not None and not self.dry_run:
             self.sb.upsert("portal_visitante", {"fonte": self.portal.fonte.slug, "n_cd_visitante": cod,
                                                 "cnpj": self.visitante.cnpj}, "fonte")
@@ -252,7 +253,7 @@ class DocumentosParadigma:
                     if not confirmado:
                         self.sb.atualizar("licitacao_documentos", doc["id"], {
                             "status_processamento": "pendente",
-                            "erro": "portal exige cadastro de visitante: configure VISITANTE_* (CNPJ da empresa)",
+                            "erro": "portal exige cadastro de visitante: configure VISITANTE_* (CNPJ ou CPF)",
                         })
                     continue
 

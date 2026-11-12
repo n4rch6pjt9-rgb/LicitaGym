@@ -148,6 +148,10 @@ jobs:
           VISITANTE_CONTATO: ${{ secrets.VISITANTE_CONTATO }}
           VISITANTE_CONSENTIMENTO_LGPD: ${{ secrets.VISITANTE_CONSENTIMENTO_LGPD }}
         run: |
+          # O Actions só mascara o valor exato do secret; o coletor usa o CPF só com dígitos. Mascara as duas formas.
+          if [ -n "${VISITANTE_CPF:-}" ]; then
+            echo "::add-mask::${VISITANTE_CPF//[!0-9]/}"
+          fi
           ARGS=(--fonte "${FONTE}" --origem "${ORIGEM}")
           if [ "${DOCUMENTOS_HABILITADOS}" != "true" ]; then
             ARGS+=(--sem-documentos)

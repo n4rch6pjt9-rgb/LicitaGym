@@ -1034,3 +1034,22 @@ def test_fiemg_nao_libera_nem_com_autorizado():
     """Revisão #304: WAF (FIEMG) não se libera pelo construtor, só as fontes da decisão de 05/10."""
     with pytest.raises(PermissionError):
         P.PortalParadigma(P.FONTES["fiemg"], autorizado=True, sessao=MagicMock())
+
+
+def test_ws_registra_cada_nova_tentativa_no_log(monkeypatch, caplog):
+    """12/11/2026: uma hora de silêncio no log do sesc_senac_rs não distinguia travamento de espera. Cada nova tentativa
+    do WebService tem de deixar linha com fonte, método, motivo e espera."""
+    import requests  # noqa: PLC0415
+    monkeypatch.setattr(P.time, "sleep", lambda _s: None)
+    s = MagicMock()
+    ok = MagicMock(status_code=200)
+    ok.json.return_value = {"d": []}
+    s.post.side_effect = [MagicMock(status_code=503, headers={}), requests.ConnectionError("caiu"),
+                          MagicMock(status_code=429, headers={"Retry-After": "9"}), ok]
+    p = P.PortalParadigma(P.FONTES["fiesc"], delay=0, sessao=s)
+    with caplog.at_level("WARNING", logger=P.log.name):
+        assert p._ws("PesquisarProcessos", {}) == []
+    linhas = [r.getMessage() for r in caplog.records if "tentativa" in r.getMessage()]
+    assert len(linhas) == 3
+    assert all("fiesc" in ln and "PesquisarProcessos" in ln for ln in linhas)
+    assert "HTTP 503" in linhas[0] and "ConnectionError" in linhas[1] and "HTTP 429" in linhas[2] and "9" in linhas[2]

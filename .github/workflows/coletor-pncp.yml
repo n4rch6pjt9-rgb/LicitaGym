@@ -83,6 +83,7 @@ jobs:
     env:
       DELAY_SEGUNDOS: "1.5"
       PNCP_WORKERS: "2"
+      PYTHONUNBUFFERED: "1"
       # Original (raw) dos itens e resultados: bucket privado `arquivo-raw` do Supabase Storage, com a mesma service
       # role do passo Coleta. Até 12/11/2026 ia para o disco do runner e se perdia no fim do job.
       ARQUIVO_RAW_DESTINO: "supabase"

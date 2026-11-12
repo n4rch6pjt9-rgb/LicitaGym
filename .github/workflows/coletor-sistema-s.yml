@@ -9,6 +9,10 @@
 # fiems voltou ao lote em 09/11/2026: dry-run no runner (run 42553195374) leu 12 processos, 6 no escopo, sem erro.
 # fiemt segue fora: o host não aceita conexão do runner (ConnectTimeout em compras.sfiemt.ind.br:443, run
 # 42553197711, 09/11/2026), embora responda fora de datacenter; fica só no disparo manual, para conferir se voltou.
+# sesc_senac_rs saiu do lote padrão em 12/11/2026: cancelado por tempo nos 14 jobs medidos (60 min, sem nenhuma
+# execução concluída em 15 dias) e ocupando 1 das 3 vagas da matriz. Fica no disparo manual até entender o bloqueio.
+# Saída sem buffer (PYTHONUNBUFFERED) e timeout interno abaixo do limite do job: o progresso aparece no log e, no
+# limite, o coletor recebe SIGTERM e fecha o registro em coleta_externa_run em vez de deixá-lo aberto.
 # Cada execução fica registrada em private.coleta_externa_run (RPCs coleta_externa_iniciar/finalizar), que a saúde
 # operacional lê (coleta_externa_dias_sem_sucesso).
 name: Coletor Sistema S
@@ -19,7 +23,7 @@ on:
   workflow_dispatch:
     inputs:
       fonte:
-        description: "todas (sem fiergs e fiemt) | sestsenat | fiesc | firjan | fiergs | findes | fieb | fiems | fiemt | sfiec | sescsp | sesc_senac_rs | sescdn | sescrj | sescba"
+        description: "todas (sem fiergs, fiemt e sesc_senac_rs) | sestsenat | fiesc | firjan | fiergs | findes | fieb | fiems | fiemt | sfiec | sescsp | sesc_senac_rs | sescdn | sescrj | sescba"
         default: "todas"
         required: false
       paginas:
@@ -57,7 +61,7 @@ jobs:
         run: |
           case "${FONTE}" in
             todas|"")
-              FONTES='["sestsenat","fiesc","firjan","findes","fieb","fiems","sfiec","sescsp","sesc_senac_rs","sescdn","sescrj","sescba"]'
+              FONTES='["sestsenat","fiesc","firjan","findes","fieb","fiems","sfiec","sescsp","sescdn","sescrj","sescba"]'
               ;;
             sestsenat|fiesc|firjan|fiergs|findes|fieb|fiems|fiemt|sfiec|sescsp|sesc_senac_rs|sescdn|sescrj|sescba)
               FONTES="[\"${FONTE}\"]"
@@ -82,6 +86,7 @@ jobs:
         fonte: ${{ fromJSON(needs.plano.outputs.fontes) }}
     env:
       DELAY_SEGUNDOS: "1.5"
+      PYTHONUNBUFFERED: "1"
       FONTE: ${{ matrix.fonte }}
       PAGINAS: ${{ github.event.inputs.paginas || '3' }}
       DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
@@ -133,4 +138,5 @@ jobs:
           if [ "${DOCUMENTOS_HABILITADOS}" = "true" ] && [ -z "${SUPABASE_STORAGE_BUCKET:-}" ]; then
             echo "SUPABASE_STORAGE_BUCKET ausente."; exit 1
           fi
-          python3 -m coletor.paradigma "${ARGS[@]}"
+          # 55 min + 2 min de folga ficam abaixo dos 60 do job: o SIGTERM chega ao Python, que fecha o registro.
+          timeout --kill-after=2m "${LIMITE_ETAPA:-55m}" python3 -m coletor.paradigma "${ARGS[@]}"

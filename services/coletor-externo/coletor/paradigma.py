@@ -449,19 +449,27 @@ class PortalParadigma:
                 _recusar_bloqueio(self.fonte, r.status_code)   # 401/403: bloqueio do host, sem nova tentativa
                 if r.status_code == 429 and tentativa < 3:
                     espera = retry_after_s(r)
-                    time.sleep(espera if espera is not None else 2 ** tentativa * 2)
+                    espera = espera if espera is not None else 2 ** tentativa * 2
+                    self._avisar_tentativa(metodo, tentativa, f"HTTP {r.status_code}", espera)
+                    time.sleep(espera)
                     continue
                 if r.status_code >= 500 and tentativa < 3:
+                    self._avisar_tentativa(metodo, tentativa, f"HTTP {r.status_code}", 2 ** tentativa * 2)
                     time.sleep(2 ** tentativa * 2)
                     continue
                 r.raise_for_status()
             except requests.HTTPError:
                 raise   # 4xx definitivo (o 429 e o 5xx esgotados também chegam aqui só na última tentativa)
-            except requests.RequestException:
+            except requests.RequestException as e:
                 if tentativa == 3:
                     raise
+                self._avisar_tentativa(metodo, tentativa, type(e).__name__, 2 ** tentativa * 2)
                 time.sleep(2 ** tentativa * 2)
         raise RuntimeError(f"{metodo}: sem resposta após 4 tentativas")  # nunca devolve vazio em silêncio
+
+    def _avisar_tentativa(self, metodo: str, tentativa: int, motivo: str, espera: float) -> None:
+        # 12/11/2026: sem esta linha, uma hora de espera do WAF ou do portal não deixava rastro no log.
+        log.warning("%s %s: tentativa %s/4, %s, espera %ss", self.fonte.slug, metodo, tentativa + 1, motivo, espera)
 
     # ------------ listagem ------------
     def listar(self, texto: str = "", pagina_de: int = 1, pagina_ate: int = TAMANHO_PAGINA) -> list[dict]:

@@ -122,3 +122,10 @@ def test_workflow_uma_etapa_por_job_em_sequencia():
     limite = int(re.search(r"LIMITE_ETAPA:-(\d+)m", SCRIPT.read_text(encoding="utf-8")).group(1))
     assert limite + 5 <= max(timeouts)
     assert "x-access-token:${GH_TOKEN}@" not in wf
+
+
+def test_raw_do_actions_vai_para_o_storage_do_supabase():
+    """12/11/2026: com ARQUIVO_RAW_GCS=0 o raw ia para o disco do runner e se perdia no fim do job."""
+    texto = WORKFLOW.read_text(encoding="utf-8")
+    assert re.search(r'ARQUIVO_RAW_DESTINO:\s*"supabase"', texto)
+    assert "ARQUIVO_RAW_GCS" not in texto and "ARQUIVO_RAW_DIR" not in texto

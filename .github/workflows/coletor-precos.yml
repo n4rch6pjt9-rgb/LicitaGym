@@ -76,8 +76,9 @@ jobs:
         etapa: ${{ fromJSON(needs.plano.outputs.etapas) }}
     env:
       DELAY_SEGUNDOS: "1.5"
-      ARQUIVO_RAW_GCS: "0"
-      ARQUIVO_RAW_DIR: ${{ github.workspace }}/arquivo-raw
+      # Original (raw) dos preços: bucket privado `arquivo-raw` do Supabase Storage, com a mesma service role do passo
+      # da coleta. Até 12/11/2026 ia para o disco do runner e se perdia no fim do job.
+      ARQUIVO_RAW_DESTINO: "supabase"
       ETAPA: ${{ matrix.etapa }}
       DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
       LIMITE: ${{ github.event.inputs.limite || '' }}

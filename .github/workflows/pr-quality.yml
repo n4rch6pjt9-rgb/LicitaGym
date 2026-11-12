@@ -6,7 +6,7 @@
 #   migrations         scripts/validar-migrations.sh: Postgres 17 descartável, todas as migrations, reaplicação das
 #                      novas (idempotência) e todos os supabase/tests/*_check.sql (pendências em supabase/tests/pendentes.txt)
 #   python-*           pytest
-#   hook-agente        casos do .claude/hooks/bloquear-destrutivo.mjs
+#   hook-agente        casos de .claude/hooks/bloquear-destrutivo.mjs e de lint-pos-edicao.mjs
 # Sem `uses:`: este repositório não roda actions do marketplace (o run termina em startup_failure, sem job, como
 # em 06/10 e 08/10). Checkout por git, Python/Node/Docker do runner e Deno do release oficial com SHA-256 conferido,
 # como em saude.yml e deploy-supabase-functions.yml. Nenhum job usa segredo nem fala com o Supabase de produção.
@@ -256,3 +256,6 @@ jobs:
       # Node já vem no ubuntu-latest.
       - name: Casos do hook
         run: node --version && node .claude/hooks/bloquear-destrutivo.test.mjs
+
+      - name: Casos do hook de lint pós-edição
+        run: node .claude/hooks/lint-pos-edicao.test.mjs

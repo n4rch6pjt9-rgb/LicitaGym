@@ -151,10 +151,28 @@ jobs:
           VISITANTE_CONSENTIMENTO_LGPD: ${{ vars.VISITANTE_CONSENTIMENTO_LGPD }}
           # Com CPF: chave do HMAC que identifica o cadastro em portal_visitante (o CPF não vai para o banco).
           VISITANTE_HASH_CHAVE: ${{ secrets.VISITANTE_HASH_CHAVE }}
+          # Endereço do visitante (spec 0061, K-13): opcional, mas todos juntos quando vier. O código da cidade é
+          # buscado pelo nome na lista do próprio portal (PesquisarRegiao). RG só com CPF.
+          VISITANTE_ENDERECO: ${{ secrets.VISITANTE_ENDERECO }}
+          VISITANTE_NUMERO: ${{ secrets.VISITANTE_NUMERO }}
+          VISITANTE_BAIRRO: ${{ secrets.VISITANTE_BAIRRO }}
+          VISITANTE_CEP: ${{ secrets.VISITANTE_CEP }}
+          VISITANTE_CIDADE: ${{ secrets.VISITANTE_CIDADE }}
+          VISITANTE_RG: ${{ secrets.VISITANTE_RG }}
         run: |
-          # O Actions só mascara o valor exato do secret; o coletor usa o CPF só com dígitos. Mascara as duas formas.
+          # O Actions só mascara o valor exato do secret; o coletor usa CPF, RG e CEP só com dígitos e manda o CEP com
+          # a máscara 99.999-999. Mascara também essas formas.
           if [ -n "${VISITANTE_CPF:-}" ]; then
             echo "::add-mask::${VISITANTE_CPF//[!0-9]/}"
+          fi
+          if [ -n "${VISITANTE_RG:-}" ]; then
+            RG_LIMPO="${VISITANTE_RG//[!0-9Xx]/}"
+            echo "::add-mask::${RG_LIMPO^^}"
+          fi
+          CEP_DIGITOS="${VISITANTE_CEP//[!0-9]/}"
+          if [ "${#CEP_DIGITOS}" -eq 8 ]; then
+            echo "::add-mask::${CEP_DIGITOS}"
+            echo "::add-mask::${CEP_DIGITOS:0:2}.${CEP_DIGITOS:2:3}-${CEP_DIGITOS:5:3}"
           fi
           ARGS=(--fonte "${FONTE}" --origem "${ORIGEM}")
           if [ "${DOCUMENTOS_HABILITADOS}" != "true" ]; then

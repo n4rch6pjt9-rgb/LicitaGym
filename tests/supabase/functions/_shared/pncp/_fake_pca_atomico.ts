@@ -2,6 +2,7 @@
 // Esses contratos sao verificados nos checks PostgreSQL separados.
 import { createHash } from "node:crypto";
 import { CHAVES_UNICAS, FakePostgrest } from "./_fake_postgrest.ts";
+import { listasPermitidasPca } from "./_allowlist_pca.ts";
 type Row = Record<string, unknown>;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -66,6 +67,11 @@ export class FakePcaPostgrest extends FakePostgrest {
         if (typeof row.payload_hash !== "string" || !row.payload_hash) throw new Error("payload_hash obrigatorio");
         if (["id", "created_at", "ativo", "descoberta_ausente", "reprocessar"].some((c) => c in row)) {
           throw new Error("Campo PCA protegido");
+        }
+        // Mesma lista da função em produção, lida da última migration que a define (incidente de 12/11/2026).
+        const permitidos = listasPermitidasPca()[tabela];
+        if (Object.keys(row).some((c) => !permitidos.has(c))) {
+          throw new Error("Campo PCA fora da lista permitida");
         }
 
         let query = this.from(tabela).select("*");

@@ -9,6 +9,8 @@ import { estaNoPipeline } from "./portal.ts";
 import { UnifiedHttpClient } from "../_shared/http-client/index.ts";
 import { aplicarCopiaLocal, arquivosDaCopiaLocal, itensDaCopiaLocal, precisaDaCopia } from "./copiaLocal.ts";
 import { aplicarBuscaPncp, clearBuscaPncpCache } from "./buscaPncp.ts";
+import { acompanhamentoParadigmaDoBanco, ehFonteParadigma, respostaParadigma } from "./paradigmaBanco.ts";
+import { ErroTenantAcesso } from "../_shared/tenant.ts";
 import type {
   AcompanhamentoActionParams,
   AcompanhamentoResponse,
@@ -605,6 +607,8 @@ export const ACOMPANHAMENTO_LICITACAO_COLUMNS: readonly string[] = [
   "raw",
   // spec 0049: conferência da cópia local com a atualização da compra no índice de busca do PNCP
   "pncp_data_atualizacao",
+  // spec 0061 K-1: quando o coletor gravou o processo (gravado_em de compra e itens do Paradigma)
+  "ingestao_em",
 ];
 
 // -----------------------------------------------------------------------------
@@ -734,6 +738,20 @@ export async function handleAcompanhamento(
     }
 
     const row = data as unknown as Record<string, unknown>;
+
+    // Spec 0061, K-1: Paradigma (Sistema S) responde só com o banco, sem chamar o portal nem o PNCP. Exige empresa
+    // ativa de quem chama antes de ler qualquer seção (sem vínculo, vínculo desligado, empresa desativada: 403).
+    if (ehFonteParadigma(row.fonte)) {
+      let tenant: number | null;
+      try {
+        tenant = await (ctx?.tenantDoUsuario ?? semTenant)();
+      } catch (err: unknown) {
+        if (err instanceof ErroTenantAcesso) return jsonResponse({ error: "Usuário sem empresa ativa." }, 403);
+        throw err;
+      }
+      if (tenant === null) return jsonResponse({ error: "Usuário sem empresa ativa." }, 403);
+      return respostaParadigma(await acompanhamentoParadigmaDoBanco(client, row));
+    }
 
     // 2. Resolve a chave PNCP
     const pncpKey = resolvePncpKey(row);

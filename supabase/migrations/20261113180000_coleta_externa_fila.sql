@@ -14,10 +14,10 @@
 --       leads/monitorar e não é processada há mais de 24 h. Item em processamento não é tocado (a próxima
 --       descoberta vê o hash diferente). Sem hash no item, vale o md5 da listagem.
 --   K-3 public.coleta_externa_fila_reservar(fonte, limite): devolve 'processando' há mais de 2 h à fila e reserva
---       até `limite` (máx. 500) pendentes com for update skip locked, menos tentativas e mais antigos primeiro.
+--       até `limite` (máx. 500) pendentes com for update skip locked, menos tentativas e processo mais novo primeiro.
 --       public.coleta_externa_fila_marcar(id, ok, erro): ok = feito; erro = tentativas + 1 e volta a pendente
 --       enquanto tinha menos de 5 falhas (senão fica 'erro'); ok nulo = devolve à fila sem contar tentativa (carga
---       que parou no orçamento). Id inexistente = 22023.
+--       que parou no orçamento). Só marca item em 'processando' (senão devolve false). Id inexistente = 22023.
 --   K-7 coleta_externa_run.modo aceita 'descoberta' e 'carga'.
 --   K-9 verificação coleta_externa_fila_pendente_horas (atenção 26 h, crítico 48 h; decisão do Marcelo de
 --       13/11/2026): horas do pendente mais antigo entre fontes ativas do coletor Paradigma.
@@ -103,8 +103,10 @@ begin
       from jsonb_to_recordset(coalesce(p_itens, '[]'::jsonb))
            as x("nCdOrigem" bigint, modulo integer, listagem jsonb, hash text)
      where x."nCdOrigem" > 0
+     order by x."nCdOrigem", coalesce(x.modulo, 59), coalesce(nullif(x.hash, ''), '')   -- duplicado no lote: escolha estável
   ), vivas as (
-    -- licitações da fonte ainda acompanhadas (revisita diária, decisão de 13/11/2026)
+    -- licitações da fonte ainda acompanhadas (revisita diária, decisão de 13/11/2026). Coluna prioridade, não a view
+    -- de prioridade efetiva: prazo vencido ainda em leads só custa uma revisita a mais, e a view é bem mais cara.
     -- o detalhe gravado em raw traz o nCdOrigem; id_externo (nCdProcesso) só quando ele falta
     select le.modulo,
            case when le.raw ->> 'nCdOrigem' ~ '^[0-9]{1,18}$' then (le.raw ->> 'nCdOrigem')::bigint
@@ -161,9 +163,13 @@ begin
   if p_fonte is null then
     raise exception 'coleta_externa_fila_reservar: fonte é obrigatória' using errcode = '22004';
   end if;
-  -- worker que morreu (job cancelado sem devolver): volta à fila depois de 2 h
+  -- worker que morreu (job cancelado sem devolver): volta à fila depois de 2 h, contando a tentativa; o processo que
+  -- derruba o worker toda vez para em 'erro' como os demais
   update private.coleta_externa_fila f
-     set status = 'pendente', atualizado_em = now()
+     set status = case when f.tentativas < 5 then 'pendente' else 'erro' end,
+         tentativas = f.tentativas + 1,
+         erro = coalesce(f.erro, 'reserva abandonada há mais de 2 h (worker interrompido)'),
+         atualizado_em = now()
    where f.fonte = p_fonte and f.status = 'processando' and f.atualizado_em < now() - interval '2 hours';
 
   return query
@@ -171,8 +177,10 @@ begin
       select f.id
         from private.coleta_externa_fila f
        where f.fonte = p_fonte and f.status = 'pendente'
-       -- menos falhas primeiro: item que acabou de falhar não volta à frente na mesma execução da carga
-       order by f.tentativas, f.pendente_desde nulls first, f.id
+       -- menos falhas primeiro (item que acabou de falhar não volta à frente na mesma carga); depois o processo mais
+       -- novo do portal (nCdOrigem maior): com estoque da primeira descoberta, edital recém-publicado não espera atrás
+       -- de anos de histórico. A idade do estoque aparece na saúde (pendente_desde).
+       order by f.tentativas, f.n_cd_origem desc, f.id
        limit least(greatest(coalesce(p_limite, 20), 1), 500)
          for update skip locked
     )
@@ -201,11 +209,15 @@ begin
          erro = case when p_ok then null when p_ok is null then f.erro else left(p_erro, 1000) end,
          processado_em = case when p_ok then now() else f.processado_em end,
          atualizado_em = now()
-   where f.id = p_id;
-  if not found then
+   where f.id = p_id and f.status = 'processando';
+  if found then
+    return true;
+  end if;
+  if not exists (select 1 from private.coleta_externa_fila f where f.id = p_id) then
     raise exception 'coleta_externa_fila_marcar: item % inexistente', p_id using errcode = '22023';
   end if;
-  return true;
+  -- reserva que já voltou à fila (> 2 h) e pode estar com outro worker: o atrasado não a marca
+  return false;
 end
 $fn$;
 
@@ -227,7 +239,22 @@ grant execute on function public.coleta_externa_fila_reservar(text, integer) to 
 grant execute on function public.coleta_externa_fila_marcar(bigint, boolean, text) to service_role;
 
 -- K-7 ------------------------------------------------------------------------------------------------------------
-alter table private.coleta_externa_run drop constraint if exists coleta_externa_run_modo_check;
+-- Apaga toda CHECK de coleta_externa_run que cite modo (o nome automático é coleta_externa_run_modo_check, mas uma
+-- criada à mão com outro nome continuaria recusando os modos novos) e recria com a lista ampliada.
+do $do$
+declare
+  c record;
+begin
+  for c in
+    select con.conname
+      from pg_constraint con
+     where con.conrelid = 'private.coleta_externa_run'::regclass and con.contype = 'c'
+       and pg_get_constraintdef(con.oid) ~ '\mmodo\M'
+  loop
+    execute format('alter table private.coleta_externa_run drop constraint %I', c.conname);
+  end loop;
+end
+$do$;
 alter table private.coleta_externa_run add constraint coleta_externa_run_modo_check
   check (modo in ('leads', 'monitorar', 'historico', 'dry_run', 'descoberta', 'carga'));
 

@@ -1361,3 +1361,89 @@ def test_ca7_sigterm_na_carga_nao_reprocessa_o_que_ficou_feito(ca_ambiente, monk
     assert P.main(["--fonte", "fiesc", "--etapa", "completa", *CA_ARGS]) == 0
     assert ca7_vistos == [1001, 1002, 1003, 1004, 1005], "1001 e 1002 não voltam a ser hidratados"
     assert ca7_sb.status() == {"feito": 5}
+
+
+# --- Spec 0064: casos da revisão de 13/11/2026 ------------------------------------------------------------------------
+
+def test_rev_lote_cheio_so_com_falhas_da_execucao_nao_e_fila_vazia(ca_ambiente, monkeypatch):
+    """Revisão (IMPORTANTE 3): se o lote cheio volta só com itens que falharam nesta execução, pode haver pendente de
+    outro dia atrás deles; a carga para e a execução fica incompleta, não concluída."""
+    rev_sb, _rev_portal = ca_ambiente
+    rev_sb.carregar(3)
+    monkeypatch.setattr(P, "LOTE_CARGA", 2)
+
+    def rev_processar(*a, **k):
+        raise RuntimeError("HTTP 500")
+
+    monkeypatch.setattr(P, "processar_processo", rev_processar)
+    assert P.main(["--fonte", "fiesc", "--etapa", "carga", "--orcamento-minutos", "60", *CA_ARGS]) == 1
+    assert rev_sb.finalizacao()["p_status"] == "falhou"   # só erros e nada feito: falha (antes da regra de incompleta)
+    assert rev_sb.status() == {"pendente": 3}
+
+
+def test_rev_lote_cheio_so_com_falhas_com_algo_feito_fica_incompleta(ca_ambiente, monkeypatch):
+    rev_sb, _rev_portal = ca_ambiente
+    rev_sb.carregar(5)
+    monkeypatch.setattr(P, "LOTE_CARGA", 2)
+
+    def rev_processar(rev_portal_, rev_sb_, rev_pid, *a, **k):
+        if rev_pid in (1001, 1002):
+            return
+        raise RuntimeError("HTTP 500")
+
+    monkeypatch.setattr(P, "processar_processo", rev_processar)
+    assert P.main(["--fonte", "fiesc", "--etapa", "carga", "--orcamento-minutos", "60", *CA_ARGS]) == 0
+    assert rev_sb.finalizacao()["p_status"] == "incompleta"
+
+
+def test_rev_bloqueio_403_no_meio_do_lote_devolve_e_falha(ca_ambiente, monkeypatch):
+    """401/403 do portal não se contorna: a carga para, o lote volta à fila sem contar tentativa e a execução falha."""
+    rev_sb, _rev_portal = ca_ambiente
+    rev_sb.carregar(4)
+
+    def rev_processar(rev_portal_, rev_sb_, rev_pid, *a, **k):
+        if rev_pid == 1002:
+            raise PermissionError("fiesc: o host recusou o acesso (HTTP 403)")
+
+    monkeypatch.setattr(P, "processar_processo", rev_processar)
+    with pytest.raises(PermissionError):
+        P.main(["--fonte", "fiesc", "--etapa", "carga", *CA_ARGS])
+    assert rev_sb.status() == {"feito": 1, "pendente": 3}
+    assert not [rev_p for rev_f, rev_p in rev_sb.chamadas
+                if rev_f == "coleta_externa_fila_marcar" and rev_p["p_ok"] is False]
+    assert rev_sb.finalizacao()["p_status"] == "falhou"
+
+
+def test_rev_completa_com_descoberta_quebrada_ainda_carrega_e_falha(ca_ambiente, monkeypatch):
+    """Revisão (sugestão 3): erro de página na descoberta da etapa completa não impede a carga do que já está na fila;
+    a execução fecha como falha pelo erro da descoberta."""
+    rev_sb, rev_portal = ca_ambiente
+    rev_sb.carregar(2)
+    rev_portal.listar.side_effect = RuntimeError("PesquisarProcessos: HTTP 500")
+    monkeypatch.setattr(P, "processar_processo", lambda *a, **k: None)
+    with pytest.raises(RuntimeError):
+        P.main(["--fonte", "fiesc", "--etapa", "completa", *CA_ARGS])
+    assert rev_sb.status() == {"feito": 2}
+    assert rev_sb.finalizacao()["p_status"] == "falhou"
+
+
+def test_rev_completa_com_fila_sobrando_conta_como_sucesso(ca_ambiente, monkeypatch):
+    """Revisão (IMPORTANTE 4): na completa (pequenas e médias), o estoque que sobra fica para o dia seguinte sem
+    derrubar coleta_externa_dias_sem_sucesso; o atraso aparece na saúde da fila."""
+    rev_sb, _rev_portal = ca_ambiente
+    rev_sb.carregar(5)
+    rev_relogio = {"t": 0.0}
+    monkeypatch.setattr(P.time, "monotonic", lambda: rev_relogio["t"])
+
+    def rev_processar(*a, **k):
+        rev_relogio["t"] += 300
+
+    monkeypatch.setattr(P, "processar_processo", rev_processar)
+    assert P.main(["--fonte", "fiesc", "--etapa", "completa", "--orcamento-minutos", "10", *CA_ARGS]) == 0
+    assert rev_sb.status() == {"feito": 2, "pendente": 3}
+    assert rev_sb.finalizacao()["p_status"] == "concluida"
+
+
+def test_rev_etapa_com_fila_recusa_dry_run():
+    with pytest.raises(SystemExit):
+        P.main(["--fonte", "fiesc", "--etapa", "carga", "--dry-run", *CA_ARGS])

@@ -97,22 +97,26 @@ jobs:
               echo "A entrada processos exige uma fonte (não 'todas')." >&2
               exit 1
             fi
+            # dry_run não usa a fila: o lote com dry_run roda só a coleta por termo (etapa completa) de cada fonte.
+            if [ "${DRY_RUN}" = "true" ]; then
+              GRANDES_DESC='{"nome":"fieb","fontes":"fieb","etapa":"completa","orcamento":"","limite":"70m"},{"nome":"sesc_senac_rs","fontes":"sesc_senac_rs","etapa":"completa","orcamento":"","limite":"70m"}'
+            fi
             GRUPOS="[${PEQUENAS},${MEDIAS},${GRANDES_DESC}]"
           else
             case "${FONTE}" in
               sestsenat|fiesc|firjan|fiergs|findes|fieb|fiems|fiemt|sfiec|sescsp|sesc_senac_rs|sescdn|sescrj|sescba) ;;
-              *) echo "Fonte desconhecida ou bloqueada por WAF: ${FONTE}" >&2; exit 1 ;;
+              *) echo "Fonte desconhecida ou bloqueada por WAF." >&2; exit 1 ;;
             esac
             case "${ETAPA}" in
               completa|descoberta|carga) ;;
-              *) echo "Etapa inválida: ${ETAPA} (completa, descoberta ou carga)" >&2; exit 1 ;;
+              *) echo "Etapa inválida (completa, descoberta ou carga)." >&2; exit 1 ;;
             esac
             if [ "${ETAPA}" != "completa" ] && { [ -n "${PROCESSOS}" ] || [ "${DRY_RUN}" = "true" ]; }; then
               echo "Etapa ${ETAPA} usa a fila: não combina com processos nem dry_run." >&2
               exit 1
             fi
             if [ -n "${ORCAMENTO}" ] && ! [[ "${ORCAMENTO}" =~ ^[1-9][0-9]?$ ]] ; then
-              echo "Orçamento inválido: ${ORCAMENTO} (minutos, 1 a 99)" >&2
+              echo "Orçamento inválido (minutos, 1 a 99)." >&2
               exit 1
             fi
             if [ -n "${ORCAMENTO}" ] && [ "${ORCAMENTO}" -gt 66 ]; then
@@ -221,12 +225,15 @@ jobs:
           if [ "${DOCUMENTOS_HABILITADOS}" != "true" ]; then
             ARGS+=(--sem-documentos)
           fi
-          if [ -n "${ORCAMENTO}" ]; then
+          if [ "${DRY_RUN}" = "true" ]; then
+            # dry-run não usa a fila: coleta por termo, sem orçamento, com teto de 3 páginas por termo se nada vier
+            PAGINAS="${PAGINAS:-3}"
+          elif [ -n "${ORCAMENTO}" ]; then
             ARGS+=(--orcamento-minutos "${ORCAMENTO}")
           fi
           if [ -n "${PAGINAS}" ]; then
             if ! [[ "${PAGINAS}" =~ ^[1-9][0-9]*$ ]]; then
-              echo "Páginas inválido: ${PAGINAS}" >&2
+              echo "Páginas inválido (inteiro >= 1)." >&2
               exit 1
             fi
             ARGS+=(--paginas "${PAGINAS}")
@@ -239,7 +246,7 @@ jobs:
           set -f   # sem expansão de glob: um '*' na entrada não vira nome de arquivo antes da validação
           for p in ${PROCESSOS}; do
             if ! [[ "${p}" =~ ^[1-9][0-9]*(/[1-9][0-9]*)?$ ]]; then
-              echo "Processo inválido: ${p} (use nCdOrigem ou nCdOrigem/MODULO)" >&2
+              echo "Processo inválido (use nCdOrigem ou nCdOrigem/MODULO)." >&2
               exit 1
             fi
             ARGS+=(--processo "${p}")

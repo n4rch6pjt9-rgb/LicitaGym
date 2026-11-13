@@ -40,6 +40,7 @@ CPF e CNPJ de documento de licitação ficam íntegros (decisão de 01/10/2026):
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import logging
@@ -1126,6 +1127,24 @@ def descobrir(portal: "PortalParadigma", sb, termos: list[str], paginas: int | N
     return resumo
 
 
+@contextlib.contextmanager
+def _sigterm_adiado():
+    """Adia o SIGTERM até o fim do bloco e o relança como TempoEsgotado. Fora da thread principal (onde o sinal não
+    pode ser trocado), não faz nada."""
+    recebido: list[int] = []
+    try:
+        anterior = signal.signal(signal.SIGTERM, lambda sig, _frame: recebido.append(sig))
+    except ValueError:
+        yield
+        return
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, anterior)
+    if recebido:
+        raise TempoEsgotado()
+
+
 def carregar(portal: "PortalParadigma", sb, resumo: dict, orcamento_s: float | None, dry_run: bool,
              com_resultados: bool, produtos: dict[int, dict] | None, fornecedores, documentos, origem: str,
              inicio: float | None = None) -> dict:
@@ -1146,8 +1165,14 @@ def carregar(portal: "PortalParadigma", sb, resumo: dict, orcamento_s: float | N
         lote = list(sb.rpc("coleta_externa_fila_reservar", {"p_fonte": fonte, "p_limite": LOTE_CARGA}) or [])
         # A reserva vem por tentativas: os que já falharam aqui ficam no fim. Lote só com eles = nada novo a fazer.
         if not lote or all(int(x["id"]) in falharam for x in lote):
-            for item in lote:
-                marcar(item["id"], None)
+            with _sigterm_adiado():
+                for item in lote:
+                    marcar(item["id"], None)
+            if len(lote) >= LOTE_CARGA:
+                # Lote cheio só com o que falhou aqui: pode haver pendente de outro dia atrás deles. Não é fila vazia.
+                resumo["fila_incompleta"] = True
+                log.info("%s carga: só itens que já falharam nesta execução à frente da fila; parando", fonte)
+                return resumo
             log.info("%s carga: fila vazia (%d feitos, %d com erro)", fonte, resumo["fila_feitos"],
                      resumo["fila_erros"])
             return resumo
@@ -1171,19 +1196,22 @@ def carregar(portal: "PortalParadigma", sb, resumo: dict, orcamento_s: float | N
                     falharam.add(int(item["id"]))
                     resumo["erros"] += 1
                     resumo["fila_erros"] += 1
-                    log.warning("%s %s: %s", fonte, pid, e)
+                    log.warning("%s %s: %s", fonte, pid, mascarar_segredos(str(e)))
                     marcar(item["id"], False, mascarar_segredos(f"{type(e).__name__}: {e}")[:500])
                     continue
                 lote.pop(0)
                 marcar(item["id"], True)
                 resumo["fila_feitos"] += 1
         finally:
-            for item in lote:   # orçamento, SIGTERM ou bloqueio: devolve sem contar tentativa
-                try:
-                    marcar(item["id"], None)
-                    resumo["fila_devolvidos"] += 1
-                except Exception as e:  # noqa: BLE001 - sem devolver, a reserva vence em 2 h e o item volta
-                    log.warning("%s: item %s da fila não devolvido (%s)", fonte, item.get("id"), e)
+            # orçamento, SIGTERM ou bloqueio: devolve sem contar tentativa. Um SIGTERM que chegue durante a devolução
+            # espera ela acabar (senão o resto do lote ficaria 'processando' até a reserva vencer).
+            with _sigterm_adiado():
+                for item in lote:
+                    try:
+                        marcar(item["id"], None)
+                        resumo["fila_devolvidos"] += 1
+                    except Exception as e:  # noqa: BLE001 - sem devolver, a reserva vence em 2 h e o item volta
+                        log.warning("%s: item %s da fila não devolvido (%s)", fonte, item.get("id"), e)
     resumo["fila_incompleta"] = True
     log.info("%s carga: orçamento de %.0f min esgotado (%d feitos, %d devolvidos)", fonte, (orcamento_s or 0) / 60,
              resumo["fila_feitos"], resumo["fila_devolvidos"])
@@ -1214,11 +1242,29 @@ def coletar(portal: "PortalParadigma", sb, termos: list[str], paginas: int | Non
             resumo.setdefault(chave, valor)
     if etapa:
         inicio = time.monotonic()
+        falha_descoberta: Exception | None = None
         if etapa in ("descoberta", "completa"):
-            descobrir(portal, sb, termos, paginas, resumo)
+            try:
+                descobrir(portal, sb, termos, paginas, resumo)
+            except PermissionError:
+                raise
+            except Exception as e:
+                if etapa == "descoberta":
+                    raise
+                # completa: a fila tem pendentes de antes; a carga do dia roda e a execução fecha como falha depois
+                falha_descoberta = e
+                log.warning("%s descoberta interrompida (%s); seguindo com a carga da fila", portal.fonte.slug,
+                            mascarar_segredos(str(e)))
         if etapa in ("carga", "completa"):
             carregar(portal, sb, resumo, orcamento_s, dry_run, com_resultados, produtos, fornecedores, documentos,
                      origem, inicio=inicio)
+        if falha_descoberta is not None:
+            raise falha_descoberta
+        if etapa == "completa" and resumo.pop("fila_incompleta", False):
+            # Na completa (pequenas e médias), fila que sobra fica para o dia seguinte: a execução conta como sucesso
+            # (o atraso aparece em coleta_externa_fila_pendente_horas), senão coleta_externa_dias_sem_sucesso subiria
+            # sem falha real enquanto houver estoque.
+            resumo["fila_restante"] = True
         return resumo
     vistos: dict[tuple[int, int], dict] = {}
     inicio = time.monotonic()
@@ -1283,7 +1329,7 @@ def status_final(resumo: dict) -> str:
     return "concluida"
 
 
-_SEGREDOS = re.compile(r"(?i)(bearer\s+)\S+|eyJ[\w-]+\.[\w-]+\.[\w-]*|((?:apikey|api_key|token|key)=)[^&\s]+")
+_SEGREDOS = re.compile(r"(?i)(bearer\s+)\S+|eyJ[\w-]+\.[\w-]+\.[\w-]*|sb_secret_[\w-]+|((?:apikey|api_key|token|key)=)[^&\s]+")
 
 
 def mascarar_segredos(texto: str) -> str:

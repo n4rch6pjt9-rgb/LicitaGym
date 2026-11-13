@@ -188,7 +188,62 @@ begin
     raise exception 'COLETA FILA CHECK FALHOU: CA-3: id inexistente aceito';
   end if;
 
-  raise notice 'SUCESSO: coleta_externa_fila_check (CA-1, CA-2, CA-3, CA-4)';
+  -- Revisão da migration (13/11/2026) ---------------------------------------------------------------------------
+  -- (a) ok nulo devolve a pendente sem contar tentativa e mantém o erro anterior
+  v_id := ids1[2];
+  update private.coleta_externa_fila set status = 'processando', tentativas = 2, erro = 'antes' where id = v_id;
+  if not public.coleta_externa_fila_marcar(v_id, null, null) then
+    raise exception 'COLETA FILA CHECK FALHOU: devolução (ok nulo) não marcou';
+  end if;
+  select * into r from private.coleta_externa_fila where id = v_id;
+  if r.status <> 'pendente' or r.tentativas <> 2 or r.erro <> 'antes' then
+    raise exception 'COLETA FILA CHECK FALHOU: devolução contou tentativa ou perdeu o erro: %', row_to_json(r);
+  end if;
+  -- (e) item fora de 'processando' (reserva vencida, talvez com outro worker) não é marcado: false
+  if public.coleta_externa_fila_marcar(v_id, true, null) then
+    raise exception 'COLETA FILA CHECK FALHOU: marcou item que não estava em processando';
+  end if;
+  if (select status from private.coleta_externa_fila where id = v_id) <> 'pendente' then
+    raise exception 'COLETA FILA CHECK FALHOU: item fora de processando mudou de status';
+  end if;
+  -- (f) reserva abandonada conta tentativa; com 5 falhas, vai para erro em vez de voltar
+  update private.coleta_externa_fila set status = 'processando', tentativas = 5, atualizado_em = now() - interval '3 hours'
+   where id = v_id;
+  perform public.coleta_externa_fila_reservar('fiesc', 1);
+  select * into r from private.coleta_externa_fila where id = v_id;
+  if r.status <> 'erro' or r.tentativas <> 6 then
+    raise exception 'COLETA FILA CHECK FALHOU: reserva abandonada com 5 falhas devia ir a erro: %', row_to_json(r);
+  end if;
+
+  -- (b) item em processando com hash novo: inalterado e não mexido
+  delete from private.coleta_externa_fila;
+  perform public.coleta_externa_fila_enfileirar('fiesc', '[{"nCdOrigem": 201, "modulo": 59, "listagem": {"v": 1}}]'::jsonb);
+  update private.coleta_externa_fila set status = 'processando' where n_cd_origem = 201;
+  c := public.coleta_externa_fila_enfileirar('fiesc', '[{"nCdOrigem": 201, "modulo": 59, "listagem": {"v": 2}}]'::jsonb);
+  select * into r from private.coleta_externa_fila where n_cd_origem = 201;
+  if c ->> 'inalterados' <> '1' or r.status <> 'processando' or r.listagem ->> 'v' <> '1' then
+    raise exception 'COLETA FILA CHECK FALHOU: item em processando foi alterado: % %', c, row_to_json(r);
+  end if;
+
+  -- (c) revisita pelo id_externo quando o raw não traz nCdOrigem
+  update private.coleta_externa_fila set status = 'feito', processado_em = now() - interval '25 hours'
+   where n_cd_origem = 201;
+  insert into public.licitacoes_externas (fonte, modulo, id_externo, prioridade, raw)
+  values ('fiesc', 59, 201, 'monitorar', '{}'::jsonb);
+  c := public.coleta_externa_fila_enfileirar('fiesc', '[{"nCdOrigem": 201, "modulo": 59, "listagem": {"v": 1}}]'::jsonb);
+  if c ->> 'reabertos' <> '1' then
+    raise exception 'COLETA FILA CHECK FALHOU: revisita pelo id_externo não reabriu: %', c;
+  end if;
+
+  -- (d) o mesmo processo duas vezes no lote: uma linha, contado uma vez
+  c := public.coleta_externa_fila_enfileirar('fiesc', '[
+    {"nCdOrigem": 301, "modulo": 59, "listagem": {"v": 1}},
+    {"nCdOrigem": 301, "modulo": 59, "listagem": {"v": 1}}]'::jsonb);
+  if c ->> 'novos' <> '1' or (select count(*) from private.coleta_externa_fila where n_cd_origem = 301) <> 1 then
+    raise exception 'COLETA FILA CHECK FALHOU: duplicado no lote: %', c;
+  end if;
+
+  raise notice 'SUCESSO: coleta_externa_fila_check (CA-1, CA-2, CA-3, CA-4 e casos da revisão)';
 end $$;
 
 rollback;

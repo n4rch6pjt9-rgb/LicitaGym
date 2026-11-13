@@ -2277,7 +2277,10 @@ Deno.test("0061 CA-1: Paradigma lê do banco, resumo primeiro, origem banco e gr
   assertEquals(body.disponivel, true);
   assertEquals(body.origem, "banco");
   assertEquals(body.fonte, "fieb");
-  assertEquals(body.pncp, null);
+  // compatibilidade com a tela atual: pncp é objeto (campos nulos) e atas é seção em erro
+  assertEquals(body.pncp, { cnpj: null, ano: null, sequencial: null, numero_controle_pncp: null });
+  assertEquals(body.atas.dados, null);
+  assertEquals(typeof body.atas.erro, "string");
   assertEquals(body.url_acompanhamento, "https://compras.fieb.org.br/portal/Mural.aspx");
 
   // arquivos: 4 anexos + resumo (removido do portal e outra seção ficam fora), resumo primeiro com tipo "resumo"
@@ -2305,7 +2308,10 @@ Deno.test("0061 CA-1: Paradigma lê do banco, resumo primeiro, origem banco e gr
   assertEquals(item1.marcaVencedor, "Marca X");
   assertEquals(item1.modeloVencedor, "Modelo Y");
   assertEquals(item1.temResultado, true);
-  assertEquals(item1.resultados.length, 2);
+  // como no PNCP, resultados do item = só o homologado; as posições finais ficam na seção resultados
+  assertEquals(item1.resultados.length, 1);
+  assertEquals(item1.resultados[0].fornecedorNome, "Empresa 1");
+  assertEquals(item1.resultados[0].valorUnitarioHomologado, 81);
   assertEquals(item1.catalogoId, null);
 
   // resultados: 3 linhas, vencedor primeiro em cada item, gravado_em = maior created_at
@@ -2339,6 +2345,8 @@ Deno.test("0061 CA-1: Paradigma lê do banco, resumo primeiro, origem banco e gr
   assertEquals(body.compra.dados.situacao, "Finalizado com contrato");
   assertEquals(body.compra.dados.fase, "Resultado do processo");
   assertEquals(body.compra.dados.modalidade, "Pregão eletrônico");
+  assertEquals(body.compra.dados.datas.aberturaProposta, "2023-08-23T13:20:00.000Z");
+  assertEquals(body.compra.dados.valorHomologado, null);
   assertEquals(body.compra.dados.datasProcesso, {
     inicio: "2023-08-23T13:20:00.000Z",
     fim: "2023-08-25T18:00:00.000Z",
@@ -2358,6 +2366,7 @@ Deno.test("0061 CA-1: Paradigma lê do banco, resumo primeiro, origem banco e gr
     "licitacoes_externas",
   ]);
   assertEquals(res.headers.get("Cache-Control"), "private, max-age=60");
+  assertEquals(res.headers.get("Vary"), "Authorization");
 });
 
 Deno.test("0061 K-1: seção sem dado gravado volta com erro explícito, nunca vazia (18868: 0 resultados e 0 lances)", async () => {
@@ -2480,4 +2489,72 @@ Deno.test("0061 K-1: FONTES_PARADIGMA acompanha FONTES do coletor (paradigma.py)
   assertEquals(ehFonteParadigma(" FIEB "), true);
   assertEquals(ehFonteParadigma("pncp"), false);
   assertEquals(ehFonteParadigma(null), false);
+});
+
+Deno.test("0061 K-1: item revogado não tem melhor lance 0 nem marca de vencedor (regressão SFIEC PE000652022, item 17)", async () => {
+  const revogado = {
+    ...itemFieb(1),
+    situacao: "Revogado com requisições liberadas",
+    raw: { dVlMelhorLanceMoedaVencedor: 0, dVlMelhorLanceMoedaProcesso: 0, sDsMarca: "WETTOR FITNESS", sDsModelo: "PRIME" },
+  };
+  const semLance = { ...itemFieb(2), raw: { dVlMelhorLanceMoedaVencedor: 0, sDsMarca: "Marca Z", sDsModelo: "M" } };
+  const comRaw = { ...itemFieb(3), raw: { dVlMelhorLanceMoedaVencedor: 50, sDsMarca: "Marca R", sDsModelo: "R1" } };
+  const { client } = clienteParadigma({
+    ...TABELAS_CA1,
+    licitacao_itens: [revogado, semLance, comRaw],
+    licitacao_resultados: [resultadoFieb(1, 1, false)],
+  });
+  const res = await handleRequest(reqAcomp(30115), {
+    getClient: () => client as any,
+    requireAuth: () => null,
+    tenantDoUsuario: comEmpresa,
+  });
+  const body = await res.json();
+  const [i1, i2, i3] = body.itens.dados;
+  assertEquals([i1.melhorLance, i1.marcaVencedor, i1.modeloVencedor, i1.temResultado], [null, null, null, false]);
+  assertEquals([i2.melhorLance, i2.marcaVencedor, i2.modeloVencedor], [null, null, null]);
+  // sem linha vencedora em licitacao_resultados, mas com lance > 0 e item não revogado: marca e modelo do mural
+  assertEquals([i3.melhorLance, i3.marcaVencedor, i3.modeloVencedor], [50, "Marca R", "R1"]);
+});
+
+Deno.test("0061 K-1: histórico por item em ordem de hora, lance sem data por último e empate pelo id", async () => {
+  const outroItem = { ...lanceFieb(7, "2026-08-25T13:00:00+00:00", 1, true), numero_item: 2 };
+  const { client } = clienteParadigma({
+    ...TABELAS_CA1,
+    licitacao_lances: [
+      outroItem,
+      lanceFieb(5, null, null, false),
+      lanceFieb(4, "2026-08-25T14:01:00+00:00", null, false),
+      lanceFieb(1, "2026-08-25T14:01:00+00:00", null, false),
+    ],
+  });
+  const res = await handleRequest(reqAcomp(30115), {
+    getClient: () => client as any,
+    requireAuth: () => null,
+    tenantDoUsuario: comEmpresa,
+  });
+  const body = await res.json();
+  assertEquals(body.historico.dados.map((l: any) => [l.numeroItem, l.fornecedorNome]), [
+    [1, "Empresa 1"],
+    [1, "Empresa 4"],
+    [1, "Empresa 5"],
+    [2, "Empresa 7"],
+  ]);
+});
+
+Deno.test("0061 K-1: sescrj sem mural tem url_acompanhamento null; raw ausente vira erro em compra", async () => {
+  const { client } = clienteParadigma({ ...TABELAS_CA1, licitacao: { ...LIC_FIEB, fonte: "sescrj", raw: null } });
+  const res = await handleRequest(reqAcomp(30115), {
+    getClient: () => client as any,
+    requireAuth: () => null,
+    tenantDoUsuario: comEmpresa,
+  });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.fonte, "sescrj");
+  assertEquals(body.url_acompanhamento, null);
+  assertEquals(body.compra.dados, null);
+  assertEquals(typeof body.compra.erro, "string");
+  assertEquals(body.fase, "Resultado do processo");
+  assertEquals(res.headers.get("Cache-Control"), "no-store");
 });

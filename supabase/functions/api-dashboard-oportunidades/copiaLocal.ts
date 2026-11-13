@@ -48,9 +48,10 @@ export async function lerLinhas(
   colunas: string,
   licitacaoId: number,
   ordem: string,
+  maxLotes: number = COPIA_MAX_LOTES,
 ): Promise<Record<string, unknown>[] | null> {
   const linhas: Record<string, unknown>[] = [];
-  for (let lote = 0; lote < COPIA_MAX_LOTES; lote++) {
+  for (let lote = 0; lote < maxLotes; lote++) {
     const inicio = lote * COPIA_LOTE;
     const { data, error } = await client
       .from(tabela)
@@ -59,13 +60,13 @@ export async function lerLinhas(
       .order(ordem, { ascending: true })
       .range(inicio, inicio + COPIA_LOTE - 1);
     if (error || !Array.isArray(data)) {
-      console.warn(`[api-dashboard-oportunidades] cópia local indisponível (${tabela}):`, error ?? "resposta inválida");
+      console.warn(`[api-dashboard-oportunidades] leitura de ${tabela} indisponível:`, error ?? "resposta inválida");
       return null;
     }
     linhas.push(...(data as unknown as Record<string, unknown>[]));
     if (data.length < COPIA_LOTE) return linhas;
   }
-  console.warn(`[api-dashboard-oportunidades] cópia local acima de ${COPIA_LOTE * COPIA_MAX_LOTES} linhas (${tabela})`);
+  console.warn(`[api-dashboard-oportunidades] leitura acima de ${COPIA_LOTE * maxLotes} linhas (${tabela})`);
   return null;
 }
 

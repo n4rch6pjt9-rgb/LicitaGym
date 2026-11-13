@@ -276,6 +276,20 @@ Requer autenticação JWT do usuário (`401` se não autenticado).
 
 A ação é somente leitura: não grava eventos nem gera tarefas. A automação de tarefas a partir do histórico está em design em [`docs/design/acompanhamento-tarefas.md`](../../../docs/design/acompanhamento-tarefas.md), com SQL proposto (não aplicado, fora de `supabase/migrations`) em [`docs/design/sql/acompanhamento_tarefas.sql`](../../../docs/design/sql/acompanhamento_tarefas.sql).
 
+
+#### Fonte do Paradigma (Sistema S): lido do banco (spec 0061, K-1)
+Para `fonte` do coletor Paradigma (`FONTES_PARADIGMA` em `paradigmaBanco.ts`: fieb, firjan, fiesc, sescdn, sestsenat...), a resposta sai **só do banco**, sem chamar o portal nem o PNCP. Exige empresa ativa de quem chama (`_shared/tenant.ts`): sem vínculo, vínculo desligado ou empresa desativada → `403` antes de ler qualquer seção. Licitação inexistente → `404`.
+
+- `disponivel: true`, `origem: "banco"`, `fonte`; `pncp` com campos nulos; `url_acompanhamento` = mural da fonte (`null` sem mural, ex.: `sescrj`).
+- Cada seção: `{ dados, total, erro, origem: "banco", gravado_em }`. Sem linha gravada ou falha de leitura: `dados: null` com `erro` explícito, nunca lista vazia.
+  - `compra`: situação, fase, modalidade, objeto e `datasProcesso` (`inicio`, `fim`, `publicacao`, `aberturaSessao`, `homologacao`, `finalizacao`) do `raw` da licitação (`/Date(ms)/`; data zerada = `null`); campos de `CompraMetadata` mantidos (`datas.aberturaProposta` = início, `encerramentoProposta` = fim; valores `null`). `gravado_em` = `ingestao_em`.
+  - `itens`: `licitacao_itens`, com `melhorLance` (`null` quando 0 ou item revogado/cancelado/fracassado/deserto/anulado/suspenso), `marcaVencedor`/`modeloVencedor` (da linha vencedora de `licitacao_resultados`; sem ela, do mural só com lance > 0) e `resultados` = só o homologado. `catalogoId` `null` (código é do catálogo da entidade, não CATMAT). `gravado_em` = `ingestao_em`.
+  - `resultados`: posições finais de `licitacao_resultados` (`ranking`, `vencedor`, `valorProposta`, marca, modelo), vencedor primeiro por item. `gravado_em` = maior `created_at`.
+  - `historico`: lances de `licitacao_lances` por item, em ordem de data e hora (sem data por último), com `posicao` e `vencedor`. `gravado_em` = maior `updated_at`.
+  - `arquivos`: `licitacao_documentos` com `secao = processo` e sem `removido_do_portal_em`; o resumo (`arquivo_origem = resumo_processo.html`) primeiro com `tipo: "resumo"`, os anexos com `tipo: "anexo"`, `documentoId`, `mimeType`, `dataDocumento`, `status` e `url: null` (abrir é a URL assinada do K-2). `gravado_em` = maior `last_seen_at`/`baixado_em` (última gravação de documento, não a última conferência da lista).
+  - `atas`: sempre em erro (o Paradigma não publica atas).
+- Nunca sai `raw`, `storage_uri` nem mensagem do PostgREST. `Cache-Control: private, max-age=60` com `Vary: Authorization` quando nenhuma seção (fora atas) tem erro; senão `no-store`.
+
 #### Requisição
 - **GET**: `/functions/v1/api-dashboard-oportunidades?action=acompanhamento&id=101`
 - **POST**:

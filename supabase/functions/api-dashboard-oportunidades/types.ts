@@ -348,11 +348,9 @@ export interface DatasProcessoParadigma {
   finalizacao: string | null;
 }
 
-export interface CompraParadigma {
-  situacao: string | null;
+/** CompraMetadata (campos lidos pela tela do PNCP) + o que é só do Paradigma. */
+export interface CompraParadigma extends CompraMetadata {
   fase: string | null;
-  modalidade: string | null;
-  objeto: string | null;
   numeroProcesso: string | null;
   numeroEdital: string | null;
   datasProcesso: DatasProcessoParadigma;
@@ -403,7 +401,8 @@ export interface AcompanhamentoParadigmaResponse {
   id: number | string;
   origem: "banco";
   fonte: string;
-  pncp: null;
+  /** Sem chave PNCP: campos nulos (objeto, não null, para a tela do PNCP publicada antes do K-3). */
+  pncp: { cnpj: null; ano: null; sequencial: null; numero_controle_pncp: null };
   url_edital: string | null;
   /** Mural público da fonte (o processo não tem URL própria no Paradigma). */
   url_acompanhamento: string | null;
@@ -411,6 +410,8 @@ export interface AcompanhamentoParadigmaResponse {
   compra: SecaoBanco<CompraParadigma>;
   itens: SecaoBanco<ItemAcompanhamento[]>;
   resultados: SecaoBanco<ResultadoParadigma[]>;
+  /** Sempre em erro: o Paradigma não publica atas (mantida para a tela do PNCP não quebrar). */
+  atas: SecaoBanco<AtaAcompanhamento[]>;
   historico: SecaoBanco<LanceHistorico[]>;
   arquivos: SecaoBanco<ArquivoParadigma[]>;
 }

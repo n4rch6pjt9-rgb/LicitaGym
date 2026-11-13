@@ -56,7 +56,7 @@ from .paginacao import TAMANHO_PAGINA_MAX, avaliar_pagina, clamp_tamanho, pagina
 from .perfil_item import normalizar_marca, perfil_item, texto_do_item
 from .escopo import ITEM_FORA, academia_ar_livre, brinquedo_infantil, classificar, contexto_academia, e_peca, classificar_texto_item, interesse_borracha, interesse_borracha_item, normalizar, piso_item_fora, CATEGORIAS_PISO_VETAVEL
 from .pncp import CATEGORIAS_SO_MATERIAL, fornece_produto
-from .portal import _msg_forum, cnpj_ou_none, limpar, parse_data
+from .portal import cnpj_ou_none, limpar, msg_forum, parse_data
 from .proveniencia import ORIGENS, campos_proveniencia
 from .retry import retry_after_s
 
@@ -954,8 +954,10 @@ def processar_processo(portal: "PortalParadigma", sb, pid: int, mod: int, resumo
         # para o upsert não apagar o fórum já coletado.
         try:
             mensagens = portal.forum(d)
-            linha["esclarecimentos"] = [_msg_forum(m) for m in mensagens]
+            linha["esclarecimentos"] = [msg_forum(m) for m in mensagens]
             resumo["forum_mensagens"] += len(mensagens)
+        except PermissionError:
+            raise  # bloqueio do portal (401/403) não se contorna: segue a regra do resto da coleta
         except Exception as e:  # noqa: BLE001 - o fórum não derruba o processo
             resumo["erros"] += 1
             log.warning("%s %s fórum indisponível (%s)", portal.fonte.slug, pid, type(e).__name__)

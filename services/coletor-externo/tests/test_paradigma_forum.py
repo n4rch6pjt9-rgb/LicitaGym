@@ -88,7 +88,8 @@ def test_ca13_forum_vazio_grava_lista_vazia():
 def test_ca13_falha_do_forum_conta_erro_e_nao_apaga_o_ja_coletado():
     sb, resumo, _ = _coletar(requests.ConnectionError("portal fora"))
     assert resumo["erros"] == 1
-    assert "esclarecimentos" not in sb.licitacoes[0]          # o upsert não sobrescreve o fórum já gravado
+    # Sem a chave, o upsert (destino.Supabase.upsert, merge-duplicates) não sobrescreve o fórum já gravado.
+    assert "esclarecimentos" not in sb.licitacoes[0]
     assert sb.licitacoes[0]["id_externo"] is not None          # o processo continua gravado
 
 
@@ -101,3 +102,20 @@ def test_ca13_dry_run_nao_chama_o_forum():
     p, chamadas = _portal(FORUM)
     P.coletar(p, None, [], 1, True, False, None, None, [(38191, 19)], origem="manual")
     assert not any(c[0] == "PesquisarProcessoDetalheForum" for c in chamadas)
+
+
+def test_ca13_lista_com_elemento_que_nao_e_mensagem_e_erro():
+    sb, resumo, _ = _coletar([FORUM[0], "x"])
+    assert resumo["erros"] == 1 and "esclarecimentos" not in sb.licitacoes[0]
+
+
+def test_ca13_log_da_falha_nao_leva_o_texto_do_portal(caplog):
+    _coletar(requests.ConnectionError("O piso pode ser de 15 mm? fulano@empresa.test"))
+    assert "fórum indisponível (ConnectionError)" in caplog.text
+    assert "15 mm" not in caplog.text and "fulano@" not in caplog.text
+
+
+def test_ca13_bloqueio_do_portal_no_forum_nao_vira_erro_contado():
+    """revisor: 401/403 do portal (PermissionError) segue a regra de não contornar bloqueio."""
+    sb, resumo, _ = _coletar(PermissionError("portal recusou (403)"))
+    assert sb.licitacoes == [] and resumo["forum_mensagens"] == 0

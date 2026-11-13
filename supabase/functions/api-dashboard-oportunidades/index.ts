@@ -901,8 +901,9 @@ async function handleList(
 export const RESUMO_EXECUTIVO_RPC = "dashboard_resumo_executivo";
 
 /**
- * Spec 0050 K-2: com que critério a função soma os valores. Espelha o filtro de categoria_escopo da migration
- * 20261109060000_dashboard_resumo_valor_itens_escopo (mudar uma exige mudar a outra).
+ * Spec 0050 K-2: com que critério a função soma os valores. Espelha o filtro de categoria_escopo das migrations
+ * 20261109060000_dashboard_resumo_valor_itens_escopo e 20261113140000_licitacao_valor_escopo (mudar uma exige mudar a
+ * outra).
  */
 export const RESUMO_CRITERIO_VALOR = "itens_no_escopo";
 export const RESUMO_CATEGORIAS_VALOR = ["forte", "catmat", "borracha", "piso", "obra_piso", "manutencao"] as const;

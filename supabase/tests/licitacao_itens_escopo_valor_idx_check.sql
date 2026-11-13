@@ -3,7 +3,9 @@
 --   A) o índice licitacao_itens_escopo_valor_idx não existir em public.licitacao_itens;
 --   B) não for parcial com o mesmo predicado do CTE valor_itens de dashboard_resumo_executivo
 --      (as 6 categorias de escopo e valor_total_estimado não nulo) ou não incluir valor_total_estimado;
---   C) a função dashboard_resumo_executivo não usar mais exatamente essas 6 categorias (o índice ficaria inútil);
+--   C) a função que soma o valor no escopo não usar mais exatamente essas 6 categorias (o índice ficaria inútil).
+--      Desde 20261113140000 quem lê os itens é licitacao_valor_escopo_recalcular (trigger); o resumo lê a tabela
+--      licitacao_valor_escopo;
 --   D) com o índice, o planner não o considerar para a leitura do CTE (set enable_seqscan off, só para o plano).
 -- Banco LOCAL de teste; termina em rollback. Saída esperada: "SUCESSO: licitacao_itens_escopo_valor_idx_check".
 
@@ -31,10 +33,10 @@ begin
 
   select pg_get_functiondef(p.oid) into v_fn
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-   where n.nspname = 'public' and p.proname = 'dashboard_resumo_executivo';
+   where n.nspname = 'public' and p.proname = 'licitacao_valor_escopo_recalcular';
   if v_fn is null
      or v_fn !~ $re$categoria_escopo in \('forte', 'catmat', 'borracha', 'piso', 'obra_piso', 'manutencao'\)$re$ then
-    raise exception 'licitacao_itens_escopo_valor_idx_check C: filtro de escopo da função mudou; revisar o índice';
+    raise exception 'licitacao_itens_escopo_valor_idx_check C: filtro de escopo do recálculo mudou; revisar o índice';
   end if;
 
   set local enable_seqscan = off;

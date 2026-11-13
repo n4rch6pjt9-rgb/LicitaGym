@@ -82,8 +82,11 @@ Deno.test("K-2: parse aceita documento_id inteiro positivo por GET e POST, recus
 Deno.test("K-2: PDF devolve URL assinada de 10 minutos para abrir na aba, sem o storage_uri", async () => {
   const { res, json, assinadas, colunas } = await chamar([PDF], { action: "documento_url", documento_id: 169096 });
   assertEquals(res.status, 200);
-  assertEquals(assinadas, [{ bucket: "licitacao-documentos", caminho: "paradigma/firjan/59/3800/processo/abc.pdf",
-    segundos: 600, opcoes: undefined }]);
+  assertEquals(assinadas, [
+    { bucket: "licitacao-documentos", caminho: "paradigma/firjan/59/3800/processo/abc.pdf", segundos: 600, opcoes: undefined },
+    { bucket: "licitacao-documentos", caminho: "paradigma/firjan/59/3800/processo/abc.pdf", segundos: 600,
+      opcoes: { download: "Pedidos de Reconsiderações.pdf" } },
+  ]);
   assertEquals(json.action, "documento_url");
   assertEquals(json.documento_id, 169096);
   assertEquals(json.expira_em_segundos, 600);
@@ -93,6 +96,27 @@ Deno.test("K-2: PDF devolve URL assinada de 10 minutos para abrir na aba, sem o 
   assert(String(json.url).startsWith("https://storage.test/sign/"));
   assert(!JSON.stringify(json).includes("supabase://"), "storage_uri não pode sair");
   assert(!colunas.join(",").includes("raw"), "raw não é lido");
+});
+
+// Regressão (13/11/2026): o PDF aberto na aba e salvo pelo navegador vinha com o nome do arquivo no Storage (o SHA-256).
+// A URL de abrir na aba não leva nome (o Storage só manda Content-Disposition com download): url_download leva.
+Deno.test("K-2: PDF também traz url_download com o nome original e a extensão", async () => {
+  const sha = "c".repeat(64);
+  const real = { ...PDF, nome_original: "ESPECIFICAÇÃO TÉCNICA.pdf",
+    storage_uri: `supabase://licitacao-documentos/paradigma/firjan/59/3800/processo/versoes/169096/${sha}` };
+  const { json, assinadas } = await chamar([real], { action: "documento_url", documento_id: 169096 });
+  assertEquals(json.abrir, "aba");
+  assertEquals(assinadas.map((a) => a.opcoes), [undefined, { download: "ESPECIFICAÇÃO TÉCNICA.pdf" }]);
+  assert(String(json.url_download).startsWith("https://storage.test/sign/"));
+  const semNome = await chamar([{ ...real, nome_original: "Pedidos de Reconsiderações" }], {
+    action: "documento_url", documento_id: 169096 });
+  assertEquals(semNome.assinadas[1].opcoes, { download: "Pedidos de Reconsiderações.pdf" });
+});
+
+Deno.test("K-2: outro formato devolve url_download igual à url", async () => {
+  const { json, assinadas } = await chamar([HTML], { action: "documento_url", documento_id: 169095 });
+  assertEquals(assinadas.length, 1);
+  assertEquals(json.url_download, json.url);
 });
 
 // Regressão (13/11/2026): o coletor grava cada versão em `.../versoes/<documento_id>/<sha256>`, sem extensão. O resumo

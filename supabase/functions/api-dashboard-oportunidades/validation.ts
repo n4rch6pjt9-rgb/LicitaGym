@@ -1,9 +1,12 @@
 import type {
   AcompanhamentoActionParams,
   ActionParams,
+  DocumentoUrlActionParams,
   GetActionParams,
   LicitacaoFiltros,
   ListActionParams,
+  RecorteResumo,
+  ResumoExecutivoActionParams,
   SortField,
   SortOrder,
 } from "./types.ts";
@@ -402,6 +405,7 @@ export const ACOMPANHAMENTO_ID_RE = /^\d{1,18}$/;
  */
 export function parseAcompanhamentoParams(
   idRaw: unknown,
+  atualizarRaw: unknown = false,
 ): AcompanhamentoActionParams | { error: string } {
   if (idRaw === undefined || idRaw === null || String(idRaw).trim() === "") {
     return { error: "Parâmetro 'id' é obrigatório para a ação 'acompanhamento'." };
@@ -416,7 +420,48 @@ export function parseAcompanhamentoParams(
   if (!ACOMPANHAMENTO_ID_RE.test(id)) {
     return { error: "Parâmetro 'id' inválido: informe apenas dígitos (1 a 18)." };
   }
-  return { action: "acompanhamento", id };
+  return { action: "acompanhamento", id, atualizar: atualizarRaw === true || atualizarRaw === "true" };
+}
+
+/** Parâmetros que o resumo executivo aceita além de `action`: só o recorte de catálogo/CATMAT. */
+export const PARAMETROS_RECORTE_RESUMO = ["catmat_grupo", "catmat_classe", "catmat_pdm", "catmat_item", "catalogo"] as const;
+
+/**
+ * Spec 0048 K-2: o resumo conta todas as oportunidades (leads + monitorar) do recorte de catálogo/CATMAT. Outro
+ * filtro da lista (uf, busca, prioridade...) responde 400 em vez de ser ignorado em silêncio.
+ */
+export function parseResumoExecutivoParams(source: Record<string, unknown>): ResumoExecutivoActionParams | { error: string } {
+  const aceitos = new Set<string>(["action", ...PARAMETROS_RECORTE_RESUMO]);
+  const fora = Object.keys(source).filter((k) => !aceitos.has(k));
+  if (fora.length > 0) {
+    return {
+      error: `A ação 'resumo_executivo' aceita só o recorte de catálogo/CATMAT (${PARAMETROS_RECORTE_RESUMO.join(", ")}). ` +
+        `Parâmetro não aceito: ${fora.sort().slice(0, 5).map((k) => k.slice(0, 40)).join(", ")}.`,
+    };
+  }
+  const recorte: RecorteResumo = {};
+  for (const campo of ["catmat_grupo", "catmat_classe", "catmat_pdm", "catmat_item"] as const) {
+    const r = sanitizeCodigoList(source[campo], campo);
+    if (r && !Array.isArray(r)) return { error: r.error };
+    if (r) recorte[campo] = r;
+  }
+  if (source.catalogo !== undefined && source.catalogo !== null && source.catalogo !== "") {
+    const catalogo = sanitizeBoolean(source.catalogo);
+    if (catalogo === undefined) return { error: "Parâmetro 'catalogo' deve ser true ou false." };
+    if (catalogo) recorte.catalogo = true;
+  }
+  return { action: "resumo_executivo", recorte };
+}
+
+/** Spec 0061, K-2: `documento_id` inteiro positivo (número ou string só com dígitos, até 15 dígitos). */
+export function parseDocumentoUrlParams(raw: unknown): DocumentoUrlActionParams | { error: string } {
+  const erro = { error: "Parâmetro 'documento_id' inválido: informe um inteiro positivo." };
+  if (typeof raw === "number") {
+    return Number.isSafeInteger(raw) && raw > 0 ? { action: "documento_url", documento_id: raw } : erro;
+  }
+  if (typeof raw !== "string" || !/^[0-9]{1,15}$/.test(raw.trim())) return erro;
+  const n = Number(raw.trim());
+  return n > 0 ? { action: "documento_url", documento_id: n } : erro;
 }
 
 export function parseActionFromUrl(url: URL): ActionParams | { error: string } {
@@ -447,14 +492,26 @@ export function parseActionFromUrl(url: URL): ActionParams | { error: string } {
   }
 
   if (actionParam === "acompanhamento") {
-    return parseAcompanhamentoParams(url.searchParams.get("id"));
+    return parseAcompanhamentoParams(url.searchParams.get("id"), url.searchParams.get("atualizar"));
   }
 
   if (actionParam === "objeto_categorias") {
     return { action: "objeto_categorias" };
   }
 
-  return { error: `Ação inválida: '${actionParam}'. Use 'list', 'get', 'readiness', 'acompanhamento' ou 'objeto_categorias'.` };
+  if (actionParam === "documento_url") {
+    return parseDocumentoUrlParams(url.searchParams.get("documento_id"));
+  }
+
+  if (actionParam === "resumo_executivo") {
+    const raw: Record<string, unknown> = {};
+    for (const [key, value] of url.searchParams.entries()) {
+      raw[key] = value;
+    }
+    return parseResumoExecutivoParams(raw);
+  }
+
+  return { error: `Ação inválida: '${actionParam}'. Use 'list', 'get', 'readiness', 'acompanhamento', 'objeto_categorias', 'resumo_executivo' ou 'documento_url'.` };
 }
 
 export function parseActionFromBody(
@@ -483,8 +540,16 @@ export function parseActionFromBody(
   }
 
   if (action === "acompanhamento") {
-    return parseAcompanhamentoParams(body.id);
+    return parseAcompanhamentoParams(body.id, body.atualizar);
   }
 
-  return { error: `Ação inválida: '${action}'. Use 'list', 'get', 'readiness', 'acompanhamento' ou 'objeto_categorias'.` };
+  if (action === "resumo_executivo") {
+    return parseResumoExecutivoParams(body);
+  }
+
+  if (action === "documento_url") {
+    return parseDocumentoUrlParams(body.documento_id);
+  }
+
+  return { error: `Ação inválida: '${action}'. Use 'list', 'get', 'readiness', 'acompanhamento', 'objeto_categorias', 'resumo_executivo' ou 'documento_url'.` };
 }

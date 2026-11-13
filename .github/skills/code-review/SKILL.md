@@ -32,7 +32,7 @@ Se este arquivo e as instruções acima divergirem, aplique a regra mais restrit
 
 1. **Contexto** — leia título, descrição, issue vinculada (`#123`) e commits. Se a descrição citar issue, check do Actions ou outro PR, consulte o GitHub (somente leitura). Se não for possível, declare o contexto como **não verificado**.
 2. **Diff completo** — `git diff origin/main...HEAD --stat` e depois o diff inteiro. Mapeie cada arquivo alterado para a linha correspondente da tabela acima e carregue as instruções aplicáveis.
-3. **Consumidores** — para cada função, tabela, view, RPC ou tipo alterado, busque quem usa (`grep -rn` em `supabase/functions`, `scripts`, `services`, `Kuib-Harness/src`). Documentação em Markdown **não prova** o schema implantado: confira as migrations.
+3. **Consumidores** — para cada função, tabela, view, RPC ou tipo alterado, busque quem usa (`grep -rn` em `supabase/functions`, `scripts`, `services`). Documentação em Markdown **não prova** o schema implantado: confira as migrations.
 4. **Revisão** pelas dimensões abaixo.
 5. **Verifique cada achado** no código antes de reportar: aponte arquivo e linha e descreva um cenário concreto (entrada/estado → resultado errado). Descarte suspeitas que não se confirmam.
 6. **Execute as verificações** da seção "Comandos" que se aplicam aos arquivos alterados. O que não puder rodar, declare explicitamente.
@@ -94,10 +94,6 @@ Se este arquivo e as instruções acima divergirem, aplique a regra mais restrit
 - **[IMPORTANTE]** Mudança funcional sem teste proporcional ao risco (ver cobertura esperada em `tests.instructions.md`: erro ≠ vazio, paginação, retry, idempotência, NULL em `codigoValorCaracteristica`).
 - **[IMPORTANTE]** Teste unitário chamando PNCP/Compras.gov reais ou com `sleep` real. A CI roda `deno test` sem `--allow-net`.
 
-### Front-end (Kuib-Harness)
-- Estados de carregamento, vazio e erro explícitos; nunca preencher com valor inventado.
-- Nenhuma chave privilegiada no renderer; chamadas privilegiadas via backend.
-
 ## Comandos
 
 Rode somente o que se aplica aos arquivos alterados:
@@ -113,9 +109,6 @@ pytest tests/ -q --tb=short
 
 # coletor-externo
 cd services/coletor-externo && python -m pytest -q --tb=short
-
-# App Electron
-cd Kuib-Harness && npm run typecheck && npm run build
 
 # Secrets no diff
 git diff origin/main...HEAD | grep -nE "service_role|sbp_[A-Za-z0-9]|eyJ[A-Za-z0-9_-]{10,}\.|SUPABASE_SERVICE|api[_-]?key\s*[:=]"

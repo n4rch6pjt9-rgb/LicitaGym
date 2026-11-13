@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # Valida as migrations num Postgres descartável (Docker), sem tocar em produção.
-#  1. sobe pgvector/pgvector:pg16 e aplica supabase/tests/pre.sql (stubs de auth/storage/roles do Supabase);
+#  1. sobe pgvector/pgvector:pg17 (mesma versão major da produção; troque com PG_IMAGE) e aplica supabase/tests/pre.sql (stubs de auth/storage/roles do Supabase);
 #  2. aplica todas as migrations em ordem;
-#  3. reaplica as migrations novas/alteradas em relação à base (idempotência);
+#  3. reaplica as migrations novas, alteradas ou renomeadas em relação à base (idempotência);
 #  4. roda todos os supabase/tests/*_check.sql (falham com EXCEPTION).
-# Uso: scripts/validar-migrations.sh [base_git]   (padrão: origin/main)
+# Arquivos em supabase/tests/pendentes.txt podem falhar (PENDENTE, com issue); se passarem, a validação falha
+# até saírem da lista.
+# Uso: scripts/validar-migrations.sh [base_git]   (padrão: origin/main). PG_ESPERA=<s> muda a espera pelo Postgres.
 # Requer: docker, git. Sai com código != 0 se algo falhar.
 set -uo pipefail
 
 BASE="${1:-origin/main}"
-IMG="pgvector/pgvector:pg16"
+IMG="${PG_IMAGE:-pgvector/pgvector:pg17}"
 NOME="lg-validar-migrations-$$"
 RAIZ="$(git rev-parse --show-toplevel)"
 # Migrations que dependem de extensão ausente no Postgres puro (só existem no Supabase)
@@ -19,22 +21,52 @@ cd "$RAIZ"
 if ! git rev-parse --verify --quiet "${BASE}^{commit}" >/dev/null; then
   echo "Base '$BASE' não encontrada (rode git fetch ou informe outra base)."; exit 2
 fi
-if ! NOVAS=$(git diff --name-only --diff-filter=AM "$BASE"...HEAD -- 'supabase/migrations/2*.sql'); then
+if ! NOVAS=$(git diff --name-only --diff-filter=AMR "$BASE"...HEAD -- 'supabase/migrations/2*.sql'); then
   echo "git diff contra '$BASE' falhou."; exit 2
 fi
+# Guarda de nome/conteúdo das migrations novas (sem banco): falha antes de subir o Postgres.
+bash scripts/ci/guard-migrations.sh "$BASE" || exit $?
 limpar() { docker rm -f "$NOME" >/dev/null 2>&1; }
 trap limpar EXIT
-docker run -d --name "$NOME" -e POSTGRES_PASSWORD=x "$IMG" >/dev/null
-psql_() { docker run -i --rm --network "container:$NOME" -e PGPASSWORD=x "$IMG" \
-  psql -q -h 127.0.0.1 -U postgres -tA -v ON_ERROR_STOP=1 -f - ; }
-for _ in $(seq 1 30); do echo 'select 1' | psql_ >/dev/null 2>&1 && break; sleep 2; done
+if ! docker run -d --name "$NOME" -e POSTGRES_PASSWORD=x "$IMG" >/dev/null; then
+  echo "Não subiu o Postgres ($IMG): docker indisponível ou imagem não baixou."; exit 2
+fi
+# docker exec, não docker run: subir um contêiner por arquivo custa dezenas de segundos no Docker Desktop (WSL2);
+# o psql dentro do próprio Postgres responde em milissegundos. São ~200 arquivos por validação.
+# -h 127.0.0.1: o initdb da imagem sobe um servidor temporário só no socket Unix e o derruba em seguida; por TCP
+# só o servidor definitivo responde, então a sonda abaixo não pega o temporário.
+psql_() { docker exec -i -e PGPASSWORD=x "$NOME" psql -q -h 127.0.0.1 -U postgres -tA -v ON_ERROR_STOP=1 -f - ; }
+# PG_ESPERA (s): dois validadores ao mesmo tempo no Docker Desktop fazem o initdb passar de 60 s; padrão 120.
+ESPERA="${PG_ESPERA:-120}"
+pronto=0
+for _ in $(seq 1 $((ESPERA / 2))); do echo 'select 1' | psql_ >/dev/null 2>&1 && { pronto=1; break; }; sleep 2; done
+if [ "$pronto" -ne 1 ]; then echo "Postgres ($IMG) não respondeu em $ESPERA s (PG_ESPERA)."; exit 2; fi
+echo "Postgres: $(echo 'show server_version' | psql_)"
 
-falhas=0
+# Lista: "<arquivo> | <trecho do erro esperado> | <issue>". Só vale para checks: migration (ou pre.sql) listada
+# derrubaria o portão em silêncio, e o trecho garante que só a falha conhecida vira PENDENTE.
+declare -A PEND
+if [ -f supabase/tests/pendentes.txt ]; then
+  while IFS='|' read -r nome trecho _; do
+    nome="$(echo "$nome" | xargs)"; case "$nome" in ''|\#*) continue;; esac
+    case "$nome" in *_check.sql) ;; *) echo "supabase/tests/pendentes.txt só aceita *_check.sql (achei '$nome')."; exit 2;; esac
+    trecho="$(echo "$trecho" | sed 's/^ *//; s/ *$//')"
+    [ -n "$trecho" ] || { echo "supabase/tests/pendentes.txt: '$nome' sem trecho de erro esperado."; exit 2; }
+    PEND["$nome"]="$trecho"
+  done < supabase/tests/pendentes.txt
+fi
+falhas=0; pendentes=0
 aplicar() { # $1 arquivo, $2 rótulo
-  local saida
+  local saida pend=0
+  case "$2" in check*) [ -n "${PEND[$(basename "$1")]+x}" ] && pend=1;; esac
   case " $PULAR " in *" $(basename "$1") "*) echo "pulada $2 $(basename "$1") (extensão só no Supabase)"; return;; esac
   if saida=$(psql_ < "$1" 2>&1); then
+    if [ "$pend" -eq 1 ]; then
+      echo "FALHA  $2 $(basename "$1"): passou, mas está em supabase/tests/pendentes.txt (tire da lista)"; falhas=$((falhas + 1)); return
+    fi
     echo "ok     $2 $(basename "$1") $(grep -o 'SUCESSO.*' <<<"$saida" | head -1)"
+  elif [ "$pend" -eq 1 ] && grep -qF -- "${PEND[$(basename "$1")]}" <<<"$saida"; then
+    echo "PENDENTE $2 $(basename "$1"): ${PEND[$(basename "$1")]}"; pendentes=$((pendentes + 1))
   else
     echo "FALHA  $2 $(basename "$1"): $(grep -m1 ERROR <<<"$saida")"; falhas=$((falhas + 1))
   fi
@@ -49,5 +81,6 @@ done
 for f in supabase/tests/*_check.sql; do aplicar "$f" "check "; done
 
 echo "---"
+[ "$pendentes" -gt 0 ] && echo "$pendentes pendente(s) conhecida(s) (supabase/tests/pendentes.txt)."
 if [ "$falhas" -gt 0 ]; then echo "$falhas falha(s)."; exit 1; fi
 echo "Tudo OK."

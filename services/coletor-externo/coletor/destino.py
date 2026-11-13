@@ -22,6 +22,15 @@ POSTGREST_MAX_ROWS = max(1, min(100, int(os.environ.get("SUPABASE_PAGE_SIZE", "1
 _PK_SEM_ID = {
     "fornecedores": "cnpj",
     "portal_visitante": "fonte",
+    # Catálogo CATMAT: PK é o código oficial. Lida hoje: catmat_itens (catmat_ancoras); as outras três entram por
+    # prevenção (acesso atual é pela RPC catmat_itens_mapa). Sem a entrada de catmat_itens o cliente
+    # acrescentava `,id.asc` ao order e o PostgREST respondia 400 (coluna id inexistente): coleta abortava (14/10/2026).
+    "catmat_itens": "codigo_item",
+    "catmat_pdms": "codigo_pdm",
+    "catmat_item_pdm": "codigo_item",
+    "catmat_grupos": "codigo_grupo",
+    # PK composta (id_compra, id_item_compra): quem lê passa o order completo; aqui só evita o `,id.asc` e o keyset.
+    "precos_praticados_itens": "id_compra",
 }
 
 
@@ -109,17 +118,24 @@ LICITACAO_MATCH_MAX_LOTES = 200
 class Supabase:
     """Cliente mínimo do PostgREST usando a service_role key (ignora RLS; só no backend!)."""
 
-    def __init__(self, url: str, service_key: str):
+    def __init__(self, url: str, service_key: str, *, drenar_catmat: bool = True):
         self.base = url.rstrip("/") + "/rest/v1"
+        # Schema explícito: sem estes cabeçalhos o PostgREST usa o primeiro schema exposto no painel. Em 09/10/2026 esse
+        # schema era `api` (vazio) e toda leitura/gravação dos coletores dava 404 PGRST205 ("api.<tabela>").
         self.h = {
             "apikey": service_key,
             "Authorization": f"Bearer {service_key}",
             "Content-Type": "application/json",
+            "Accept-Profile": "public",
+            "Content-Profile": "public",
         }
+        self.drenar_catmat = drenar_catmat
         self._textos_sem_drenar = 0
 
     def _contar_textos(self, tabela: str, n: int) -> None:
         """Conta linhas de texto CATMAT gravadas e drena licitacao_match ao passar de LICITACAO_MATCH_LOTE."""
+        if not self.drenar_catmat:
+            return
         self._textos_sem_drenar += n
         if self._textos_sem_drenar >= LICITACAO_MATCH_LOTE:
             self.drenar_licitacao_match()
@@ -147,19 +163,21 @@ class Supabase:
             log.warning("licitacao_match: %s pendência(s) após %s lotes", restantes, max_lotes)
         return restantes
 
-    def upsert(self, tabela: str, linhas: list[dict] | dict, conflito: str) -> list[dict]:
+    def upsert(self, tabela: str, linhas: list[dict] | dict, conflito: str, retornar: bool = True) -> list[dict]:
+        """`retornar=False` pede return=minimal (carga grande que não usa as linhas de volta) e devolve []."""
+        retorno = "representation" if retornar else "minimal"
         r = requests.post(
             f"{self.base}/{tabela}",
             params={"on_conflict": conflito},
             json=linhas,
-            headers={**self.h, "Prefer": "resolution=merge-duplicates,return=representation"},
+            headers={**self.h, "Prefer": f"resolution=merge-duplicates,return={retorno}"},
             timeout=60,
         )
         if r.status_code >= 300:
             raise RuntimeError(f"Supabase {tabela}: {r.status_code} {r.text[:500]}")
         if tabela in TABELAS_TEXTO_CATMAT:
             self._contar_textos(tabela, len(linhas) if isinstance(linhas, list) else 1)
-        return r.json()
+        return r.json() if retornar else []
 
     def atualizar(self, tabela: str, id_: int, campos: dict) -> None:
         r = requests.patch(
@@ -170,6 +188,23 @@ class Supabase:
             raise RuntimeError(f"Supabase {tabela}#{id_}: {r.status_code} {r.text[:500]}")
         if TABELAS_TEXTO_CATMAT.get(tabela, set()) & set(campos):
             self._contar_textos(tabela, 1)
+
+    def atualizar_onde(self, tabela: str, filtros: dict[str, str], campos: dict) -> int:
+        """PATCH pelas colunas do filtro (PostgREST, ex.: {"id_compra": "eq.X"}). Devolve quantas linhas mudaram.
+
+        Filtro vazio é recusado (atualizaria a tabela inteira)."""
+        if not filtros:
+            raise ValueError(f"Supabase {tabela}: atualizar_onde sem filtro")
+        r = requests.patch(
+            f"{self.base}/{tabela}", params={**filtros, "select": ",".join(filtros)}, json=campos,
+            headers={**self.h, "Prefer": "return=representation"}, timeout=60,
+        )
+        if r.status_code >= 300:
+            raise RuntimeError(f"Supabase {tabela} {filtros}: {r.status_code} {r.text[:500]}")
+        linhas = r.json()
+        if not isinstance(linhas, list):
+            raise RuntimeError(f"Supabase {tabela} {filtros}: resposta inesperada ao atualizar")
+        return len(linhas)
 
     def remover_pendentes_exceto(self, licitacao_id: int, manter_ids: list[int]) -> None:
         """Apaga linhas desta licitação que não correspondem mais a nenhum documento do
@@ -190,8 +225,8 @@ class Supabase:
         if r.status_code >= 300:
             raise RuntimeError(f"Supabase chunks: {r.status_code} {r.text[:300]}")
 
-    def rpc(self, funcao: str, params: dict) -> list[dict]:
-        r = requests.post(f"{self.base}/rpc/{funcao}", json=params, headers=self.h, timeout=60)
+    def rpc(self, funcao: str, params: dict, timeout: float = 60) -> list[dict]:
+        r = requests.post(f"{self.base}/rpc/{funcao}", json=params, headers=self.h, timeout=timeout)
         if r.status_code >= 300:
             raise RuntimeError(f"Supabase rpc {funcao}: {r.status_code} {r.text[:300]}")
         return r.json()
@@ -246,7 +281,7 @@ class Supabase:
             headers = dict(self.h)
             if primeira:
                 headers["Prefer"] = "count=exact"
-            r = requests.get(f"{self.base}/{tabela}", params=params, headers=headers, timeout=60)
+            r = requests.get(f"{self.base}/{tabela}", params=params, headers={**headers, "Accept-Profile": "public", "Content-Profile": "public"}, timeout=60)
             if getattr(r, "status_code", None) == 404:
                 log.warning("Supabase %s: HTTP 404 ao selecionar; não é fim de coleta", tabela)
             r.raise_for_status()

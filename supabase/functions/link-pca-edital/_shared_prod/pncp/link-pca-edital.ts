@@ -7,12 +7,16 @@
 
 export type LinkMetodo = "codigo_item" | "pdm_janela";
 
+/** contratacao_edital = contratacoes_editais. licitacao_externa = compra do coletor. */
+export type LinkOrigem = "contratacao_edital" | "licitacao_externa";
+
 export type LinkMatchRow = {
   editalId: string;
   planoId: string;
   metodo: LinkMetodo;
   /** Detalhe auditável (código, PDM, lag). */
   detalhe: string;
+  origem?: LinkOrigem;
 };
 
 export type LinkDecision = {
@@ -20,6 +24,7 @@ export type LinkDecision = {
   planoId: string;
   evidencia: string;
   metodo: LinkMetodo;
+  origem: LinkOrigem;
 };
 
 export function buildEvidencia(metodo: LinkMetodo, detalhe: string): string {
@@ -33,13 +38,15 @@ export function buildEvidencia(metodo: LinkMetodo, detalhe: string): string {
 export function pickUniquePlanoLinks(rows: LinkMatchRow[]): LinkDecision[] {
   const byEdital = new Map<string, LinkMatchRow[]>();
   for (const row of rows) {
-    const list = byEdital.get(row.editalId) ?? [];
+    const origem = row.origem ?? "contratacao_edital";
+    const chave = `${origem}:${row.editalId}`;
+    const list = byEdital.get(chave) ?? [];
     list.push(row);
-    byEdital.set(row.editalId, list);
+    byEdital.set(chave, list);
   }
 
   const out: LinkDecision[] = [];
-  for (const [editalId, list] of byEdital) {
+  for (const list of byEdital.values()) {
     const planos = new Set(list.map((r) => r.planoId));
     if (planos.size !== 1) continue;
     // Preferir codigo_item se houver mistura de métodos para o mesmo plano
@@ -47,9 +54,10 @@ export function pickUniquePlanoLinks(rows: LinkMatchRow[]): LinkDecision[] {
       list.find((r) => r.metodo === "codigo_item") ?? list[0];
     if (!preferred) continue;
     out.push({
-      editalId,
+      editalId: preferred.editalId,
       planoId: preferred.planoId,
       metodo: preferred.metodo,
+      origem: preferred.origem ?? "contratacao_edital",
       evidencia: buildEvidencia(preferred.metodo, preferred.detalhe),
     });
   }

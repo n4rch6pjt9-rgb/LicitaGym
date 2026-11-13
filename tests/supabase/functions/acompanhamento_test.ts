@@ -2,6 +2,7 @@ import { assertEquals } from "jsr:@std/assert@1";
 import {
   ACOMPANHAMENTO_LICITACAO_COLUMNS,
   buildAcompanhamentoUrl,
+  CACHE_ERRO_TTL_MS,
   clearAcompanhamentoCache,
   handleAcompanhamento,
   linkSistemaOrigemFromRaw,
@@ -284,6 +285,8 @@ Deno.test("acompanhamento: fluxo completo com paginação, resultados, atas, his
           titulo: "Edital Pregão 90010/2026",
           tipoDocumentoNome: "Edital",
           url: "https://pncp.gov.br/pncp-api/v1/orgaos/45138070000149/compras/2026/559/arquivos/1",
+          dataPublicacaoPncp: "2026-09-29T14:18:51",
+          statusAtivo: true,
           sequencialDocumento: 1,
         },
       ]), { status: 200, headers: { "Content-Type": "application/json" } }));
@@ -363,6 +366,10 @@ Deno.test("acompanhamento: fluxo completo com paginação, resultados, atas, his
     assertEquals(body.arquivos.erro, null);
     assertEquals(body.arquivos.total, 1);
     assertEquals(body.arquivos.dados[0].url, "https://pncp.gov.br/pncp-api/v1/orgaos/45138070000149/compras/2026/559/arquivos/1");
+    assertEquals(body.arquivos.dados[0].dataPublicacaoPncp, "2026-09-29T14:18:51");
+    assertEquals(body.arquivos.dados[0].statusAtivo, true);
+    assertEquals(body.atas.dados[0].vigente === undefined, false);
+    assertEquals("fase" in body, true);
 
     // Testa cache em memória no segundo acesso
     const resCached = await handleAcompanhamento(
@@ -469,7 +476,7 @@ Deno.test("acompanhamento: select não inclui linkSistemaOrigem e usa a lista ex
         selectedCols = cols;
         return {
           eq: (_col: string, _val: unknown) => ({
-            maybeSingle: () => Promise.resolve({ data: { id: 7, fonte: "sestsenat", id_externo: 1 }, error: null }),
+            maybeSingle: () => Promise.resolve({ data: { id: 7, fonte: "portal_desconhecido", id_externo: 1 }, error: null }),
           }),
         };
       },
@@ -542,12 +549,16 @@ Deno.test("acompanhamento: url_acompanhamento vem de raw.linkSistemaOrigem quand
 Deno.test("validation acompanhamento: id válido (1 a 18 dígitos) via URL e body", () => {
   for (const id of ["1", "101", "000123", "123456789012345678"]) {
     const url = new URL(`http://localhost/api-dashboard-oportunidades?action=acompanhamento&id=${id}`);
-    assertEquals(parseActionFromUrl(url), { action: "acompanhamento", id });
-    assertEquals(parseActionFromBody({ action: "acompanhamento", id }), { action: "acompanhamento", id });
+    assertEquals(parseActionFromUrl(url), { action: "acompanhamento", id, atualizar: false });
+    assertEquals(parseActionFromBody({ action: "acompanhamento", id }), { action: "acompanhamento", id, atualizar: false });
   }
-  assertEquals(parseActionFromBody({ action: "acompanhamento", id: 42 }), { action: "acompanhamento", id: "42" });
+  assertEquals(parseActionFromBody({ action: "acompanhamento", id: 42 }), { action: "acompanhamento", id: "42", atualizar: false });
+  assertEquals(
+    parseActionFromBody({ action: "acompanhamento", id: "7", atualizar: true }),
+    { action: "acompanhamento", id: "7", atualizar: true },
+  );
   const padded = new URL("http://localhost/api-dashboard-oportunidades?action=acompanhamento&id=%2042%20");
-  assertEquals(parseActionFromUrl(padded), { action: "acompanhamento", id: "42" });
+  assertEquals(parseActionFromUrl(padded), { action: "acompanhamento", id: "42", atualizar: false });
 });
 
 Deno.test("validation acompanhamento: id inválido retorna erro", () => {
@@ -680,4 +691,157 @@ Deno.test("materialOuServicoDoItem: código vence o nome; nome sem acento e sem 
   assertEquals(materialOuServicoDoItem({ materialOuServicoNome: "Serviço" }), "S");
   assertEquals(materialOuServicoDoItem({ materialOuServicoNome: "MATERIAL" }), "M");
   assertEquals(materialOuServicoDoItem({}), null);
+});
+
+// -----------------------------------------------------------------------------
+// Latência do detalhe com PNCP instável (09/11/2026): 503 rápido + lease de 1 req/s
+// -----------------------------------------------------------------------------
+
+/** PNCP com a compra no ar e os demais endpoints em 503 (cenário medido em produção, id 125). */
+function pncp503(contagem: Map<string, number>, saudavel: () => boolean): typeof fetch {
+  return (input: RequestInfo | URL) => {
+    const urlStr = String(input);
+    const chave = urlStr.includes("/api/consulta/v1/") ? "compra" : (urlStr.match(/\/(itens|atas|historico|arquivos)/)?.[1] ?? "outro");
+    contagem.set(chave, (contagem.get(chave) ?? 0) + 1);
+    if (chave === "compra") {
+      return Promise.resolve(new Response(JSON.stringify({ situacaoCompraNome: "Divulgada no PNCP" }), { status: 200 }));
+    }
+    if (saudavel()) return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
+    return Promise.resolve(new Response("Service Unavailable", { status: 503 }));
+  };
+}
+
+function clienteComLease(slots: { n: number }) {
+  return new UnifiedHttpClient({
+    hostLease: {
+      acquireSlot: () => {
+        slots.n++;
+        return Promise.resolve({ allowed: true, wait_ms: 0 });
+      },
+      reportRateLimit: () => Promise.resolve(),
+    },
+  });
+}
+
+Deno.test("acompanhamento: 503 do PNCP não repete a chamada no detalhe (uma vaga do lease por endpoint)", async () => {
+  clearAcompanhamentoCache();
+  const contagem = new Map<string, number>();
+  const slots = { n: 0 };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = pncp503(contagem, () => false);
+  try {
+    const res = await handleAcompanhamento(
+      { action: "acompanhamento", id: 125 },
+      { getClient: () => createMockSupabase({ id: 125, fonte: "pncp", codigo_externo: "31710696000173-1-000003/2026" }) as any, httpClient: clienteComLease(slots) },
+    );
+    assertEquals(res.status, 200);
+    const body = await res.json();
+    // erro explícito (não vazio silencioso) em cada seção que falhou
+    assertEquals(body.itens.erro, "HTTP 503 on pncp.gov.br");
+    assertEquals(typeof body.historico.erro, "string");
+    assertEquals(typeof body.arquivos.erro, "string");
+    assertEquals(typeof body.atas.erro, "string");
+    for (const ep of ["compra", "itens", "atas", "historico", "arquivos"]) {
+      assertEquals(contagem.get(ep), 1, `endpoint ${ep} chamado mais de uma vez`);
+    }
+    // spec 0049: Atas em 503 → uma busca de atas no índice do PNCP (503 aqui), também sem repetição
+    assertEquals(contagem.get("outro"), 1, "busca do PNCP chamada mais de uma vez");
+    // antes: 13 vagas do lease (1 req/s no host) = ~18 s de fila medidos em produção
+    assertEquals(slots.n, 6);
+  } finally {
+    globalThis.fetch = originalFetch;
+    clearAcompanhamentoCache();
+  }
+});
+
+Deno.test("acompanhamento: resposta com seção em erro fica só no cache negativo curto (Tentar novamente volta ao PNCP)", async () => {
+  clearAcompanhamentoCache();
+  const contagem = new Map<string, number>();
+  let saudavel = false;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = pncp503(contagem, () => saudavel);
+  const realNow = Date.now;
+  const row = { id: 125, fonte: "pncp", codigo_externo: "31710696000173-1-000003/2026" };
+  const cacheControl: string[] = [];
+  const chamar = async () => {
+    const res = await handleAcompanhamento(
+      { action: "acompanhamento", id: 125 },
+      { getClient: () => createMockSupabase(row) as any, httpClient: clienteComLease({ n: 0 }) },
+    );
+    cacheControl.push(res.headers.get("Cache-Control") ?? "");
+    return await res.json();
+  };
+  try {
+    const primeira = await chamar();
+    assertEquals(typeof primeira.itens.erro, "string");
+    assertEquals(cacheControl[0], "no-store");
+
+    // clique repetido dentro do cache negativo não ocupa o lease de novo
+    saudavel = true;
+    await chamar();
+    assertEquals(contagem.get("itens"), 1);
+
+    // passado o cache negativo, o PNCP é consultado de novo
+    Date.now = () => realNow() + CACHE_ERRO_TTL_MS + 1;
+    const segunda = await chamar();
+    assertEquals(contagem.get("itens"), 2);
+    assertEquals(segunda.itens.erro, null);
+
+    assertEquals(cacheControl[2], "private, max-age=300");
+
+    // resposta completa fica no cache de 5 min: a próxima chamada não vai ao PNCP
+    await chamar();
+    assertEquals(contagem.get("itens"), 2);
+  } finally {
+    Date.now = realNow;
+    globalThis.fetch = originalFetch;
+    clearAcompanhamentoCache();
+  }
+});
+
+Deno.test("acompanhamento: 503 em /resultados de um item conta como resposta incompleta (cache negativo e no-store)", async () => {
+  clearAcompanhamentoCache();
+  const realNow = Date.now;
+  let resultadosOk = false;
+  let chamadasResultados = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (input: RequestInfo | URL) => {
+    const urlStr = String(input);
+    if (urlStr.includes("/api/consulta/v1/")) {
+      return Promise.resolve(new Response(JSON.stringify({ situacaoCompraNome: "Homologada" }), { status: 200 }));
+    }
+    if (urlStr.includes("/resultados")) {
+      chamadasResultados++;
+      if (!resultadosOk) return Promise.resolve(new Response("Service Unavailable", { status: 503 }));
+      return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
+    }
+    if (urlStr.includes("/itens?")) {
+      return Promise.resolve(new Response(JSON.stringify([
+        { numeroItem: 1, descricao: "MESA DE TÊNIS DE MESA", temResultado: true },
+      ]), { status: 200 }));
+    }
+    return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
+  };
+  const row = { id: 125, fonte: "pncp", codigo_externo: "31710696000173-1-000003/2026" };
+  const chamar = () =>
+    handleAcompanhamento(
+      { action: "acompanhamento", id: 125 },
+      { getClient: () => createMockSupabase(row) as any, httpClient: clienteComLease({ n: 0 }) },
+    );
+  try {
+    const res = await chamar();
+    const body = await res.json();
+    assertEquals(body.itens.erro, null);
+    assertEquals(typeof body.itens.dados[0].resultadosErro, "string");
+    assertEquals(res.headers.get("Cache-Control"), "no-store");
+
+    resultadosOk = true;
+    Date.now = () => realNow() + CACHE_ERRO_TTL_MS + 1;
+    await (await chamar()).json();
+    assertEquals(chamadasResultados, 2);
+  } finally {
+    Date.now = realNow;
+    globalThis.fetch = originalFetch;
+    clearAcompanhamentoCache();
+  }
 });

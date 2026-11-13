@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable
 
 import requests
+from .proveniencia import campos_proveniencia
 
 BASE = "https://compras.sestsenat.org.br/portal"
 WS = f"{BASE}/WebService/Servicos.asmx"
@@ -149,7 +150,7 @@ class PortalSestSenat:
             "dtoIdioma": {"nCdIdioma": 1}}})
         if not isinstance(r, list):
             raise RespostaInvalida("PesquisarProcessoDetalheForum: payload não é lista")
-        return [_msg_forum(m) for m in r]
+        return [msg_forum(m) for m in r]
 
     def notas(self, id_processo: int, id_edital: int | None, modulo: int = 59) -> list[dict]:
         r = self._ws("PesquisarNota", {"dtoProcesso": {
@@ -202,7 +203,9 @@ class ArquivoGrande(Exception):
         self.bytes_lidos = bytes_lidos
 
 
-def _msg_forum(m: dict) -> dict:
+def msg_forum(m: dict) -> dict:
+    """Mensagem do fórum (PesquisarProcessoDetalheForum) no formato de licitacoes_externas.esclarecimentos. Usada pela
+    coleta da Sest Senat e pela do Paradigma (spec 0061, K-15)."""
     return {
         "id": m.get("nCdMensagem"),
         "id_pai": m.get("nCdMensagemPai"),
@@ -253,8 +256,9 @@ def _deduplicar(secao: str, itens: Iterable[dict]) -> list[Arquivo]:
     return list(por_arquivo.values())
 
 
-def processo_para_linha(d: dict, modulo: int) -> dict:
+def processo_para_linha(d: dict, modulo: int, origem: str = "manual", agora: datetime | None = None) -> dict:
     return {
+        **campos_proveniencia(d, origem, agora),  # spec 0023
         "fonte": "sestsenat",
         "modulo": modulo,
         "id_externo": d["nCdProcesso"],

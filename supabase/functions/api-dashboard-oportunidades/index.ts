@@ -1,6 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, SupabaseClient } from "npm:@supabase/supabase-js@2";
-import { jsonResponse, requireUserAuth } from "../_shared/http.ts";
+import { type AuthenticatedUser, isLicitagymAdmin, jsonResponse, requireUserAuth } from "../_shared/http.ts";
 
 export const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -8,18 +8,29 @@ export const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, idempotency-key",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
 };
-import type { ActionParams, AcompanhamentoActionParams, GetActionParams, LicitacaoFiltros, ListActionParams } from "./types.ts";
+import type {
+  ActionParams,
+  GetActionParams,
+  LicitacaoFiltros,
+  ListActionParams,
+  ResumoExecutivo,
+  ResumoExecutivoActionParams,
+  SortField,
+} from "./types.ts";
 import { parseActionFromBody, parseActionFromUrl } from "./validation.ts";
 import { applyLicitacaoFilters, applyOportunidadesScope, calculateRange } from "./query.ts";
-import { buildEditalUrl } from "../_shared/edital-url.ts";
+import { buildEditalUrl, buildPortalUrl, ehFonteSistemaS } from "../_shared/edital-url.ts";
 import { handleAcompanhamento } from "./acompanhamento.ts";
+import { handleDocumentoUrl } from "./documentoUrl.ts";
+import { anexarAlertaPortal, type TenantDoUsuario } from "./portal.ts";
+import { ErroTenantAcesso, lerTenantDoUsuario } from "../_shared/tenant.ts";
 import type { UnifiedHttpClient } from "../_shared/http-client/index.ts";
 
 /**
  * Fonte de leitura de list/get: a view com a prioridade EFETIVA (migration
  * 20260930200000_licitacoes_prioridade_efetiva). Mesmas colunas públicas da tabela, mas `prioridade`
  * recalculada só para baixo (historico com qualquer sinal de encerramento; leads -> monitorar com o
- * prazo vencido), mais `canonica_id`/`eh_canonica` (20261003170000_licitacoes_pncp_canonica: o list
+ * prazo vencido em Brasília, #319), mais `canonica_id`/`eh_canonica` (20261003170000_licitacoes_pncp_canonica: o list
  * mostra só a publicação canônica de uma compra PNCP republicada; o get devolve qualquer linha).
  * security_invoker + SELECT só para service_role (o client desta função).
  * readiness e acompanhamento continuam lendo a tabela (saúde da base e `raw` server-side).
@@ -73,6 +84,10 @@ export const PUBLIC_LICITACAO_COLUMNS = [
   "last_synced_at",
   "objeto_categoria",
   "objeto_registro_preco",
+  // proveniência da última ingestão (spec 0023): nulos nas linhas anteriores à spec
+  "payload_hash",
+  "ingestao_origem",
+  "ingestao_em",
 ].join(",");
 
 /**
@@ -83,37 +98,75 @@ export const PUBLIC_LICITACAO_COLUMNS = [
  */
 export const CANONICA_COLUMNS = "canonica_id,eh_canonica";
 
-/** Projeção de list/get (sempre na view): colunas públicas da tabela + as da canônica. */
-export const OPORTUNIDADES_COLUMNS = `${PUBLIC_LICITACAO_COLUMNS},${CANONICA_COLUMNS}`;
+/** Motivo da prioridade efetiva (view): historico cita o sinal; prazo vencido cita prazo_encerrado (#319). */
+export const PRIORIDADE_MOTIVO_COLUMN = "prioridade_motivo";
 
-/** Colunas do objeto canônico (migration 20261004140000_objeto_canonico). */
-const COLUNAS_OBJETO = ["objeto_categoria", "objeto_registro_preco"];
-/** Mesmas colunas sem as do objeto canônico: usadas se a função for publicada antes de a migration existir no banco. */
-export const OPORTUNIDADES_COLUMNS_SEM_OBJETO = OPORTUNIDADES_COLUMNS.split(",")
-  .filter((c) => !COLUNAS_OBJETO.includes(c))
+/** Projeção de list/get (sempre na view): colunas públicas da tabela + as da canônica + o motivo. */
+export const OPORTUNIDADES_COLUMNS = `${PUBLIC_LICITACAO_COLUMNS},${CANONICA_COLUMNS},${PRIORIDADE_MOTIVO_COLUMN}`;
+
+/**
+ * Colunas que podem ainda não existir na view quando a função é publicada antes da migration (o merge republica as
+ * funções e aplica a migration em ordem não garantida): objeto canônico (20261004140000) e proveniência (20261014190000).
+ */
+export const COLUNAS_OPCIONAIS = [
+  "objeto_categoria",
+  "objeto_registro_preco",
+  "payload_hash",
+  "ingestao_origem",
+  "ingestao_em",
+];
+/** Mesmas colunas sem as opcionais: usadas se a view ainda não as tiver. */
+export const OPORTUNIDADES_COLUMNS_SEM_OPCIONAIS = OPORTUNIDADES_COLUMNS.split(",")
+  .filter((c) => !COLUNAS_OPCIONAIS.includes(c))
   .join(",");
 
-/** O banco respondeu "coluna não existe" (42703) para uma coluna do objeto canônico? */
-function colunaDoObjetoAusente(error: unknown): boolean {
+/** O banco respondeu "coluna não existe" (42703) para uma coluna opcional? */
+export function colunaOpcionalAusente(error: unknown): boolean {
   const e = error as { code?: string; message?: string } | null;
-  return e?.code === "42703" && COLUNAS_OBJETO.some((c) => (e.message ?? "").includes(c));
+  return e?.code === "42703" && COLUNAS_OPCIONAIS.some((c) => (e.message ?? "").includes(c));
 }
 
 /**
- * Executa a leitura com as colunas do objeto canônico e, se a view ainda não as tiver (função publicada antes da
- * migration, ou migration atrasada), repete sem elas: list e get continuam respondendo, só sem a categoria.
+ * Executa a leitura com todas as colunas e, se a view ainda não tiver alguma opcional (função publicada antes da
+ * migration, ou migration atrasada/falha), repete sem elas: list e get continuam respondendo, só sem esses campos.
  */
-async function comColunasDoObjeto<R extends { error: unknown }>(ler: (colunas: string) => PromiseLike<R>): Promise<R> {
+export async function comColunasOpcionais<R extends { error: unknown }>(
+  ler: (colunas: string) => PromiseLike<R>,
+): Promise<R> {
   const r = await ler(OPORTUNIDADES_COLUMNS);
-  if (!colunaDoObjetoAusente(r.error)) return r;
-  console.warn("[api-dashboard-oportunidades] colunas do objeto canônico ausentes na view; respondendo sem elas");
-  return await ler(OPORTUNIDADES_COLUMNS_SEM_OBJETO);
+  if (!colunaOpcionalAusente(r.error)) return r;
+  console.warn("[api-dashboard-oportunidades] coluna opcional ausente na view; respondendo sem as opcionais");
+  return await ler(OPORTUNIDADES_COLUMNS_SEM_OPCIONAIS);
 }
 
 export interface DashboardOportunidadesClientContext {
   getClient?: () => SupabaseClient;
   requireAuth?: (req: Request) => Promise<Response | null> | Response | null;
   httpClient?: UnifiedHttpClient;
+  /** Empresa de quem chama (resolvida pelo JWT em handleRequest). Ausente = nenhuma: nada conta como "no pipeline". */
+  tenantDoUsuario?: TenantDoUsuario;
+}
+
+const semTenant: TenantDoUsuario = () => Promise.resolve(null);
+
+/**
+ * Empresa do usuário, resolvida uma vez e só quando a seção do Portal precisa (_shared/tenant.ts). Recusa de acesso
+ * (sem vínculo, vínculo desligado, empresa desativada) → null: o alerta trata a licitação como fora do pipeline e a
+ * lista continua, sem mostrar pipeline de outra empresa. Erro de banco propaga (erro não é vazio).
+ */
+function tenantPreguicoso(client: () => SupabaseClient, user: AuthenticatedUser | undefined): TenantDoUsuario {
+  let pendente: Promise<number | null> | null = null;
+  return () => {
+    if (!user) return Promise.resolve(null);
+    pendente ??= lerTenantDoUsuario(client(), user.id, isLicitagymAdmin(user))
+      .then((r) => r.tenant)
+      .catch((e) => {
+        // Só a recusa de acesso (sem vínculo, empresa desativada) vira "sem empresa". Falha de banco é falha.
+        if (e instanceof ErroTenantAcesso) return null;
+        throw e;
+      });
+    return pendente;
+  };
 }
 
 /**
@@ -221,22 +274,25 @@ async function handleReadiness(
 }
 
 /**
- * Aderência ao catálogo CATMAT de licitações já carregadas (detalhe): lê public.licitacao_match (texto do item ou do
- * objeto casando com padrões de PDM) e devolve, por licitação, a mesma forma do catmat_match da lista. É um extra:
+ * Escopo CATMAT de licitações já carregadas (detalhe): lê public.licitacao_match (texto do item ou do
+ * objeto casando com padrões de PDM), mantém só os PDMs efetivos do catálogo da empresa (sem excluídos nem PDMs fora
+ * dele, como a lista com catalogo=true) e devolve, por licitação, a mesma forma do catmat_match da lista. É um extra:
  * se a consulta falhar, o detalhe sai sem aderência (com log) em vez de falhar.
  * Diferença conhecida do catmat_match da lista (licitacoes_ids_por_catmat_unica): aqui não entram o casamento pelo
  * código do item (em 04/10/2026, 2 itens em toda a base) nem os objetos ainda pendentes de recálculo.
+ * Só no detalhe, cada entrada traz `itens`: os numero_item (licitacao_itens) que casaram para aquele (PDM, motivo),
+ * sem repetição, em ordem crescente, no máximo MAX_ITENS_ADERENCIA ([] para texto_objeto ou se a leitura falhar).
  */
-async function aderenciaPorLicitacao(
+async function escopoCatmatPorLicitacao(
   client: SupabaseClient,
   ids: number[],
-): Promise<Map<number, CatmatMatch[]>> {
-  const porLicitacao = new Map<number, CatmatMatch[]>();
+): Promise<Map<number, CatmatMatchDetalhe[]>> {
+  const porLicitacao = new Map<number, CatmatMatchDetalhe[]>();
   if (ids.length === 0) return porLicitacao;
   try {
     const { data, error } = await client
       .from("licitacao_match")
-      .select("licitacao_id,codigo_pdm,origem")
+      .select("licitacao_id,codigo_pdm,origem,item_id")
       .in("licitacao_id", ids)
       .order("licitacao_id")
       .order("codigo_pdm")
@@ -245,7 +301,11 @@ async function aderenciaPorLicitacao(
       console.warn("[api-dashboard-oportunidades] aderência do detalhe indisponível (licitacao_match):", error ?? "resposta inválida");
       return porLicitacao;
     }
-    const linhas = data as Array<{ licitacao_id: number; codigo_pdm: number; origem: string }>;
+    if (data.length === 0) return porLicitacao;
+    const noCatalogo = await pdmsDoCatalogo(client);
+    if (noCatalogo === null) return porLicitacao;
+    const linhas = (data as Array<{ licitacao_id: number; codigo_pdm: number; origem: string; item_id?: number | string | null }>)
+      .filter((l) => noCatalogo.has(Number(l.codigo_pdm)));
     const pdms = [...new Set(linhas.map((l) => Number(l.codigo_pdm)))];
     const nomes = new Map<number, string>();
     if (pdms.length > 0) {
@@ -255,14 +315,29 @@ async function aderenciaPorLicitacao(
         nomes.set(Number(r.codigo_pdm), r.nome_pdm);
       }
     }
-    const vistos = new Set<string>();
+    const numeros = await numerosDosItens(
+      client,
+      linhas.map((l) => l.item_id).filter((v): v is number | string => v !== null && v !== undefined).map(Number),
+    );
+    const porChave = new Map<string, { entrada: CatmatMatchDetalhe; itens: Set<number> }>();
     for (const l of linhas) {
       const chave = `${l.licitacao_id}:${l.codigo_pdm}:${l.origem}`;
-      if (vistos.has(chave)) continue;
-      vistos.add(chave);
-      const lista = porLicitacao.get(Number(l.licitacao_id)) ?? [];
-      lista.push({ codigo_pdm: Number(l.codigo_pdm), nome_pdm: nomes.get(Number(l.codigo_pdm)) ?? null, codigo_item: null, motivo: l.origem });
-      porLicitacao.set(Number(l.licitacao_id), lista);
+      let grupo = porChave.get(chave);
+      if (!grupo) {
+        grupo = {
+          entrada: { codigo_pdm: Number(l.codigo_pdm), nome_pdm: nomes.get(Number(l.codigo_pdm)) ?? null, codigo_item: null, motivo: l.origem, itens: [] },
+          itens: new Set<number>(),
+        };
+        porChave.set(chave, grupo);
+        const lista = porLicitacao.get(Number(l.licitacao_id)) ?? [];
+        lista.push(grupo.entrada);
+        porLicitacao.set(Number(l.licitacao_id), lista);
+      }
+      const numero = l.item_id === null || l.item_id === undefined ? undefined : numeros.get(Number(l.item_id));
+      if (numero !== undefined) grupo.itens.add(numero);
+    }
+    for (const { entrada, itens } of porChave.values()) {
+      entrada.itens = [...itens].sort((a, b) => a - b).slice(0, MAX_ITENS_ADERENCIA);
     }
   } catch (e) {
     console.warn("[api-dashboard-oportunidades] aderência do detalhe indisponível:", e instanceof Error ? e.message : String(e));
@@ -270,8 +345,64 @@ async function aderenciaPorLicitacao(
   return porLicitacao;
 }
 
+/**
+ * PDMs efetivos do catálogo da empresa (public.catalogo_catmat_pdms_efetivos: a regra mais específica vence e só entram
+ * os incluídos), para a aderência do detalhe mostrar só o que a empresa vende. Catálogo sem PDM incluído = conjunto
+ * vazio (nenhuma aderência). Se a leitura falhar devolve null (com log): o detalhe sai sem aderência em vez de mostrar
+ * PDMs excluídos ou fora do catálogo.
+ */
+async function pdmsDoCatalogo(client: SupabaseClient): Promise<Set<number> | null> {
+  const pdms = new Set<number>();
+  try {
+    // Em páginas: o max_rows do PostgREST (1000) cortaria em silêncio um catálogo com grupos/classes inteiros.
+    for (let de = 0; ; de += CATALOGO_PDMS_PAGINA) {
+      const { data, error } = await client
+        .rpc("catalogo_catmat_pdms_efetivos")
+        .order("codigo_pdm")
+        .range(de, de + CATALOGO_PDMS_PAGINA - 1);
+      if (error || !Array.isArray(data)) {
+        console.warn("[api-dashboard-oportunidades] catálogo CATMAT indisponível para a aderência:", error ?? "resposta inválida");
+        return null;
+      }
+      for (const r of data as Array<{ codigo_pdm: number | string }>) pdms.add(Number(r.codigo_pdm));
+      if (data.length < CATALOGO_PDMS_PAGINA) return pdms;
+    }
+  } catch (e) {
+    console.warn("[api-dashboard-oportunidades] catálogo CATMAT indisponível para a aderência:", e instanceof Error ? e.message : String(e));
+    return null;
+  }
+}
+
+/**
+ * numero_item (public.licitacao_itens) por id de item, lido só pelos ids pedidos, em lotes (URL curta no PostgREST).
+ * É um extra da aderência: se qualquer lote falhar, devolve o mapa vazio (com log) e todas as entradas saem com
+ * `itens: []`, em vez de listas parciais que pareceriam completas.
+ */
+async function numerosDosItens(client: SupabaseClient, itemIds: number[]): Promise<Map<number, number>> {
+  const numeros = new Map<number, number>();
+  const unicos = [...new Set(itemIds.filter((id) => Number.isFinite(id)))];
+  try {
+    for (let i = 0; i < unicos.length; i += ITENS_ADERENCIA_LOTE) {
+      const lote = unicos.slice(i, i + ITENS_ADERENCIA_LOTE);
+      const { data, error } = await client.from("licitacao_itens").select("id,numero_item").in("id", lote);
+      if (error || !Array.isArray(data)) {
+        console.warn("[api-dashboard-oportunidades] números dos itens da aderência indisponíveis (licitacao_itens):", error ?? "resposta inválida");
+        return new Map();
+      }
+      for (const r of data as Array<{ id: number | string; numero_item: number | string | null }>) {
+        const numero = r.numero_item === null || r.numero_item === undefined ? NaN : Number(r.numero_item);
+        if (Number.isFinite(numero)) numeros.set(Number(r.id), numero);
+      }
+    }
+  } catch (e) {
+    console.warn("[api-dashboard-oportunidades] números dos itens da aderência indisponíveis:", e instanceof Error ? e.message : String(e));
+    return new Map();
+  }
+  return numeros;
+}
+
 /** Acrescenta catmat_match ao item só quando há casamento (a resposta não muda para quem não tem). */
-function comAderencia(item: Record<string, unknown>, ader: Map<number, CatmatMatch[]>): Record<string, unknown> {
+function comAderencia(item: Record<string, unknown>, ader: Map<number, CatmatMatchDetalhe[]>): Record<string, unknown> {
   const m = ader.get(Number(item.id));
   return m && m.length > 0 ? { ...item, catmat_match: m } : item;
 }
@@ -295,7 +426,7 @@ async function handleGet(
 
     // Caso 1: Busca única por ID
     if (params.id !== undefined && params.id !== null) {
-      const { data, error } = await comColunasDoObjeto((colunas) =>
+      const { data, error } = await comColunasOpcionais((colunas) =>
         client
           .from(OPORTUNIDADES_VIEW)
           .select(colunas)
@@ -319,9 +450,11 @@ async function handleGet(
       const itemWithUrl = comAderencia({
         ...itemRecord,
         url_edital: buildEditalUrl(itemRecord),
-      }, await aderenciaPorLicitacao(client, [Number(itemRecord.id)]));
+        url_portal: buildPortalUrl(itemRecord),
+      }, await escopoCatmatPorLicitacao(client, [Number(itemRecord.id)]));
+      const [itemComPortal] = await anexarAlertaPortal(client, [itemWithUrl], ctx?.tenantDoUsuario ?? semTenant);
 
-      return jsonResponse({ item: itemWithUrl });
+      return jsonResponse({ item: itemComPortal });
     }
 
     // Caso 2: Busca única por codigo_externo + fonte
@@ -333,7 +466,7 @@ async function handleGet(
         );
       }
 
-      const { data, error } = await comColunasDoObjeto((colunas) =>
+      const { data, error } = await comColunasOpcionais((colunas) =>
         client
           .from(OPORTUNIDADES_VIEW)
           .select(colunas)
@@ -358,9 +491,11 @@ async function handleGet(
       const itemWithUrl = comAderencia({
         ...itemRecord,
         url_edital: buildEditalUrl(itemRecord),
-      }, await aderenciaPorLicitacao(client, [Number(itemRecord.id)]));
+        url_portal: buildPortalUrl(itemRecord),
+      }, await escopoCatmatPorLicitacao(client, [Number(itemRecord.id)]));
+      const [itemComPortal] = await anexarAlertaPortal(client, [itemWithUrl], ctx?.tenantDoUsuario ?? semTenant);
 
-      return jsonResponse({ item: itemWithUrl });
+      return jsonResponse({ item: itemComPortal });
     }
 
     // Caso 3: Busca por par órgão + processo (1..N compras/certames do mesmo processo administrativo) paginada
@@ -369,7 +504,7 @@ async function handleGet(
       const limit = params.limit && params.limit > 0 ? params.limit : 20;
       const { from, to } = calculateRange(page, limit);
 
-      const { data, error, count } = await comColunasDoObjeto((colunas) =>
+      const { data, error, count } = await comColunasOpcionais((colunas) =>
         client
           .from(OPORTUNIDADES_VIEW)
           .select(colunas, { count: "exact" })
@@ -391,11 +526,12 @@ async function handleGet(
       }
 
       const rawItems = (data ?? []) as unknown as Array<Record<string, unknown>>;
-      const ader = await aderenciaPorLicitacao(client, rawItems.map((r) => Number(r.id)));
-      const items = rawItems.map((row) => comAderencia({
+      const ader = await escopoCatmatPorLicitacao(client, rawItems.map((r) => Number(r.id)));
+      const items = await anexarAlertaPortal(client, rawItems.map((row) => comAderencia({
         ...row,
         url_edital: buildEditalUrl(row),
-      }, ader));
+        url_portal: buildPortalUrl(row),
+      }, ader)), ctx?.tenantDoUsuario ?? semTenant);
       const total = count;
       if (total === 0 && items.length === 0) {
         return jsonResponse(
@@ -430,13 +566,21 @@ async function handleGet(
  * Distingue resultado vazio (200 com items: []) de erro (400/500).
  */
 /**
- * Teto de licitações resolvidas pelo recorte CATMAT antes do filtro por id (evita URL gigante no PostgREST).
- * licitacoes_ids_por_catmat_unica não trunca (sem LIMIT nem paginação), então r.ids é completo. Acima do teto, os ids são
- * primeiro reduzidos ao escopo de Oportunidades (idsNoEscopo) e o teto vale sobre o que sobra.
+ * Teto de proteção de licitações resolvidas pelo recorte CATMAT (spec 0004): até 10 lotes por página. Conta os ids da
+ * RPC antes do escopo (inclui historico): se a base de homologadas crescer perto disto, migrar para a abordagem (a)
+ * da spec (RPC paginada no banco). Em 09/10/2026
+ * licitacoes_externas inteira tinha ~1.660 linhas e o maior recorte, 1.103 ids. licitacoes_ids_por_catmat_unica não
+ * trunca (sem LIMIT nem paginação), então r.ids é completo; acima deste teto a lista responde 422.
  */
-export const MAX_IDS_CATMAT = 1000;
+export const MAX_IDS_CATMAT = 5000;
 
-/** Tamanho do lote de ids por consulta ao reduzir o recorte CATMAT ao escopo (URL curta no PostgREST). */
+/**
+ * Até este número de ids, a consulta principal filtra por `id in (...)` direto (uma URL só). Acima, a lista é
+ * montada em duas fases (listarCatmatEmDuasFases), com lotes de CATMAT_ESCOPO_LOTE ids por URL.
+ */
+export const MAX_IDS_CATMAT_URL = 1000;
+
+/** Tamanho do lote de ids por consulta na lista em duas fases (URL curta no PostgREST). */
 export const CATMAT_ESCOPO_LOTE = 500;
 
 export interface CatmatMatch {
@@ -445,6 +589,20 @@ export interface CatmatMatch {
   codigo_item: number | null;
   motivo: string;
 }
+
+/** Entrada de catmat_match no get: a mesma da lista mais os numero_item que casaram (só no detalhe). */
+export interface CatmatMatchDetalhe extends CatmatMatch {
+  itens: number[];
+}
+
+/** Página da leitura de catalogo_catmat_pdms_efetivos (= max_rows do PostgREST em supabase/config.toml). */
+export const CATALOGO_PDMS_PAGINA = 1000;
+
+/** Máximo de numero_item por entrada de catmat_match no get (em 04/10/2026, o maior grupo tinha 44). */
+export const MAX_ITENS_ADERENCIA = 50;
+
+/** Tamanho do lote de ids por leitura de licitacao_itens na aderência do get. */
+export const ITENS_ADERENCIA_LOTE = 500;
 
 /** SQLSTATE do Postgres para statement_timeout (query_canceled). */
 export const PG_STATEMENT_TIMEOUT = "57014";
@@ -455,6 +613,10 @@ export function ehStatementTimeout(err: unknown): boolean {
 }
 
 export function temRecorteCatmat(f: LicitacaoFiltros): boolean {
+  // O Sistema S adota regulamento próprio (RCA) e NÃO acompanha CATMAT federal.
+  if (ehFonteSistemaS(f.fonte)) {
+    return false;
+  }
   return !!(f.catmat_grupo || f.catmat_classe || f.catmat_pdm || f.catmat_item || f.catalogo === true);
 }
 
@@ -513,29 +675,110 @@ async function resolverCatmat(
   return { ids: (resultado.ids ?? []).map(Number), porLicitacao };
 }
 
+/** Chave de ordenação de uma compra na lista em duas fases. */
+export interface ChaveOrdenacao {
+  id: number;
+  chave: unknown;
+}
+
 /**
- * Reduz os ids do recorte CATMAT ao escopo pedido, na view da prioridade efetiva: sem filtro de
- * prioridade, só leads e monitorar; com filtro, só aquela prioridade; nos dois casos só a publicação
- * canônica (applyOportunidadesScope, o mesmo recorte da consulta principal). Assim um
- * recorte com muitas compras arquivadas (historico) e poucas Oportunidades não bate no teto à toa.
- * Consulta em lotes de CATMAT_ESCOPO_LOTE ids; falha de consulta levanta (vira 500).
+ * Fase 1 da lista em duas fases: para os ids do recorte CATMAT, lê só `id` e a coluna de ordenação, em lotes de
+ * CATMAT_ESCOPO_LOTE, com TODOS os filtros e o escopo de Oportunidades (os mesmos da consulta principal). Falha
+ * de qualquer lote levanta (vira 500): nunca devolve um recorte parcial.
  */
-export async function idsNoEscopo(
+export async function chavesNoRecorte(
   client: SupabaseClient,
   ids: number[],
   filtros: LicitacaoFiltros,
-): Promise<number[]> {
-  const mantidos: number[] = [];
+  orderBy: SortField,
+): Promise<ChaveOrdenacao[]> {
+  const chaves: ChaveOrdenacao[] = [];
   for (let i = 0; i < ids.length; i += CATMAT_ESCOPO_LOTE) {
     const lote = ids.slice(i, i + CATMAT_ESCOPO_LOTE);
-    let query = client.from(OPORTUNIDADES_VIEW).select("id").in("id", lote);
-    if (filtros.prioridade) query = query.eq("prioridade", filtros.prioridade);
-    query = applyOportunidadesScope(query, filtros);
-    const { data, error } = await query;
+    const query = client.from(OPORTUNIDADES_VIEW).select(`id,${orderBy}`);
+    const { data, error } = await applyOportunidadesScope(applyLicitacaoFilters(query, { ...filtros, ids: lote }), filtros);
     if (error) throw error;
-    for (const row of (data ?? []) as Array<{ id: number }>) mantidos.push(Number(row.id));
+    for (const row of (data ?? []) as unknown as Array<Record<string, unknown>>) {
+      chaves.push({ id: Number(row.id), chave: row[orderBy] });
+    }
   }
-  return mantidos;
+  return chaves;
+}
+
+/**
+ * Ordena como a consulta principal (`order(order_by, { nullsFirst: false })` + `order("id")`): coluna no sentido
+ * pedido, nulos por último nos dois sentidos, id crescente para desempatar. valor_total compara como número; as
+ * datas, pelo instante (Date.parse), para não depender do formato do offset. Limites conhecidos: Date.parse trunca em
+ * milissegundo (o Postgres ordena pelo microssegundo; as fontes gravam em segundos) e 'infinity'/'NaN' contam como
+ * nulo.
+ */
+export function ordenarChaves(chaves: ChaveOrdenacao[], orderBy: SortField, ascending: boolean): ChaveOrdenacao[] {
+  const valor = (v: unknown): number => (orderBy === "valor_total" ? Number(v) : Date.parse(String(v)));
+  const nulo = (v: unknown): boolean => v === null || v === undefined || Number.isNaN(valor(v));
+  return [...chaves].sort((x, y) => {
+    const xn = nulo(x.chave);
+    const yn = nulo(y.chave);
+    if (xn !== yn) return xn ? 1 : -1;
+    if (!xn && !yn) {
+      const d = valor(x.chave) - valor(y.chave);
+      if (d !== 0) return ascending ? d : -d;
+    }
+    return x.id - y.id;
+  });
+}
+
+/** Linhas da view -> itens da lista (url do edital, catmat_match e alerta do Portal). */
+async function montarItens(
+  client: SupabaseClient,
+  rows: Array<Record<string, unknown>>,
+  matches: Map<number, CatmatMatch[]> | null,
+  tenantDoUsuario: TenantDoUsuario,
+): Promise<Array<Record<string, unknown>>> {
+  return await anexarAlertaPortal(client, rows.map((row) => ({
+    ...row,
+    url_edital: buildEditalUrl(row),
+        url_portal: buildPortalUrl(row),
+    ...(matches ? { catmat_match: matches.get(Number(row.id)) ?? [] } : {}),
+  })), tenantDoUsuario);
+}
+
+/**
+ * Lista do recorte CATMAT acima de MAX_IDS_CATMAT_URL ids (spec 0004), sem lista gigante de ids na URL:
+ * 1) chavesNoRecorte: id + coluna de ordenação, com todos os filtros, em lotes;
+ * 2) ordena em memória (ordenarChaves) e fatia a página; total = ids que sobraram;
+ * 3) lê as colunas completas só dos ids da página (no máximo `limit`) e devolve na ordem da fase 2.
+ */
+async function listarCatmatEmDuasFases(
+  client: SupabaseClient,
+  ids: number[],
+  filtros: LicitacaoFiltros,
+  params: ListActionParams,
+  matches: Map<number, CatmatMatch[]>,
+  tenantDoUsuario: TenantDoUsuario,
+): Promise<Response> {
+  const { page, limit, order_by, order_direction } = params;
+  const { from, to } = calculateRange(page, limit);
+  const ordenadas = ordenarChaves(await chavesNoRecorte(client, ids, filtros, order_by), order_by, order_direction === "asc");
+  const total = ordenadas.length;
+  const idsPagina = ordenadas.slice(from, to + 1).map((c) => c.id);
+  if (idsPagina.length === 0) {
+    return jsonResponse({ action: "list", page, limit, total, order_by, order_direction, items: [] });
+  }
+  // Mesmos filtros e escopo da fase 1: uma compra que saiu do escopo entre as fases não volta na página.
+  const { data, error } = await comColunasOpcionais((colunas) => {
+    let paginaQuery = client.from(OPORTUNIDADES_VIEW).select(colunas);
+    paginaQuery = applyOportunidadesScope(applyLicitacaoFilters(paginaQuery, { ...filtros, ids: idsPagina }), filtros);
+    return paginaQuery;
+  });
+  if (error) throw error;
+  const porId = new Map(((data ?? []) as unknown as Array<Record<string, unknown>>).map((row) => [Number(row.id), row]));
+  const rows = idsPagina.map((id) => porId.get(id)).filter((row): row is Record<string, unknown> => row !== undefined);
+  if (rows.length < idsPagina.length) {
+    console.warn(
+      `[api-dashboard-oportunidades] recorte CATMAT: ${idsPagina.length - rows.length} compra(s) saíram do escopo entre as fases (página ${page})`,
+    );
+  }
+  return jsonResponse({ action: "list", page, limit, total, order_by, order_direction, items: await montarItens(client, rows, matches, tenantDoUsuario) });
 }
 
 async function handleList(
@@ -571,26 +814,29 @@ async function handleList(
       if (r.ids.length === 0) {
         return jsonResponse({ action: "list", page, limit, total: 0, order_by, order_direction, items: [] });
       }
-      let ids = r.ids;
-      if (ids.length > MAX_IDS_CATMAT) {
-        // O teto vale sobre as Oportunidades do recorte, não sobre as compras arquivadas (historico):
-        // reduz ao escopo pedido antes de decidir o 422. Abaixo do teto, a consulta principal já recorta.
-        ids = await idsNoEscopo(client, ids, filtros);
-        if (ids.length === 0) {
-          return jsonResponse({ action: "list", page, limit, total: 0, order_by, order_direction, items: [] });
-        }
-        if (ids.length > MAX_IDS_CATMAT) {
-          return jsonResponse({
-            error: `O recorte CATMAT casa ${ids.length} oportunidades (limite ${MAX_IDS_CATMAT}). Refine por classe, PDM ou outro filtro.`,
-          }, 422);
+      if (r.ids.length > MAX_IDS_CATMAT) {
+        return jsonResponse({
+          error: `O recorte CATMAT casa ${r.ids.length} licitações (limite ${MAX_IDS_CATMAT}). Refine por classe, PDM ou outro filtro.`,
+        }, 422);
+      }
+      if (r.ids.length > MAX_IDS_CATMAT_URL) {
+        try {
+          return await listarCatmatEmDuasFases(client, r.ids, filtros, params, r.porLicitacao, ctx?.tenantDoUsuario ?? semTenant);
+        } catch (err: unknown) {
+          // statement_timeout num lote: indisponibilidade temporária (503), como na RPC
+          if (ehStatementTimeout(err)) {
+            console.error("[api-dashboard-oportunidades] Timeout na lista em duas fases do recorte CATMAT:", err);
+            return jsonResponse({ error: "filtro de catálogo indisponível" }, 503);
+          }
+          throw err;
         }
       }
-      filtros = { ...filtros, ids };
+      filtros = { ...filtros, ids: r.ids };
       matches = r.porLicitacao;
     }
 
     const isAscending = order_direction === "asc";
-    const { data, error, count } = await comColunasDoObjeto((colunas) => {
+    const { data, error, count } = await comColunasOpcionais((colunas) => {
       let baseQuery = client
         .from(OPORTUNIDADES_VIEW)
         .select(colunas, { count: "exact" });
@@ -635,11 +881,7 @@ async function handleList(
     }
 
     const rawItems = (data ?? []) as unknown as Array<Record<string, unknown>>;
-    const items = rawItems.map((row) => ({
-      ...row,
-      url_edital: buildEditalUrl(row),
-      ...(matches ? { catmat_match: matches.get(Number(row.id)) ?? [] } : {}),
-    }));
+    const items = await montarItens(client, rawItems, matches, ctx?.tenantDoUsuario ?? semTenant);
 
     return jsonResponse({
       action: "list",
@@ -652,6 +894,110 @@ async function handleList(
     });
   } catch (err: unknown) {
     console.error("[api-dashboard-oportunidades] Exceção em list:", err);
+    return jsonResponse({ error: "Erro interno no servidor" }, 500);
+  }
+}
+
+/** Spec 0048 K-1: função SQL do resumo executivo (EXECUTE só service_role). */
+export const RESUMO_EXECUTIVO_RPC = "dashboard_resumo_executivo";
+
+/**
+ * Spec 0050 K-2: com que critério a função soma os valores. Espelha o filtro de categoria_escopo da migration
+ * 20261109060000_dashboard_resumo_valor_itens_escopo (mudar uma exige mudar a outra).
+ */
+export const RESUMO_CRITERIO_VALOR = "itens_no_escopo";
+export const RESUMO_CATEGORIAS_VALOR = ["forte", "catmat", "borracha", "piso", "obra_piso", "manutencao"] as const;
+
+function numeroOuNull(v: unknown): number | null {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+const CONTAGENS_RESUMO = [
+  "leads_total",
+  "monitoradas_total",
+  "com_valor_total",
+  "prazo_amanha_total",
+  "prazo_7_dias_total",
+] as const;
+
+/**
+ * Linha de K-1 com tipos estáveis. Somas podem ser null (nenhuma linha com valor). Contagem ausente ou não numérica
+ * (count nunca é null no SQL) é contrato quebrado: devolve null para o handler responder 500, nunca um 0 inventado.
+ */
+function normalizarResumo(row: Record<string, unknown>): ResumoExecutivo | null {
+  const contagens: Record<string, number> = {};
+  for (const campo of CONTAGENS_RESUMO) {
+    const n = numeroOuNull(row[campo]);
+    if (n === null) return null;
+    contagens[campo] = n;
+  }
+  return {
+    leads_total: contagens.leads_total,
+    monitoradas_total: contagens.monitoradas_total,
+    valor_potencial_total: numeroOuNull(row.valor_potencial_total),
+    com_valor_total: contagens.com_valor_total,
+    prazo_amanha_total: contagens.prazo_amanha_total,
+    prazo_amanha_valor: numeroOuNull(row.prazo_amanha_valor),
+    prazo_7_dias_total: contagens.prazo_7_dias_total,
+    prazo_7_dias_valor: numeroOuNull(row.prazo_7_dias_valor),
+    calculado_em: typeof row.calculado_em === "string" ? row.calculado_em : null,
+  };
+}
+
+/**
+ * Spec 0048 K-2: números do painel executivo, calculados no banco (K-1) sobre o mesmo recorte de catálogo/CATMAT da
+ * action=list. Exige empresa ativa de quem chama (403 sem vínculo, vínculo desligado ou empresa desativada), antes
+ * de qualquer consulta de dados. Recorte sem resultado calcula sobre nenhuma licitação (array vazio), nunca sobre
+ * todas.
+ */
+async function handleResumoExecutivo(
+  params: ResumoExecutivoActionParams,
+  ctx: DashboardOportunidadesClientContext,
+): Promise<Response> {
+  try {
+    const tenant = await (ctx.tenantDoUsuario ?? semTenant)();
+    if (tenant === null) {
+      return jsonResponse({ error: "Usuário sem empresa ativa." }, 403);
+    }
+    const client = ctx.getClient ? ctx.getClient() : getDefaultServiceClient();
+    const { recorte } = params;
+
+    let ids: number[] | null = null;
+    if (temRecorteCatmat(recorte)) {
+      try {
+        ids = (await resolverCatmat(client, recorte)).ids;
+      } catch (err: unknown) {
+        if (ehStatementTimeout(err)) {
+          console.error("[api-dashboard-oportunidades] Timeout ao resolver o recorte CATMAT do resumo:", err);
+          return jsonResponse({ error: "filtro de catálogo indisponível" }, 503);
+        }
+        throw err;
+      }
+    }
+
+    const { data, error } = await client.rpc(RESUMO_EXECUTIVO_RPC, { p_ids_filtro: ids }).single();
+    if (error && ehStatementTimeout(error)) {
+      console.error("[api-dashboard-oportunidades] Timeout em dashboard_resumo_executivo:", error);
+      return jsonResponse({ error: "resumo executivo indisponível" }, 503);
+    }
+    const resumo = !error && data && typeof data === "object" ? normalizarResumo(data as Record<string, unknown>) : null;
+    if (!resumo) {
+      console.error("[api-dashboard-oportunidades] Erro em resumo_executivo:", error ?? "linha fora do contrato K-1");
+      return jsonResponse({ error: "Falha ao calcular o resumo executivo" }, 500);
+    }
+
+    return jsonResponse({
+      action: "resumo_executivo",
+      resumo,
+      recorte: { aplicado: ids !== null, filtros: recorte, licitacoes_total: ids === null ? null : ids.length },
+      fonte: OPORTUNIDADES_VIEW,
+      criterio_valor: RESUMO_CRITERIO_VALOR,
+      categorias_valor: [...RESUMO_CATEGORIAS_VALOR],
+    });
+  } catch (err: unknown) {
+    console.error("[api-dashboard-oportunidades] Exceção em resumo_executivo:", err);
     return jsonResponse({ error: "Erro interno no servidor" }, 500);
   }
 }
@@ -700,16 +1046,27 @@ export async function handleRequest(
   if (authError) {
     return authError;
   }
+  // requireUserAuth anexa o usuário em req.user; o pipeline do alerta do Portal é o da empresa dele.
+  const user = (req as unknown as { user?: AuthenticatedUser }).user;
+  const ctxTenant: DashboardOportunidadesClientContext = {
+    ...ctx,
+    tenantDoUsuario: ctx?.tenantDoUsuario ??
+      tenantPreguicoso(() => (ctx?.getClient ? ctx.getClient() : getDefaultServiceClient()), user),
+  };
 
   switch (actionParams.action) {
     case "get":
-      return await handleGet(actionParams, ctx);
+      return await handleGet(actionParams, ctxTenant);
     case "list":
-      return await handleList(actionParams, ctx);
+      return await handleList(actionParams, ctxTenant);
     case "acompanhamento":
-      return await handleAcompanhamento(actionParams, ctx, getDefaultServiceClient);
+      return await handleAcompanhamento(actionParams, ctxTenant, getDefaultServiceClient);
     case "objeto_categorias":
       return await handleObjetoCategorias(ctx);
+    case "resumo_executivo":
+      return await handleResumoExecutivo(actionParams, ctxTenant);
+    case "documento_url":
+      return await handleDocumentoUrl(actionParams, ctxTenant, getDefaultServiceClient);
     default:
       return jsonResponse({ error: "Ação não suportada" }, 400);
   }

@@ -28,6 +28,7 @@ function resolveHistoryFields(
   return historyFields;
 }
 
+/** Falha de histórico retorna erro; este caminho não garante rollback entre requisições. */
 export async function upsertByHash<T extends Record<string, unknown>>(
   client: SupabaseClient,
   table: string,
@@ -113,13 +114,14 @@ async function upsertExistingRow<T extends Record<string, unknown>>(
       .select("id").single();
     if (error) return "erro";
     if (options?.historyTable && inserted?.id) {
-      await client.from(options.historyTable).insert({
+      const { error: historyError } = await client.from(options.historyTable).insert({
         ...resolveHistoryFields(options.historyFields, inserted.id),
         tipo_operacao: "insert",
         dados_novos: fullRow,
         payload_hash_novo: payloadHash,
         sync_run_id: options.syncRunId,
       });
+      if (historyError) return "erro";
     }
     return "novo";
   }
@@ -146,7 +148,7 @@ async function upsertExistingRow<T extends Record<string, unknown>>(
   if (error) return "erro";
 
   if (options?.historyTable) {
-    await client.from(options.historyTable).insert({
+    const { error: historyError } = await client.from(options.historyTable).insert({
       ...resolveHistoryFields(options.historyFields, existingId),
       tipo_operacao: "update",
       dados_anteriores: existing,
@@ -155,6 +157,7 @@ async function upsertExistingRow<T extends Record<string, unknown>>(
       payload_hash_novo: payloadHash,
       sync_run_id: options.syncRunId,
     });
+    if (historyError) return "erro";
   }
   return "alterado";
 }

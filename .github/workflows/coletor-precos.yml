@@ -1,0 +1,119 @@
+# Coleta recorrente de preços praticados e enriquecimento via API PNCP (spec 0009 + spec 0031):
+# roda os coletores Python (services/coletor-externo) no runner do GitHub, duas vezes por semana, na mesma
+# estrutura de matriz do Coletor PNCP (.github/workflows/coletor-pncp.yml). Sem actions de terceiros (regra do repo):
+# checkout por git, Python do runner.
+# Pré-requisitos (secrets do repositório): SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY.
+# Etapas:
+#   1. catalogo     -> Compras.gov Pesquisa de Preço (1_consultarMaterial) por PDM efetivo e itens avulsos
+#   2. detalhe      -> Compras.gov Pesquisa de Preço (2_consultarMaterialDetalhe) nas linhas sem descrição detalhada
+#   3. contratacao  -> API PNCP (/api/consulta/v1/orgaos/{cnpj}/compras/{ano}/{sequencial} e /itens) para estimado × homologado e link
+# A lógica fica em services/coletor-externo/ci/coletor-precos.sh (testada em tests/test_ci_coletor_precos.py).
+name: Coletor de Preços
+
+on:
+  schedule:
+    - cron: "0 10 * * 1,4"   # Segunda e quinta às 07:00 em Brasília (mantém precos_dias_sem_coleta <= 3,5d)
+  workflow_dispatch:
+    inputs:
+      modo:
+        description: "catalogo | detalhe | contratacao | todos"
+        default: "todos"
+        required: false
+      dry_run:
+        description: "true = só consulta, não grava"
+        default: "false"
+        required: false
+      limite:
+        description: "Teto opcional de itens/compras a processar na etapa"
+        default: ""
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coletor-precos
+  cancel-in-progress: false
+
+jobs:
+  # Traduz o modo do disparo nas etapas da matriz (modo desconhecido falha aqui, antes de qualquer coleta).
+  plano:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      etapas: ${{ steps.etapas.outputs.etapas }}
+    steps:
+      - name: Checkout (git, sem actions de terceiros)
+        run: |
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          # Token só no cabeçalho do fetch, sem gravar em .git/config (padrão do pr-quality.yml).
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c http.extraheader="$auth" fetch -q --depth 1 origin "${GITHUB_SHA}"
+          git checkout -q FETCH_HEAD -- services/coletor-externo/ci
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Etapas
+        id: etapas
+        env:
+          MODO: ${{ github.event.inputs.modo || 'todos' }}
+        run: |
+          ETAPAS="$(bash services/coletor-externo/ci/coletor-precos.sh etapas "${MODO}")"
+          echo "etapas=${ETAPAS}" >> "${GITHUB_OUTPUT}"
+          echo "modo ${MODO}: ${ETAPAS}"
+
+  coletar:
+    needs: plano
+    name: coletar (${{ matrix.etapa }})
+    runs-on: ubuntu-latest
+    # Por etapa, acima do LIMITE_ETAPA (180m em ci/coletor-precos.sh) para terminar como falha antes de cancelar o job.
+    timeout-minutes: 200
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        etapa: ${{ fromJSON(needs.plano.outputs.etapas) }}
+    env:
+      DELAY_SEGUNDOS: "1.5"
+      # Original (raw) dos preços: bucket privado `arquivo-raw` do Supabase Storage, com a mesma service role do passo
+      # da coleta. Até 12/11/2026 ia para o disco do runner e se perdia no fim do job.
+      ARQUIVO_RAW_DESTINO: "supabase"
+      ETAPA: ${{ matrix.etapa }}
+      DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+      LIMITE: ${{ github.event.inputs.limite || '' }}
+    steps:
+      - name: Checkout (git, sem actions de terceiros)
+        run: |
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          # Token só no cabeçalho do fetch, sem gravar em .git/config (padrão do pr-quality.yml).
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c http.extraheader="$auth" fetch -q --depth 1 origin "${GITHUB_SHA}"
+          git checkout -q FETCH_HEAD -- services/coletor-externo
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Conferir segredos
+        env:
+          TEM_URL: ${{ secrets.SUPABASE_URL != '' }}
+          TEM_CHAVE: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY != '' }}
+        run: |
+          if [ "${TEM_URL}" != "true" ] || [ "${TEM_CHAVE}" != "true" ]; then
+            echo "Secrets SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY ausentes no repositório."; exit 1
+          fi
+
+      # Só binários prontos (--only-binary): nenhum setup.py de pacote roda aqui. Os segredos ficam fora deste passo.
+      - name: Dependências
+        working-directory: services/coletor-externo
+        run: |
+          python3 --version
+          python3 -m pip install --quiet --disable-pip-version-check --only-binary :all: -r requirements.txt
+
+      # Os segredos entram só neste passo (padrão do saude.yml e coletor-pncp.yml).
+      - name: Coleta
+        working-directory: services/coletor-externo
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: bash ci/coletor-precos.sh rodar "${ETAPA}"

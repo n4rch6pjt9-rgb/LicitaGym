@@ -26,7 +26,14 @@ import {
   OPORTUNIDADES_COLUMNS,
   OPORTUNIDADES_VIEW,
   PUBLIC_LICITACAO_COLUMNS,
+  RESUMO_CATEGORIAS_VALOR,
 } from "../../../supabase/functions/api-dashboard-oportunidades/index.ts";
+import {
+  dataParadigma,
+  ehFonteParadigma,
+  FONTES_PARADIGMA,
+} from "../../../supabase/functions/api-dashboard-oportunidades/paradigmaBanco.ts";
+import { ErroTenantAcesso } from "../../../supabase/functions/_shared/tenant.ts";
 
 // Helper mock para testar montagem de query em applyLicitacaoFilters
 class MockQueryBuilder implements FilterableQuery {
@@ -597,9 +604,6 @@ function createRecordingMockClient(config: {
   headCountResult?: { count: number | null; error: unknown };
   rpcResult?: { data: unknown[] | null; error: unknown };
   pdmNomes?: Array<{ codigo_pdm: number; nome_pdm: string }>;
-  /** Consulta de escopo do recorte CATMAT (select("id") na view): ids que ficam. Padrão: todos. */
-  escopoIds?: (ids: number[]) => number[];
-  escopoError?: unknown;
 }) {
   const calls: RecordedCall[] = [];
 
@@ -711,26 +715,6 @@ function createRecordingMockClient(config: {
       return {
         select(cols?: string, opts?: { count?: string; head?: boolean }) {
           calls.push({ method: "select", args: [cols, opts] });
-          if (cols === "id" && !opts) {
-            // Escopo do recorte CATMAT: select("id").in("id", lote).eq|or(...)
-            let lote: number[] = [];
-            const escopo: Record<string, unknown> = {
-              then(onfulfilled?: (v: unknown) => unknown, onrejected?: (e: unknown) => unknown) {
-                const res = config.escopoError
-                  ? { data: null, error: config.escopoError }
-                  : { data: (config.escopoIds ?? ((x: number[]) => x))(lote).map((id) => ({ id })), error: null };
-                return Promise.resolve(res).then(onfulfilled, onrejected);
-              },
-            };
-            for (const m of ["eq", "in", "or"]) {
-              escopo[m] = (...args: unknown[]) => {
-                calls.push({ method: `escopo.${m}`, args });
-                if (m === "in") lote = args[1] as number[];
-                return escopo;
-              };
-            }
-            return escopo;
-          }
           if (opts?.head) {
             // Contagem (head): aceita os mesmos filtros encadeados e resolve com headCountResult
             const headResult = config.headCountResult ?? { count: 10, error: null };
@@ -818,9 +802,15 @@ Deno.test("handleRequest list com filtro uf asserte eq('uf', 'AC') e PUBLIC_LICI
     // objeto canônico (20261004140000_objeto_canonico)
     "objeto_categoria",
     "objeto_registro_preco",
+    // proveniência (spec 0023)
+    "payload_hash",
+    "ingestao_origem",
+    "ingestao_em",
     // só na view (20261003170000_licitacoes_pncp_canonica)
     "canonica_id",
     "eh_canonica",
+    // motivo da prioridade efetiva (#319)
+    "prioridade_motivo",
   ].join(",");
   assertEquals(selectCall?.args[0], EXPECTED_PROJECTION);
 
@@ -1273,12 +1263,12 @@ Deno.test("acompanhamento: oportunidade não encontrada retorna 404", async () =
   assertEquals(body.error, "Licitação não encontrada");
 });
 
-Deno.test("acompanhamento: linha não-PNCP retorna 200 com disponivel: false", async () => {
+Deno.test("acompanhamento: linha não-PNCP e fora do Paradigma retorna 200 com disponivel: false", async () => {
   const mockClient = createRecordingMockClient({
     singleResult: {
       data: {
         id: 202,
-        fonte: "sestsenat",
+        fonte: "portal_desconhecido",
         modulo: 59,
         id_externo: 12345,
         objeto: "Contratação SEST SENAT",
@@ -1450,44 +1440,6 @@ Deno.test("list com recorte CATMAT: outro erro da RPC continua 500 genérico", a
   assertEquals(await res.json(), { error: "Erro interno no servidor" });
 });
 
-Deno.test("list com catalogo=true e 3098 casamentos (volume de prod): uma chamada à RPC única, sem range", async () => {
-  // 1103 licitações distintas, ~2,8 casamentos cada (como catalogo=true em prod em 02/10/2026; dados fictícios)
-  const data = Array.from({ length: 3098 }, (_, i) => ({
-    licitacao_id: String(1 + (i % 1103)),
-    codigo_pdm: 7115 + (i % 3),
-    codigo_item: i % 7 === 0 ? String(600000 + i) : null,
-    motivo: i % 7 === 0 ? "codigo" : "texto_item",
-  }));
-  const mockClient = createRecordingMockClient({
-    rpcResult: { data, error: null },
-    escopoIds: (ids) => ids.filter((id) => id <= 40),
-    listResult: { data: [{ id: 1 }], count: 40, error: null },
-  });
-  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list&catalogo=true&limit=1", { method: "GET" });
-  // deno-lint-ignore no-explicit-any
-  const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
-  assertEquals(res.status, 200);
-  const body = await res.json();
-  assertEquals(mockClient.calls.filter((c) => c.method === "rpc").map((c) => c.args[0]), [CATMAT_RPC]);
-  assertEquals(mockClient.calls.some((c) => c.method === "rpc.range" || c.method === "rpc.order"), false);
-  // 1103 ids > MAX_IDS_CATMAT: reduz ao escopo (3 lotes de até 500) e lista os 40 restantes
-  assertEquals(mockClient.calls.filter((c) => c.method === "escopo.in").map((c) => (c.args[1] as number[]).length), [500, 500, 103]);
-  assertEquals(body.total, 40);
-  // ids e codigo_item chegam como string (bigint no JSON) e viram number; casamentos da licitação 1 preservados
-  const casamentos1 = data.filter((d) => d.licitacao_id === "1").length;
-  assertEquals(body.items[0].catmat_match.length, casamentos1);
-  assertEquals(typeof body.items[0].catmat_match[0].codigo_item, "number");
-});
-
-Deno.test("list com recorte CATMAT acima de 1000 licitações: 422", async () => {
-  const data = Array.from({ length: 1001 }, (_, i) => ({ licitacao_id: i + 1, codigo_pdm: 7115, codigo_item: null, motivo: "texto_item" }));
-  const mockClient = createRecordingMockClient({ rpcResult: { data, error: null } });
-  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list&catmat_grupo=78", { method: "GET" });
-  // deno-lint-ignore no-explicit-any
-  const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
-  assertEquals(res.status, 422);
-});
-
 Deno.test("list sem recorte CATMAT (ou catalogo=false) não chama a RPC nem anexa catmat_match", async () => {
   for (const qs of ["action=list&uf=SP", "action=list&catalogo=false"]) {
     const mockClient = createRecordingMockClient({ listResult: { data: [{ id: 1 }], count: 1, error: null } });
@@ -1498,6 +1450,18 @@ Deno.test("list sem recorte CATMAT (ou catalogo=false) não chama a RPC nem anex
     const body = await res.json();
     assertEquals(mockClient.calls.some((c) => c.method === "rpc"), false, qs);
     assertEquals("catmat_match" in body.items[0], false, qs);
+  }
+});
+
+Deno.test("list com fonte Sistema S ignora recorte CATMAT pois Sistema S não acompanha CATMAT", async () => {
+  for (const fonte of ["sestsenat", "sistema_s", "fiesc"]) {
+    const mockClient = createRecordingMockClient({ listResult: { data: [{ id: 10, fonte }], count: 1, error: null } });
+    const req = new Request(`http://localhost/api-dashboard-oportunidades?action=list&fonte=${fonte}&catalogo=true`, { method: "GET" });
+    // deno-lint-ignore no-explicit-any
+    const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
+    assertEquals(res.status, 200);
+    // Não pode ter chamado a RPC de CATMAT
+    assertEquals(mockClient.calls.some((c) => c.method === "rpc"), false, fonte);
   }
 });
 
@@ -1542,6 +1506,10 @@ Deno.test("applyOportunidadesScope: só canônica sempre; sem prioridade só lea
   const leads = new MockQueryBuilder();
   applyOportunidadesScope(leads, { prioridade: "leads" });
   assertEquals(leads.calls, [SO_CANONICA]);
+
+  const porFonte = new MockQueryBuilder();
+  applyOportunidadesScope(porFonte, { fonte: "sestsenat" });
+  assertEquals(porFonte.calls, [SO_CANONICA]);
 });
 
 Deno.test("list padrão lê a view e exclui historico na lista", async () => {
@@ -1617,9 +1585,9 @@ Deno.test("get por id de uma compra historico devolve 200 com a prioridade efeti
   const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
   assertEquals(res.status, 200);
   assertEquals((await res.json()).item.prioridade, "historico");
-  // a aderência do detalhe (licitacao_match/catmat_pdms) é uma leitura extra; a licitação vem só da view
+  // a aderência do detalhe e o alerta do portal são leituras extras; a licitação vem só da view
   assertEquals(
-    mockClient.calls.filter((c) => c.method === "from" && !["licitacao_match", "catmat_pdms"].includes(c.args[0] as string)),
+    mockClient.calls.filter((c) => c.method === "from" && !["licitacao_match", "catmat_pdms", "licitacoes_externas", "portal_consulta", "pipeline_oportunidades"].includes(c.args[0] as string)),
     [{ method: "from", args: [OPORTUNIDADES_VIEW] }],
   );
   assertEquals(mockClient.calls.some((c) => c.method === "or"), false);
@@ -1640,9 +1608,9 @@ Deno.test("get por codigo_externo e por orgao_cnpj + processo_norm leem a view, 
     // deno-lint-ignore no-explicit-any
     const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
     assertEquals(res.status, 200, qs);
-    // a aderência do detalhe (licitacao_match/catmat_pdms) é uma leitura extra; a licitação vem só da view
+    // a aderência do detalhe e o alerta do portal são leituras extras; a licitação vem só da view
     assertEquals(
-      mockClient.calls.filter((c) => c.method === "from" && !["licitacao_match", "catmat_pdms"].includes(c.args[0] as string)),
+      mockClient.calls.filter((c) => c.method === "from" && !["licitacao_match", "catmat_pdms", "licitacoes_externas", "portal_consulta", "pipeline_oportunidades"].includes(c.args[0] as string)),
       [{ method: "from", args: [OPORTUNIDADES_VIEW] }],
     );
     assertEquals(mockClient.calls.some((c) => c.method === "or"), false);
@@ -1651,8 +1619,8 @@ Deno.test("get por codigo_externo e por orgao_cnpj + processo_norm leem a view, 
 
 
 // --------------------------------------------------------------------------
-// Recorte CATMAT x escopo de Oportunidades (review do #108): o teto MAX_IDS_CATMAT vale sobre as
-// Oportunidades do recorte, depois de tirar historico. Dados fictícios.
+// Recorte CATMAT acima de MAX_IDS_CATMAT_URL (lista em duas fases, spec 0004): testes em
+// api_dashboard_oportunidades_catmat_teto_test.ts. Aqui fica só o caminho até o limite da URL.
 // --------------------------------------------------------------------------
 
 function rpcComIds(n: number) {
@@ -1662,112 +1630,17 @@ function rpcComIds(n: number) {
   };
 }
 
-Deno.test("CATMAT: 1200 historico + 300 atuais não dá 422; lista só as atuais, escopo em lotes de 500", async () => {
-  // ids 1..1200 historico, 1201..1500 atuais (leads/monitorar)
-  const atuais = (ids: number[]) => ids.filter((id) => id > 1200);
-  const mockClient = createRecordingMockClient({
-    rpcResult: rpcComIds(1500),
-    escopoIds: atuais,
-    listResult: { data: [{ id: 1201 }, { id: 1202 }], count: 300, error: null },
-  });
-  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list&catmat_grupo=78&limit=2", { method: "GET" });
-  // deno-lint-ignore no-explicit-any
-  const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
-  assertEquals(res.status, 200);
-  const body = await res.json();
-  assertEquals(body.total, 300);
-  assertEquals(body.items.map((i: { id: number }) => i.id), [1201, 1202]);
-  assertEquals(body.items[0].catmat_match.length, 1);
-
-  // escopo: 3 lotes (500+500+500) na view, cada um com o or que exclui historico
-  // recorte resolvido numa chamada só, sem paginação PostgREST
-  assertEquals(mockClient.calls.filter((c) => c.method === "rpc").length, 1);
-  assertEquals(mockClient.calls.some((c) => c.method === "rpc.range"), false);
-  const lotes = mockClient.calls.filter((c) => c.method === "escopo.in");
-  assertEquals(lotes.map((c) => (c.args[1] as number[]).length), [500, 500, 500]);
-  assertEquals(lotes.every((c) => c.args[0] === "id"), true);
-  assertEquals(mockClient.calls.filter((c) => c.method === "escopo.or").map((c) => c.args[0]), [
-    ESCOPO_OPORTUNIDADES,
-    ESCOPO_OPORTUNIDADES,
-    ESCOPO_OPORTUNIDADES,
-  ]);
-  // sem prioridade, o único eq do escopo é o da canônica
-  assertEquals(mockClient.calls.filter((c) => c.method === "escopo.eq").map((c) => c.args), [
-    ["eh_canonica", true],
-    ["eh_canonica", true],
-    ["eh_canonica", true],
-  ]);
-  // consulta principal filtra pelos 300 ids atuais (e aplica o escopo de novo)
-  const inPrincipal = mockClient.calls.find((c) => c.method === "in" && c.args[0] === "id");
-  assertEquals((inPrincipal?.args[1] as number[]).length, 300);
-  assertEquals(Math.min(...(inPrincipal?.args[1] as number[])), 1201);
-  assertEquals(mockClient.calls.filter((c) => c.method === "from").map((c) => c.args[0]).filter((t) => t !== "catmat_pdms").every((t) => t === OPORTUNIDADES_VIEW), true);
-});
-
-Deno.test("CATMAT: mais de 1000 atuais depois do escopo continua 422 (com a contagem de oportunidades)", async () => {
-  // 1300 ids, 200 historico: sobram 1100 atuais
-  const mockClient = createRecordingMockClient({ rpcResult: rpcComIds(1300), escopoIds: (ids) => ids.filter((id) => id > 200) });
-  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list&catmat_grupo=78", { method: "GET" });
-  // deno-lint-ignore no-explicit-any
-  const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
-  assertEquals(res.status, 422);
-  assertEquals((await res.json()).error.includes("1100 oportunidades"), true);
-  // a consulta principal nem roda
-  assertEquals(mockClient.calls.some((c) => c.method === "select" && c.args[0] === OPORTUNIDADES_COLUMNS), false);
-});
-
-Deno.test("CATMAT com prioridade=leads acima do teto: escopo filtra eq(prioridade, leads) e a canônica, sem o or", async () => {
-  const mockClient = createRecordingMockClient({
-    rpcResult: rpcComIds(1001),
-    escopoIds: (ids) => ids.filter((id) => id % 2 === 0),
-    listResult: { data: [], count: 0, error: null },
-  });
-  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list&catmat_grupo=78&prioridade=leads", { method: "GET" });
-  // deno-lint-ignore no-explicit-any
-  const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
-  assertEquals(res.status, 200);
-  assertEquals(mockClient.calls.filter((c) => c.method === "escopo.eq").map((c) => c.args), [
-    ["prioridade", "leads"],
-    ["eh_canonica", true],
-    ["prioridade", "leads"],
-    ["eh_canonica", true],
-    ["prioridade", "leads"],
-    ["eh_canonica", true],
-  ]);
-  assertEquals(mockClient.calls.some((c) => c.method === "escopo.or"), false);
-  const inPrincipal = mockClient.calls.find((c) => c.method === "in" && c.args[0] === "id");
-  assertEquals((inPrincipal?.args[1] as number[]).length, 500);
-});
-
-Deno.test("CATMAT acima do teto só com historico: 200 vazio sem a consulta principal", async () => {
-  const mockClient = createRecordingMockClient({ rpcResult: rpcComIds(1500), escopoIds: () => [] });
-  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list&catmat_grupo=78", { method: "GET" });
-  // deno-lint-ignore no-explicit-any
-  const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
-  assertEquals(res.status, 200);
-  const body = await res.json();
-  assertEquals(body.total, 0);
-  assertEquals(body.items, []);
-  assertEquals(mockClient.calls.some((c) => c.method === "select" && c.args[0] === OPORTUNIDADES_COLUMNS), false);
-});
-
-Deno.test("CATMAT até o teto não faz a consulta de escopo (a consulta principal já recorta)", async () => {
+Deno.test("CATMAT até o limite da URL (1000 ids) usa uma consulta só, sem a lista em duas fases", async () => {
   const mockClient = createRecordingMockClient({ rpcResult: rpcComIds(1000), listResult: { data: [], count: 0, error: null } });
   const req = new Request("http://localhost/api-dashboard-oportunidades?action=list&catmat_grupo=78", { method: "GET" });
   // deno-lint-ignore no-explicit-any
   const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
   assertEquals(res.status, 200);
-  assertEquals(mockClient.calls.some((c) => c.method.startsWith("escopo.")), false);
+  assertEquals(mockClient.calls.some((c) => c.method === "select" && /^id,(data_fim|data_publicacao|valor_total)$/.test(String(c.args[0]))), false);
   assertEquals(mockClient.calls.some((c) => c.method === "or" && c.args[0] === ESCOPO_OPORTUNIDADES), true);
-});
-
-Deno.test("CATMAT acima do teto com falha na consulta de escopo: 500 genérico", async () => {
-  const mockClient = createRecordingMockClient({ rpcResult: rpcComIds(1001), escopoError: { message: "timeout" } });
-  const req = new Request("http://localhost/api-dashboard-oportunidades?action=list&catmat_grupo=78", { method: "GET" });
-  // deno-lint-ignore no-explicit-any
-  const res = await handleRequest(req, { getClient: () => mockClient as any, requireAuth: () => null });
-  assertEquals(res.status, 500);
-  assertEquals((await res.json()).error, "Erro interno no servidor");
+  const inId = mockClient.calls.filter((c) => c.method === "in" && c.args[0] === "id");
+  assertEquals(inId.length, 1);
+  assertEquals((inId[0].args[1] as number[]).length, 1000);
 });
 
 
@@ -1779,7 +1652,7 @@ Deno.test("CATMAT acima do teto com falha na consulta de escopo: 500 genérico",
 
 Deno.test("OPORTUNIDADES_COLUMNS = colunas públicas da tabela + canonica_id, eh_canonica (fora de PUBLIC_LICITACAO_COLUMNS)", () => {
   assertEquals(CANONICA_COLUMNS, "canonica_id,eh_canonica");
-  assertEquals(OPORTUNIDADES_COLUMNS, `${PUBLIC_LICITACAO_COLUMNS},canonica_id,eh_canonica`);
+  assertEquals(OPORTUNIDADES_COLUMNS, `${PUBLIC_LICITACAO_COLUMNS},canonica_id,eh_canonica,prioridade_motivo`);
   assertEquals(PUBLIC_LICITACAO_COLUMNS.split(",").some((c) => c === "canonica_id" || c === "eh_canonica"), false);
 });
 
@@ -1863,4 +1736,835 @@ Deno.test("get por codigo_externo e por orgao_cnpj + processo_norm não filtram 
     assertEquals(mockClient.calls.find((c) => c.method === "select")?.args[0], OPORTUNIDADES_COLUMNS, qs);
     assertEquals(mockClient.calls.some((c) => c.method === "eq" && c.args[0] === "eh_canonica"), false, qs);
   }
+});
+
+// --------------------------------------------------------------------------
+// Spec 0048 K-2: action=resumo_executivo (CA-4 e CA-5)
+// --------------------------------------------------------------------------
+
+interface ResumoMockConfig {
+  /** Vínculos do usuário em tenant_membros. */
+  membros?: Array<{ tenant_id: number; papel: string; ativo: boolean }>;
+  /** Empresas ativas (tenants.ativo = true). */
+  ativas?: number[];
+  /** Ids devolvidos por licitacoes_ids_por_catmat_unica. */
+  idsCatmat?: number[];
+  /** Linha devolvida por dashboard_resumo_executivo. */
+  resumoRow?: Record<string, unknown> | null;
+  resumoError?: { message: string; code?: string } | null;
+  /** Falha de banco ao ler tenant_membros. */
+  membrosError?: { message: string } | null;
+  /** Erro da RPC do recorte CATMAT (ex.: statement_timeout 57014). */
+  catmatError?: { message: string; code?: string } | null;
+}
+
+/** Cliente falso para o resumo: grava as chamadas e responde por tabela/RPC. */
+function criarClienteResumo(cfg: ResumoMockConfig) {
+  const calls: Array<{ method: string; args: unknown[] }> = [];
+  function consulta(tabela: string) {
+    const filtros: Array<[string, unknown[]]> = [];
+    const q: Record<string, unknown> = {};
+    for (const m of ["select", "eq", "in", "order", "limit"]) {
+      q[m] = (...args: unknown[]) => {
+        filtros.push([m, args]);
+        calls.push({ method: `${tabela}.${m}`, args });
+        return q;
+      };
+    }
+    q.then = (ok?: (v: unknown) => unknown, ko?: (e: unknown) => unknown) => {
+      let data: unknown[] = [];
+      if (tabela === "tenant_membros") data = cfg.membros ?? [];
+      if (tabela === "tenants") {
+        const ativas = cfg.ativas ?? [];
+        const porId = filtros.find(([m]) => m === "in");
+        const ids = porId ? (porId[1][1] as number[]) : ativas;
+        data = ativas.filter((id) => ids.includes(id)).map((id) => ({ id }));
+      }
+      const error = tabela === "tenant_membros" ? cfg.membrosError ?? null : null;
+      return Promise.resolve({ data: error ? null : data, error }).then(ok, ko);
+    };
+    return q;
+  }
+  const client = {
+    calls,
+    from(tabela: string) {
+      calls.push({ method: "from", args: [tabela] });
+      return consulta(tabela);
+    },
+    rpc(fn: string, args: unknown) {
+      calls.push({ method: "rpc", args: [fn, args] });
+      const resultado = () => {
+        if (fn === CATMAT_RPC) {
+          if (cfg.catmatError) return { data: null, error: cfg.catmatError };
+          return { data: { ids: cfg.idsCatmat ?? [], matches: [] }, error: null };
+        }
+        if (fn === "dashboard_resumo_executivo") {
+          if (cfg.resumoError) return { data: null, error: cfg.resumoError };
+          return { data: cfg.resumoRow ?? null, error: null };
+        }
+        return { data: null, error: { message: `rpc inesperada: ${fn}` } };
+      };
+      return {
+        single: () => Promise.resolve(resultado()),
+        then: (ok?: (v: unknown) => unknown, ko?: (e: unknown) => unknown) => Promise.resolve(resultado()).then(ok, ko),
+      };
+    },
+  };
+  return client;
+}
+
+const RESUMO_ROW = {
+  leads_total: 3,
+  monitoradas_total: 4,
+  valor_potencial_total: "150000.50",
+  com_valor_total: 2,
+  prazo_amanha_total: 1,
+  prazo_amanha_valor: "100000.00",
+  prazo_7_dias_total: 2,
+  prazo_7_dias_valor: "150000.50",
+  calculado_em: "2026-11-09T15:00:00+00:00",
+};
+
+/** requireAuth falso que anexa o usuário em req.user, como o requireUserAuth. */
+function authComUsuario(user: { id: string; app_metadata?: Record<string, unknown> } | null) {
+  return (r: Request) => {
+    if (!user) return new Response(JSON.stringify({ error: "Não autenticado" }), { status: 401 });
+    (r as unknown as { user: unknown }).user = user;
+    return null;
+  };
+}
+
+const MEMBRO_ATIVO = [{ tenant_id: 7, papel: "operacao", ativo: true }];
+
+function rpcsChamadas(calls: Array<{ method: string; args: unknown[] }>): string[] {
+  return calls.filter((c) => c.method === "rpc").map((c) => String(c.args[0]));
+}
+
+Deno.test("CA-4: resumo_executivo calcula K-1 só sobre os ids do recorte de catálogo da lista", async () => {
+  const client = criarClienteResumo({ membros: MEMBRO_ATIVO, ativas: [7], idsCatmat: [11, 12, 13], resumoRow: RESUMO_ROW });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=resumo_executivo&catalogo=true");
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario({ id: "u-1" }) });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.action, "resumo_executivo");
+  assertEquals(body.fonte, "licitacoes_externas_prioridade_efetiva");
+  assertEquals(body.resumo, {
+    leads_total: 3,
+    monitoradas_total: 4,
+    valor_potencial_total: 150000.5,
+    com_valor_total: 2,
+    prazo_amanha_total: 1,
+    prazo_amanha_valor: 100000,
+    prazo_7_dias_total: 2,
+    prazo_7_dias_valor: 150000.5,
+    calculado_em: "2026-11-09T15:00:00+00:00",
+  });
+  assertEquals(body.recorte, { aplicado: true, filtros: { catalogo: true }, licitacoes_total: 3 });
+  const chamada = client.calls.find((c) => c.method === "rpc" && c.args[0] === "dashboard_resumo_executivo");
+  assertEquals(chamada?.args[1], { p_ids_filtro: [11, 12, 13] });
+  // O recorte usa a mesma RPC da action=list
+  const catmat = client.calls.find((c) => c.method === "rpc" && c.args[0] === CATMAT_RPC);
+  assertEquals((catmat?.args[1] as Record<string, unknown>).p_somente_catalogo, true);
+});
+
+Deno.test("CA-4: resumo_executivo sem recorte calcula sobre todas as oportunidades (p_ids_filtro null)", async () => {
+  const client = criarClienteResumo({ membros: MEMBRO_ATIVO, ativas: [7], resumoRow: RESUMO_ROW });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=resumo_executivo");
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario({ id: "u-1" }) });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.recorte, { aplicado: false, filtros: {}, licitacoes_total: null });
+  const chamada = client.calls.find((c) => c.method === "rpc" && c.args[0] === "dashboard_resumo_executivo");
+  assertEquals(chamada?.args[1], { p_ids_filtro: null });
+  assertEquals(rpcsChamadas(client.calls).includes(CATMAT_RPC), false);
+});
+
+Deno.test("CA-4: recorte vazio calcula sobre nenhum id, nunca sobre todas (p_ids_filtro [])", async () => {
+  const client = criarClienteResumo({
+    membros: MEMBRO_ATIVO,
+    ativas: [7],
+    idsCatmat: [],
+    resumoRow: {
+      ...RESUMO_ROW,
+      leads_total: 0,
+      monitoradas_total: 0,
+      valor_potencial_total: null,
+      com_valor_total: 0,
+      prazo_amanha_total: 0,
+      prazo_amanha_valor: null,
+      prazo_7_dias_total: 0,
+      prazo_7_dias_valor: null,
+    },
+  });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=resumo_executivo&catmat_pdm=99999");
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario({ id: "u-1" }) });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  const chamada = client.calls.find((c) => c.method === "rpc" && c.args[0] === "dashboard_resumo_executivo");
+  assertEquals(chamada?.args[1], { p_ids_filtro: [] });
+  assertEquals(body.resumo.valor_potencial_total, null);
+  assertEquals(body.resumo.prazo_amanha_valor, null);
+  assertEquals(body.recorte.licitacoes_total, 0);
+});
+
+Deno.test("CA-4: resumo_executivo sem JWT responde 401 e não consulta o banco", async () => {
+  const client = criarClienteResumo({ membros: MEMBRO_ATIVO, ativas: [7], resumoRow: RESUMO_ROW });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=resumo_executivo");
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario(null) });
+  assertEquals(res.status, 401);
+  assertEquals(client.calls.length, 0);
+});
+
+Deno.test("CA-4: resumo_executivo recusa filtro fora do recorte de catálogo/CATMAT com 400", async () => {
+  for (const qs of ["uf=SP", "prioridade=leads", "busca=esteira", "catmat_pdm=abc"]) {
+    const client = criarClienteResumo({ membros: MEMBRO_ATIVO, ativas: [7], resumoRow: RESUMO_ROW });
+    const req = new Request(`http://localhost/api-dashboard-oportunidades?action=resumo_executivo&${qs}`);
+    // deno-lint-ignore no-explicit-any
+    const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario({ id: "u-1" }) });
+    assertEquals(res.status, 400, qs);
+    assertEquals(rpcsChamadas(client.calls), [], qs);
+  }
+});
+
+Deno.test("CA-4: resumo_executivo por POST aceita o mesmo recorte", async () => {
+  const client = criarClienteResumo({ membros: MEMBRO_ATIVO, ativas: [7], idsCatmat: [5], resumoRow: RESUMO_ROW });
+  const req = new Request("http://localhost/api-dashboard-oportunidades", {
+    method: "POST",
+    body: JSON.stringify({ action: "resumo_executivo", catmat_classe: [7830] }),
+  });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario({ id: "u-1" }) });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.recorte, { aplicado: true, filtros: { catmat_classe: [7830] }, licitacoes_total: 1 });
+});
+
+Deno.test("CA-4: falha da função K-1 responde 500 sem detalhe interno", async () => {
+  const client = criarClienteResumo({
+    membros: MEMBRO_ATIVO,
+    ativas: [7],
+    resumoError: { message: "relation private.segredo does not exist", code: "42P01" },
+  });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=resumo_executivo");
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario({ id: "u-1" }) });
+  assertEquals(res.status, 500);
+  const texto = await res.text();
+  assertEquals(texto.includes("segredo"), false);
+  assertEquals(texto.includes("42P01"), false);
+});
+
+Deno.test("CA-5: usuário sem vínculo com empresa recebe 403 e nada é calculado", async () => {
+  const client = criarClienteResumo({ membros: [], ativas: [7], idsCatmat: [1], resumoRow: RESUMO_ROW });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=resumo_executivo&catalogo=true");
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario({ id: "u-2" }) });
+  assertEquals(res.status, 403);
+  assertEquals(rpcsChamadas(client.calls), []);
+});
+
+Deno.test("CA-5: usuário ligado só a empresa desativada recebe 403, nunca cai na outra empresa ativa", async () => {
+  const client = criarClienteResumo({
+    membros: [{ tenant_id: 3, papel: "admin", ativo: true }],
+    ativas: [7],
+    idsCatmat: [1],
+    resumoRow: RESUMO_ROW,
+  });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=resumo_executivo&catalogo=true");
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario({ id: "u-3" }) });
+  assertEquals(res.status, 403);
+  assertEquals(rpcsChamadas(client.calls), []);
+});
+
+Deno.test("CA-5: vínculo desligado recebe 403 mesmo com a empresa ativa", async () => {
+  const client = criarClienteResumo({
+    membros: [{ tenant_id: 7, papel: "operacao", ativo: false }],
+    ativas: [7],
+    resumoRow: RESUMO_ROW,
+  });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=resumo_executivo");
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario({ id: "u-4" }) });
+  assertEquals(res.status, 403);
+  assertEquals(rpcsChamadas(client.calls), []);
+});
+
+Deno.test("CA-4: linha da função K-1 sem contagem responde 500, nunca 0 inventado", async () => {
+  const { leads_total: _fora, ...semLeads } = RESUMO_ROW;
+  const client = criarClienteResumo({ membros: MEMBRO_ATIVO, ativas: [7], resumoRow: semLeads });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=resumo_executivo");
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario({ id: "u-1" }) });
+  assertEquals(res.status, 500);
+});
+
+Deno.test("CA-4: timeout da função K-1 ou do recorte CATMAT responde 503", async () => {
+  const timeout = { message: "canceling statement due to statement timeout", code: "57014" };
+  const casos: Array<[string, ResumoMockConfig]> = [
+    ["action=resumo_executivo", { resumoError: timeout }],
+    ["action=resumo_executivo&catalogo=true", { catmatError: timeout }],
+  ];
+  for (const [qs, extra] of casos) {
+    const client = criarClienteResumo({ membros: MEMBRO_ATIVO, ativas: [7], resumoRow: RESUMO_ROW, ...extra });
+    const req = new Request(`http://localhost/api-dashboard-oportunidades?${qs}`);
+    // deno-lint-ignore no-explicit-any
+    const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario({ id: "u-1" }) });
+    assertEquals(res.status, 503, qs);
+  }
+});
+
+Deno.test("CA-4: catalogo com valor inválido responde 400", async () => {
+  const client = criarClienteResumo({ membros: MEMBRO_ATIVO, ativas: [7], resumoRow: RESUMO_ROW });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=resumo_executivo&catalogo=xyz");
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario({ id: "u-1" }) });
+  assertEquals(res.status, 400);
+  assertEquals(rpcsChamadas(client.calls), []);
+});
+
+Deno.test("CA-5: falha de banco ao ler o vínculo responde 500 (erro não vira 403 nem resumo)", async () => {
+  const client = criarClienteResumo({ membrosError: { message: "connection reset" }, ativas: [7], resumoRow: RESUMO_ROW });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=resumo_executivo");
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario({ id: "u-5" }) });
+  assertEquals(res.status, 500);
+  assertEquals(rpcsChamadas(client.calls), []);
+});
+
+Deno.test("CA-5: admin da plataforma sem vínculo cai na única empresa ativa e calcula", async () => {
+  const client = criarClienteResumo({ membros: [], ativas: [7], resumoRow: RESUMO_ROW });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=resumo_executivo");
+  const admin = { id: "u-6", app_metadata: { licitagym_role: "admin" } };
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario(admin) });
+  assertEquals(res.status, 200);
+});
+
+// --------------------------------------------------------------------------
+// Spec 0050 K-2: o resumo diz com que critério o valor foi somado (CA-5). O 403 de outro tenant segue nos testes
+// "CA-5: ..." da 0048 acima (CA-6 da 0050).
+// --------------------------------------------------------------------------
+
+Deno.test("0050 CA-5: resumo_executivo informa que o valor soma só os itens no escopo e quais categorias contam", async () => {
+  const client = criarClienteResumo({ membros: MEMBRO_ATIVO, ativas: [7], resumoRow: RESUMO_ROW });
+  const req = new Request("http://localhost/api-dashboard-oportunidades?action=resumo_executivo");
+  // deno-lint-ignore no-explicit-any
+  const res = await handleRequest(req, { getClient: () => client as any, requireAuth: authComUsuario({ id: "u-1" }) });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.criterio_valor, "itens_no_escopo");
+  assertEquals(body.categorias_valor, ["forte", "catmat", "borracha", "piso", "obra_piso", "manutencao"]);
+});
+
+Deno.test("0050 CA-5: categorias_valor da API são as mesmas que a última migration de dashboard_resumo_executivo soma", async () => {
+  const pasta = new URL("../../../supabase/migrations/", import.meta.url);
+  const nomes: string[] = [];
+  for await (const e of Deno.readDir(pasta)) if (e.isFile && /^\d{14}_.*\.sql$/.test(e.name)) nomes.push(e.name);
+  nomes.sort();
+  let ultima = "";
+  for (const nome of nomes) {
+    const sql = await Deno.readTextFile(new URL(nome, pasta));
+    // Desde 20261113140000 a regra mora nas funções de licitacao_valor_escopo (trigger) e o resumo lê a tabela.
+    const redefine =
+      /create or replace function public\.(dashboard_resumo_executivo|licitacao_valor_escopo_recalcular|licitacao_valor_escopo_trg)\(/i;
+    if (redefine.test(sql)) ultima = sql;
+  }
+  // Todas as cópias da regra na última migration (recálculo, trigger, carga), não só a primeira.
+  const ocorrencias = [...ultima.matchAll(/categoria_escopo in \(([^)]*)\)/gi)];
+  if (ocorrencias.length === 0) {
+    throw new Error("a última migration da regra do valor no escopo não filtra categoria_escopo in (...)");
+  }
+  for (const m of ocorrencias) {
+    const doSql = m[1].split(",").map((s) => s.trim().replace(/^'|'$/g, "")).sort();
+    assertEquals(doSql, [...RESUMO_CATEGORIAS_VALOR].sort());
+  }
+});
+
+// -----------------------------------------------------------------------------
+// Spec 0061, K-1: acompanhamento do Paradigma (Sistema S) lido do banco
+// -----------------------------------------------------------------------------
+
+type Linhas = Record<string, unknown>[];
+interface TabelasParadigma {
+  licitacao?: Record<string, unknown> | null;
+  licitacao_itens?: Linhas | "erro";
+  licitacao_resultados?: Linhas | "erro";
+  licitacao_lances?: Linhas | "erro";
+  licitacao_documentos?: Linhas | "erro";
+}
+
+/** Cliente falso: licitacoes_externas por maybeSingle; as tabelas filhas por eq + order + range. */
+function clienteParadigma(t: TabelasParadigma) {
+  const lidas: string[] = [];
+  const client = {
+    from(tabela: string) {
+      lidas.push(tabela);
+      let licitacaoId: unknown = null;
+      const q = {
+        select: () => q,
+        eq: (col: string, val: unknown) => {
+          if (col === "licitacao_id") licitacaoId = val;
+          return q;
+        },
+        order: () => q,
+        maybeSingle: () => Promise.resolve({ data: t.licitacao ?? null, error: null }),
+        range: (ini: number, fim: number) => {
+          const v = t[tabela as keyof TabelasParadigma];
+          if (v === "erro") return Promise.resolve({ data: null, error: { message: "falha simulada" } });
+          const linhas = ((v as Linhas | undefined) ?? []).filter((l) => l.licitacao_id === licitacaoId);
+          return Promise.resolve({ data: linhas.slice(ini, fim + 1), error: null });
+        },
+      };
+      return q;
+    },
+  };
+  return { client, lidas };
+}
+
+const LIC_FIEB = {
+  id: 30115,
+  fonte: "fieb",
+  modulo: 59,
+  id_externo: 38191,
+  codigo_externo: "38191",
+  numero_processo: "SDE 2026000001",
+  numero_edital: "2026000001",
+  orgao_cnpj: null,
+  link_sistema_origem: null,
+  fase: "Resultado do processo",
+  pncp_data_atualizacao: null,
+  ingestao_em: "2026-11-13T10:37:04.840335+00:00",
+  raw: {
+    sDsSituacao: "Finalizado com contrato",
+    sDsFase: "Resultado do processo",
+    sNmModalidadeTipo: "Pregão eletrônico",
+    sDsObjeto: "Aquisição de piso de borracha",
+    tDtInicial: "/Date(1692796800000)/",
+    tDtFinal: "/Date(1692986400000)/",
+    tDtPublicacao: "/Date(-62135586000000)/",
+    tDtAberturaSessao: "/Date(1692990000000)/",
+    tDtHomologacao: "/Date(-62135586000000)/",
+    tDtFinalizacao: "\u0013\u0012\u0012\u0013",
+  },
+};
+
+function itemFieb(numero: number) {
+  return {
+    licitacao_id: 30115,
+    numero_item: numero,
+    descricao: `Piso ${numero}`,
+    quantidade: 10,
+    unidade_medida: "M2",
+    valor_unitario_estimado: 100,
+    situacao: "Encerrado",
+    catalogo_codigo_item: "MA0000001",
+    material_ou_servico: "M",
+    raw: { dVlMelhorLanceMoedaVencedor: 80.5, sDsMarca: "Marca X", sDsModelo: "Modelo Y", sStItem: "Encerrado" },
+  };
+}
+
+function resultadoFieb(numero: number, ranking: number, vencedor: boolean) {
+  return {
+    licitacao_id: 30115,
+    numero_item: numero,
+    sequencial_resultado: ranking,
+    fornecedor_nome: `Empresa ${ranking}`,
+    fornecedor_cnpj: "11222333000181",
+    ranking,
+    vencedor,
+    valor_proposta: 80 + ranking,
+    valor_unitario_homologado: vencedor ? 81 : null,
+    quantidade_homologada: vencedor ? 10 : null,
+    marca: "Marca X",
+    modelo: "Modelo Y",
+    situacao: vencedor ? "vencedor" : "perdida",
+    data_resultado: null,
+    created_at: `2026-11-1${ranking}T10:00:00+00:00`,
+  };
+}
+
+function lanceFieb(id: number, data: string | null, posicao: number | null, vencedor: boolean) {
+  return {
+    id,
+    licitacao_id: 30115,
+    numero_item: 1,
+    id_lance_externo: 9000 + id,
+    data_lance: data,
+    valor: 100 - id,
+    moeda: "R$",
+    fornecedor_nome: `Empresa ${id}`,
+    fornecedor_cnpj: "11222333000181",
+    marca: "Marca X",
+    modelo: "Modelo Y",
+    posicao,
+    vencedor,
+    updated_at: `2026-11-13T0${id}:00:00+00:00`,
+  };
+}
+
+function docFieb(id: number, origem: string, extra: Record<string, unknown> = {}) {
+  const resumo = origem === "resumo_processo.html";
+  return {
+    id,
+    licitacao_id: 30115,
+    secao: "processo",
+    nome_original: resumo ? "Resumo do processo" : `Anexo ${id}.pdf`,
+    arquivo_origem: origem,
+    data_documento: resumo ? null : `2026-06-0${id}T20:00:00+00:00`,
+    mime_type: resumo ? "text/html" : "application/pdf",
+    status_processamento: "baixado",
+    removido_do_portal_em: null,
+    last_seen_at: `2026-11-12T1${id}:00:00+00:00`,
+    storage_uri: `gs://licitagym-documentos/segredo/${id}`,
+    ...extra,
+  };
+}
+
+const TABELAS_CA1: TabelasParadigma = {
+  licitacao: LIC_FIEB,
+  licitacao_itens: [itemFieb(2), itemFieb(1)],
+  licitacao_resultados: [resultadoFieb(1, 2, false), resultadoFieb(1, 1, true), resultadoFieb(2, 1, true)],
+  licitacao_lances: [
+    lanceFieb(3, "2026-08-25T14:03:00+00:00", 1, true),
+    lanceFieb(1, "2026-08-25T14:01:00+00:00", null, false),
+    lanceFieb(2, "2026-08-25T14:02:00+00:00", 2, false),
+  ],
+  licitacao_documentos: [
+    docFieb(4, "wbc4.pdf"),
+    docFieb(1, "wbc1.pdf"),
+    docFieb(9, "resumo_processo.html"),
+    docFieb(3, "wbc3.pdf"),
+    docFieb(2, "wbc2.pdf"),
+    docFieb(5, "wbc5.pdf", { removido_do_portal_em: "2026-11-01T00:00:00+00:00" }),
+    docFieb(6, "edital.pdf", { secao: "edital" }),
+  ],
+};
+
+function reqAcomp(id: number): Request {
+  return new Request(`http://localhost/api-dashboard-oportunidades?action=acompanhamento&id=${id}`, { method: "GET" });
+}
+
+/** Troca o fetch global por um que falha e conta as chamadas. */
+async function semFetch<T>(fn: () => Promise<T>): Promise<{ r: T; chamadas: number }> {
+  const original = globalThis.fetch;
+  let chamadas = 0;
+  globalThis.fetch = ((..._a: unknown[]) => {
+    chamadas++;
+    return Promise.reject(new Error("fetch proibido no K-1"));
+  }) as typeof fetch;
+  try {
+    return { r: await fn(), chamadas };
+  } finally {
+    globalThis.fetch = original;
+  }
+}
+
+const comEmpresa = () => Promise.resolve(7);
+
+Deno.test("0061 CA-1: Paradigma lê do banco, resumo primeiro, origem banco e gravado_em, sem fetch", async () => {
+  const { client, lidas } = clienteParadigma(TABELAS_CA1);
+  const { r: res, chamadas } = await semFetch(() =>
+    handleRequest(reqAcomp(30115), {
+      getClient: () => client as any,
+      requireAuth: () => null,
+      tenantDoUsuario: comEmpresa,
+    })
+  );
+  assertEquals(chamadas, 0);
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  const texto = JSON.stringify(body);
+  assertEquals(texto.includes("storage_uri"), false);
+  assertEquals(texto.includes("gs://"), false);
+  assertEquals(texto.includes("\"raw\""), false);
+  assertEquals(body.disponivel, true);
+  assertEquals(body.origem, "banco");
+  assertEquals(body.fonte, "fieb");
+  // compatibilidade com a tela atual: pncp é objeto (campos nulos) e atas é seção em erro
+  assertEquals(body.pncp, { cnpj: null, ano: null, sequencial: null, numero_controle_pncp: null });
+  assertEquals(body.atas.dados, null);
+  assertEquals(typeof body.atas.erro, "string");
+  // Link direto do processo no mural (o mural abre o detalhe pelos parâmetros), não a página geral.
+  assertEquals(body.url_acompanhamento,
+    "https://compras.fieb.org.br/portal/Mural.aspx?nCdModulo=59&sDsProcesso=SDE%202026000001&nCdProcesso=38191");
+
+  // arquivos: 4 anexos + resumo (removido do portal e outra seção ficam fora), resumo primeiro com tipo "resumo"
+  assertEquals(body.arquivos.erro, null);
+  assertEquals(body.arquivos.total, 5);
+  assertEquals(body.arquivos.dados.length, 5);
+  assertEquals(body.arquivos.dados[0].tipo, "resumo");
+  assertEquals(body.arquivos.dados[0].titulo, "Resumo do processo");
+  assertEquals(body.arquivos.dados.slice(1).map((a: any) => a.documentoId), [1, 2, 3, 4]);
+  assertEquals(body.arquivos.dados.slice(1).every((a: any) => a.tipo === "anexo"), true);
+  assertEquals(body.arquivos.dados[1].mimeType, "application/pdf");
+  assertEquals(body.arquivos.dados[1].status, "baixado");
+  assertEquals(body.arquivos.dados[1].url, null);
+  assertEquals(body.arquivos.origem, "banco");
+  assertEquals(body.arquivos.gravado_em, "2026-11-12T19:00:00+00:00");
+
+  // itens: em ordem, com unidade, melhor lance, marca e modelo do vencedor e os resultados do item
+  assertEquals(body.itens.erro, null);
+  assertEquals(body.itens.origem, "banco");
+  assertEquals(body.itens.gravado_em, LIC_FIEB.ingestao_em);
+  assertEquals(body.itens.dados.map((i: any) => i.numeroItem), [1, 2]);
+  const item1 = body.itens.dados[0];
+  assertEquals(item1.unidade, "M2");
+  assertEquals(item1.melhorLance, 80.5);
+  assertEquals(item1.marcaVencedor, "Marca X");
+  assertEquals(item1.modeloVencedor, "Modelo Y");
+  assertEquals(item1.temResultado, true);
+  // como no PNCP, resultados do item = só o homologado; as posições finais ficam na seção resultados
+  assertEquals(item1.resultados.length, 1);
+  assertEquals(item1.resultados[0].fornecedorNome, "Empresa 1");
+  assertEquals(item1.resultados[0].valorUnitarioHomologado, 81);
+  assertEquals(item1.catalogoId, null);
+
+  // resultados: 3 linhas, vencedor primeiro em cada item, gravado_em = maior created_at
+  assertEquals(body.resultados.erro, null);
+  assertEquals(body.resultados.total, 3);
+  assertEquals(body.resultados.origem, "banco");
+  assertEquals(body.resultados.gravado_em, "2026-11-12T10:00:00+00:00");
+  assertEquals(body.resultados.dados.map((r: any) => [r.numeroItem, r.ranking, r.vencedor]), [
+    [1, 1, true],
+    [1, 2, false],
+    [2, 1, true],
+  ]);
+
+  // historico: lances em ordem de data e hora, vencedor e posição final marcados
+  assertEquals(body.historico.erro, null);
+  assertEquals(body.historico.origem, "banco");
+  assertEquals(body.historico.total, 3);
+  assertEquals(body.historico.dados.map((l: any) => l.data), [
+    "2026-08-25T14:01:00+00:00",
+    "2026-08-25T14:02:00+00:00",
+    "2026-08-25T14:03:00+00:00",
+  ]);
+  assertEquals(body.historico.dados.map((l: any) => [l.posicao, l.vencedor]), [[null, false], [2, false], [1, true]]);
+  assertEquals(body.historico.dados[0].fornecedorNome, "Empresa 1");
+  assertEquals(body.historico.gravado_em, "2026-11-13T03:00:00+00:00");
+
+  // compra: datas e fase do raw (data mínima e marcador de nulo do Paradigma = null)
+  assertEquals(body.compra.erro, null);
+  assertEquals(body.compra.origem, "banco");
+  assertEquals(body.compra.gravado_em, LIC_FIEB.ingestao_em);
+  assertEquals(body.compra.dados.situacao, "Finalizado com contrato");
+  assertEquals(body.compra.dados.fase, "Resultado do processo");
+  assertEquals(body.compra.dados.modalidade, "Pregão eletrônico");
+  assertEquals(body.compra.dados.datas.aberturaProposta, "2023-08-23T13:20:00.000Z");
+  assertEquals(body.compra.dados.valorHomologado, null);
+  assertEquals(body.compra.dados.datasProcesso, {
+    inicio: "2023-08-23T13:20:00.000Z",
+    fim: "2023-08-25T18:00:00.000Z",
+    publicacao: null,
+    aberturaSessao: "2023-08-25T19:00:00.000Z",
+    homologacao: null,
+    finalizacao: null,
+  });
+  assertEquals(body.fase, "Resultado do processo");
+
+  // só as tabelas do banco foram lidas
+  assertEquals([...new Set(lidas)].sort(), [
+    "licitacao_documentos",
+    "licitacao_itens",
+    "licitacao_lances",
+    "licitacao_resultados",
+    "licitacoes_externas",
+  ]);
+  assertEquals(res.headers.get("Cache-Control"), "private, max-age=60");
+  assertEquals(res.headers.get("Vary"), "Authorization");
+});
+
+Deno.test("0061 K-1: seção sem dado gravado volta com erro explícito, nunca vazia (18868: 0 resultados e 0 lances)", async () => {
+  const { client } = clienteParadigma({
+    licitacao: { ...LIC_FIEB, id: 30172, id_externo: 18868 },
+    licitacao_itens: [{ ...itemFieb(1), licitacao_id: 30172 }],
+    licitacao_resultados: [],
+    licitacao_lances: [],
+    licitacao_documentos: [],
+  });
+  const { r: res, chamadas } = await semFetch(() =>
+    handleRequest(reqAcomp(30172), {
+      getClient: () => client as any,
+      requireAuth: () => null,
+      tenantDoUsuario: comEmpresa,
+    })
+  );
+  assertEquals(chamadas, 0);
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.itens.erro, null);
+  assertEquals(body.itens.dados.length, 1);
+  assertEquals(body.itens.dados[0].temResultado, false);
+  for (const secao of ["resultados", "historico", "arquivos"]) {
+    assertEquals(typeof body[secao].erro, "string", `${secao} sem erro`);
+    assertEquals(body[secao].erro.length > 0, true);
+    assertEquals(body[secao].dados, null, `${secao} com dados`);
+    assertEquals(body[secao].total, 0);
+    assertEquals(body[secao].origem, "banco");
+    assertEquals(body[secao].gravado_em, null);
+  }
+  assertEquals(res.headers.get("Cache-Control"), "no-store");
+});
+
+Deno.test("0061 K-1: falha de leitura de uma seção vira erro só nela, sem derrubar as outras", async () => {
+  const { client } = clienteParadigma({ ...TABELAS_CA1, licitacao_lances: "erro" });
+  const res = await handleRequest(reqAcomp(30115), {
+    getClient: () => client as any,
+    requireAuth: () => null,
+    tenantDoUsuario: comEmpresa,
+  });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.historico.dados, null);
+  assertEquals(typeof body.historico.erro, "string");
+  assertEquals(JSON.stringify(body).includes("falha simulada"), false);
+  assertEquals(body.itens.erro, null);
+  assertEquals(body.arquivos.total, 5);
+});
+
+Deno.test("0061 K-1: Paradigma sem vínculo ativo responde 403 sem ler as seções", async () => {
+  const { client, lidas } = clienteParadigma(TABELAS_CA1);
+  const res = await handleRequest(reqAcomp(30115), {
+    getClient: () => client as any,
+    requireAuth: () => null,
+    tenantDoUsuario: () => Promise.resolve(null),
+  });
+  assertEquals(res.status, 403);
+  assertEquals(lidas.filter((t) => t !== "licitacoes_externas"), []);
+  assertEquals(JSON.stringify(await res.json()).includes("Piso"), false);
+});
+
+Deno.test("0061 K-1: vínculo recusado (empresa desativada ou de outro tenant) 403; falha ao ler o tenant 500", async () => {
+  const { client, lidas } = clienteParadigma(TABELAS_CA1);
+  const res = await handleRequest(reqAcomp(30115), {
+    getClient: () => client as any,
+    requireAuth: () => null,
+    tenantDoUsuario: () => Promise.reject(new ErroTenantAcesso("Empresa desativada.", 403)),
+  });
+  assertEquals(res.status, 403);
+  assertEquals(lidas.filter((t) => t !== "licitacoes_externas"), []);
+
+  const res500 = await handleRequest(reqAcomp(30115), {
+    getClient: () => client as any,
+    requireAuth: () => null,
+    tenantDoUsuario: () => Promise.reject(new Error("conexão caiu")),
+  });
+  assertEquals(res500.status, 500);
+  assertEquals(JSON.stringify(await res500.json()).includes("conexão caiu"), false);
+  assertEquals(lidas.filter((t) => t !== "licitacoes_externas"), []);
+});
+
+Deno.test("0061 K-1: Paradigma pelo handleRequest real resolve o tenant (sem usuário = 403)", async () => {
+  // sem ctx.tenantDoUsuario, o index usa tenantPreguicoso; requireAuth falso não anexa req.user => sem empresa
+  const { client, lidas } = clienteParadigma(TABELAS_CA1);
+  const res = await handleRequest(reqAcomp(30115), { getClient: () => client as any, requireAuth: () => null });
+  assertEquals(res.status, 403);
+  assertEquals(lidas.filter((t) => t !== "licitacoes_externas"), []);
+});
+
+Deno.test("0061 K-1: licitação inexistente responde 404", async () => {
+  const { client } = clienteParadigma({ licitacao: null });
+  const res = await handleRequest(reqAcomp(1), {
+    getClient: () => client as any,
+    requireAuth: () => null,
+    tenantDoUsuario: comEmpresa,
+  });
+  assertEquals(res.status, 404);
+});
+
+Deno.test("0061 K-1: dataParadigma converte /Date(ms)/ e zera data mínima e marcador de nulo", () => {
+  assertEquals(dataParadigma("/Date(1692796800000)/"), "2023-08-23T13:20:00.000Z");
+  assertEquals(dataParadigma("/Date(1692796800000-0300)/"), "2023-08-23T13:20:00.000Z");
+  assertEquals(dataParadigma("/Date(-62135586000000)/"), null);
+  assertEquals(dataParadigma("/Date(0)/"), null);
+  assertEquals(dataParadigma("\u0013\u0012\u0012\u0013"), null);
+  assertEquals(dataParadigma(null), null);
+  assertEquals(dataParadigma(123), null);
+});
+
+Deno.test("0061 K-1: FONTES_PARADIGMA acompanha FONTES do coletor (paradigma.py)", async () => {
+  const py = await Deno.readTextFile(
+    new URL("../../../services/coletor-externo/coletor/paradigma.py", import.meta.url),
+  );
+  const inicio = py.indexOf("FONTES: dict[str, Fonte] = {");
+  const bloco = py.slice(inicio, py.indexOf("\n}", inicio));
+  const slugs = [...bloco.matchAll(/^\s+"([a-z_]+)": Fonte\(/gm)].map((m) => m[1]);
+  assertEquals(slugs.length > 10, true);
+  for (const s of slugs) assertEquals(FONTES_PARADIGMA.has(s), true, `fonte ${s} fora de FONTES_PARADIGMA`);
+  assertEquals(ehFonteParadigma(" FIEB "), true);
+  assertEquals(ehFonteParadigma("pncp"), false);
+  assertEquals(ehFonteParadigma(null), false);
+});
+
+Deno.test("0061 K-1: item revogado não tem melhor lance 0 nem marca de vencedor (regressão SFIEC PE000652022, item 17)", async () => {
+  const revogado = {
+    ...itemFieb(1),
+    situacao: "Revogado com requisições liberadas",
+    raw: { dVlMelhorLanceMoedaVencedor: 0, dVlMelhorLanceMoedaProcesso: 0, sDsMarca: "WETTOR FITNESS", sDsModelo: "PRIME" },
+  };
+  const semLance = { ...itemFieb(2), raw: { dVlMelhorLanceMoedaVencedor: 0, sDsMarca: "Marca Z", sDsModelo: "M" } };
+  const comRaw = { ...itemFieb(3), raw: { dVlMelhorLanceMoedaVencedor: 50, sDsMarca: "Marca R", sDsModelo: "R1" } };
+  const { client } = clienteParadigma({
+    ...TABELAS_CA1,
+    licitacao_itens: [revogado, semLance, comRaw],
+    licitacao_resultados: [resultadoFieb(1, 1, false)],
+  });
+  const res = await handleRequest(reqAcomp(30115), {
+    getClient: () => client as any,
+    requireAuth: () => null,
+    tenantDoUsuario: comEmpresa,
+  });
+  const body = await res.json();
+  const [i1, i2, i3] = body.itens.dados;
+  assertEquals([i1.melhorLance, i1.marcaVencedor, i1.modeloVencedor, i1.temResultado], [null, null, null, false]);
+  assertEquals([i2.melhorLance, i2.marcaVencedor, i2.modeloVencedor], [null, null, null]);
+  // sem linha vencedora em licitacao_resultados, mas com lance > 0 e item não revogado: marca e modelo do mural
+  assertEquals([i3.melhorLance, i3.marcaVencedor, i3.modeloVencedor], [50, "Marca R", "R1"]);
+});
+
+Deno.test("0061 K-1: histórico por item em ordem de hora, lance sem data por último e empate pelo id", async () => {
+  const outroItem = { ...lanceFieb(7, "2026-08-25T13:00:00+00:00", 1, true), numero_item: 2 };
+  const { client } = clienteParadigma({
+    ...TABELAS_CA1,
+    licitacao_lances: [
+      outroItem,
+      lanceFieb(5, null, null, false),
+      lanceFieb(4, "2026-08-25T14:01:00+00:00", null, false),
+      lanceFieb(1, "2026-08-25T14:01:00+00:00", null, false),
+    ],
+  });
+  const res = await handleRequest(reqAcomp(30115), {
+    getClient: () => client as any,
+    requireAuth: () => null,
+    tenantDoUsuario: comEmpresa,
+  });
+  const body = await res.json();
+  assertEquals(body.historico.dados.map((l: any) => [l.numeroItem, l.fornecedorNome]), [
+    [1, "Empresa 1"],
+    [1, "Empresa 4"],
+    [1, "Empresa 5"],
+    [2, "Empresa 7"],
+  ]);
+});
+
+Deno.test("0061 K-1: sescrj sem mural tem url_acompanhamento null; raw ausente vira erro em compra", async () => {
+  const { client } = clienteParadigma({ ...TABELAS_CA1, licitacao: { ...LIC_FIEB, fonte: "sescrj", raw: null } });
+  const res = await handleRequest(reqAcomp(30115), {
+    getClient: () => client as any,
+    requireAuth: () => null,
+    tenantDoUsuario: comEmpresa,
+  });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.fonte, "sescrj");
+  assertEquals(body.url_acompanhamento, null);
+  assertEquals(body.compra.dados, null);
+  assertEquals(typeof body.compra.erro, "string");
+  assertEquals(body.fase, "Resultado do processo");
+  assertEquals(res.headers.get("Cache-Control"), "no-store");
 });

@@ -102,6 +102,28 @@ Estatísticas de preços efetivamente pagos por PDM e item CATMAT.
 | `outlier_detectado` | `boolean` | Flag de presença de distorção de preço (IQR) |
 | `outlier_tipo` | `text` | `'minimo_abaixo_iqr'`, `'maximo_acima_iqr'` ou `'normal'` |
 
+#### Consumo pelo Agente de Preço
+
+`v_bi_precos_praticados` é a referência histórica de preços efetivamente
+homologados/registrados para o Agente de Preço. O agente deve manter essa
+referência separada dos valores planejados do PCA e dos valores estimados do
+edital:
+
+- **Histórico praticado:** mínimo, mediana, máximo, quantidade de amostras e
+  datas desta view; usado somente quando o item e a unidade forem comparáveis.
+- **PCA:** sinal de demanda planejada e valor estimado pelo órgão; nunca entra
+  na mediana ou nos quartis de preços praticados.
+- **Edital:** estimativa e quantidade da oportunidade em análise; base para as
+  regras determinísticas de exequibilidade da proposta.
+- **Proposta e piso do tenant:** dados privados do cliente; não compõem a view
+  e o piso não pode ser exposto em achados, logs ou respostas públicas.
+
+Quando houver vínculo PCA–edital com evidência auditável, o agente pode
+apresentar a comparação `PCA × edital × proposta` como contexto separado. A
+comparação exige item, unidade e escopo técnico compatíveis; sem essa prova, o
+resultado deve ser `nao_verificada`, sem variação financeira calculada. O PCA
+não transforma uma demanda planejada em oportunidade nem em preço praticado.
+
 ---
 
 ### 4.3 `public.v_bi_atas_vencendo`

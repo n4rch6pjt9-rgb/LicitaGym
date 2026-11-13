@@ -1,5 +1,5 @@
 import { assertEquals } from "jsr:@std/assert@1";
-import { contaComoVenda, handleRequest } from "../../../supabase/functions/api-fornecedores-homologados/index.ts";
+import { contaComoVenda, handleRequest, linksDoEdital } from "../../../supabase/functions/api-fornecedores-homologados/index.ts";
 import { requireUserAuth } from "../../../supabase/functions/_shared/http.ts";
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 
@@ -203,6 +203,106 @@ Deno.test("api-fornecedores-homologados: get filtra licitacao_resultados por ven
   const body = await res.json();
   assertEquals(body.editais.length, 1);
   assertEquals(body.editais[0].valor_homologado, 100);
+});
+
+// -----------------------------------------------------------------------------
+// Links do edital na rota do fornecedor (PNCP + portal de origem)
+// -----------------------------------------------------------------------------
+
+const CONTROLE_TESTE = "11222333000181-1-000467/2026";
+const URL_PNCP_TESTE = "https://pncp.gov.br/app/editais/11222333000181/2026/467";
+
+Deno.test("linksDoEdital: PNCP sai do numeroControlePNCP; origem gov.br sai como o órgão informou", () => {
+  const origem = "https://www1.compras.mg.gov.br/n/procedimentolei14133/consulta/eletronico/visualizar/2026/10/1234567";
+  assertEquals(linksDoEdital({ fonte: "pncp", codigo_externo: CONTROLE_TESTE, link_sistema_origem: origem }), {
+    url_pncp: URL_PNCP_TESTE,
+    url_origem: origem,
+    origem_host: "www1.compras.mg.gov.br",
+  });
+});
+
+Deno.test("linksDoEdital: Comprasnet é reescrito para a página pública de acompanhamento", () => {
+  const links = linksDoEdital({
+    fonte: "pncp",
+    codigo_externo: CONTROLE_TESTE,
+    link_sistema_origem:
+      "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/acompanhamento-compra?compra=98703305900102026",
+  });
+  assertEquals(
+    links.url_origem,
+    "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/landing?destino=acompanhamento-compra&compra=98703305900102026",
+  );
+  assertEquals(links.origem_host, "cnetmobile.estaleiro.serpro.gov.br");
+});
+
+Deno.test("linksDoEdital: sem link, http sem TLS, sem esquema ou host fora da lista -> só PNCP", () => {
+  const soPncp = { url_pncp: URL_PNCP_TESTE, url_origem: null, origem_host: null };
+  for (const link of [
+    null,
+    "",
+    "  ",
+    "http://www1.compras.mg.gov.br/n/procedimento/1",
+    "www.portal-exemplo.org.br",
+    "https://portal-privado-exemplo.com.br/processo/1",
+    "https://compras.mg.gov.br.exemplo.com/processo/1",
+    "javascript:alert(1)",
+  ]) {
+    assertEquals(linksDoEdital({ fonte: "pncp", codigo_externo: CONTROLE_TESTE, link_sistema_origem: link }), soPncp);
+  }
+});
+
+Deno.test("linksDoEdital: fonte fora do PNCP sem numeroControlePNCP não inventa link", () => {
+  assertEquals(linksDoEdital({ fonte: "sestsenat", codigo_externo: "12345" }), {
+    url_pncp: null,
+    url_origem: null,
+    origem_host: null,
+  });
+  assertEquals(linksDoEdital(null), { url_pncp: null, url_origem: null, origem_host: null });
+});
+
+Deno.test("api-fornecedores-homologados: get devolve url_pncp, url_origem e origem_host por edital, sem o link bruto", async () => {
+  const chamadas: Chamada[] = [];
+  const origem = "https://www1.compras.mg.gov.br/n/procedimentolei14133/consulta/eletronico/visualizar/2026/10/1234567";
+  const mockDb = createMockDb((table) => {
+    if (table === "fornecedores_homologados") return consulta({ data: { cnpj: CNPJ_TESTE }, error: null });
+    if (table === "fornecedores") return consulta({ data: null, error: null });
+    if (table === "homologacoes_itens") return consulta({ data: [], error: null });
+    if (table === "licitacao_resultados") {
+      return consulta({
+        data: [
+          {
+            licitacao_id: 7, numero_item: 1, valor_total_homologado: 100, valor_unitario_homologado: 50,
+            quantidade_homologada: 2, marca: null, modelo: null, data_resultado: "2026-09-01",
+            licitacoes_externas: { id: 7, fonte: "pncp", codigo_externo: CONTROLE_TESTE, link_sistema_origem: origem },
+          },
+          {
+            licitacao_id: 8, numero_item: 1, valor_total_homologado: 10, valor_unitario_homologado: 10,
+            quantidade_homologada: 1, marca: null, modelo: null, data_resultado: "2026-08-01",
+            licitacoes_externas: { id: 8, fonte: "pncp", codigo_externo: "11222333000181-1-000012/2025", link_sistema_origem: null },
+          },
+        ],
+        error: null,
+      }, chamadas);
+    }
+    throw new Error(`tabela inesperada: ${table}`);
+  });
+
+  const res = await handleRequest(post(JSON.stringify({ action: "get", cnpj: CNPJ_TESTE })), {
+    requireAuth: autenticado,
+    getDb: () => mockDb,
+  });
+
+  assertEquals(res.status, 200);
+  const select = chamadas.find((c) => c[0] === "select");
+  assertEquals(String(select?.[1]).includes("link_sistema_origem"), true);
+  const body = await res.json();
+  assertEquals(body.editais[0].url_pncp, URL_PNCP_TESTE);
+  assertEquals(body.editais[0].url_origem, origem);
+  assertEquals(body.editais[0].origem_host, "www1.compras.mg.gov.br");
+  assertEquals(body.editais[1].url_pncp, "https://pncp.gov.br/app/editais/11222333000181/2025/12");
+  assertEquals(body.editais[1].url_origem, null);
+  assertEquals(body.editais[1].origem_host, null);
+  assertEquals("link_sistema_origem" in body.editais[0], false);
 });
 
 Deno.test("api-fornecedores-homologados: orgao_get ignora lance perdedor e resultado cancelado", async () => {

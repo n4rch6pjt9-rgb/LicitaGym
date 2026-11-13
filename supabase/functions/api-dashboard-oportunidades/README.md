@@ -130,10 +130,17 @@ Lê a view da prioridade efetiva. Uma compra `historico` é devolvida normalment
     "url_edital": "https://pncp.gov.br/app/editais/07486108000185/2026/1",
     "created_at": "2026-09-20T08:05:00Z",
     "updated_at": "2026-09-28T09:00:00Z",
-    "last_synced_at": "2026-09-28T09:00:00Z"
+    "last_synced_at": "2026-09-28T09:00:00Z",
+    "payload_hash": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+    "ingestao_origem": "cron",
+    "ingestao_em": "2026-10-14T09:00:00+00:00"
   }
 }
 ```
+
+`payload_hash`, `ingestao_origem` (`cron` | `manual`) e `ingestao_em` (UTC) são a proveniência da **última**
+ingestão da linha (spec 0023): sha256 do `raw` serializado de forma estável e quem/quando gravou. Nulos nas linhas
+anteriores à spec. `last_synced_at` continua sendo a data da primeira gravação (o coletor não o atualiza).
 
 #### Resposta de Sucesso por Processo Administrativo (HTTP 200)
 ```json
@@ -186,7 +193,7 @@ Lista oportunidades com suporte a paginação, ordenação configurável e múlt
 | `modalidade` | string / string[] | Modalidade única ou lista separada por vírgula / array |
 | `situacao` | string | Situação da licitação |
 | `fase` | string | Fase da licitação |
-| `categoria_escopo` | string | Categoria (`catmat`, `borracha`, `piso`, `obra_piso`, `forte`, `fraco`) |
+| `categoria_escopo` | string | Categoria (`catmat`, `borracha`, `piso`, `obra_piso`, `forte`, `fraco`, `manutencao`) |
 | `interesse_borracha` | boolean | Filtrar oportunidades de interesse em borracha (`true`/`false`) |
 | `fonte` | string | Fonte dos dados (`pncp`, `sestsenat`, etc.) |
 | `data_publicacao_inicio` | string | Início da publicação (`>= data_publicacao_inicio`) |
@@ -249,16 +256,39 @@ Obtém o painel de acompanhamento em tempo real para uma oportunidade, consultan
 - Metadados da compra (`situacao`, `modalidade`, `objeto`, `valorEstimado`, `valorHomologado`, `datas`, `linkSistemaOrigem`).
 - Lista completa de itens paginada (`numeroItem`, `descricao`, `quantidade`, `unidade`, `valorUnitarioEstimado`, `situacaoCompraItemNome`, `temResultado`, `catalogoCodigoItem`, `catalogoId`, `catalogoNome`, `materialOuServico`). `numeroItem` é o número do item no PNCP, nunca código de catálogo; `catalogoCodigoItem` só é CATMAT/CATSER com `catalogoId = 1` (Catálogo do Compras.gov.br), com `catalogoId = 2` ("Outros") é código do órgão.
 - Vencedores e homologação de itens com resultado via `/itens/{n}/resultados` com concorrência limitada (~5). CNPJ/CPF retornados como dados públicos oficiais.
+- **PDM e unidade por item (spec 0009, CA-8)**, para a aba Inteligência de Preços cruzar o `valorUnitarioEstimado` com a `api-precos` (`precoReferencia.ts`, lidos do banco a cada resposta, também com o PNCP em cache):
+  - `codigoPdm`, `codigoPdmOrigem`, `codigoPdmMotivo`: `catalogo_pncp` quando o item tem código CATMAT oficial (`catalogoId = 1`, material) e `public.catmat_itens` dá o PDM; código oficial sem PDM na base local dá `null` (não cai no texto, que poderia contradizer o oficial). Sem código oficial, `casamento_texto` quando `public.licitacao_match` (origem `texto_item`) casou o texto do item com **um** PDM (derivado). Serviço, mais de um PDM, nenhum PDM, item ainda não carregado em `licitacao_itens`, item com texto em recálculo (`licitacao_match_pendente`, cujas linhas em `licitacao_match` ainda são as antigas), casamento nunca carregado (`licitacao_match_estado.carregado_em` nulo) ou consulta falha: `codigoPdm: null` com o motivo; consulta falha não cai na outra fonte e não derruba o acompanhamento. Leitura em lotes de 100; lote que volta com 1000 linhas (corte do PostgREST) conta como falha.
+  - `unidadeSigla`, `unidadeSiglaOrigem` (`normalizada_da_unidade_pncp`): sigla de fornecimento da Pesquisa de Preço (`UN`, `PAR`, `M2`, `RO`) tirada de `unidade` (texto livre do PNCP, que continua como veio) por dicionário fechado. Embalagem com quantidade (`CAIXA 1,00 PAR`), mistura ou forma desconhecida (`KIT`, `PR`) dá `null`: o Dashboard não compara.
+  - Medição em 19/10/2026 (`licitacao_itens`, 177.351 itens): 5.116 com código de catálogo, 288 com PDM pelo `catmat_itens`, 17.634 com PDM pelo texto (1.041 com mais de um), 17.752 com algum PDM, 16.442 com PDM e valor estimado > 0.
 - Atas de registro de preço associadas (`numero`, `ano`, `vigenciaInicio`, `vigenciaFim`, `cancelado`).
 - Histórico completo de eventos e retificações paginado (`data`, `categoria`, `tipo`, `item`, `documentoTitulo`, `justificativa`).
 - Arquivos e editais oficiais para download direto (`titulo`, `tipo`, `url`).
-- URLs seguras derivadas na leitura: `url_edital` e `url_acompanhamento` (redirecionamento Comprasnet `https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/landing?destino=acompanhamento-compra&compra={idCompra}` quando `idCompra` tem 17 dígitos válidos).
+- URLs seguras derivadas na leitura: `url_edital` (só link do edital; Sistema S/Paradigma sem link da origem = null), `url_portal` (link direto do processo no mural do portal Paradigma, `Mural.aspx?nCdModulo&sDsProcesso&nCdProcesso`, que abre o detalhe; sem módulo, id ou número do processo, a página geral do mural; não é o edital; null nas outras fontes) e `url_acompanhamento` (redirecionamento Comprasnet `https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/landing?destino=acompanhamento-compra&compra={idCompra}` quando `idCompra` tem 17 dígitos válidos).
 - Cache em memória de ~5 minutos (`Cache-Control: private, max-age=300`).
 - Isolamento de falhas parciais: falha em uma seção não inviabiliza as demais; cada seção possui seu campo `erro`.
+- **PNCP fora: fontes em ordem por seção.** O `erro` da 1ª fonte fica sempre na seção, e a resposta com seção em erro é `no-store`.
+  - Itens e Documentos com erro e sem dados vêm da cópia gravada pelo coletor (`origem: "copia_local"`, `copia_gravada_em`; PR #501).
+  - **Spec 0049.** Resumo (`compra`) e Atas com erro e sem dados vêm do índice de busca do PNCP (`/api/search/`), casado pelo `numero_controle_pncp` exato: `origem: "busca_pncp"` e `busca_atualizado_em`, a `data_atualizacao_pncp` do índice em ISO `-03:00` (Atas: a mais recente). O que a busca não traz fica `null`: `processo`, `linkSistemaOrigem`, `datas.inclusao`. Atas sem fornecedor e sem valor, com `permiteAdesao`.
+  - Itens/Documentos da cópia ganham `conferencia_busca: { pncp_atualizado_em, gravado_em, compra_mudou }`, que compara a atualização da compra no índice com `licitacoes_externas.pncp_data_atualizacao`. A comparação usa a `dataAtualizacao` da compra, não a global: `compra_mudou: false` não prova que os itens não mudaram.
+  - A busca falhando (2 tentativas só para queda de conexão, 5 s cada) deixa a seção como estava. Contrato medido da busca: `docs/pncp/schemas-consultas-pncp.md`, seção 6.
 
 Requer autenticação JWT do usuário (`401` se não autenticado).
 
 A ação é somente leitura: não grava eventos nem gera tarefas. A automação de tarefas a partir do histórico está em design em [`docs/design/acompanhamento-tarefas.md`](../../../docs/design/acompanhamento-tarefas.md), com SQL proposto (não aplicado, fora de `supabase/migrations`) em [`docs/design/sql/acompanhamento_tarefas.sql`](../../../docs/design/sql/acompanhamento_tarefas.sql).
+
+
+#### Fonte do Paradigma (Sistema S): lido do banco (spec 0061, K-1)
+Para `fonte` do coletor Paradigma (`FONTES_PARADIGMA` em `paradigmaBanco.ts`: fieb, firjan, fiesc, sescdn, sestsenat...), a resposta sai **só do banco**, sem chamar o portal nem o PNCP. Exige empresa ativa de quem chama (`_shared/tenant.ts`): sem vínculo, vínculo desligado ou empresa desativada → `403` antes de ler qualquer seção. Licitação inexistente → `404`.
+
+- `disponivel: true`, `origem: "banco"`, `fonte`; `pncp` com campos nulos; `url_acompanhamento` = link direto do processo no mural da fonte, o mesmo de `url_portal` (`null` sem mural, ex.: `sescrj`).
+- Cada seção: `{ dados, total, erro, origem: "banco", gravado_em }`. Sem linha gravada ou falha de leitura: `dados: null` com `erro` explícito, nunca lista vazia.
+  - `compra`: situação, fase, modalidade, objeto e `datasProcesso` (`inicio`, `fim`, `publicacao`, `aberturaSessao`, `homologacao`, `finalizacao`) do `raw` da licitação (`/Date(ms)/`; data zerada = `null`); campos de `CompraMetadata` mantidos (`datas.aberturaProposta` = início, `encerramentoProposta` = fim; valores `null`). `gravado_em` = `ingestao_em`.
+  - `itens`: `licitacao_itens`, com `melhorLance` (`null` quando 0 ou item revogado/cancelado/fracassado/deserto/anulado/suspenso), `marcaVencedor`/`modeloVencedor` (da linha vencedora de `licitacao_resultados`; sem ela, do mural só com lance > 0) e `resultados` = só o homologado. `catalogoId` `null` (código é do catálogo da entidade, não CATMAT). `gravado_em` = `ingestao_em`.
+  - `resultados`: posições finais de `licitacao_resultados` (`ranking`, `vencedor`, `valorProposta`, marca, modelo), vencedor primeiro por item. `gravado_em` = maior `created_at`.
+  - `historico`: lances de `licitacao_lances` por item, em ordem de data e hora (sem data por último), com `posicao` e `vencedor`. `gravado_em` = maior `updated_at`.
+  - `arquivos`: `licitacao_documentos` com `secao = processo` e sem `removido_do_portal_em`; o resumo (`arquivo_origem = resumo_processo.html`) primeiro com `tipo: "resumo"`, os anexos com `tipo: "anexo"`, `documentoId`, `mimeType`, `dataDocumento`, `status` e `url: null` (abrir é a URL assinada do K-2). `gravado_em` = maior `last_seen_at`/`baixado_em` (última gravação de documento, não a última conferência da lista).
+  - `atas`: sempre em erro (o Paradigma não publica atas).
+- Nunca sai `raw`, `storage_uri` nem mensagem do PostgREST. `Cache-Control: private, max-age=60` com `Vary: Authorization` quando nenhuma seção (fora atas) tem erro; senão `no-store`.
 
 #### Requisição
 - **GET**: `/functions/v1/api-dashboard-oportunidades?action=acompanhamento&id=101`
@@ -378,6 +408,75 @@ A ação é somente leitura: não grava eventos nem gera tarefas. A automação 
 ```
 
 ---
+
+### 5. `resumo_executivo` (specs 0048 e 0050)
+
+Números do Painel Executivo calculados no banco por `public.dashboard_resumo_executivo` (prioridade efetiva, só
+publicações canônicas, leads + monitorar), nunca por uma amostra da lista.
+
+- **Auth:** JWT de usuário (401 sem). Exige empresa ativa de quem chama (`_shared/tenant.ts`): sem vínculo, vínculo
+  desligado ou empresa desativada → 403, antes de qualquer consulta de dados.
+- **Parâmetros (GET ou POST):** só o recorte de catálogo/CATMAT da `list`: `catmat_grupo`, `catmat_classe`,
+  `catmat_pdm`, `catmat_item`, `catalogo`. Qualquer outro filtro (uf, busca, prioridade...) → 400.
+- **Recorte:** sem recorte, o resumo conta todas as oportunidades; recorte sem nenhuma licitação conta nenhuma
+  (zeros e somas `null`), nunca todas. Timeout ao resolver o recorte ou ao calcular → 503; linha da função fora do contrato → 500.
+
+```json
+{
+  "action": "resumo_executivo",
+  "resumo": {
+    "leads_total": 3, "monitoradas_total": 4,
+    "valor_potencial_total": 3300.5, "com_valor_total": 3,
+    "prazo_amanha_total": 1, "prazo_amanha_valor": 1000,
+    "prazo_7_dias_total": 3, "prazo_7_dias_valor": 3300.5,
+    "calculado_em": "2026-11-09T15:00:00+00:00"
+  },
+  "recorte": { "aplicado": true, "filtros": { "catalogo": true }, "licitacoes_total": 6 },
+  "fonte": "licitacoes_externas_prioridade_efetiva",
+  "criterio_valor": "itens_no_escopo",
+  "categorias_valor": ["forte", "catmat", "borracha", "piso", "obra_piso", "manutencao"]
+}
+```
+
+- **Valores (spec 0050, "Valor no escopo"):** `valor_potencial_total`, `prazo_amanha_valor` e `prazo_7_dias_valor`
+  somam `licitacao_itens.valor_total_estimado` só dos itens com `categoria_escopo` em `categorias_valor`; `fraco` e
+  item sem categoria ficam fora. Não somam mais o `valor_total` do certame. `com_valor_total` conta as licitações
+  com pelo menos um desses itens com valor. A categoria vem do coletor (CATMAT e termos), não do TR.
+- Os valores são `null` quando nenhum item que conta tem valor (a tela mostra "—", nunca 0).
+- `prazo_amanha_*`: prazo (o mesmo instante com que a view rebaixa leads: normalizado, senão `raw.data_fim_vigencia`, senão `data_fim`) depois de agora e até 23:59:59 de amanhã (Brasília); `prazo_7_dias_*`: até 23:59:59 do
+  7º dia depois de hoje. Sem "alta aderência" (volta só com aderência pelo TR, decisão de 09/11).
+- `recorte.licitacoes_total`: licitações do recorte (todas as prioridades, antes do escopo leads + monitorar); `null`
+  sem recorte.
+
+### 6. `documento_url` (spec 0061, K-2)
+
+Link assinado do Supabase Storage para abrir um documento do processo (`arquivos[].documentoId` do `acompanhamento`).
+Gerado a cada clique, válido por **10 minutos**. Exige login (401) e empresa ativa (403), checada antes de ler o
+documento. `licitacao_documentos` é dado público coletado do portal, sem `tenant_id`.
+
+```http
+POST /functions/v1/api-dashboard-oportunidades
+{ "action": "documento_url", "documento_id": 169096 }
+```
+(ou `GET ?action=documento_url&documento_id=169096`)
+
+```json
+{ "action": "documento_url", "documento_id": 169096, "url": "https://…/storage/v1/object/sign/licitacao-documentos/…",
+  "url_download": "https://…/storage/v1/object/sign/licitacao-documentos/…&download=…", "expira_em_segundos": 600, "nome_original": "Pedidos de Reconsiderações", "mime_type": "application/pdf",
+  "abrir": "aba" }
+```
+
+- `abrir`: `aba` para PDF; `download` para os outros formatos (a URL já baixa com o `nome_original`).
+- `url_download`: sempre baixa com o nome original. No PDF é uma segunda URL (a `url` abre na aba sem nome, e salvar
+  dali dava o SHA-256 do objeto); nos outros formatos é igual à `url`.
+- **404**: documento inexistente, removido do portal, sem arquivo confirmado (`sha256` nulo) ou fora do bucket
+  `licitacao-documentos` (arquivo antigo no GCS, `gs://`). A etapa do pipeline não importa: documento `indexado`,
+  `extraido`, `ignorado` ou com `erro` de extração continua abrindo, porque o arquivo segue no Storage.
+- Nome do download: o `nome_original`; sem extensão, ganha a do arquivo no Storage ou, como o coletor grava sem
+  extensão (`…/versoes/<id>/<sha256>`), a do `mime_type` (ex.: "Resumo do processo.html"). MIME desconhecido: sem
+  extensão.
+- **500** erro de banco; **502** falha ao assinar. Nenhuma resposta traz o `storage_uri` nem mensagem do
+  PostgREST/Storage (a URL assinada contém, por natureza, o caminho do objeto no bucket).
 
 ## Tratamento de Erros
 

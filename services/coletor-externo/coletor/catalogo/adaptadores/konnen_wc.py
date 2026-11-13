@@ -12,14 +12,23 @@ from ..htmlutil import sem_comentario, uma_linha
 from ..rede import Resposta
 from .base import AdaptadorBase, Ctx, ItemLista, PaginaLista
 
+# O tema às vezes fecha o <a> antes de productline:
+# <a href="..."></a><div class="productline">
 _CARD = re.compile(
-    r'<a href="(https://www\.konnenfitness\.com\.br/produto/[^"#?]+/?)"[^>]*>\s*<div class="productline">',
+    r'<a href="(https://www\.konnenfitness\.com\.br/produto/[^"#?]+/?)"[^>]*>\s*(?:</a>\s*)?<div class="productline">',
     re.I,
 )
 _FAIXA_KMH = re.compile(
     r"(\d+(?:[.,]\d+)?)\s*(?:a|até|ate|–|—|-)\s*(\d+(?:[.,]\d+)?)\s*km\s*/?\s*h", re.I,
 )
 _PULAR_ROTULO = {"informações", "informacoes", "descrição", "descricao", "fale com um consultor"}
+# Código sozinho na descrição curta (a E12 escreve "COD: E12"; a Air Bike escreve só "HB007").
+_CODIGO_SOLTO = re.compile(r"^[A-Za-z]{1,8}\d{2,}[A-Za-z0-9._-]*$")
+# Norma citada sozinha (NR12, ISO9001) não é código do fabricante.
+_NORMA = re.compile(r"^(?:NR|NBR|ISO|ABNT|IEC|EN|INMETRO)\d", re.I)
+# Rótulo curto + valor que começa por número ("Medidas: 2041 x 1270 mm", "Peso: 120 kg").
+# Frase com dois-pontos ("Atenção: não utilize...") fica texto.
+_ROTULO_LINHA = re.compile(r"^([^:,.]{2,40}):\s+(\d.*)$")
 
 
 def _num(token: str):
@@ -98,8 +107,10 @@ class Konnen(AdaptadorBase):
                 produto["linhas"].append({"nome": cat.split(" ", 1)[1].strip(), "origem": "pagina", "ev": ev})
         familia, metodo = familia_de(categorias, nome)
         produto["familia"], produto["familia_metodo"] = familia, metodo
-        codigo = _codigo(principal)
-        ev_cod = bloco.ev("modelo", "div.woocommerce-product-details__short-description", f"COD: {codigo or ''}")
+        codigo, trecho_cod = _codigo(principal)
+        ev_cod = bloco.ev(
+            "modelo", "div.woocommerce-product-details__short-description", trecho_cod,
+        )
         produto["modelos"].append({
             "codigo_fabricante": codigo, "nome_modelo": None, "referencia": None, "ev": ev_cod,
             "configuracoes": [],
@@ -125,6 +136,20 @@ class Konnen(AdaptadorBase):
             ev = bloco.ev("marketing", "div.infosp", marketing[:300])
             produto["textos"].append({"tipo": "marketing", "texto": marketing, "ev": ev})
             self._divergencia_velocidade(produto, marketing, ev)
+        for titulo, corpo in _destaques(principal):
+            # Título e corpo ficam separados, cada um com o trecho como a página escreveu.
+            # Corpo já capturado como marketing não entra de novo.
+            if corpo and marketing and corpo in marketing:
+                corpo = ""
+            if not corpo and not titulo:
+                continue
+            ev_titulo = bloco.ev("destaque", "div.infosp h2", titulo[:300]) if titulo else None
+            texto = corpo or titulo
+            ev = bloco.ev("destaque", "div.infosp p", texto[:300]) if corpo else ev_titulo
+            produto["textos"].append({
+                "tipo": "destaque", "titulo": titulo or None, "texto": texto, "ev": ev,
+                "ev_titulo": ev_titulo,
+            })
         cta = _cta(principal)
         if cta:
             ev = bloco.ev("oferta", "a.btn-primary", cta)
@@ -156,9 +181,21 @@ def _post_id(html: str) -> str | None:
     return m.group(1) if m else None
 
 
-def _codigo(html: str) -> str | None:
+def _codigo(html: str) -> tuple[str | None, str]:
+    """(código, trecho como a página escreveu). O trecho entra na evidência sem prefixo inventado."""
     m = re.search(r"COD:\s*([A-Za-z0-9][A-Za-z0-9._-]*)", html)
-    return m.group(1) if m else None
+    if m:
+        return m.group(1), m.group(0)
+    curto = re.search(
+        r'(?s)<div class="woocommerce-product-details__short-description">(.*?)</div>', html,
+    )
+    if not curto:
+        return None, ""
+    for p in re.findall(r"(?s)<p[^>]*>(.*?)</p>", curto.group(1)):
+        t = uma_linha(p)
+        if _CODIGO_SOLTO.fullmatch(t) and not _NORMA.match(t):
+            return t, t
+    return None, ""
 
 
 def _categorias(html: str) -> list[str]:
@@ -204,10 +241,40 @@ def _pares_aba(html: str) -> list[tuple[str | None, str]]:
             if atual and atual[1]:
                 pares.append((atual[0], atual[1]))
             atual = None
-            pares.append((None, linha))
+            pares.append(_rotulo_livre(linha))
     if atual and atual[1]:
         pares.append((atual[0], atual[1]))
     return [(r, v) for r, v in pares if r is None or r.lower().rstrip(":") not in _PULAR_ROTULO]
+
+
+def _rotulo_livre(linha: str) -> tuple[str | None, str]:
+    """'Medidas: 2041 x 1270 x 1174 mm' vira rótulo + valor. Frase com dois-pontos fica texto."""
+    m = _ROTULO_LINHA.match(linha)
+    if not m:
+        return None, linha
+    rotulo = m.group(1).strip()
+    if len(rotulo.split()) > 4 or rotulo.lower() in _PULAR_ROTULO:
+        return None, linha
+    return rotulo, m.group(2).strip()
+
+
+def _destaques(principal: str) -> list[tuple[str, str]]:
+    """Cada bloco infosp da vitrine: título do h2 e o primeiro parágrafo com texto."""
+    corte = principal.split('id="tab-description"', 1)[0]
+    partes = re.split(r'(?i)<div class="[^"]*\binfosp\b[^"]*">', corte)
+    saida: list[tuple[str, str]] = []
+    for parte in partes[1:]:
+        h = re.search(r"(?s)<h2[^>]*>(.*?)</h2>", parte)
+        titulo = uma_linha(h.group(1)) if h else ""
+        corpo = ""
+        for p in re.findall(r"(?s)<p[^>]*>(.*?)</p>", parte):
+            t = uma_linha(p)
+            if len(t) > 3:
+                corpo = t
+                break
+        if titulo or corpo:
+            saida.append((titulo, corpo))
+    return saida
 
 
 def uma_linha_preservando(fragmento: str) -> list[str]:

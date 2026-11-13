@@ -79,6 +79,19 @@ def corpo_resumido(r: Any, limite: int = 300) -> str:
     return texto[:limite]
 
 
+# Falha interna do Compras.gov devolvida como HTTP 400: corpo {"detail": "Erro ao efetuar a consulta "}. Visto no Job de
+# preços em 21/10/2026 (18:39 UTC): a mesma consulta respondeu 200 minutos depois. É instabilidade, não parâmetro
+# inválido, e entra no retry como 502/503/504. Qualquer outro 400 continua erro sem retry.
+MARCA_INSTABILIDADE_400 = "erro ao efetuar a consulta"
+
+
+def instabilidade_compras(r: Any) -> bool:
+    """True para o HTTP 400 que o Compras.gov usa quando a consulta falha do lado dele (ver MARCA_INSTABILIDADE_400)."""
+    if getattr(r, "status_code", None) != 400:
+        return False
+    return MARCA_INSTABILIDADE_400 in corpo_resumido(r, limite=2000).lower()
+
+
 def erro_http(r: Any, contexto: str) -> ErroApiCompras:
     """Erro para status que não é sucesso nem retry. 404 ganha explicação própria (é parâmetro faltando, não vazio)."""
     corpo = corpo_resumido(r)

@@ -48,7 +48,7 @@ begin
   end if;
   select string_agg(e, ', ') into v_faltando
     from unnest(array['pncp_sync_heartbeat_parado', 'pncp_sync_falhas_24h', 'pncp_sync_dias_sem_sucesso',
-                      'licitacoes_horas_sem_novas', 'itens_sem_taxonomia_pct']) e
+                      'licitacoes_horas_sem_novas', 'itens_sem_taxonomia_pct', 'precos_dias_sem_coleta']) e
    where e not in (select r.verificacao from private.saude_operacional_resumo() r);
   if v_faltando is not null then
     raise exception 'SAUDE CHECK FALHOU: verificações ausentes no resumo: %', v_faltando;

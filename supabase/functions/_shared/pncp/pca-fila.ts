@@ -1,0 +1,914 @@
+import { SupabaseClient } from "npm:@supabase/supabase-js@2";
+import { gravarItensDePlanoExistente, gravarPaginaPcaEmLote, type LoteStats, selectIn } from "./pca-lote.ts";
+import { BudgetExhaustedError, type RequestBudget } from "./retry.ts";
+import { RateLimitPauseError, SAFE_EDGE_MARGIN_MS } from "../http-client/index.ts";
+import { storeSourceRecord } from "./supabase-admin.ts";
+import { hashPayload, sha256Hex } from "./hash.ts";
+import { normalizePcaItem } from "./normalize.ts";
+
+function ePerdaDePosse(error: unknown): boolean {
+  return error instanceof ReservaPcaPerdidaError ||
+    (error != null && typeof error === "object" && "code" in error && error.code === "40001");
+}
+
+/**
+ * Sync do PCA por fila de planos (spec 0012, PR 2).
+ *
+ * Fase A, descoberta: a consulta `/pca/` por classe lista os planos e `dataAtualizacaoGlobalPCA`. Ela não serve para
+ * itens: a paginação repete e pula itens (medido em 09/10/2026). Os planos novos ou alterados vão para
+ * `private.pca_plano_fila`, com as classes do escopo. A fase A não grava plano nem item: se gravasse o cabeçalho antes
+ * dos itens, uma carga que falhasse depois deixaria a data já atualizada e o plano nunca voltaria para a fila.
+ *
+ * Fase B, carga: tira planos da fila e lê os itens pela integração por plano (`/orgaos/{cnpj}/pca/{ano}/{seq}/itens`),
+ * conferindo o total com `/itens/quantidade`. Grava cabeçalho + itens do escopo em lote e inativa os itens do escopo
+ * daquele plano que não vieram. Leitura que não fecha com a quantidade é erro: nada é inativado.
+ */
+
+type Row = Record<string, unknown>;
+
+/** Lê todas as linhas de uma consulta paginando por faixa (o PostgREST corta em max-rows). Para em página vazia. */
+async function lerTudo(
+  consulta: (de: number, ate: number) => PromiseLike<{ data: unknown; error: unknown }>,
+): Promise<Row[]> {
+  const out: Row[] = [];
+  for (let de = 0;;) {
+    const { data, error } = await consulta(de, de + 999);
+    if (error) throw error;
+    const pagina = (data ?? []) as Row[];
+    if (pagina.length === 0) return out;
+    out.push(...pagina);
+    de += pagina.length;
+  }
+}
+
+const ePausa = (e: unknown) => e instanceof BudgetExhaustedError || e instanceof RateLimitPauseError;
+
+export type Rotina = "incremental" | "backfill" | "reconciliacao";
+export const ROTINAS: Rotina[] = ["incremental", "backfill", "reconciliacao"];
+
+export type PlanoDescoberto = {
+  id_pca_pncp: string;
+  orgao_cnpj: string;
+  ano: number;
+  sequencial: number;
+  data_atualizacao_fonte: string | null;
+  /** cabeçalho do plano como veio da consulta, sem itens */
+  plano: Row;
+};
+
+/** idPcaPncp = {CNPJ14}-{segmento}-{sequencial6}/{ano} */
+const ID_PCA = /^(\d{14})-\d+-(\d{1,6})\/(\d{4})$/;
+
+export function planoDaConsulta(raw: Row): PlanoDescoberto | null {
+  const id = String(raw.idPcaPncp ?? "").trim();
+  const m = ID_PCA.exec(id);
+  if (!m) return null;
+  const { itens: _itens, ...cabecalho } = raw;
+  return {
+    id_pca_pncp: id,
+    orgao_cnpj: m[1],
+    sequencial: Number(m[2]),
+    ano: Number(m[3]),
+    data_atualizacao_fonte: raw.dataAtualizacaoGlobalPCA ? String(raw.dataAtualizacaoGlobalPCA) : null,
+    plano: cabecalho,
+  };
+}
+
+/** Data da fonte vem sem fuso ("2026-09-21T11:31:57"); o banco grava como UTC. */
+function instante(v: unknown): number | null {
+  if (v == null || v === "") return null;
+  const s = String(v);
+  const comFuso = /([zZ]|[+-]\d{2}:?\d{2})$/.test(s) ? s : `${s}Z`;
+  const t = Date.parse(comFuso);
+  return Number.isFinite(t) ? t : null;
+}
+
+export type OpcoesHttp = { budget?: RequestBudget; syncRunId?: string };
+
+export interface ConsultaPca {
+  fetchPcaPage(
+    ano: number,
+    pagina: number,
+    codigo: string,
+    tamanhoPagina?: number,
+    options?: OpcoesHttp,
+  ): Promise<{ status: number; body: unknown }>;
+}
+
+/** Posição da descoberta para retomar (classe e página seguintes). */
+export type PosicaoDescoberta = { classe_idx: number; pagina: number };
+
+export type Descoberta = {
+  planos: Map<string, PlanoDescoberto>;
+  /** todas as páginas de todas as classes lidas sem erro, a partir da página 1 da primeira classe */
+  completo: boolean;
+  /** onde retomar quando não terminou; null quando terminou */
+  retomar_de: PosicaoDescoberta | null;
+  paginas: number;
+  linhas: number;
+  pares_distintos: number;
+  erro: string | null;
+  /**
+   * parou por erro de página (HTTP, envelope): a página não foi lida, então o que a cadeia viu não prova ausência.
+   * Prazo e pausa de cota não contam: a página seguinte é lida inteira pela continuação.
+   */
+  erro_pagina: boolean;
+};
+
+class PrazoDescoberta extends Error {}
+
+/**
+ * Fase A: lê as páginas da consulta por classe até o fim ou até o prazo. Erro de página, prazo ou pausa de cota
+ * encerram como incompleta, com os planos já lidos e a posição para retomar (erro ≠ vazio: nada é "provado ausente").
+ */
+export async function descobrirPlanos(
+  consulta: ConsultaPca,
+  opts: {
+    ano: number;
+    classes: string[];
+    tamanhoPagina: number;
+    prazoEsgotado: () => boolean;
+    inicio?: PosicaoDescoberta;
+    http?: OpcoesHttp;
+    /** Arquiva cada página da consulta antes de ler os planos (como o fluxo antigo). Falha conta como erro de página. */
+    arquivar?: Arquivar;
+  },
+): Promise<Descoberta> {
+  const inicio = opts.inicio ?? { classe_idx: 0, pagina: 1 };
+  const res: Descoberta = {
+    planos: new Map(),
+    completo: false,
+    retomar_de: null,
+    paginas: 0,
+    linhas: 0,
+    pares_distintos: 0,
+    erro: null,
+    erro_pagina: false,
+  };
+  const pares = new Set<string>();
+  let pos = { ...inicio };
+  try {
+    for (; pos.classe_idx < opts.classes.length; pos = { classe_idx: pos.classe_idx + 1, pagina: 1 }) {
+      const codigo = opts.classes[pos.classe_idx];
+      for (;; pos.pagina++) {
+        if (opts.prazoEsgotado()) throw new PrazoDescoberta("prazo esgotado na descoberta");
+        const { status, body } = await consulta.fetchPcaPage(opts.ano, pos.pagina, codigo, opts.tamanhoPagina, {
+          ...opts.http,
+        });
+        res.paginas++;
+        if (status === 204) break; // fim válido, sem conteúdo
+        if (opts.arquivar && body != null) {
+          await opts.arquivar({
+            endpoint: `/pca/?anoPca=${opts.ano}&codigoClassificacaoSuperior=${codigo}&pagina=${pos.pagina}`,
+            requisicao: {
+              ano: opts.ano,
+              codigoClassificacao: codigo,
+              pagina: pos.pagina,
+              tamanhoPagina: opts.tamanhoPagina,
+            },
+            status,
+            body,
+          });
+        }
+        const obj = (body && typeof body === "object" ? body : null) as Row | null;
+        if (status >= 400 || !obj || !Array.isArray(obj.data)) {
+          throw new Error(`consulta /pca/ classe ${codigo} página ${pos.pagina}: HTTP ${status} ou envelope sem data[]`);
+        }
+        for (const raw of obj.data as Row[]) {
+          const p = planoDaConsulta(raw);
+          if (!p) continue;
+          res.planos.set(p.id_pca_pncp, p);
+          for (const item of (Array.isArray(raw.itens) ? raw.itens : []) as Row[]) {
+            res.linhas++;
+            pares.add(`${p.id_pca_pncp}|${item.numeroItem}`);
+          }
+        }
+        if (Number(obj.paginasRestantes ?? 0) <= 0) break;
+      }
+    }
+    // Completo só se começou do início: retomada não cobre as páginas lidas pela invocação anterior.
+    res.completo = inicio.classe_idx === 0 && inicio.pagina === 1;
+  } catch (error) {
+    res.retomar_de = { ...pos };
+    res.erro = ePausa(error) ? "pausa de cota" : (error instanceof Error ? error.message : String(error));
+    res.erro_pagina = !ePausa(error) && !(error instanceof PrazoDescoberta);
+  } finally {
+    res.pares_distintos = pares.size;
+  }
+  return res;
+}
+
+export type ItemFila = {
+  id_pca_pncp: string;
+  orgao_cnpj: string;
+  ano: number;
+  sequencial: number;
+  motivo: "novo" | "alterado" | "backfill" | "reconciliacao" | "ausente" | "impressao";
+  plano: Row | null;
+  classes: string[];
+  data_atualizacao_fonte: string | null;
+  chain_id: string;
+};
+
+export async function enfileirar(client: SupabaseClient, itens: ItemFila[]): Promise<number> {
+  let total = 0;
+  for (let i = 0; i < itens.length; i += 500) {
+    const { data, error } = await client.schema("private").rpc("pca_fila_enfileirar", {
+      p_itens: itens.slice(i, i + 500),
+    });
+    if (error) throw error;
+    total += Number(data ?? 0);
+  }
+  return total;
+}
+
+/**
+ * Decide o que entra na fila. incremental: plano novo, com `dataAtualizacaoGlobalPCA` maior que a gravada, sem data
+ * gravada ou inativo. backfill/reconciliacao: todos os descobertos.
+ */
+export async function enfileirarDescobertos(
+  client: SupabaseClient,
+  descoberta: Descoberta,
+  rotina: Rotina,
+  opts: { chainId: string; classes: string[] },
+): Promise<{ enfileirados: number; novos: number; alterados: number; sem_mudanca: number }> {
+  const out = { enfileirados: 0, novos: 0, alterados: 0, sem_mudanca: 0 };
+  const planos = [...descoberta.planos.values()];
+  if (planos.length === 0) return out;
+  const banco = new Map(
+    (await selectIn(client, "pca_planos", "id, id_pca_pncp, data_atualizacao_origem, ativo, reprocessar", "id_pca_pncp",
+      planos.map((p) => p.id_pca_pncp)))
+      .map((r) => [String(r.id_pca_pncp), r]),
+  );
+  const fila: ItemFila[] = [];
+  for (const p of planos) {
+    const atual = banco.get(p.id_pca_pncp);
+    let motivo: ItemFila["motivo"] | null;
+    if (rotina !== "incremental") {
+      motivo = rotina;
+    } else if (!atual) {
+      motivo = "novo";
+    } else {
+      const fonte = instante(p.data_atualizacao_fonte);
+      const gravada = instante(atual.data_atualizacao_origem);
+      motivo = atual.ativo === false || atual.reprocessar === true || gravada == null ||
+          (fonte != null && fonte > gravada)
+        ? "alterado"
+        : null;
+    }
+    if (!motivo) {
+      out.sem_mudanca++;
+      continue;
+    }
+    if (motivo === "novo") out.novos++;
+    else if (motivo === "alterado") out.alterados++;
+    fila.push({ ...p, motivo, classes: opts.classes, chain_id: opts.chainId });
+  }
+  out.enfileirados = await enfileirar(client, fila);
+  return out;
+}
+
+/**
+ * Depois de descoberta completa (todas as páginas de todas as classes, numa execução ou numa cadeia de continuações
+ * sem erro de página): atualiza o contador de ausência e, na reconciliação, enfileira os ausentes. `vistos`: os
+ * planos que a descoberta inteira viu.
+ */
+/** Chave do escopo em pca_planos.descoberta_ausente: classes ordenadas, sem repetição (= pca_escopo_ausencia). */
+export function escopoDeClasses(classes: unknown): string {
+  return Array.isArray(classes) ? [...new Set(classes.map(String))].sort().join(",") : "";
+}
+
+/** Ausências seguidas do plano neste escopo (chave ausente = 0). */
+export function ausenciaNoEscopo(descobertaAusente: unknown, escopo: string): number {
+  const mapa = descobertaAusente && typeof descobertaAusente === "object" ? descobertaAusente as Row : {};
+  const n = Number(mapa[escopo] ?? 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** Zera a ausência do plano só no escopo destas classes (as dos outros escopos ficam). */
+async function zerarAusencia(client: SupabaseClient, planoId: string, classes: string[]) {
+  const { error } = await client.schema("private").rpc("pca_zerar_ausencia", {
+    p_plano_id: planoId,
+    p_classes: classes,
+  });
+  if (error) throw error;
+}
+
+export async function tratarAusentes(
+  client: SupabaseClient,
+  vistos: Iterable<string>,
+  opts: { ano: number; classes: string[]; rotina: Rotina; chainId: string },
+): Promise<{ ausentes_2_ou_mais: number; enfileirados: number }> {
+  const { data, error } = await client.schema("private").rpc("pca_marcar_descoberta", {
+    p_ano: opts.ano,
+    p_vistos: [...new Set(vistos)],
+    p_classes: opts.classes,
+  });
+  if (error) throw error;
+  const ausentes = Number(data ?? 0);
+  if (opts.rotina !== "reconciliacao" || ausentes === 0) return { ausentes_2_ou_mais: ausentes, enfileirados: 0 };
+
+  const linhas = await lerTudo((de, ate) =>
+    client.from("pca_planos").select("id, id_pca_pncp, descoberta_ausente")
+      .eq("ano_exercicio", opts.ano).eq("ativo", true)
+      .order("id").range(de, ate)
+  );
+  // Só o contador deste escopo de classes (a chave em descoberta_ausente, igual à de pca_escopo_ausencia).
+  const escopo = escopoDeClasses(opts.classes);
+  const fila: ItemFila[] = [];
+  for (const r of linhas) {
+    if (ausenciaNoEscopo(r.descoberta_ausente, escopo) < 2) continue;
+    const m = ID_PCA.exec(String(r.id_pca_pncp));
+    if (!m) continue;
+    fila.push({
+      id_pca_pncp: String(r.id_pca_pncp),
+      orgao_cnpj: m[1],
+      sequencial: Number(m[2]),
+      ano: Number(m[3]),
+      motivo: "ausente",
+      plano: null,
+      classes: opts.classes,
+      data_atualizacao_fonte: null,
+      chain_id: opts.chainId,
+    });
+  }
+  return { ausentes_2_ou_mais: ausentes, enfileirados: await enfileirar(client, fila) };
+}
+
+export interface IntegracaoPca {
+  getPcaItensPagina(
+    cnpj: string,
+    ano: number,
+    sequencial: number,
+    pagina: number,
+    tamanhoPagina: number,
+    options?: OpcoesHttp & { attemptTimeoutMs?: number },
+  ): Promise<{ status: number; body: unknown }>;
+  getPcaItensQuantidade(
+    cnpj: string,
+    ano: number,
+    sequencial: number,
+    options?: OpcoesHttp & { attemptTimeoutMs?: number },
+  ): Promise<{ status: number; body: unknown }>;
+}
+
+/**
+ * Página da integração. 2000 foi aceito na medição de 09/10 (plano de 1.800 itens numa página), mas o teto real do
+ * servidor não foi medido. Por isso o fim da leitura não é decidido só pelo tamanho da página: o total lido tem de
+ * fechar com `/itens/quantidade`.
+ */
+export const TAMANHO_PAGINA_INTEGRACAO = 2000;
+/** Teto de segurança contra laço: 20 páginas de 2.000 = 40.000 itens num plano (o maior medido tinha 1.800). */
+const MAX_PAGINAS_PLANO = 20;
+/** Timeout por tentativa na integração (respostas medidas de 0,2 a 0,4 s; o orçamento corta antes, se precisar). */
+const TIMEOUT_TENTATIVA_INTEGRACAO_MS = 30_000;
+/**
+ * O cliente unificado lança BudgetExhaustedError também quando o mesmo GET estoura o timeout duas vezes, com orçamento
+ * sobrando. Por falta de orçamento, ele só lança com menos que espera + tentativa + margem (até ~4 s + 30 s + 10 s).
+ * Acima deste limite o erro é timeout repetido (falha do plano); abaixo, conta como fim do orçamento (pausa).
+ */
+const MARGEM_FIM_ORCAMENTO_MS = TIMEOUT_TENTATIVA_INTEGRACAO_MS + SAFE_EDGE_MARGIN_MS + 5_000;
+
+/** Pausa na carga: cota (429 com espera) ou orçamento que acabou de fato. Sem orçamento, BudgetExhausted é pausa. */
+function ePausaDaCarga(e: unknown, budget?: RequestBudget): boolean {
+  if (e instanceof RateLimitPauseError) return true;
+  if (!(e instanceof BudgetExhaustedError)) return false;
+  return !budget || budget.remainingMs() <= MARGEM_FIM_ORCAMENTO_MS;
+}
+
+/** Resposta bruta da integração com a requisição que a produziu (AGENTS.md: arquivar antes de normalizar). */
+export type RespostaBruta = { endpoint: string; requisicao: Row; status: number; body: unknown };
+export type Arquivar = (r: RespostaBruta) => Promise<void>;
+
+/**
+ * Arquiva a resposta bruta em private.source_record, como o fluxo antigo (sync-pncp-pca/index.ts) faz com a página da
+ * consulta. Falha ao arquivar propaga, como lá: o plano fica 'erro' e nada é inativado. Página de 2.000 itens dá
+ * cerca de 1 MB de payload (o maior plano medido, 1.800 itens, cabe numa página).
+ *
+ * 2xx: payload é o corpo bruto. HTTP ≥ 400: payload = { status, body }. O status entra no payload, não no endpoint:
+ * o endpoint continua o mesmo da requisição, e o content_hash (do payload) separa um 4xx de um 2xx com o mesmo corpo
+ * na deduplicação (endpoint, request_hash, content_hash).
+ */
+export function arquivarNoSourceRecord(client: SupabaseClient, syncRunId: string): Arquivar {
+  return async (r) => {
+    const payload = r.status >= 400 ? { status: r.status, body: r.body } : r.body;
+    await storeSourceRecord(client, {
+      syncRunId,
+      resourceType: "pca",
+      endpoint: r.endpoint,
+      requestHash: await hashPayload(r.requisicao),
+      contentHash: await sha256Hex(JSON.stringify(payload)),
+      payload,
+    });
+  };
+}
+
+/**
+ * Lê todos os itens do plano pela integração e confere com a quantidade. 204 = fim; HTTP ≥ 400, resposta que não é
+ * lista ou total que não fecha = erro (nunca "plano sem itens"). Com `arquivar`, cada resposta com corpo (páginas e
+ * quantidade) é arquivada antes de qualquer conferência ou normalização.
+ */
+export async function lerItensPlano(
+  integracao: IntegracaoPca,
+  cnpj: string,
+  ano: number,
+  sequencial: number,
+  http: OpcoesHttp = {},
+  arquivar?: Arquivar,
+) {
+  const opcoes = { ...http, attemptTimeoutMs: TIMEOUT_TENTATIVA_INTEGRACAO_MS };
+  const base = `/orgaos/${cnpj}/pca/${ano}/${sequencial}/itens`;
+  const itens: Row[] = [];
+  const numeros = new Set<number>();
+  let terminou = false;
+  for (let pagina = 1; pagina <= MAX_PAGINAS_PLANO && !terminou; pagina++) {
+    const { status, body } = await integracao.getPcaItensPagina(
+      cnpj,
+      ano,
+      sequencial,
+      pagina,
+      TAMANHO_PAGINA_INTEGRACAO,
+      opcoes,
+    );
+    if (status === 204) break;
+    if (arquivar && body != null) {
+      await arquivar({
+        endpoint: `${base}?pagina=${pagina}&tamanhoPagina=${TAMANHO_PAGINA_INTEGRACAO}`,
+        requisicao: { cnpj, ano, sequencial, pagina, tamanhoPagina: TAMANHO_PAGINA_INTEGRACAO },
+        status,
+        body,
+      });
+    }
+    if (status >= 400 || !Array.isArray(body)) {
+      throw new Error(
+        `integração ${cnpj}/${ano}/${sequencial} página ${pagina}: HTTP ${status} ou resposta não é lista`,
+      );
+    }
+    for (const item of body) {
+      const numero = inteiroDaIntegracao(item?.numeroItem);
+      if (numero === null || numero <= 0) {
+        throw new Error(`integração ${cnpj}/${ano}/${sequencial} página ${pagina}: numeroItem inválido`);
+      }
+      if (numeros.has(numero)) {
+        throw new Error(
+          `integração ${cnpj}/${ano}/${sequencial} página ${pagina}: numeroItem repetido (${numero})`,
+        );
+      }
+      // A classe é conferida na carga (classeDesconhecida): classe fora do padrão não derruba a leitura (spec 0056).
+      numeros.add(numero);
+      itens.push(item as Row);
+    }
+    terminou = body.length < TAMANHO_PAGINA_INTEGRACAO;
+  }
+  const q = await integracao.getPcaItensQuantidade(cnpj, ano, sequencial, opcoes);
+  if (arquivar && q.body != null) {
+    await arquivar({
+      endpoint: `${base}/quantidade`,
+      requisicao: { cnpj, ano, sequencial, quantidade: true },
+      status: q.status,
+      body: q.body,
+    });
+  }
+  const quantidade = inteiroDaIntegracao(q.body);
+  if (q.status !== 200 || quantidade === null) {
+    throw new Error(`integração ${cnpj}/${ano}/${sequencial}: quantidade inválida (HTTP ${q.status})`);
+  }
+  if (quantidade !== itens.length) {
+    throw new Error(
+      `integração ${cnpj}/${ano}/${sequencial}: leitura incompleta (${itens.length} de ${quantidade})`,
+    );
+  }
+  return itens;
+}
+
+/** Conserva inteiros decimais textuais já aceitos, sem converter ausência, booleanos ou coleções em zero. */
+function inteiroDaIntegracao(valor: unknown): number | null {
+  if (typeof valor !== "number" && (typeof valor !== "string" || !/^\d+$/.test(valor))) return null;
+  const numero = Number(valor);
+  return Number.isSafeInteger(numero) && numero >= 0 ? numero : null;
+}
+
+/**
+ * Classe do item fora do padrão (erro da administração, medido em 11/11/2026: "Não se aplica.", código de item no
+ * lugar da classe, texto livre). Material: 4 dígitos. Serviço (`classificacaoCatalogoId = 2`): 2 a 4 dígitos.
+ * Devolve o valor original quando a classe é desconhecida; `null` quando é válida.
+ */
+export function classeDesconhecida(item: Row): { valor: unknown } | null {
+  const classe = item?.classificacaoSuperiorCodigo;
+  if (typeof classe !== "string" && typeof classe !== "number") return { valor: classe ?? null };
+  const servico = item?.classificacaoCatalogoId === 2 || item?.classificacaoCatalogoId === "2";
+  const texto = String(classe);
+  return /^\d{4}$/.test(texto) || (servico && /^\d{2,4}$/.test(texto)) ? null : { valor: classe };
+}
+
+/**
+ * Item da integração no formato da consulta, que é o que o normalizador lê. Nomes que mudam (medido em 09/10/2026 no
+ * plano do Galeão, com valores iguais): quantidade → quantidadeEstimada, descricao → descricaoItem,
+ * nomeClassificacao → nomeClassificacaoCatalogo. Os demais campos têm o mesmo nome.
+ */
+export function itemIntegracaoParaConsulta(item: Row): Row {
+  const { quantidade, descricao, nomeClassificacao, ...resto } = item;
+  return {
+    ...resto,
+    quantidadeEstimada: quantidade ?? null,
+    descricaoItem: descricao ?? null,
+    nomeClassificacaoCatalogo: nomeClassificacao ?? null,
+  };
+}
+
+async function idDoPlano(client: SupabaseClient, idPcaPncp: string): Promise<string | null> {
+  const { data, error } = await client.from("pca_planos").select("id").eq("id_pca_pncp", idPcaPncp).maybeSingle();
+  if (error) throw error;
+  return data ? String((data as Row).id) : null;
+}
+
+async function inativarItensAusentes(
+  client: SupabaseClient,
+  planoId: string,
+  numerosVindos: Set<number>,
+  classes: string[],
+  foraDoEscopo: Map<number, Row> = new Map(),
+): Promise<number> {
+  const ativos = (await selectIn(client, "pca_itens", "id, numero_item, ativo", "pca_plano_id", [planoId], {
+    column: "classe_material_servico",
+    values: classes,
+  })).filter((r) => r.ativo !== false && !numerosVindos.has(Number(r.numero_item)));
+  const sumiram = ativos.filter((r) => !foraDoEscopo.has(Number(r.numero_item)));
+  for (let i = 0; i < sumiram.length; i += 100) {
+    const { error } = await client.from("pca_itens").update({ ativo: false })
+      .in("id", sumiram.slice(i, i + 100).map((r) => r.id));
+    if (error) throw error;
+  }
+  // Saiu do escopo (spec 0056, K-4): grava o estado lido (classe nova e hash) junto com a inativação. O trigger
+  // registra saiu_escopo pela troca de classe; se o item voltar ao escopo, o hash diferente reativa com entrou_escopo.
+  for (const r of ativos.filter((x) => foraDoEscopo.has(Number(x.numero_item)))) {
+    const lido = foraDoEscopo.get(Number(r.numero_item))!;
+    const linha = { ...normalizePcaItem(itemIntegracaoParaConsulta(lido), {}), pca_plano_id: planoId };
+    const { error } = await client.from("pca_itens")
+      .update({ ...linha, payload_hash: await hashPayload(linha), ativo: false }).eq("id", r.id);
+    if (error) throw error;
+  }
+  return ativos.length;
+}
+
+/** Quantidade da impressão (camada 1) diferente da leitura: erro do plano, antes de gravar ou inativar (CA-5). */
+async function conferirImpressao(client: SupabaseClient, linha: Row, lidos: number) {
+  const { data, error } = await client.schema("private").from("pca_impressao_plano").select("quantidade")
+    .eq("orgao_cnpj", String(linha.orgao_cnpj)).eq("ano", Number(linha.ano))
+    .eq("sequencial", Number(linha.sequencial)).maybeSingle();
+  if (error) throw error;
+  const quantidade = (data as Row | null)?.quantidade;
+  if (quantidade == null) return;
+  if (Number(quantidade) !== lidos) {
+    throw new Error(
+      `a impressão do plano tem ${quantidade} itens e a integração devolveu ${lidos}: nada gravado nem inativado`,
+    );
+  }
+}
+
+/** Item de classe desconhecida que já estava gravado como do escopo: o plano não é carregado (K-3). */
+async function recusarDesconhecidoDoEscopo(
+  client: SupabaseClient,
+  idPca: string,
+  desconhecidos: Row[],
+  classes: string[],
+) {
+  const planoId = await idDoPlano(client, idPca);
+  if (!planoId) return;
+  const gravados = new Set(
+    (await selectIn(client, "pca_itens", "id, numero_item, ativo", "pca_plano_id", [planoId], {
+      column: "classe_material_servico",
+      values: classes,
+    })).filter((r) => r.ativo !== false).map((r) => Number(r.numero_item)),
+  );
+  const conflito = desconhecidos.find((it) => gravados.has(Number(it.numeroItem)));
+  if (conflito) {
+    throw new Error(
+      `classe desconhecida no item ${conflito.numeroItem} (${
+        JSON.stringify(classeDesconhecida(conflito)?.valor)
+      }), que está gravado como do escopo: plano não carregado`,
+    );
+  }
+}
+
+/**
+ * Plano ausente sem item do escopo na integração: inativa só os itens das classes do escopo. O plano só é inativado se
+ * não sobrar item ativo de outra classe (um plano com 7220 numa reconciliação só de 7830 continua ativo, com os itens
+ * 7220). Se o plano continua ativo, o contador de ausência zera: ele não tem mais item do escopo, e a ausência
+ * medida pela descoberta dessas classes não diz nada sobre as outras.
+ */
+export async function inativarAusenteNoEscopo(
+  client: SupabaseClient,
+  planoId: string,
+  classes: string[],
+): Promise<{ itens: number; plano: boolean }> {
+  const itens = await inativarItensAusentes(client, planoId, new Set(), classes);
+  const { data, error } = await client.from("pca_itens").select("id")
+    .eq("pca_plano_id", planoId).eq("ativo", true).limit(1);
+  if (error) throw error;
+  const restam = ((data ?? []) as Row[]).length > 0;
+  if (restam) {
+    await zerarAusencia(client, planoId, classes);
+  } else {
+    const { error: e2 } = await client.from("pca_planos").update({ ativo: false }).eq("id", planoId);
+    if (e2) throw e2;
+  }
+  return { itens, plano: !restam };
+}
+
+export type FilaStats = LoteStats & {
+  planos_feitos: number;
+  planos_erro: number;
+  itens_inativados: number;
+  planos_inativados: number;
+};
+
+export class ReservaPcaPerdidaError extends Error {
+  constructor(cause?: unknown) { super("reserva PCA não pertence mais ao worker", { cause }); this.name = "ReservaPcaPerdidaError"; }
+}
+
+async function marcarFila(client: SupabaseClient, linha: Row, ok: boolean, erro: string | null) {
+  const agora = new Date().toISOString();
+  const patch: Row = ok
+    ? { status: "feito", erro: erro ? erro.slice(0, 500) : null, processado_em: agora, atualizado_em: agora }
+    : {
+      status: "erro",
+      erro: (erro ?? "erro").slice(0, 500),
+      tentativas: Number(linha.tentativas ?? 0) + 1,
+      atualizado_em: agora,
+    };
+  // Sem chain_id no patch: um reenfileiramento durante o processamento pode ter gravado um chain_id mais novo.
+  if (ok) {
+    // Desliga reprocessar antes de concluir, enquanto o token ainda autoriza a escrita no plano.
+    const { error: eMarca } = await client.from("pca_planos").update({ reprocessar: false })
+      .eq("id_pca_pncp", String(linha.id_pca_pncp)).eq("reprocessar", true);
+    if (ePerdaDePosse(eMarca)) throw eMarca;
+    if (eMarca) console.warn(`[pca-fila] marca reprocessar de ${linha.id_pca_pncp} não desligou: ${eMarca.message}`);
+  }
+  const { data, error } = await client.schema("private").from("pca_plano_fila").update(patch)
+    .eq("id", linha.id).eq("status", "processando").eq("reserva_token", linha.reserva_token).select("id");
+  if (error) throw error;
+  if (!Array.isArray(data) || data.length !== 1) throw new ReservaPcaPerdidaError();
+}
+
+/**
+ * Devolve para pendente o que foi reservado e não processado. Se a devolução falhar, a reserva recupera a linha
+ * 'processando' depois de 15 min; a falha vai para o log em vez de sumir.
+ */
+async function devolverReservados(client: SupabaseClient, linhas: Row[]) {
+  if (linhas.length === 0) return;
+  for (const linha of linhas) {
+    const { error } = await client.schema("private").from("pca_plano_fila")
+      .update({ status: "pendente", atualizado_em: new Date().toISOString() })
+      .eq("id", linha.id).eq("status", "processando").eq("reserva_token", linha.reserva_token);
+    if (error) console.warn(JSON.stringify({ evento: "pca_fila_devolucao_falhou", linhas: 1, erro: error.message }));
+  }
+}
+
+/** Adia apenas o plano interrompido; os demais reservados voltam à fila normalmente. */
+async function adiarPlanoAposPausa(client: SupabaseClient, linha: Row, erro: unknown) {
+  const minutos = erro instanceof RateLimitPauseError ? 30 : 20;
+  const disponivelEm = new Date(Date.now() + minutos * 60_000).toISOString();
+  const { data, error } = await client.schema("private").from("pca_plano_fila")
+    .update({ status: "pendente", disponivel_em: disponivelEm, atualizado_em: new Date().toISOString() })
+    .eq("id", linha.id).eq("status", "processando").eq("reserva_token", linha.reserva_token).select("id");
+  if (error) throw error;
+  if (!Array.isArray(data) || data.length !== 1) throw new Error("adiamento não atualizou o plano reservado");
+  console.warn(JSON.stringify({
+    evento: "pca_fila_pausa",
+    id_pca_pncp: String(linha.id_pca_pncp),
+    tipo: erro instanceof RateLimitPauseError ? "rate_limit" : "budget",
+    disponivel_em: disponivelEm,
+  }));
+}
+
+/**
+ * Fase B: processa planos da fila do ano até `limite` ou até o prazo. Um plano por vez: 1 requisição de itens (mais
+ * páginas só acima de 2.000 itens) e 1 de quantidade. Plano com erro não inativa nada.
+ */
+export async function processarFila(
+  client: SupabaseClient,
+  integracao: IntegracaoPca,
+  opts: {
+    ano: number;
+    limite: number;
+    prazoEsgotado: () => boolean;
+    runId: string;
+    http?: OpcoesHttp;
+    aoTerminarPlano?: () => Promise<void>;
+    clientDaReserva?: (token: string, runId: string) => SupabaseClient;
+  },
+): Promise<FilaStats> {
+  const stats: FilaStats = {
+    recebidos: 0,
+    novos: 0,
+    alterados: 0,
+    inalterados: 0,
+    erros: 0,
+    planos_feitos: 0,
+    planos_erro: 0,
+    itens_inativados: 0,
+    planos_inativados: 0,
+  };
+  const arquivar = arquivarNoSourceRecord(client, opts.runId);
+  let processados = 0;
+  while (processados < opts.limite && !opts.prazoEsgotado()) {
+    const { data, error } = await client.schema("private").rpc("pca_fila_reservar", {
+      p_limite: Math.min(5, opts.limite - processados),
+      p_max_tentativas: 5,
+      p_ano: opts.ano,
+    });
+    if (error) throw error;
+    const reservados = (data ?? []) as Row[];
+    if (reservados.length === 0) break;
+
+    for (let i = 0; i < reservados.length; i++) {
+      const linha = reservados[i];
+      if (typeof linha.reserva_token !== "string" || !linha.reserva_token) throw new ReservaPcaPerdidaError();
+      const clientPlano = opts.clientDaReserva?.(linha.reserva_token, opts.runId) ?? client;
+      if (opts.prazoEsgotado()) {
+        await devolverReservados(client, reservados.slice(i));
+        return stats;
+      }
+      processados++;
+      const idPca = String(linha.id_pca_pncp);
+      const classes = (Array.isArray(linha.classes) && linha.classes.length ? linha.classes : ["7830"]).map(String);
+      const doEscopo = new Set(classes);
+      // a falha do plano já entrou nas contagens (ramo de erro na gravação em lote): o catch não soma de novo
+      let falhaContada = false;
+      try {
+        const todos = await lerItensPlano(
+          integracao,
+          String(linha.orgao_cnpj),
+          Number(linha.ano),
+          Number(linha.sequencial),
+          { ...opts.http, syncRunId: opts.runId },
+          arquivar,
+        );
+        const { data: posse, error: ePosse } = await clientPlano.schema("private").from("pca_plano_fila")
+          .select("id").eq("id", linha.id).eq("status", "processando").eq("reserva_token", linha.reserva_token);
+        if (ePosse) throw ePosse;
+        if (!Array.isArray(posse) || posse.length !== 1) throw new ReservaPcaPerdidaError();
+        await conferirImpressao(clientPlano, linha, todos.length);
+        // Classe desconhecida: fica fora do escopo e não conta para ausência; o valor original vai no aviso (e na
+        // resposta bruta já arquivada em source_record). Só derruba o plano se o item já estava gravado no escopo.
+        const desconhecidos = todos.filter((it) => classeDesconhecida(it) !== null);
+        const conhecidos = todos.filter((it) => classeDesconhecida(it) === null);
+        const avisos = desconhecidos.map((it) =>
+          `classe desconhecida no item ${it.numeroItem} (${JSON.stringify(classeDesconhecida(it)!.valor).slice(0, 80)})`
+        );
+        if (desconhecidos.length > 0) await recusarDesconhecidoDoEscopo(clientPlano, idPca, desconhecidos, classes);
+        const escopo = conhecidos.filter((it) => doEscopo.has(String(it.classificacaoSuperiorCodigo ?? "")));
+        const numeros = new Set(escopo.map((it) => Number(it.numeroItem)));
+        // Item lido com classe conhecida fora do escopo: se estava gravado no escopo, saiu dele (não foi removido).
+        const foraDoEscopo = new Map(
+          conhecidos.filter((it) => !doEscopo.has(String(it.classificacaoSuperiorCodigo ?? "")))
+            .map((it) => [Number(it.numeroItem), it] as const),
+        );
+        const aviso = () => avisos.length ? `aviso: ${avisos.join("; ")}` : null;
+
+        let r: LoteStats;
+        let planoId: string | null;
+        if (linha.motivo === "ausente") {
+          // Ausente em 2 descobertas seguidas. Sem item do escopo na integração: inativa os itens do escopo (e o plano,
+          // se não sobrar item de outra classe). Com item: a consulta pulou o plano, então grava os itens no plano que
+          // já existe e zera o contador.
+          planoId = await idDoPlano(clientPlano, idPca);
+          if (!planoId) {
+            await marcarFila(clientPlano, linha, true, null);
+            stats.planos_feitos++;
+            continue;
+          }
+          if (escopo.length === 0) {
+            const r0 = await inativarAusenteNoEscopo(clientPlano, planoId, classes);
+            stats.itens_inativados += r0.itens;
+            if (r0.plano) stats.planos_inativados++;
+            await marcarFila(clientPlano, linha, true, aviso());
+            stats.planos_feitos++;
+            continue;
+          }
+          r = await gravarItensDePlanoExistente(clientPlano, planoId, escopo.map(itemIntegracaoParaConsulta), {
+            runId: opts.runId,
+          });
+          await zerarAusencia(clientPlano, planoId, classes);
+        } else {
+          if (!linha.plano || typeof linha.plano !== "object") throw new Error("fila sem cabeçalho do plano");
+          r = await gravarPaginaPcaEmLote(
+            clientPlano,
+            [{ ...(linha.plano as Row), itens: escopo.map(itemIntegracaoParaConsulta) }],
+            { ano: Number(linha.ano), runId: opts.runId },
+          );
+          planoId = await idDoPlano(clientPlano, idPca);
+        }
+        stats.recebidos += r.recebidos;
+        stats.novos += r.novos;
+        stats.alterados += r.alterados;
+        stats.inalterados += r.inalterados;
+        stats.erros += r.erros;
+        if (r.erros > 0 || !planoId) {
+          stats.planos_erro++;
+          falhaContada = true;
+          const eReset = await marcarCabecalhoParaReprocessar(clientPlano, idPca);
+          if (ePerdaDePosse(eReset)) throw eReset;
+          if (eReset) throw new Error(`${r.erros} erro(s) na gravação em lote; reprocessar não gravou: ${eReset.message}`);
+          await marcarFila(clientPlano, linha, false, `${r.erros} erro(s) na gravação em lote`);
+          continue;
+        }
+        stats.itens_inativados += await inativarItensAusentes(clientPlano, planoId, numeros, classes, foraDoEscopo);
+        avisos.push(...(r.avisos ?? []));
+        if (avisos.length) {
+          console.warn(JSON.stringify({
+            evento: "pca_fila_aviso",
+            id_pca_pncp: idPca,
+            total: avisos.length,
+            avisos: avisos.slice(0, 20).map((a) => a.slice(0, 200)),
+            runId: opts.runId,
+          }));
+        }
+        await marcarFila(clientPlano, linha, true, aviso());
+        stats.planos_feitos++;
+      } catch (error) {
+        if (ePerdaDePosse(error)) {
+          await devolverReservados(client, reservados.slice(i + 1));
+          throw error instanceof ReservaPcaPerdidaError ? error : new ReservaPcaPerdidaError(error);
+        }
+        if (ePausaDaCarga(error, opts.http?.budget)) {
+          // pausa de cota ou fim do orçamento: não é falha do plano; volta para a fila sem gastar tentativa
+          try {
+            await adiarPlanoAposPausa(clientPlano, linha, error);
+          } catch (eAdiar) {
+            console.warn(JSON.stringify({
+              evento: "pca_fila_adiamento_falhou",
+              id_pca_pncp: idPca,
+              erro: eAdiar instanceof Error ? eAdiar.message : String((eAdiar as { message?: string })?.message ?? eAdiar),
+            }));
+          }
+          // Tenta liberar o restante mesmo se o adiamento falhar; a causa original continua sendo a pausa.
+          try {
+            await devolverReservados(clientPlano, reservados.slice(i + 1));
+          } catch (eDevolver) {
+            console.warn(JSON.stringify({
+              evento: "pca_fila_devolucao_falhou",
+              linhas: reservados.length - i - 1,
+              erro: eDevolver instanceof Error ? eDevolver.message : String(eDevolver),
+            }));
+          }
+          throw error;
+        }
+        // Timeout repetido com orçamento sobrando cai aqui: falha do plano (soma tentativa), segue para o próximo.
+        if (!falhaContada) {
+          stats.erros++;
+          stats.planos_erro++;
+        }
+        // A falha pode ter vindo depois de gravar o cabeçalho (inativação, contador de ausência): sem o reset, um plano
+        // que esgota as tentativas ficaria com a data nova e o incremental não o reenfileiraria.
+        const eReset = await marcarCabecalhoParaReprocessar(clientPlano, idPca);
+        if (ePerdaDePosse(eReset)) {
+          await devolverReservados(client, reservados.slice(i + 1));
+          throw new ReservaPcaPerdidaError(eReset);
+        }
+        if (eReset) console.warn(`[pca-fila] reset do cabeçalho ${idPca} falhou: ${eReset.message}`);
+        const mensagem = error instanceof BudgetExhaustedError
+          ? "timeout repetido na integração (orçamento ainda sobrava)"
+          : (error instanceof Error ? error.message : String(error));
+        try {
+          await marcarFila(clientPlano, linha, false, mensagem);
+        } catch (eMarca) {
+          // Sem gravar o erro, a linha fica 'processando' e a reserva a recupera depois de 15 min (contando
+          // tentativa). O banco está falhando: devolve o resto e encerra a carga desta execução.
+          console.warn(JSON.stringify({
+            evento: "pca_fila_marcar_erro_falhou",
+            id_pca_pncp: idPca,
+            erro: eMarca instanceof Error ? eMarca.message : String((eMarca as { message?: string })?.message ?? eMarca),
+          }));
+          await devolverReservados(clientPlano, reservados.slice(i + 1));
+          return stats;
+        }
+      } finally {
+        await opts.aoTerminarPlano?.();
+      }
+    }
+  }
+  return stats;
+}
+
+/**
+ * O cabeçalho pode ter ficado com a data nova depois de uma falha. Liga `reprocessar` para o incremental reenfileirar o
+ * plano enquanto houver tentativas. Filas esgotadas exigem recuperação explícita. Os campos da fonte (data, hash) ficam com o último dado oficial gravado:
+ * a nova tentativa relê os itens da integração de qualquer jeito. Plano que não existe no banco: nada muda (o
+ * incremental o vê como novo).
+ */
+async function marcarCabecalhoParaReprocessar(client: SupabaseClient, idPca: string): Promise<{ message: string } | null> {
+  const { error } = await client.from("pca_planos").update({ reprocessar: true }).eq("id_pca_pncp", idPca);
+  return error;
+}
+
+/** Planos do ano ainda abertos e que a reserva ainda pode pegar, e os que esgotaram as tentativas. */
+export async function situacaoFila(client: SupabaseClient, ano: number): Promise<{ abertos: number; esgotados: number }> {
+  const linhas = await lerTudo((de, ate) =>
+    client.schema("private").from("pca_plano_fila").select("id, status, tentativas")
+      .eq("ano", ano).in("status", ["pendente", "processando", "erro"]).order("id").range(de, ate)
+  );
+  const esgotados = linhas.filter((r) => Number(r.tentativas) >= 5).length;
+  return { abertos: linhas.length - esgotados, esgotados };
+}

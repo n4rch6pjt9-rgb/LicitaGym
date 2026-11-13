@@ -1,0 +1,4 @@
+# Checks que falham hoje no scripts/validar-migrations.sh por causa conhecida, com issue aberta. Só *_check.sql.
+# Formato: <arquivo> | <trecho exato da mensagem de erro esperada> | <issue e motivo>
+# A falha só vira PENDENTE se a saída contiver o trecho; outra falha no mesmo arquivo é FALHA.
+# Se o arquivo passar, a validação falha até ele sair desta lista. A lista só diminui.

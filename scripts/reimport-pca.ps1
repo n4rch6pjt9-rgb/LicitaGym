@@ -63,16 +63,7 @@ function Get-RetryWaitSeconds($Attempt, $HttpStatus, $Message) {
 }
 
 if ($LimparAntes) {
-  Write-Host "ATENCAO: rode no SQL Editor antes de continuar (ou confirme que ja rodou):" -ForegroundColor Yellow
-  Write-Host ""
-  Write-Host "DELETE FROM public.pca_planos WHERE ano_exercicio = $Ano;" -ForegroundColor Yellow
-  Write-Host ""
-  Write-Host "UPDATE private.pncp_sync_run" -ForegroundColor Yellow
-  Write-Host "SET status = 'falhou', erro_principal = 'liberado para reimport', finalizada_em = now()" -ForegroundColor Yellow
-  Write-Host "WHERE status = 'executando';" -ForegroundColor Yellow
-  Write-Host ""
-  Write-Host "Pressione Enter apos executar o SQL, ou Ctrl+C para cancelar." -ForegroundColor Yellow
-  Read-Host
+  throw "LimparAntes desativado: use a reconciliacao por plano, sem apagar dados do ano."
 }
 
 $ok = 0
@@ -93,6 +84,13 @@ for ($pagina = $PaginaInicial; $pagina -le $PaginaFinal; $pagina++) {
         continue
       }
 
+      if ($json.status -notin @("incompleta", "concluida") -or [int]$json.erros -gt 0) {
+        throw "PCA nao confirmou a pagina: status=$($json.status) erros=$($json.erros)"
+      }
+      $resultados = @($json.por_codigo.PSObject.Properties)
+      if ($resultados.Count -eq 0 -or @($resultados | Where-Object { [int]$_.Value.ultima_pagina -ne $pagina }).Count -gt 0) {
+        throw "O checkpoint retomou outra pagina; nenhuma pagina solicitada foi confirmada."
+      }
       Write-Host ("  OK recebidos={0} novos={1} alterados={2} erros={3}" -f $json.recebidos, $json.novos, $json.alterados, $json.erros) -ForegroundColor Green
       $ok++
       $sucesso = $true
@@ -126,4 +124,5 @@ for ($pagina = $PaginaInicial; $pagina -le $PaginaFinal; $pagina++) {
 Write-Host "`nResumo: $ok paginas OK, $($falhas.Count) falhas." -ForegroundColor Cyan
 if ($falhas.Count -gt 0) {
   Write-Host "Retomar com: .\scripts\reimport-pca.ps1 -PaginaInicial $($falhas[0]) -PaginaFinal $PaginaFinal" -ForegroundColor Yellow
+  exit 1
 }

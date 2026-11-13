@@ -244,12 +244,26 @@ def _doc(nome, data, tipo=None):
     return {"nome_original": nome, "data_documento": data, "raw": {"tipo_documento": tipo}}
 
 
+def test_documento_devolvido_em_utc_nao_reativa_suspensao_anterior():
+    # #339. Suspensão real 09:40 de Brasília (12:40 UTC), 20 min antes da retificação das 10:00.
+    # O PostgREST devolve o instante em UTC. A tolerância é 10 min: o instante certo não reativa a
+    # suspensão. Cortar o fuso em [:19] leria 12:40 como Brasília (15:40 UTC), depois da retificação.
+    ln = _linha(77, "Aquisição de equipamentos de academia", termos=("academia",),
+                itens=[{"id": 1, "numero_item": 1, "descricao": "Leg press 45 graus", "material_ou_servico": "M",
+                        "categoria_escopo": "forte", "interesse_borracha": False}])
+    ln["raw"]["data_atualizacao_pncp"] = "2026-09-24T10:00:00"
+    ln["documentos"] = [_doc("Memorando suspensão.pdf", "2026-09-24T12:40:00+00:00")]
+    linha = R.reclassificar(R.SomenteLeitura(_sb([ln])), agora=AGORA)["linhas"][0]
+    assert linha["status"] == "sem_mudanca" and linha["campos"] == {} and linha["prioridade_depois"] == "leads"
+
+
 def test_documento_de_suspensao_da_compra_tira_dos_leads_e_grava_a_fase():
     ln = _linha(135, "Aquisição de equipamentos de academia", termos=("academia",),
                 itens=[{"id": 1, "numero_item": 1, "descricao": "Leg press 45 graus", "material_ou_servico": "M",
                         "categoria_escopo": "forte", "interesse_borracha": False}])
     ln["raw"]["data_atualizacao_pncp"] = "2026-09-29T14:18:52"
-    ln["documentos"] = [_doc("ATA RELATIVA E DECISÃO ADM. DE SUSPENSÃO.pdf", "2026-09-29T14:18:52+00:00")]
+    # 14:18:52 de Brasília gravado certo e devolvido pelo PostgREST em UTC (#339).
+    ln["documentos"] = [_doc("ATA RELATIVA E DECISÃO ADM. DE SUSPENSÃO.pdf", "2026-09-29T17:18:52+00:00")]
     ln["fase"] = None
     r = R.reclassificar(R.SomenteLeitura(_sb([ln])), agora=AGORA)
     linha = r["linhas"][0]

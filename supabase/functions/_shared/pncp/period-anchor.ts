@@ -79,39 +79,40 @@ export function shouldSkipAnnualLoad(
   summary: PcaSearchPeriodSummary | null,
   scopedProbes: PcaScopedProbe[] = [],
 ): { skip: boolean; reason: string | null } {
-  if (!anchor?.ultima_carga_completa) {
-    return { skip: false, reason: null };
+  if (!anchor?.ultima_carga_completa) return { skip: false, reason: null };
+  const raw = anchor.metadata?.carga_completa;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { skip: false, reason: "carga_anterior_sem_escopo_comprovado" };
   }
-
-  if (summary && summary.total_indexado > (anchor.total_indexado ?? 0)) {
-    return { skip: false, reason: "total_indexado_cresceu" };
+  const carga = raw as Record<string, unknown>;
+  if (
+    carga.version !== 1 || !carga.total_registros_classe || !scopedProbes.length ||
+    scopedProbes.some((p) => !Number.isSafeInteger(p.total_registros) || p.total_registros < 0)
+  ) {
+    return { skip: false, reason: "carga_anterior_sem_escopo_comprovado" };
   }
-
-  const scopedChange = scopedTotalsChanged(anchor, scopedProbes);
-  if (scopedChange) {
-    return { skip: false, reason: scopedChange };
+  if (!summary || !Number.isSafeInteger(summary.total_indexado) || summary.total_indexado < 0) {
+    return { skip: false, reason: "search_indisponivel" };
   }
-
-  if (summary?.max_data_atualizacao && anchor.ultima_data_atualizacao) {
-    const anchorTs = parsePncpTimestamp(anchor.ultima_data_atualizacao);
-    const indexTs = parsePncpTimestamp(summary.max_data_atualizacao);
-    if (
-      anchorTs !== null &&
-      indexTs !== null &&
-      indexTs > anchorTs
-    ) {
-      return { skip: false, reason: "indice_search_atualizado" };
-    }
+  if (summary.total_indexado !== carga.total_indexado) {
+    return { skip: false, reason: "total_indexado_alterado" };
   }
-
-  if (anchor.ultima_data_atualizacao || scopedProbes.length > 0) {
-    return {
-      skip: true,
-      reason: "periodo_inalterado_desde_ultima_carga",
-    };
+  const scopedChange = scopedTotalsChanged({ ...anchor, metadata: carga }, scopedProbes);
+  if (scopedChange) return { skip: false, reason: scopedChange };
+  const snapshotTotals = carga.total_registros_classe as Record<string, unknown>;
+  if (scopedProbes.some((p) => snapshotTotals[p.codigo_classificacao] !== p.total_registros)) {
+    return { skip: false, reason: "escopo_nao_comprovado" };
   }
-
-  return { skip: false, reason: null };
+  const anterior = typeof carga.ultima_data_atualizacao === "string"
+    ? parsePncpTimestamp(carga.ultima_data_atualizacao)
+    : null;
+  const atual = summary.max_data_atualizacao ? parsePncpTimestamp(summary.max_data_atualizacao) : null;
+  if (anterior === null || atual === null) {
+    const vazio = summary.total_indexado === 0 && scopedProbes.every((p) => p.total_registros === 0);
+    return { skip: vazio, reason: vazio ? "periodo_inalterado_desde_ultima_carga" : "data_search_nao_comprovada" };
+  }
+  if (anterior !== atual) return { skip: false, reason: "indice_search_atualizado" };
+  return { skip: true, reason: "periodo_inalterado_desde_ultima_carga" };
 }
 
 function summaryMetadata(summary: PcaSearchPeriodSummary | null) {
@@ -133,6 +134,7 @@ export async function upsertPeriodProbe(
   if (ano === undefined) {
     throw new Error("upsertPeriodProbe: ano obrigatorio");
   }
+  const anterior = await getPeriodAnchor(client, ano);
   const now = new Date().toISOString();
   const { error } = await client.schema("private").from("pncp_period_anchor").upsert(
     {
@@ -144,6 +146,7 @@ export async function upsertPeriodProbe(
       total_indexado: summary?.total_indexado ?? null,
       ultima_verificacao: now,
       metadata: {
+        ...(anterior?.metadata ?? {}),
         ...summaryMetadata(summary),
         ...extraMetadata,
       },
@@ -178,6 +181,12 @@ export async function markPeriodLoadComplete(
       metadata: {
         ...summaryMetadata(summary),
         ...extraMetadata,
+        carga_completa: {
+          version: 1,
+          total_indexado: summary?.total_indexado ?? null,
+          ultima_data_atualizacao: summary?.max_data_atualizacao ?? null,
+          total_registros_classe: extraMetadata.total_registros_classe ?? {},
+        },
       },
       updated_at: now,
     },

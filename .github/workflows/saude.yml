@@ -1,7 +1,8 @@
 # Saúde operacional (plano DevOps, Fase 3): a cada 30 min consulta a api-saude, o readiness da api-dashboard-oportunidades
 # e o Dashboard; com verificação crítica abre/atualiza a issue "alerta-operacional" (o GitHub avisa por e-mail) e a fecha
 # quando normaliza. Limiares: private.saude_limiares. Lógica: scripts/saude-alerta.sh (testável com DRY_RUN=1).
-# Pré-requisito: secret SAUDE_TOKEN = o mesmo valor de SYNC_CRON_SECRET das Edge Functions.
+# Pré-requisito: secret SAUDE_TOKEN = SYNC_CRON_SECRET das Edge Functions.
+# Secret SAUDE_APIKEY = chave publishable do projeto (header apikey). O Bearer sozinho é recusado pelo gateway.
 name: Saude operacional
 
 on:
@@ -27,7 +28,7 @@ jobs:
           git init -q .
           git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git fetch -q --depth 1 origin "${GITHUB_SHA}"
-          git checkout -q FETCH_HEAD -- scripts/saude-alerta.sh
+          git checkout -q FETCH_HEAD -- scripts/saude-alerta.sh scripts/saude_validar.py
         env:
           GH_TOKEN: ${{ github.token }}
 
@@ -36,9 +37,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           SAUDE_TOKEN: ${{ secrets.SAUDE_TOKEN }}
+          SAUDE_APIKEY: ${{ secrets.SAUDE_APIKEY }}
+          # Cobertura atual contratada; incluir/remover verificações exige revisar este conjunto.
+          # coleta_externa_fila_pendente_horas (spec 0064) fica fora enquanto o limiar estiver desligado
+          # (20261113200000, decisão de 13/11/2026, até a fila do Sistema S escoar); religar e incluir aqui juntos.
+          SAUDE_VERIFICACOES_ESPERADAS: cron_falhas_24h,cron_http_erros_24h,cron_sem_resposta,pncp_sync_heartbeat_parado,pncp_sync_falhas_24h,pncp_sync_dias_sem_sucesso,coleta_externa_dias_sem_sucesso,coleta_externa_executando_horas,precos_dias_sem_coleta,pgc_dias_sem_coleta,licitacoes_horas_sem_novas,itens_sem_taxonomia_pct
         run: |
           if [ -z "${SAUDE_TOKEN}" ]; then
             echo "::error::Secret SAUDE_TOKEN ausente (use o valor de SYNC_CRON_SECRET)."
+            exit 1
+          fi
+          if [ -z "${SAUDE_APIKEY}" ]; then
+            echo "::error::Secret SAUDE_APIKEY ausente (chave publishable do projeto, header apikey)."
             exit 1
           fi
           bash scripts/saude-alerta.sh

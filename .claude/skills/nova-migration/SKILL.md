@@ -27,5 +27,8 @@ Leia também `.github/instructions/database-migrations.instructions.md`.
    `raise exception 'ACL CHECK FALHOU: ...'` e termina com `raise notice 'SUCESSO: ...'`).
 6. **Destrutivo** (`drop table/column`, `alter ... type`, `set not null`, `truncate`, `delete`): só com justificativa
    escrita no PR e plano de volta. Prefira aditivo.
-7. **Validar:** skill `validar-migrations`. Depois peça ao agente `revisor-migration`.
-8. **Produção:** o merge na `main` aplica a migration pela integração do Supabase. Diga isso no PR.
+7. **Validar:** skill `validar-migrations` (a CI roda o mesmo no job `migrations`). Depois peça ao agente
+   `revisor-migration`. A branch de preview do PR (check Supabase Preview) aplica a migration num banco real: o merge
+   só sai com ela verde. Se o preview for ignorado pelo limite de branches, avise o Marcelo antes de seguir.
+8. **Produção:** o merge na `main` aplica a migration pela integração do Supabase. Diga isso no PR. Depois do merge:
+   skill `verificar-producao` e `get_advisors` (security); achado novo vira issue.

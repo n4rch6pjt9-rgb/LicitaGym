@@ -418,11 +418,14 @@ def test_coletar_precos_falha_se_resposta_rpc_invalida():
 def test_coletar_precos_catalogo_vazio_nao_usa_pdms_padrao():
     cliente = MagicMock()
     sb = MagicMock()
+    sb.selecionar.return_value = []  # sem itens avulsos no catálogo
     sb.rpc.return_value = []
 
     res = compras_precos.coletar(cliente, sb)
 
-    assert res["sucesso"] is True
+    # Spec 0009 (revisão I5): catálogo vazio no modo catálogo é falha explícita, não coleta "bem-sucedida" sem nada.
+    assert res["sucesso"] is False
+    assert "vazio" in res["erro"]
     assert res["total_coletados"] == 0
     cliente.consultar_material.assert_not_called()
 
@@ -431,6 +434,7 @@ def test_coletar_precos_usa_pdms_da_rpc():
     cliente = MagicMock()
     cliente.consultar_material.return_value = {"resultado": [], "totalRegistros": 0}
     sb = MagicMock()
+    sb.selecionar.return_value = []  # sem itens avulsos no catálogo
     sb.rpc.return_value = [{"codigo_pdm": 9999}]
 
     compras_precos.coletar(cliente, sb)

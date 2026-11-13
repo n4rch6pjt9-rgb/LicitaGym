@@ -41,6 +41,7 @@ import sys
 import threading
 import time
 import unicodedata
+import uuid
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -48,7 +49,9 @@ from urllib.parse import urljoin, urlsplit
 
 import requests
 
+from .arquivo_raw import ArquivoRaw, ArquivoRawErro, fechar_todos
 from .destino import Armazenamento, Supabase, drenar_licitacao_match, env, parece_html, sha256
+from .proveniencia import ORIGENS, campos_proveniencia
 from .paginacao import TAMANHO_PAGINA_MAX, avaliar_pagina, clamp_tamanho
 from . import escopo as _escopo
 from .catmat_codigo import (
@@ -66,6 +69,8 @@ from .escopo import (
     classificar,
     excluir_compra,
     interesse_borracha,
+    interesse_borracha_item,
+    CATEGORIAS_PISO_VETAVEL,
     normalizar,
     obra_ou_construcao,
     piso_item_fora,
@@ -148,6 +153,9 @@ def validar_prioridades(prioridades: list[str] | set[str] | str | None) -> set[s
 # Detalhe da compra e atalho (o edital e a fonte principal): nao gastar 10 min nele.
 DETALHE_TIMEOUT = int(os.environ.get("PNCP_DETALHE_TIMEOUT", "20"))
 DETALHE_TENTATIVAS = int(os.environ.get("PNCP_DETALHE_TENTATIVAS", "2"))
+# /atas da compra (pncp-integracao-v3): tamanhoPagina >= 10; família atas aceita até 500.
+TAMANHO_PAGINA_ATAS = 100
+ATAS_PAGINAS_MAX = 20
 
 # Termos padrão: prioriza o interesse comercial (grama/borracha) e o núcleo fitness
 TERMOS_PADRAO = [
@@ -183,7 +191,7 @@ class PNCP:
                     return []
                 if r.status_code in (429, 500, 502, 503, 504):
                     ultimo = requests.HTTPError(f"{r.status_code} do PNCP", response=r)
-                    espera = _retry_after_s(r) if r.status_code == 429 else None
+                    espera = _retry_after_s(r, maximo=float("inf")) if r.status_code == 429 else None
                     time.sleep(espera if espera is not None else min(60, 5 * 2 ** tentativa))
                     continue
                 r.raise_for_status()
@@ -272,6 +280,32 @@ class PNCP:
     def arquivos(self, c: dict) -> list[dict]:
         return self._lista(self.base_compra(c) + "/arquivos")
 
+    def atas(self, c: dict) -> list[dict]:
+        """Atas de registro de preço da compra: GET /api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/atas
+        (pncp-integracao-v3, PaginaRetornoAtaRegistroPrecoDTO: {data, totalPaginas, numeroPagina,
+        paginasRestantes, empty}; tamanhoPagina mínimo 10, família atas até 500). HTTP 204 = sem atas.
+        Envelope inesperado, página repetida ou erro HTTP levantam: quem chama trata como "sem informação",
+        nunca como "sem ata"."""
+        out, pagina, vistas = [], 1, set()
+        while True:
+            r = self._get(self.base_compra(c) + "/atas", pagina=pagina, tamanhoPagina=TAMANHO_PAGINA_ATAS)
+            if r == []:   # 204
+                return out
+            if not isinstance(r, dict) or not isinstance(r.get("data"), list):
+                raise RespostaInvalida(f"PNCP atas: envelope inesperado ({type(r).__name__})")
+            lote = r["data"]
+            impressao = sha256(json.dumps(lote, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+            if lote and impressao in vistas:
+                raise RespostaInvalida(f"PNCP atas: página repetida (página {pagina})")
+            vistas.add(impressao)
+            out += lote
+            restantes = r.get("paginasRestantes")
+            if not lote or not isinstance(restantes, int) or restantes <= 0:
+                return out
+            if pagina >= ATAS_PAGINAS_MAX:
+                raise RespostaInvalida(f"PNCP atas: mais de {ATAS_PAGINAS_MAX} páginas")
+            pagina += 1
+
     def _abrir(self, url: str):
         """GET em streaming sem redirecionamento automático: cada salto passa pela allowlist."""
         atual = url
@@ -297,7 +331,7 @@ class PNCP:
                 with self._abrir(url) as r:
                     if r.status_code == 429:
                         ultimo = requests.HTTPError(f"{r.status_code} do PNCP", response=r)
-                        espera = _retry_after_s(r)
+                        espera = _retry_after_s(r, maximo=float("inf"))
                         time.sleep(espera if espera is not None else min(60, 5 * 2 ** tentativa))
                         continue
                     if r.status_code in (500, 502, 503, 504):
@@ -342,6 +376,38 @@ def valor_total_detalhe(det: dict) -> float | None:
     mesma coluna tornaria valor_total incomparável entre compras (e o homologado nem existe em
     editais abertos, que são justamente os que chegam sem valor)."""
     return _valor_positivo((det or {}).get("valorTotalEstimado"))
+
+
+# Regulamento a partir do nome oficial do amparo legal (spec 0020). A regra que vale é a do banco
+# (public.regulamento_do_amparo, gatilho em licitacoes_externas); este espelho só alimenta o resumo do dry-run.
+# 14.981 e 13.303 antes de 14.133: o nome pode citar mais de uma lei.
+_LEIS_AMPARO = (
+    ("LEI_14981", re.compile(r"(^|[^0-9])14\.?981([^0-9]|$)")),
+    ("LEI_13303", re.compile(r"(^|[^0-9])13\.?303([^0-9]|$)")),
+    ("LEI_14133", re.compile(r"(^|[^0-9])14\.?133([^0-9]|$)")),
+)
+
+
+def regulamento_do_amparo(nome) -> str | None:
+    """Espelho de public.regulamento_do_amparo: LEI_14981, LEI_13303, LEI_14133, OUTRO; None se vazio."""
+    # Mesmos caracteres do btrim(p_nome, E' \t\r\n') do SQL (str.strip() tiraria também \xa0, \v, \f).
+    if not isinstance(nome, str) or not nome.strip(" \t\r\n"):
+        return None
+    for regulamento, padrao in _LEIS_AMPARO:
+        if padrao.search(nome):
+            return regulamento
+    return "OUTRO"
+
+
+def amparo_legal_detalhe(det: dict | None) -> dict | None:
+    """amparoLegal do detalhe da compra, exatamente como veio (objeto inteiro, sem aparar o nome: dado de auditoria).
+    None sem nome: ausente não é gravado. O strip serve só para validar; o banco apara ao derivar o regulamento."""
+    if not isinstance(det, dict):
+        return None
+    a = det.get("amparoLegal")
+    if not isinstance(a, dict) or not isinstance(a.get("nome"), str) or not a["nome"].strip():
+        return None
+    return dict(a)
 
 
 def _link_http(v) -> str | None:
@@ -413,13 +479,23 @@ def material_ou_servico(it: dict) -> str | None:
 
 
 def _data(v):
-    if not v:
-        return None
-    try:
-        d = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
-        return (d if d.tzinfo else d.replace(tzinfo=timezone.utc)).isoformat()
-    except ValueError:
-        return None
+    """ISO com fuso. Texto sem fuso é horário de Brasília, como _data_pncp (#339; o mesmo padrão da #332).
+    Usado em data_documento, data_resultado e data_homologacao. Fuso explícito é respeitado."""
+    return _data_pncp(v)
+
+
+def abertura_das_propostas(c: dict, det: dict | None) -> str | None:
+    """Início do recebimento de propostas (licitacoes_externas.data_inicio, #333): dataAberturaProposta do detalhe,
+    senão data_inicio_vigencia da busca (é o campo preenchido; data_inicio_recebimento_propostas vem vazio), no fuso
+    do PNCP."""
+    return _data_pncp((det or {}).get("dataAberturaProposta")) or _data_pncp(c.get("data_inicio_vigencia"))
+
+
+def _data_pncp(v):
+    """ISO com fuso, com texto sem fuso no horário de Brasília (FUSO_PNCP), como _instante. Usado em data_fim,
+    data_publicacao (#332) e data_inicio (#333) de licitacoes_externas. Data sem hora vira 00:00 de Brasília."""
+    d = _instante(v)
+    return d.isoformat() if d else None
 
 
 # Categorias de equipamento/material de academia: item marcado como serviço ('S') no PNCP não conta nelas
@@ -503,7 +579,34 @@ def compra_so_de_servico(itens: list[dict] | None) -> bool:
     return bool(itens) and all(material_ou_servico(it) == "S" for it in itens)
 
 
+# Categorias que a regra do forte ancorado não toca (vêm do piso/borracha/obra ou do código CATMAT)
+_FORA_DA_REGRA_ANCORADA = ("borracha", "obra_piso", "piso", "catmat")
+
+
+def forte_ancorado(cat: str | None, descricao: str, ancoras) -> tuple[str | None, dict | None]:
+    """Regra do forte ancorado (Marcelo, 03/10/2026 19:00 BRT, modo núcleo; coletor/catmat_ancoras.py).
+    `cat` é a categoria do texto do item (escopo.classificar). Retorna (categoria, motivo):
+    - piso, obra_piso, borracha e catmat: ficam como estão;
+    - item que casa âncora de PDM ou de item incluído no catálogo: "forte"; se uma lista fixa de fora veta o texto
+      (escopo.veto_lista_fixa), "fraco";
+    - sem âncora: "forte" das listas fixas cai para "fraco"; "fraco" e None ficam.
+    motivo (None quando nada muda): {"ancora", "pdm", "origem", "item_origem", "veto"}."""
+    if cat in _FORA_DA_REGRA_ANCORADA:
+        return cat, None
+    hits = ancoras.casar(descricao)
+    if hits:
+        a = hits[0]
+        veto = _escopo.veto_lista_fixa(descricao)
+        motivo = {"ancora": a.ancora, "pdm": a.codigo_pdm, "origem": a.origem, "item_origem": a.codigo_item_origem,
+                  "veto": veto}
+        return ("fraco" if veto else "forte"), motivo
+    if cat == "forte":
+        return "fraco", {"ancora": None, "pdm": None, "origem": None, "item_origem": None, "veto": None}
+    return cat, None
+
+
 def avaliar(compra: dict, itens: list[dict], mapa_catmat: MapaCatmat | None = None,
+            motivos: dict | None = None,
             ) -> tuple[str | None, bool, dict[int, tuple[str | None, bool]]]:
     """Classifica a compra pelo objeto e pelos itens. Retorna (categoria, interesse_borracha, por_item).
 
@@ -523,7 +626,14 @@ def avaliar(compra: dict, itens: list[dict], mapa_catmat: MapaCatmat | None = No
     Catálogo do Compras.gov.br (catalogo.id = 1) presente no mapa CATMAT é classificado pelo código: PDM no catálogo
     efetivo da empresa -> "catmat", fora -> None. Sem código desse catálogo (Outros = código do órgão, CATSER) ou com
     código fora do mapa, vale o texto, como antes. As travas abaixo (obra, ar livre, passagem...) valem igual.
-    `mapa_catmat` None = só texto (sem banco nenhum, testes antigos); com banco e RPC fora do ar, main aborta."""
+    `mapa_catmat` None = só texto (sem banco nenhum, testes antigos); com banco e RPC fora do ar, main aborta.
+
+    Forte ancorado (03/10/2026, Marcelo: modo núcleo): com `mapa_catmat.ancoras`, item que o código não decidiu só
+    é "forte" quando casa uma âncora do catálogo (forte_ancorado); as listas fixas só rebaixam para "fraco". O
+    objeto da compra não tem âncora: "forte" do objeto vira "fraco". As travas acima continuam valendo depois
+    (âncora não é item core da compra de passagem). `motivos` (opcional) recebe {numeroItem: motivo} dos itens em
+    que a regra decidiu, para o relatório do reclassificador."""
+    ancoras = mapa_catmat.ancoras if mapa_catmat is not None else None
     objeto = compra.get("description") or compra.get("title") or ""
     if excluir_compra(objeto) or servico_sem_material(objeto):
         return None, False, {it["numeroItem"]: (None, False) for it in itens}
@@ -546,6 +656,10 @@ def avaliar(compra: dict, itens: list[dict], mapa_catmat: MapaCatmat | None = No
         desc = it.get("descricao") or ""
         decidido, cat_codigo = categoria_por_codigo(it, mapa_catmat, material_ou_servico(it))
         cat = cat_codigo if decidido else classificar(desc)
+        if ancoras is not None and not decidido:
+            cat, motivo = forte_ancorado(cat, desc, ancoras)
+            if motivo is not None and motivos is not None:
+                motivos[it["numeroItem"]] = motivo
         # "Fornecimento de halteres"/"Fornecimento e instalação de esteiras" também fornecem produto (fornece_produto;
         # PRODUTO só conhece os substantivos genéricos)
         servico = material_ou_servico(it) == "S" and not PRODUTO.search(normalizar(desc)) and \
@@ -559,7 +673,7 @@ def avaliar(compra: dict, itens: list[dict], mapa_catmat: MapaCatmat | None = No
             cat = None
         if ar_livre and cat in CATEGORIAS_SO_MATERIAL:
             cat = None
-        if cat in ("piso", "obra_piso") and piso_item_fora(desc):
+        if cat in CATEGORIAS_PISO_VETAVEL and piso_item_fora(desc):
             cat = None
         if obra and cat in CATEGORIAS_SO_MATERIAL:
             cat = None
@@ -568,8 +682,10 @@ def avaliar(compra: dict, itens: list[dict], mapa_catmat: MapaCatmat | None = No
         if predial:   # manutenção predial: só o objeto decide (nem o piso da planilha SINAPI conta)
             por_item[it["numeroItem"]] = (None, False)
             continue
-        por_item[it["numeroItem"]] = (cat, interesse_borracha(desc, cat))
+        por_item[it["numeroItem"]] = (cat, interesse_borracha_item(desc, cat))  # #390: piso de outro produto não
     cat_obj = classificar(objeto)
+    if ancoras is not None and cat_obj == "forte":   # o objeto não tem âncora: as listas fixas só dão "fraco"
+        cat_obj = "fraco"
     # pncp.py:388-391 antes de 02/10/2026: o objeto sozinho ("manutenção de equipamentos de musculação") fazia
     # forte numa compra sem nenhum item de material.
     if so_servico and cat_obj in CATEGORIAS_SO_MATERIAL and not fornece_produto(normalizar(objeto)):
@@ -609,7 +725,8 @@ _ITEM_FINAL = re.compile(r"homologad|adjudicad|desert|fracassad|anulad|revogad|c
 # Datas do PNCP sem fuso (ex.: data_fim_vigencia "2026-10-13T09:30") estão no horário de Brasília.
 FUSO_PNCP = timezone(timedelta(hours=-3))
 # Prazo de proposta além disto é data inválida, não lead (02/10/2026): id 129 com 2604-04-16, credenciamento
-# "contínuo" com 9999-12-31, id 126 com 2029. Fica monitorar ("Prazo inválido") até alguém conferir.
+# "contínuo" com 9999-12-31, id 126 com 2029. Fica monitorar ("Prazo inválido") até alguém conferir, salvo quando
+# normalizacao_prazo (09/10/2026) corrige o ano ou um fato (ata, resultado) limita o prazo.
 PRAZO_PROPOSTA_MAXIMO = timedelta(days=730)
 
 
@@ -642,7 +759,8 @@ def _verdadeiro(v) -> bool:
 
 
 def motivo_prioridade(compra: dict, tem_resultado: bool | None = None, *, agora: datetime | None = None,
-                      status_busca: str | None = None, itens: list[dict] | None = None) -> tuple[str | None, str]:
+                      status_busca: str | None = None, itens: list[dict] | None = None,
+                      prazo_normalizado: str | None = None) -> tuple[str | None, str]:
     """(prioridade, motivo). Função pura: não consulta nada, só lê os campos recebidos.
 
     `compra` aceita o item da busca (situacao_nome, tem_resultado, cancelado, data_fim_vigencia), o detalhe
@@ -659,7 +777,9 @@ def motivo_prioridade(compra: dict, tem_resultado: bool | None = None, *, agora:
 
     Precedência de chaves (_campo): as do detalhe vêm antes das da busca (existeResultado > tem_resultado,
     situacaoCompraNome > situacao_nome, dataEncerramentoProposta > data_fim_vigencia), então na visão
-    compra_com_detalhe() o detalhe vence a busca, que pode estar defasada."""
+    compra_com_detalhe() o detalhe vence a busca, que pode estar defasada.
+    `prazo_normalizado`: prazo de proposta normalizado (normalizacao_prazo) que substitui o bruto implausível na
+    decisão; o bruto continua no raw."""
     agora = agora or datetime.now(timezone.utc)
     if tem_resultado is True:
         return "historico", "resultado consultado"
@@ -688,7 +808,8 @@ def motivo_prioridade(compra: dict, tem_resultado: bool | None = None, *, agora:
         return "monitorar", f"situação {situacao}"
     # prazo do PNCP (detalhe, depois raw.data_fim_vigencia) antes do data_fim gravado: o coletor grava o
     # horário sem fuso do PNCP como UTC (_data), 3 h antes do prazo real em Brasília
-    fim = _instante(_campo(compra, "dataEncerramentoProposta", "data_fim_vigencia") or _campo(compra, "data_fim"))
+    fim = _instante(prazo_normalizado) or \
+        _instante(_campo(compra, "dataEncerramentoProposta", "data_fim_vigencia") or _campo(compra, "data_fim"))
     if fim:
         if fim > agora + PRAZO_PROPOSTA_MAXIMO:
             return "monitorar", f"prazo de proposta implausível ({fim.date().isoformat()})"
@@ -758,6 +879,67 @@ FASE_ITENS_FINALIZADOS = "Encerrada (itens finalizados)"
 FASE_RECEBENDO = "Recebendo propostas"
 FASE_JULGAMENTO = "Em julgamento"
 FASE_PRAZO_INVALIDO = "Prazo inválido"
+FASE_REGISTRO_PRECO = "Registro de Preço"
+
+# Republicação do edital (09/10/2026, caso 135): documento ATIVO do tipo Edital com "republica" no título.
+_DOC_REPUBLICACAO = re.compile(r"\brepublica")
+_TIPO_EDITAL = re.compile(r"^\s*edital\s*$")
+
+
+def _texto_doc(d: dict) -> str:
+    # nome de arquivo usa "_" como espaço ("AVISO_SUSPENSAO_P_E_35_2026.pdf"), e "_" é letra para o \b
+    return normalizar(" ".join(str(d.get(k) or "") for k in _CHAVES_TEXTO_DOC)).replace("_", " ").strip()
+
+
+def _data_doc(d: dict) -> datetime | None:
+    return _instante(next((d[k] for k in _CHAVES_DATA_DOC if d.get(k)), None))
+
+
+def _republicacao(d: dict) -> datetime | None:
+    """Data do documento se ele é a republicação do edital (tipo Edital + "republica" no título), senão None."""
+    tipo = normalizar(str(d.get("tipoDocumentoNome") or d.get("tipo_documento") or "")).replace("_", " ")
+    titulo = normalizar(" ".join(str(d.get(k) or "") for k in ("titulo", "nome_original"))).replace("_", " ")
+    if not _TIPO_EDITAL.search(tipo) or not _DOC_REPUBLICACAO.search(titulo) or documento_de_etapa(titulo):
+        return None
+    return _data_doc(d)
+
+
+def analise_documental(documentos: list[dict] | None, retificada_em=None) -> tuple[str | None, bool]:
+    """(sinal, republicada): o sinal de sinal_documental e se uma suspensão foi neutralizada pela republicação do
+    edital. Republicação = documento ativo do tipo Edital com "republica" no título (normalizado, sem acento, "_"
+    vira espaço) publicado em data >= (última suspensão - TOLERANCIA_RETIFICACAO). Caso 135 (Baraúna/RN): edital de
+    republicação 14:18:51, ata de suspensão 14:18:52 e retificação 14:18:52 do mesmo upload; dataPublicacaoPncp é a
+    data do upload, então a ordem dentro do mesmo minuto não diz o que veio antes no processo."""
+    resultado = revogacao = False
+    ultima_suspensao = ultima_republicacao = None
+    for d in documentos or []:
+        if d.get("statusAtivo") is False:
+            continue
+        rep = _republicacao(d)
+        if rep and (ultima_republicacao is None or rep > ultima_republicacao):
+            ultima_republicacao = rep
+        t = _texto_doc(d)
+        if not t or _DOC_DE_CONTRATO.search(t) or documento_de_etapa(t):
+            continue
+        fim_suspensao = bool(_DOC_FIM_SUSPENSAO.search(t))
+        if _DOC_HOMOLOGACAO.search(t) or (_DOC_RESULTADO_FINAL.search(t) and not _DOC_RESULTADO_NAO_FINAL.search(t)):
+            resultado = True
+        if _DOC_REVOGACAO.search(t) and "parcial" not in t and not fim_suspensao:
+            revogacao = True
+        if _DOC_SUSPENSAO.search(t) and "parcial" not in t and not fim_suspensao:
+            dt = _data_doc(d)
+            if dt and (ultima_suspensao is None or dt > ultima_suspensao):
+                ultima_suspensao = dt
+    if resultado:
+        return "resultado", False
+    if revogacao:
+        return "revogacao", False
+    retificacao = _instante(retificada_em)
+    if ultima_suspensao and (retificacao is None or ultima_suspensao >= retificacao - TOLERANCIA_RETIFICACAO):
+        if ultima_republicacao and ultima_republicacao >= ultima_suspensao - TOLERANCIA_RETIFICACAO:
+            return None, True
+        return "suspensao", False
+    return None, False
 
 
 def sinal_documental(documentos: list[dict] | None, retificada_em=None) -> str | None:
@@ -770,33 +952,9 @@ def sinal_documental(documentos: list[dict] | None, retificada_em=None) -> str |
     revogação/suspensão parcial e fim de suspensão (revogação da suspensão, reabertura) também não;
     contrato/ata/aditivo/empenho não contam (contratação sim);
     suspensão só vale se não houve retificação da compra depois dela (retificada_em: dataAtualizacao do detalhe
-    ou data_atualizacao_pncp da busca, horário de Brasília)."""
-    resultado = revogacao = False
-    ultima_suspensao = None
-    for d in documentos or []:
-        if d.get("statusAtivo") is False:
-            continue
-        # nome de arquivo usa "_" como espaço ("AVISO_SUSPENSAO_P_E_35_2026.pdf"), e "_" é letra para o \b
-        t = normalizar(" ".join(str(d.get(k) or "") for k in _CHAVES_TEXTO_DOC)).replace("_", " ").strip()
-        if not t or _DOC_DE_CONTRATO.search(t) or documento_de_etapa(t):
-            continue
-        fim_suspensao = bool(_DOC_FIM_SUSPENSAO.search(t))
-        if _DOC_HOMOLOGACAO.search(t) or (_DOC_RESULTADO_FINAL.search(t) and not _DOC_RESULTADO_NAO_FINAL.search(t)):
-            resultado = True
-        if _DOC_REVOGACAO.search(t) and "parcial" not in t and not fim_suspensao:
-            revogacao = True
-        if _DOC_SUSPENSAO.search(t) and "parcial" not in t and not fim_suspensao:
-            dt = _instante(next((d[k] for k in _CHAVES_DATA_DOC if d.get(k)), None))
-            if dt and (ultima_suspensao is None or dt > ultima_suspensao):
-                ultima_suspensao = dt
-    if resultado:
-        return "resultado"
-    if revogacao:
-        return "revogacao"
-    retificacao = _instante(retificada_em)
-    if ultima_suspensao and (retificacao is None or ultima_suspensao >= retificacao - TOLERANCIA_RETIFICACAO):
-        return "suspensao"
-    return None
+    ou data_atualizacao_pncp da busca, horário de Brasília) nem republicação do edital depois dela
+    (analise_documental)."""
+    return analise_documental(documentos, retificada_em)[0]
 
 
 def _fase_do_motivo(prioridade: str | None, motivo: str) -> str | None:
@@ -817,41 +975,163 @@ def _fase_do_motivo(prioridade: str | None, motivo: str) -> str | None:
     return None   # sem prazo (status da busca) ou indeterminado: fica a situação oficial
 
 
+def atas_nao_canceladas(atas: list[dict] | None) -> list[dict]:
+    """Atas de registro de preço (formato AtaRegistroPrecoDTO do PNCP) que não estão canceladas: cancelado != true e
+    sem dataCancelamento."""
+    return [a for a in atas or [] if isinstance(a, dict) and not _verdadeiro(a.get("cancelado"))
+            and not a.get("dataCancelamento")]
+
+
+def _fim_do_dia_se_data(v, d: datetime) -> datetime:
+    """Data sem hora ("2024-05-10") vale até o fim do dia (Brasília)."""
+    return d + timedelta(days=1, seconds=-1) if len(str(v)) == 10 else d
+
+
+def _limite_dos_fatos(compra: dict, atas: list[dict] | None) -> tuple[datetime | None, str | None]:
+    """(data, regra): o fato mais antigo que prova que as propostas já tinham fechado: assinatura de ata de registro
+    de preço não cancelada (limitado_por_ata) ou homologação/resultado gravado (limitado_por_resultado)."""
+    fatos = []
+    for a in atas_nao_canceladas(atas):
+        v = a.get("dataAssinatura") or a.get("dataVigenciaInicio")
+        d = _instante(v)
+        if d:
+            fatos.append((_fim_do_dia_se_data(v, d), "limitado_por_ata"))
+    v = _campo(compra, "data_homologacao")
+    d = _instante(v)
+    if d:
+        fatos.append((_fim_do_dia_se_data(v, d), "limitado_por_resultado"))
+    return min(fatos, key=lambda f: f[0]) if fatos else (None, None)
+
+
+def normalizar_prazo_proposta(original, *, abertura=None, publicacao=None, limite: datetime | None = None,
+                              regra_limite: str | None = None) -> dict | None:
+    """Normaliza o prazo de proposta IMPLAUSÍVEL (quem chama decide que é implausível). Função pura.
+    Prazo = FIM DO RECEBIMENTO DE PROPOSTAS (dataEncerramentoProposta; licitacoes_externas.data_fim), não a abertura
+    da sessão (decisão do dono, 09/10/2026).
+
+    a) troca o ano pelo da abertura e depois pelo da publicação; aceita só se piso <= corrigido <= teto, com piso = a
+       abertura (sem ela, a publicação) e teto = `limite` (fato: ata/resultado/homologação) ou, sem fato,
+       publicação + PRAZO_PROPOSTA_MAXIMO (730 dias). Regra "ano_da_abertura" / "ano_da_publicacao".
+    b) se não fechar e houver fato (`limite` + `regra_limite`), o prazo fica limitado por ele: normalizado None e
+       regra = regra_limite ("limitado_por_ata": a ata assinada prova que as propostas fecharam antes dela).
+    c) senão None: nada normalizado (fica "Prazo inválido").
+    Ano 9999 é sentinela (credenciamento "contínuo"), não erro de digitação: não normaliza.
+    Saída: {campo: "data_fim", original (texto bruto do PNCP), normalizado (ISO com fuso ou None), regra,
+    origem: "inferido"}. O bruto nunca é alterado: continua em raw."""
+    fim = _instante(original)
+    if fim is None or fim.year >= 9999:
+        return None
+    ini, pub, teto = _instante(abertura), _instante(publicacao), limite
+    piso = ini or pub
+    if teto is None and pub is not None:
+        teto = pub + PRAZO_PROPOSTA_MAXIMO
+
+    def _saida(normalizado: datetime | None, regra: str) -> dict:
+        return {"campo": "data_fim", "original": str(original),
+                "normalizado": normalizado.isoformat() if normalizado else None,
+                "regra": regra, "origem": "inferido"}
+
+    if piso is not None and teto is not None:
+        for base, regra in ((ini, "ano_da_abertura"), (pub, "ano_da_publicacao")):
+            if base is None or base.year == fim.year:
+                continue
+            try:
+                corrigido = fim.replace(year=base.year)
+            except ValueError:   # 29/02 em ano não bissexto
+                continue
+            if piso <= corrigido <= teto:
+                return _saida(corrigido, regra)
+    if limite is not None and regra_limite:
+        return _saida(None, regra_limite)
+    return None
+
+
+def normalizacao_prazo(compra: dict, *, agora: datetime | None = None, atas: list[dict] | None = None) -> dict | None:
+    """Normalização do prazo de proposta da compra (normalizar_prazo_proposta) quando ele é implausível (além de
+    agora + PRAZO_PROPOSTA_MAXIMO), senão None. Lê o prazo como motivo_prioridade (detalhe, busca, gravado), a
+    abertura (dataAberturaProposta / data_inicio_vigencia / data_inicio), a publicação (dataPublicacaoPncp /
+    data_publicacao_pncp / data_publicacao) e o limite dos fatos (_limite_dos_fatos). Caso 129: 2604-04-16 com
+    abertura 2024-04-26 não fecha com troca de ano; a ata 39/2024 assinada em 2024-05-10 limita -> limitado_por_ata."""
+    agora = agora or datetime.now(timezone.utc)
+    original = _campo(compra, "dataEncerramentoProposta", "data_fim_vigencia") or _campo(compra, "data_fim")
+    fim = _instante(original)
+    if fim is None or fim <= agora + PRAZO_PROPOSTA_MAXIMO:
+        return None
+    limite, regra = _limite_dos_fatos(compra, atas)
+    return normalizar_prazo_proposta(
+        original, abertura=_campo(compra, "dataAberturaProposta", "data_inicio_vigencia", "data_inicio"),
+        publicacao=_campo(compra, "dataPublicacaoPncp", "data_publicacao_pncp", "data_publicacao"),
+        limite=limite, regra_limite=regra)
+
+
+def visao_para_prazo(visao: dict, data_homologacao: datetime | None) -> dict:
+    """A visão da compra para normalizacao_prazo com a homologação recém-lida dos resultados (a mesma que a coleta
+    grava em data_homologacao). Sem ela, limitado_por_resultado não é alcançável na coleta: a visão vem do detalhe e da
+    busca, que não trazem essa data, e a linha gravada não é relida. Data já presente na visão prevalece."""
+    if data_homologacao is None or _campo(visao, "data_homologacao"):
+        return visao
+    return {**visao, "data_homologacao": data_homologacao.isoformat()}
+
+
+def decisao_oficial(prioridade: str | None, motivo: str) -> bool:
+    """A decisão de motivo_prioridade é por sinal OFICIAL (P1-P4: resultado, encerramento, itens finalizados,
+    Suspensa oficial), que vence ata, documentos e prazo?"""
+    if motivo.startswith("sem prazo de proposta; busca"):
+        return False
+    return prioridade == "historico" or (prioridade == "monitorar" and motivo.startswith("situação "))
+
+
 def fase_da_compra(compra: dict, tem_resultado: bool | None = None, *, agora: datetime | None = None,
                    status_busca: str | None = None, itens: list[dict] | None = None,
                    documentos: list[dict] | None = None, retificada_em=None,
-                   excluida: bool = False) -> tuple[str | None, str | None, str]:
+                   excluida: bool = False, atas: list[dict] | None = None) -> tuple[str | None, str | None, str]:
     """(fase, prioridade, motivo): a fase real da compra, gravada em licitacoes_externas.fase (coluna que a
     view e a API já expõem; `situacao` continua sendo a oficial do PNCP). Função pura. Precedência (o primeiro
     que casar vence):
       P0 excluída do PNCP (detalhe HTTP 410)                        -> Excluída do PNCP          / historico
       P1-P4 motivo_prioridade: resultado/homologação, encerramento oficial, itens finalizados, Suspensa oficial
+      P4a ata de registro de preço não cancelada (/atas da compra)    -> Registro de Preço         / historico
       P5 documento da compra de homologação/adjudicação/resultado     -> Homologada (documento)    / historico
       P6 documento da compra de revogação/anulação (não parcial)      -> Revogada/Anulada (doc.)   / historico
-      P7 documento de suspensão sem retificação posterior             -> Suspensa (documento)      / monitorar
-      P8-P10 prazo: aberto -> leads; vencido -> Em julgamento; implausível -> Prazo inválido (monitorar)
+      P7 documento de suspensão sem retificação nem republicação do edital posterior
+                                                                      -> Suspensa (documento)      / monitorar
+      P8-P10 prazo (o normalizado quando o bruto é implausível e normalizacao_prazo corrige o ano): aberto -> leads;
+             vencido -> Em julgamento; implausível sem normalização -> Prazo inválido (monitorar)
+    `atas` None = não consultadas ou falha na consulta (sem informação): P4a não se aplica, e quem chama decide se
+    pode gravar (o coletor não grava fase/prioridade de compra SRP com /atas indisponível). Suspensão neutralizada
+    pela republicação do edital acrescenta "(suspensão anterior; republicado)" ao motivo.
     `fase` None = sem rótulo melhor que a situação oficial (quem chama não grava)."""
     if excluida:
         return FASE_EXCLUIDA, "historico", "compra excluída do PNCP (HTTP 410)"
+    norm = normalizacao_prazo(compra, agora=agora, atas=atas)
     prioridade, motivo = motivo_prioridade(compra, tem_resultado, agora=agora, status_busca=status_busca,
-                                           itens=itens)
-    # Só sinal oficial retorna antes dos documentos: o último recurso "sem prazo; status da busca" (P10) fica depois da
-    # análise documental (Copilot, PR #134, 2ª rodada: busca "encerradas" + aviso de suspensão vigente = monitorar).
-    pela_busca = motivo.startswith("sem prazo de proposta; busca")
-    if not pela_busca and (prioridade == "historico" or (prioridade == "monitorar" and motivo.startswith("situação "))):
+                                           itens=itens, prazo_normalizado=(norm or {}).get("normalizado"))
+    # Só sinal oficial retorna antes da ata e dos documentos: o último recurso "sem prazo; status da busca" (P10) fica
+    # depois da análise documental (Copilot, PR #134, 2ª rodada: busca "encerradas" + aviso de suspensão = monitorar).
+    if decisao_oficial(prioridade, motivo):
         return _fase_do_motivo(prioridade, motivo), prioridade, motivo
-    sinal = sinal_documental(documentos, retificada_em)
+    validas = atas_nao_canceladas(atas)
+    if validas:
+        a = min(validas, key=lambda x: str(x.get("dataAssinatura") or "9999"))
+        return FASE_REGISTRO_PRECO, "historico", (
+            f"ata de registro de preço {a.get('numeroAtaRegistroPreco') or '?'} assinada em "
+            f"{a.get('dataAssinatura') or '?'} (não cancelada)")
+    sinal, republicada = analise_documental(documentos, retificada_em)
     if sinal == "resultado":
         return FASE_RESULTADO_DOC, "historico", "documento de homologação/adjudicação/resultado da compra"
     if sinal == "revogacao":
         return FASE_REVOGADA_DOC, "historico", "documento de revogação/anulação da compra"
     if sinal == "suspensao":
         return FASE_SUSPENSA_DOC, "monitorar", "documento de suspensão da compra sem retificação posterior"
-    return _fase_do_motivo(prioridade, motivo), prioridade, motivo
+    fase = _fase_do_motivo(prioridade, motivo)
+    if republicada:
+        motivo = f"{motivo} (suspensão anterior; republicado)"
+    return fase, prioridade, motivo
 
 
 # Campos de estado do detalhe da compra (/api/consulta/v1/...) que motivo_prioridade lê.
-ESTADO_DETALHE = ("existeResultado", "valorTotalHomologado", "situacaoCompraNome", "dataEncerramentoProposta")
+ESTADO_DETALHE = ("existeResultado", "valorTotalHomologado", "situacaoCompraNome", "dataEncerramentoProposta",
+                  "dataAberturaProposta", "dataPublicacaoPncp")
 
 
 def compra_com_detalhe(compra: dict, det: dict | None) -> dict:
@@ -886,8 +1166,10 @@ def _dt(v) -> datetime | None:
 def coletar(pncp: PNCP, sb: Supabase | None, arm: Armazenamento | None, termos: list[str], status,
             paginas: int, tam: int, com_resultados: bool, baixar_arquivos: bool, max_bytes: int,
             dry_run: bool, modo: str | None = None, agora: datetime | None = None, workers: int = 3,
-            pausa_segunda_passada: float = 30, mapa_catmat: MapaCatmat | None = None) -> dict:
-    """Busca `status` para cada termo e grava as compras no escopo. `modo` só vai para o log/resumo:
+            pausa_segunda_passada: float = 30, mapa_catmat: MapaCatmat | None = None,
+            origem: str = "manual") -> dict:
+    """Busca `status` para cada termo e grava as compras no escopo. `origem` (cron|manual) vai para a
+    proveniência de cada linha gravada (spec 0023). `modo` só vai para o log/resumo:
     a prioridade de cada compra vem de prioridade_da_compra() (estado real, com o status da busca só
     como último recurso). Uma compra encerrada vira historico mesmo que já fosse lead (rebaixa).
     `mapa_catmat`: código CATMAT antes do texto em avaliar (None = só texto)."""
@@ -898,12 +1180,17 @@ def coletar(pncp: PNCP, sb: Supabase | None, arm: Armazenamento | None, termos: 
     resumo = {"encontradas": 0, "no_escopo": 0, "interesse_borracha": 0, "fora": 0,
               "gravadas": 0, "erros": 0}
     falhas: list[tuple[dict, str, str]] = []
+    # dry-run volta antes do upsert: a chave natural do item inclui licitacao_id, que só existe depois.
+    arquivos_raw = None if dry_run else _abrir_arquivos_pncp(str(uuid.uuid4()))
 
     def _tentar(c, termo, st):
         try:
             _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos,
-                       max_bytes, dry_run, resumo, modo, status_busca=st, agora=agora, mapa_catmat=mapa_catmat)
+                       max_bytes, dry_run, resumo, modo, status_busca=st, agora=agora, mapa_catmat=mapa_catmat,
+                       arquivos_raw=arquivos_raw, origem=origem)
             return c, None
+        except ArquivoRawErro:
+            raise
         except Exception as e:
             if "Supabase" in str(e) and (" 401 " in str(e) or " 403 " in str(e)):
                 raise SystemExit("Supabase recusou a chave (401/403). Confira SUPABASE_SERVICE_ROLE_KEY "
@@ -911,60 +1198,83 @@ def coletar(pncp: PNCP, sb: Supabase | None, arm: Armazenamento | None, termos: 
             log.warning("  %s: %s (vai para a segunda passada)", c.get("numero_controle_pncp"), str(e)[:120])
             return c, e
 
-    for termo in termos:
-        for st in status_lista:
-            lidos = 0
-            for pagina in range(1, paginas + 1):
-                try:
-                    res = pncp.buscar(termo, st, pagina, tam)
-                except Exception as e:
-                    # Uma busca que esgotou as tentativas (429/5xx/timeout) não derruba os outros termos;
-                    # fica no resumo e o processo sai com código 1 (ver main).
-                    _inc(resumo, "falha_busca")
-                    with _trava:
-                        resumo.setdefault("termos_com_falha", []).append(f"{termo} [{st}] pág. {pagina}")
-                    log.error('"%s" [%s] pág. %s: busca falhou, segue para o próximo termo: %s',
-                              termo, st, pagina, str(e)[:160])
-                    break
-                if not isinstance(res, dict) or not isinstance(res.get("items"), list):
-                    _inc(resumo, "falha_busca")
-                    log.warning('"%s" [%s] pág. %s: resposta inesperada; não é fim de coleta', termo, st, pagina)
-                    break
-                lote = res.get("items") or []
-                log.info('"%s" [%s] pág. %s: %s de %s', termo, st, pagina, len(lote), res.get("total"))
-                fila = []
-                for c in lote:
-                    chave = c.get("numero_controle_pncp")
-                    if not chave:
-                        continue
-                    if chave in vistos:
-                        vistos[chave].append(termo)
-                        continue
-                    vistos[chave] = [termo]
-                    resumo["encontradas"] += 1
-                    fila.append(c)
-                with ThreadPoolExecutor(max_workers=workers) as ex:
-                    for c, erro in ex.map(lambda c: _tentar(c, termo, st), fila):
-                        if erro:
-                            falhas.append((c, termo, st))
-                lidos += len(lote)
-                decisao = avaliar_pagina(lote, tamanho=tam, pagina=pagina, corpo=res, acumulado=lidos)
-                if decisao.aviso:
-                    log.warning('"%s" [%s] pág. %s: %s', termo, st, pagina, decisao.aviso)
-                if decisao.encerrar:
-                    break
-            else:
-                log.warning('"%s" [%s]: parou no teto de %s páginas sem o total confirmar o fim',
-                            termo, st, paginas)
+    def _varrer(termo, st, inicio=1, lidos=0, segunda=False) -> tuple[int, int] | None:
+        """Pagina a busca de (termo, status) a partir de `inicio`. Devolve None quando chega ao fim, ou
+        (página que falhou, itens lidos até ali) quando a busca esgota as tentativas ou volta fora do envelope:
+        quem chama refaz dali na segunda passada."""
+        nivel, destino = ((logging.ERROR, "falhou também na segunda passada") if segunda
+                          else (logging.WARNING, "vai para a segunda passada"))
+        for pagina in range(inicio, paginas + 1):
+            try:
+                res = pncp.buscar(termo, st, pagina, tam)
+            except Exception as e:
+                # Uma busca que esgotou as tentativas (429/5xx/timeout/conexão derrubada) não derruba os outros
+                # termos: volta para a segunda passada.
+                log.log(nivel, '"%s" [%s] pág. %s: busca falhou, %s: %s', termo, st, pagina, destino, str(e)[:160])
+                return pagina, lidos
+            if not isinstance(res, dict) or not isinstance(res.get("items"), list):
+                log.log(nivel, '"%s" [%s] pág. %s: resposta inesperada (não é fim de coleta), %s',
+                        termo, st, pagina, destino)
+                return pagina, lidos
+            lote = res.get("items") or []
+            log.info('"%s" [%s] pág. %s: %s de %s', termo, st, pagina, len(lote), res.get("total"))
+            fila = []
+            for c in lote:
+                chave = c.get("numero_controle_pncp")
+                if not chave:
+                    continue
+                if chave in vistos:
+                    vistos[chave].append(termo)
+                    continue
+                vistos[chave] = [termo]
+                resumo["encontradas"] += 1
+                fila.append(c)
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                for c, erro in ex.map(lambda c: _tentar(c, termo, st), fila):
+                    if erro:
+                        falhas.append((c, termo, st))
+            lidos += len(lote)
+            decisao = avaliar_pagina(lote, tamanho=tam, pagina=pagina, corpo=res, acumulado=lidos)
+            if decisao.aviso:
+                log.warning('"%s" [%s] pág. %s: %s', termo, st, pagina, decisao.aviso)
+            if decisao.encerrar:
+                return None
+        log.warning('"%s" [%s]: parou no teto de %s páginas sem o total confirmar o fim', termo, st, paginas)
+        return None
 
-    if falhas:
-        log.info("Segunda passada: %s compra(s) que falharam por instabilidade do PNCP", len(falhas))
-        time.sleep(pausa_segunda_passada)
-        for c, termo, st in falhas:
-            _, erro = _tentar(c, termo, st)
-            if erro:
-                _inc(resumo, "erros")
-    return resumo
+    try:
+        buscas_falhas: list[tuple[str, str, int, int]] = []
+        for termo in termos:
+            for st in status_lista:
+                parou = _varrer(termo, st)
+                if parou:
+                    buscas_falhas.append((termo, st, *parou))
+
+        if buscas_falhas:
+            # O /api/search do PNCP derruba conexões em rajadas (14/10: ~60% das chamadas): refazer depois dos outros
+            # termos costuma passar. O que falhar de novo fica no resumo e o processo sai com código 1 (ver main).
+            log.info("Segunda passada: %s busca(s) que falharam por instabilidade do PNCP", len(buscas_falhas))
+            time.sleep(pausa_segunda_passada)
+            for termo, st, pagina, lidos in buscas_falhas:
+                parou = _varrer(termo, st, pagina, lidos, segunda=True)
+                if parou:
+                    _inc(resumo, "falha_busca")
+                    resumo.setdefault("termos_com_falha", []).append(f"{termo} [{st}] pág. {parou[0]}")
+                else:
+                    _inc(resumo, "busca_recuperada")
+                    log.info('"%s" [%s]: recuperada na segunda passada a partir da pág. %s', termo, st, pagina)
+
+        if falhas:
+            log.info("Segunda passada: %s compra(s) que falharam por instabilidade do PNCP", len(falhas))
+            time.sleep(pausa_segunda_passada)
+            for c, termo, st in falhas:
+                _, erro = _tentar(c, termo, st)
+                if erro:
+                    _inc(resumo, "erros")
+        return resumo
+    finally:
+        if arquivos_raw is not None:
+            resumo["arquivo_raw"] = fechar_todos(list(arquivos_raw.values()))
 
 
 def _resultados_relevantes(pncp, c, itens, por_item) -> list[tuple[dict, dict]]:
@@ -1004,7 +1314,8 @@ def identificacao_do_detalhe(c: dict, det: dict) -> dict:
     numero_processo None = detalhe respondeu sem processo.
 
     valor_total (valorTotalEstimado do detalhe; a busca deixa valor_global vazio em editais) só
-    entra no dict quando existe: ausente nunca vira NULL gravado por cima de valor bom."""
+    entra no dict quando existe: ausente nunca vira NULL gravado por cima de valor bom. O mesmo vale para
+    amparo_legal (amparoLegal do detalhe), de onde o banco deriva o regulamento (spec 0020)."""
     proc = (det.get("processo") or "").strip() or None
     num, ano = det.get("numeroCompra"), det.get("anoCompra") or c.get("ano")
     mod = det.get("modalidadeNome") or c.get("modalidade_licitacao_nome")
@@ -1013,6 +1324,9 @@ def identificacao_do_detalhe(c: dict, det: dict) -> dict:
     valor = valor_total_detalhe(det)
     if valor is not None:
         out["valor_total"] = valor
+    amparo = amparo_legal_detalhe(det)
+    if amparo is not None:
+        out["amparo_legal"] = amparo
     return out
 
 
@@ -1029,8 +1343,27 @@ def _raw_resultado(r: dict) -> dict:
     return {k: v for k, v in r.items() if k not in campos_sigilosos}
 
 
+def _abrir_arquivos_pncp(execucao_id: str) -> dict[str, ArquivoRaw]:
+    """Um id por execução, as duas tabelas cujo raw sai do banco. licitacoes_externas fica de fora."""
+    return {
+        "licitacao_itens": ArquivoRaw("licitacao_itens", "pncp", execucao_id=execucao_id),
+        "licitacao_resultados": ArquivoRaw("licitacao_resultados", "pncp", execucao_id=execucao_id),
+    }
+
+
+def _enviar_raw(arquivos_raw: dict[str, ArquivoRaw] | None, tabela: str, chave: dict, bruto: dict) -> None:
+    """Com o dict da execução, acumula o lote. Sem ele (chamada avulsa), grava e fecha na hora."""
+    if arquivos_raw is None:
+        avulso = ArquivoRaw(tabela, "pncp")
+        avulso.adicionar(chave, bruto)
+        avulso.fechar()
+        return
+    arquivos_raw[tabela].adicionar(chave, bruto)
+
+
 def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_bytes, dry_run, resumo,
-               modo=None, status_busca=None, agora=None, det=None, mapa_catmat=None):
+               modo=None, status_busca=None, agora=None, det=None, mapa_catmat=None,
+               arquivos_raw: dict[str, ArquivoRaw] | None = None, origem: str = "manual"):
     """Coleta completa de uma compra: itens, resultados, detalhe e lista de arquivos do PNCP, gravados em
     licitacoes_externas, licitacao_itens, licitacao_resultados e licitacao_documentos.
     `det` = detalhe já consultado (recoletar_atualizadas); None consulta aqui.
@@ -1088,10 +1421,31 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
         _inc(resumo, "falha_arquivos")
         raise ConsultaFalhou(f"documentos da compra {c.get('numero_controle_pncp')} indisponíveis, nada decidido "
                              f"nem gravado: {erro_arquivos}") from erro_arquivos
+    # Atas de registro de preço só em compra SRP (detalhe.srp). Falha na consulta = sem informação (atas None), nunca
+    # "sem ata": a fase/prioridade que a ata poderia mudar não é gravada (fica a do banco).
+    atas, atas_indisponiveis = None, False
+    if det is not None and det.get("srp") is True and not excluida:
+        try:
+            atas = pncp.atas(c)
+            if not isinstance(atas, list):
+                raise RespostaInvalida(f"PNCP atas: esperava lista, veio {type(atas).__name__}")
+        except Exception as e:
+            atas, atas_indisponiveis = None, True
+            _inc(resumo, "falha_atas")
+            log.warning("            atas da compra %s indisponíveis (sem informação): %s",
+                        c.get("numero_controle_pncp"), str(e)[:120])
+    visao = compra_com_detalhe(c, det)
     fase, prioridade, motivo = fase_da_compra(
-        compra_com_detalhe(c, det), tem_resultado, agora=agora, status_busca=status_busca, itens=itens,
+        visao, tem_resultado, agora=agora, status_busca=status_busca, itens=itens,
         documentos=arquivos if isinstance(arquivos, list) else None,
-        retificada_em=atualizacao_da_compra(det, c), excluida=excluida)
+        retificada_em=atualizacao_da_compra(det, c), excluida=excluida, atas=atas)
+    normalizacao = normalizacao_prazo(visao_para_prazo(visao, data_homologacao), agora=agora, atas=atas)
+    # SRP com /atas indisponível: só a decisão oficial (P0-P4) é gravada; ata, documentos e prazo ficam para a
+    # próxima coleta (a ata venceria todos eles).
+    sem_atas = atas_indisponiveis and not excluida and not decisao_oficial(
+        *motivo_prioridade(visao, tem_resultado, agora=agora, status_busca=status_busca, itens=itens))
+    if sem_atas:
+        _inc(resumo, "prioridade_nao_gravada_sem_atas")
     # Fail-closed: sem o detalhe, "leads" vindo só da busca+itens pode ser compra já homologada.
     # Não grava (fica o valor do banco); historico/monitorar pela busca+itens continuam valendo.
     leads_sem_detalhe = det is None and prioridade == "leads"
@@ -1128,14 +1482,21 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
         "unidade_compradora": c.get("unidade_nome"), "orgao_nome": c.get("orgao_nome"),
         "orgao_cnpj": c.get("orgao_cnpj"), "municipio": c.get("municipio_nome"), "uf": c.get("uf"),
         "modalidade": c.get("modalidade_licitacao_nome"), "situacao": c.get("situacao_nome"), "fase": fase,
-        "data_publicacao": _data(c.get("data_publicacao_pncp")), "data_fim": _data(raw.get("data_fim_vigencia")),
+        "data_publicacao": _data_pncp(c.get("data_publicacao_pncp")), "data_fim": _data_pncp(raw.get("data_fim_vigencia")),
         "data_homologacao": data_homologacao.isoformat() if data_homologacao else None,
         "prioridade": prioridade, "categoria_escopo": categoria,
         "interesse_borracha": interesse, "termos_busca": [termo], "raw": raw,
+        # proveniência da passagem (spec 0023): hash do raw, origem cron|manual e instante UTC. `agora` é o início
+        # da passagem (coletar/recoletar_atualizadas fixam uma vez), não o instante de cada upsert.
+        **campos_proveniencia(raw, origem, agora),
     }
     # valor_total: detalhe (valorTotalEstimado, via identificacao_do_detalhe) > valor_global da busca
     # (vazio em editais). Sem nenhum dos dois a chave fica fora: o upsert (merge-duplicates) atualiza
     # toda coluna enviada, e mandar null apagaria um valor já gravado.
+    # data_inicio (abertura das propostas, #333): só vai quando há valor, para não apagar um já gravado.
+    abertura = abertura_das_propostas(c, det)
+    if abertura:
+        linha["data_inicio"] = abertura
     valor_total = ident.get("valor_total") or _valor_positivo(c.get("valor_global"))
     if valor_total is not None:
         linha["valor_total"] = valor_total
@@ -1144,10 +1505,18 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
     # O estado derivado vence: encerrada/homologada vira historico mesmo que a linha fosse lead.
     # Só não grava quando não dá para saber (não apaga uma prioridade já gravada com NULL) ou quando
     # seria leads sem o detalhe confirmar (fail-closed: homologada nunca vira lead).
-    if prioridade is None or leads_sem_detalhe:
+    # Prazo de proposta implausível normalizado (normalizacao_prazo): data_fim recebe o normalizado (None quando o
+    # prazo é só limitado por um fato, ex. limitado_por_ata) e normalizacoes.data_fim guarda {campo, original,
+    # normalizado, regra, origem: "inferido"}. O bruto continua em raw.data_fim_vigencia. Sem normalização,
+    # normalizacoes = null (o PNCP pode ter corrigido a data).
+    if not sem_atas:
+        linha["normalizacoes"] = {"data_fim": normalizacao} if normalizacao else None
+        if normalizacao:
+            linha["data_fim"] = normalizacao["normalizado"]
+    if prioridade is None or leads_sem_detalhe or sem_atas:
         linha.pop("prioridade")
     # fase None = sem rótulo melhor que a situação oficial; fase de leads sem detalhe também não grava
-    if fase is None or leads_sem_detalhe:
+    if fase is None or leads_sem_detalhe or sem_atas:
         linha.pop("fase")
     if not data_homologacao:
         linha.pop("data_homologacao")
@@ -1159,32 +1528,46 @@ def _processar(pncp, sb, arm, c, termo, com_resultados, baixar_arquivos, max_byt
     lic_id = sb.upsert("licitacoes_externas", linha, "fonte,codigo_externo")[0]["id"]
     _inc(resumo, "gravadas")
 
+    # raw destas duas tabelas vai para o GCS (arquivo_raw). Omitir a coluna no upsert
+    # merge-duplicates mantém o valor já gravado; linha nova fica com raw NULL até o DROP.
+    # licitacoes_externas.raw e licitacao_documentos.raw continuam no banco.
     if itens:
-        sb.upsert("licitacao_itens", [{
-            "licitacao_id": lic_id, "numero_item": it["numeroItem"], "descricao": it.get("descricao"),
-            "material_ou_servico": material_ou_servico(it), "quantidade": _num(it.get("quantidade")),
-            "unidade_medida": it.get("unidadeMedida"), "valor_unitario_estimado": _num(it.get("valorUnitarioEstimado")),
-            "valor_total_estimado": _num(it.get("valorTotal")),
-            "catalogo_codigo_item": str(it["catalogoCodigoItem"]) if it.get("catalogoCodigoItem") else None,
-            # catalogo.id do PNCP (1 = Compras.gov.br; 2 = Outros, código do órgão): só o 1 casa com CATMAT
-            "catalogo_id": catalogo_id(it),
-            "situacao": it.get("situacaoCompraItemNome"), "tem_resultado": it.get("temResultado"),
-            "categoria_escopo": por_item[it["numeroItem"]][0], "interesse_borracha": por_item[it["numeroItem"]][1],
-            "raw": it,
-        } for it in itens], "licitacao_id,numero_item")
+        linhas_itens = []
+        for it in itens:
+            ln = {
+                "licitacao_id": lic_id, "numero_item": it["numeroItem"], "descricao": it.get("descricao"),
+                "material_ou_servico": material_ou_servico(it), "quantidade": _num(it.get("quantidade")),
+                "unidade_medida": it.get("unidadeMedida"), "valor_unitario_estimado": _num(it.get("valorUnitarioEstimado")),
+                "valor_total_estimado": _num(it.get("valorTotal")),
+                "catalogo_codigo_item": str(it["catalogoCodigoItem"]) if it.get("catalogoCodigoItem") else None,
+                # catalogo.id do PNCP (1 = Compras.gov.br; 2 = Outros, código do órgão): só o 1 casa com CATMAT
+                "catalogo_id": catalogo_id(it),
+                "situacao": it.get("situacaoCompraItemNome"), "tem_resultado": it.get("temResultado"),
+                "categoria_escopo": por_item[it["numeroItem"]][0], "interesse_borracha": por_item[it["numeroItem"]][1],
+            }
+            _enviar_raw(arquivos_raw, "licitacao_itens",
+                        {"licitacao_id": lic_id, "numero_item": ln["numero_item"]}, it)
+            linhas_itens.append(ln)
+        sb.upsert("licitacao_itens", linhas_itens, "licitacao_id,numero_item")
 
-    linhas = [{
-        "licitacao_id": lic_id, "numero_item": it["numeroItem"],
-        "sequencial_resultado": r.get("sequencialResultado") or 1,
-        "fornecedor_nome": r.get("nomeRazaoSocialFornecedor") if r.get("tipoPessoa") != "PF" else None,
-        "fornecedor_cnpj": cnpj_ou_none(r.get("niFornecedor")),
-        "porte_fornecedor": r.get("porteFornecedorNome"),
-        "quantidade_homologada": _num(r.get("quantidadeHomologada")),
-        "valor_unitario_homologado": _num(r.get("valorUnitarioHomologado")),
-        "valor_total_homologado": _num(r.get("valorTotalHomologado")),
-        "situacao": r.get("situacaoCompraItemResultadoNome"), "data_resultado": _data(r.get("dataResultado")),
-        "raw": _raw_resultado(r),
-    } for it, r in pares]
+    linhas = []
+    for it, r in pares:
+        ln = {
+            "licitacao_id": lic_id, "numero_item": it["numeroItem"],
+            "sequencial_resultado": r.get("sequencialResultado") or 1,
+            "fornecedor_nome": r.get("nomeRazaoSocialFornecedor") if r.get("tipoPessoa") != "PF" else None,
+            "fornecedor_cnpj": cnpj_ou_none(r.get("niFornecedor")),
+            "porte_fornecedor": r.get("porteFornecedorNome"),
+            "quantidade_homologada": _num(r.get("quantidadeHomologada")),
+            "valor_unitario_homologado": _num(r.get("valorUnitarioHomologado")),
+            "valor_total_homologado": _num(r.get("valorTotalHomologado")),
+            "situacao": r.get("situacaoCompraItemResultadoNome"), "data_resultado": _data(r.get("dataResultado")),
+        }
+        _enviar_raw(arquivos_raw, "licitacao_resultados", {
+            "licitacao_id": lic_id, "numero_item": ln["numero_item"],
+            "sequencial_resultado": ln["sequencial_resultado"],
+        }, _raw_resultado(r))
+        linhas.append(ln)
     if linhas:
         sb.upsert("licitacao_resultados", linhas, "licitacao_id,numero_item,sequencial_resultado")
 
@@ -1255,6 +1638,11 @@ def raw_com_prazo_do_detalhe(c: dict, det: dict | None) -> dict:
     atualizacao = (det or {}).get("dataAtualizacao")
     if atualizacao and atualizacao != c.get("data_atualizacao_pncp"):
         extra["data_atualizacao_detalhe"] = atualizacao
+    # Abertura das propostas (#333): a do detalhe vai em raw.data_inicio_vigencia (a da busca em
+    # data_inicio_vigencia_busca), para o backfill de data_inicio comparar com a mesma fonte que o coletor gravou.
+    abertura = (det or {}).get("dataAberturaProposta")
+    if abertura and abertura != c.get("data_inicio_vigencia"):
+        extra.update(data_inicio_vigencia=abertura, data_inicio_vigencia_busca=c.get("data_inicio_vigencia"))
     return {**c, **extra} if extra else c
 
 
@@ -1368,7 +1756,7 @@ def recoletar_atualizadas(pncp: PNCP, sb: Supabase, arm: Armazenamento | None = 
                           prioridades: list[str] | set[str] | str | None = PRIORIDADES_RECOLETA_PADRAO,
                           com_resultados: bool = True, max_bytes: int = 80 * 1048576, dry_run: bool = False,
                           limite: int | None = None, agora: datetime | None = None,
-                          mapa_catmat: MapaCatmat | None = None) -> dict:
+                          mapa_catmat: MapaCatmat | None = None, origem: str = "manual") -> dict:
     """Recoleta (metadados + itens + resultados + lista de arquivos) as compras PNCP já gravadas cujo
     dataAtualizacao/dataAtualizacaoGlobal no detalhe do PNCP difere do guardado em
     licitacoes_externas.pncp_data_atualizacao[_global] (ou que ainda não têm valor guardado).
@@ -1388,61 +1776,71 @@ def recoletar_atualizadas(pncp: PNCP, sb: Supabase, arm: Armazenamento | None = 
                               select="id,prioridade")}
     linhas = sb.selecionar("licitacoes_externas", fonte="eq.pncp", categoria_escopo="not.is.null", order="id.asc",
                            select="id,codigo_externo,pncp_data_atualizacao,pncp_data_atualizacao_global,raw")
-    for ln in linhas:
-        if (prio_map.get(ln["id"]) or "").lower() not in prio_set:
-            continue
-        resumo["lidas"] += 1
-        if limite and resumo["recoletadas"] >= limite:
-            break
-        chaves = compra_de_codigo(ln.get("codigo_externo"))
-        if not chaves:
-            continue
-        resumo["consultadas"] += 1
-        try:
-            det = consultar_detalhe(pncp, chaves)
-        except CompraExcluida:
-            # 410: o detalhe não traz versão. _processar marca historico/"Excluída do PNCP" e não grava
-            # pncp_data_atualizacao*. det=None para ele consultar de novo e cair no bloco da main.
-            log.info("  %s: excluída do PNCP (410); versão não gravada", ln["codigo_externo"])
+    arquivos_raw = None if dry_run else _abrir_arquivos_pncp(str(uuid.uuid4()))
+    try:
+        for ln in linhas:
+            if (prio_map.get(ln["id"]) or "").lower() not in prio_set:
+                continue
+            resumo["lidas"] += 1
+            if limite and resumo["recoletadas"] >= limite:
+                break
+            chaves = compra_de_codigo(ln.get("codigo_externo"))
+            if not chaves:
+                continue
+            resumo["consultadas"] += 1
+            try:
+                det = consultar_detalhe(pncp, chaves)
+            except CompraExcluida:
+                # 410: o detalhe não traz versão. _processar marca historico/"Excluída do PNCP" e não grava
+                # pncp_data_atualizacao*. det=None para ele consultar de novo e cair no bloco da main.
+                log.info("  %s: excluída do PNCP (410); versão não gravada", ln["codigo_externo"])
+                if dry_run:
+                    _inc(resumo, "excluidas_do_pncp")
+                    continue
+                try:
+                    c = compra_para_recoleta(ln.get("raw") or {}, ln["codigo_externo"], {})
+                    if c is not None:
+                        _processar(pncp, sb, arm, c, None, com_resultados, False, max_bytes, False, resumo,
+                                   agora=agora, det=None, mapa_catmat=mapa_catmat, arquivos_raw=arquivos_raw,
+                                   origem=origem)
+                        resumo["recoletadas"] += 1
+                except ArquivoRawErro:
+                    raise
+                except Exception as e:
+                    resumo["erros"] += 1
+                    log.warning("  %s: marcação de excluída falhou (tenta de novo na próxima): %s",
+                                ln["codigo_externo"], str(e)[:160])
+                continue
+            except ConsultaFalhou as e:
+                resumo["falha_detalhe"] += 1
+                log.warning("  %s: detalhe falhou, fica para a próxima: %s", ln["codigo_externo"], str(e)[:120])
+                continue
+            motivo = mudou_no_pncp(ln, det)
+            if motivo is None:
+                resumo["sem_data_pncp" if not datas_atualizacao(det) else "sem_mudanca"] += 1
+                continue
+            resumo["mudaram"] += 1
+            resumo["motivos"][motivo] = resumo["motivos"].get(motivo, 0) + 1
+            log.info("  %s: %s (guardado %s / %s; PNCP %s / %s)", ln["codigo_externo"], motivo,
+                     ln.get("pncp_data_atualizacao"), ln.get("pncp_data_atualizacao_global"),
+                     det.get("dataAtualizacao"), det.get("dataAtualizacaoGlobal"))
             if dry_run:
-                _inc(resumo, "excluidas_do_pncp")
                 continue
             try:
-                c = compra_para_recoleta(ln.get("raw") or {}, ln["codigo_externo"], {})
-                if c is not None:
-                    _processar(pncp, sb, arm, c, None, com_resultados, False, max_bytes, False, resumo,
-                               agora=agora, det=None, mapa_catmat=mapa_catmat)
-                    resumo["recoletadas"] += 1
+                _processar(pncp, sb, arm, compra_para_recoleta(ln.get("raw"), ln["codigo_externo"], det), None,
+                           com_resultados, False, max_bytes, False, resumo, agora=agora, det=det,
+                           mapa_catmat=mapa_catmat, arquivos_raw=arquivos_raw, origem=origem)
+                resumo["recoletadas"] += 1
+            except ArquivoRawErro:
+                raise
             except Exception as e:
                 resumo["erros"] += 1
-                log.warning("  %s: marcação de excluída falhou (tenta de novo na próxima): %s",
+                log.warning("  %s: recoleta falhou (versão não gravada, tenta de novo na próxima): %s",
                             ln["codigo_externo"], str(e)[:160])
-            continue
-        except ConsultaFalhou as e:
-            resumo["falha_detalhe"] += 1
-            log.warning("  %s: detalhe falhou, fica para a próxima: %s", ln["codigo_externo"], str(e)[:120])
-            continue
-        motivo = mudou_no_pncp(ln, det)
-        if motivo is None:
-            resumo["sem_data_pncp" if not datas_atualizacao(det) else "sem_mudanca"] += 1
-            continue
-        resumo["mudaram"] += 1
-        resumo["motivos"][motivo] = resumo["motivos"].get(motivo, 0) + 1
-        log.info("  %s: %s (guardado %s / %s; PNCP %s / %s)", ln["codigo_externo"], motivo,
-                 ln.get("pncp_data_atualizacao"), ln.get("pncp_data_atualizacao_global"),
-                 det.get("dataAtualizacao"), det.get("dataAtualizacaoGlobal"))
-        if dry_run:
-            continue
-        try:
-            _processar(pncp, sb, arm, compra_para_recoleta(ln.get("raw"), ln["codigo_externo"], det), None,
-                       com_resultados, False, max_bytes, False, resumo, agora=agora, det=det,
-                       mapa_catmat=mapa_catmat)
-            resumo["recoletadas"] += 1
-        except Exception as e:
-            resumo["erros"] += 1
-            log.warning("  %s: recoleta falhou (versão não gravada, tenta de novo na próxima): %s",
-                        ln["codigo_externo"], str(e)[:160])
-    return resumo
+        return resumo
+    finally:
+        if arquivos_raw is not None:
+            resumo["arquivo_raw"] = fechar_todos(list(arquivos_raw.values()))
 
 
 def _compra_slug(lic: dict) -> str:
@@ -1820,6 +2218,8 @@ def criar_parser() -> argparse.ArgumentParser:
     ap.add_argument("--limite-recoleta", type=int, default=None,
                     help="máximo de compras recoletadas por --recoletar-atualizadas")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--origem", choices=list(ORIGENS), default="manual",
+                    help="origem da ingestão gravada em cada linha (spec 0023): cron (agendado) ou manual (padrão)")
     ap.add_argument("--corrigir-processos", action="store_true",
                     help="só corrige numero_processo das compras PNCP já gravadas (processo administrativo real)")
     return ap
@@ -1864,11 +2264,12 @@ def main(argv: list[str] | None = None) -> int:
                                   prioridades=args.prioridades or PRIORIDADES_RECOLETA_PADRAO,
                                   com_resultados=not args.sem_resultados,
                                   max_bytes=int(float(env("MAX_MB", "80")) * 1048576),
-                                  dry_run=args.dry_run, limite=args.limite_recoleta, mapa_catmat=mapa)
+                                  dry_run=args.dry_run, limite=args.limite_recoleta, mapa_catmat=mapa,
+                                  origem=args.origem)
         if not args.dry_run:
             drenar_licitacao_match(sb)
         log.info("RESUMO RECOLETA: %s", r)
-        return 0
+        return 1 if r.get("falha_detalhe", 0) or r.get("erros", 0) else 0
 
     if args.baixar_pendentes:
         sb = Supabase(env("SUPABASE_URL", obrigatorio=True), env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True))
@@ -1927,7 +2328,7 @@ def main(argv: list[str] | None = None) -> int:
     r = coletar(PNCP(delay=delay), sb, arm, termos, status, paginas,
                 tam, not args.sem_resultados, args.baixar_arquivos,
                 int(float(env("MAX_MB", "80")) * 1048576), args.dry_run,
-                modo=args.modo, workers=workers, mapa_catmat=mapa)
+                modo=args.modo, workers=workers, mapa_catmat=mapa, origem=args.origem)
     drenar_licitacao_match(sb)  # recorte CATMAT por texto: zera a pendência de licitacao_match (sem efeito no dry-run)
     log.info("RESUMO: %s", r)
     if r.get("falha_busca"):

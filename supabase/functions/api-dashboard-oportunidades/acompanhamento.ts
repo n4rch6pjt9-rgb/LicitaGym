@@ -1,7 +1,16 @@
 import { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { errorDetail, jsonResponse } from "../_shared/http.ts";
-import { buildEditalUrl, buildPncpEditalUrl } from "../_shared/edital-url.ts";
+import { buildAcompanhamentoUrl, buildEditalUrl, buildOrigemUrl, buildPncpEditalUrl } from "../_shared/edital-url.ts";
+import { secaoPortal, type TenantDoUsuario } from "./portal.ts";
+import { anexarReferenciaPreco } from "./precoReferencia.ts";
+import { diaBrasilia } from "../_shared/portal-compras.ts";
+import { sincronizarPortalOficialEAtraso } from "./pncpAtraso.ts";
+import { estaNoPipeline } from "./portal.ts";
 import { UnifiedHttpClient } from "../_shared/http-client/index.ts";
+import { aplicarCopiaLocal, arquivosDaCopiaLocal, itensDaCopiaLocal, precisaDaCopia } from "./copiaLocal.ts";
+import { aplicarBuscaPncp, clearBuscaPncpCache } from "./buscaPncp.ts";
+import { acompanhamentoParadigmaDoBanco, ehFonteParadigma, respostaParadigma } from "./paradigmaBanco.ts";
+import { ErroTenantAcesso } from "../_shared/tenant.ts";
 import type {
   AcompanhamentoActionParams,
   AcompanhamentoResponse,
@@ -11,13 +20,14 @@ import type {
   CompraMetadata,
   HistoricoEvento,
   ItemAcompanhamento,
-  ItemResultado,
 } from "./types.ts";
 
 export interface DashboardOportunidadesClientContext {
   getClient?: () => SupabaseClient;
   requireAuth?: (req: Request) => Promise<Response | null> | Response | null;
   httpClient?: UnifiedHttpClient;
+  /** Empresa de quem chama (index.ts resolve pelo JWT). Ausente = nenhuma: nada conta como "no pipeline". */
+  tenantDoUsuario?: TenantDoUsuario;
 }
 
 export interface PncpKey {
@@ -106,30 +116,8 @@ export function resolvePncpKey(row: Record<string, unknown> | null | undefined):
   return null;
 }
 
-/**
- * Constrói a url_acompanhamento para o Comprasnet a partir de linkSistemaOrigem.
- * Revalida: protocolo https, host exato cnetmobile.estaleiro.serpro.gov.br e
- * parâmetro compra com exatamente 17 dígitos (UASG 6 + Mod 2 + Num 5 + Ano 4).
- */
-export function buildAcompanhamentoUrl(linkSistemaOrigem: unknown): string | null {
-  if (typeof linkSistemaOrigem !== "string") return null;
-  const trimmed = linkSistemaOrigem.trim();
-  if (!trimmed.toLowerCase().startsWith("https://")) return null;
-
-  try {
-    const parsed = new URL(trimmed);
-    if (parsed.protocol !== "https:") return null;
-    const hostname = parsed.hostname.toLowerCase();
-    if (hostname !== "cnetmobile.estaleiro.serpro.gov.br") return null;
-
-    const idCompra = parsed.searchParams.get("compra");
-    if (!idCompra || !/^\d{17}$/.test(idCompra.trim())) return null;
-
-    return `https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/landing?destino=acompanhamento-compra&compra=${idCompra.trim()}`;
-  } catch {
-    return null;
-  }
-}
+// buildAcompanhamentoUrl mora em _shared/edital-url.ts (também usada pela rota do fornecedor).
+export { buildAcompanhamentoUrl };
 
 // -----------------------------------------------------------------------------
 // Cache em memória (TTL de 5 minutos)
@@ -142,6 +130,11 @@ interface CacheEntry {
 
 const acompanhamentoCache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 5 * 60 * 1000;
+/**
+ * Cache negativo: resposta com seção em erro fica pouco tempo, para o "Tentar novamente" voltar a consultar o
+ * PNCP logo e, ao mesmo tempo, cliques seguidos não ocuparem o lease de pncp.gov.br (compartilhado com os coletores).
+ */
+export const CACHE_ERRO_TTL_MS = 15 * 1000;
 const MAX_CACHE_ENTRIES = 200;
 
 export function getCachedAcompanhamento(key: string): AcompanhamentoResponse | null {
@@ -154,7 +147,11 @@ export function getCachedAcompanhamento(key: string): AcompanhamentoResponse | n
   return entry.data;
 }
 
-export function setCachedAcompanhamento(key: string, data: AcompanhamentoResponse): void {
+export function setCachedAcompanhamento(
+  key: string,
+  data: AcompanhamentoResponse,
+  ttlMs: number = CACHE_TTL_MS,
+): void {
   if (acompanhamentoCache.size >= MAX_CACHE_ENTRIES) {
     const now = Date.now();
     for (const [k, v] of acompanhamentoCache.entries()) {
@@ -166,13 +163,14 @@ export function setCachedAcompanhamento(key: string, data: AcompanhamentoRespons
     }
   }
   acompanhamentoCache.set(key, {
-    expiresAt: Date.now() + CACHE_TTL_MS,
+    expiresAt: Date.now() + ttlMs,
     data,
   });
 }
 
 export function clearAcompanhamentoCache(): void {
   acompanhamentoCache.clear();
+  clearBuscaPncpCache();
 }
 
 /**
@@ -195,6 +193,27 @@ async function mapConcurrent<T, R>(
   return results;
 }
 
+/**
+ * Opções das chamadas ao PNCP no detalhe (caminho interativo: o usuário espera a resposta).
+ * Uma tentativa só, sem retry: o host pncp.gov.br passa pelo lease global (private.acquire_http_slot,
+ * 1 requisição/s, concorrência 1, compartilhado com os coletores), e cada nova tentativa ocupa mais uma vaga
+ * da fila. Em 09/11/2026 (id 125) o PNCP devolvia 503 em 0,3 s e o detalhe levava 17 a 32 s: 13 vagas do lease
+ * (5 endpoints, 3 tentativas cada nos que falhavam) somaram 18,1 s de 19,5 s. A seção que falha volta com
+ * `erro` explícito e o botão "Tentar novamente" consulta de novo (resposta com erro fica só 15 s no cache).
+ * Timeout de 10 s por tentativa: o detalhe não fica 20 s preso num PNCP que não responde.
+ */
+export const PNCP_DETALHE_OPCOES = { attemptTimeoutMs: 10_000, maxAttempts: 1 } as const;
+
+/** Resposta sem seção em erro (cache de 5 min); com erro, só o cache negativo de 15 s (CACHE_ERRO_TTL_MS). */
+export function acompanhamentoCompleto(payload: AcompanhamentoResponse): boolean {
+  if (!payload.disponivel) return false;
+  const secoesOk = [payload.compra, payload.itens, payload.atas, payload.historico, payload.arquivos]
+    .every((secao) => secao.erro === null);
+  // falha em /itens/{n}/resultados fica no item (resultadosErro), não na seção
+  const resultadosOk = (payload.itens.dados ?? []).every((item) => !item.resultadosErro);
+  return secoesOk && resultadosOk;
+}
+
 // -----------------------------------------------------------------------------
 // Clientes e Normalizadores de Endpoints PNCP
 // -----------------------------------------------------------------------------
@@ -211,7 +230,7 @@ async function fetchCompraMetadata(
       headers: { Accept: "application/json" },
     }, {
       endpoint: "/api/consulta/v1/orgaos/{cnpj}/compras/{ano}/{seq}",
-      attemptTimeoutMs: 20_000,
+      ...PNCP_DETALHE_OPCOES,
     });
 
     if (res.status === 204 || !res.body || typeof res.body !== "object") {
@@ -320,7 +339,7 @@ async function fetchItensComResultados(
       }, {
         endpoint: "/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/itens",
         pagina,
-        attemptTimeoutMs: 20_000,
+        ...PNCP_DETALHE_OPCOES,
       });
 
       if (res.status === 204 || !res.body) break;
@@ -353,7 +372,7 @@ async function fetchItensComResultados(
           headers: { Accept: "application/json" },
         }, {
           endpoint: "/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/itens/{n}/resultados",
-          attemptTimeoutMs: 20_000,
+          ...PNCP_DETALHE_OPCOES,
         });
 
         if (resResult.status === 204 || !resResult.body) {
@@ -411,7 +430,7 @@ async function fetchAtas(
       }, {
         endpoint: "/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/atas",
         pagina,
-        attemptTimeoutMs: 20_000,
+        ...PNCP_DETALHE_OPCOES,
       });
 
       if (res.status === 204 || !res.body) break;
@@ -429,17 +448,7 @@ async function fetchAtas(
 
       if (pageAtas.length === 0) break;
 
-      for (const a of pageAtas) {
-        atasList.push({
-          numero: (a.numeroAtaRegistroPreco as string) ?? (a.numero as string) ?? null,
-          ano: typeof a.anoAta === "number" ? a.anoAta : (a.anoAta ? Number(a.anoAta) : null),
-          vigenciaInicio: (a.dataVigenciaInicio as string) ?? null,
-          vigenciaFim: (a.dataVigenciaFim as string) ?? null,
-          dataAssinatura: (a.dataAssinatura as string) ?? null,
-          cancelado: Boolean(a.cancelado),
-          objeto: (a.objetoCompra as string) ?? (a.objeto as string) ?? null,
-        });
-      }
+      for (const a of pageAtas) atasList.push(ataDoPncp(a));
 
       if (paginasRestantes === 0 && pageAtas.length < tamanhoPagina) break;
       pagina++;
@@ -474,7 +483,7 @@ async function fetchHistorico(
       }, {
         endpoint: "/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/historico",
         pagina,
-        attemptTimeoutMs: 20_000,
+        ...PNCP_DETALHE_OPCOES,
       });
 
       if (res.status === 204 || !res.body) break;
@@ -530,7 +539,7 @@ async function fetchArquivos(
       headers: { Accept: "application/json" },
     }, {
       endpoint: "/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/arquivos",
-      attemptTimeoutMs: 20_000,
+      ...PNCP_DETALHE_OPCOES,
     });
 
     if (res.status === 204 || !res.body) {
@@ -550,12 +559,16 @@ async function fetchArquivos(
       const downloadUrl = (arq.url as string) ?? (arq.uri as string) ??
         (seqDoc ? `https://pncp.gov.br/pncp-api/v1/orgaos/${cnpj}/compras/${ano}/${seq}/arquivos/${seqDoc}` : null);
 
-      arquivosList.push({
+      const arquivo: ArquivoAcompanhamento = {
         titulo: (arq.titulo as string) ?? null,
         tipo: (arq.tipoDocumentoNome as string) ?? (arq.tipoDocumentoDescricao as string) ?? null,
         url: downloadUrl,
         sequencialDocumento: seqDoc,
-      });
+      };
+      // Repassados só quando vêm do PNCP (ausente != false/null inventado).
+      if (typeof arq.dataPublicacaoPncp === "string") arquivo.dataPublicacaoPncp = arq.dataPublicacaoPncp;
+      if (typeof arq.statusAtivo === "boolean") arquivo.statusAtivo = arq.statusAtivo;
+      arquivosList.push(arquivo);
     }
 
     return { dados: arquivosList, total: arquivosList.length, erro: null };
@@ -589,14 +602,112 @@ export const ACOMPANHAMENTO_LICITACAO_COLUMNS: readonly string[] = [
   "processo_norm",
   "numero_edital",
   "orgao_cnpj",
+  "link_sistema_origem",
+  "fase",
   "raw",
+  // spec 0049: conferência da cópia local com a atualização da compra no índice de busca do PNCP
+  "pncp_data_atualizacao",
+  // spec 0061 K-1: quando o coletor gravou o processo (gravado_em de compra e itens do Paradigma)
+  "ingestao_em",
 ];
+
+// -----------------------------------------------------------------------------
+// Campos derivados (calculados a cada resposta, fora do cache: dependem da linha e do dia)
+// -----------------------------------------------------------------------------
+
+/**
+ * Ata da consulta do PNCP (AtaRegistroPrecoPeriodoDTO). Cancelada = `cancelado` verdadeiro OU `dataCancelamento`
+ * preenchida: o PNCP pode mandar a data com `cancelado: false`, e a ata não pode aparecer como vigente.
+ */
+export function ataDoPncp(a: Record<string, unknown>): AtaAcompanhamento {
+  const dataCancelamento = typeof a.dataCancelamento === "string" && a.dataCancelamento.trim() !== ""
+    ? a.dataCancelamento
+    : null;
+  return {
+    numero: (a.numeroAtaRegistroPreco as string) ?? (a.numero as string) ?? null,
+    ano: typeof a.anoAta === "number" ? a.anoAta : (a.anoAta ? Number(a.anoAta) : null),
+    vigenciaInicio: (a.dataVigenciaInicio as string) ?? null,
+    vigenciaFim: (a.dataVigenciaFim as string) ?? null,
+    dataAssinatura: (a.dataAssinatura as string) ?? null,
+    cancelado: Boolean(a.cancelado) || dataCancelamento != null,
+    dataCancelamento,
+    objeto: (a.objetoCompra as string) ?? (a.objeto as string) ?? null,
+  };
+}
+
+/**
+ * Ata vigente no dia `hoje` (YYYY-MM-DD, America/Sao_Paulo): cancelada => false; sem vigenciaFim => null (não dá
+ * para afirmar); vigenciaInicio no futuro => false; senão hoje <= vigenciaFim. Datas do PNCP comparadas pelo dia.
+ */
+export function ataVigente(ata: AtaAcompanhamento, hoje: string): boolean | null {
+  if (ata.cancelado) return false;
+  const fim = typeof ata.vigenciaFim === "string" ? ata.vigenciaFim.slice(0, 10) : "";
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fim)) return null;
+  const inicio = typeof ata.vigenciaInicio === "string" ? ata.vigenciaInicio.slice(0, 10) : "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(inicio) && inicio > hoje) return false;
+  return hoje <= fim;
+}
+
+function semAcento(v: string): string {
+  return v.normalize("NFKD").replace(/[̀-ͯ]/g, "").trim().toLowerCase();
+}
+
+/**
+ * Situação do item para exibir. Situação específica do PNCP diferente de "Em andamento" é mantida. Com
+ * "Em andamento": "Registro de Preço" se há ata não cancelada; "Homologado" se o item tem resultado ou a fase é
+ * homologada; "Suspensa" se a fase é suspensa; "Recebendo Propostas" se a fase é recebendo propostas; senão mantém.
+ */
+export function situacaoExibidaItem(
+  item: ItemAcompanhamento,
+  ctx: { fase: string | null; atas: AtaAcompanhamento[] },
+): string | null {
+  const bruto = item.situacaoCompraItemNome;
+  if (typeof bruto !== "string" || semAcento(bruto) !== "em andamento") return bruto ?? null;
+  const fase = typeof ctx.fase === "string" ? semAcento(ctx.fase) : "";
+  if (ctx.atas.some((a) => !a.cancelado)) return "Registro de Preço";
+  if (item.temResultado || item.resultados.length > 0 || fase.startsWith("homologad")) return "Homologado";
+  if (fase.includes("suspens")) return "Suspensa";
+  if (fase.includes("recebendo propostas")) return "Recebendo Propostas";
+  return bruto;
+}
+
+/** Acrescenta fase, atas[].vigente e itens[].situacaoExibida sem remover campos (não altera a entrada). */
+export function enriquecerAcompanhamento<
+  T extends {
+    itens: AcompanhamentoSection<ItemAcompanhamento[]>;
+    atas: AcompanhamentoSection<AtaAcompanhamento[]>;
+  },
+>(payload: T, fase: string | null, agora: Date): T & { fase: string | null } {
+  const hoje = diaBrasilia(agora);
+  const atas = (payload.atas.dados ?? []).map((a) => ({ ...a, vigente: ataVigente(a, hoje) }));
+  const itens = payload.itens.dados
+    ? payload.itens.dados.map((it) => ({ ...it, situacaoExibida: situacaoExibidaItem(it, { fase, atas }) }))
+    : payload.itens.dados;
+  return {
+    ...payload,
+    fase,
+    atas: { ...payload.atas, dados: payload.atas.dados ? atas : payload.atas.dados },
+    itens: { ...payload.itens, dados: itens },
+  };
+}
 
 /** Extrai `linkSistemaOrigem` do payload bruto (`raw`) da linha, se for string. */
 export function linkSistemaOrigemFromRaw(raw: unknown): string | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const value = (raw as Record<string, unknown>).linkSistemaOrigem;
   return typeof value === "string" && value.trim() !== "" ? value : null;
+}
+
+const semTenant: TenantDoUsuario = () => Promise.resolve(null);
+
+/** Cliente HTTP do detalhe. Host lease usa private.acquire_http_slot via client.schema("private").rpc(...). */
+function httpClientDoDetalhe(client: SupabaseClient, ctx?: DashboardOportunidadesClientContext): UnifiedHttpClient {
+  if (ctx?.httpClient) return ctx.httpClient;
+  const hasPrivateRpc = typeof client.rpc === "function" && typeof client.schema === "function";
+  return new UnifiedHttpClient({
+    supabaseClient: hasPrivateRpc ? client : null,
+    hostLease: hasPrivateRpc ? undefined : null,
+  });
 }
 
 export async function handleAcompanhamento(
@@ -628,6 +739,20 @@ export async function handleAcompanhamento(
 
     const row = data as unknown as Record<string, unknown>;
 
+    // Spec 0061, K-1: Paradigma (Sistema S) responde só com o banco, sem chamar o portal nem o PNCP. Exige empresa
+    // ativa de quem chama antes de ler qualquer seção (sem vínculo, vínculo desligado, empresa desativada: 403).
+    if (ehFonteParadigma(row.fonte)) {
+      let tenant: number | null;
+      try {
+        tenant = await (ctx?.tenantDoUsuario ?? semTenant)();
+      } catch (err: unknown) {
+        if (err instanceof ErroTenantAcesso) return jsonResponse({ error: "Usuário sem empresa ativa." }, 403);
+        throw err;
+      }
+      if (tenant === null) return jsonResponse({ error: "Usuário sem empresa ativa." }, 403);
+      return respostaParadigma(await acompanhamentoParadigmaDoBanco(client, row));
+    }
+
     // 2. Resolve a chave PNCP
     const pncpKey = resolvePncpKey(row);
     if (!pncpKey) {
@@ -643,19 +768,12 @@ export async function handleAcompanhamento(
     // 3. Verifica Cache em memória (~5 minutos)
     const cacheKey = `${pncpKey.cnpj}/${pncpKey.ano}/${pncpKey.sequencial}`;
     const cached = getCachedAcompanhamento(cacheKey);
-    if (cached) {
-      return jsonResponse(cached, 200, {
-        "Cache-Control": "private, max-age=300",
-      });
-    }
 
-    // 4. Instancia cliente HTTP
-    // Host lease usa private.acquire_http_slot via client.schema("private").rpc(...).
-    const hasPrivateRpc = typeof client.rpc === "function" && typeof client.schema === "function";
-    const httpClient = ctx?.httpClient ?? new UnifiedHttpClient({
-      supabaseClient: hasPrivateRpc ? client : null,
-      hostLease: hasPrivateRpc ? undefined : null,
-    });
+    let payload: AcompanhamentoResponse;
+    if (cached && cached.disponivel) {
+      payload = cached;
+    } else {
+    const httpClient = httpClientDoDetalhe(client, ctx);
 
     // 5. Executa requisições em paralelo com tratamento individual de erros
     const [compraSettled, itensSettled, atasSettled, historicoSettled, arquivosSettled] =
@@ -695,10 +813,13 @@ export async function handleAcompanhamento(
     const urlEdital = buildEditalUrl(row) ?? buildPncpEditalUrl(pncpKey.cnpj, pncpKey.ano, pncpKey.sequencial);
     // linkSistemaOrigem não é coluna de licitacoes_externas: vem do PNCP (compra)
     // ou do payload `raw`, lido apenas server-side (raw nunca é devolvido).
-    const rawLinkOrigem = compraSection.dados?.linkSistemaOrigem ?? linkSistemaOrigemFromRaw(row.raw);
-    const urlAcompanhamento = buildAcompanhamentoUrl(rawLinkOrigem);
+    const rawLinkOrigem = (typeof row.link_sistema_origem === "string" ? row.link_sistema_origem : null) ??
+      compraSection.dados?.linkSistemaOrigem ??
+      linkSistemaOrigemFromRaw(row.raw);
+    const portalOrigem = buildOrigemUrl(rawLinkOrigem, row.fonte);
+    const urlAcompanhamento = portalOrigem?.url ?? buildAcompanhamentoUrl(rawLinkOrigem);
 
-    const payload: AcompanhamentoResponse = {
+    payload = {
       disponivel: true,
       id: row.id as number | string,
       pncp: {
@@ -715,14 +836,97 @@ export async function handleAcompanhamento(
       atas: atasSection,
       historico: historicoSection,
       arquivos: arquivosSection,
+      portal: null,
     };
 
-    // 7. Salva no cache em memória
-    setCachedAcompanhamento(cacheKey, payload);
+    setCachedAcompanhamento(cacheKey, payload, acompanhamentoCompleto(payload) ? CACHE_TTL_MS : CACHE_ERRO_TTL_MS);
+    }
 
-    return jsonResponse(payload, 200, {
-      "Cache-Control": "private, max-age=300",
-    });
+    const linkPortal = (typeof row.link_sistema_origem === "string" ? row.link_sistema_origem : null) ??
+      (payload.disponivel ? payload.compra.dados?.linkSistemaOrigem : null) ??
+      linkSistemaOrigemFromRaw(row.raw);
+    // PNCP fora (itens/documentos com erro e sem dados): cópia gravada pelo coletor, com o erro do PNCP mantido.
+    // Fora do cache: a cópia é do banco e não pode prender o "Tentar novamente".
+    if (payload.disponivel) {
+      const disp = payload;
+      const [copiaItens, copiaArquivos] = await Promise.all([
+        precisaDaCopia(disp.itens) ? itensDaCopiaLocal(client, Number(row.id)) : Promise.resolve(null),
+        precisaDaCopia(disp.arquivos) ? arquivosDaCopiaLocal(client, Number(row.id), disp.pncp) : Promise.resolve(null),
+      ]);
+      const comCopia = {
+        compra: disp.compra,
+        atas: disp.atas,
+        itens: aplicarCopiaLocal(disp.itens, copiaItens),
+        arquivos: aplicarCopiaLocal(disp.arquivos, copiaArquivos),
+      };
+      // Spec 0049: Resumo e Atas pela busca do PNCP e conferência da cópia, só quando alguma seção falhou.
+      const comBusca = await aplicarBuscaPncp(
+        comCopia,
+        disp.pncp.numero_controle_pncp,
+        row.pncp_data_atualizacao,
+        httpClientDoDetalhe(client, ctx),
+      );
+      payload = { ...disp, ...comBusca };
+    }
+
+    // PDM e unidade por item (CA-8 da spec 0009): lidos do banco a cada resposta, também quando o PNCP veio do cache.
+    const itensDoPayload = payload.disponivel && Array.isArray(payload.itens.dados) ? payload.itens.dados : [];
+    const [portal, itensComPreco] = await Promise.all([
+      payload.disponivel
+        ? secaoPortal(client, Number(row.id), linkPortal, params.atualizar === true, ctx?.tenantDoUsuario ?? semTenant)
+        : Promise.resolve(null),
+      anexarReferenciaPreco(client, Number(row.id), itensDoPayload),
+    ]);
+    if (payload.disponivel && itensDoPayload.length > 0) {
+      payload = { ...payload, itens: { ...payload.itens, dados: itensComPreco } };
+    }
+
+    let pncpEmAtraso = false;
+    let portalOficialInfo = null;
+    if (payload.disponivel) {
+      const sincPortal = await sincronizarPortalOficialEAtraso(
+        client,
+        Number(row.id),
+        row,
+        payload.url_acompanhamento,
+        portal,
+        payload.compra,
+        payload.historico,
+        payload.arquivos,
+        {
+          emPipeline: await estaNoPipeline(
+            client,
+            Number(row.id),
+            await (ctx?.tenantDoUsuario ?? semTenant)(),
+          ),
+        },
+      );
+      payload = {
+        ...payload,
+        url_acompanhamento: sincPortal.urlAcompanhamento,
+        historico: sincPortal.historicoAtualizado,
+        arquivos: sincPortal.arquivosAtualizados,
+      };
+      pncpEmAtraso = sincPortal.pncpEmAtraso;
+      portalOficialInfo = sincPortal.portalOficial;
+    }
+
+    const fase = typeof row.fase === "string" && row.fase.trim() !== "" ? row.fase : null;
+    return jsonResponse(
+      payload.disponivel
+        ? {
+          ...enriquecerAcompanhamento(payload, fase, new Date()),
+          portal,
+          pncp_em_atraso: pncpEmAtraso,
+          portal_oficial: portalOficialInfo,
+        }
+        : payload,
+      200,
+      {
+        // Resposta com seção em erro não fica no navegador: o "Tentar novamente" precisa chegar à função.
+        "Cache-Control": acompanhamentoCompleto(payload) ? "private, max-age=300" : "no-store",
+      },
+    );
   } catch (err: unknown) {
     console.error("[api-dashboard-oportunidades] Exceção em acompanhamento:", err);
     return jsonResponse({ error: "Erro interno no servidor" }, 500);

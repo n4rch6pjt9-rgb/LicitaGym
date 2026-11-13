@@ -1,0 +1,6 @@
+argumento OK
+clonar OK
+buscar-commit OK
+checkout OK
+dependencias OK
+pytest OK

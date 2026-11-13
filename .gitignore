@@ -1,1 +1,116 @@
+ chore/agente-backend
 node_modules/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+/lib/
+/lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+.venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Testing & Coverage
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+.nox/
+coverage.xml
+
+# macOS
+.DS_Store
+
+# Coleta / dados temporários
+var/
+
+# Supabase
+supabase/.branches/
+
+# Node / npm
+node_modules/
+package-lock.json
+
+# Cache do indexador de editais (GCS -> banco)
+.cache_indexador/
+
+# Estado da sincronização PNCP
+scripts/.sync_state/
+
+# saidas locais e pendencias (nao versionar)
+var/
+supabase/.temp/
+
+# logs do plugin claude-mem (só o CLAUDE.md da raiz é instrução)
+**/CLAUDE.md
+!/CLAUDE.md
+CLAUDE.local.md
+
+# Backups e arquivos temporários
+_*.tgz
+_*.tar
+.playwright-mcp/
+
+# Pasta de agentes e frontend local
+Dashboard-agentes/
+Dashboard/
+docs/ai-audits/
+
+# 🔒 Dados sensíveis de navegação e coleta (NUNCA commitar)
+*.har
+*.zip
+**/*.har
+**/*.zip
+**/html - sislog*.txt
+**/html lang=*.txt
+.claude/settings.local.json
+
+# Arquivo temporario do Excel/Word enquanto o documento esta aberto
+~$*
+
+# Logs, dumps de coleta e temporários locais (nunca versionar; ver scripts/ci/checar-higiene.sh)
+*.log
+*_resultado.json
+*.tmp
+.tmp/
+.sync_state/
+*.sqlite3
+*.sqlite3-journal
+**/artifacts/
+Thumbs.db
+ main

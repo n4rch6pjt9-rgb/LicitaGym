@@ -62,12 +62,8 @@ if (-not $SkipPca) {
     $rodada++
     $body = @{
       ano            = $Ano
-      pagina_inicial = $pagina
       max_paginas    = $PcaPaginasPorRodada
       tamanho_pagina = $PcaTamanhoPagina
-    }
-    if ($classesAbertas.Count -gt 0) {
-      $body.codigos_classificacao = $classesAbertas
     }
     if ($ForcarPca -and $rodada -eq 1) { $body.forcar = $true }
 
@@ -125,6 +121,9 @@ if (-not $SkipPca) {
       Write-Host "  AVISO: uma classe na resposta. Confira se a funcao implantada resolve a policy completa." -ForegroundColor Yellow
     }
     if ($classesAbertas.Count -eq 0) { break }
+    if ($json.status -ne "incompleta" -or -not $json.continuation) {
+      throw "PCA sem checkpoint valido; atualize a funcao antes de retomar."
+    }
     $pagina = $proxima
     Start-Sleep -Seconds 3
   } while ($true)

@@ -7,15 +7,17 @@ import {
   finishSyncRun,
   logSyncRequest,
   storeSourceRecord,
+  updateSyncHeartbeat,
 } from "../_shared/pncp/supabase-admin.ts";
 import { orgSyncClasses } from "../_shared/pncp/catmat-scope-resolver.ts";
 import { hashPayload, sha256Hex } from "../_shared/pncp/hash.ts";
 import {
   chunkValues,
   fetchAllByRange,
-  POSTGREST_PAGE_SIZE,
+  POSTGREST_IN_CHUNK,
 } from "../_shared/pncp/postgrest-paginate.ts";
 import { upsertByHash } from "../_shared/pncp/upsert.ts";
+import { linhaEntidade } from "./entidade.ts";
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -65,7 +67,7 @@ Deno.serve(async (req) => {
     ];
 
     const cnpjsSet = new Set<string>();
-    for (const idChunk of chunkValues(planIds, POSTGREST_PAGE_SIZE)) {
+    for (const idChunk of chunkValues(planIds, POSTGREST_IN_CHUNK)) {
       const { rows: planRows } = await fetchAllByRange<{ orgao_cnpj: string }>(
         (from, to) =>
           client
@@ -83,8 +85,44 @@ Deno.serve(async (req) => {
       }
     }
 
-    const cnpjs = Array.from(cnpjsSet);
+    const { rows: orgaosExistentes } = await fetchAllByRange<{ cnpj: string }>(
+      (from, to) =>
+        client
+          .from("orgaos")
+          .select("cnpj")
+          .order("id")
+          .range(from, to),
+      { orderBy: "id" },
+    );
+    const cnpjsJaGravados = new Set(
+      orgaosExistentes
+        .map((row) => String(row.cnpj ?? "").trim())
+        .filter((c) => c.length > 0),
+    );
+
+    // Prioriza CNPJs que ainda não estão em public.orgaos e respeita orçamento de tempo (90s)
+    // para nunca estourar o limite de 150s da Edge Function nem deixar sync_execucoes presa em 'executando'.
+    const cnpjs = Array.from(cnpjsSet).sort((a, b) => {
+      const aExiste = cnpjsJaGravados.has(a) ? 1 : 0;
+      const bExiste = cnpjsJaGravados.has(b) ? 1 : 0;
+      if (aExiste !== bExiste) return aExiste - bExiste;
+      return a.localeCompare(b);
+    });
+
+    const ORCAMENTO_PADRAO_MS = 90_000;
+    const inicioMs = Date.now();
+    let processados = 0;
+    let interrompidoPorOrcamento = false;
+
     for (const cnpj of cnpjs) {
+      if (Date.now() - inicioMs >= ORCAMENTO_PADRAO_MS) {
+        interrompidoPorOrcamento = true;
+        break;
+      }
+      if (processados > 0 && processados % 10 === 0) {
+        await updateSyncHeartbeat(client, runId);
+      }
+      processados++;
       try {
         const orgaoData = await integracao.getOrgao(cnpj);
         const payload = orgaoData as Record<string, unknown>;
@@ -105,16 +143,21 @@ Deno.serve(async (req) => {
           client,
           "entidades",
           { codigo_pncp: cnpj },
-          {
-            codigo_pncp: cnpj,
-            cnpj: cnpj,
-            cnpj_normalizado: cnpj.replace(/\D/g, ""),
-            tipo: "orgao",
-          },
-          { syncRunId: runId, lastSeenSyncId: runId },
+          linhaEntidade(cnpj),
+          { syncRunId: runId },
         );
 
-        if (entidadeResult !== "erro") stats.entidades_inseridas++;
+        if (entidadeResult === "erro") {
+          stats.erros++;
+          await logSyncRequest(client, {
+            syncRunId: runId,
+            endpoint: `/orgaos/${cnpj}`,
+            parametros: { cnpj, tabela: "entidades" },
+            erro: "upsert entidades failed",
+          });
+        } else {
+          stats.entidades_inseridas++;
+        }
 
         const entidadeIdResult = await client
           .from("entidades")
@@ -122,7 +165,15 @@ Deno.serve(async (req) => {
           .eq("codigo_pncp", cnpj)
           .single();
 
-        if (entidadeIdResult.data && entidadeIdResult.data.id) {
+        if (entidadeIdResult.error) {
+          stats.erros++;
+          await logSyncRequest(client, {
+            syncRunId: runId,
+            endpoint: `/orgaos/${cnpj}`,
+            parametros: { cnpj, tabela: "entidades_select" },
+            erro: entidadeIdResult.error.message,
+          });
+        } else if (entidadeIdResult.data && entidadeIdResult.data.id) {
           const entidadeId = entidadeIdResult.data.id;
 
           const orgaoResult = await upsertByHash(
@@ -131,13 +182,22 @@ Deno.serve(async (req) => {
             { entidade_id: entidadeId },
             {
               entidade_id: entidadeId,
-              orgao_id_pncp: cnpj.slice(0, 8),
               cnpj: cnpj,
             },
-            { syncRunId: runId, lastSeenSyncId: runId },
+            { syncRunId: runId },
           );
 
-          if (orgaoResult !== "erro") stats.orgaos_inseridas++;
+          if (orgaoResult === "erro") {
+            stats.erros++;
+            await logSyncRequest(client, {
+              syncRunId: runId,
+              endpoint: `/orgaos/${cnpj}`,
+              parametros: { cnpj, tabela: "orgaos" },
+              erro: "upsert orgaos failed",
+            });
+          } else {
+            stats.orgaos_inseridas++;
+          }
         }
       } catch (error) {
         stats.erros++;
@@ -152,18 +212,23 @@ Deno.serve(async (req) => {
 
     await finishSyncRun(client, runId, {
       status: stats.erros > 0 ? "concluida_com_erros" : "concluida",
-      totalRecebidos: cnpjs.length,
+      totalRecebidos: processados,
       totalErros: stats.erros,
       parametros: {
         ...stats,
         pca_itens_pages: itemPages,
         plan_id_count: planIds.length,
+        cnpjs_total: cnpjs.length,
+        cnpjs_processados: processados,
+        interrompido_por_orcamento: interrompidoPorOrcamento,
       },
     });
     return jsonResponse({
       status: stats.erros > 0 ? "concluida_com_erros" : "ok",
       stats,
-      cnpjs_processados: cnpjs.length,
+      cnpjs_processados: processados,
+      cnpjs_total: cnpjs.length,
+      interrompido_por_orcamento: interrompidoPorOrcamento,
     }, stats.erros > 0 ? 500 : 200);
   } catch (error) {
     await finishSyncRun(client, runId, {

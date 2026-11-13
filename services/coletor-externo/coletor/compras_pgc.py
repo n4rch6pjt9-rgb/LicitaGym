@@ -6,6 +6,12 @@ Consulta:
 
 Filtra por classes do escopo (7830 núcleo fitness, 7220 pisos).
 Grava em public.pca_pgc_itens via PostgREST (upsert idempotente).
+
+Spec 0057: o manual v2.0 diz tipo=M/S, mas a API só aceita Material/Servico (testado em 11/11/2026). A API repete a
+mesma chave do upsert em várias linhas (DFDs/artefatos), inclusive na mesma página: o lote é deduplicado antes de
+gravar, ficando com a linha de dataHoraAtualizacaoItem mais recente (empate: dataHoraAtualizacaoArtefato; depois a
+última lida). statusContratacaoExecucao é código opaco (sem dicionário oficial): vai como texto, nunca como booleano.
+Roda no Job pelo coletor.main (--coleta pgc) ou direto (python -m coletor.compras_pgc).
 """
 from __future__ import annotations
 
@@ -13,10 +19,10 @@ import argparse
 import hashlib
 import json
 import logging
-import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 from typing import Any
 
 import requests
@@ -54,6 +60,12 @@ def normalizar_registro_pgc(item: dict[str, Any], ano_contexto: int | None = Non
             return float(val)
         except (ValueError, TypeError):
             return None
+
+    def _txt(val: Any) -> str | None:
+        if val is None or isinstance(val, bool):
+            return None
+        v = str(val).strip()
+        return v or None
 
     def _date(val: Any) -> str | None:
         if not val or not isinstance(val, str):
@@ -113,7 +125,7 @@ def normalizar_registro_pgc(item: dict[str, Any], ano_contexto: int | None = Non
         "data_fim_processo_compra": _date(item.get("dataFimProcessoCompra")),
         "duracao_processo_compra": _int(item.get("duracaoProcessoCompra")),
         "numero_item_pncp": num_item_pncp,
-        "status_contratacao_execucao": item.get("statusContratacaoExecucao"),
+        "status_contratacao_execucao": _txt(item.get("statusContratacaoExecucao")),
         "data_hora_publicacao_pncp": item.get("dataHoraPublicacaoPncp"),
         "data_hora_atualizacao_item": item.get("dataHoraAtualizacaoItem"),
         "raw": item,
@@ -149,6 +161,9 @@ class ClienteComprasPGC:
                 if r.status_code == 404:
                     log.warning("HTTP 404 em %s; não é fim de coleta", contexto)
                     raise erro_http(r, contexto)
+                if 400 <= r.status_code < 500 and r.status_code != 429:
+                    # erro do pedido (ex.: 400 "Parâmetro inválido"): repetir não muda a resposta
+                    raise erro_http(r, contexto)
                 if r.status_code in (429, 502, 503, 504):
                     if tentativa == 3:
                         raise RuntimeError(f"HTTP {r.status_code} esgotado em PGC classe {classe}")
@@ -165,6 +180,41 @@ class ClienteComprasPGC:
         raise RuntimeError(f"Falha ao consultar PGC classe {classe} após retries")
 
 
+CONFLITO = "orgao_cnpj,codigo_uasg,ano_pca_projeto_compra,numero_item_pncp,codigo_item_catalogo"
+
+
+def _chave(linha: dict[str, Any]) -> tuple | None:
+    """Chave do upsert (uq_pca_pgc_item). Linha sem algum campo da chave não tem identidade: não entra."""
+    k = tuple(linha.get(c) for c in CONFLITO.split(","))
+    return None if any(v in (None, "") for v in k) else k
+
+
+def _recencia(linha: dict[str, Any]) -> tuple[str, str]:
+    raw = linha.get("raw") or {}
+    return (str(raw.get("dataHoraAtualizacaoItem") or ""), str(raw.get("dataHoraAtualizacaoArtefato") or ""))
+
+
+def deduplicar(linhas: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int, int]:
+    """Uma linha por chave do upsert: a mais recente (item, depois artefato; empate: a última lida).
+
+    Devolve (linhas, repetidas descartadas, sem chave descartadas)."""
+    escolhidas: dict[tuple, dict[str, Any]] = {}
+    sem_chave = 0
+    for ln in linhas:
+        k = _chave(ln)
+        if k is None:
+            sem_chave += 1
+            continue
+        atual = escolhidas.get(k)
+        if atual is None or _recencia(ln) >= _recencia(atual):
+            escolhidas[k] = ln
+    unicas = list(escolhidas.values())
+    return unicas, len(linhas) - sem_chave - len(unicas), sem_chave
+
+
+LOTE_UPSERT = 500
+
+
 def coletar(
     cliente: ClienteComprasPGC,
     sb: Supabase | None,
@@ -173,42 +223,61 @@ def coletar(
     limite: int | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
+    """Lê todas as páginas de cada (ano, classe), deduplica pela chave do upsert e só então grava.
+
+    A deduplicação é por (ano, classe) inteiro, não por página: a mesma chave aparece em páginas diferentes. Classe
+    com erro de leitura não grava nada (leitura parcial nunca vira gravação)."""
     total_coletados = 0
     total_gravados = 0
+    repetidos = 0
+    sem_chave = 0
     erros = 0
-    amostras = []
+    amostras: list[dict[str, Any]] = []
+
+    def resumo() -> dict[str, Any]:
+        return {
+            "sucesso": erros == 0,
+            "total_coletados": total_coletados,
+            "total_gravados": total_gravados,
+            "repetidos_descartados": repetidos,
+            "sem_chave": sem_chave,
+            "erros": erros,
+            "amostras": amostras,
+        }
 
     for ano in anos:
         for classe in classes:
             pagina = 1
             paginas_vistas: set[str] = set()
             lidos = 0
+            linhas_classe: list[dict[str, Any]] = []
+            falhou = False
+            atingiu_limite = False
             while True:
                 log.info("Consultando PGC classe %d ano %d pagina %d...", classe, ano, pagina)
                 try:
                     resp = cliente.consultar_classe(classe, ano, pagina=pagina, tamanho_pagina=TAMANHO_PAGINA_MAX)
                 except Exception as e:
                     log.error("Erro ao buscar classe %d ano %d pagina %d: %s", classe, ano, pagina, e)
-                    erros += 1
+                    falhou = True
                     break
 
                 if not isinstance(resp, dict) or not isinstance(resp.get("resultado"), list):
                     log.warning("PGC classe %d ano %d página %d: resposta inesperada; não é fim de coleta",
                                 classe, ano, pagina)
-                    erros += 1
+                    falhou = True
                     break
                 itens = resp["resultado"]
                 if pagina_repetida(itens, paginas_vistas) and itens:
                     log.warning("PGC classe %d ano %d página %d: conteúdo repetido; não é fim de coleta",
                                 classe, ano, pagina)
-                    erros += 1
+                    falhou = True
                     break
 
-                linhas_norm = []
                 for it in itens:
                     norm = normalizar_registro_pgc(it, ano_contexto=ano)
                     if norm and norm.get("orgao_cnpj") and norm.get("codigo_uasg"):
-                        linhas_norm.append(norm)
+                        linhas_classe.append(norm)
                         total_coletados += 1
                         if len(amostras) < 5:
                             amostras.append({
@@ -219,24 +288,10 @@ def coletar(
                                 "valor_total": norm["valor_total_item"],
                             })
 
-                if not dry_run and sb is not None and linhas_norm:
-                    try:
-                        conflito = "orgao_cnpj,codigo_uasg,ano_pca_projeto_compra,numero_item_pncp,codigo_item_catalogo"
-                        sb.upsert("pca_pgc_itens", linhas_norm, conflito=conflito)
-                        total_gravados += len(linhas_norm)
-                    except Exception as e:
-                        log.error("Erro no upsert de %d linhas PGC: %s", len(linhas_norm), e)
-                        erros += 1
-
                 if limite and total_coletados >= limite:
                     log.info("Limite de %d itens atingido", limite)
-                    return {
-                        "sucesso": True,
-                        "total_coletados": total_coletados,
-                        "total_gravados": total_gravados,
-                        "erros": erros,
-                        "amostras": amostras,
-                    }
+                    atingiu_limite = True
+                    break
 
                 lidos += len(itens)
                 decisao = avaliar_pagina(
@@ -248,16 +303,41 @@ def coletar(
                     break
                 pagina += 1
 
-    return {
-        "sucesso": erros == 0,
-        "total_coletados": total_coletados,
-        "total_gravados": total_gravados,
-        "erros": erros,
-        "amostras": amostras,
-    }
+            if falhou:
+                erros += 1
+                log.error("PGC classe %d ano %d: leitura incompleta; nada gravado desta classe", classe, ano)
+                continue
+
+            unicas, rep, sc = deduplicar(linhas_classe)
+            repetidos += rep
+            sem_chave += sc
+            if sc:
+                log.warning("PGC classe %d ano %d: %d linha(s) sem chave completa (não gravadas)", classe, ano, sc)
+            if not dry_run and sb is not None:
+                for k in range(0, len(unicas), LOTE_UPSERT):
+                    lote = unicas[k:k + LOTE_UPSERT]
+                    try:
+                        sb.upsert("pca_pgc_itens", lote, conflito=CONFLITO, retornar=False)
+                        total_gravados += len(lote)
+                    except Exception as e:
+                        log.error("Erro no upsert de %d linhas PGC: %s", len(lote), e)
+                        erros += 1
+            log.info("PGC classe %d ano %d: %d lidas, %d únicas, %d repetidas, %d sem chave",
+                     classe, ano, len(linhas_classe), len(unicas), rep, sc)
+            if atingiu_limite:
+                return resumo()
+
+    return resumo()
 
 
-def main(argv: list[str] | None = None) -> int:
+def anos_padrao(hoje: date) -> list[int]:
+    """Ano corrente e o seguinte: o PCA do ano seguinte é montado no PGC antes de ir ao PNCP."""
+    return [hoje.year, hoje.year + 1]
+
+
+def executar(argv: list[str] | None = None, hoje: date | None = None,
+             sessao: requests.Session | None = None) -> int:
+    """Entrada do Job (coletor.main --coleta pgc) e do módulo. Código 1 se qualquer classe falhar."""
     ap = argparse.ArgumentParser(description="Coletor Compras.gov PGC (PCA por classe)")
     ap.add_argument("--classes", help="Classes separadas por vírgula (padrão: 7830,7220)", default="7830,7220")
     ap.add_argument("--anos", help="Anos do PCA separados por vírgula (padrão: ano atual e seguinte)", default=None)
@@ -265,17 +345,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--delay", type=float, default=1.0, help="Delay mínimo em segundos entre requisições (mínimo 1.0)")
     ap.add_argument("--dry-run", action="store_true", help="Não grava no banco; mostra resumo e amostras")
     args = ap.parse_args(argv)
-
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    if args.limite and not args.dry_run:
+        # leitura parcial nunca vira gravação: --limite é para amostra
+        log.info("--limite implica --dry-run (amostra não grava)")
+        args.dry_run = True
 
     classes = [int(c.strip()) for c in args.classes.split(",") if c.strip()]
-    ano_atual = datetime.now().year
     if args.anos:
         anos = [int(a.strip()) for a in args.anos.split(",") if a.strip()]
     else:
-        anos = [ano_atual, ano_atual + 1]
+        anos = anos_padrao(hoje or datetime.now(ZoneInfo("America/Sao_Paulo")).date())
 
-    cliente = ClienteComprasPGC(delay=args.delay)
+    cliente = ClienteComprasPGC(delay=args.delay, sessao=sessao)
     sb = None
     if not args.dry_run:
         sb = Supabase(env("SUPABASE_URL", obrigatorio=True), env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True))
@@ -283,6 +364,11 @@ def main(argv: list[str] | None = None) -> int:
     res = coletar(cliente, sb, classes, anos, limite=args.limite, dry_run=args.dry_run)
     print(json.dumps(res, indent=2, ensure_ascii=False))
     return 0 if res["sucesso"] else 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    return executar(argv)
 
 
 if __name__ == "__main__":

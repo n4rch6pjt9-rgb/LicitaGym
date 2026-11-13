@@ -14,11 +14,14 @@ Todas as `sync-*` e a `link-catmat-pca` autenticam com `validateCronAuth`: **`Au
 | `sync-pncp-orgaos` | nenhum | 21–27 s (191 CNPJs) | pncp.gov.br (integração) | **agendar** |
 | `sync-pncp-legislation` | nenhum | 2 s | www.gov.br | **agendar** (semanal) |
 | `sync-pncp-catalogo` | nenhum | não medido (nunca rodou) | pncp.gov.br (integração) | **agendar** (mensal) |
+| coletor Python (`python -m coletor.pncp`) | `--origem cron\|manual`, `--termos-padrao` (rápido) | leads completo (~160 termos): 3h43 no cron de 15/10 (run 38746383473); rápido (12 termos): 31 min no disparo de 14/10 (run 38648833691) | pncp.gov.br | **agendado** no GitHub Actions (`.github/workflows/coletor-pncp.yml`, 06:00 BRT, completo; uma etapa por job, em sequência, cada uma com limite de 330 min; um disparo enquanto outro run espera cancela o que esperava); disparo manual pela tela de sincronizações (`api-syncs` → workflow_dispatch, `rapido=true`) |
+| `sync-portal-compras` | `limite` (40), `origem` (`cron` no job `licitagym-sync-portal-compras`, `0 11 * * *`; `manual` pela api-syncs; spec 0023). Só grava `portal_consulta`; não toca a proveniência de `licitacoes_externas` | não medido | portaldecompraspublicas.com.br | **agendado** diário (migration `20261008180000`, corpo com `origem` desde `20261014190000`) |
 | `sync-pncp-contratacoes-editais/atas/contratos` | `data_inicial`, `data_final` (janela padrão de 2 dias), `modalidade`, `modo`, `usar_atualizacao`, `async` | 1–183 s | pncp.gov.br | **não agendar**: bloqueadas por `PNCP_NATIONAL_SYNC_ENABLED` (responde 423) e fora do escopo. As oportunidades vêm do coletor-externo. |
 | `sync-pncp-irp` | `orgaos` | | | **não agendar**: gate `IRP_SYNC_ENABLED` (CLA-34) |
 | `sync-comprasgov-consulta` | | | | **não agendar**: placeholder, os 77 endpoints não estão ligados |
 | `import-catmat-curadoria` | JSON de curadoria | | | manual |
-| `sync-pncp-contratacoes-itens`, `link-pca-edital` | `limite`, `edital_id` / `janela_dias`, `limite`, `dry_run` | até 127 s | | **não agendar**: publicadas, mas **não versionadas no repo**, e dependem de editais |
+| `sync-pncp-contratacoes-itens` | `limite`, `so_sem_itens`, `edital_id` | | pncp.gov.br (integração) | **não agendar**: depende de `contratacoes_editais`, alimentada só pelo sync nacional de editais (423). Fora da lista do workflow de deploy, mas publicada em produção (v224 ativa em 09/11/2026; provavelmente pela integração GitHub do Supabase, que lê o `config.toml`; mecanismo não confirmado). Base parada desde 20/09/2026: 8 editais ativos, 80 itens em 4 editais, nenhum com código. Sem disparo pela tela (`api-syncs`, disparavel false) até a spec 0024, que prevê cron e disparo manual com escopo pelo catálogo. Importa `_shared_prod`. |
+| `link-pca-edital` | `janela_dias`, `limite`, `dry_run`, `classes` | até 150 s | nenhuma (só banco) | **agendar em dry_run**: versionada no repo. Casa `contratacoes_editais` e `licitacoes_externas`. O job `licitagym-link-pca-edital` (04:33 BRT) nasce com `dry_run: true` |
 
 ## 3. Plano de agendamento
 
@@ -28,9 +31,12 @@ Janela fora de pico: 02:00–06:00 BRT. Os minutos quebrados espalham a carga. O
 |---|---|---|---|---|---|---|---|
 | 1 | `licitagym-sync-compras-catmat-catalogo` | `sync-compras-catmat` | dom 02:07 | `7 5 * * 0` | `{"modo":"catalogo","incluir_inativos":false,"async":true}` | 150 s | Espelho segue os PDMs efetivos, não a classe inteira. Nasce `active = false`; `cron.alter_job(..., active := true)` só depois do deploy da função nova. `async` devolve 202. `incluir_inativos: false` é explícito: só ativos. |
 | 2 | `licitagym-sync-compras-catmat-catalogo-continuacao` | `sync-compras-catmat` | dom 02:27 | `27 5 * * 0` | `{"modo":"catalogo","incluir_inativos":false,"async":true,"somente_retomada":true}` | 150 s | Só continua um run `incompleta` do mesmo lock. Se a carga das 02:07 terminou, responde ignorado. |
-| 3 | `licitagym-sync-pncp-pca` | `sync-pncp-pca` | diário 03:13 | `13 6 * * *` | `{"verificar_periodo":true,"async":true}` | 150 s | O PCA é a fonte da demanda. O gate de período pula a carga quando nada mudou. `async` devolve 202 e a carga roda em background. |
-| 4 | `licitagym-sync-pncp-pca-continuacao` | `sync-pncp-pca` | diário 03:43 | `43 6 * * *` | igual ao 3 | 150 s | Retoma as páginas pendentes do lock `pca-sync:<ano>:7830` quando a 1ª execução esgota o orçamento de 110 s. Se estiver tudo em dia, devolve `ignorado`. |
+| 3 | `licitagym-sync-pncp-pca-fila` | `sync-pncp-pca` | diário 03:13 | `13 6 * * *` | `{"rotina":"incremental","async":true}` | 150 s | Fluxo por fila de planos (spec 0012, #294; ligado em `20261011210000_cron_pca_fila_ligar.sql`). Descobre pela consulta os planos novos ou alterados e enfileira em `private.pca_plano_fila`. Os itens de cada plano vêm da integração e são gravados em lote. Lock `pca-fila:<ano>`. |
+| 4 | `licitagym-sync-pncp-pca-fila-continuacao` | `sync-pncp-pca` | diário, a cada 10 min das 03:00 às 04:50 | `*/10 6-7 * * *` | `{"rotina":"incremental","somente_retomada":true,"async":true}` | 150 s | Retoma a descoberta e consome a fila até esvaziar. Sem trabalho, responde `ignorado` e não chama o PNCP. Pode cruzar com o 5 (04:23) e o 6 (04:43) em dia de carga longa: medir. |
+| 4b | `licitagym-sync-pncp-pca-reconciliacao` | `sync-pncp-pca` | dia 1, 02:13 | `13 5 1 * *` | `{"rotina":"reconciliacao","async":true}` | 150 s | Descoberta completa e enfileiramento de todos os planos, com a regra de ausência em 2 descobertas. |
+| — | `licitagym-sync-pncp-pca` e `-continuacao` (antigos) | `sync-pncp-pca` | desligados | `13 6` / `43 6` | `{"verificar_periodo":true,"async":true}` | — | Desligados em `20261011210000`: morriam por "CPU Time exceeded" na página 2 desde 26/09. Para voltar, use uma migration com o `active` invertido. |
 | 5 | `licitagym-link-catmat-pca` | `link-catmat-pca` | diário 04:23 | `23 7 * * *` | `{"limite":500,"offset":N}`, N = 0, 500, … até o total de `pca_itens` (7 lotes para 3.331, calculado na hora) | 120 s | Liga PCA a CATMAT depois do PCA. Não chama API externa. Lote de 500 levou no máximo 27 s. |
+| 5b | `licitagym-link-pca-edital` | `link-pca-edital` | diário 04:33 | `33 7 * * *` | `{"dry_run": true, "limite": 500}` | 150 s | Depois do vínculo CATMAT. Só reporta. Gravar é tirar `dry_run` do corpo, com ok explícito. |
 | 6 | `licitagym-sync-pncp-orgaos` | `sync-pncp-orgaos` | diário 04:43 | `43 7 * * *` | `{}` | 150 s | Entidades e órgãos dos CNPJs dos planos PCA. Depende do PCA. Leva 21–27 s. |
 | 7 | `licitagym-orgaos-classificar` | SQL: `fn_orgaos_uasgs_classificar()` | diário 05:03 | `3 8 * * *` | — | `statement_timeout` de 10 min | Classifica órgãos e UASGs na transação própria. Não espera o refresh da MV. |
 | 7b | `licitagym-escopo-match` | SQL: `fn_escopo_match_atualizar()` | diário 05:18 | `18 8 * * *` | — | `statement_timeout` de 10 min | Sincroniza `escopo_item_calc` (só texto novo ou alterado), atualiza `mv_escopo_demanda` e grava `match_nivel`. Faixa livre 05:12–05:26, depois do pior caso da classificação. |
@@ -45,8 +51,8 @@ Sobre o job 5: o `pg_net` dispara os 7 lotes do `link-catmat-pca` quase ao mesmo
 
 ```
 dom: compras-catmat catálogo (02:07) → retomada do catálogo (02:27)
-diário: pca (03:13) → pca-continuacao (03:43) → link-catmat-pca (04:23) → orgaos (04:43) → classificar (05:03) → escopo (05:18)
-independentes: legislation (seg 05:27), catalogo (dia 1 05:37), respostas (:11), limpeza (dom 05:51)
+diário: pca-fila (03:13) → pca-fila-continuacao (a cada 10 min até 04:50) → link-catmat-pca (04:23) → link-pca-edital em dry_run (04:33) → orgaos (04:43) → classificar (05:03) → escopo (05:18)
+independentes: pca-reconciliacao (dia 1 02:13), legislation (seg 05:27), catalogo (dia 1 05:37), respostas (:11), limpeza (dom 05:51)
 ```
 
 - `link-catmat-pca` precisa do catálogo CATMAT (domingo) e do PCA do dia. O vínculo e o sync de órgãos continuam na lista fixa de classes (7830 e 7220); o job de domingo não amplia esse escopo.

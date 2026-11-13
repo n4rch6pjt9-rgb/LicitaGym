@@ -1,63 +1,89 @@
-# LicitaGym: onboarding do agente
+# LicitaGym (backend)
 
-Regras de produto e de dados (zero alucinação, identificadores oficiais, schemas antes de requisições): **`AGENTS.md`**.
-Regras por área: **`.github/instructions/*.instructions.md`** (catmat, database-migrations, document-pipeline,
-edge-functions, pncp, python-ingestion, tests). Este arquivo não repete esse conteúdo: diz como o projeto roda,
-entrega e é observado, e o que o agente não pode fazer.
-Os `CLAUDE.md` de subpastas são logs do plugin claude-mem (histórico de sessões), não instruções.
+<!-- Mantenha abaixo de 200 linhas. Regra que vale só para uma pasta vai para .claude/rules/ com `paths:`.
+     Procedimento de vários passos vai para skill. Fato com data ("em 08/10...") vai para docs/, não aqui. -->
+
+@AGENTS.md
+
+Regras de negócio e escopo do produto (sempre carregadas): `.claude/rules/regras-negocio.md`.
+Regras por área (carregam só ao tocar a pasta): `.claude/rules/*.md`, geradas de `.github/instructions/`.
+Escopo do produto e objetivo final: `docs/produto/ESCOPO.md`. Spec-mãe em execução: `specs/0032-agentes-dentro-da-tarefa.md`.
 
 ## O que é
-SaaS de monitoramento de licitações públicas (foco: equipamentos fitness e pisos de borracha). Este repositório
-é o backend: banco, Edge Functions e coletores. O frontend fica em `n4rch6pjt9-rgb/Dashboard---LicitaGym`.
+SaaS de licitações públicas para fornecedores do mercado fitness (cliente atual: Konnen). Este repo é o backend:
+banco, Edge Functions e coletores. Frontend: `n4rch6pjt9-rgb/Dashboard---LicitaGym`.
 
 | Pasta | Conteúdo |
 |---|---|
 | `supabase/migrations/` | schema (Postgres 17, RLS, ACL explícita). Uma migration por mudança, idempotente |
-| `supabase/functions/` | Edge Functions Deno (`api-*` para o Dashboard, `sync-*` para ingestão). Código comum em `_shared/` |
+| `supabase/functions/` | Edge Functions Deno (`api-*` para o Dashboard, `sync-*` para ingestão). Comum em `_shared/` |
 | `supabase/tests/*_check.sql` | checagens de ACL/regra de negócio (DO blocks que falham com EXCEPTION) |
-| `services/coletor-externo/` | coletores Python (PNCP detalhe, Sistema S/Paradigma, taxonomia, escopo). Imagem Docker do Cloud Run Job |
-| `scripts/` | coletores Python antigos e scripts PowerShell de operação |
-| `tests/` | pytest dos `scripts/` e testes Deno (`tests/supabase/**`) |
-| `Kuib-Harness/` | app desktop de administração (Electron + Vue) |
-| `docs/` | arquitetura, schemas das APIs oficiais, runbooks |
+| `services/coletor-externo/` | coletores Python (Cloud Run Jobs, ver o README da pasta) |
+| `scripts/` | coletores antigos e scripts de operação |
+| `tests/` | pytest e testes Deno (`tests/supabase/**`) |
+| `specs/` | uma spec por mudança não trivial (`/spec`), template em `specs/_template.md` |
+| `docs/` | produto, arquitetura, schemas das APIs oficiais, runbooks |
 
-## Como testar (os mesmos comandos da CI `pr-quality.yml`)
+## Como testar (mesmos comandos da CI `pr-quality.yml`)
 ```bash
-deno check supabase/functions/<funcao>/index.ts
+scripts/ci/deno-check-funcoes.sh [funcao ...]
 deno test tests/supabase --allow-read --allow-write --allow-env --no-prompt
+git diff --name-only origin/main... | scripts/ci/lint-alterados.sh -
 pip install -r requirements-dev.txt && pytest tests/ -q
 cd services/coletor-externo && pip install -r requirements.txt -r ../../requirements-dev.txt && python -m pytest -q
+scripts/validar-migrations.sh        # Postgres 17 descartável (Docker)
 ```
-Migration nova: skill `validar-migrations` (Postgres descartável) antes do PR.
+- Pre-commit: `git config core.hooksPath .githooks` uma vez por clone. Ele e a CI barram marcador de conflito,
+  segredo no conteúdo, log/HAR/compactado/chave/CSV/dump de coleta e item novo na raiz (`scripts/ci/checar-higiene.sh`, lista em `raiz-permitida.txt`).
+- Pendências conhecidas: `.github/ci/deno-check-pendentes.txt` e `supabase/tests/pendentes.txt`. A lista só diminui.
+- Quem toca um arquivo resolve o lint dele inteiro. Não acrescente regra de lint sem limpar a base.
+- Workflow novo do GitHub Actions não usa `uses:` (marketplace bloqueado): siga `pr-quality.yml`.
 
-## Ambientes e entrega
-- **Um ambiente: produção** (Supabase `ifaiagegyicjzlpskafh`). Não há staging.
-- **Merge na `main` aplica em produção**:
-  - migrations: integração Supabase ↔ GitHub (configurada no painel do Supabase). Aparece no commit como o check
-    **"Supabase Preview"**, mas aplica em produção (~30 s após o merge). Confira depois com a skill `verificar-producao`;
-  - Edge Functions: a integração Supabase ↔ GitHub republica **todas** as funções do repositório a cada merge na `main`.
-    PR em `supabase/functions/**` ou `supabase/migrations/**` é de alto risco (produção, sem staging).
-    O workflow `.github/workflows/deploy-supabase-functions.yml` continua no repo (deploy explícito de um subconjunto + smoke test);
-    não é o que decide se a função publica.
-- Coletor externo: Cloud Run Job `coletor-sestsenat` (GCP), agendamento semanal; ver `services/coletor-externo/README.md`.
-- PR empilhado: merge commit (não squash), porque a branch é apagada no merge. Skill `merge-pilha`.
+## Produção e branches de preview
+- Produção: Supabase `ifaiagegyicjzlpskafh`.
+- **Branch de preview por PR:** a integração Supabase ↔ GitHub cria uma branch Supabase para o PR e aplica nela as
+  migrations do PR (check **Supabase Preview**). É a validação em banco real antes do merge.
+  - PR com migration ou Edge Function só vai para merge com o Supabase Preview verde. Se o check vier "ignored ...
+    limit of concurrent preview branches", avise o Marcelo: liberar vaga ou subir o limite é decisão dele.
+  - Não apague branch de preview sem pedido explícito.
+  - Renomear a migration de um PR que já tem preview quebra o preview ("Remote migration versions not found in local
+    migrations directory"): avise antes.
+- **Merge na `main` = produção:** aplica as migrations (~30 s) e republica **todas** as Edge Functions.
+  PR em `supabase/functions/**` ou `supabase/migrations/**` é alto risco.
+- Antes do merge, confira de novo a `main`: migration com versão repetida ou anterior à última aplicada é recusada
+  (`scripts/ci/guard-migrations.sh` acusa).
+- Depois do merge: skill `verificar-producao` e `get_advisors` (security). Achado novo vira issue.
+- PR empilhado: merge commit, não squash (skill `merge-pilha`).
 
-## Observabilidade
-- **Saúde consolidada:** `private.saude_operacional_resumo()` (limiares em `private.saude_limiares`), exposta pela
-  Edge Function `api-saude` (cron secret ou admin). O workflow `.github/workflows/saude.yml` (a cada 30 min) abre/fecha
-  a issue com rótulo `alerta-operacional` quando há verificação crítica.
-- Execuções: `private.pncp_sync_run` (heartbeat, `incompleta`/`retomada`), `private.coleta_externa_run`,
-  `private.pncp_sync_request`.
-- Saúde da API: `api-dashboard-oportunidades?action=readiness`.
-- Logs: painel do Supabase (Edge Functions) e Cloudflare Workers Logs (Dashboard). Skill `verificar-producao`.
+## Banco
+Mudança de schema, ACL ou dado só por migration versionada + PR (skill `nova-migration`, agente `revisor-migration`).
+MCP do Supabase é somente leitura. Exceção: o que o Marcelo fizer à mão, depois registrado em migration.
 
-## MCP
-`.mcp.json` e `.cursor/mcp.json`: Supabase **somente leitura**. Escrita em produção só por migration + PR, ou pelo
-SQL Editor com o usuário.
+## Convenções
+- **Edge Functions:** auth por `requireCronAuth` / `await requireUserAuth` / `await requireCronOrUserAuth`
+  (`_shared/http.ts`). `service_role` em `api-*` só depois de checar o usuário. Erro de página não é resultado vazio.
+  Importar de `_shared/`, nunca de `_shared_prod/`.
+- **Python:** timeout explícito, retry com backoff e `Retry-After`, `DELAY_SEGUNDOS >= 1`. Teste unitário não chama API real.
+- **SQL:** `YYYYMMDDHHMMSS_assunto.sql`, idempotente, `revoke all` + grant mínimo, RLS ligada,
+  SECURITY DEFINER com `search_path` fixo, e `supabase/tests/<assunto>_check.sql`.
+- Correção P0/P1 leva teste de regressão. Mudança de classificação leva contagem antes/depois (dry-run) no PR.
+- Tudo em português: comentário, PR, mensagem de erro.
+
+## Fluxo de trabalho
+1. Mudança não trivial começa por `/spec <ideia>`. A spec diz **qual fase da spec-mãe ela alimenta**; se não alimenta
+   nenhuma, fica `parada` (ver `docs/produto/ESCOPO.md`).
+2. Marcelo aprova (sempre que houver migration, decisão de produto ou dado de produção).
+3. `/implement specs/NNNN-slug.md`: testes dos critérios de aceite primeiro, depois o código, até PR em draft.
+4. Antes de pedir merge: agentes `revisor-codigo` e `revisor-seguranca` (e `revisor-migration` se houver migration,
+   `revisor-tenant` se tocar `api-*` ou tabela com `tenant_id`), mesmo que a CI e o revisor externo tenham passado.
+   O PR registra o resultado. Mudança de classificação: o usuário roda a skill `dry-run-classificacao` e anexa a
+   contagem ao PR (ela só é chamada por ele).
+5. Fechamento e início de ciclo (issues dos dois repos, aviso às outras janelas): skill `ciclo-janelas`.
 
 ## Skills e agentes (`.claude/`)
 | Nome | Quando usar |
 |---|---|
+ chore/agente-backend
 | skill `nova-migration` | antes de escrever qualquer migration |
 | skill `validar-migrations` | antes de abrir PR com migration |
 | skill `merge-pilha` | quando o usuário pedir merge de PRs empilhados |
@@ -70,12 +96,28 @@ SQL Editor com o usuário.
 `frontend-dashboard` (repo do Dashboard), define a ordem (backend mergeado e publicado antes do front que depende dele),
 revisa as entregas e leva ao Marcelo as decisões de produto e os pedidos de merge.
 
+| `/spec`, `/implement` | criar e executar spec |
+| skill `nova-migration`, `validar-migrations` | antes de escrever / antes do PR com migration |
+| skill `verificar-producao` | depois de merge, ou para investigar incidente |
+| skill `merge-pilha` | merge de PRs empilhados, a pedido do usuário |
+| skill `ciclo-janelas` | fim e início de ciclo (regras R2 a R4) |
+| skill `dry-run-classificacao` | PR que muda regra de classificação (escopo, CATMAT, objeto, tipo de órgão, marca, prioridade): monta a contagem antes/depois |
+| agentes `revisor-codigo`, `revisor-migration`, `revisor-seguranca` | revisão antes do PR |
+| agente `revisor-tenant` | diff em `api-*`, `_shared/tenant.ts` ou policy de tabela com `tenant_id`: isolamento entre empresas |
+| hooks `bloquear-destrutivo` (antes) e `lint-pos-edicao` (depois de editar `.ts`/`.py`) | automáticos; quem dispara cada automação: `docs/operacao/matriz-automacoes.md` |
+
+## Observabilidade
+- Saúde: `private.saude_operacional_resumo()` via `api-saude`; `saude.yml` abre issue `alerta-operacional`.
+- Execuções: `private.pncp_sync_run`, `private.coleta_externa_run`, `private.job_queue`.
+- Logs: painel Supabase (Edge Functions) e Cloudflare Workers Logs (Dashboard).
+ main
+
 ## O que o agente NÃO faz
-- Não faz merge nem deploy sem o "ok" explícito do usuário (merge aplica em produção).
-- Não roda `supabase db reset/push`, `supabase migration repair`, `git push --force`, push direto na `main`,
-  `terraform apply/destroy`, `wrangler deploy`, `wrangler delete`: `.claude/hooks/bloquear-destrutivo.mjs` bloqueia (casos de teste em
-  `.claude/hooks/bloquear-destrutivo.test.mjs`; rode `node .claude/hooks/bloquear-destrutivo.test.mjs` ao mudar o hook).
-  Se for mesmo necessário, o usuário roda.
-- Não usa `user_metadata` para papel: admin é `app_metadata.licitagym_role = 'admin'`.
-- Não lê, copia nem versiona `.env*` (exceto `.env.example`), chaves, HAR, CSV, zip nem dados de coleta.
+- Não altera schema, ACL ou dado de produção fora de migration + PR.
+- Não faz merge nem deploy sem "ok" explícito do Marcelo.
+- Não roda `supabase db reset/push`, `supabase migration repair`, `git push --force`, push na `main`,
+  `terraform apply/destroy`, `wrangler deploy/delete` (bloqueado por `.claude/hooks/bloquear-destrutivo.mjs`).
+- Não usa `user_metadata` para papel (admin = `app_metadata.licitagym_role = 'admin'`).
+- Não lê nem versiona `.env*` (exceto `.env.example`), chaves, HAR, CSV, zip ou dados de coleta.
+- Não faz login em portal de compras: só dado aberto/público.
 - Não inventa dado (ver `AGENTS.md`).

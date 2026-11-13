@@ -12,12 +12,12 @@ Grupo → Classe → PDM → Item. E1 Grupo, E2 Classe, E3 PDM, E4 Item, E5 Natu
 Core 78/7830; extensão curada 72/7220. Não misturar automaticamente core e extensão.
 
 ## Alto — o que vira lead
-O cliente vende produtos que casam com o CATMAT dele. Contrato de serviço (credenciamento, locação, manutenção inclusive com peças, obra, oficineiros) nunca vira lead. Um termo de busca sozinho não torna a linha `forte`.
+O escopo é decidido pelo texto do item no Termo de Referência (e no edital); o CATMAT é sinal de apoio, porque o órgão erra o enquadramento com frequência e o TR prevalece quando diverge. Divergência TR × CATMAT vira achado, não descarte. Contrato de serviço (credenciamento, locação, manutenção inclusive com peças, obra, oficineiros) nunca vira lead. Um termo de busca sozinho não torna a linha `forte`.
 
 - `forte`: polia, espaldar.
 - `fraco`: pilates, "aparelho para condicionamento físico" genérico, colchonete.
 - `Puxador` é positivo só na categoria acessórios.
-- Academia ao ar livre só conta junto com piso.
+- Academia ao ar livre está fora de escopo: termos de "ar livre" no texto do TR ou do edital desqualificam o item (ver `.claude/rules/regras-negocio.md`).
 - Mudança de classificação sem dry-run (contagem antes e depois) no texto do PR.
 
 ## Alto ([BLOQUEANTE]) ao revisar

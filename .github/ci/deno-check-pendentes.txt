@@ -1,0 +1,8 @@
+# Entrypoints de Edge Function que não passam em `deno check` hoje (erro de tipo real, levantado em 08/10/2026).
+# Formato: <funcao> | <trecho exato do erro esperado> | <motivo>
+# A falha só vira PENDENTE se a saída contiver o trecho; outro erro na mesma função é FALHA.
+# Se a função passar, a CI falha até ela sair desta lista. A lista só diminui; função nova nunca entra aqui.
+api-pncp-irp                 | Property 'auth' does not exist on type 'SupabaseClient' | TS2339
+import-catmat-curadoria      | is not assignable to parameter of type 'LegacyImportBody & CuradoriaExportV2' | TS2345
+sync-comprasgov-consulta     | 'metadados' does not exist in type | TS2353 (função pendente, TODO de endpoints)
+sync-pncp-contratacoes-itens | Property 'id' does not exist on type 'ParserError | TS2339 (importa _shared_prod)

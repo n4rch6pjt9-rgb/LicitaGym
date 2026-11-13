@@ -1,5 +1,103 @@
 # Coletores LicitaGym (PNCP + SEST SENAT) → Supabase + RAG
 
+## Perguntar ao edital (spec 0038)
+
+Serviço HTTP do Cloud Run (`agente-perguntas`, `coletor/perguntas_servico.py`, só biblioteca padrão). Quem chama é
+só a Edge Function `api-agentes` (ela faz usuário, empresa, pipeline e o limite de 50 perguntas/dia). Mesma imagem
+dos Jobs: o `Dockerfile` tem `ENTRYPOINT ["python", "-m", "coletor.main"]`, e `--command`/`--args` do deploy trocam
+esse entrypoint.
+
+| Rota | Entrada | Saída |
+|---|---|---|
+| `GET /saude` | — | `200 {"ok": true}` |
+| `POST /edital/perguntar` | cabeçalho `X-Agente-Segredo`; corpo `{"licitacao_id": int > 0, "pergunta": 1..500 caracteres, "k": 1..20 (padrão 8)}` | `200 {resposta, motivo_sem_resposta, citacoes[{n, chunk_id, documento_id, pagina, texto, apoio, apoio_inicio}], modelo, versao_prompt ("0038.2"), uso{entrada, saida, pensamento}}` |
+
+Erros: `400` corpo inválido, `401` segredo errado ou ausente, `503` serviço sem `AGENTE_PERGUNTAS_SEGREDO`,
+`502` falha do Vertex ou do Supabase, orçamento de tempo esgotado, resposta do modelo fora do formato nas duas
+tentativas ou cortada no teto de tokens (sem detalhe do erro na resposta; a `api-agentes` não grava nada).
+`resposta: null, motivo_sem_resposta: "nao_encontrado"` só em três casos: nenhum trecho, o modelo respondeu
+`{"resposta": null}`, ou a citação foi rejeitada (sem marcador `[n]`, marcador fora dos trechos entregues, ou algum
+`[n]` sem `apoio` válido).
+
+O modelo devolve `{"resposta": "...[n]...", "apoio": {"n": "<frase copiada do trecho n>"}}`. Cada `apoio` precisa
+estar no texto do trecho n (comparação com espaços colapsados e sem diferença de maiúsculas) e ter pelo menos 20
+caracteres. Na citação, `apoio` é a frase recortada do texto original do trecho (não o texto do modelo) e
+`apoio_inicio` é a posição dela, em caracteres, no `texto` do trecho. Os trechos vêm da RPC `agente_chunks_licitacao` (migration da spec 0038).
+
+Deploy (do Marcelo). Conta de serviço própria, com o mínimo:
+
+```bash
+PROJECT=$(gcloud config get-value project); REGION=southamerica-east1
+SA=agente-perguntas@$PROJECT.iam.gserviceaccount.com
+gcloud iam service-accounts create agente-perguntas
+gcloud projects add-iam-policy-binding $PROJECT --member=serviceAccount:$SA --role=roles/aiplatform.user
+
+# segredo compartilhado com a api-agentes (gerado uma vez; não fica em arquivo nem no histórico do shell)
+SEGREDO=$(openssl rand -hex 32)
+printf '%s' "$SEGREDO" | gcloud secrets create agente-perguntas-segredo --data-file=-
+for s in supabase-service-key agente-perguntas-segredo; do
+  gcloud secrets add-iam-policy-binding $s --member=serviceAccount:$SA --role=roles/secretmanager.secretAccessor
+done
+
+gcloud run deploy agente-perguntas --source services/coletor-externo --region $REGION --service-account $SA \
+  --command python --args=-m,coletor.perguntas_servico \
+  --set-secrets SUPABASE_SERVICE_ROLE_KEY=supabase-service-key:latest,AGENTE_PERGUNTAS_SEGREDO=agente-perguntas-segredo:latest \
+  --set-env-vars SUPABASE_URL=$SUPABASE_URL,GOOGLE_CLOUD_PROJECT=$PROJECT \
+  --allow-unauthenticated --max-instances 2 --concurrency 4 --timeout 60
+
+curl -s "$(gcloud run services describe agente-perguntas --region $REGION --format 'value(status.url)')/saude"
+```
+
+- `--allow-unauthenticated` porque a autenticação é o segredo compartilhado (comparado com `hmac.compare_digest`);
+  sem o cabeçalho certo a rota responde 401 antes de qualquer chamada ao Vertex ou ao Supabase.
+- Tempo: a `api-agentes` desiste em 60 s, então cada pergunta tem orçamento de 55 s (`PERGUNTAS_ORCAMENTO_S`), com
+  teto próprio por chamada (embedding 8 s, RPC 10 s, geração 40 s; `PERGUNTAS_*_TIMEOUT_S`) e no máximo uma nova
+  tentativa, depois de 2 s, em erro transitório do Vertex. Orçamento esgotado responde 502 sem tentar de novo. O
+  serviço não usa o intervalo `EMBED_INTERVALO` nem as 8 tentativas do `ia.py` (são da indexação em lote).
+- O mesmo valor do segredo vai para os segredos do Supabase, com a URL do serviço (nenhuma chave do GCP vai para lá):
+
+```bash
+supabase secrets set AGENTE_PERGUNTAS_SEGREDO="$SEGREDO" \
+  AGENTE_PERGUNTAS_URL="$(gcloud run services describe agente-perguntas --region $REGION --format 'value(status.url)')"
+unset SEGREDO
+```
+
+Trocar o segredo: nova versão em `agente-perguntas-segredo`, novo deploy (ou nova revisão) do serviço e o mesmo
+valor em `supabase secrets set`.
+
+## Rótulo "fora do perfil" dos preços (spec 0037, fase 0)
+
+`--coleta perfil-precos --dry-run` lê `precos_praticados_itens` e rotula uma amostra estratificada por PDM com o
+Gemini do Vertex (`coletor/perfil_precos.py`), **sem gravar nada**. Faz uma chamada por lote de itens da compra. Para
+cada item, o log traz o rótulo (`no_perfil`, `pdm_divergente` com o produto real, `fora_do_perfil` ou `incerto`) e o
+motivo; no fim vêm os tokens e a projeção para a base inteira. Os créditos são os do projeto GCP. A gravação (tabela
+`precos_rotulo_perfil`) é da fase 1. A descrição detalhada (texto do TR) desempata quando o órgão errou o PDM.
+
+Roda no Job `coletor-precos`. O SA precisa de `roles/aiplatform.user` e o Job, de `GOOGLE_CLOUD_PROJECT`:
+
+```bash
+PROJECT=$(gcloud config get-value project)
+gcloud projects add-iam-policy-binding $PROJECT \
+  --member=serviceAccount:coletor-precos@$PROJECT.iam.gserviceaccount.com --role=roles/aiplatform.user
+# amostra de 50 compras (inclui PDMs variados):
+gcloud run jobs execute coletor-precos --region southamerica-east1 \
+  --update-env-vars GOOGLE_CLOUD_PROJECT=$PROJECT \
+  --args="--coleta,perfil-precos,--dry-run,--limite,50"
+# só a compra-âncora (esteira transportadora no PDM de esteira ergométrica):
+gcloud run jobs execute coletor-precos --region southamerica-east1 \
+  --args="--coleta,perfil-precos,--dry-run,--compras,93099205000052026"
+```
+
+O custo em dólar só aparece se o Job tiver `PRECO_ENTRADA_USD_MTOK` e `PRECO_SAIDA_USD_MTOK` (preço por milhão de
+tokens do `GEN_MODEL` vigente). Sem eles, o log traz só os tokens.
+
+Ritmo do Vertex (o endpoint global do 3.8 Flash devolve 429 e 504 em rajada): `PERFIL_PAUSA_S` (pausa mínima entre
+chamadas, padrão 4), `PERFIL_ESPERAS_S` (espera entre tentativas, padrão `30,60`; a última se repete),
+`PERFIL_TIMEOUT_MS` (prazo de cada chamada, padrão 90000; o prazo vai também ao servidor, que desiste uns 3 s antes),
+`PERFIL_ITENS_POR_CHAMADA` (padrão 6: lotes de 15 estouravam o prazo), `PERFIL_MAX_FALHAS_SEGUIDAS` (padrão 8) e
+`PERFIL_TENTATIVAS_VERTEX` (padrão 3). Compra que esgota as tentativas fica sem rótulo e a rodada segue; o resumo
+final traz `erros_por_tipo` (cota, erro 5xx, prazo, resposta inválida).
+
 ## Gate de marca e referências do edital (v16.3)
 - Colunas na ordem fornecedor → marca → modelo, e o gate do fornecedor calculado sobre **todas** as propostas dele:
   `perfil_comercial` = fabricante — marca própria | fabricante + revenda | revenda monomarca | revenda multimarca;
@@ -32,20 +130,37 @@ Todo processo Paradigma no escopo, aberto ou fechado, tem os anexos (edital, err
 - documento que some do portal → `removido_do_portal_em` (o arquivo continua no LicitaGym);
 - a view `v_licitacao_documentos` dá, por licitação, contagens e a lista completa (`documentos` jsonb com `bucket` e `caminho`).
 
-**Cadastro de visitante:** o portal exige identificação para baixar. O coletor se identifica com o **CNPJ da empresa** (nunca CPF). Sem estas variáveis, os documentos ficam `pendente` e nada é baixado:
+**Cadastro de visitante:** o portal exige identificação para baixar. O coletor se identifica com o **CNPJ da empresa** ou, desde 12/11/2026, com o **CPF de uma pessoa** (`VISITANTE_CPF` + `VISITANTE_NOME` no lugar de `VISITANTE_CNPJ` + `VISITANTE_RAZAO_SOCIAL`; os dois juntos é erro). O CPF não vai para o banco: `portal_visitante` guarda só o HMAC-SHA256 dele, com a chave `VISITANTE_HASH_CHAVE` (obrigatória com CPF; gere um valor aleatório longo e guarde só no secret). Sem estas variáveis, os documentos ficam `pendente` e nada é baixado:
 
 ```
 SUPABASE_STORAGE_BUCKET=licitacao-documentos
 VISITANTE_CNPJ=00.000.000/0000-00
 VISITANTE_RAZAO_SOCIAL=...
+# ou, por pessoa física:
+# VISITANTE_CPF=000.000.000-00
+# VISITANTE_NOME=...
+# VISITANTE_HASH_CHAVE=...      # chave do HMAC do CPF (aleatória, só no secret)
 VISITANTE_EMAIL=...            # e-mail institucional
 VISITANTE_TELEFONE=...
 VISITANTE_UF=CE
 VISITANTE_CONTATO=...          # opcional (nome do contato comercial)
 VISITANTE_CONSENTIMENTO_LGPD=1 # aceite exigido pelo formulário do portal
+# Endereço (spec 0061, K-13): opcional, mas todos juntos. Portais como a Firjan pedem o cadastro completo.
+# VISITANTE_ENDERECO=...       # logradouro
+# VISITANTE_NUMERO=...
+# VISITANTE_BAIRRO=...
+# VISITANTE_CEP=00000-000      # 8 dígitos; vai ao portal como 00.000-000
+# VISITANTE_CIDADE=...         # nome; o código vem da lista do portal (PesquisarRegiao)
+# VISITANTE_RG=...             # só com CPF
 MAX_MB=50                      # acima disso o documento fica "ignorado"
 ```
-Guardar como segredo (Secret Manager / variáveis do job), não no repositório.
+Guardar como segredo (Secret Manager / variáveis do job), não no repositório. Com endereço, a cidade (com a UF) precisa
+estar na lista do portal; se não estiver, o documento fica `pendente` com o motivo e nenhum cadastro é enviado.
+
+**Relatórios públicos do processo (spec 0061, K-14):** além dos anexos, o coletor lê `PesquisarProcessoDetalheRelatorio`
+e guarda como documento cada relatório com `bExibePublico = 1` (ex.: "Pedidos de Reconsiderações"), a partir do PDF de
+`/licitacao-backend/wbc/GetRelatorioAreaExterna` (`reportType=1`). Arquivo estável `relatorio_<nCdItem>.pdf`,
+versionado como os anexos; resposta que não é PDF conta erro e não é gravada.
 
 **Dashboard (abrir o arquivo):** usuário logado gera link assinado com o `bucket`/`caminho` da view:
 ```ts
@@ -55,6 +170,45 @@ const { data } = await supabase.storage.from(doc.bucket).createSignedUrl(doc.cam
 **Arquivos antigos fora do SaaS:** os PDFs do SEST SENAT que estão no disco da VM sobem com `python -m coletor.migrar_storage` (rodar na VM; confere sha256; não apaga o original). O coletor SEST SENAT e o PNCP passam a gravar no Storage quando `SUPABASE_STORAGE_BUCKET` está definido.
 
 Migração: `supabase/migrations/20260929140000_documentos_no_licitagym.sql` (aplicada pela integração Supabase no merge) (bucket + policy de leitura para `authenticated`, colunas de histórico, `portal_visitante`, view e o cadastro das fontes Paradigma que faltavam em `fontes_externas`).
+
+## Catálogo de produtos Paradigma por categoria (08/11/2026)
+
+`coletor/catalogo_paradigma.py` exporta o catálogo público de um portal Paradigma (tela `CatalogoProdutos.aspx`) por
+categoria, com o **código interno da entidade** (`sCdProdutoEmpresa`, ex.: Sesc DN `310031041500001`). Usa o cliente
+`PortalParadigma` (mesmo intervalo, 429 com `Retry-After`, 401/403 encerram, faixas de até 100). Só leitura, sem login,
+sem gravar no banco. A categoria vai por código (`PT030`) ou nome exato; categoria inexistente dá erro.
+
+```bash
+python -m coletor.catalogo_paradigma --fonte sescdn --categorias "PT030;ES1205" --saida /fora/do/repo/catalogo.csv
+```
+
+Saída `.csv` (`;`, UTF-8 com BOM) ou `.json`, com `codigo_sesc`, `descricao`, `tipo`, `categoria`, `id_categoria`,
+`id_produto` e `fonte` (no CSV, texto que o Excel leria como fórmula ganha `'` na frente; o JSON guarda o original).
+É dado de coleta: caminho dentro do repositório é recusado. Saída: 0 ok; 2 categoria inexistente ou ambígua, ou
+saída inválida; 3 catálogo possivelmente cortado (página repetida ou limite da paginação), sem gravar.
+Em 08/11/2026 o Sesc DN tinha 52 produtos em
+`PT030 - EQUIP CONDICIONAMENTO FISICO` e 79 em `ES1205 - EQUIP E MAT ESPORTIVO`.
+
+## Coletor Sistema S — coleta em camadas (spec 0064, 13/11/2026)
+
+A coleta agendada tem duas etapas, ligadas pela fila `private.coleta_externa_fila` (só por RPC, `service_role`):
+
+```bash
+python3 -m coletor.paradigma --fonte fieb --etapa descoberta              # mural comum inteiro -> fila, sem hidratar
+python3 -m coletor.paradigma --fonte fieb --etapa carga --orcamento-minutos 60   # fila -> detalhe, itens, lances, fórum
+python3 -m coletor.paradigma --fonte fiesc                                # --etapa completa (padrão): as duas
+```
+
+- **Descoberta:** `PesquisarProcessos` sem termo (ou os `--termos` dados), página a página; entra na fila o processo
+  com início nos últimos 24 meses e situação "Em proposta", "Em andamento" ou "Finalizado…" quando a linha traz a
+  situação (medido em 13/11/2026: a listagem devolve `sDsSituacao` nulo; sem ela, não descarta). O hash da linha
+  (objeto, situação, datas, valores) decide: igual, o processo não volta a ser hidratado; mudou, volta à fila. Processo
+  em `leads`/`monitorar` volta à fila uma vez por dia. Erro de página = execução `falhou`, nunca lista vazia.
+- **Carga:** reserva lotes (`for update skip locked`) e hidrata cada um com a regra de escopo de sempre. No fim do
+  orçamento (ou no SIGTERM do limite do job) devolve o lote à fila sem contar tentativa e fecha `incompleta`; a
+  próxima execução continua de onde parou. Erro de um processo marca só aquele item (até 5 falhas; depois `erro`).
+- `--dry-run`, `--processo` e `--anos` seguem a coleta antiga por termo, sem fila.
+- Saúde: `coleta_externa_fila_pendente_horas` (pendente mais antigo, atenção 26 h, crítico 48 h).
 
 ## Coletor Sistema S — adaptador Paradigma (v15, 26/09/2026)
 
@@ -82,7 +236,7 @@ python3 -m coletor.paradigma --fonte fiesc --dry-run --paginas 1        # só li
 python3 -m coletor.paradigma --fonte fiesc                                # grava licitação + itens + ranking
 python3 -m coletor.paradigma --fonte sestsenat --termos "academia;esporte e lazer"
 ```
-Sesc SP e Sesc/Senac RS (paradigmabs.com.br) são recusados: o robots.txt do host proíbe coleta automatizada.
+Decisão de 05/10/2026, confirmada em 09/11/2026: quando o `robots.txt` bloqueia o portal, a coleta segue. Sesc SP (`sescsp`, scr360.paradigmabs.com.br), Sesc/Senac RS (`sesc_senac_rs`), Sesc RJ (`sescrj`) e Sesc BA (`sescba`), em egov.paradigmabs.com.br, têm `Disallow: /` e entram pelo webservice público do mural, com o mesmo intervalo do adaptador (`FONTES_MURAL_AUTORIZADO`; o CLI passa `autorizado=True` só nelas, e o `PortalParadigma` recusa `autorizado=True` em qualquer outra fonte). Sesc DN (`sescdn`, egov-br.paradigmabs.com.br) não tem `robots.txt` (404, conferido em 09/11/2026) e coleta como os self-hosted. Bloqueio de WAF continua fora: FIEMG responde 403 de desafio Cloudflare e fica em `PermissionError`. Decisão de 09/11/2026 (revoga a de 11/10/2026): o cadastro de visitante (`VISITANTE_*`, dados da empresa informados pelo usuário na UI) pode ser usado em toda fonte que coleta; captcha é resolvido por pessoa na UI espelhada, nunca por resolvedor automático. Resposta 401/403 de qualquer host para a coleta na hora, sem nova tentativa; 429 respeita `Retry-After`.
 
 ---
 
@@ -234,6 +388,15 @@ Polia e espaldar são `forte`. Pilates, "aparelho para condicionamento físico" 
 `Puxador` é positivo só na categoria acessórios.
 O coletor usa `--escopo fitness` por padrão (`--escopo tudo` desliga o filtro).
 
+**Forte ancorado (03/10/2026, modo núcleo).** Com o banco configurado, `forte` só vem de item que casa uma âncora
+do catálogo CATMAT da empresa (`coletor/catmat_ancoras.py`: nome/TIPO/NOME dos itens dos PDMs efetivos e dos itens
+incluídos, segundo `catmat_itens_mapa()`, com o texto de `catmat_itens`/`catalogo_itens` e, por último, de `catmat_item_pdm`; 100 linhas por página). As listas fixas acima só rebaixam: sem âncora o
+`forte` delas vira `fraco`, e item ancorado que cai em `ITEM_FORA`, academia ao ar livre ou brinquedo infantil fica
+`fraco`. O objeto da compra não tem âncora (`forte` do objeto vira `fraco`). Piso, borracha, obra_piso e o código
+CATMAT (`catmat`) não mudam; as travas (serviço, obra, ATI, passagem sem core, predial) continuam. PDM efetivo sem
+itens com descrição aborta a coleta antes de gravar. `FORTE_ANCORADO` = `nucleo` (padrão), `estrito`
+(âncora inteira) ou `desligado` (regra antiga, só emergência).
+
 ## 1. Criar as tabelas (uma vez)
 
 As tabelas vêm de `supabase/migrations/20260923100000_licitacoes_externas.sql` (já aplicada; migrations novas entram por PR e a integração Supabase aplica no merge)
@@ -280,6 +443,24 @@ no bucket e `roles/secretmanager.secretAccessor` no secret.
 Para rodar toda semana: Cloud Scheduler → `gcloud run jobs execute`.
 A coleta é idempotente (upsert + só baixa o que está `pendente`/`erro`).
 
+## Verificador de legislação (spec 0044, trimestral)
+
+`python -m coletor.verificar_legislacao` confere se o texto oficial das normas do corpus curado
+(`coletor/data/legislacao_corpus.json`) mudou e se os artigos de `norma_dispositivos` com `conferido_oficial = true`
+ainda são trecho literal do texto oficial. Só faz `select` em `norma_dispositivos`; não grava nada.
+O relatório sai no log (uma linha JSON por norma e por artigo que não confere, mais o resumo).
+Código de saída: 0 tudo igual; 1 norma mudou ou artigo divergente; 2 não verificado ou sem hash de referência.
+
+```bash
+gcloud run jobs deploy verificar-legislacao --source . --region $REGION   --command python --args="-m,coletor.verificar_legislacao"   --set-env-vars SUPABASE_URL=$SUPABASE_URL   --set-secrets SUPABASE_SERVICE_ROLE_KEY=supabase-service-key:latest   --task-timeout=10m --max-retries=0
+gcloud run jobs execute verificar-legislacao --region $REGION   # primeira execução: imprime os hashes atuais
+# Cloud Scheduler: dia 1 de jan/abr/jul/out, 09:00 BRT -> gcloud run jobs execute verificar-legislacao
+```
+
+Corpus sem hash (`sha256_texto_normalizado: null`) sai como `sem_referencia` com o `sha256_atual`: grave o hash e a
+data (`conferido_em`) num PR depois de conferir o texto. Norma que mudou: confira o texto novo, atualize
+`norma_dispositivos` por migration se algum artigo citado mudou, e só então grave o hash novo.
+
 ## Configuração
 
 | Variável | Padrão | Uso |
@@ -290,7 +471,32 @@ A coleta é idempotente (upsert + só baixa o que está `pendente`/`erro`).
 | `GCS_BUCKET` | — | Sem ela, salva em `./dados`. |
 
 Flags: `--ids`, `--de/--ate`, `--modulo` (59 = pregão eletrônico), `--todos`
-(inclui processos em andamento), `--dry-run`.
+(inclui processos em andamento), `--dry-run`, `--coleta`.
+
+**Pesquisa de Preço no mesmo Job (spec 0009).** `--coleta` escolhe o que roda: `sestsenat`, `precos` ou `todas`
+(padrão). Com `precos`, o Job roda `coletor.compras_precos` em modo catálogo (PDMs de
+`catalogo_catmat_pdms_efetivos()`; se a RPC falhar, a coleta falha, sem lista fixa) e depois o
+`2_consultarMaterialDetalhe` só para as linhas sem descrição detalhada, gravando `detalhe_sincronizado_em`. Falha de
+qualquer parte (inclusive de uma linha do detalhe) faz o Job sair com código 1. Para um agendamento só de preços:
+`--args="--coleta,precos"`. A saúde operacional (`precos_dias_sem_coleta`) fica crítica com 8 dias sem gravar preço.
+
+**PGC no mesmo Job (spec 0057).** `--coleta pgc` roda `coletor.compras_pgc` (não entra em `todas`): PCA do
+Compras.gov (`2_consultarPgcDetalheCatalogo`, `tipo=Material`; o manual diz `M`, mas a API só aceita `Material`)
+do ano corrente e do seguinte, classes 7830 e 7220. Cada (ano, classe) é lido inteiro, deduplicado pela chave do
+upsert (a API repete a mesma chave em várias linhas; fica a de `dataHoraAtualizacaoItem` mais recente) e só então
+gravado em `public.pca_pgc_itens`. Classe com erro de leitura não grava nada e o Job sai com código 1; HTTP 400 não é
+repetido. `statusContratacaoExecucao` é código opaco (sem dicionário oficial), gravado como texto. A saúde
+(`pgc_dias_sem_coleta`) fica crítica com 8 dias sem gravar. Agendamento diário (do Marcelo), depois do primeiro
+`--dry-run` conferido:
+
+```bash
+gcloud run jobs execute coletor-precos --region $REGION --args="--coleta,pgc,--dry-run"   # conferir o resumo
+gcloud scheduler jobs create http coletor-pgc-diario --location $REGION --schedule "30 5 * * *" \
+  --time-zone "America/Sao_Paulo" \
+  --uri "https://run.googleapis.com/v2/projects/$PROJECT/locations/$REGION/jobs/coletor-precos:run" \
+  --http-method POST --oauth-service-account-email $SA \
+  --message-body '{"overrides":{"containerOverrides":[{"args":["--coleta","pgc"]}]}}'
+```
 
 ## Volume observado (piloto)
 
@@ -332,14 +538,72 @@ python3 -m coletor.buscar "Por que a Freedom Motors recorreu e qual foi a decis�
   fornecedores, decisão, motivos, fundamentos legais, valores, pontos-chave) e um trecho-resumo.
 - Embeddings: `text-multilingual-embedding-002` (lotes de até 30 trechos, 1 chamada a cada 12,5 s), 768 dimensões, `RETRIEVAL_DOCUMENT` (consulta usa `RETRIEVAL_QUERY`).
   Cada chunk grava o modelo em `licitacao_chunks.embedding_model` (padrão da coluna: o mesmo modelo).
-- `GEN_MODEL` (padrão `gemini-2.5-flash`) e `GOOGLE_CLOUD_LOCATION` (padrão `us-central1`) são configuráveis. O embedding do RAG permanece `text-multilingual-embedding-002` com 768 dimensões; trocar o modelo exige um plano de reindex aprovado. Não apontar `EMBED_MODEL` para outro modelo sem esse plano.
+- `GEN_MODEL` (padrão `gemini-3.8-flash`, desde 22/10/2026: o `gemini-2.5-flash` foi descontinuado), `GEN_LOCATION` (padrão `global`, endpoint do 3.8 Flash) e `GEN_THINKING` (padrão deduzido do modelo: `low` no Gemini 3+, `off` no 2.5-flash; aceita `off`, `low`, `medium`, `high` ou `padrao`) são configuráveis. O embedding usa `GOOGLE_CLOUD_LOCATION` (padrão `us-central1`), separado da geração. O embedding do RAG permanece `text-multilingual-embedding-002` com 768 dimensões; trocar o modelo exige um plano de reindex aprovado. Não apontar `EMBED_MODEL` para outro modelo sem esse plano.
 
 **Cota do Vertex (projeto novo):** o modelo de embeddings começa com **5 requisições/min**
 por região. O indexador já respeita isso (`EMBED_INTERVALO=12.5`). Para acelerar, peça aumento em
 IAM e administrador → Cotas → "online prediction requests per base model … textembedding-gecko"
-(us-central1) e reduza `EMBED_INTERVALO`. PDFs escaneados passam por OCR em partes de
-`OCR_PAGINAS=8` páginas.
+(us-central1) e reduza `EMBED_INTERVALO`.
+
+**OCR (PDF escaneado):** uma chamada ao Gemini **por página** (`ia.ocr_pagina`), com `temperature 0`,
+`max_output_tokens=OCR_MAX_TOKENS` (padrão 4096) e pensamento desligado. Cada página passa pelo detector de
+degeneração (`coletor/ocr.py`): repetição seguida da mesma unidade (caractere, padrão curto ou linha) com ao menos
+`OCR_DEGENERADO_MIN_REP` repetições (padrão 20) cobrindo ao menos `OCR_DEGENERADO_MIN_CHARS` caracteres (padrão 300).
+A repetição precisa terminar a página (até `OCR_DEGENERADO_MAX_CAUDA`=80 caracteres depois) ou cobrir
+`OCR_DEGENERADO_MIN_CHARS_MEIO`=3000 caracteres: formulário ou tabela em branco no meio da página não conta.
+Estados por página, gravados sem texto em `licitacao_documentos.extracao.ocr_paginas`:
+`extraido` (vira chunk), `OCR_DEGENERADO` (repetição ou `MAX_TOKENS`; não vira chunk) e `OCR_REQUIRED` (OCR sem texto).
+Documento com alguma página não aceita fica com `extracao.ocr_incompleto = true`; se nenhuma página for aceita,
+fica `ignorado` com `erro` começando por `OCR_DEGENERADO` (o estado próprio em `status_processamento` é migration
+separada, issue #299). `--reprocessar-ocr` refaz esses documentos. Medição que motivou: spec 0016, seção 5 (Baraúna, 09/10/2026).
 
 **Importante para o app:** a pergunta do usuário precisa ser convertida em vetor com o
 **mesmo modelo** (`text-multilingual-embedding-002`, 768d, `RETRIEVAL_QUERY`) antes de chamar
 `match_licitacao_chunks`. Veja `coletor/buscar.py` como referência.
+
+## 5. Fila de preparação da Triagem (spec 0018, decisão 12)
+
+Quando uma licitação entra na etapa "Triagem" do pipeline de uma empresa, o banco grava um pedido em
+`private.job_queue` (migration `20261011160000`). O `coletor.preparar_triagem` consome esses pedidos:
+detalhe PNCP com `amparo_legal` (o banco deriva o regulamento), download, indexação e
+`pipeline_tarefas_reaplicar`. Os agentes **não** rodam aqui: rodam quando alguém abre a análise.
+
+```bash
+python3 -m coletor.preparar_triagem --limite 5
+```
+
+- Desfechos: `ok`, `sem_documento`, `regulamento_nao_informado_pela_fonte` (aparecem no card do pipeline).
+- Falha técnica volta para a fila com espera crescente (5, 10, 20, 40 min) até 5 tentativas; depois, `failed`.
+  O erro gravado é curto (`download: HTTP 504`); o detalhe fica só no log do job.
+- Fonte que não é PNCP (ou fonte nula): usa os documentos que já existem, sem chamar o PNCP.
+- Pedido em `processing` há mais de 1 h volta para a fila: o timeout do job precisa ficar abaixo disso.
+
+Cloud Run Job a cada 15 min (o deploy é do Marcelo). Contas de serviço dedicadas, com o mínimo:
+
+```bash
+SA_JOB=preparar-triagem@$PROJECT.iam.gserviceaccount.com
+SA_SCHED=preparar-triagem-sched@$PROJECT.iam.gserviceaccount.com
+gcloud iam service-accounts create preparar-triagem
+gcloud iam service-accounts create preparar-triagem-sched
+gcloud secrets add-iam-policy-binding supabase-service-key --member=serviceAccount:$SA_JOB \
+  --role=roles/secretmanager.secretAccessor
+gcloud projects add-iam-policy-binding $PROJECT --member=serviceAccount:$SA_JOB --role=roles/aiplatform.user
+
+gcloud run jobs deploy preparar-triagem --source . --region $REGION --service-account $SA_JOB \
+  --set-env-vars SUPABASE_URL=$SUPABASE_URL,SUPABASE_STORAGE_BUCKET=<bucket>,DELAY_SEGUNDOS=1.5,GOOGLE_CLOUD_PROJECT=$PROJECT \
+  --set-secrets SUPABASE_SERVICE_ROLE_KEY=supabase-service-key:latest \
+  --command python --args="-m,coletor.preparar_triagem,--limite,5" --task-timeout=50m --max-retries=0
+
+# o scheduler só invoca este job
+gcloud run jobs add-iam-policy-binding preparar-triagem --region $REGION \
+  --member=serviceAccount:$SA_SCHED --role=roles/run.invoker
+gcloud scheduler jobs create http preparar-triagem-15min --location $REGION --schedule "*/15 * * * *" \
+  --uri "https://run.googleapis.com/v2/projects/$PROJECT/locations/$REGION/jobs/preparar-triagem:run" \
+  --http-method POST --oauth-service-account-email $SA_SCHED
+```
+
+- `--source .` gera uma build nova (não reaproveita a imagem do `coletor-sestsenat`).
+- Sem `SUPABASE_STORAGE_BUCKET` (ou `GCS_BUCKET`) o job para: no Cloud Run o disco local se perde.
+- `--max-retries=0`: quem tenta de novo é a fila (com espera), não o Cloud Run. Duas execuções ao mesmo tempo não
+  pegam o mesmo pedido (`FOR UPDATE SKIP LOCKED`); duas empresas com a mesma licitação podem baixar e indexar em
+  paralelo (resultado idempotente, só custo).

@@ -10,7 +10,7 @@ import {
 } from "../_shared/http.ts";
 
 /**
- * api-saude: saúde operacional da ingestão (private.saude_operacional_resumo, migration 20261001100000).
+ * api-saude: saúde operacional da ingestão (public.saude_operacional_resumo → private, migration 20261007133000).
  *   POST {action: "resumo"} -> {status_geral, contagem, verificacoes[]}
  * Acesso: cron secret (workflow .github/workflows/saude.yml) ou usuário com app_metadata.licitagym_role = 'admin'.
  * Usuário comum: 403 (o detalhe traz mensagens de erro internas). Sem credencial: 401.
@@ -43,16 +43,17 @@ async function resumoDoBanco(): Promise<Verificacao[]> {
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   if (!url || !serviceKey) throw new Error("SUPABASE_URL ou SUPABASE_SERVICE_ROLE_KEY não configuradas");
   const client = createClient(url, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } });
-  const { data, error } = await client.schema("private").rpc("saude_operacional_resumo");
+  // public: o Data API não expõe o schema private ("Invalid schema: private").
+  const { data, error } = await client.rpc("saude_operacional_resumo");
   if (error) throw new Error(`saude_operacional_resumo: ${error.message}`);
   return (data ?? []) as Verificacao[];
 }
 
 export function consolidar(verificacoes: Verificacao[]) {
   const contagem = { ok: 0, atencao: 0, critico: 0 };
-  let geral: StatusSaude = "ok";
+  let geral: StatusSaude = verificacoes.length === 0 ? "atencao" : "ok";
   for (const v of verificacoes) {
-    const s = (v.status in ORDEM ? v.status : "atencao") as StatusSaude; // status desconhecido nunca vira "ok"
+    const s = (Object.hasOwn(ORDEM, v.status) ? v.status : "atencao") as StatusSaude;
     contagem[s]++;
     if (ORDEM[s] > ORDEM[geral]) geral = s;
   }
@@ -82,6 +83,8 @@ export async function handleRequest(req: Request, ctx: ApiSaudeContext = {}): Pr
 
   try {
     const verificacoes = await (ctx.getResumo ?? resumoDoBanco)();
+    // Ausência de observação não comprova saúde. Mantém o contrato de erro existente.
+    if (verificacoes.length === 0) throw new Error("Resumo sem verificações");
     const { status_geral, contagem } = consolidar(verificacoes);
     console.info("[api-saude] resumo", { origem: cron ? "cron" : "admin", status_geral, ...contagem });
     return jsonResponse({

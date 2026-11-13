@@ -7,6 +7,10 @@ create schema storage;
 create table storage.buckets (id text primary key, name text, public boolean, file_size_limit bigint, allowed_mime_types text[]);
 create table storage.objects (id uuid primary key default gen_random_uuid(), bucket_id text, name text);
 alter table storage.objects enable row level security;
+-- storage.foldername do Supabase: pastas do caminho do objeto, sem o nome do arquivo ('7/a/b.pdf' -> {7,a}).
+create or replace function storage.foldername(name text) returns text[] language sql immutable as $$
+  select (string_to_array(name, '/'))[1:array_length(string_to_array(name, '/'), 1) - 1]
+$$;
 create extension vector;
 grant usage on schema public to anon, authenticated, service_role;
 -- privilégios padrão como no Supabase (origem do problema)

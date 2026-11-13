@@ -312,6 +312,9 @@ def status_normalizado(situacao: str | None) -> str:
     s = normalizar(situacao or "")
     if not s:
         return "desconhecida"
+    # "Aguardando homologação" (nCdSituacao 23) ainda não foi homologada: em julgamento, nunca histórico (12/11/2026).
+    if "aguard" in s and "homolog" in s:
+        return "em_julgamento"
     if "homolog" in s and "parcial" in s:
         return "homologada"
     if any(k in s for k in ("fracass", "desert")):

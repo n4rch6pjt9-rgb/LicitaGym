@@ -1,11 +1,11 @@
 # 0061: Mostrar o detalhe da oportunidade do Sistema S a partir do banco
 
-- **Status:** em implementação (aprovada pelo Marcelo em 13/11/2026; parte 1: K-11 e K-12; parte 2: K-13 e K-14; K-1 no #546). **Adendo de 13/11/2026 (K-15 a K-17, processo julgado por lote): rascunho, aguarda o Marcelo.**
+- **Status:** em implementação (aprovada pelo Marcelo em 13/11/2026; parte 1: K-11 e K-12; parte 2: K-13 e K-14; K-1 no #546). **Adendo de 13/11/2026 (K-15 a K-17, processo julgado por lote): aprovado pelo Marcelo em 13/11/2026.**
 - **Alimenta:** módulo 1 de `docs/produto/ESCOPO.md` (Radar: coleta e detalhe da oportunidade do Sistema S)
 - **Repositório:** os dois (backend vai ao ar antes do front)
 - **Issue:** nenhuma
 - **Área:** edge-functions, coletor, migrations (tabela `licitacao_lances`), dashboard-contrato, dashboard-tela
-- **Depende do ok do Marcelo:** sim (migration nova em produção e secrets novos do visitante). Perguntas em aberto: 10 a 12 (adendo do lote).
+- **Depende do ok do Marcelo:** sim (migration nova em produção e secrets novos do visitante). Perguntas em aberto: nenhuma.
 
 ## Leitura obrigatória antes de implementar
 
@@ -225,6 +225,10 @@ Medido em 12/11/2026 (MCP somente leitura, logs do Actions e código da `main` e
 
 ## Decisões do Marcelo
 
+- 13/11/2026 (adendo do lote, perguntas 10 a 12): aprovadas as três recomendações.
+  - O lance do lote vai para `licitacao_lances`, com `numero_lote` e `numero_item = 0`, mais a tabela `licitacao_lotes`.
+  - O resultado do lote não vira preço de item: não entra em `licitacao_resultados` nem no agente de preço. O vencedor e o valor do lote ficam em `licitacao_lotes` e aparecem no detalhe.
+  - O lance desclassificado é gravado como o portal mostra, e `situacaoProposta` aparece no histórico.
 - 13/11/2026: spec aprovada, com a migration `licitacao_lances` (K-12) e os secrets novos do visitante (K-13).
 - 12/11/2026: resumo do processo só para editais homologados ou finalizados (#536).
 - 12/11/2026: o detalhe lê do banco com atualização por frescor (R-1 da 0029); esta spec estende ao Sistema S.
@@ -282,14 +286,14 @@ Medido em 12/11/2026 (MCP somente leitura, logs do Actions e código da `main` e
 6. ~~Frescor do detalhe do Sistema S~~ **Respondida (12/11/2026), ver "Decisões do Marcelo".**
 7. ~~URL assinada~~ **Respondida (12/11/2026), ver "Decisões do Marcelo".**
 8. ~~Ordem com a 0029~~ **Respondida (12/11/2026), ver "Decisões do Marcelo".**
-10. **(Adendo do lote) Onde guardar o lance do lote.** Recomendação: `licitacao_lances` com `numero_lote` e
+10. ~~**(Adendo do lote) Onde guardar o lance do lote.**~~ **Respondida (13/11/2026): a recomendação foi aprovada.** Recomendação: `licitacao_lances` com `numero_lote` e
     `numero_item = 0` (a chave única atual continua valendo, sem mexer nas 33 linhas do 38191), mais a tabela
     `licitacao_lotes`. Alternativa: tabela `licitacao_lotes_lances` separada (o K-1 passa a ter duas fontes de
     histórico).
-11. **(Adendo do lote) Resultado do lote vira preço?** Recomendação: **não**. O valor é do lote inteiro (R$ 7.527,00
+11. ~~**(Adendo do lote) Resultado do lote vira preço?**~~ **Respondida (13/11/2026): não, como recomendado.** Recomendação: **não**. O valor é do lote inteiro (R$ 7.527,00
     para 5 tamanhos de camisa), não unitário de item; dividir pela quantidade inventaria preço (zero alucinação; preço
     só de compra homologada, por item). O vencedor e o valor do lote ficam em `licitacao_lotes` e aparecem no
     detalhe; `licitacao_resultados` e o agente de preço continuam só com resultado por item.
-12. **(Adendo do lote) Lance desclassificado.** O mural mostra o lance desclassificado (R$ 4.457,70, menor que o do
+12. ~~**(Adendo do lote) Lance desclassificado.**~~ **Respondida (13/11/2026): a recomendação foi aprovada.** O mural mostra o lance desclassificado (R$ 4.457,70, menor que o do
     vencedor) sem posição. Recomendação: gravar como o portal mostra e expor `situacaoProposta` no histórico, para a
     tela não sugerir que o menor valor venceu.

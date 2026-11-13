@@ -661,3 +661,108 @@ def test_ca6_mascara_tira_endereco_e_rg_do_motivo_do_portal():
     texto = "Visitante RUA DE TESTE 100 CENTRO TESTE 88.000-000 rg 123456789 recusado"
     m = VIS_END.mascarar(texto)
     assert "TESTE" not in m and "88.000-000" not in m and "123456789" not in m and "recusado" in m
+
+
+# ---------------- revisores da parte 2 ----------------
+def test_ca6_erro_http_do_relatorio_nao_leva_o_uid_para_o_log(caplog):
+    """revisor-seguranca: a mensagem do requests traz a URL com o uidLicitacao."""
+    p, _, _ = portal_firjan()
+    get = p.s.get.side_effect
+    p.s.get.side_effect = lambda url, **k: (Resp(b"", "text/html", 404) if "GetRelatorioAreaExterna" in url
+                                            else get(url, **k))
+    sb = sb_fake()
+    r = DP.DocumentosParadigma(p, sb, MagicMock(), VIS_END).sincronizar(10, FIRJAN_DET, "x")
+    assert r["erros"] == 1 and r["relatorios"] == 0
+    # A falha vem antes de a linha existir: nada no banco; o log leva só o status.
+    assert "HTTP 404" in caplog.text and "00000000-0000-4000-8000-000000003800" not in caplog.text
+    assert not any("00000000-0000-4000-8000-000000003800" in (u.get("erro") or "") for u in atualizacoes(sb).values())
+
+
+def test_ca6_relatorio_nao_segue_redirecionamento():
+    p, _, gets = portal_firjan()
+    kwargs = []
+    get = p.s.get.side_effect
+    p.s.get.side_effect = lambda url, **k: (kwargs.append(k), get(url, **k))[1]
+    DP.DocumentosParadigma(p, sb_fake(), MagicMock(), VIS_END).sincronizar(10, FIRJAN_DET, "x")
+    rel = [k for k in kwargs if k.get("params") and "uidLicitacao" in k["params"]]
+    assert rel and rel[0]["allow_redirects"] is False
+
+
+def test_ca6_falha_na_lista_de_relatorios_desliga_o_resto_da_execucao():
+    """revisor-codigo: portal sem o método não custa retry e erro em cada processo."""
+    p, chamadas, _ = portal_firjan()
+    ws = p._ws
+
+    def falha(m, c):
+        if m == "PesquisarProcessoDetalheRelatorio":
+            chamadas.append((m, c))
+            raise D.requests.HTTPError("500")
+        return ws(m, c)
+    p._ws = falha
+    docs = DP.DocumentosParadigma(p, sb_fake(), MagicMock(), VIS_END)
+    r1 = docs.sincronizar(10, FIRJAN_DET, "x")
+    r2 = docs.sincronizar(11, {**FIRJAN_DET, "nCdProcesso": 3801}, "y")
+    assert r1["erros"] == 1 and r2["erros"] == 0 and r2["relatorios_pulados"] == 1
+    assert sum(1 for c in chamadas if c[0] == "PesquisarProcessoDetalheRelatorio") == 1
+
+
+def test_ca6_relatorio_confirmado_de_processo_fechado_nao_e_baixado_de_novo():
+    existentes = [{"id": 70, "arquivo_origem": "relatorio_59008.pdf", "status_processamento": "baixado",
+                   "sha256": "abc", "removido_do_portal_em": None}]
+    p, _, gets = portal_firjan()
+    ws = p._ws
+    p._ws = lambda m, c: "<html>" + "x" * 60 + "</html>" if m == "PesquisarResumoEdital" else ws(m, c)
+    DP.DocumentosParadigma(p, sb_fake(existentes), MagicMock(), VIS_END).sincronizar(
+        10, FIRJAN_DET, "x", resumo_processo=True)
+    assert not any("GetRelatorioAreaExterna" in u for u, _ in gets)
+
+
+def test_ca6_rg_com_x_e_rg_curto_mascarado():
+    v = DP.VisitanteInstitucional("52998224725", "PESSOA TESTE", "p@t.test", "48900000000", "SC", "", "CPF",
+                                  "k" * 32, rg="4123456")
+    assert "4.123.456" not in v.mascarar("rg 4.123.456 recusado") and "recusado" in v.mascarar("rg 4.123.456 recusado")
+    vx = DP.VisitanteInstitucional("52998224725", "PESSOA TESTE", "p@t.test", "48900000000", "SC", "", "CPF",
+                                   "k" * 32, rg="1234567X")
+    assert "678-x" not in vx.mascarar("rg 12.345.678-x").lower()
+
+
+def test_ca6_rg_do_ambiente_mantem_o_x(monkeypatch):
+    vals = {"VISITANTE_CPF": "529.982.247-25", "VISITANTE_NOME": "PESSOA TESTE", "VISITANTE_EMAIL": "p@t.test",
+            "VISITANTE_TELEFONE": "48900000000", "VISITANTE_UF": "SC", "VISITANTE_CONSENTIMENTO_LGPD": "1",
+            "VISITANTE_HASH_CHAVE": "k" * 32, "VISITANTE_RG": "12.345.678-x"}
+    monkeypatch.setattr(DP, "env", lambda n, padrao=None, obrigatorio=False: vals.get(n, padrao))
+    assert DP.VisitanteInstitucional.do_ambiente().rg == "12345678X"
+
+
+def test_ca6_cookie_do_visitante_leva_o_endereco():
+    p, _, _ = portal_firjan()
+    DP.DocumentosParadigma(p, sb_fake(), MagicMock(), VIS_END).sincronizar(10, FIRJAN_DET, "x")
+    import json as _json
+    cookie = [c for c in p.s.post.call_args_list if "SetCookie" in c.args[0]][0]
+    valor = _json.loads(_json.loads(cookie.kwargs["data"])["value"])
+    assert valor["nCdCidade"] == "4375" and valor["sCdCep"] == "88.000-000" and valor["nCdEndereco"] == 137000
+
+
+def test_ca6_sem_endereco_dto_antigo_e_sem_pesquisar_regiao():
+    p, chamadas = portal_fake()
+    DP.DocumentosParadigma(p, sb_fake(), MagicMock(), VIS).sincronizar(10, DET, "x")
+    assert not any(c[0] == "PesquisarRegiao" for c in chamadas)
+    dto = [c[1]["dtoVisitante"] for c in chamadas if c[0] == "SalvarVisitante"][0]
+    assert dto["nCdCidade"] == "0" and dto["sCdCep"] == "" and dto["nCdEndereco"] == 0
+    assert "bFlInteresseCertame" not in dto and dto["sDsRg"] == ""
+
+
+def test_ca6_falha_na_regiao_nao_repete_por_anexo():
+    p, chamadas, _ = portal_firjan(relatorios=[])
+    anexos2 = FIRJAN_ANEXOS + [{**FIRJAN_ANEXOS[0], "nSqAnexo": 2, "sNmArquivo": "wbc_teste_2.pdf",
+                                "sDsParametroCriptografado": "?q=DDD"}]
+    ws = p._ws
+
+    def regiao_quebrada(m, c):
+        if m == "PesquisarRegiao":
+            chamadas.append((m, c))
+            return None
+        return anexos2 if m == "PesquisarAnexos" else ws(m, c)
+    p._ws = regiao_quebrada
+    r = DP.DocumentosParadigma(p, sb_fake(), MagicMock(), VIS_END).sincronizar(10, FIRJAN_DET, "x")
+    assert r["erros"] == 2 and sum(1 for c in chamadas if c[0] == "PesquisarRegiao") == 1

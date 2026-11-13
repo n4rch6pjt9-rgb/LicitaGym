@@ -111,6 +111,9 @@ class VisitanteInstitucional:
                     for p in re.findall(r"\w{3,}", self._sem_acento(v or ""))}
         for palavra in sorted(palavras, key=len, reverse=True):
             texto = re.sub(rf"\b{self._qualquer_acento(palavra)}\b", "***", texto, flags=re.IGNORECASE)
+        if self.rg:
+            rg = r"[\s.\-/]*".join(re.escape(c) for c in self.rg)
+            texto = re.sub(rf"(?<![0-9A-Za-z]){rg}(?![0-9A-Za-z])", "***", texto, flags=re.IGNORECASE)
         texto = re.sub(r"[\w.+-]+@[\w-]+(\.[\w-]+)+", "***", texto)
         return re.sub(r"\+?\(?\d[\d.\-/() _,–—+]{6,}\d",
                       lambda m: "***" if len(re.sub(r"\D", "", m.group())) >= 8 else m.group(), texto)
@@ -159,7 +162,7 @@ class VisitanteInstitucional:
             # Chave curta se adivinha, e com ela o HMAC volta a ser força bruta sobre 10^9 CPFs.
             raise SystemExit(f"VISITANTE_HASH_CHAVE curta: use ao menos {TAMANHO_MINIMO_CHAVE_HASH} caracteres aleatórios.")
         end = {k: (env(k) or "").strip() for k in CAMPOS_ENDERECO}
-        rg = re.sub(r"\D", "", env("VISITANTE_RG") or "")
+        rg = re.sub(r"[^0-9X]", "", (env("VISITANTE_RG") or "").upper())  # mantém o X do dígito verificador
         if any(end.values()):
             faltam = [k for k, v in end.items() if not v]
             if faltam:
@@ -211,6 +214,8 @@ class DocumentosParadigma:
         self.n_cd_endereco = 0                  # oComplemento do SalvarVisitante: endereço já gravado no portal
         self._n_cd_cidade: str | None = None    # código da cidade na lista do portal (1 consulta por execução)
         self._pendencia_cidade: str | None = None  # motivo, quando a cidade não está na lista (não repete a consulta)
+        self._erro_regiao: str | None = None       # PesquisarRegiao inconclusivo: não repete por anexo
+        self._relatorios_indisponivel: str | None = None  # 1ª falha da lista de relatórios desliga o resto da execução
         # portal_visitante guarda o CNPJ, ou só o HMAC do CPF (dado pessoal); sem chave de cadastro, não há cache.
         self._chave = visitante.chave_cadastro() if visitante is not None else None
         if sb is not None and self._chave is not None and not dry_run:
@@ -294,6 +299,15 @@ class DocumentosParadigma:
             return self._n_cd_cidade
         if self._pendencia_cidade:
             raise CadastroPendente(self._pendencia_cidade)
+        if self._erro_regiao:
+            raise RuntimeError(self._erro_regiao)
+        try:
+            return self._consultar_cidade()
+        except RuntimeError as e:
+            self._erro_regiao = str(e)
+            raise
+
+    def _consultar_cidade(self) -> str:
         v = self.visitante
         estados = self.portal._ws("PesquisarRegiao", {"dtoRegiao": {"sCdCodigo": "BR", "tmpTipoRegiao": 1,
                                                                     "sCdPais": "BR"}})
@@ -427,8 +441,14 @@ class DocumentosParadigma:
         url = f"{partes.scheme}://{partes.netloc}/licitacao-backend/wbc/GetRelatorioAreaExterna"
         params = {"uidLicitacao": rel["uidLicitacao"], "nCdItem": rel["nCdItem"], "nCdIdioma": 1,
                   "sDsTitulo": rel["sNmItem"].strip(), "reportType": 1}
-        with self.portal.s.get(url, params=params, stream=True, timeout=(30, 300)) as r:
-            r.raise_for_status()
+        try:
+            resposta = self.portal.s.get(url, params=params, stream=True, timeout=(30, 300), allow_redirects=False)
+        except requests.RequestException as e:
+            # A mensagem do requests traz a URL com o uidLicitacao: não vai para o banco nem para o log.
+            raise RuntimeError(f"relatório indisponível ({type(e).__name__})") from None
+        with resposta as r:
+            if r.status_code != 200:
+                raise RuntimeError(f"relatório indisponível (HTTP {r.status_code})")
             blocos, total = [], 0
             for bloco in r.iter_content(256 * 1024):
                 blocos.append(bloco)
@@ -442,17 +462,26 @@ class DocumentosParadigma:
         return conteudo
 
     def _sincronizar_relatorios(self, lic_id: int | None, d: dict, caminho_base: str, existentes: dict, agora: str,
-                                resumo: dict) -> None:
-        """Relatórios públicos do processo como documentos (spec 0061, K-14). A falha na lista conta erro e não
-        afeta os anexos já sincronizados."""
+                                resumo: dict, fechado: bool = False) -> None:
+        """Relatórios públicos do processo como documentos (spec 0061, K-14). A falha na lista conta erro, não afeta
+        os anexos e desliga os relatórios no resto da execução (portal sem o método responderia 500 com retry em
+        cada processo). Relatório já confirmado de processo fechado não é pedido de novo."""
+        if self._relatorios_indisponivel:
+            resumo["relatorios_pulados"] += 1
+            return
         try:
             lista = self.relatorios(d)
         except Exception as e:
             resumo["erros"] += 1
-            log.warning("%s %s relatórios do processo: %s", self.portal.fonte.slug, d.get("nCdProcesso"), e)
+            self._relatorios_indisponivel = f"{type(e).__name__}"
+            log.warning("%s %s relatórios do processo indisponíveis (%s): desligados nesta execução",
+                        self.portal.fonte.slug, d.get("nCdProcesso"), e)
             return
         for rel in lista:
             nome = rel["sNmItem"].strip()
+            anterior = existentes.get(f"relatorio_{rel['nCdItem']}.pdf") or {}
+            if fechado and anterior.get("status_processamento") == "baixado" and anterior.get("sha256"):
+                continue
             self._gravar_gerado(
                 lic_id, d, caminho_base, existentes, agora, resumo, arquivo=f"relatorio_{rel['nCdItem']}.pdf",
                 nome=nome, origem="Relatório",
@@ -464,7 +493,7 @@ class DocumentosParadigma:
         """Registra todos os anexos do processo e baixa os que ainda não estão no LicitaGym. Com resumo_processo,
         guarda também o resumo do processo (edital encerrado com resultado) como documento."""
         resumo = {"documentos": 0, "novos": 0, "baixados": 0, "aguardando_cadastro": 0, "erros": 0, "ignorados": 0,
-                  "removidos_do_portal": 0, "resumos": 0, "relatorios": 0}
+                  "removidos_do_portal": 0, "resumos": 0, "relatorios": 0, "relatorios_pulados": 0}
         anexos = self.listar(d)
         resumo["documentos"] = len(anexos)
         if self.dry_run:
@@ -583,5 +612,5 @@ class DocumentosParadigma:
 
         if resumo_processo:
             self._sincronizar_resumo(lic_id, d, caminho_base, existentes, agora, resumo)
-        self._sincronizar_relatorios(lic_id, d, caminho_base, existentes, agora, resumo)
+        self._sincronizar_relatorios(lic_id, d, caminho_base, existentes, agora, resumo, fechado=resumo_processo)
         return resumo

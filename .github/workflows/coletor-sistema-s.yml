@@ -166,7 +166,8 @@ jobs:
             echo "::add-mask::${VISITANTE_CPF//[!0-9]/}"
           fi
           if [ -n "${VISITANTE_RG:-}" ]; then
-            echo "::add-mask::${VISITANTE_RG//[!0-9]/}"
+            RG_LIMPO="${VISITANTE_RG//[!0-9Xx]/}"
+            echo "::add-mask::${RG_LIMPO^^}"
           fi
           CEP_DIGITOS="${VISITANTE_CEP//[!0-9]/}"
           if [ "${#CEP_DIGITOS}" -eq 8 ]; then

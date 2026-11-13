@@ -1120,3 +1120,27 @@ def test_processo_em_julgamento_nao_grava_resultado_mas_cadastra_participantes()
     resumo = P.coletar(p, None, [], 1, True, True, None, forn, [(32, 18)])
     assert resumo["resultados"] == 0 and resumo["itens_com_vencedor"] == 0
     assert resumo["participantes"] > 0                    # o cadastro de fornecedores segue com todos os participantes
+
+
+# --- Spec 0063 ------------------------------------------------------------------------------------------------------
+
+def test_ca7_log_info_de_progresso_por_processo(caplog):
+    """CA-7 (K-5): uma linha INFO de progresso por processo, com o nCdOrigem, sem chamada a API real."""
+    ca7_portal = MagicMock()
+    ca7_portal.fonte = P.FONTES["fiesc"]
+    ca7_portal.listar.return_value = [
+        {"nCdOrigem": 101, "nCdModulo": 59, "sDsObjeto": "a"},
+        {"nCdOrigem": 202, "nCdModulo": 59, "sDsObjeto": "b"},
+        {"nCdOrigem": 303, "nCdModulo": 18, "sDsObjeto": "c"},
+    ]
+    ca7_portal.detalhes.return_value = None
+    with caplog.at_level("INFO", logger=P.log.name):
+        P.coletar(ca7_portal, None, ["academia"], paginas=1, dry_run=True)
+    ca7_prog = [ca7_r for ca7_r in caplog.records if ca7_r.levelname == "INFO" and "progresso" in ca7_r.getMessage()]
+    assert len(ca7_prog) == 3, [ca7_r.getMessage() for ca7_r in caplog.records]
+    for ca7_i, (ca7_rec, ca7_pid) in enumerate(zip(ca7_prog, (101, 202, 303)), start=1):
+        ca7_msg = ca7_rec.getMessage()
+        assert "fiesc" in ca7_msg and f"{ca7_i}/3" in ca7_msg and f"nCdOrigem {ca7_pid}" in ca7_msg, ca7_msg
+    ca7_fim_termo = [ca7_r for ca7_r in caplog.records if ca7_r.levelname == "INFO" and "termo 'academia'" in ca7_r.getMessage()]
+    assert ca7_fim_termo, "log no fim da listagem de cada termo"
+

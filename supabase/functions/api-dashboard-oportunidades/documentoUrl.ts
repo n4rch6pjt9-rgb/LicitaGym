@@ -8,7 +8,7 @@
  *   (arquivo antigo no GCS, `gs://`, não abre por aqui). A etapa do pipeline não importa: baixado, extraido,
  *   indexado, ignorado ou erro de extração continuam com o arquivo no Storage.
  * - Nunca devolve o storage_uri nem o caminho no Storage, e nunca repassa mensagem do PostgREST ou do Storage.
- * - PDF abre na aba; outro formato vai como download com o nome original.
+ * - PDF abre na aba (`url`) e baixa com o nome original (`url_download`); outro formato só baixa (as duas iguais).
  */
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { jsonResponse } from "../_shared/http.ts";
@@ -43,11 +43,37 @@ function ehPdf(mime: string | null, caminho: string): boolean {
   return m === "application/pdf" || (!m && caminho.toLowerCase().endsWith(".pdf"));
 }
 
-/** Nome para o download: o original, com a extensão do arquivo no Storage quando o original não tem. */
-function nomeDownload(nome: string | null, caminho: string): string | true {
-  const ext = /\.([a-z0-9]{1,8})$/i.exec(caminho)?.[0] ?? "";
+/** Extensão pelo MIME, para o arquivo que o coletor grava sem extensão (`.../versoes/<id>/<sha256>`). */
+const EXTENSAO_POR_MIME: Record<string, string> = {
+  "application/pdf": ".pdf",
+  "text/html": ".html",
+  "text/plain": ".txt",
+  "text/csv": ".csv",
+  "application/zip": ".zip",
+  "application/x-zip-compressed": ".zip",
+  "application/x-rar-compressed": ".rar",
+  "application/vnd.rar": ".rar",
+  "application/x-7z-compressed": ".7z",
+  "application/msword": ".doc",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+  "application/vnd.ms-excel": ".xls",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+  "application/vnd.oasis.opendocument.text": ".odt",
+  "application/vnd.oasis.opendocument.spreadsheet": ".ods",
+  "image/jpeg": ".jpg",
+  "image/png": ".png",
+};
+
+/**
+ * Nome para o download: o original; sem extensão, ganha a do arquivo no Storage ou, se o caminho também não tem (o
+ * caso real do coletor), a do MIME. MIME desconhecido deixa o nome como está.
+ */
+function nomeDownload(nome: string | null, caminho: string, mime: string | null): string | true {
   if (!nome) return true;
-  return /\.[a-z0-9]{1,8}$/i.test(nome) || !ext ? nome : nome + ext;
+  if (/\.[a-z0-9]{1,8}$/i.test(nome)) return nome;
+  const doCaminho = /\.[a-z0-9]{1,8}$/i.exec(caminho.split("/").pop() ?? "")?.[0];
+  const doMime = EXTENSAO_POR_MIME[(mime ?? "").split(";")[0].trim().toLowerCase()];
+  return nome + (doCaminho ?? doMime ?? "");
 }
 
 const naoEncontrado = () => jsonResponse({ error: "Documento não encontrado ou sem arquivo para abrir." }, 404);
@@ -77,21 +103,26 @@ export async function handleDocumentoUrl(
     const mime = typeof doc.mime_type === "string" ? doc.mime_type : null;
     const nome = typeof doc.nome_original === "string" ? doc.nome_original : null;
     const pdf = ehPdf(mime, caminho);
-    const opcoes = pdf ? undefined : { download: nomeDownload(nome, caminho) };
-    const assinada = await client.storage.from(BUCKET_DOCUMENTOS).createSignedUrl(
-      caminho,
-      DOCUMENTO_URL_SEGUNDOS,
-      opcoes,
+    // PDF: uma URL para abrir na aba (sem nome) e outra para baixar com o nome original, porque o Storage só manda
+    // Content-Disposition com nome no download, e salvar da aba dava o nome do objeto (o SHA-256). Outro formato: só a
+    // de download.
+    const bucket = client.storage.from(BUCKET_DOCUMENTOS);
+    const comNome = { download: nomeDownload(nome, caminho, mime) };
+    const assinadas = await Promise.all(
+      (pdf ? [undefined, comNome] : [comNome]).map((o) => bucket.createSignedUrl(caminho, DOCUMENTO_URL_SEGUNDOS, o)),
     );
-    const url = assinada.data?.signedUrl;
-    if (assinada.error || !url) {
-      console.error("[api-dashboard-oportunidades] Falha ao assinar documento", params.documento_id, assinada.error);
+    const falha = assinadas.find((a) => a.error || !a.data?.signedUrl);
+    if (falha) {
+      console.error("[api-dashboard-oportunidades] Falha ao assinar documento", params.documento_id, falha.error);
       return jsonResponse({ error: "Não foi possível gerar o link do documento" }, 502);
     }
+    const url = assinadas[0].data!.signedUrl;
+    const urlDownload = assinadas[assinadas.length - 1].data!.signedUrl;
     return jsonResponse({
       action: "documento_url",
       documento_id: params.documento_id,
       url,
+      url_download: urlDownload,
       expira_em_segundos: DOCUMENTO_URL_SEGUNDOS,
       nome_original: nome,
       mime_type: mime,

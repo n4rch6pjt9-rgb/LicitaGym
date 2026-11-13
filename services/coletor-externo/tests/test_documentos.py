@@ -46,7 +46,7 @@ def portal_fake(exige=1, body=PDF, ctype="application/pdf"):
     def ws(metodo, corpo):
         chamadas.append((metodo, corpo))
         return {"PesquisarAnexos": ANEXOS, "ValidarSalvarVisitante": exige, "AnexoExiste": "",
-                "SalvarVisitante": {"nCdCodigo": 5209}}[metodo]
+                "SalvarVisitante": {"nCdCodigo": 5209}, "PesquisarProcessoDetalheRelatorio": []}[metodo]
     p._ws = ws
     p.s.get.side_effect = lambda url, **k: Resp(body, ctype)
     return p, chamadas
@@ -488,3 +488,176 @@ def test_dry_run_nao_pede_o_resumo_ao_portal():
     p, chamadas = _portal_com_resumo()
     r = DP.DocumentosParadigma(p, None, None, None, dry_run=True).sincronizar(None, DET, "x", resumo_processo=True)
     assert r["resumos"] == 0 and not any(c[0] == "PesquisarResumoEdital" for c in chamadas)
+
+
+# ---------------- Spec 0061, CA-6 (K-13 cadastro completo, K-14 relatórios públicos) ----------------
+# Fixture reduzida dos HARs da Firjan (processo 3800, 12/11/2026), sem dado pessoal: documento, nomes, endereço,
+# e-mail e telefone trocados por valores de teste; códigos de cidade e UF de teste.
+FIRJAN_DET = {"nCdProcesso": 3800, "nCdOrigem": 3800, "nCdModulo": 59, "nCdAnexo": 77001, "sNrProcesso": "SS 99/2026",
+              "nIdTipoApuracao": 1, "nCdSituacao": 4, "nCdEmpresa": 2285}
+FIRJAN_ANEXOS = [{"nCdAnexo": 77001, "nSqAnexo": 1, "sDsAnexo": "Edital SS 99-2026.pdf", "sNmArquivo": "wbc_teste_1.pdf",
+                  "tDtAnexo": "/Date(1762900000000)/", "sDsOrigem": "Processo", "sDsParametroCriptografado": "?q=CCC"}]
+PAISES = [{"sCdCodigo": "AR", "sDsRegiao": "Argentina", "tmpTipoRegiao": 0},
+          {"sCdCodigo": "BR", "sDsRegiao": "Brasil", "tmpTipoRegiao": 0}]
+ESTADOS = [{"sCdCodigo": "RJ", "sDsRegiao": "Rio de Janeiro", "sCdPai": "BR", "tmpTipoRegiao": 1},
+           {"sCdCodigo": "SC", "sDsRegiao": "Santa Catarina", "sCdPai": "BR", "tmpTipoRegiao": 1}]
+CIDADES_SC = [{"sCdCodigo": "4301", "sDsRegiao": "Blumenau", "sCdPai": "SC", "tmpTipoRegiao": 2},
+              {"sCdCodigo": "4375", "sDsRegiao": "Florianópolis", "sCdPai": "SC", "tmpTipoRegiao": 2}]
+RELATORIOS = [
+    {"nCdItem": 59008, "sNmItem": "Pedidos de Reconsiderações", "sDsArquivoRelatorio": "Recursos", "bExibePublico": 1,
+     "uidLicitacao": "00000000-0000-4000-8000-000000003800", "sDsParametroCriptografado": "?q=REL"},
+    {"nCdItem": 59009, "sNmItem": "Relatório interno", "sDsArquivoRelatorio": "Interno", "bExibePublico": 0,
+     "uidLicitacao": "00000000-0000-4000-8000-000000003800"},
+]
+PDF_REL = b"%PDF-1.7 relatorio de teste"
+VIS_END = DP.VisitanteInstitucional(
+    "52998224725", "PESSOA TESTE", "pessoa@teste.test", "48900000000", "SC", "48900000000", "CPF", "k" * 32,
+    endereco="RUA DE TESTE", numero="100", bairro="CENTRO TESTE", cep="88000000", cidade="Florianopolis",
+    rg="123456789")
+
+
+def portal_firjan(cidades=CIDADES_SC, relatorios=RELATORIOS, rel_body=PDF_REL):
+    p = P.PortalParadigma(P.FONTES["firjan"], sessao=MagicMock(), delay=0)
+    chamadas, gets = [], []
+
+    def ws(metodo, corpo):
+        chamadas.append((metodo, corpo))
+        if metodo == "PesquisarRegiao":
+            r = corpo["dtoRegiao"]
+            if r["tmpTipoRegiao"] == 0:
+                return PAISES
+            if r["tmpTipoRegiao"] == 1:
+                return ESTADOS if r["sCdCodigo"] == "BR" and r["sCdPais"] == "BR" else []
+            return cidades if r["sCdCodigo"] == "SC" and r["sCdPais"] == "BR" else []
+        return {"PesquisarAnexos": FIRJAN_ANEXOS, "ValidarSalvarVisitante": 1, "AnexoExiste": "",
+                "SalvarVisitante": {"nCdCodigo": 46000, "oComplemento": 137000, "sDsConteudo": ""},
+                "PesquisarProcessoDetalheRelatorio": relatorios}[metodo]
+
+    def get(url, **k):
+        gets.append((url, k.get("params")))
+        if "GetRelatorioAreaExterna" in url:
+            return Resp(rel_body, "application/octet-stream")
+        return Resp(PDF, "application/pdf")
+    p._ws = ws
+    p.cadastro_download = 1
+    p.s.get.side_effect = get
+    return p, chamadas, gets
+
+
+def test_ca6_cadastro_completo_acha_a_cidade_e_manda_o_endereco():
+    """CA-6 (K-13): PesquisarRegiao tipo 1 e 2, nCdCidade da lista, CEP com máscara, endereço e RG preenchidos."""
+    p, chamadas, gets = portal_firjan()
+    sb, arm = sb_fake(), MagicMock()
+    r = DP.DocumentosParadigma(p, sb, arm, VIS_END).sincronizar(10, FIRJAN_DET, "paradigma/firjan/59/3800")
+    assert r["baixados"] == 1 and r["erros"] == 0 and r["aguardando_cadastro"] == 0
+    regioes = [c[1]["dtoRegiao"] for c in chamadas if c[0] == "PesquisarRegiao"]
+    assert {"sCdCodigo": "BR", "tmpTipoRegiao": 1, "sCdPais": "BR"} in regioes
+    assert {"sCdCodigo": "SC", "tmpTipoRegiao": 2, "sCdPais": "BR"} in regioes
+    dto = [c[1]["dtoVisitante"] for c in chamadas if c[0] == "SalvarVisitante"][0]
+    assert dto["nCdCidade"] == "4375" and dto["sCdCep"] == "88.000-000" and dto["sCdEstado"] == "SC"
+    assert dto["sDsEndereco"] == "RUA DE TESTE" and dto["sNrEndereco"] == "100" and dto["sNmBairro"] == "CENTRO TESTE"
+    assert dto["sDsRg"] == "123456789" and dto["sDsTelefone"] == "48900000000" and dto["sCdPais"] == "BR"
+    assert "bFlInteresseCertame" not in dto
+
+
+def test_ca6_segundo_cadastro_reaproveita_visitante_e_endereco():
+    """O portal devolve o código do endereço em oComplemento; o mural manda de volta nos cadastros seguintes."""
+    p, chamadas, _ = portal_firjan()
+    anexos2 = FIRJAN_ANEXOS + [{**FIRJAN_ANEXOS[0], "nSqAnexo": 2, "sNmArquivo": "wbc_teste_2.pdf",
+                                "sDsParametroCriptografado": "?q=DDD"}]
+    ws = p._ws
+    p._ws = lambda m, c: anexos2 if m == "PesquisarAnexos" else ws(m, c)
+    DP.DocumentosParadigma(p, sb_fake(), MagicMock(), VIS_END).sincronizar(10, FIRJAN_DET, "x")
+    dtos = [c[1]["dtoVisitante"] for c in chamadas if c[0] == "SalvarVisitante"]
+    assert len(dtos) == 2 and dtos[1]["nCdVisitante"] == 46000 and dtos[1]["nCdEndereco"] == 137000
+    assert sum(1 for c in chamadas if c[0] == "PesquisarRegiao") == 2      # cidade buscada uma vez por execução
+
+
+def test_ca6_cidade_fora_da_lista_fica_pendente_sem_salvar_visitante():
+    """CA-6 (K-13): cidade não achada -> anexo pendente com o motivo, nenhum SalvarVisitante, nada baixado."""
+    p, chamadas, gets = portal_firjan(cidades=[CIDADES_SC[0]], relatorios=[])
+    sb = sb_fake()
+    r = DP.DocumentosParadigma(p, sb, MagicMock(), VIS_END).sincronizar(10, FIRJAN_DET, "x")
+    assert r["aguardando_cadastro"] == 1 and r["baixados"] == 0
+    assert not any(c[0] == "SalvarVisitante" for c in chamadas)
+    assert not any("Download.aspx" in u for u, _ in gets)
+    up = atualizacoes(sb)[1000]
+    assert up["status_processamento"] == "pendente" and "cidade" in up["erro"] and "SC" in up["erro"]
+
+
+def test_ca6_relatorio_publico_vira_documento_do_processo():
+    """CA-6 (K-14): só o relatório com bExibePublico=1, PDF de GetRelatorioAreaExterna (reportType=1)."""
+    p, chamadas, gets = portal_firjan()
+    sb = sb_fake()
+    r = DP.DocumentosParadigma(p, sb, MagicMock(), VIS_END).sincronizar(10, FIRJAN_DET, "paradigma/firjan/59/3800")
+    assert r["relatorios"] == 1 and r["erros"] == 0
+    req = [c[1]["dtoProcesso"] for c in chamadas if c[0] == "PesquisarProcessoDetalheRelatorio"][0]
+    assert req["nCdProcesso"] == 3800 and req["nCdEmpresa"] == 2285 and req["nIdTipoApuracao"] == 1
+    assert req["nCdSituacao"] == 4 and req["dtoIdioma"] == {"nCdIdioma": 1}
+    rel = [(u, q) for u, q in gets if "GetRelatorioAreaExterna" in u]
+    assert len(rel) == 1
+    url, params = rel[0]
+    assert url == "https://portaldecompras.firjan.com.br/licitacao-backend/wbc/GetRelatorioAreaExterna"
+    assert params == {"uidLicitacao": "00000000-0000-4000-8000-000000003800", "nCdItem": 59008, "nCdIdioma": 1,
+                      "sDsTitulo": "Pedidos de Reconsiderações", "reportType": 1}
+    linhas = [l for c in sb.upsert.call_args_list if c.args[0] == "licitacao_documentos" for l in c.args[1]]
+    doc = [l for l in linhas if l["arquivo_origem"] == "relatorio_59008.pdf"][0]
+    assert doc["nome_original"] == "Pedidos de Reconsiderações" and doc["origem_portal"] == "Relatório"
+    assert "sDsParametroCriptografado" not in doc["raw"] and "uidLicitacao" not in doc["raw"]
+    ups = [u for u in atualizacoes(sb).values() if u.get("mime_type") == "application/pdf"
+           and u.get("sha256") == D.sha256(PDF_REL)]
+    assert ups and ups[0]["status_processamento"] == "baixado"
+
+
+def test_ca6_relatorio_que_volta_html_conta_erro_e_nao_grava():
+    html = b"<!DOCTYPE html><html><body>erro</body></html>"
+    p, _, _ = portal_firjan(rel_body=html)
+    sb = sb_fake()
+    r = DP.DocumentosParadigma(p, sb, MagicMock(), VIS_END).sincronizar(10, FIRJAN_DET, "x")
+    assert r["relatorios"] == 0 and r["erros"] == 1
+    assert not any(u.get("sha256") == D.sha256(html) for u in atualizacoes(sb).values())
+
+
+def test_ca6_falha_na_lista_de_relatorios_nao_derruba_os_anexos():
+    p, _, _ = portal_firjan()
+    ws = p._ws
+
+    def falha(m, c):
+        if m == "PesquisarProcessoDetalheRelatorio":
+            raise D.requests.ConnectionError("portal fora")
+        return ws(m, c)
+    p._ws = falha
+    r = DP.DocumentosParadigma(p, sb_fake(), MagicMock(), VIS_END).sincronizar(10, FIRJAN_DET, "x")
+    assert r["baixados"] == 1 and r["erros"] == 1 and r["relatorios"] == 0
+
+
+def test_ca6_endereco_do_ambiente_completo_ou_nada(monkeypatch):
+    base = {"VISITANTE_CPF": "529.982.247-25", "VISITANTE_NOME": "PESSOA TESTE", "VISITANTE_EMAIL": "p@t.test",
+            "VISITANTE_TELEFONE": "(48) 90000-0000", "VISITANTE_UF": "sc", "VISITANTE_CONSENTIMENTO_LGPD": "1",
+            "VISITANTE_HASH_CHAVE": "k" * 32}
+    endereco = {"VISITANTE_ENDERECO": "RUA DE TESTE", "VISITANTE_NUMERO": "100", "VISITANTE_BAIRRO": "CENTRO",
+                "VISITANTE_CEP": "88.000-000", "VISITANTE_CIDADE": "Florianópolis", "VISITANTE_RG": "12.345.678-9"}
+
+    def com(vals):
+        monkeypatch.setattr(DP, "env", lambda n, padrao=None, obrigatorio=False: vals.get(n, padrao))
+        return DP.VisitanteInstitucional.do_ambiente()
+
+    sem = com(base)
+    assert sem.endereco == "" and sem.cidade == ""                         # sem endereço: comportamento antigo
+    v = com({**base, **endereco})
+    assert v.cep == "88000000" and v.rg == "123456789" and v.cidade == "Florianópolis"
+    with pytest.raises(SystemExit, match="VISITANTE_BAIRRO"):
+        com({**base, **{k: x for k, x in endereco.items() if k != "VISITANTE_BAIRRO"}})
+    with pytest.raises(SystemExit, match="VISITANTE_CEP"):
+        com({**base, **endereco, "VISITANTE_CEP": "8800"})
+    cnpj = {k: x for k, x in base.items() if k not in ("VISITANTE_CPF", "VISITANTE_NOME", "VISITANTE_HASH_CHAVE")}
+    cnpj.update({"VISITANTE_CNPJ": "24.608.949/0001-37", "VISITANTE_RAZAO_SOCIAL": "EMPRESA TESTE LTDA"})
+    with pytest.raises(SystemExit, match="VISITANTE_RG"):
+        com({**cnpj, **endereco})                                          # RG só com CPF
+    assert "RUA" not in repr(v) and "88000000" not in repr(v) and "123456789" not in repr(v)
+
+
+def test_ca6_mascara_tira_endereco_e_rg_do_motivo_do_portal():
+    texto = "Visitante RUA DE TESTE 100 CENTRO TESTE 88.000-000 rg 123456789 recusado"
+    m = VIS_END.mascarar(texto)
+    assert "TESTE" not in m and "88.000-000" not in m and "123456789" not in m and "recusado" in m

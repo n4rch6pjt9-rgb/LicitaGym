@@ -145,9 +145,22 @@ VISITANTE_TELEFONE=...
 VISITANTE_UF=CE
 VISITANTE_CONTATO=...          # opcional (nome do contato comercial)
 VISITANTE_CONSENTIMENTO_LGPD=1 # aceite exigido pelo formulário do portal
+# Endereço (spec 0061, K-13): opcional, mas todos juntos. Portais como a Firjan pedem o cadastro completo.
+# VISITANTE_ENDERECO=...       # logradouro
+# VISITANTE_NUMERO=...
+# VISITANTE_BAIRRO=...
+# VISITANTE_CEP=00000-000      # 8 dígitos; vai ao portal como 00.000-000
+# VISITANTE_CIDADE=...         # nome; o código vem da lista do portal (PesquisarRegiao)
+# VISITANTE_RG=...             # só com CPF
 MAX_MB=50                      # acima disso o documento fica "ignorado"
 ```
-Guardar como segredo (Secret Manager / variáveis do job), não no repositório.
+Guardar como segredo (Secret Manager / variáveis do job), não no repositório. Com endereço, a cidade (com a UF) precisa
+estar na lista do portal; se não estiver, o documento fica `pendente` com o motivo e nenhum cadastro é enviado.
+
+**Relatórios públicos do processo (spec 0061, K-14):** além dos anexos, o coletor lê `PesquisarProcessoDetalheRelatorio`
+e guarda como documento cada relatório com `bExibePublico = 1` (ex.: "Pedidos de Reconsiderações"), a partir do PDF de
+`/licitacao-backend/wbc/GetRelatorioAreaExterna` (`reportType=1`). Arquivo estável `relatorio_<nCdItem>.pdf`,
+versionado como os anexos; resposta que não é PDF conta erro e não é gravada.
 
 **Dashboard (abrir o arquivo):** usuário logado gera link assinado com o `bucket`/`caminho` da view:
 ```ts

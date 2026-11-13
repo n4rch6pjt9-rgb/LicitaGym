@@ -9,9 +9,14 @@ Fluxo, igual ao do mural do portal (HAR SFIEC PE000652022, 26/09/2026):
      fica no banco), e ele não vai para log nem para erro.
      Sem cadastro configurado, o documento fica registrado como pendente e NÃO é baixado (o coletor não
      contorna a exigência do portal).
+     Com endereço configurado (spec 0061, K-13; HARs da Firjan de 12/11/2026), o cadastro vai completo: CEP com
+     máscara, RG (só CPF) e nCdCidade achado pelo nome em PesquisarRegiao (tipo 1 confere a UF, tipo 2 lista as
+     cidades); cidade fora da lista deixa o documento pendente com o motivo, sem SalvarVisitante.
   4. AnexoExiste -> Download.aspx?q=<sDsParametroCriptografado>
   5. O arquivo vai para o Supabase Storage (bucket privado) e a linha de licitacao_documentos guarda
      storage_uri, sha256, tamanho e tipo.
+  6. Relatórios públicos do processo (spec 0061, K-14): PesquisarProcessoDetalheRelatorio + PDF de
+     GetRelatorioAreaExterna (reportType=1), guardados como documento com arquivo estável relatorio_<nCdItem>.pdf.
 
 Histórico: nada é apagado. Documento novo no portal ganha first_seen_at; documento que some do portal
 não é marcado como removido automaticamente: ausência na coleta não comprova remoção do portal. O histórico permanece preservado até reconciliação autoritativa. Assim o processo aberto
@@ -28,6 +33,7 @@ import time
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 import requests
 
@@ -51,6 +57,21 @@ class ArquivoGrande(Exception):
     pass
 
 
+def _nome_regiao(texto: str) -> str:
+    """Nome de cidade comparável: sem acento, sem caixa, espaços únicos."""
+    sem = "".join(c for c in unicodedata.normalize("NFKD", texto) if not unicodedata.combining(c))
+    return " ".join(sem.casefold().split())
+
+
+class CadastroPendente(Exception):
+    """O portal pede cadastro, mas o coletor não consegue montá-lo completo (ex.: cidade fora da lista do portal).
+    O documento fica pendente com o motivo; nenhum SalvarVisitante é chamado com dado incompleto."""
+
+
+# Endereço do visitante (spec 0061, K-13): opcional; se vier, vem inteiro. RG só com CPF.
+CAMPOS_ENDERECO = ("VISITANTE_ENDERECO", "VISITANTE_NUMERO", "VISITANTE_BAIRRO", "VISITANTE_CEP", "VISITANTE_CIDADE")
+
+
 @dataclass(frozen=True)
 class VisitanteInstitucional:
     """Identificação do LicitaGym nos portais: CNPJ da empresa ou CPF de uma pessoa. Lida do ambiente/segredo."""
@@ -62,17 +83,32 @@ class VisitanteInstitucional:
     contato: str = field(default="", repr=False)
     tipo: str = "CNPJ"  # "CNPJ" ou "CPF"
     chave_hash: str = field(default="", repr=False)  # chave do HMAC do CPF (VISITANTE_HASH_CHAVE)
+    endereco: str = field(default="", repr=False)
+    numero: str = field(default="", repr=False)
+    bairro: str = field(default="", repr=False)
+    cep: str = field(default="", repr=False)     # 8 dígitos; vai ao portal com a máscara 99.999-999
+    cidade: str = field(default="", repr=False)  # nome; o código vem da lista PesquisarRegiao do portal
+    rg: str = field(default="", repr=False)      # só com CPF
 
     @property
     def cnpj(self) -> str | None:
         return self.documento if self.tipo == "CNPJ" else None
+
+    @property
+    def tem_endereco(self) -> bool:
+        return bool(self.cidade)
+
+    @property
+    def cep_mascarado(self) -> str:
+        return f"{self.cep[:2]}.{self.cep[2:5]}-{self.cep[5:]}" if len(self.cep) == 8 else ""
 
     def mascarar(self, texto: str) -> str:
         """Tira do texto os dados do visitante em qualquer formato, para erro e log: caracteres de controle (o texto do
         portal não pode injetar comando `::` no Actions), cada palavra do nome e do contato com 3+ letras (com
         ou sem acento), e-mails e toda sequência de 8+ dígitos (documento e telefone, com qualquer pontuação)."""
         texto = re.sub(r"[\x00-\x1f\x7f]", " ", texto)
-        palavras = {p for v in (self.nome, self.contato) for p in re.findall(r"\w{3,}", self._sem_acento(v or ""))}
+        palavras = {p for v in (self.nome, self.contato, self.endereco, self.bairro)
+                    for p in re.findall(r"\w{3,}", self._sem_acento(v or ""))}
         for palavra in sorted(palavras, key=len, reverse=True):
             texto = re.sub(rf"\b{self._qualquer_acento(palavra)}\b", "***", texto, flags=re.IGNORECASE)
         texto = re.sub(r"[\w.+-]+@[\w-]+(\.[\w-]+)+", "***", texto)
@@ -122,20 +158,38 @@ class VisitanteInstitucional:
         if tipo == "CPF" and len(env("VISITANTE_HASH_CHAVE")) < TAMANHO_MINIMO_CHAVE_HASH:
             # Chave curta se adivinha, e com ela o HMAC volta a ser força bruta sobre 10^9 CPFs.
             raise SystemExit(f"VISITANTE_HASH_CHAVE curta: use ao menos {TAMANHO_MINIMO_CHAVE_HASH} caracteres aleatórios.")
+        end = {k: (env(k) or "").strip() for k in CAMPOS_ENDERECO}
+        rg = re.sub(r"\D", "", env("VISITANTE_RG") or "")
+        if any(end.values()):
+            faltam = [k for k, v in end.items() if not v]
+            if faltam:
+                raise SystemExit(f"Endereço do visitante incompleto: {', '.join(faltam)} (informe todos ou nenhum)")
+            end["VISITANTE_CEP"] = re.sub(r"\D", "", end["VISITANTE_CEP"])
+            if len(end["VISITANTE_CEP"]) != 8:
+                raise SystemExit("VISITANTE_CEP inválido: use os 8 dígitos do CEP.")
+        if rg and tipo != "CPF":
+            raise SystemExit("VISITANTE_RG só vale com VISITANTE_CPF.")
         return cls(d, env(campo_nome), env("VISITANTE_EMAIL"), re.sub(r"\D", "", env("VISITANTE_TELEFONE")),
                    env("VISITANTE_UF").upper()[:2], env("VISITANTE_CONTATO") or "", tipo,
-                   (env("VISITANTE_HASH_CHAVE") or "") if tipo == "CPF" else "")
+                   (env("VISITANTE_HASH_CHAVE") or "") if tipo == "CPF" else "",
+                   endereco=end["VISITANTE_ENDERECO"], numero=end["VISITANTE_NUMERO"], bairro=end["VISITANTE_BAIRRO"],
+                   cep=end["VISITANTE_CEP"], cidade=end["VISITANTE_CIDADE"], rg=rg)
 
-    def dto(self, n_cd_visitante: int, anexo: dict, d: dict) -> dict:
-        """dtoVisitante no formato do formulário do portal (documento do tipo CNPJ ou CPF)."""
+    def dto(self, n_cd_visitante: int, anexo: dict, d: dict, n_cd_cidade: str | None = None,
+            n_cd_endereco: int = 0) -> dict:
+        """dtoVisitante no formato do formulário do portal (HARs da Firjan de 12/11/2026): documento do tipo CNPJ ou
+        CPF; com endereço, CEP com máscara e o código da cidade achado na lista do portal (n_cd_cidade). Sem
+        bFlInteresseCertame, como o mural."""
         cpf = self.tipo == "CPF"
         return {
-            "nCdVisitante": n_cd_visitante or 0, "nCdEndereco": 0, "nCdEmpresa": 0,
-            "sDsCpf": self.documento if cpf else "", "sDsCnpj": "" if cpf else self.documento, "sDsRg": "",
+            "nCdVisitante": n_cd_visitante or 0, "nCdEndereco": n_cd_endereco or 0, "nCdEmpresa": 0,
+            "sDsCpf": self.documento if cpf else "", "sDsCnpj": "" if cpf else self.documento,
+            "sDsRg": self.rg if cpf else "",
             "sNmVisitante": self.nome,
-            "sDsEmail": self.email, "sDsTelefone": self.telefone, "sDsEndereco": "", "sNrEndereco": "",
-            "sDsComplemento": "", "sNmBairro": "", "sCdCep": "", "sCdPais": "BR", "sCdEstado": self.uf,
-            "nCdCidade": "0", "sDsTipoDocumento": self.tipo, "bFlInteresseCertame": "1", "sNmContato": self.contato,
+            "sDsEmail": self.email, "sDsTelefone": self.telefone, "sDsEndereco": self.endereco,
+            "sNrEndereco": self.numero, "sDsComplemento": "", "sNmBairro": self.bairro, "sCdCep": self.cep_mascarado,
+            "sCdPais": "BR", "sCdEstado": self.uf, "nCdCidade": n_cd_cidade or "0",
+            "sDsTipoDocumento": self.tipo, "sNmContato": self.contato,
             "bFlConsentimentoLGPD": 1,
             "dtoAnexo": {"nCdAnexo": anexo["nCdAnexo"], "nSqAnexo": anexo["nSqAnexo"]},
             "dtoEdital": {"nCdEdital": d["nCdProcesso"], "nCdOrigem": d.get("nCdOrigem") or d["nCdProcesso"]},
@@ -154,6 +208,9 @@ class DocumentosParadigma:
         self.max_bytes = max_bytes
         self.dry_run = dry_run
         self.n_cd_visitante: int | None = None  # código do visitante no portal (reaproveitado entre execuções)
+        self.n_cd_endereco = 0                  # oComplemento do SalvarVisitante: endereço já gravado no portal
+        self._n_cd_cidade: str | None = None    # código da cidade na lista do portal (1 consulta por execução)
+        self._pendencia_cidade: str | None = None  # motivo, quando a cidade não está na lista (não repete a consulta)
         # portal_visitante guarda o CNPJ, ou só o HMAC do CPF (dado pessoal); sem chave de cadastro, não há cache.
         self._chave = visitante.chave_cadastro() if visitante is not None else None
         if sb is not None and self._chave is not None and not dry_run:
@@ -194,7 +251,9 @@ class DocumentosParadigma:
             return True
         if self.visitante is None:
             return False
-        r = self.portal._ws("SalvarVisitante", {"dtoVisitante": self.visitante.dto(self.n_cd_visitante or 0, anexo, d)})
+        cidade = self._codigo_cidade() if self.visitante.tem_endereco else None
+        r = self.portal._ws("SalvarVisitante", {"dtoVisitante": self.visitante.dto(
+            self.n_cd_visitante or 0, anexo, d, cidade, self.n_cd_endereco)})
         cod = (r or {}).get("nCdCodigo") if isinstance(r, dict) else None
         if not isinstance(cod, int) or cod <= 0:
             # O erro vai para o banco e para o log: só a forma da resposta, o código e a mensagem do portal com os
@@ -208,6 +267,9 @@ class DocumentosParadigma:
         if cod != self.n_cd_visitante and self._chave is not None and self.sb is not None and not self.dry_run:
             self.sb.upsert("portal_visitante", {"fonte": self.portal.fonte.slug, "n_cd_visitante": cod,
                                                 **self._chave}, "fonte")
+        endereco = r.get("oComplemento")
+        if isinstance(endereco, int) and not isinstance(endereco, bool) and endereco > 0:
+            self.n_cd_endereco = endereco
         novo = cod != self.n_cd_visitante or not getattr(self, "_cookie_ok", False)
         self.n_cd_visitante = cod
         if not novo:
@@ -215,13 +277,46 @@ class DocumentosParadigma:
         # O mural guarda o visitante no cookie CK_VISITANTE_TEMP antes do download; o coletor faz o mesmo (1x por execução).
         self._cookie_ok = True
         try:
-            dto = {k: v for k, v in self.visitante.dto(cod, anexo, d).items() if not k.startswith("dto")}
+            dto = {k: v for k, v in self.visitante.dto(cod, anexo, d, cidade, self.n_cd_endereco).items()
+                   if not k.startswith("dto")}
             self.portal.s.post(f"{self.portal.fonte.base}/WebService/Servicos.asmx/SetCookie",
                                data=json.dumps({"name": "CK_VISITANTE_TEMP", "value": json.dumps(dto)}).encode(),
                                headers={"Content-Type": "application/json; charset=utf-8"}, timeout=30)
         except requests.RequestException as e:
             log.info("SetCookie CK_VISITANTE_TEMP falhou (%s); seguindo", e)
         return True
+
+    def _codigo_cidade(self) -> str:
+        """Código da cidade do visitante na lista do portal, como o formulário do mural: PesquisarRegiao tipo 1 (estados
+        do país) confere a UF; tipo 2 (cidades da UF) dá o código pelo nome, sem acento nem caixa. Cidade ou UF fora
+        da lista -> CadastroPendente com o motivo (nunca o código "0")."""
+        if self._n_cd_cidade:
+            return self._n_cd_cidade
+        if self._pendencia_cidade:
+            raise CadastroPendente(self._pendencia_cidade)
+        v = self.visitante
+        estados = self.portal._ws("PesquisarRegiao", {"dtoRegiao": {"sCdCodigo": "BR", "tmpTipoRegiao": 1,
+                                                                    "sCdPais": "BR"}})
+        if not isinstance(estados, list):
+            raise RuntimeError("PesquisarRegiao (estados) inconclusivo: resposta não é lista")
+        if not any(isinstance(e, dict) and e.get("sCdCodigo") == v.uf for e in estados):
+            self._pendencia_cidade = f"portal exige cadastro de visitante: UF {v.uf} fora da lista de estados do portal"
+            raise CadastroPendente(self._pendencia_cidade)
+        cidades = self.portal._ws("PesquisarRegiao", {"dtoRegiao": {"sCdCodigo": v.uf, "tmpTipoRegiao": 2,
+                                                                    "sCdPais": "BR"}})
+        if not isinstance(cidades, list):
+            raise RuntimeError("PesquisarRegiao (cidades) inconclusivo: resposta não é lista")
+        alvo = _nome_regiao(v.cidade)
+        achadas = [c.get("sCdCodigo") for c in cidades
+                   if isinstance(c, dict) and _nome_regiao(str(c.get("sDsRegiao") or "")) == alvo]
+        codigos = [str(c) for c in achadas if c not in (None, "", "0", 0)]
+        if len(set(codigos)) != 1:
+            motivo = "não achada" if not codigos else "ambígua"
+            self._pendencia_cidade = (f"portal exige cadastro de visitante: cidade {motivo} na lista do portal para a "
+                                      f"UF {v.uf} (confira VISITANTE_CIDADE)")
+            raise CadastroPendente(self._pendencia_cidade)
+        self._n_cd_cidade = codigos[0]
+        return self._n_cd_cidade
 
     def _baixar(self, anexo: dict) -> tuple[bytes, str | None]:
         self.portal._ws("AnexoExiste", {"dtoAnexo": {"sNmLocalAnexo": LOCAL_ANEXOS, "sNmArquivo": anexo["sNmArquivo"]}})
@@ -267,46 +362,109 @@ class DocumentosParadigma:
             raise RuntimeError("PesquisarResumoEdital inconclusivo: resposta vazia ou sem HTML")
         return _DATA_GERACAO_RESUMO.sub(r"\g<1>0", r)
 
-    def _sincronizar_resumo(self, lic_id: int | None, d: dict, caminho_base: str, existentes: dict, agora: str,
-                            resumo: dict) -> None:
+    def _gravar_gerado(self, lic_id: int | None, d: dict, caminho_base: str, existentes: dict, agora: str,
+                       resumo: dict, *, arquivo: str, nome: str, origem: str, raw: dict, mime: str, obter,
+                       contador: str) -> None:
+        """Documento gerado pelo portal (resumo, relatório) com nome de arquivo estável: registra a linha uma vez,
+        versiona o conteúdo no Storage e só marca baixado com SHA-256 e storage_uri conferidos. Falha conta erro e
+        não rebaixa o que já estava confirmado."""
         from .versionamento import processar_versao
 
-        doc = existentes.get(ARQUIVO_RESUMO)
+        doc = existentes.get(arquivo)
         anterior = doc or {}
         confirmado = anterior.get("status_processamento") == "baixado" and bool(anterior.get("sha256"))
         try:
-            conteudo = self.resumo_html(d).encode("utf-8")
+            conteudo = obter()
             if doc is None:
                 doc = self.sb.upsert("licitacao_documentos", [{
-                    "licitacao_id": lic_id, "secao": SECAO_PROCESSO, "nome_original": "Resumo do processo",
-                    "arquivo_origem": ARQUIVO_RESUMO, "data_documento": None, "origem_portal": "Resumo",
-                    "last_seen_at": agora, "raw": {"metodo": "PesquisarResumoEdital",
-                                                   "normalizacao": "data de geração da página (label_0) zerada"},
+                    "licitacao_id": lic_id, "secao": SECAO_PROCESSO, "nome_original": nome, "arquivo_origem": arquivo,
+                    "data_documento": None, "origem_portal": origem, "last_seen_at": agora, "raw": raw,
                 }], "licitacao_id,secao,arquivo_origem")[0]
                 resumo["novos"] += 1
             digest = sha256(conteudo)
             versao, _ = processar_versao(sb=self.sb, arm=self.arm, documento_id=doc["id"], caminho_base=caminho_base,
-                                         secao=SECAO_PROCESSO, conteudo=conteudo, mime_type="text/html")
+                                         secao=SECAO_PROCESSO, conteudo=conteudo, mime_type=mime)
             if versao.get("sha256") != digest or not versao.get("storage_uri"):
-                raise RuntimeError("Versão do resumo registrada sem storage_uri ou com SHA-256 divergente")
+                raise RuntimeError("Versão registrada sem storage_uri ou com SHA-256 divergente")
             if not confirmado or anterior.get("sha256") != digest:
                 self.sb.atualizar("licitacao_documentos", doc["id"], {
-                    "storage_uri": versao["storage_uri"], "mime_type": "text/html", "tamanho_bytes": len(conteudo),
+                    "storage_uri": versao["storage_uri"], "mime_type": mime, "tamanho_bytes": len(conteudo),
                     "sha256": digest, "baixado_em": datetime.now(timezone.utc).isoformat(),
                     "status_processamento": "baixado", "erro": None})
-            resumo["resumos"] += 1
+            resumo[contador] += 1
         except Exception as e:
             resumo["erros"] += 1
-            log.warning("%s resumo do processo %s: %s", self.portal.fonte.slug, d.get("nCdProcesso"), e)
+            log.warning("%s %s %s: %s", self.portal.fonte.slug, d.get("nCdProcesso"), nome, e)
             if doc is not None and not confirmado:
                 self.sb.atualizar("licitacao_documentos", doc["id"], {"status_processamento": "erro",
                                                                       "erro": str(e)[:500]})
+
+    def _sincronizar_resumo(self, lic_id: int | None, d: dict, caminho_base: str, existentes: dict, agora: str,
+                            resumo: dict) -> None:
+        self._gravar_gerado(
+            lic_id, d, caminho_base, existentes, agora, resumo, arquivo=ARQUIVO_RESUMO, nome="Resumo do processo",
+            origem="Resumo", raw={"metodo": "PesquisarResumoEdital",
+                                  "normalizacao": "data de geração da página (label_0) zerada"},
+            mime="text/html", obter=lambda: self.resumo_html(d).encode("utf-8"), contador="resumos")
+
+    def relatorios(self, d: dict) -> list[dict]:
+        """Relatórios do processo que o mural mostra ao público (PesquisarProcessoDetalheRelatorio, HAR Firjan de
+        12/11/2026), ex.: "Pedidos de Reconsiderações". Só os com bExibePublico = 1 e com uidLicitacao e nCdItem."""
+        r = self.portal._ws("PesquisarProcessoDetalheRelatorio", {"dtoProcesso": {
+            "nCdProcesso": d["nCdProcesso"], "nCdModulo": d.get("nCdModulo") or 59,
+            "nIdTipoApuracao": d.get("nIdTipoApuracao") or 0, "nCdSituacao": d.get("nCdSituacao") or 0,
+            "nCdEmpresa": d.get("nCdEmpresa") or 0, "dtoIdioma": {"nCdIdioma": 1}}})
+        if not isinstance(r, list):
+            raise RuntimeError("PesquisarProcessoDetalheRelatorio inconclusivo: resposta não é lista")
+        return [x for x in r if isinstance(x, dict) and x.get("bExibePublico") == 1 and x.get("uidLicitacao")
+                and isinstance(x.get("nCdItem"), int) and not isinstance(x.get("nCdItem"), bool)
+                and (x.get("sNmItem") or "").strip()]
+
+    def _baixar_relatorio(self, rel: dict) -> bytes:
+        """PDF do relatório (GetRelatorioAreaExterna, reportType=1; o 2 devolve HTML). Fica na raiz do domínio do
+        portal, fora de /portal. Resposta que não começa com %PDF- é erro: o portal devolve HTML quando falha."""
+        partes = urlsplit(self.portal.fonte.base)
+        url = f"{partes.scheme}://{partes.netloc}/licitacao-backend/wbc/GetRelatorioAreaExterna"
+        params = {"uidLicitacao": rel["uidLicitacao"], "nCdItem": rel["nCdItem"], "nCdIdioma": 1,
+                  "sDsTitulo": rel["sNmItem"].strip(), "reportType": 1}
+        with self.portal.s.get(url, params=params, stream=True, timeout=(30, 300)) as r:
+            r.raise_for_status()
+            blocos, total = [], 0
+            for bloco in r.iter_content(256 * 1024):
+                blocos.append(bloco)
+                total += len(bloco)
+                if total > self.max_bytes:
+                    raise ArquivoGrande(f"relatório maior que {self.max_bytes // 1048576} MB")
+        time.sleep(self.portal.delay)
+        conteudo = b"".join(blocos)
+        if not conteudo.startswith(b"%PDF-"):
+            raise RuntimeError("portal devolveu outra coisa em vez do PDF do relatório (HTML ou vazio)")
+        return conteudo
+
+    def _sincronizar_relatorios(self, lic_id: int | None, d: dict, caminho_base: str, existentes: dict, agora: str,
+                                resumo: dict) -> None:
+        """Relatórios públicos do processo como documentos (spec 0061, K-14). A falha na lista conta erro e não
+        afeta os anexos já sincronizados."""
+        try:
+            lista = self.relatorios(d)
+        except Exception as e:
+            resumo["erros"] += 1
+            log.warning("%s %s relatórios do processo: %s", self.portal.fonte.slug, d.get("nCdProcesso"), e)
+            return
+        for rel in lista:
+            nome = rel["sNmItem"].strip()
+            self._gravar_gerado(
+                lic_id, d, caminho_base, existentes, agora, resumo, arquivo=f"relatorio_{rel['nCdItem']}.pdf",
+                nome=nome, origem="Relatório",
+                raw={"metodo": "GetRelatorioAreaExterna", "reportType": 1, "nCdItem": rel["nCdItem"],
+                     "sNmItem": nome, "sDsArquivoRelatorio": rel.get("sDsArquivoRelatorio")},
+                mime="application/pdf", obter=lambda rel=rel: self._baixar_relatorio(rel), contador="relatorios")
 
     def sincronizar(self, lic_id: int | None, d: dict, caminho_base: str, resumo_processo: bool = False) -> dict:
         """Registra todos os anexos do processo e baixa os que ainda não estão no LicitaGym. Com resumo_processo,
         guarda também o resumo do processo (edital encerrado com resultado) como documento."""
         resumo = {"documentos": 0, "novos": 0, "baixados": 0, "aguardando_cadastro": 0, "erros": 0, "ignorados": 0,
-                  "removidos_do_portal": 0, "resumos": 0}
+                  "removidos_do_portal": 0, "resumos": 0, "relatorios": 0}
         anexos = self.listar(d)
         resumo["documentos"] = len(anexos)
         if self.dry_run:
@@ -314,6 +472,7 @@ class DocumentosParadigma:
                 print(f"      doc | {parse_data(a.get('tDtAnexo')) or '':25.25} | {a.get('sDsAnexo')}")
             if resumo_processo:
                 print("      doc | resumo do processo (PesquisarResumoEdital)")
+            print("      doc | relatórios públicos do processo (PesquisarProcessoDetalheRelatorio)")
             return resumo
         agora = datetime.now(timezone.utc).isoformat()
         existentes = {r["arquivo_origem"]: r for r in self.sb.selecionar(
@@ -360,12 +519,16 @@ class DocumentosParadigma:
             )
 
             try:
-                if not self._identificar(a, d):
+                try:
+                    liberado, motivo = self._identificar(a, d), None
+                except CadastroPendente as e:
+                    liberado, motivo = False, str(e)
+                if not liberado:
                     resumo["aguardando_cadastro"] += 1
                     if not confirmado:
                         self.sb.atualizar("licitacao_documentos", doc["id"], {
                             "status_processamento": "pendente",
-                            "erro": "portal exige cadastro de visitante: configure VISITANTE_* (CNPJ ou CPF)",
+                            "erro": motivo or "portal exige cadastro de visitante: configure VISITANTE_* (CNPJ ou CPF)",
                         })
                     continue
 
@@ -420,4 +583,5 @@ class DocumentosParadigma:
 
         if resumo_processo:
             self._sincronizar_resumo(lic_id, d, caminho_base, existentes, agora, resumo)
+        self._sincronizar_relatorios(lic_id, d, caminho_base, existentes, agora, resumo)
         return resumo

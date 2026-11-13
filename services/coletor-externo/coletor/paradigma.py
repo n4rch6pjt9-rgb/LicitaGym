@@ -308,12 +308,39 @@ def quer_resumo_do_processo(d: dict) -> bool:
     return status_normalizado(d.get("sDsSituacao")) in ("homologada", "encerrada")
 
 
+def processo_com_resultado(d: dict) -> bool:
+    """Situação do processo em que o ranking do portal é resultado de compra (preço, marca e fornecedor só de compra
+    homologada). Medição do mural de 12/11/2026: o ranking e até o troféu aparecem antes da homologação ("Em
+    andamento", "Análise dos lances", "Aguardando homologação"); a compra direta (módulo 19) não tem data de
+    homologação e conclui como "Finalizado com contrato" ou "com pedido"; "Finalizado" sozinho não teve vencedor."""
+    # Situação fora deste mapa (ex.: "Encerrado", "Adjudicado", "Concluído", nenhuma no banco em 12/11) não grava:
+    # na dúvida, ranking não vira preço homologado.
+    if status_normalizado(d.get("sDsSituacao")) == "homologada":
+        return True
+    s = normalizar(d.get("sDsSituacao") or "")
+    return s.startswith("finalizado com contrato") or s.startswith("finalizado com pedido")
+
+
+def item_com_resultado(it: dict) -> bool:
+    """Item concluído com compra: "Homologado…" (inclusive "com contrato") ou "Encerrado", nunca o que voltou "com
+    requisições liberadas" (cancelado, fracassado, revogado ou finalizado sem vencedor)."""
+    s = normalizar((it.get("sStItem") or "").strip())
+    if "requisic" in s:
+        return False
+    return s.startswith("homologado") or s == "encerrado"
+
+
 def status_normalizado(situacao: str | None) -> str:
     s = normalizar(situacao or "")
     if not s:
         return "desconhecida"
-    # "Aguardando homologação" (nCdSituacao 23) ainda não foi homologada: em julgamento, nunca histórico (12/11/2026).
-    if "aguard" in s and "homolog" in s:
+    # Mapa medido no mural em 12/11/2026 (um processo por situação + 60 abertos da FIEB):
+    # - "Recebimento de lances/propostas" ainda recebe proposta (itens "Ativo", 0 lances): aberta, antes da regra de
+    #   "lance", que a mandava para julgamento;
+    # - "Aguardando homologação" (23) e "Em aprovação" (9) ainda não foram homologados: em julgamento, nunca histórico.
+    if s.startswith("recebimento"):
+        return "aberta"
+    if ("aguard" in s and "homolog" in s) or "em aprovac" in s:
         return "em_julgamento"
     if "homolog" in s and "parcial" in s:
         return "homologada"
@@ -896,6 +923,7 @@ def processar_processo(portal: "PortalParadigma", sb, pid: int, mod: int, resumo
     if not com_resultados:
         return
     homolog = parse_data(d.get("tDtHomologacao"))
+    com_resultado_do_processo = processo_com_resultado(d)
     cnpjs: list[str] = []
     for it, linha in zip(its, li):
         if not it.get("nCdItem"):
@@ -911,6 +939,8 @@ def processar_processo(portal: "PortalParadigma", sb, pid: int, mod: int, resumo
         brutos = portal.resultado_item(d, it)
         # Todos os participantes do item (inclusive sem posição/desclassificados) vão para o cadastro de fornecedores.
         cnpjs += [c for c in (empresa_cnpj(r.get("sNmEmpresa"))[1] for r in brutos) if c]
+        if not (com_resultado_do_processo and item_com_resultado(it)):
+            continue   # ranking antes da conclusão não é preço homologado (medição de 12/11/2026)
         try:
             res = linhas_resultados(lic["id"] if lic else None, linha["numero_item"],
                                     brutos, homolog, it.get("sStItem"), linha["quantidade"])

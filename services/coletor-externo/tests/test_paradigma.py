@@ -1066,3 +1066,55 @@ def test_aguardando_homologacao_nao_e_homologada():
     assert P.status_normalizado("Homologado") == "homologada"
     assert P.status_normalizado("Homologado com contrato") == "homologada"
     assert P.status_normalizado("Homologado parcialmente") == "homologada"
+
+
+# ---------------- Situação do mural e quando gravar resultado (medição do mural de 12/11/2026) ----------------
+@pytest.mark.parametrize(("situacao", "status", "prioridade"), [
+    ("Recebimento de lances", "aberta", "leads"),           # 18 de 60 abertos da FIEB; antes caía em monitorar
+    ("Em andamento", "aberta", "leads"),
+    ("Análise dos lances", "em_julgamento", "monitorar"),
+    ("Aguardando homologação", "em_julgamento", "monitorar"),
+    ("Em aprovação", "em_julgamento", "monitorar"),         # antes ficava desconhecida e sem prioridade
+    ("Homologado", "homologada", "historico"),
+    ("Finalizado com contrato", "encerrada", "historico"),
+    ("Fracassada", "sem_vencedor", "historico"),
+    ("Revogado", "cancelada", "historico"),
+])
+def test_mapa_de_situacao_do_mural(situacao, status, prioridade):
+    assert P.status_normalizado(situacao) == status
+    assert P.prioridade_da_compra(status, "2099-01-01T00:00:00+00:00")[0] == prioridade
+
+
+@pytest.mark.parametrize(("situacao", "grava"), [
+    ("Homologado", True), ("Homologado com contrato", True), ("Homologado parcialmente", True),
+    ("Finalizado com contrato", True), ("Finalizado com pedido", True),
+    # lances com ranking e até troféu antes da homologação (firjan 4, sescba 12523, fieb 77): não é preço homologado
+    ("Em andamento", False), ("Recebimento de lances", False), ("Análise dos lances", False),
+    ("Aguardando homologação", False), ("Em aprovação", False),
+    ("Finalizado", False), ("Fracassada", False), ("Fracassado", False), ("Deserto", False),
+    ("Cancelado", False), ("Revogado", False), (None, False),
+])
+def test_resultado_so_de_processo_concluido_com_compra(situacao, grava):
+    assert P.processo_com_resultado({"sDsSituacao": situacao}) is grava
+
+
+@pytest.mark.parametrize(("situacao_item", "grava"), [
+    ("Homologado", True), ("Encerrado", True), ("Aberto", False), ("Ativo", False), ("Em análise de lances", False),
+    ("Cancelado", False), ("Cancelado com requisições liberadas", False), ("Fracassado com requisições liberadas", False),
+    ("Revogado com requisições liberadas", False), ("Encerrado com requisições liberadas", False), (None, False),
+])
+def test_resultado_so_de_item_concluido(situacao_item, grava):
+    assert P.item_com_resultado({"sStItem": situacao_item}) is grava
+
+
+def test_processo_em_julgamento_nao_grava_resultado_mas_cadastra_participantes():
+    """firjan 4 ("Em andamento", 53 lances com posição) tinha 43 linhas em licitacao_resultados em 12/11."""
+    p = P.PortalParadigma(P.FONTES["sfiec"], sessao=MagicMock(), delay=0)
+    p.detalhes = MagicMock(return_value={**SFIEC["detalhe"], "sDsSituacao": "Análise dos lances"})
+    p.itens = MagicMock(return_value=SFIEC["itens"])
+    p.resultado_item = lambda d, it: P.limpar(SFIEC["lances"][str(it["nCdItem"])])
+    forn = MagicMock()
+    forn.cadastrar.return_value = {"consultados": 0, "em_cache": 0, "erros": 0, "linhas": []}
+    resumo = P.coletar(p, None, [], 1, True, True, None, forn, [(32, 18)])
+    assert resumo["resultados"] == 0 and resumo["itens_com_vencedor"] == 0
+    assert resumo["participantes"] > 0                    # o cadastro de fornecedores segue com todos os participantes

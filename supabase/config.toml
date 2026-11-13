@@ -74,9 +74,6 @@ verify_jwt = false
 [functions.import-catmat-curadoria]
 verify_jwt = false
 
-[functions.sync-pncp-legislation]
-verify_jwt = false
-
 [functions.sync-pncp-contratacoes-editais]
 verify_jwt = false
 
@@ -102,9 +99,6 @@ verify_jwt = false
 verify_jwt = false
 
 [functions.api-precos]
-verify_jwt = false
-
-[functions.api-pncp-legislacao]
 verify_jwt = false
 
 [functions.api-pncp-contratacoes]

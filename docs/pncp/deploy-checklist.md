@@ -56,7 +56,6 @@ Sync jobs usam `Authorization: Bearer <SYNC_CRON_SECRET>` — deploy com JWT des
 
 ```powershell
 $fn = @(
-  "sync-pncp-legislation",
   "sync-pncp-pca",
   "sync-pncp-contratacoes-editais",
   "sync-pncp-contratacoes-atas",
@@ -66,7 +65,6 @@ $fn = @(
   "import-catmat-curadoria",
   "api-pncp-pca",
   "api-pncp-contratacoes",
-  "api-pncp-legislacao",
   "api-pncp-irp",
   "calculate-distance-webrouter"
 )
@@ -146,7 +144,6 @@ Invoke-RestMethod -Method POST `
 | POST sync-pncp-pca `somente_verificacao` | `status: verificacao`, `periodo.max_data_atualizacao` |
 | POST import-catmat-curadoria | `inseridos` / `atualizados` |
 | POST sync-pncp-pca `-Forcar` | Só quando PNCP Consulta estável (504 = externo) |
-| GET api-pncp-legislacao | Lista ou `[]` |
 
 Scripts locais (apontando remoto):
 

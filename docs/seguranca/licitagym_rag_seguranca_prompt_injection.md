@@ -121,7 +121,7 @@ drop policy if exists "Permitir inserção autenticada"                  on publ
 drop policy if exists "Permitir atualização autenticada"               on public.legislacao;
 
 revoke insert, update, delete on public.legislacao, public.legislacao_embeddings from anon, authenticated;
--- Escrita passa a ser exclusiva do service_role (sync-pncp-legislation), que ignora RLS.
+-- Escrita passa a ser exclusiva do service_role, que ignora RLS (a sync-pncp-legislation que escrevia saiu pela spec 0043).
 
 -- Opcional (NÃO aplicar junto com o REVOKE acima sem o GRANT abaixo):
 -- policy só filtra o que o GRANT permite. Sem GRANT, o admin também recebe 42501.

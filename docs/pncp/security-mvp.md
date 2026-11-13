@@ -17,7 +17,7 @@
 - Edge Functions de sync usam apenas API Consulta (pública) ou credenciais de serviço sem escopo usuário.
 - RLS em `public.*`: leitura autenticada; escrita apenas via `service_role` nas funções de sync.
 - Migration `202609180009_rls_tenant_review.sql`: `REVOKE ALL` de `anon`; `GRANT SELECT` para `authenticated`.
-- Storage `pncp-legislation`: bucket privado; download via signed URL (`api-pncp-legislacao?signed_url=true`).
+- Storage `pncp-legislation`: bucket privado, sem leitor desde a spec 0043 (a `api-pncp-legislacao`, que assinava a URL, foi removida). A remoção do bucket é a K-4 da 0043.
 - Logs: nunca registrar CPF, tokens ou payloads completos de usuário.
 - Tenant futuro: adicionar coluna `tenant_id` e policies quando multi-tenant for necessário; MVP é single-tenant com auth Supabase.
 

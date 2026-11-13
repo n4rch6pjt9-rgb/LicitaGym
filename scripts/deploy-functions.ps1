@@ -10,7 +10,6 @@ $ErrorActionPreference = "Stop"
 $functions = @(
   "sync-pncp-pca",
   "import-catmat-curadoria",
-  "sync-pncp-legislation",
   "sync-pncp-contratacoes-editais",
   "sync-pncp-contratacoes-atas",
   "sync-pncp-contratacoes-contratos",
@@ -19,7 +18,6 @@ $functions = @(
   "link-catmat-pca",
   "sync-pncp-irp",
   "api-pncp-pca",
-  "api-pncp-legislacao",
   "api-pncp-contratacoes",
   "api-pncp-irp",
   "calculate-distance-webrouter"

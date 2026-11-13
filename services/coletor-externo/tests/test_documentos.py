@@ -447,3 +447,44 @@ def test_resumo_vazio_conta_erro_e_nao_grava_documento_vazio():
 ])
 def test_resumo_so_para_editais_encerrados_com_resultado(situacao, esperado):
     assert P.quer_resumo_do_processo({"sDsSituacao": situacao}) is esperado
+
+
+def _resumo_com_geracao(ms):
+    return RESUMO_HTML.replace("</body>", f"SALVADOR, <script>$('#frameResumoEdital').contents().find('#label_0').text("
+                                           f"kendo.toString(new Date({ms}), 'G'))</script></body>")
+
+
+def test_resumo_igual_com_data_de_geracao_diferente_tem_o_mesmo_hash():
+    """Revisor (#536): a data de geração (label_0) é a hora da consulta; sem zerar, cada coleta viraria versão nova."""
+    p, _ = _portal_com_resumo(_resumo_com_geracao(1794527485000))
+    dp = DP.DocumentosParadigma(p, sb_fake(), MagicMock(), None)
+    a = dp.resumo_html(DET)
+    p2, _ = _portal_com_resumo(_resumo_com_geracao(1794600000000))
+    b = DP.DocumentosParadigma(p2, sb_fake(), MagicMock(), None).resumo_html(DET)
+    assert a == b and "new Date(1692796800000)" in a          # data do processo preservada
+
+
+def test_resumo_ja_baixado_com_mesmo_conteudo_nao_regrava_nem_conta_novo():
+    p, _ = _portal_com_resumo()
+    conteudo = DP.DocumentosParadigma(p, sb_fake(), MagicMock(), None).resumo_html(DET).encode("utf-8")
+    existente = {"id": 77, "arquivo_origem": DP.ARQUIVO_RESUMO, "status_processamento": "baixado",
+                 "sha256": D.sha256(conteudo), "removido_do_portal_em": None}
+    sb = sb_fake(existentes=[existente])
+    r = DP.DocumentosParadigma(p, sb, MagicMock(), None).sincronizar(10, DET, "x", resumo_processo=True)
+    assert r["resumos"] == 1 and r["novos"] == 2                # só os 2 anexos são novos
+    assert 77 not in atualizacoes(sb)
+
+
+def test_falha_no_resumo_ja_confirmado_preserva_o_baixado():
+    p, _ = _portal_com_resumo(resumo=None)
+    existente = {"id": 77, "arquivo_origem": DP.ARQUIVO_RESUMO, "status_processamento": "baixado",
+                 "sha256": "a" * 64, "removido_do_portal_em": None}
+    sb = sb_fake(existentes=[existente])
+    r = DP.DocumentosParadigma(p, sb, MagicMock(), None).sincronizar(10, DET, "x", resumo_processo=True)
+    assert r["erros"] == 1 and 77 not in atualizacoes(sb)
+
+
+def test_dry_run_nao_pede_o_resumo_ao_portal():
+    p, chamadas = _portal_com_resumo()
+    r = DP.DocumentosParadigma(p, None, None, None, dry_run=True).sincronizar(None, DET, "x", resumo_processo=True)
+    assert r["resumos"] == 0 and not any(c[0] == "PesquisarResumoEdital" for c in chamadas)

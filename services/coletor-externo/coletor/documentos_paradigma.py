@@ -41,6 +41,9 @@ SECAO_PROCESSO = "processo"
 LOCAL_ANEXOS = "EditalAnexos"
 ARQUIVO_RESUMO = "resumo_processo.html"   # nome estável do documento "Resumo do processo" (PesquisarResumoEdital)
 MODULOS_SEM_CADASTRO = {20}               # o próprio mural ignora o cadastro de visitante nesse módulo
+# Data de geração da página do resumo (label_0, ao lado da cidade): é a hora da consulta, muda a cada chamada e faria
+# cada coleta gravar uma versão nova. As datas do processo (label_1, label_2) ficam como vieram.
+_DATA_GERACAO_RESUMO = re.compile(r"(#label_0'\)\.text\(kendo\.toString\(new Date\()\d+")
 TAMANHO_MINIMO_CHAVE_HASH = 32
 
 
@@ -262,7 +265,7 @@ class DocumentosParadigma:
             "dtoIdioma": {"nCdIdioma": 1}, "sGMT": "-03:00"}})
         if not isinstance(r, str) or "<" not in r or len(r.strip()) < 50:
             raise RuntimeError("PesquisarResumoEdital inconclusivo: resposta vazia ou sem HTML")
-        return r
+        return _DATA_GERACAO_RESUMO.sub(r"\g<1>0", r)
 
     def _sincronizar_resumo(self, lic_id: int | None, d: dict, caminho_base: str, existentes: dict, agora: str,
                             resumo: dict) -> None:
@@ -277,7 +280,8 @@ class DocumentosParadigma:
                 doc = self.sb.upsert("licitacao_documentos", [{
                     "licitacao_id": lic_id, "secao": SECAO_PROCESSO, "nome_original": "Resumo do processo",
                     "arquivo_origem": ARQUIVO_RESUMO, "data_documento": None, "origem_portal": "Resumo",
-                    "last_seen_at": agora, "raw": {"metodo": "PesquisarResumoEdital"},
+                    "last_seen_at": agora, "raw": {"metodo": "PesquisarResumoEdital",
+                                                   "normalizacao": "data de geração da página (label_0) zerada"},
                 }], "licitacao_id,secao,arquivo_origem")[0]
                 resumo["novos"] += 1
             digest = sha256(conteudo)
@@ -293,7 +297,7 @@ class DocumentosParadigma:
             resumo["resumos"] += 1
         except Exception as e:
             resumo["erros"] += 1
-            log.warning("resumo do processo %s: %s", d.get("nCdProcesso"), e)
+            log.warning("%s resumo do processo %s: %s", self.portal.fonte.slug, d.get("nCdProcesso"), e)
             if doc is not None and not confirmado:
                 self.sb.atualizar("licitacao_documentos", doc["id"], {"status_processamento": "erro",
                                                                       "erro": str(e)[:500]})

@@ -75,9 +75,9 @@ GitHub Actions):
 | CA-6 | K-3, K-4 | **Dado** a resposta da `api-saude`, **quando** o teste lista as verificações, **então** `coleta_externa_executando_horas` está presente e está em `SAUDE_VERIFICACOES_ESPERADAS`. | Deno `tests/supabase/functions/api_saude_test.ts` |
 | CA-9 | K-7 | **Dado** uma fonte com `ativo = true` sem nenhuma execução concluída e outra concluída há 1 dia, **quando** se lê `saude_operacional_resumo()`, **então** `coleta_externa_dias_sem_sucesso` vem `critico` com o slug da primeira no detalhe; com a primeira `ativo = false`, vem `ok`. | SQL `supabase/tests/saude_coleta_externa_executando_check.sql` |
 | CA-7 | K-5 | **Dado** um portal falso com 3 processos, **quando** `coletar` roda, **então** o log tem 3 linhas `INFO` de progresso com o `nCdOrigem` de cada processo, sem chamada a API real. | pytest `services/coletor-externo/tests/test_paradigma.py` |
-| CA-8 | K-6c (em espera) | **Dado** o disparo agendado do `sesc_senac_rs`, **quando** o job roda, **então** a execução fecha em `coleta_externa_run` com status final (nunca fica `executando`) antes dos 70 min. Prova: pytest do `--origem cron` e uma execução real registrada no PR (id da run e status). | pytest `services/coletor-externo/tests/test_paradigma.py` + evidência no PR |
-| CA-10 | K-6a (em espera) | **Dado** uma chamada sem o secret de cron, ou com JWT de usuário, **quando** chega à `sync-disparar-coletor`, **então** responde 401 e não chama o GitHub (negativo de acesso). | Deno `tests/supabase/functions/sync_disparar_coletor_test.ts` |
-| CA-11 | K-6a (em espera) | **Dado** o secret de cron válido e um `fetch` falso, **quando** a função roda, **então** faz um único POST ao endpoint `dispatches` com `ref=main` e os inputs fixos; com o GitHub respondendo 4xx, devolve 502 sem repassar o corpo nem o token. | Deno `tests/supabase/functions/sync_disparar_coletor_test.ts` |
+| CA-8 | K-6c (movido para a 0064) | **Dado** o disparo agendado do `sesc_senac_rs`, **quando** o job roda, **então** a execução fecha em `coleta_externa_run` com status final (nunca fica `executando`) antes dos 70 min. Prova: pytest do `--origem cron` e uma execução real registrada no PR (id da run e status). | pytest `services/coletor-externo/tests/test_paradigma.py` + evidência no PR |
+| CA-10 | K-6a (movido para a 0064) | **Dado** uma chamada sem o secret de cron, ou com JWT de usuário, **quando** chega à `sync-disparar-coletor`, **então** responde 401 e não chama o GitHub (negativo de acesso). | Deno `tests/supabase/functions/sync_disparar_coletor_test.ts` |
+| CA-11 | K-6a (movido para a 0064) | **Dado** o secret de cron válido e um `fetch` falso, **quando** a função roda, **então** faz um único POST ao endpoint `dispatches` com `ref=main` e os inputs fixos; com o GitHub respondendo 4xx, devolve 502 sem repassar o corpo nem o token. | Deno `tests/supabase/functions/sync_disparar_coletor_test.ts` |
 
 ### Cobertura na implementação (13/11/2026)
 
@@ -88,12 +88,11 @@ GitHub Actions):
 | CA-5, CA-9 | `supabase/tests/saude_coleta_externa_executando_check.sql` |
 | CA-6 | `tests/supabase/functions/api_saude_test.ts` → "CA-6: ..." |
 | CA-7 | `services/coletor-externo/tests/test_paradigma.py::test_ca7_log_info_de_progresso_por_processo` |
-| CA-8, CA-10, CA-11 | em espera com o K-6 (ver abaixo) |
+| CA-8, CA-10, CA-11 | saíram com o K-6 para a spec 0064 (ver abaixo) |
 
-**K-6 (K-6a, K-6b, K-6c) em espera desde 13/11/2026:** o Marcelo está repensando a orquestração do coletor
-Paradigma (workflow por portal/camadas) e o disparo do `sesc_senac_rs` pode sair desta spec. Este PR entrega K-1 a K-5
-e K-7. O código e os testes do K-6 já escritos ficaram guardados como patch fora do repositório
-(`0063-k6-disparo-rs.patch` na pasta de notas da sessão), para retomar se o K-6 voltar.
+**K-6 (K-6a, K-6b, K-6c) saiu desta spec (decisão do Marcelo, 13/11/2026):** virou a spec 0064
+(`specs/0064-sistema-s-coleta-camadas.md`, coleta do Sistema S por portal e em camadas). Esta spec entrega K-1 a K-5
+e K-7.
 
 K-7 na implementação: "fonte ativa" = `ativo = true` **e** `plataforma = 'paradigma'` **e** `modo_coleta <> 'bloqueado'`.
 Sem esse recorte, `pncp`, `sesi_pe`, `sesi_pa`, `sesc_dn`, `cn_sesi` (nunca rodam no coletor Paradigma) e `fiemg`
@@ -136,8 +135,8 @@ sessão de orquestração em 13/11/2026; confirmação do Marcelo pendente.
 - **Backfill/reprocessamento:** não. A primeira execução do job fecha a linha do `sesc_senac_rs` aberta desde 12/11
   (contagem antes/depois no PR: linhas `executando` com mais de 6 h).
 - **Edge Functions republicadas no merge:** todas (regra do merge); `api-saude` muda de resposta (verificação nova).
-  A função nova `sync-disparar-coletor` (K-6a) e o job do K-6b **não** entram neste PR: K-6 em espera desde 13/11/2026
-  (ver "Cobertura na implementação"). O secret `GITHUB_DISPATCH_TOKEN` já gravado fica sem uso até o K-6 voltar.
+  A função nova `sync-disparar-coletor` (K-6a) e o job do K-6b **não** entram: o K-6 foi para a spec 0064
+  (ver "Cobertura na implementação"). O secret `GITHUB_DISPATCH_TOKEN` já gravado fica sem uso por esta spec.
 - **Contrato com o Dashboard:** o bloco de saúde (só admin da plataforma) ganha uma linha; sem mudança de campo.
 - **Dado oficial x derivado:** nenhum dado oficial muda; status e horas são derivados de `coleta_externa_run`.
 - **Ordem com a 0062:** as duas recriam a função de métricas da saúde. A segunda a entrar parte da definição de

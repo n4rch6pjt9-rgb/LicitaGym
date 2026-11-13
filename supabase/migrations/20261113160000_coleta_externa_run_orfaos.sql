@@ -17,8 +17,8 @@
 --   K-7 coleta_externa_dias_sem_sucesso cobra toda fonte ativa do coletor Paradigma (ativo, plataforma paradigma,
 --       modo_coleta <> 'bloqueado'); fonte ativa sem conclusão = sem dado (crítico). fiergs, fiemt e sesc_senac_rs
 --       passam a ativo = false (decisão de 13/11/2026). Nenhum código de coleta lê ativo: a coleta não muda.
---   K-6 (disparo agendado do sesc_senac_rs) fica fora desta migration: em espera desde 13/11/2026, enquanto a
---       orquestração do coletor Paradigma é repensada.
+--   K-6 (disparo agendado do sesc_senac_rs) saiu da spec 0063 e foi para a spec 0064 (coleta do Sistema S por
+--       portal e em camadas; decisão do Marcelo de 13/11/2026).
 --   private.saude_operacional_resumo() é recriada a partir da definição de produção (20261111120000), mudando só o
 --   bloco da coleta externa.
 --

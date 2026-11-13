@@ -16,13 +16,18 @@
 --   2. Reabre na fila os planos que falharam por esse erro, no padrão de 20261111220000_pca_fila_reabrir_esgotados_0056:
 --      status 'pendente', tentativas 0, disponivel_em e reserva_token nulos, erro com o rastro
 --      "reaberto allowlist; antes: <erro anterior>" e chain_id fixo 00560000-0000-4000-8000-000000000057.
---      Só linhas cujo erro é exatamente desta causa; teto de 3000 linhas (a fila inteira tem cerca de 3.650), acima do
---      qual a migration falha em vez de reabrir em massa. Rodar de novo não toca linha nenhuma: as reabertas já estão
+--      Só linhas cujo erro é desta causa e atualizadas desde 12/11 (início do incidente). Teto de 3000 linhas: em
+--      13/11 eram 198, mas a continuação da carga (06–08 UTC) segue processando os 2.611 planos pendentes da
+--      impressão até o merge, e cada um que falhar entra no corte; acima do teto a migration falha em vez de reabrir em
+--      massa (a fila inteira tem cerca de 3.650 linhas). Rodar de novo não toca linha nenhuma: as reabertas já estão
 --      em 'pendente' com tentativas 0.
 --
 -- Efeito esperado depois do merge: os itens dos planos passam a gravar com hash novo (os 3 campos entram no hash),
 -- então os itens já existentes voltam como 'alterado'; o trigger de eventos da 0056 já ignora esses 3 campos na
--- classificação de mudança de negócio.
+-- classificação de mudança de negócio (não sai evento falso), mas public.pca_alteracoes ganha uma linha com o snapshot
+-- completo por item reprocessado, uma única vez (6.330 itens em pca_itens em 13/11, mais os novos).
+-- Corpo da função conferido em 13/11: md5(prosrc) em produção = corpo de 20261027231110 (d1e45c99ad0bb95e7133f961dc5bbcf3);
+-- esta cópia não desfaz alteração feita fora do repositório.
 --
 -- Quem lê/escreve: só service_role (sync-pncp-pca via pca_persistir_lote_atomico).
 -- Verificar: supabase/tests/pca_allowlist_grupo_contratacao_check.sql e, em produção,
@@ -411,6 +416,7 @@ begin
          atualizado_em = now()
    where status in ('erro', 'pendente')
      and erro like '%Campo PCA fora da lista permitida%'
+     and atualizado_em >= timestamptz '2026-11-12 00:00:00+00'
      and erro not like 'reaberto allowlist; antes: %';
   get diagnostics v_n = row_count;
   if v_n > 3000 then

@@ -2,7 +2,7 @@
 --   LISTA    a função private.pca_persistir_unidade_atomica não aceitar os 3 campos da spec 0056 em pca_itens;
 --   ACL      anon ou authenticated puderem executar a função, ou service_role não puder;
 --   SEGURO   a função deixar de ser SECURITY INVOKER com search_path vazio;
---   RESTO    ainda houver linha da fila em 'erro' com o erro "Campo PCA fora da lista permitida" que não foi reaberta;
+--   RESTO    ainda houver linha da fila em 'erro' ou 'pendente' com o erro "Campo PCA fora da lista permitida" que não foi reaberta;
 --   EFEITO   linha marcada com o chain_id da reabertura estiver em 'pendente' sem os campos zerados.
 -- No banco descartável a fila nasce vazia: RESTO e EFEITO passam; em produção provam a reabertura.
 do $chk$
@@ -16,7 +16,11 @@ begin
     raise exception 'ACL CHECK FALHOU: private.pca_persistir_unidade_atomica não existe';
   end if;
 
-  select p.prosrc into v_src from pg_proc p where p.oid = v_fn;
+  -- Só o trecho da lista de pca_itens: data_atualizacao_origem já existia na lista de pca_planos.
+  select substring(p.prosrc from 'WHEN ''pca_itens'' THEN(.*?)ELSE false') into v_src from pg_proc p where p.oid = v_fn;
+  if v_src is null then
+    raise exception 'pca_allowlist_grupo_contratacao_check (LISTA): trecho de pca_itens não encontrado';
+  end if;
   foreach v_campo in array array['grupo_contratacao_codigo', 'grupo_contratacao_nome', 'data_atualizacao_origem'] loop
     if position(quote_literal(v_campo) in v_src) = 0 then
       raise exception 'pca_allowlist_grupo_contratacao_check (LISTA): % fora da lista da função', v_campo;
@@ -39,7 +43,7 @@ begin
 
   select count(*) into v_n
     from private.pca_plano_fila
-   where status = 'erro'
+   where status in ('erro', 'pendente')
      and erro like '%Campo PCA fora da lista permitida%'
      and erro not like 'reaberto allowlist; antes: %';
   if v_n > 0 then

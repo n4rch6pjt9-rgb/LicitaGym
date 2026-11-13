@@ -1,3 +1,4 @@
+// deno-lint-ignore-file no-import-prefix -- o repo não tem deno.json/import map; todos os testes importam por jsr:.
 import { assertEquals } from "jsr:@std/assert@1";
 import { type ApiSaudeContext, consolidar, handleRequest, type Verificacao } from "../../../supabase/functions/api-saude/index.ts";
 
@@ -77,4 +78,32 @@ Deno.test("migration de saúde: tudo só service_role e função security define
   assertEquals(inv.includes("revoke all on function public.saude_operacional_resumo() from public, anon, authenticated;"), true);
   assertEquals(inv.includes("grant execute on function public.saude_operacional_resumo() to service_role;"), true);
   assertEquals(/grant [^;]*to [^;]*\b(anon|authenticated)\b/i.test(inv), false);
+});
+
+// Spec 0063, CA-6 (K-3, K-4): a verificação de execução presa da coleta externa sai na api-saude e o workflow de
+// saúde a exige (SAUDE_VERIFICACOES_ESPERADAS), senão o resumo sem ela não acusaria contrato incompleto.
+Deno.test("CA-6: coleta_externa_executando_horas sai na api-saude e está em SAUDE_VERIFICACOES_ESPERADAS", async () => {
+  const migrations = [...Deno.readDirSync("./supabase/migrations")]
+    .map((e) => e.name)
+    .filter((n) => /^\d{14}_.*\.sql$/.test(n))
+    .sort();
+  let ultimaSaude = "";
+  for (const nome of migrations) {
+    const sql = Deno.readTextFileSync(`./supabase/migrations/${nome}`);
+    if (sql.includes("create or replace function private.saude_operacional_resumo()")) ultimaSaude = sql;
+  }
+  assertEquals(ultimaSaude.includes("'verificacao', 'coleta_externa_executando_horas'"), true,
+    "a definição mais recente da função de saúde mede coleta_externa_executando_horas");
+  assertEquals(/\('coleta_externa_executando_horas',[^)]*'horas',\s*2,\s*7,/.test(ultimaSaude), true,
+    "limiares atenção 2 h e crítico 7 h");
+
+  const body = await (await handleRequest(post(), ctx({
+    getResumo: () => Promise.resolve([v("coleta_externa_executando_horas", "critico")]),
+  }))).json();
+  assertEquals(body.verificacoes.map((x: Verificacao) => x.verificacao), ["coleta_externa_executando_horas"]);
+
+  const yml = await Deno.readTextFile("./.github/workflows/saude.yml");
+  const esperadas = yml.match(/SAUDE_VERIFICACOES_ESPERADAS:\s*(\S+)/)?.[1].split(",") ?? [];
+  assertEquals(esperadas.includes("coleta_externa_executando_horas"), true);
+  assertEquals(esperadas.includes("coleta_externa_dias_sem_sucesso"), true);
 });

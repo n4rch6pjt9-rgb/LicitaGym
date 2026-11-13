@@ -1066,6 +1066,7 @@ def coletar(portal: "PortalParadigma", sb, termos: list[str], paginas: int | Non
         for chave, valor in base.items():
             resumo.setdefault(chave, valor)
     vistos: dict[tuple[int, int], dict] = {}
+    inicio = time.monotonic()
     if processos:
         vistos = {p: {} for p in processos}
     else:
@@ -1084,7 +1085,13 @@ def coletar(portal: "PortalParadigma", sb, termos: list[str], paginas: int | Non
                 pid = x.get("nCdOrigem")
                 if isinstance(pid, int) and pid > 0:
                     vistos.setdefault((pid, modulo_de(x)), x)
-    for (pid, mod), x in vistos.items():
+            # Spec 0063 (K-5): fim de cada termo no log, para saber onde a execução estava se for cortada.
+            log.info("%s termo %r ano=%s: %d listados, %d processos distintos até aqui (%.0f s)",
+                     portal.fonte.slug, t, ano, len(lote), len(vistos), time.monotonic() - inicio)
+    total = len(vistos)
+    for posicao, ((pid, mod), x) in enumerate(vistos.items(), start=1):
+        log.info("%s progresso %d/%d: nCdOrigem %s módulo %s (%.0f s)",
+                 portal.fonte.slug, posicao, total, pid, mod, time.monotonic() - inicio)
         try:
             processar_processo(portal, sb, pid, mod, resumo, dry_run, com_resultados, produtos, fornecedores,
                                forcar=bool(processos), listagem=x, documentos=documentos, origem=origem)

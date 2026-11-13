@@ -43,11 +43,37 @@ function ehPdf(mime: string | null, caminho: string): boolean {
   return m === "application/pdf" || (!m && caminho.toLowerCase().endsWith(".pdf"));
 }
 
-/** Nome para o download: o original, com a extensão do arquivo no Storage quando o original não tem. */
-function nomeDownload(nome: string | null, caminho: string): string | true {
-  const ext = /\.([a-z0-9]{1,8})$/i.exec(caminho)?.[0] ?? "";
+/** Extensão pelo MIME, para o arquivo que o coletor grava sem extensão (`.../versoes/<id>/<sha256>`). */
+const EXTENSAO_POR_MIME: Record<string, string> = {
+  "application/pdf": ".pdf",
+  "text/html": ".html",
+  "text/plain": ".txt",
+  "text/csv": ".csv",
+  "application/zip": ".zip",
+  "application/x-zip-compressed": ".zip",
+  "application/x-rar-compressed": ".rar",
+  "application/vnd.rar": ".rar",
+  "application/x-7z-compressed": ".7z",
+  "application/msword": ".doc",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+  "application/vnd.ms-excel": ".xls",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+  "application/vnd.oasis.opendocument.text": ".odt",
+  "application/vnd.oasis.opendocument.spreadsheet": ".ods",
+  "image/jpeg": ".jpg",
+  "image/png": ".png",
+};
+
+/**
+ * Nome para o download: o original; sem extensão, ganha a do arquivo no Storage ou, se o caminho também não tem (o
+ * caso real do coletor), a do MIME. MIME desconhecido deixa o nome como está.
+ */
+function nomeDownload(nome: string | null, caminho: string, mime: string | null): string | true {
   if (!nome) return true;
-  return /\.[a-z0-9]{1,8}$/i.test(nome) || !ext ? nome : nome + ext;
+  if (/\.[a-z0-9]{1,8}$/i.test(nome)) return nome;
+  const doCaminho = /\.[a-z0-9]{1,8}$/i.exec(caminho.split("/").pop() ?? "")?.[0];
+  const doMime = EXTENSAO_POR_MIME[(mime ?? "").split(";")[0].trim().toLowerCase()];
+  return nome + (doCaminho ?? doMime ?? "");
 }
 
 const naoEncontrado = () => jsonResponse({ error: "Documento não encontrado ou sem arquivo para abrir." }, 404);
@@ -77,7 +103,7 @@ export async function handleDocumentoUrl(
     const mime = typeof doc.mime_type === "string" ? doc.mime_type : null;
     const nome = typeof doc.nome_original === "string" ? doc.nome_original : null;
     const pdf = ehPdf(mime, caminho);
-    const opcoes = pdf ? undefined : { download: nomeDownload(nome, caminho) };
+    const opcoes = pdf ? undefined : { download: nomeDownload(nome, caminho, mime) };
     const assinada = await client.storage.from(BUCKET_DOCUMENTOS).createSignedUrl(
       caminho,
       DOCUMENTO_URL_SEGUNDOS,

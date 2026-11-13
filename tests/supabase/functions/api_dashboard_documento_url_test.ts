@@ -95,6 +95,29 @@ Deno.test("K-2: PDF devolve URL assinada de 10 minutos para abrir na aba, sem o 
   assert(!colunas.join(",").includes("raw"), "raw não é lido");
 });
 
+// Regressão (13/11/2026): o coletor grava cada versão em `.../versoes/<documento_id>/<sha256>`, sem extensão. O resumo
+// da Firjan 3800 baixava como "Resumo do processo", sem `.html`, e o Windows abria como texto.
+Deno.test("K-2: caminho real sem extensão usa a extensão do mime_type", async () => {
+  const sha = "b".repeat(64);
+  const real = (d: Doc, mime: string | null): Doc => ({ ...d, mime_type: mime,
+    storage_uri: `supabase://licitacao-documentos/paradigma/firjan/59/3800/processo/versoes/${d.id}/${sha}` });
+  const casos: [string | null, string][] = [
+    ["text/html", "Resumo do processo.html"],
+    ["text/html; charset=utf-8", "Resumo do processo.html"],
+    ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "Resumo do processo.docx"],
+    ["application/zip", "Resumo do processo.zip"],
+    ["application/x-desconhecido", "Resumo do processo"],
+    [null, "Resumo do processo"],
+  ];
+  for (const [mime, esperado] of casos) {
+    const { assinadas } = await chamar([real(HTML, mime)], { action: "documento_url", documento_id: 169095 });
+    assertEquals(assinadas[0].opcoes, { download: esperado }, String(mime));
+  }
+  const comExt = { ...real(HTML, "text/html"), nome_original: "planilha.xlsx" };
+  const { assinadas } = await chamar([comExt], { action: "documento_url", documento_id: 169095 });
+  assertEquals(assinadas[0].opcoes, { download: "planilha.xlsx" }, "nome com extensão fica como está");
+});
+
 Deno.test("K-2: outro formato baixa com o nome original", async () => {
   const { res, json, assinadas } = await chamar([HTML], { action: "documento_url", documento_id: 169095 });
   assertEquals(res.status, 200);

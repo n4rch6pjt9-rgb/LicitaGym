@@ -1,0 +1,43 @@
+flowchart TD
+  subgraph FONTES["Fontes externas"]
+    PNCP_C["PNCP Consulta API"]
+    CG_DADOS["Compras.gov Dados Abertos"]
+    LEG["Legislação (scrape)"]
+  end
+  subgraph JOBS["pg_cron"]
+    J1[job sync diário]
+  end
+  subgraph SYNCS["Edge Functions sync-*"]
+    S1[sync-pncp]
+    S2[sync-comprasgov-consulta stub]
+    S3[coletor Python Cloud Run]
+  end
+  subgraph CONTRATO["Tabelas-contrato"]
+    T1[(pca_*)]
+    T2[(entidades / contratacoes_*)]
+    T3[(catmat_*)]
+    T4[(licitacoes_externas + itens/docs/chunks)]
+    T5[(legislacao_*)]
+    T6[(source_record / sync_run)]
+  end
+  subgraph APIS["APIs de leitura"]
+    A1[api-dashboard-oportunidades]
+    A2[api-pncp-contratacoes]
+    A3[api-fornecedores-homologados]
+    A4[api-catmat]
+    A5[api-saude]
+  end
+  DASH[Dashboard]
+  PNCP_C --> J1 --> S1 --> T1
+  PNCP_C --> S2
+  CG_DADOS --> S3 --> T4
+  LEG --> S3 --> T5
+  S1 --> T2 & T3 & T6
+  T1 --> A2
+  T4 --> A1
+  T2 --> A3
+  T3 --> A4
+  T6 --> A5
+  A1 --> DASH
+  A2 --> DASH
+  DASH -. POST dispara sync .-> S1

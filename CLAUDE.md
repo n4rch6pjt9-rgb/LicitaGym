@@ -83,6 +83,19 @@ MCP do Supabase é somente leitura. Exceção: o que o Marcelo fizer à mão, de
 ## Skills e agentes (`.claude/`)
 | Nome | Quando usar |
 |---|---|
+ chore/agente-backend
+| skill `nova-migration` | antes de escrever qualquer migration |
+| skill `validar-migrations` | antes de abrir PR com migration |
+| skill `merge-pilha` | quando o usuário pedir merge de PRs empilhados |
+| skill `verificar-producao` | depois de merge/deploy, ou para investigar incidente |
+| agente `revisor-migration` | revisão de migration (destrutivo, ACL, RLS, idempotência) antes do PR |
+| agente `revisor-seguranca` | revisão de segredos, auth e service_role antes do PR |
+| agente `backend-licitagym` | implementa uma issue deste repositório até um PR em draft verificado, a pedido do orquestrador (sem merge nem deploy) |
+
+**Orquestração entre repositórios:** uma sessão orquestradora divide o trabalho entre `backend-licitagym` (este repo) e
+`frontend-dashboard` (repo do Dashboard), define a ordem (backend mergeado e publicado antes do front que depende dele),
+revisa as entregas e leva ao Marcelo as decisões de produto e os pedidos de merge.
+
 | `/spec`, `/implement` | criar e executar spec |
 | skill `nova-migration`, `validar-migrations` | antes de escrever / antes do PR com migration |
 | skill `verificar-producao` | depois de merge, ou para investigar incidente |
@@ -97,6 +110,7 @@ MCP do Supabase é somente leitura. Exceção: o que o Marcelo fizer à mão, de
 - Saúde: `private.saude_operacional_resumo()` via `api-saude`; `saude.yml` abre issue `alerta-operacional`.
 - Execuções: `private.pncp_sync_run`, `private.coleta_externa_run`, `private.job_queue`.
 - Logs: painel Supabase (Edge Functions) e Cloudflare Workers Logs (Dashboard).
+ main
 
 ## O que o agente NÃO faz
 - Não altera schema, ACL ou dado de produção fora de migration + PR.

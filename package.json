@@ -1,0 +1,20 @@
+{
+  "name": "workspace",
+  "version": "1.0.0",
+  "description": "**Versão no git: v15.** A partir desta versão o coletor **não é mais distribuído por ZIP**. Código canônico: este repositório (`coletor/`, `tests/`, `supabase/migrations/`, `monitor.sh`).",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "mermaid": "node node_modules/mermaid/dist/cli.js render"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "mermaid": "^13.0.0-alpha.0"
+  }
+}

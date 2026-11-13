@@ -42,7 +42,7 @@ function maiorData(atual: string | null, v: unknown): string | null {
 }
 
 /** Lê todas as linhas de uma tabela da licitação em lotes; null = falha ou leitura incompleta. */
-async function lerLinhas(
+export async function lerLinhas(
   client: SupabaseClient,
   tabela: string,
   colunas: string,

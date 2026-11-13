@@ -28,6 +28,12 @@ import {
   PUBLIC_LICITACAO_COLUMNS,
   RESUMO_CATEGORIAS_VALOR,
 } from "../../../supabase/functions/api-dashboard-oportunidades/index.ts";
+import {
+  dataParadigma,
+  ehFonteParadigma,
+  FONTES_PARADIGMA,
+} from "../../../supabase/functions/api-dashboard-oportunidades/paradigmaBanco.ts";
+import { ErroTenantAcesso } from "../../../supabase/functions/_shared/tenant.ts";
 
 // Helper mock para testar montagem de query em applyLicitacaoFilters
 class MockQueryBuilder implements FilterableQuery {
@@ -1257,12 +1263,12 @@ Deno.test("acompanhamento: oportunidade não encontrada retorna 404", async () =
   assertEquals(body.error, "Licitação não encontrada");
 });
 
-Deno.test("acompanhamento: linha não-PNCP retorna 200 com disponivel: false", async () => {
+Deno.test("acompanhamento: linha não-PNCP e fora do Paradigma retorna 200 com disponivel: false", async () => {
   const mockClient = createRecordingMockClient({
     singleResult: {
       data: {
         id: 202,
-        fonte: "sestsenat",
+        fonte: "portal_desconhecido",
         modulo: 59,
         id_externo: 12345,
         objeto: "Contratação SEST SENAT",
@@ -2069,4 +2075,409 @@ Deno.test("0050 CA-5: categorias_valor da API são as mesmas que a última migra
   if (!m) throw new Error("a última migration de dashboard_resumo_executivo não filtra categoria_escopo in (...)");
   const doSql = m[1].split(",").map((s) => s.trim().replace(/^'|'$/g, "")).sort();
   assertEquals(doSql, [...RESUMO_CATEGORIAS_VALOR].sort());
+});
+
+// -----------------------------------------------------------------------------
+// Spec 0061, K-1: acompanhamento do Paradigma (Sistema S) lido do banco
+// -----------------------------------------------------------------------------
+
+type Linhas = Record<string, unknown>[];
+interface TabelasParadigma {
+  licitacao?: Record<string, unknown> | null;
+  licitacao_itens?: Linhas | "erro";
+  licitacao_resultados?: Linhas | "erro";
+  licitacao_lances?: Linhas | "erro";
+  licitacao_documentos?: Linhas | "erro";
+}
+
+/** Cliente falso: licitacoes_externas por maybeSingle; as tabelas filhas por eq + order + range. */
+function clienteParadigma(t: TabelasParadigma) {
+  const lidas: string[] = [];
+  const client = {
+    from(tabela: string) {
+      lidas.push(tabela);
+      let licitacaoId: unknown = null;
+      const q = {
+        select: () => q,
+        eq: (col: string, val: unknown) => {
+          if (col === "licitacao_id") licitacaoId = val;
+          return q;
+        },
+        order: () => q,
+        maybeSingle: () => Promise.resolve({ data: t.licitacao ?? null, error: null }),
+        range: (ini: number, fim: number) => {
+          const v = t[tabela as keyof TabelasParadigma];
+          if (v === "erro") return Promise.resolve({ data: null, error: { message: "falha simulada" } });
+          const linhas = ((v as Linhas | undefined) ?? []).filter((l) => l.licitacao_id === licitacaoId);
+          return Promise.resolve({ data: linhas.slice(ini, fim + 1), error: null });
+        },
+      };
+      return q;
+    },
+  };
+  return { client, lidas };
+}
+
+const LIC_FIEB = {
+  id: 30115,
+  fonte: "fieb",
+  modulo: 59,
+  id_externo: 38191,
+  codigo_externo: "38191",
+  numero_processo: "SDE 2026000001",
+  numero_edital: "2026000001",
+  orgao_cnpj: null,
+  link_sistema_origem: null,
+  fase: "Resultado do processo",
+  pncp_data_atualizacao: null,
+  ingestao_em: "2026-11-13T10:37:04.840335+00:00",
+  raw: {
+    sDsSituacao: "Finalizado com contrato",
+    sDsFase: "Resultado do processo",
+    sNmModalidadeTipo: "Pregão eletrônico",
+    sDsObjeto: "Aquisição de piso de borracha",
+    tDtInicial: "/Date(1692796800000)/",
+    tDtFinal: "/Date(1692986400000)/",
+    tDtPublicacao: "/Date(-62135586000000)/",
+    tDtAberturaSessao: "/Date(1692990000000)/",
+    tDtHomologacao: "/Date(-62135586000000)/",
+    tDtFinalizacao: "\u0013\u0012\u0012\u0013",
+  },
+};
+
+function itemFieb(numero: number) {
+  return {
+    licitacao_id: 30115,
+    numero_item: numero,
+    descricao: `Piso ${numero}`,
+    quantidade: 10,
+    unidade_medida: "M2",
+    valor_unitario_estimado: 100,
+    situacao: "Encerrado",
+    catalogo_codigo_item: "MA0000001",
+    material_ou_servico: "M",
+    raw: { dVlMelhorLanceMoedaVencedor: 80.5, sDsMarca: "Marca X", sDsModelo: "Modelo Y", sStItem: "Encerrado" },
+  };
+}
+
+function resultadoFieb(numero: number, ranking: number, vencedor: boolean) {
+  return {
+    licitacao_id: 30115,
+    numero_item: numero,
+    sequencial_resultado: ranking,
+    fornecedor_nome: `Empresa ${ranking}`,
+    fornecedor_cnpj: "11222333000181",
+    ranking,
+    vencedor,
+    valor_proposta: 80 + ranking,
+    valor_unitario_homologado: vencedor ? 81 : null,
+    quantidade_homologada: vencedor ? 10 : null,
+    marca: "Marca X",
+    modelo: "Modelo Y",
+    situacao: vencedor ? "vencedor" : "perdida",
+    data_resultado: null,
+    created_at: `2026-11-1${ranking}T10:00:00+00:00`,
+  };
+}
+
+function lanceFieb(id: number, data: string | null, posicao: number | null, vencedor: boolean) {
+  return {
+    id,
+    licitacao_id: 30115,
+    numero_item: 1,
+    id_lance_externo: 9000 + id,
+    data_lance: data,
+    valor: 100 - id,
+    moeda: "R$",
+    fornecedor_nome: `Empresa ${id}`,
+    fornecedor_cnpj: "11222333000181",
+    marca: "Marca X",
+    modelo: "Modelo Y",
+    posicao,
+    vencedor,
+    updated_at: `2026-11-13T0${id}:00:00+00:00`,
+  };
+}
+
+function docFieb(id: number, origem: string, extra: Record<string, unknown> = {}) {
+  const resumo = origem === "resumo_processo.html";
+  return {
+    id,
+    licitacao_id: 30115,
+    secao: "processo",
+    nome_original: resumo ? "Resumo do processo" : `Anexo ${id}.pdf`,
+    arquivo_origem: origem,
+    data_documento: resumo ? null : `2026-06-0${id}T20:00:00+00:00`,
+    mime_type: resumo ? "text/html" : "application/pdf",
+    status_processamento: "baixado",
+    removido_do_portal_em: null,
+    last_seen_at: `2026-11-12T1${id}:00:00+00:00`,
+    storage_uri: `gs://licitagym-documentos/segredo/${id}`,
+    ...extra,
+  };
+}
+
+const TABELAS_CA1: TabelasParadigma = {
+  licitacao: LIC_FIEB,
+  licitacao_itens: [itemFieb(2), itemFieb(1)],
+  licitacao_resultados: [resultadoFieb(1, 2, false), resultadoFieb(1, 1, true), resultadoFieb(2, 1, true)],
+  licitacao_lances: [
+    lanceFieb(3, "2026-08-25T14:03:00+00:00", 1, true),
+    lanceFieb(1, "2026-08-25T14:01:00+00:00", null, false),
+    lanceFieb(2, "2026-08-25T14:02:00+00:00", 2, false),
+  ],
+  licitacao_documentos: [
+    docFieb(4, "wbc4.pdf"),
+    docFieb(1, "wbc1.pdf"),
+    docFieb(9, "resumo_processo.html"),
+    docFieb(3, "wbc3.pdf"),
+    docFieb(2, "wbc2.pdf"),
+    docFieb(5, "wbc5.pdf", { removido_do_portal_em: "2026-11-01T00:00:00+00:00" }),
+    docFieb(6, "edital.pdf", { secao: "edital" }),
+  ],
+};
+
+function reqAcomp(id: number): Request {
+  return new Request(`http://localhost/api-dashboard-oportunidades?action=acompanhamento&id=${id}`, { method: "GET" });
+}
+
+/** Troca o fetch global por um que falha e conta as chamadas. */
+async function semFetch<T>(fn: () => Promise<T>): Promise<{ r: T; chamadas: number }> {
+  const original = globalThis.fetch;
+  let chamadas = 0;
+  globalThis.fetch = ((..._a: unknown[]) => {
+    chamadas++;
+    return Promise.reject(new Error("fetch proibido no K-1"));
+  }) as typeof fetch;
+  try {
+    return { r: await fn(), chamadas };
+  } finally {
+    globalThis.fetch = original;
+  }
+}
+
+const comEmpresa = () => Promise.resolve(7);
+
+Deno.test("0061 CA-1: Paradigma lê do banco, resumo primeiro, origem banco e gravado_em, sem fetch", async () => {
+  const { client, lidas } = clienteParadigma(TABELAS_CA1);
+  const { r: res, chamadas } = await semFetch(() =>
+    handleRequest(reqAcomp(30115), {
+      getClient: () => client as any,
+      requireAuth: () => null,
+      tenantDoUsuario: comEmpresa,
+    })
+  );
+  assertEquals(chamadas, 0);
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  const texto = JSON.stringify(body);
+  assertEquals(texto.includes("storage_uri"), false);
+  assertEquals(texto.includes("gs://"), false);
+  assertEquals(texto.includes("\"raw\""), false);
+  assertEquals(body.disponivel, true);
+  assertEquals(body.origem, "banco");
+  assertEquals(body.fonte, "fieb");
+  assertEquals(body.pncp, null);
+  assertEquals(body.url_acompanhamento, "https://compras.fieb.org.br/portal/Mural.aspx");
+
+  // arquivos: 4 anexos + resumo (removido do portal e outra seção ficam fora), resumo primeiro com tipo "resumo"
+  assertEquals(body.arquivos.erro, null);
+  assertEquals(body.arquivos.total, 5);
+  assertEquals(body.arquivos.dados.length, 5);
+  assertEquals(body.arquivos.dados[0].tipo, "resumo");
+  assertEquals(body.arquivos.dados[0].titulo, "Resumo do processo");
+  assertEquals(body.arquivos.dados.slice(1).map((a: any) => a.documentoId), [1, 2, 3, 4]);
+  assertEquals(body.arquivos.dados.slice(1).every((a: any) => a.tipo === "anexo"), true);
+  assertEquals(body.arquivos.dados[1].mimeType, "application/pdf");
+  assertEquals(body.arquivos.dados[1].status, "baixado");
+  assertEquals(body.arquivos.dados[1].url, null);
+  assertEquals(body.arquivos.origem, "banco");
+  assertEquals(body.arquivos.gravado_em, "2026-11-12T19:00:00+00:00");
+
+  // itens: em ordem, com unidade, melhor lance, marca e modelo do vencedor e os resultados do item
+  assertEquals(body.itens.erro, null);
+  assertEquals(body.itens.origem, "banco");
+  assertEquals(body.itens.gravado_em, LIC_FIEB.ingestao_em);
+  assertEquals(body.itens.dados.map((i: any) => i.numeroItem), [1, 2]);
+  const item1 = body.itens.dados[0];
+  assertEquals(item1.unidade, "M2");
+  assertEquals(item1.melhorLance, 80.5);
+  assertEquals(item1.marcaVencedor, "Marca X");
+  assertEquals(item1.modeloVencedor, "Modelo Y");
+  assertEquals(item1.temResultado, true);
+  assertEquals(item1.resultados.length, 2);
+  assertEquals(item1.catalogoId, null);
+
+  // resultados: 3 linhas, vencedor primeiro em cada item, gravado_em = maior created_at
+  assertEquals(body.resultados.erro, null);
+  assertEquals(body.resultados.total, 3);
+  assertEquals(body.resultados.origem, "banco");
+  assertEquals(body.resultados.gravado_em, "2026-11-12T10:00:00+00:00");
+  assertEquals(body.resultados.dados.map((r: any) => [r.numeroItem, r.ranking, r.vencedor]), [
+    [1, 1, true],
+    [1, 2, false],
+    [2, 1, true],
+  ]);
+
+  // historico: lances em ordem de data e hora, vencedor e posição final marcados
+  assertEquals(body.historico.erro, null);
+  assertEquals(body.historico.origem, "banco");
+  assertEquals(body.historico.total, 3);
+  assertEquals(body.historico.dados.map((l: any) => l.data), [
+    "2026-08-25T14:01:00+00:00",
+    "2026-08-25T14:02:00+00:00",
+    "2026-08-25T14:03:00+00:00",
+  ]);
+  assertEquals(body.historico.dados.map((l: any) => [l.posicao, l.vencedor]), [[null, false], [2, false], [1, true]]);
+  assertEquals(body.historico.dados[0].fornecedorNome, "Empresa 1");
+  assertEquals(body.historico.gravado_em, "2026-11-13T03:00:00+00:00");
+
+  // compra: datas e fase do raw (data mínima e marcador de nulo do Paradigma = null)
+  assertEquals(body.compra.erro, null);
+  assertEquals(body.compra.origem, "banco");
+  assertEquals(body.compra.gravado_em, LIC_FIEB.ingestao_em);
+  assertEquals(body.compra.dados.situacao, "Finalizado com contrato");
+  assertEquals(body.compra.dados.fase, "Resultado do processo");
+  assertEquals(body.compra.dados.modalidade, "Pregão eletrônico");
+  assertEquals(body.compra.dados.datasProcesso, {
+    inicio: "2023-08-23T13:20:00.000Z",
+    fim: "2023-08-25T18:00:00.000Z",
+    publicacao: null,
+    aberturaSessao: "2023-08-25T19:00:00.000Z",
+    homologacao: null,
+    finalizacao: null,
+  });
+  assertEquals(body.fase, "Resultado do processo");
+
+  // só as tabelas do banco foram lidas
+  assertEquals([...new Set(lidas)].sort(), [
+    "licitacao_documentos",
+    "licitacao_itens",
+    "licitacao_lances",
+    "licitacao_resultados",
+    "licitacoes_externas",
+  ]);
+  assertEquals(res.headers.get("Cache-Control"), "private, max-age=60");
+});
+
+Deno.test("0061 K-1: seção sem dado gravado volta com erro explícito, nunca vazia (18868: 0 resultados e 0 lances)", async () => {
+  const { client } = clienteParadigma({
+    licitacao: { ...LIC_FIEB, id: 30172, id_externo: 18868 },
+    licitacao_itens: [{ ...itemFieb(1), licitacao_id: 30172 }],
+    licitacao_resultados: [],
+    licitacao_lances: [],
+    licitacao_documentos: [],
+  });
+  const { r: res, chamadas } = await semFetch(() =>
+    handleRequest(reqAcomp(30172), {
+      getClient: () => client as any,
+      requireAuth: () => null,
+      tenantDoUsuario: comEmpresa,
+    })
+  );
+  assertEquals(chamadas, 0);
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.itens.erro, null);
+  assertEquals(body.itens.dados.length, 1);
+  assertEquals(body.itens.dados[0].temResultado, false);
+  for (const secao of ["resultados", "historico", "arquivos"]) {
+    assertEquals(typeof body[secao].erro, "string", `${secao} sem erro`);
+    assertEquals(body[secao].erro.length > 0, true);
+    assertEquals(body[secao].dados, null, `${secao} com dados`);
+    assertEquals(body[secao].total, 0);
+    assertEquals(body[secao].origem, "banco");
+    assertEquals(body[secao].gravado_em, null);
+  }
+  assertEquals(res.headers.get("Cache-Control"), "no-store");
+});
+
+Deno.test("0061 K-1: falha de leitura de uma seção vira erro só nela, sem derrubar as outras", async () => {
+  const { client } = clienteParadigma({ ...TABELAS_CA1, licitacao_lances: "erro" });
+  const res = await handleRequest(reqAcomp(30115), {
+    getClient: () => client as any,
+    requireAuth: () => null,
+    tenantDoUsuario: comEmpresa,
+  });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.historico.dados, null);
+  assertEquals(typeof body.historico.erro, "string");
+  assertEquals(JSON.stringify(body).includes("falha simulada"), false);
+  assertEquals(body.itens.erro, null);
+  assertEquals(body.arquivos.total, 5);
+});
+
+Deno.test("0061 K-1: Paradigma sem vínculo ativo responde 403 sem ler as seções", async () => {
+  const { client, lidas } = clienteParadigma(TABELAS_CA1);
+  const res = await handleRequest(reqAcomp(30115), {
+    getClient: () => client as any,
+    requireAuth: () => null,
+    tenantDoUsuario: () => Promise.resolve(null),
+  });
+  assertEquals(res.status, 403);
+  assertEquals(lidas.filter((t) => t !== "licitacoes_externas"), []);
+  assertEquals(JSON.stringify(await res.json()).includes("Piso"), false);
+});
+
+Deno.test("0061 K-1: vínculo recusado (empresa desativada ou de outro tenant) 403; falha ao ler o tenant 500", async () => {
+  const { client, lidas } = clienteParadigma(TABELAS_CA1);
+  const res = await handleRequest(reqAcomp(30115), {
+    getClient: () => client as any,
+    requireAuth: () => null,
+    tenantDoUsuario: () => Promise.reject(new ErroTenantAcesso("Empresa desativada.", 403)),
+  });
+  assertEquals(res.status, 403);
+  assertEquals(lidas.filter((t) => t !== "licitacoes_externas"), []);
+
+  const res500 = await handleRequest(reqAcomp(30115), {
+    getClient: () => client as any,
+    requireAuth: () => null,
+    tenantDoUsuario: () => Promise.reject(new Error("conexão caiu")),
+  });
+  assertEquals(res500.status, 500);
+  assertEquals(JSON.stringify(await res500.json()).includes("conexão caiu"), false);
+  assertEquals(lidas.filter((t) => t !== "licitacoes_externas"), []);
+});
+
+Deno.test("0061 K-1: Paradigma pelo handleRequest real resolve o tenant (sem usuário = 403)", async () => {
+  // sem ctx.tenantDoUsuario, o index usa tenantPreguicoso; requireAuth falso não anexa req.user => sem empresa
+  const { client, lidas } = clienteParadigma(TABELAS_CA1);
+  const res = await handleRequest(reqAcomp(30115), { getClient: () => client as any, requireAuth: () => null });
+  assertEquals(res.status, 403);
+  assertEquals(lidas.filter((t) => t !== "licitacoes_externas"), []);
+});
+
+Deno.test("0061 K-1: licitação inexistente responde 404", async () => {
+  const { client } = clienteParadigma({ licitacao: null });
+  const res = await handleRequest(reqAcomp(1), {
+    getClient: () => client as any,
+    requireAuth: () => null,
+    tenantDoUsuario: comEmpresa,
+  });
+  assertEquals(res.status, 404);
+});
+
+Deno.test("0061 K-1: dataParadigma converte /Date(ms)/ e zera data mínima e marcador de nulo", () => {
+  assertEquals(dataParadigma("/Date(1692796800000)/"), "2023-08-23T13:20:00.000Z");
+  assertEquals(dataParadigma("/Date(1692796800000-0300)/"), "2023-08-23T13:20:00.000Z");
+  assertEquals(dataParadigma("/Date(-62135586000000)/"), null);
+  assertEquals(dataParadigma("/Date(0)/"), null);
+  assertEquals(dataParadigma("\u0013\u0012\u0012\u0013"), null);
+  assertEquals(dataParadigma(null), null);
+  assertEquals(dataParadigma(123), null);
+});
+
+Deno.test("0061 K-1: FONTES_PARADIGMA acompanha FONTES do coletor (paradigma.py)", async () => {
+  const py = await Deno.readTextFile(
+    new URL("../../../services/coletor-externo/coletor/paradigma.py", import.meta.url),
+  );
+  const inicio = py.indexOf("FONTES: dict[str, Fonte] = {");
+  const bloco = py.slice(inicio, py.indexOf("\n}", inicio));
+  const slugs = [...bloco.matchAll(/^\s+"([a-z_]+)": Fonte\(/gm)].map((m) => m[1]);
+  assertEquals(slugs.length > 10, true);
+  for (const s of slugs) assertEquals(FONTES_PARADIGMA.has(s), true, `fonte ${s} fora de FONTES_PARADIGMA`);
+  assertEquals(ehFonteParadigma(" FIEB "), true);
+  assertEquals(ehFonteParadigma("pncp"), false);
+  assertEquals(ehFonteParadigma(null), false);
 });

@@ -462,16 +462,19 @@ POST /functions/v1/api-dashboard-oportunidades
 
 ```json
 { "action": "documento_url", "documento_id": 169096, "url": "https://…/storage/v1/object/sign/licitacao-documentos/…",
-  "expira_em_segundos": 600, "nome_original": "Pedidos de Reconsiderações", "mime_type": "application/pdf",
+  "url_download": "https://…/storage/v1/object/sign/licitacao-documentos/…&download=…", "expira_em_segundos": 600, "nome_original": "Pedidos de Reconsiderações", "mime_type": "application/pdf",
   "abrir": "aba" }
 ```
 
 - `abrir`: `aba` para PDF; `download` para os outros formatos (a URL já baixa com o `nome_original`).
+- `url_download`: sempre baixa com o nome original. No PDF é uma segunda URL (a `url` abre na aba sem nome, e salvar
+  dali dava o SHA-256 do objeto); nos outros formatos é igual à `url`.
 - **404**: documento inexistente, removido do portal, sem arquivo confirmado (`sha256` nulo) ou fora do bucket
   `licitacao-documentos` (arquivo antigo no GCS, `gs://`). A etapa do pipeline não importa: documento `indexado`,
   `extraido`, `ignorado` ou com `erro` de extração continua abrindo, porque o arquivo segue no Storage.
-- `abrir = download`: o nome do arquivo baixado é o `nome_original`, com a extensão do arquivo no Storage quando o
-  original não tem (ex.: "Resumo do processo.html").
+- Nome do download: o `nome_original`; sem extensão, ganha a do arquivo no Storage ou, como o coletor grava sem
+  extensão (`…/versoes/<id>/<sha256>`), a do `mime_type` (ex.: "Resumo do processo.html"). MIME desconhecido: sem
+  extensão.
 - **500** erro de banco; **502** falha ao assinar. Nenhuma resposta traz o `storage_uri` nem mensagem do
   PostgREST/Storage (a URL assinada contém, por natureza, o caminho do objeto no bucket).
 

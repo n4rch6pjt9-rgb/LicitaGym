@@ -361,10 +361,6 @@ function extractComprasGovIdCompra(row: LicitacaoRowForEdital, raw: Record<strin
   return null;
 }
 
-/**
- * Constrói a URL do edital para uma linha de licitação.
- * Retorna null se nenhuma URL segura/válida puder ser derivada.
- */
 function inteiroPositivo(v: unknown): number | null {
   const n = typeof v === "number" ? v : typeof v === "string" && /^[0-9]{1,12}$/.test(v.trim()) ? Number(v) : NaN;
   return Number.isSafeInteger(n) && n > 0 ? n : null;
@@ -390,6 +386,10 @@ export function buildPortalUrl(row: LicitacaoRowForEdital | null | undefined): s
   return `${mural}?nCdModulo=${modulo}&sDsProcesso=${encodeURI(numero)}&nCdProcesso=${processo}`;
 }
 
+/**
+ * Constrói a URL do edital para uma linha de licitação.
+ * Retorna null se nenhuma URL segura/válida puder ser derivada.
+ */
 export function buildEditalUrl(row: LicitacaoRowForEdital | null | undefined): string | null {
   if (!row || typeof row !== "object") return null;
 

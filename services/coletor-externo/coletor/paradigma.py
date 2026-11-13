@@ -583,13 +583,16 @@ class PortalParadigma:
             "tmpTipoMuralProcesso": 0, "dtoIdioma": {"nCdIdioma": 1}, "sNrProcesso": d.get("sNrProcesso")}})
         return r or []
 
-    def resultado_item(self, d: dict, it: dict) -> list[dict]:
-        """Lances primeiro; se o item não tiver lance ranqueado, tenta a aba Classificação."""
-        try:
-            ls = self.lances(d, it)
-        except requests.RequestException as e:
-            log.info("%s %s item %s: lances indisponíveis (%s)", self.fonte.slug, d.get("nCdProcesso"), it.get("nCdItem"), e)
-            ls = []
+    def resultado_item(self, d: dict, it: dict, ls: list[dict] | None = None) -> list[dict]:
+        """Lances primeiro; se o item não tiver lance ranqueado, tenta a aba Classificação.
+
+        `ls`: os lances já lidos por quem chama (processar_processo grava a disputa antes), para não pedir de novo."""
+        if ls is None:
+            try:
+                ls = self.lances(d, it)
+            except requests.RequestException as e:
+                log.info("%s %s item %s: lances indisponíveis (%s)", self.fonte.slug, d.get("nCdProcesso"), it.get("nCdItem"), e)
+                ls = []
         if any(_rank(x) for x in ls):
             return ls
         mod = modulo_de(d)
@@ -970,14 +973,29 @@ def processar_processo(portal: "PortalParadigma", sb, pid: int, mod: int, resumo
                 except requests.RequestException as e:
                     log.info("%s %s item %s: participantes indisponíveis (%s)", portal.fonte.slug, pid, it["nCdItem"], e)
             continue
-        brutos = portal.resultado_item(d, it)
+        # A disputa inteira vai para licitacao_lances em qualquer situação (spec 0061, K-11): histórico, não preço.
+        # Os lances são lidos aqui, e não pelo resultado_item, porque ele troca os lances pela aba Classificação
+        # quando ainda não há posição, e engole o erro: lance que não veio tem de contar erro, nunca "sem lances".
+        try:
+            ls_brutos = portal.lances(d, it)
+        except requests.RequestException as e:
+            ls_brutos = None
+            resumo["erros"] += 1
+            log.warning("%s %s item %s: lances indisponíveis (%s)", portal.fonte.slug, pid, it.get("nCdItem"), e)
+        if ls_brutos is not None:
+            lances = linhas_lances(lic["id"] if lic else None, linha["numero_item"], ls_brutos)
+            resumo["lances"] += len(lances)
+            if lances and not dry_run:
+                agora = datetime.now(timezone.utc).isoformat()
+                try:
+                    sb.upsert("licitacao_lances", [{**x, "updated_at": agora} for x in lances],
+                              "licitacao_id,numero_item,id_lance_externo")
+                except Exception as e:  # noqa: BLE001 - falha de gravação dos lances não derruba itens e resultados
+                    resumo["erros"] += 1
+                    log.warning("%s %s item %s: lances não gravados (%s)", portal.fonte.slug, pid, it.get("nCdItem"), e)
+        brutos = portal.resultado_item(d, it, ls=ls_brutos) if ls_brutos is not None else portal.resultado_item(d, it)
         # Todos os participantes do item (inclusive sem posição/desclassificados) vão para o cadastro de fornecedores.
         cnpjs += [c for c in (empresa_cnpj(r.get("sNmEmpresa"))[1] for r in brutos) if c]
-        # A disputa inteira vai para licitacao_lances em qualquer situação (spec 0061, K-11): histórico, não preço.
-        lances = linhas_lances(lic["id"] if lic else None, linha["numero_item"], brutos)
-        resumo["lances"] += len(lances)
-        if lances and not dry_run:
-            sb.upsert("licitacao_lances", lances, "licitacao_id,numero_item,id_lance_externo")
         if not (com_resultado_do_processo and item_com_resultado(it)):
             continue   # ranking antes da conclusão não é preço homologado (medição de 12/11/2026)
         try:

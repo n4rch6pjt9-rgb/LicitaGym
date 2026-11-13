@@ -45,7 +45,8 @@ def _portal():
     p = P.PortalParadigma(P.FONTES["fieb"], sessao=MagicMock(), delay=0)
     p.detalhes = MagicMock(return_value=P.limpar(FX["detalhe"]))
     p.itens = MagicMock(return_value=P.limpar(FX["itens"]))
-    p.resultado_item = lambda d, it: P.limpar(FX["lances"])
+    p.resultado_item = lambda d, it, ls=None: P.limpar(FX["lances"])
+    p.lances = lambda d, it: P.limpar(FX["lances"])
     return p
 
 
@@ -87,3 +88,44 @@ def test_ca12_ranking_sem_id_de_lance_nao_vira_lance():
     """A aba Classificação (fallback de resultado_item) não traz nCdLance: não é lance e não entra na tabela."""
     ranking = [{"nNrRanking": 1, "sNmEmpresa": "FORNECEDOR TESTE 1 LTDA - 11.222.334/0001-62", "dVlProposta": 10.0}]
     assert P.linhas_lances(10, 1, ranking) == []
+
+
+def test_ca12_erro_na_chamada_de_lances_conta_erro_e_nao_vira_sem_lances():
+    """Revisor (#parte 1): a falha de PesquisarProcessoDetalheItemProdutoLance não pode virar lista vazia em silêncio."""
+    import requests
+
+    sb = SbFake()
+    portal = _portal()
+
+    def falha(d, it):
+        raise requests.ConnectionError("portal fora")
+    portal.lances = falha
+    resumo = P.coletar(portal, sb, [], 1, False, True, None, None, [(38191, 19)], origem="manual")
+    assert resumo["erros"] == 1 and resumo["lances"] == 0
+    assert "licitacao_lances" not in sb.tabelas
+
+
+def test_ca12_lances_sem_posicao_nao_somem_quando_a_classificacao_responde():
+    """Revisor: com a disputa em curso (lance sem posição), resultado_item troca pela aba Classificação; os lances
+    continuam gravados porque vêm da chamada de lances, não do retorno do resultado_item."""
+    sb = SbFake()
+    portal = _portal()
+    sem_posicao = [{**x, "nNrRanking": None, "bFlVencedor": 0} for x in P.limpar(FX["lances"])]
+    portal.lances = lambda d, it: sem_posicao
+    portal.resultado_item = lambda d, it, ls=None: [{"nNrRanking": 1, "sNmEmpresa": "FORNECEDOR TESTE 1 LTDA"}]
+    P.coletar(portal, sb, [], 1, False, True, None, None, [(38191, 19)], origem="manual")
+    assert len(sb.tabelas["licitacao_lances"]) == 33
+    assert all(x["posicao"] is None for x in sb.tabelas["licitacao_lances"].values())
+
+
+def test_ca12_falha_ao_gravar_lances_nao_derruba_resultados():
+    sb = SbFake()
+    original = sb.upsert
+
+    def upsert(tabela, linhas, conflito):
+        if tabela == "licitacao_lances":
+            raise RuntimeError("PostgREST 500")
+        return original(tabela, linhas, conflito)
+    sb.upsert = upsert
+    resumo = P.coletar(_portal(), sb, [], 1, False, True, None, None, [(38191, 19)], origem="manual")
+    assert resumo["erros"] == 1 and len(sb.tabelas["licitacao_resultados"]) == 7

@@ -34,7 +34,7 @@ create table if not exists public.licitacao_lances (
   vencedor          boolean not null default false,
   raw               jsonb not null,
   created_at        timestamptz not null default now(),
-  updated_at        timestamptz not null default now(),
+  updated_at        timestamptz not null default now(),   -- o coletor envia a cada upsert (sem trigger)
   constraint licitacao_lances_chave unique (licitacao_id, numero_item, id_lance_externo)
 );
 
@@ -46,5 +46,7 @@ comment on table public.licitacao_lances is
 alter table public.licitacao_lances enable row level security;
 revoke all on table public.licitacao_lances from anon, authenticated, public;
 grant select, insert, update, delete on table public.licitacao_lances to service_role;
+-- A identity gera o valor sem conferir permissão na sequência; anon e authenticated não precisam dela.
+revoke all on sequence public.licitacao_lances_id_seq from anon, authenticated, public;
 
 commit;

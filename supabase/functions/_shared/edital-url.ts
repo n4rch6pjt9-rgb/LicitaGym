@@ -365,13 +365,29 @@ function extractComprasGovIdCompra(row: LicitacaoRowForEdital, raw: Record<strin
  * Constrói a URL do edital para uma linha de licitação.
  * Retorna null se nenhuma URL segura/válida puder ser derivada.
  */
+function inteiroPositivo(v: unknown): number | null {
+  const n = typeof v === "number" ? v : typeof v === "string" && /^[0-9]{1,12}$/.test(v.trim()) ? Number(v) : NaN;
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
 /**
  * Página pública do portal de compras da fonte (mural do Paradigma), para um link "Abrir portal" com rótulo próprio.
  * Não é o edital. null quando a fonte não tem mural conhecido.
+ *
+ * Com módulo, id do processo e número do processo, devolve o link direto do processo: o próprio mural monta
+ * `Mural.aspx?nCdModulo=..&sDsProcesso=..&nCdProcesso=..` e abre o detalhe ao carregar (conferido na Firjan 3800 em
+ * 13/11/2026). O mural lê a query com split('=') e decodeURI, que não decodifica %2F nem os reservados: o número vai com
+ * espaço como %20 e barra crua; número com & = # ? + ou % cai na página geral.
  */
 export function buildPortalUrl(row: LicitacaoRowForEdital | null | undefined): string | null {
   const fonte = String(row?.fonte ?? "").trim().toLowerCase();
-  return Object.hasOwn(PARADIGMA_MURAL, fonte) ? PARADIGMA_MURAL[fonte] : null;
+  if (!Object.hasOwn(PARADIGMA_MURAL, fonte)) return null;
+  const mural = PARADIGMA_MURAL[fonte];
+  const modulo = inteiroPositivo(row?.modulo);
+  const processo = inteiroPositivo(row?.id_externo);
+  const numero = typeof row?.numero_processo === "string" ? row.numero_processo.trim() : "";
+  if (!modulo || !processo || !numero || /[&=#?+%]/.test(numero)) return mural;
+  return `${mural}?nCdModulo=${modulo}&sDsProcesso=${encodeURI(numero)}&nCdProcesso=${processo}`;
 }
 
 export function buildEditalUrl(row: LicitacaoRowForEdital | null | undefined): string | null {

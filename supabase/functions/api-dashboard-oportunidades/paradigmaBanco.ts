@@ -23,7 +23,7 @@
 // Nunca sai: `raw`, `storage_uri` (caminho no Storage) nem mensagem de erro do PostgREST.
 import { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { jsonResponse } from "../_shared/http.ts";
-import { buildEditalUrl, PARADIGMA_MURAL } from "../_shared/edital-url.ts";
+import { buildEditalUrl, buildPortalUrl, PARADIGMA_MURAL } from "../_shared/edital-url.ts";
 import { COPIA_LOTE, lerLinhas } from "./copiaLocal.ts";
 import type {
   AcompanhamentoParadigmaResponse,
@@ -412,7 +412,7 @@ export async function acompanhamentoParadigmaDoBanco(
     // Sem chave PNCP. Objeto com campos nulos (não null) para a tela atual, que lê pncp.numero_controle_pncp.
     pncp: { cnpj: null, ano: null, sequencial: null, numero_controle_pncp: null },
     url_edital: buildEditalUrl(row),
-    url_acompanhamento: PARADIGMA_MURAL[fonte] ?? null,
+    url_acompanhamento: buildPortalUrl(row),
     fase: compra.dados?.fase ?? texto(row.fase),
     compra,
     itens,

@@ -433,3 +433,29 @@ Deno.test("portal: cada fonte Paradigma do coletor aponta para o próprio mural 
     "https://compras.fiemg.com.br/portal/Mural.aspx",
   );
 });
+
+
+Deno.test("buildPortalUrl: link direto do processo no mural do Paradigma (Firjan 3800, conferido no portal em 13/11/2026)", () => {
+  // O mural lê a query com split('=') e decodeURI: espaço vai como %20 e a barra fica crua.
+  assertEquals(
+    buildPortalUrl({ fonte: "firjan", modulo: 59, id_externo: 3800, numero_processo: "SS 03204/2026" }),
+    "https://portaldecompras.firjan.com.br/portal/Mural.aspx?nCdModulo=59&sDsProcesso=SS%2003204/2026&nCdProcesso=3800",
+  );
+  assertEquals(
+    buildPortalUrl({ fonte: "sescsp", modulo: "18", id_externo: "32", numero_processo: "PE000652022" }),
+    "https://scr360.paradigmabs.com.br/sescsp/portal/Mural.aspx?nCdModulo=18&sDsProcesso=PE000652022&nCdProcesso=32",
+  );
+});
+
+Deno.test("buildPortalUrl: sem dado completo ou com caractere que o mural não decodifica, cai na página geral", () => {
+  const geral = "https://portaldecompras.firjan.com.br/portal/Mural.aspx";
+  assertEquals(buildPortalUrl({ fonte: "firjan", modulo: 59, id_externo: 3800 }), geral);
+  assertEquals(buildPortalUrl({ fonte: "firjan", modulo: 59, numero_processo: "SS 1/2026" }), geral);
+  assertEquals(buildPortalUrl({ fonte: "firjan", id_externo: 3800, numero_processo: "SS 1/2026" }), geral);
+  assertEquals(buildPortalUrl({ fonte: "firjan", modulo: 0, id_externo: 3800, numero_processo: "SS 1/2026" }), geral);
+  assertEquals(buildPortalUrl({ fonte: "firjan", modulo: 59, id_externo: -1, numero_processo: "SS 1/2026" }), geral);
+  for (const ruim of ["A&B 1", "A=1", "A#1", "A?1", "A+1", "A%201", "   "]) {
+    assertEquals(buildPortalUrl({ fonte: "firjan", modulo: 59, id_externo: 3800, numero_processo: ruim }), geral, ruim);
+  }
+  assertEquals(buildPortalUrl({ fonte: "pncp", modulo: 59, id_externo: 3800, numero_processo: "SS 1/2026" }), null);
+});

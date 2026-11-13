@@ -176,6 +176,11 @@ situação; sem ela, o processo entra e a carga aplica o escopo de hoje.
 - 13/11/2026: descoberta pelo mural comum inteiro (K-4), filtrado pelas situações "Em proposta", "Em andamento" e
   "Finalizado" e por início nos últimos 24 meses; a carga aplica a regra de escopo de hoje.
 
+- 13/11/2026 (revisão do PR #553): revisita do K-2 fica em 24 h, mesmo que na prática um processo processado logo
+  depois da descoberta só volte em ~48 h.
+- 13/11/2026 (revisão do PR #553): o limiar `coleta_externa_fila_pendente_horas` fica desligado (`ativo = false`,
+  migration 20261113200000) e fora de `SAUDE_VERIFICACOES_ESPERADAS` até a fila escoar; religar os dois juntos.
+
 ## Perguntas em aberto
 
 - nenhuma

@@ -18,7 +18,8 @@
 # Saída sem buffer (PYTHONUNBUFFERED) e timeout interno abaixo do limite do job: o progresso aparece no log e, no
 # limite, o coletor recebe SIGTERM, devolve o lote à fila e fecha o registro em coleta_externa_run.
 # Cada execução agendada fica registrada em private.coleta_externa_run (modo leads, descoberta ou carga), que a saúde
-# operacional lê (coleta_externa_dias_sem_sucesso, coleta_externa_executando_horas, coleta_externa_fila_pendente_horas).
+# operacional lê (coleta_externa_dias_sem_sucesso, coleta_externa_executando_horas e coleta_externa_fila_pendente_horas,
+# esta desligada até a fila escoar, migration 20261113200000).
 name: Coletor Sistema S
 
 on:

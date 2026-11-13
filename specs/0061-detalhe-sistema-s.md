@@ -61,6 +61,11 @@ Medido em 12/11/2026 (MCP somente leitura, logs do Actions e código da `main` e
   - `buildPortalUrl` devolve só o `Mural.aspx` da fonte.
   - O HAR do mural da FIEB (12/11) mostra que o processo abre por POST ao webservice, sem URL própria.
   - Se existe parâmetro de link direto: não medido.
+  - **Medido em 13/11/2026:** o JS do `Mural.aspx` lê `nCdModulo`, `sDsProcesso` e `nCdProcesso` da query e abre o
+    detalhe ao carregar (`Mural.aspx?nCdModulo=59&sDsProcesso=SS%2003204/2026&nCdProcesso=3800` na Firjan;
+    `.../sescdn/portal/Mural.aspx?nCdModulo=59&sDsProcesso=0147/26-PG&nCdProcesso=4387` no tenant SaaS da Sesc DN). O
+    mural decodifica com `decodeURI`: espaço vai como `%20` e a barra crua. `buildPortalUrl` passou a montar esse link
+    (K-9), e "Copiar número" fica como apoio.
 - **Os filtros da lista estão fixos no front.**
   - **Modalidade:** 3 opções (`OpportunityListView.tsx:291-294`: Pregão, Dispensa, Concorrência), enquanto o Sistema S tem 9 valores em 570 licitações:
     - Pregão eletrônico: 221;
@@ -272,6 +277,7 @@ Medido em 12/11/2026 (MCP somente leitura, logs do Actions e código da `main` e
     - O processo 38191, "Finalizado com contrato", tem 4 anexos em `PesquisarAnexos`, todos `bFlPublico = 1`, e o navegador baixou os 4 sem cadastro.
   - **Consequência no K-1:** a seção `arquivos` não filtra por situação nem por escopo. Ela lista todo documento do processo gravado e não removido do portal.
 - 13/11/2026: entra na 0061 o fórum do processo (K-15, esclarecimentos e impugnações): o coletor global do Paradigma não chamava `PesquisarProcessoDetalheForum`, que só a coleta da Sest Senat usava. Grava na coluna que já existe (`licitacoes_externas.esclarecimentos`), sem migration. Mostrar o fórum no Dashboard fica para o K-3/K-10.
+- 13/11/2026: o link do portal leva ao processo (K-9, link direto medido nos murais da Firjan e da Sesc DN) e o documento abre pelo link assinado no clique (K-3, botão "Abrir documento").
 
 ## Perguntas em aberto
 

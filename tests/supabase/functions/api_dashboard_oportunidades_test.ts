@@ -2289,7 +2289,9 @@ Deno.test("0061 CA-1: Paradigma lê do banco, resumo primeiro, origem banco e gr
   assertEquals(body.pncp, { cnpj: null, ano: null, sequencial: null, numero_controle_pncp: null });
   assertEquals(body.atas.dados, null);
   assertEquals(typeof body.atas.erro, "string");
-  assertEquals(body.url_acompanhamento, "https://compras.fieb.org.br/portal/Mural.aspx");
+  // Link direto do processo no mural (o mural abre o detalhe pelos parâmetros), não a página geral.
+  assertEquals(body.url_acompanhamento,
+    "https://compras.fieb.org.br/portal/Mural.aspx?nCdModulo=59&sDsProcesso=SDE%202026000001&nCdProcesso=38191");
 
   // arquivos: 4 anexos + resumo (removido do portal e outra seção ficam fora), resumo primeiro com tipo "resumo"
   assertEquals(body.arquivos.erro, null);

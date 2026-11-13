@@ -263,7 +263,7 @@ Obtém o painel de acompanhamento em tempo real para uma oportunidade, consultan
 - Atas de registro de preço associadas (`numero`, `ano`, `vigenciaInicio`, `vigenciaFim`, `cancelado`).
 - Histórico completo de eventos e retificações paginado (`data`, `categoria`, `tipo`, `item`, `documentoTitulo`, `justificativa`).
 - Arquivos e editais oficiais para download direto (`titulo`, `tipo`, `url`).
-- URLs seguras derivadas na leitura: `url_edital` (só link do edital; Sistema S/Paradigma sem link da origem = null), `url_portal` (mural público do portal Paradigma da fonte, não é o edital; null nas outras fontes) e `url_acompanhamento` (redirecionamento Comprasnet `https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/landing?destino=acompanhamento-compra&compra={idCompra}` quando `idCompra` tem 17 dígitos válidos).
+- URLs seguras derivadas na leitura: `url_edital` (só link do edital; Sistema S/Paradigma sem link da origem = null), `url_portal` (link direto do processo no mural do portal Paradigma, `Mural.aspx?nCdModulo&sDsProcesso&nCdProcesso`, que abre o detalhe; sem módulo, id ou número do processo, a página geral do mural; não é o edital; null nas outras fontes) e `url_acompanhamento` (redirecionamento Comprasnet `https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/landing?destino=acompanhamento-compra&compra={idCompra}` quando `idCompra` tem 17 dígitos válidos).
 - Cache em memória de ~5 minutos (`Cache-Control: private, max-age=300`).
 - Isolamento de falhas parciais: falha em uma seção não inviabiliza as demais; cada seção possui seu campo `erro`.
 - **PNCP fora: fontes em ordem por seção.** O `erro` da 1ª fonte fica sempre na seção, e a resposta com seção em erro é `no-store`.
@@ -280,7 +280,7 @@ A ação é somente leitura: não grava eventos nem gera tarefas. A automação 
 #### Fonte do Paradigma (Sistema S): lido do banco (spec 0061, K-1)
 Para `fonte` do coletor Paradigma (`FONTES_PARADIGMA` em `paradigmaBanco.ts`: fieb, firjan, fiesc, sescdn, sestsenat...), a resposta sai **só do banco**, sem chamar o portal nem o PNCP. Exige empresa ativa de quem chama (`_shared/tenant.ts`): sem vínculo, vínculo desligado ou empresa desativada → `403` antes de ler qualquer seção. Licitação inexistente → `404`.
 
-- `disponivel: true`, `origem: "banco"`, `fonte`; `pncp` com campos nulos; `url_acompanhamento` = mural da fonte (`null` sem mural, ex.: `sescrj`).
+- `disponivel: true`, `origem: "banco"`, `fonte`; `pncp` com campos nulos; `url_acompanhamento` = link direto do processo no mural da fonte, o mesmo de `url_portal` (`null` sem mural, ex.: `sescrj`).
 - Cada seção: `{ dados, total, erro, origem: "banco", gravado_em }`. Sem linha gravada ou falha de leitura: `dados: null` com `erro` explícito, nunca lista vazia.
   - `compra`: situação, fase, modalidade, objeto e `datasProcesso` (`inicio`, `fim`, `publicacao`, `aberturaSessao`, `homologacao`, `finalizacao`) do `raw` da licitação (`/Date(ms)/`; data zerada = `null`); campos de `CompraMetadata` mantidos (`datas.aberturaProposta` = início, `encerramentoProposta` = fim; valores `null`). `gravado_em` = `ingestao_em`.
   - `itens`: `licitacao_itens`, com `melhorLance` (`null` quando 0 ou item revogado/cancelado/fracassado/deserto/anulado/suspenso), `marcaVencedor`/`modeloVencedor` (da linha vencedora de `licitacao_resultados`; sem ela, do mural só com lance > 0) e `resultados` = só o homologado. `catalogoId` `null` (código é do catálogo da entidade, não CATMAT). `gravado_em` = `ingestao_em`.

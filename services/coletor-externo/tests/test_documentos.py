@@ -344,3 +344,106 @@ def test_mascara_do_visitante_pega_nome_parcial_sem_acento_e_comando_do_actions(
     assert "Jose" not in texto and "silva" not in texto and "529" not in texto
     assert "\n" not in texto and "\r" not in texto
     assert "recusado" in texto and "::" in texto                # mensagem preservada, sem a quebra de linha
+
+
+# ---------------- Download sem cadastro e resumo do processo (HAR FIEB 38191, 12/11/2026) ----------------
+MURAL_FIEB = ('<script type="text/javascript">objConfiguracao = JSON.parse(\'{"bFlForumPublico":1,'
+              '"bFlForumPublicoCotacao":1,"bFlCadastroParaEfetuarDownloadAnexoAreaPublica":0,'
+              '"sCaminhoUpload":"/upload/"}\'); FecharObjeto(objConfiguracao);</script>')
+RESUMO_HTML = ("<html><body>COMPRA DIRETA 30921564.2023.CD.4324.SESISE <script>$('#label_1').text(kendo.toString("
+               "new Date(1692796800000), 'G'))</script> 1 - Objeto: Aquisição de Tatame</body></html>")
+
+
+@pytest.mark.parametrize(("html", "esperado"), [
+    (MURAL_FIEB, 0),
+    (MURAL_FIEB.replace('AreaPublica":0', 'AreaPublica":1'), 1),
+    ("<html>sem configuração</html>", None),
+])
+def test_le_do_mural_se_o_portal_exige_cadastro_para_baixar(html, esperado):
+    assert P.cadastro_para_baixar(html) == esperado
+
+
+def test_portal_le_a_configuracao_ao_abrir_o_mural(monkeypatch):
+    sessao = MagicMock()
+    sessao.get.return_value = MagicMock(status_code=200, text=MURAL_FIEB)
+    monkeypatch.setattr(P.requests, "Session", lambda: sessao)
+    assert P.PortalParadigma(P.FONTES["fieb"], delay=0).cadastro_download == 0
+    assert P.PortalParadigma(P.FONTES["fieb"], sessao=MagicMock(), delay=0).cadastro_download is None
+
+
+def test_portal_sem_exigencia_de_cadastro_baixa_direto_sem_visitante():
+    """HAR FIEB: ValidarSalvarVisitante devolve 1 ("permite cadastro"), mas com a configuração em 0 o navegador baixa
+    direto, sem SalvarVisitante. Antes o coletor deixava os 71 documentos do teste pendentes."""
+    p, chamadas = portal_fake(exige=1)
+    p.cadastro_download = 0
+    sb = sb_fake()
+    r = DP.DocumentosParadigma(p, sb, MagicMock(), None).sincronizar(10, DET, "paradigma/fieb/19/38191")
+    assert r["baixados"] == 2 and r["aguardando_cadastro"] == 0 and r["erros"] == 0
+    assert not any(c[0] in ("ValidarSalvarVisitante", "SalvarVisitante") for c in chamadas)
+
+
+def test_modulo_20_dispensa_cadastro_como_no_portal():
+    p, chamadas = portal_fake(exige=1)
+    p.cadastro_download = 1
+    det = {**DET, "nCdModulo": 20}
+    r = DP.DocumentosParadigma(p, sb_fake(), MagicMock(), None).sincronizar(10, det, "x")
+    assert r["baixados"] == 2 and not any(c[0] == "SalvarVisitante" for c in chamadas)
+
+
+def test_portal_que_exige_cadastro_mantem_o_fluxo_do_visitante():
+    p, chamadas = portal_fake(exige=1)
+    p.cadastro_download = 1
+    r = DP.DocumentosParadigma(p, sb_fake(), MagicMock(), None).sincronizar(10, DET, "x")
+    assert r["aguardando_cadastro"] == 2 and r["baixados"] == 0
+
+
+def _portal_com_resumo(resumo=RESUMO_HTML):
+    p, chamadas = portal_fake(exige=0)
+    ws_original = p._ws
+
+    def ws(metodo, corpo):
+        if metodo == "PesquisarResumoEdital":
+            chamadas.append((metodo, corpo))
+            return resumo
+        return ws_original(metodo, corpo)
+    p._ws = ws
+    return p, chamadas
+
+
+def test_resumo_do_processo_encerrado_vira_documento_com_o_html_original():
+    p, chamadas = _portal_com_resumo()
+    sb = sb_fake()
+    r = DP.DocumentosParadigma(p, sb, MagicMock(), None).sincronizar(10, DET, "paradigma/fieb/18/32", resumo_processo=True)
+    assert r["resumos"] == 1 and r["erros"] == 0
+    corpo = [c[1] for c in chamadas if c[0] == "PesquisarResumoEdital"][0]
+    assert corpo == {"dtoProcesso": {"nCdProcesso": 32, "nCdOrigem": 32, "nCdModulo": 18,
+                                     "dtoIdioma": {"nCdIdioma": 1}, "sGMT": "-03:00"}}
+    linhas = [ln for c in sb.upsert.call_args_list if c.args[0] == "licitacao_documentos"
+              for ln in (c.args[1] if isinstance(c.args[1], list) else [c.args[1]])]
+    resumo = [ln for ln in linhas if ln["arquivo_origem"] == DP.ARQUIVO_RESUMO][0]
+    assert resumo["nome_original"] == "Resumo do processo" and resumo["origem_portal"] == "Resumo"
+    up = [u for u in atualizacoes(sb).values() if u.get("mime_type") == "text/html"][0]
+    assert up["status_processamento"] == "baixado" and up["sha256"] == D.sha256(RESUMO_HTML.encode("utf-8"))
+
+
+def test_resumo_nao_e_pedido_para_processo_aberto():
+    p, chamadas = _portal_com_resumo()
+    r = DP.DocumentosParadigma(p, sb_fake(), MagicMock(), None).sincronizar(10, DET, "x")
+    assert "resumos" not in r or r["resumos"] == 0
+    assert not any(c[0] == "PesquisarResumoEdital" for c in chamadas)
+
+
+def test_resumo_vazio_conta_erro_e_nao_grava_documento_vazio():
+    p, _ = _portal_com_resumo(resumo=None)
+    sb = sb_fake()
+    r = DP.DocumentosParadigma(p, sb, MagicMock(), None).sincronizar(10, DET, "x", resumo_processo=True)
+    assert r["resumos"] == 0 and r["erros"] == 1
+    assert not any(u.get("mime_type") == "text/html" for u in atualizacoes(sb).values())
+
+
+@pytest.mark.parametrize(("situacao", "esperado"), [
+    ("Homologado", True), ("Finalizado com contrato", True), ("Homologado com contrato", True),
+    ("Cancelado", False), ("Fracassada", False), ("Em andamento", False), (None, False),
+])
+def test_resumo_so_para_editais_encerrados_com_resultado(situacao, esperado):
+    assert P.quer_resumo_do_processo({"sDsSituacao": situacao}) is esperado

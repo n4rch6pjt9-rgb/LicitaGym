@@ -293,6 +293,21 @@ def valor(v: Any) -> float | None:
     return None
 
 
+def cadastro_para_baixar(html: str | None) -> int | None:
+    """bFlCadastroParaEfetuarDownloadAnexoAreaPublica do objConfiguracao do Mural.aspx: 0 = o portal libera o download
+    de anexo sem cadastro de visitante (FIEB, HAR de 12/11/2026); >0 = exige; None = não encontrado."""
+    if not isinstance(html, str):
+        return None
+    m = re.search(r'"bFlCadastroParaEfetuarDownloadAnexoAreaPublica"\s*:\s*(\d+)', html)
+    return int(m.group(1)) if m else None
+
+
+def quer_resumo_do_processo(d: dict) -> bool:
+    """Resumo do processo (PesquisarResumoEdital) só de edital encerrado com resultado: num edital aberto ele ainda
+    pode mudar, e cancelado ou fracassado não tem resultado para analisar."""
+    return status_normalizado(d.get("sDsSituacao")) in ("homologada", "encerrada")
+
+
 def status_normalizado(situacao: str | None) -> str:
     s = normalizar(situacao or "")
     if not s:
@@ -438,9 +453,13 @@ class PortalParadigma:
         self.timeout = timeout
         self.s = sessao or requests.Session()
         self.s.headers.update({"User-Agent": UA, "Accept": "application/json, text/plain, */*"})
+        # Configuração pública do portal (objConfiguracao do Mural.aspx): None = não lida, e aí o fluxo de documentos
+        # segue o conservador (pergunta ao portal e cadastra o visitante se ele permitir).
+        self.cadastro_download: int | None = None
         if sessao is None:
             r = self.s.get(f"{fonte.base}/Mural.aspx", timeout=timeout)  # cookies de sessão ASP.NET
             _recusar_bloqueio(self.fonte, r.status_code)
+            self.cadastro_download = cadastro_para_baixar(getattr(r, "text", None))
 
     def _ws(self, metodo: str, body: dict) -> Any:
         payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -864,7 +883,8 @@ def processar_processo(portal: "PortalParadigma", sb, pid: int, mod: int, resumo
         # Todos os anexos do processo (aberto ou fechado) ficam registrados e guardados no LicitaGym.
         try:
             r = documentos.sincronizar(lic["id"] if lic else None, d,
-                                       f"paradigma/{portal.fonte.slug}/{modulo_de(d)}/{d['nCdProcesso']}")
+                                       f"paradigma/{portal.fonte.slug}/{modulo_de(d)}/{d['nCdProcesso']}",
+                                       resumo_processo=quer_resumo_do_processo(d))
             for k, v in r.items():
                 resumo[f"docs_{k}"] = resumo.get(f"docs_{k}", 0) + v
         except Exception as e:

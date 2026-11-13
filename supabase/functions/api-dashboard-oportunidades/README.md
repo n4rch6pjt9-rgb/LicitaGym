@@ -448,6 +448,30 @@ publicações canônicas, leads + monitorar), nunca por uma amostra da lista.
 - `recorte.licitacoes_total`: licitações do recorte (todas as prioridades, antes do escopo leads + monitorar); `null`
   sem recorte.
 
+### 6. `documento_url` (spec 0061, K-2)
+
+Link assinado do Supabase Storage para abrir um documento do processo (`arquivos[].documentoId` do `acompanhamento`).
+Gerado a cada clique, válido por **10 minutos**. Exige login (401) e empresa ativa (403), checada antes de ler o
+documento. `licitacao_documentos` é dado público coletado do portal, sem `tenant_id`.
+
+```http
+POST /functions/v1/api-dashboard-oportunidades
+{ "action": "documento_url", "documento_id": 169096 }
+```
+(ou `GET ?action=documento_url&documento_id=169096`)
+
+```json
+{ "action": "documento_url", "documento_id": 169096, "url": "https://…/storage/v1/object/sign/licitacao-documentos/…",
+  "expira_em_segundos": 600, "nome_original": "Pedidos de Reconsiderações", "mime_type": "application/pdf",
+  "abrir": "aba" }
+```
+
+- `abrir`: `aba` para PDF; `download` para os outros formatos (a URL já baixa com o `nome_original`).
+- **404**: documento inexistente, removido do portal, ainda não baixado (`status_processamento` diferente de
+  `baixado`), sem arquivo, ou fora do bucket `licitacao-documentos` (arquivo antigo no GCS, `gs://`).
+- **500** erro de banco; **502** falha ao assinar. Nenhuma resposta traz `storage_uri`, caminho do Storage ou
+  mensagem do PostgREST/Storage.
+
 ## Tratamento de Erros
 
 As respostas de erro utilizam códigos de status HTTP apropriados e formato JSON com mensagens padronizadas:

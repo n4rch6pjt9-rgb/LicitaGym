@@ -583,13 +583,16 @@ class PortalParadigma:
             "tmpTipoMuralProcesso": 0, "dtoIdioma": {"nCdIdioma": 1}, "sNrProcesso": d.get("sNrProcesso")}})
         return r or []
 
-    def resultado_item(self, d: dict, it: dict) -> list[dict]:
-        """Lances primeiro; se o item não tiver lance ranqueado, tenta a aba Classificação."""
-        try:
-            ls = self.lances(d, it)
-        except requests.RequestException as e:
-            log.info("%s %s item %s: lances indisponíveis (%s)", self.fonte.slug, d.get("nCdProcesso"), it.get("nCdItem"), e)
-            ls = []
+    def resultado_item(self, d: dict, it: dict, ls: list[dict] | None = None) -> list[dict]:
+        """Lances primeiro; se o item não tiver lance ranqueado, tenta a aba Classificação.
+
+        `ls`: os lances já lidos por quem chama (processar_processo grava a disputa antes), para não pedir de novo."""
+        if ls is None:
+            try:
+                ls = self.lances(d, it)
+            except requests.RequestException as e:
+                log.info("%s %s item %s: lances indisponíveis (%s)", self.fonte.slug, d.get("nCdProcesso"), it.get("nCdItem"), e)
+                ls = []
         if any(_rank(x) for x in ls):
             return ls
         mod = modulo_de(d)
@@ -772,6 +775,40 @@ def empresa_cnpj(s: str | None) -> tuple[str | None, str | None]:
     return (m.group(1).strip() or None), cnpj_ou_none(m.group(2))
 
 
+def linhas_lances(lic_id: int | None, numero_item: int, lances: list[dict]) -> list[dict]:
+    """Lances da disputa (PesquisarProcessoDetalheItemProdutoLance) -> licitacao_lances (spec 0061, K-11).
+
+    Todos os lances do item, com ou sem posição final: é o histórico da disputa, não preço homologado (este fica em
+    licitacao_resultados, só de compra concluída). Só entra o que é lance do portal (tem nCdLance): a aba
+    Classificação, usada como alternativa em resultado_item, não traz id de lance. Empresa e CNPJ como o portal
+    publica (decisão de 01/10/2026). Mesmo nCdLance repetido pelo portal entra uma vez."""
+    vistos: set[int] = set()
+    saida = []
+    for r in lances or []:
+        id_lance = r.get("nCdLance")
+        if not isinstance(id_lance, int) or isinstance(id_lance, bool) or id_lance <= 0 or id_lance in vistos:
+            continue
+        vistos.add(id_lance)
+        nome, cnpj = empresa_cnpj(r.get("sNmEmpresa"))
+        valor = r.get("dVlLanceMoeda")
+        saida.append({
+            "licitacao_id": lic_id,
+            "numero_item": numero_item,
+            "id_lance_externo": id_lance,
+            "data_lance": parse_data(r.get("tDtLance")),
+            "valor": valor if isinstance(valor, (int, float)) and not isinstance(valor, bool) else None,
+            "moeda": r.get("sSgMoedaLance") or r.get("sSgMoedaProcesso"),
+            "fornecedor_nome": nome,
+            "fornecedor_cnpj": cnpj,
+            "marca": (r.get("sDsMarca") or "").strip() or None,
+            "modelo": (r.get("sDsModelo") or "").strip() or None,
+            "posicao": _rank(r),
+            "vencedor": r.get("bFlVencedor") == 1,
+            "raw": r,
+        })
+    return saida
+
+
 def linhas_resultados(lic_id: int | None, numero_item: int, ranking: list[dict], data_resultado: str | None,
                       situacao_item: str | None = None, quantidade: float | None = None) -> list[dict]:
     """Lances/classificação Paradigma -> licitacao_resultados.
@@ -936,7 +973,27 @@ def processar_processo(portal: "PortalParadigma", sb, pid: int, mod: int, resumo
                 except requests.RequestException as e:
                     log.info("%s %s item %s: participantes indisponíveis (%s)", portal.fonte.slug, pid, it["nCdItem"], e)
             continue
-        brutos = portal.resultado_item(d, it)
+        # A disputa inteira vai para licitacao_lances em qualquer situação (spec 0061, K-11): histórico, não preço.
+        # Os lances são lidos aqui, e não pelo resultado_item, porque ele troca os lances pela aba Classificação
+        # quando ainda não há posição, e engole o erro: lance que não veio tem de contar erro, nunca "sem lances".
+        try:
+            ls_brutos = portal.lances(d, it)
+        except requests.RequestException as e:
+            ls_brutos = None
+            resumo["erros"] += 1
+            log.warning("%s %s item %s: lances indisponíveis (%s)", portal.fonte.slug, pid, it.get("nCdItem"), e)
+        if ls_brutos is not None:
+            lances = linhas_lances(lic["id"] if lic else None, linha["numero_item"], ls_brutos)
+            resumo["lances"] += len(lances)
+            if lances and not dry_run:
+                agora = datetime.now(timezone.utc).isoformat()
+                try:
+                    sb.upsert("licitacao_lances", [{**x, "updated_at": agora} for x in lances],
+                              "licitacao_id,numero_item,id_lance_externo")
+                except Exception as e:  # noqa: BLE001 - falha de gravação dos lances não derruba itens e resultados
+                    resumo["erros"] += 1
+                    log.warning("%s %s item %s: lances não gravados (%s)", portal.fonte.slug, pid, it.get("nCdItem"), e)
+        brutos = portal.resultado_item(d, it, ls=ls_brutos) if ls_brutos is not None else portal.resultado_item(d, it)
         # Todos os participantes do item (inclusive sem posição/desclassificados) vão para o cadastro de fornecedores.
         cnpjs += [c for c in (empresa_cnpj(r.get("sNmEmpresa"))[1] for r in brutos) if c]
         if not (com_resultado_do_processo and item_com_resultado(it)):
@@ -980,7 +1037,7 @@ def coletar(portal: "PortalParadigma", sb, termos: list[str], paginas: int | Non
     """`resumo`, quando vem de quem chama, é preenchido no lugar: interrompida pelo limite da etapa (SIGTERM), a
     coleta ainda deixa os contadores do que já gravou."""
     base = {"listados": 0, "processos": 0, "no_escopo": 0, "itens_escopo": 0, "itens_catalogo": 0,
-            "resultados": 0, "itens_com_vencedor": 0, "alertas": 0, "erros": 0,
+            "resultados": 0, "lances": 0, "itens_com_vencedor": 0, "alertas": 0, "erros": 0,
             "participantes": 0, "fornecedores_consultados": 0, "fornecedores_em_cache": 0,
             "fornecedores_erros": 0, "paginacao_avisos": []}
     if resumo is None:

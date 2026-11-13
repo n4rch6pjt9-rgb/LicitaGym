@@ -56,7 +56,7 @@ from .paginacao import TAMANHO_PAGINA_MAX, avaliar_pagina, clamp_tamanho, pagina
 from .perfil_item import normalizar_marca, perfil_item, texto_do_item
 from .escopo import ITEM_FORA, academia_ar_livre, brinquedo_infantil, classificar, contexto_academia, e_peca, classificar_texto_item, interesse_borracha, interesse_borracha_item, normalizar, piso_item_fora, CATEGORIAS_PISO_VETAVEL
 from .pncp import CATEGORIAS_SO_MATERIAL, fornece_produto
-from .portal import cnpj_ou_none, limpar, parse_data
+from .portal import cnpj_ou_none, limpar, msg_forum, parse_data
 from .proveniencia import ORIGENS, campos_proveniencia
 from .retry import retry_after_s
 
@@ -573,6 +573,16 @@ class PortalParadigma:
             "tmpTipoMuralProcesso": 0, "dtoIdioma": {"nCdIdioma": 1}}})
         return r or []
 
+    def forum(self, d: dict) -> list[dict]:
+        """Fórum do processo (esclarecimentos e impugnações com as respostas), como o mural mostra (spec 0061, K-15).
+        Resposta que não é lista de mensagens é erro: nunca vira "sem mensagens"."""
+        r = self._ws("PesquisarProcessoDetalheForum", {"dtoForum": {
+            "dtoProcesso": {"nCdProcesso": d["nCdProcesso"], "nCdModulo": modulo_de(d)},
+            "dtoIdioma": {"nCdIdioma": 1}}})
+        if not isinstance(r, list) or any(not isinstance(m, dict) for m in r):
+            raise RuntimeError("PesquisarProcessoDetalheForum inconclusivo: resposta não é lista de mensagens")
+        return r
+
     def lances(self, d: dict, it: dict) -> list[dict]:
         """Grade de lances do item (a mesma que o mural mostra ao expandir o item). Corpo igual ao do JS do portal;
         nCdTipoModalidade tem que ser 0 (o JS manda undefined; null no JSON derruba o webservice com 500)."""
@@ -939,9 +949,19 @@ def processar_processo(portal: "PortalParadigma", sb, pid: int, mod: int, resumo
           f"{d.get('sDsSituacao')}{prio_tag} | {(d.get('sDsObjeto') or '')[:80]}")
     lic = None
     if not dry_run:
-        lic = sb.upsert("licitacoes_externas",
-                        linha_licitacao(portal.fonte, d, cat, borr, listagem=listagem, origem=origem),
-                        "fonte,modulo,id_externo")[0]
+        linha = linha_licitacao(portal.fonte, d, cat, borr, listagem=listagem, origem=origem)
+        # Fórum (spec 0061, K-15) na coluna que a coleta da Sest Senat já usa. Falha conta erro e não manda a coluna,
+        # para o upsert não apagar o fórum já coletado.
+        try:
+            mensagens = portal.forum(d)
+            linha["esclarecimentos"] = [msg_forum(m) for m in mensagens]
+            resumo["forum_mensagens"] += len(mensagens)
+        except PermissionError:
+            raise  # bloqueio do portal (401/403) não se contorna: segue a regra do resto da coleta
+        except Exception as e:  # noqa: BLE001 - o fórum não derruba o processo
+            resumo["erros"] += 1
+            log.warning("%s %s fórum indisponível (%s)", portal.fonte.slug, pid, type(e).__name__)
+        lic = sb.upsert("licitacoes_externas", linha, "fonte,modulo,id_externo")[0]
         for i in li:
             i["licitacao_id"] = lic["id"]
         if li:
@@ -1037,7 +1057,7 @@ def coletar(portal: "PortalParadigma", sb, termos: list[str], paginas: int | Non
     """`resumo`, quando vem de quem chama, é preenchido no lugar: interrompida pelo limite da etapa (SIGTERM), a
     coleta ainda deixa os contadores do que já gravou."""
     base = {"listados": 0, "processos": 0, "no_escopo": 0, "itens_escopo": 0, "itens_catalogo": 0,
-            "resultados": 0, "lances": 0, "itens_com_vencedor": 0, "alertas": 0, "erros": 0,
+            "resultados": 0, "lances": 0, "forum_mensagens": 0, "itens_com_vencedor": 0, "alertas": 0, "erros": 0,
             "participantes": 0, "fornecedores_consultados": 0, "fornecedores_em_cache": 0,
             "fornecedores_erros": 0, "paginacao_avisos": []}
     if resumo is None:

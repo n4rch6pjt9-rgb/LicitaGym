@@ -150,7 +150,7 @@ class PortalSestSenat:
             "dtoIdioma": {"nCdIdioma": 1}}})
         if not isinstance(r, list):
             raise RespostaInvalida("PesquisarProcessoDetalheForum: payload não é lista")
-        return [_msg_forum(m) for m in r]
+        return [msg_forum(m) for m in r]
 
     def notas(self, id_processo: int, id_edital: int | None, modulo: int = 59) -> list[dict]:
         r = self._ws("PesquisarNota", {"dtoProcesso": {
@@ -203,7 +203,9 @@ class ArquivoGrande(Exception):
         self.bytes_lidos = bytes_lidos
 
 
-def _msg_forum(m: dict) -> dict:
+def msg_forum(m: dict) -> dict:
+    """Mensagem do fórum (PesquisarProcessoDetalheForum) no formato de licitacoes_externas.esclarecimentos. Usada pela
+    coleta da Sest Senat e pela do Paradigma (spec 0061, K-15)."""
     return {
         "id": m.get("nCdMensagem"),
         "id_pai": m.get("nCdMensagemPai"),

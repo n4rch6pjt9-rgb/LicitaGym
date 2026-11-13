@@ -42,7 +42,7 @@ Legenda da coluna **Quem dispara**:
 | `saude.yml` (saúde operacional; abre issue `alerta-operacional`) | a cada 30 min (minutos 7 e 37) | 🤖 |
 | `sentinela-observador.yml` (confere se o `saude.yml` está rodando) | a cada 30 min (minutos 17 e 47) | 🤖 |
 | `coletor-pncp.yml` | todo dia, 06:00 em Brasília | 🤖; manual com `workflow_dispatch` (`modo`, `dry_run`, `rapido`) |
-| `coletor-sistema-s.yml` | todo dia, 06:30 em Brasília | 🤖; manual com `workflow_dispatch` (`fonte`, `paginas`, `documentos`, `dry_run`) |
+| `coletor-sistema-s.yml` (spec 0064) | todo dia, 06:30 em Brasília (pequenas, médias e descoberta de `fieb`/`sesc_senac_rs`); a cada 2 h, minuto 15 (carga de `fieb`/`sesc_senac_rs`, 60 min) | 🤖; manual com `workflow_dispatch` (`fonte`, `etapa`, `orcamento`, `paginas`, `documentos`, `dry_run`, `processos`) |
 | pg_cron `licitagym-coleta-externa-orfaos` (spec 0063) | de hora em hora (minuto 23) | 🤖; fecha como `incompleta` execução de `coleta_externa_run` presa há mais de 6 h |
 | `coletor-precos.yml` | segunda e quinta, 07:00 em Brasília | 🤖; manual com `workflow_dispatch` (`modo`, `dry_run`, `limite`) |
 | `supabase-auth-check.yml` | só manual | 👤 |

@@ -107,3 +107,30 @@ Deno.test("CA-6: coleta_externa_executando_horas sai na api-saude e está em SAU
   assertEquals(esperadas.includes("coleta_externa_executando_horas"), true);
   assertEquals(esperadas.includes("coleta_externa_dias_sem_sucesso"), true);
 });
+
+// Spec 0064, CA-9 (K-9): idade do pendente mais antigo da fila do Sistema S sai na api-saude e o workflow de saúde a
+// exige; limiares atenção 26 h e crítico 48 h na definição mais recente da função.
+Deno.test("CA-9: coleta_externa_fila_pendente_horas sai na api-saude e está em SAUDE_VERIFICACOES_ESPERADAS", async () => {
+  const migrations = [...Deno.readDirSync("./supabase/migrations")]
+    .map((e) => e.name)
+    .filter((n) => /^\d{14}_.*\.sql$/.test(n))
+    .sort();
+  let ultimaSaude = "";
+  for (const nome of migrations) {
+    const sql = Deno.readTextFileSync(`./supabase/migrations/${nome}`);
+    if (sql.includes("create or replace function private.saude_operacional_resumo()")) ultimaSaude = sql;
+  }
+  assertEquals(ultimaSaude.includes("'verificacao', 'coleta_externa_fila_pendente_horas'"), true,
+    "a definição mais recente da função de saúde mede coleta_externa_fila_pendente_horas");
+  assertEquals(/\('coleta_externa_fila_pendente_horas',[^)]*'horas',\s*26,\s*48,/.test(ultimaSaude), true,
+    "limiares atenção 26 h e crítico 48 h");
+
+  const body = await (await handleRequest(post(), ctx({
+    getResumo: () => Promise.resolve([v("coleta_externa_fila_pendente_horas", "atencao")]),
+  }))).json();
+  assertEquals(body.verificacoes.map((x: Verificacao) => x.verificacao), ["coleta_externa_fila_pendente_horas"]);
+
+  const yml = await Deno.readTextFile("./.github/workflows/saude.yml");
+  const esperadas = yml.match(/SAUDE_VERIFICACOES_ESPERADAS:\s*(\S+)/)?.[1].split(",") ?? [];
+  assertEquals(esperadas.includes("coleta_externa_fila_pendente_horas"), true);
+});

@@ -1144,3 +1144,220 @@ def test_ca7_log_info_de_progresso_por_processo(caplog):
     ca7_fim_termo = [ca7_r for ca7_r in caplog.records if ca7_r.levelname == "INFO" and "termo 'academia'" in ca7_r.getMessage()]
     assert ca7_fim_termo, "log no fim da listagem de cada termo"
 
+
+
+# --- Spec 0064: coleta em camadas (descoberta -> fila -> carga) -----------------------------------------------------
+# Nomes locais com prefixo (ca_, ca5_, ca6_, ca7_): variável genérica entra no corpus de coletor/escopo_casos.py.
+
+def _ca_data(ca_dias: int) -> str:
+    """Data no formato do portal (/Date(ms)/), `ca_dias` antes de agora."""
+    ca_ms = int((datetime.now(timezone.utc).timestamp() - ca_dias * 86400) * 1000)
+    return f"/Date({ca_ms})/"
+
+
+class FilaFalsa:
+    """Supabase falso com a fila em memória: enfileirar/reservar/marcar como as RPCs da migration, mais o registro."""
+
+    def __init__(self):
+        self.itens: dict[int, dict] = {}
+        self.chamadas: list[tuple[str, dict]] = []
+
+    def carregar(self, ca_n: int):
+        for ca_k in range(1, ca_n + 1):
+            self.itens[ca_k] = {"id": ca_k, "n_cd_origem": 1000 + ca_k, "modulo": 59, "status": "pendente",
+                                "listagem": {"nCdOrigem": 1000 + ca_k, "nCdModulo": 59}}
+
+    def rpc(self, funcao, params, timeout=60):
+        self.chamadas.append((funcao, params))
+        if funcao == "coleta_externa_iniciar":
+            return 77
+        if funcao == "coleta_externa_fila_reservar":
+            ca_livres = [ca_x for ca_x in self.itens.values() if ca_x["status"] == "pendente"][: params["p_limite"]]
+            for ca_x in ca_livres:
+                ca_x["status"] = "processando"
+            return [{ca_c: ca_x[ca_c] for ca_c in ("id", "n_cd_origem", "modulo", "listagem")} for ca_x in ca_livres]
+        if funcao == "coleta_externa_fila_marcar":
+            ca_x = self.itens[params["p_id"]]
+            ca_x["status"] = {True: "feito", False: "pendente", None: "pendente"}[params["p_ok"]]
+            return True
+        if funcao == "coleta_externa_fila_enfileirar":
+            return {"novos": len(params["p_itens"]), "reabertos": 0, "inalterados": 0}
+        return True
+
+    def status(self) -> dict[str, int]:
+        ca_cont: dict[str, int] = {}
+        for ca_x in self.itens.values():
+            ca_cont[ca_x["status"]] = ca_cont.get(ca_x["status"], 0) + 1
+        return ca_cont
+
+    def finalizacao(self) -> dict:
+        ca_fim = [ca_p for ca_f, ca_p in self.chamadas if ca_f == "coleta_externa_finalizar"]
+        assert len(ca_fim) == 1, self.chamadas
+        return ca_fim[0]
+
+
+CA_ARGS = ["--origem", "cron", "--sem-catalogo", "--sem-documentos", "--sem-resultados", "--sem-fornecedores"]
+
+
+@pytest.fixture
+def ca_ambiente(monkeypatch):
+    """main com Supabase e portal falsos (sem API real) e a fila em memória."""
+    ca_sb = FilaFalsa()
+    ca_portal = MagicMock()
+    ca_portal.fonte = P.FONTES["fiesc"]
+    ca_portal.listar.return_value = []
+    monkeypatch.setenv("SUPABASE_URL", "https://exemplo.invalid")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "chave-de-teste")
+    import coletor.destino as ca_destino  # noqa: PLC0415
+    monkeypatch.setattr(ca_destino, "Supabase", lambda *a, **k: ca_sb)
+    monkeypatch.setattr(P, "PortalParadigma", lambda *a, **k: ca_portal)
+    return ca_sb, ca_portal
+
+
+CA5_MURAL = [
+    {"nCdOrigem": 1, "nCdModulo": 59, "sDsSituacao": "Em proposta", "tDtInicial": _ca_data(10), "sDsObjeto": "um"},
+    {"nCdOrigem": 2, "nCdModulo": 59, "sDsSituacao": "Em andamento", "tDtInicial": _ca_data(100), "sDsObjeto": "dois"},
+    {"nCdOrigem": 3, "nCdModulo": 18, "sDsSituacao": "Finalizado", "tDtInicial": _ca_data(400), "sDsObjeto": "tres"},
+    {"nCdOrigem": 4, "nCdModulo": 59, "sDsSituacao": "Finalizado com contrato", "tDtInicial": _ca_data(700),
+     "sDsObjeto": "quatro"},
+    {"nCdOrigem": 5, "nCdModulo": 59, "sDsSituacao": "Finalizado", "tDtInicial": "/Date(1559347200000)/",
+     "sDsObjeto": "de 2019"},
+    {"nCdOrigem": 6, "nCdModulo": 59, "sDsSituacao": "Cancelado", "tDtInicial": _ca_data(5), "sDsObjeto": "cancelado"},
+]
+
+
+def test_ca5_descoberta_enfileira_so_situacoes_aceitas_dos_ultimos_24_meses_sem_hidratar(ca_ambiente):
+    """CA-5 (K-4): mural sem termo; só os 4 nas situações aceitas e nos últimos 24 meses vão para a fila, com hash; o
+    detalhe não é pedido."""
+    ca5_sb, ca5_portal = ca_ambiente
+    ca5_portal.listar.side_effect = lambda ca5_t, ca5_de, ca5_ate: CA5_MURAL if ca5_de == 1 else []
+    assert P.main(["--fonte", "fiesc", "--etapa", "descoberta", *CA_ARGS]) == 0
+    ca5_termos = {ca5_c.args[0] for ca5_c in ca5_portal.listar.call_args_list}
+    assert ca5_termos == {""}, "descoberta lista o mural comum, sem termo"
+    ca5_enf = [ca5_p for ca5_f, ca5_p in ca5_sb.chamadas if ca5_f == "coleta_externa_fila_enfileirar"]
+    ca5_itens = [ca5_x for ca5_p in ca5_enf for ca5_x in ca5_p["p_itens"]]
+    assert sorted(ca5_x["nCdOrigem"] for ca5_x in ca5_itens) == [1, 2, 3, 4]
+    assert all(ca5_p["p_fonte"] == "fiesc" for ca5_p in ca5_enf)
+    assert {ca5_x["nCdOrigem"]: ca5_x["modulo"] for ca5_x in ca5_itens}[3] == 18
+    assert all(isinstance(ca5_x["hash"], str) and len(ca5_x["hash"]) >= 32 for ca5_x in ca5_itens)
+    assert all(ca5_x["listagem"]["nCdOrigem"] == ca5_x["nCdOrigem"] for ca5_x in ca5_itens)
+    ca5_portal.detalhes.assert_not_called()
+    assert ca5_sb.chamadas[0][1]["p_modo"] == "descoberta"
+    assert ca5_sb.finalizacao()["p_status"] == "concluida"
+
+
+def test_ca5_hash_muda_com_situacao_e_valor_e_nao_com_campo_de_tela():
+    """CA-5 (K-4): o hash cobre objeto, situação, datas e valores; campo de exibição não reabre o processo."""
+    ca5_base = {"nCdOrigem": 9, "sDsObjeto": "x", "sDsSituacao": "Em andamento", "tDtInicial": "/Date(1)/",
+                "tDtFinal": "/Date(2)/", "tDtEncerrado": "/Date(3)/", "dVlEstimado": 10, "dVlNegociado": 0,
+                "nPaginaDe": 1}
+    ca5_h = P.hash_listagem(ca5_base)
+    assert P.hash_listagem(dict(ca5_base)) == ca5_h
+    assert P.hash_listagem({**ca5_base, "nPaginaDe": 101}) == ca5_h
+    for ca5_campo, ca5_novo in (("sDsObjeto", "y"), ("sDsSituacao", "Finalizado"), ("tDtFinal", "/Date(5)/"),
+                                ("tDtEncerrado", "/Date(6)/"), ("dVlNegociado", 9), ("dVlEstimado", 11)):
+        assert P.hash_listagem({**ca5_base, ca5_campo: ca5_novo}) != ca5_h, ca5_campo
+
+
+def test_ca5_situacao_ausente_na_listagem_nao_descarta():
+    """Medido em 13/11/2026 (sescdn, sescba): o PesquisarProcessos devolve sDsSituacao nulo. Sem a situação na linha,
+    a descoberta não descarta (a carga aplica o escopo); com ela, só as três aceitas passam."""
+    ca5_agora = datetime.now(timezone.utc)
+    assert P.aceita_na_descoberta({"nCdOrigem": 1, "sDsSituacao": None, "tDtInicial": _ca_data(3)}, ca5_agora)
+    assert P.aceita_na_descoberta({"nCdOrigem": 1, "sDsSituacao": "Em andamento", "tDtInicial": None}, ca5_agora)
+    assert not P.aceita_na_descoberta({"nCdOrigem": 1, "sDsSituacao": "Revogado", "tDtInicial": _ca_data(3)},
+                                      ca5_agora)
+    assert not P.aceita_na_descoberta({"nCdOrigem": -2147483648, "sDsSituacao": None, "tDtInicial": _ca_data(3)},
+                                      ca5_agora)
+
+
+def test_ca5_pagina_2_do_mural_falhando_nao_conclui(ca_ambiente):
+    """CA-5 (K-4): erro de página não é lista vazia; a execução não termina concluida."""
+    ca5_sb, ca5_portal = ca_ambiente
+
+    def ca5_listar(ca5_t, ca5_de, ca5_ate):
+        if ca5_de == 1:
+            return [{**ca5_x, "nCdOrigem": ca5_x["nCdOrigem"] + 100 * ca5_k}
+                    for ca5_k in range(17) for ca5_x in CA5_MURAL][:100]
+        raise RuntimeError("PesquisarProcessos: HTTP 500 na página 2")
+
+    ca5_portal.listar.side_effect = ca5_listar
+    with pytest.raises(RuntimeError):
+        P.main(["--fonte", "fiesc", "--etapa", "descoberta", *CA_ARGS])
+    assert ca5_sb.finalizacao()["p_status"] not in ("concluida", "concluida_com_erros")
+
+
+def test_ca6_carga_para_no_orcamento_e_devolve_o_resto(ca_ambiente, monkeypatch):
+    """CA-6 (K-5): 10 reservados, relógio esgota o orçamento depois de 4: 4 feito, 6 devolvidos a pendente,
+    execução incompleta; sem chamada a API real."""
+    ca6_sb, ca6_portal = ca_ambiente
+    ca6_sb.carregar(10)
+    ca6_feitos: list[int] = []
+    ca6_relogio = {"t": 0.0}
+    monkeypatch.setattr(P.time, "monotonic", lambda: ca6_relogio["t"])
+
+    def ca6_processar(ca6_portal_, ca6_sb_, ca6_pid, *a, **k):
+        ca6_feitos.append(ca6_pid)
+        ca6_relogio["t"] += 60 if len(ca6_feitos) < 4 else 3600   # o 4.º estoura os 10 min
+
+    monkeypatch.setattr(P, "processar_processo", ca6_processar)
+    monkeypatch.setattr(P, "LOTE_CARGA", 10)
+    assert P.main(["--fonte", "fiesc", "--etapa", "carga", "--orcamento-minutos", "10", *CA_ARGS]) == 0
+    assert ca6_sb.status() == {"feito": 4, "pendente": 6}
+    assert ca6_feitos == [1001, 1002, 1003, 1004]
+    ca6_dev = [ca6_p for ca6_f, ca6_p in ca6_sb.chamadas
+               if ca6_f == "coleta_externa_fila_marcar" and ca6_p["p_ok"] is None]
+    assert len(ca6_dev) == 6, "devolução sem contar tentativa (p_ok nulo)"
+    assert ca6_sb.chamadas[0][1]["p_modo"] == "carga"
+    assert ca6_sb.finalizacao()["p_status"] == "incompleta"
+    ca6_portal.listar.assert_not_called()
+
+
+def test_ca6_carga_que_esvazia_a_fila_conclui_e_erro_marca_so_o_item(ca_ambiente, monkeypatch):
+    """CA-6 (K-5): fila esvaziada = concluida_com_erros quando um processo falha; o erro marca só aquele item."""
+    ca6_sb, _ca6_portal = ca_ambiente
+    ca6_sb.carregar(3)
+
+    def ca6_processar(ca6_portal_, ca6_sb_, ca6_pid, ca6_mod, ca6_resumo, *a, **k):
+        ca6_resumo["no_escopo"] += 1
+        if ca6_pid == 1002:
+            raise RuntimeError("detalhe HTTP 500")
+
+    monkeypatch.setattr(P, "processar_processo", ca6_processar)
+    assert P.main(["--fonte", "fiesc", "--etapa", "carga", "--orcamento-minutos", "60", *CA_ARGS]) == 0
+    ca6_marcas: dict[int, list[dict]] = {}
+    for ca6_f, ca6_p in ca6_sb.chamadas:
+        if ca6_f == "coleta_externa_fila_marcar":
+            ca6_marcas.setdefault(ca6_p["p_id"], []).append(ca6_p)
+    # o item 2 falha uma vez (tentativa contada) e, reservado de novo nesta execução, só volta à fila (p_ok nulo)
+    assert [ca6_m["p_ok"] for ca6_m in ca6_marcas[2]] == [False, None]
+    assert "HTTP 500" in ca6_marcas[2][0]["p_erro"]
+    assert [ca6_m["p_ok"] for ca6_m in ca6_marcas[1]] == [True] and [ca6_m["p_ok"] for ca6_m in ca6_marcas[3]] == [True]
+    assert ca6_sb.finalizacao()["p_status"] == "concluida_com_erros"
+
+
+def test_ca7_sigterm_na_carga_nao_reprocessa_o_que_ficou_feito(ca_ambiente, monkeypatch):
+    """CA-7 (K-5, K-6), regressão: interrompida por SIGTERM no meio da carga, a próxima execução não reprocessa os
+    itens já feitos (antes recomeçava do zero)."""
+    ca7_sb, _ca7_portal = ca_ambiente
+    ca7_sb.carregar(5)
+    ca7_vistos: list[int] = []
+    ca7_estado = {"cortar": True}
+
+    def ca7_processar(ca7_portal_, ca7_sb_, ca7_pid, *a, **k):
+        if ca7_estado["cortar"] and len(ca7_vistos) == 2:
+            raise P.TempoEsgotado()
+        ca7_vistos.append(ca7_pid)
+
+    monkeypatch.setattr(P, "processar_processo", ca7_processar)
+    with pytest.raises(SystemExit) as ca7_saida:
+        P.main(["--fonte", "fiesc", "--etapa", "completa", *CA_ARGS])
+    assert ca7_saida.value.code == 143
+    assert ca7_sb.finalizacao()["p_status"] == "incompleta"
+    assert ca7_sb.status() == {"feito": 2, "pendente": 3}, "o item interrompido e o resto do lote voltam à fila"
+
+    ca7_sb.chamadas.clear()
+    ca7_estado["cortar"] = False
+    assert P.main(["--fonte", "fiesc", "--etapa", "completa", *CA_ARGS]) == 0
+    assert ca7_vistos == [1001, 1002, 1003, 1004, 1005], "1001 e 1002 não voltam a ser hidratados"
+    assert ca7_sb.status() == {"feito": 5}

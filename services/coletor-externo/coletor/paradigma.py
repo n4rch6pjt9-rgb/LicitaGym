@@ -40,6 +40,7 @@ CPF e CNPJ de documento de licitação ficam íntegros (decisão de 01/10/2026):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import re
@@ -1050,21 +1051,175 @@ def processar_processo(portal: "PortalParadigma", sb, pid: int, mod: int, resumo
                       f"{l.get('uf')}/{l.get('municipio')} | CNAE {l.get('cnae_principal')}")
 
 
+# ---------------- coleta em camadas: descoberta -> fila -> carga (spec 0064) ----------------
+ETAPAS = ("completa", "descoberta", "carga")
+# Situações aceitas na descoberta (decisão do Marcelo, 13/11/2026), por prefixo do texto normalizado: "Finalizado com
+# contrato/pedido" entra. Medido em 13/11/2026 (sescdn, sescba): o PesquisarProcessos devolve sDsSituacao nulo (só o
+# código nCdSituacao) e as visões do mural (999 em andamento, 997 encerrados) não filtram essa listagem. Sem a situação
+# na linha, o processo não é descartado: a carga aplica a regra de escopo de hoje.
+SITUACOES_DESCOBERTA = ("em proposta", "em andamento", "finalizado")
+JANELA_DESCOBERTA_DIAS = 730   # início nos últimos 24 meses
+# Campos da listagem que, mudando, reabrem o processo na fila (objeto, situação, datas, valores). Campo de exibição
+# (paginação, ordenação, ícone) fica fora.
+CAMPOS_HASH_LISTAGEM = ("sDsObjeto", "sDsSituacao", "nCdSituacao", "tDtInicial", "tDtFinal", "tDtEncerrado",
+                        "dVlEstimado", "dVlNegociado")
+LOTE_CARGA = 20
+
+
+def hash_listagem(x: dict) -> str:
+    """sha256 dos campos de CAMPOS_HASH_LISTAGEM da linha da listagem (K-4)."""
+    base = {k: (x or {}).get(k) for k in CAMPOS_HASH_LISTAGEM}
+    texto = json.dumps(base, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(texto.encode("utf-8")).hexdigest()
+
+
+def aceita_na_descoberta(x: dict, agora: datetime) -> bool:
+    """Linha do mural que vai para a fila: id válido, situação aceita (quando a linha a traz) e início nos últimos 24
+    meses (quando a linha o traz). Sem situação ou sem data, não descarta: dado ausente não vira exclusão."""
+    pid = (x or {}).get("nCdOrigem")
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    sit = x.get("sDsSituacao")
+    if isinstance(sit, str) and sit.strip():
+        s = normalizar(sit).strip()
+        if not any(s.startswith(a) for a in SITUACOES_DESCOBERTA):
+            return False
+    inicio = parse_data(x.get("tDtInicial"))
+    if inicio and datetime.fromisoformat(inicio) < agora - timedelta(days=JANELA_DESCOBERTA_DIAS):
+        return False
+    return True
+
+
+def _enfileirar(sb, fonte: str, pagina: list, resumo: dict, agora: datetime) -> None:
+    aceitos = [x for x in pagina if isinstance(x, dict) and aceita_na_descoberta(x, agora)]
+    resumo["descartados"] += len(pagina) - len(aceitos)
+    if not aceitos:
+        return
+    itens = [{"nCdOrigem": x["nCdOrigem"], "modulo": modulo_de(x), "listagem": x, "hash": hash_listagem(x)}
+             for x in aceitos]
+    c = sb.rpc("coleta_externa_fila_enfileirar", {"p_fonte": fonte, "p_itens": itens}) or {}
+    resumo["descobertos"] += len(aceitos)
+    for k in ("novos", "reabertos", "inalterados"):
+        resumo[f"fila_{k}"] += int(c.get(k, 0) or 0)
+
+
+def descobrir(portal: "PortalParadigma", sb, termos: list[str], paginas: int | None, resumo: dict,
+              agora: datetime | None = None) -> dict:
+    """K-4: lista o mural (termo vazio = mural comum inteiro) e enfileira página a página, sem hidratar. Erro de página
+    sobe (execução falhou), nunca vira lista vazia; o que já entrou na fila fica (enfileirar é idempotente)."""
+    agora = agora or datetime.now(timezone.utc)
+    inicio = time.monotonic()
+    for termo in termos:
+        def buscar(de: int, ate: int, termo: str = termo) -> Any:
+            pagina = portal.listar(termo, de, ate)
+            if isinstance(pagina, list):
+                _enfileirar(sb, portal.fonte.slug, pagina, resumo, agora)
+            return pagina
+        lote, avisos = paginar_intervalo(buscar, tamanho=TAMANHO_PAGINA, max_paginas=paginas,
+                                         rotulo=f"{portal.fonte.slug} descoberta termo {termo!r}")
+        resumo["paginacao_avisos"].extend(avisos)
+        resumo["listados"] += len(lote)
+        log.info("%s descoberta termo %r: %d listados, %d na fila (novos %d, reabertos %d, inalterados %d), "
+                 "%d descartados (%.0f s)", portal.fonte.slug, termo, len(lote), resumo["descobertos"],
+                 resumo["fila_novos"], resumo["fila_reabertos"], resumo["fila_inalterados"], resumo["descartados"],
+                 time.monotonic() - inicio)
+    return resumo
+
+
+def carregar(portal: "PortalParadigma", sb, resumo: dict, orcamento_s: float | None, dry_run: bool,
+             com_resultados: bool, produtos: dict[int, dict] | None, fornecedores, documentos, origem: str,
+             inicio: float | None = None) -> dict:
+    """K-5: reserva lotes da fila e hidrata cada processo até o orçamento acabar. O que sobrou do lote volta à fila
+    sem contar tentativa (inclusive no SIGTERM); a fila sobrando marca a execução como incompleta. Erro de um
+    processo marca só aquele item; 401/403 do portal para tudo."""
+    inicio = time.monotonic() if inicio is None else inicio
+    fonte = portal.fonte.slug
+
+    def no_orcamento() -> bool:
+        return orcamento_s is None or time.monotonic() - inicio < orcamento_s
+
+    def marcar(item_id: int, ok: bool | None, erro: str | None = None) -> None:
+        sb.rpc("coleta_externa_fila_marcar", {"p_id": item_id, "p_ok": ok, "p_erro": erro})
+
+    falharam: set[int] = set()   # item que falhou nesta execução não é tentado de novo nela (volta na próxima)
+    while no_orcamento():
+        lote = list(sb.rpc("coleta_externa_fila_reservar", {"p_fonte": fonte, "p_limite": LOTE_CARGA}) or [])
+        # A reserva vem por tentativas: os que já falharam aqui ficam no fim. Lote só com eles = nada novo a fazer.
+        if not lote or all(int(x["id"]) in falharam for x in lote):
+            for item in lote:
+                marcar(item["id"], None)
+            log.info("%s carga: fila vazia (%d feitos, %d com erro)", fonte, resumo["fila_feitos"],
+                     resumo["fila_erros"])
+            return resumo
+        try:
+            while lote and no_orcamento():
+                item = lote[0]
+                if int(item["id"]) in falharam:
+                    lote.pop(0)
+                    marcar(item["id"], None)
+                    continue
+                pid, mod = int(item["n_cd_origem"]), int(item["modulo"])
+                log.info("%s carga: nCdOrigem %s módulo %s (fila %d, %.0f s)", fonte, pid, mod, item["id"],
+                         time.monotonic() - inicio)
+                try:
+                    processar_processo(portal, sb, pid, mod, resumo, dry_run, com_resultados, produtos, fornecedores,
+                                       listagem=item.get("listagem") or {}, documentos=documentos, origem=origem)
+                except PermissionError:
+                    raise   # bloqueio do host: o item interrompido volta à fila com o resto do lote
+                except Exception as e:  # noqa: BLE001 - um processo com erro não derruba a carga, mas é contado
+                    lote.pop(0)
+                    falharam.add(int(item["id"]))
+                    resumo["erros"] += 1
+                    resumo["fila_erros"] += 1
+                    log.warning("%s %s: %s", fonte, pid, e)
+                    marcar(item["id"], False, mascarar_segredos(f"{type(e).__name__}: {e}")[:500])
+                    continue
+                lote.pop(0)
+                marcar(item["id"], True)
+                resumo["fila_feitos"] += 1
+        finally:
+            for item in lote:   # orçamento, SIGTERM ou bloqueio: devolve sem contar tentativa
+                try:
+                    marcar(item["id"], None)
+                    resumo["fila_devolvidos"] += 1
+                except Exception as e:  # noqa: BLE001 - sem devolver, a reserva vence em 2 h e o item volta
+                    log.warning("%s: item %s da fila não devolvido (%s)", fonte, item.get("id"), e)
+    resumo["fila_incompleta"] = True
+    log.info("%s carga: orçamento de %.0f min esgotado (%d feitos, %d devolvidos)", fonte, (orcamento_s or 0) / 60,
+             resumo["fila_feitos"], resumo["fila_devolvidos"])
+    return resumo
+
+
 def coletar(portal: "PortalParadigma", sb, termos: list[str], paginas: int | None, dry_run: bool,
             com_resultados: bool = True, produtos: dict[int, dict] | None = None, fornecedores=None,
             processos: list[tuple[int, int]] | None = None, anos: list[int] | None = None, documentos=None,
-            origem: str = "manual", resumo: dict | None = None) -> dict:
+            origem: str = "manual", resumo: dict | None = None, etapa: str | None = None,
+            orcamento_s: float | None = None) -> dict:
     """`resumo`, quando vem de quem chama, é preenchido no lugar: interrompida pelo limite da etapa (SIGTERM), a
-    coleta ainda deixa os contadores do que já gravou."""
+    coleta ainda deixa os contadores do que já gravou.
+
+    `etapa` (spec 0064) liga a coleta em camadas: 'descoberta' (mural -> fila), 'carga' (fila -> hidratação, até
+    `orcamento_s`) ou 'completa' (as duas). Sem etapa, a coleta antiga por termo (dry-run, --processo, --anos)."""
     base = {"listados": 0, "processos": 0, "no_escopo": 0, "itens_escopo": 0, "itens_catalogo": 0,
             "resultados": 0, "lances": 0, "forum_mensagens": 0, "itens_com_vencedor": 0, "alertas": 0, "erros": 0,
             "participantes": 0, "fornecedores_consultados": 0, "fornecedores_em_cache": 0,
             "fornecedores_erros": 0, "paginacao_avisos": []}
+    if etapa:
+        base.update({"descobertos": 0, "descartados": 0, "fila_novos": 0, "fila_reabertos": 0,
+                     "fila_inalterados": 0, "fila_feitos": 0, "fila_erros": 0, "fila_devolvidos": 0})
     if resumo is None:
         resumo = base
     else:
         for chave, valor in base.items():
             resumo.setdefault(chave, valor)
+    if etapa:
+        inicio = time.monotonic()
+        if etapa in ("descoberta", "completa"):
+            descobrir(portal, sb, termos, paginas, resumo)
+        if etapa in ("carga", "completa"):
+            carregar(portal, sb, resumo, orcamento_s, dry_run, com_resultados, produtos, fornecedores, documentos,
+                     origem, inicio=inicio)
+        return resumo
     vistos: dict[tuple[int, int], dict] = {}
     inicio = time.monotonic()
     if processos:
@@ -1101,22 +1256,28 @@ def coletar(portal: "PortalParadigma", sb, termos: list[str], paginas: int | Non
     return resumo
 
 
-def modo_registro(anos: list[int] | None, processos: list[tuple[int, int]] | None) -> str:
-    """Modo gravado em private.coleta_externa_run (vocabulário da constraint da tabela)."""
+def modo_registro(anos: list[int] | None, processos: list[tuple[int, int]] | None, etapa: str | None = None) -> str:
+    """Modo gravado em private.coleta_externa_run (vocabulário da constraint da tabela). A etapa completa segue
+    como 'leads', o modo da coleta agendada de antes."""
     if anos:
         return "historico"
     if processos:
         return "monitorar"
+    if etapa in ("descoberta", "carga"):
+        return etapa
     return "leads"
 
 
 def status_final(resumo: dict) -> str:
     """Status gravado em coleta_externa_run; 'falhou' é também o critério do código de saída 1.
 
-    Erro sem nada no escopo é falha. Aviso de paginação (teto de segurança ou página repetida) não é fim confirmado
+    Erro sem nada no escopo (e, na carga, sem nenhum item da fila feito) é falha. Carga que parou no orçamento com
+    fila sobrando é incompleta. Aviso de paginação (teto de segurança ou página repetida) não é fim confirmado
     da listagem: a coleta conta como concluída com erros, nunca como concluída limpa."""
-    if resumo.get("erros") and not resumo.get("no_escopo"):
+    if resumo.get("erros") and not (resumo.get("no_escopo") or resumo.get("fila_feitos")):
         return "falhou"
+    if resumo.get("fila_incompleta"):
+        return "incompleta"
     if resumo.get("erros") or resumo.get("paginacao_avisos"):
         return "concluida_com_erros"
     return "concluida"
@@ -1155,6 +1316,11 @@ class RegistroColeta:
             detalhe["erro"] = mascarar_segredos(erro)[:500]
         if r.get("paginacao_avisos"):
             detalhe["paginacao_avisos"] = [str(a)[:200] for a in r["paginacao_avisos"][:20]]
+        fila = {k: int(r[k]) for k in ("descobertos", "descartados", "fila_novos", "fila_reabertos",
+                                        "fila_inalterados", "fila_feitos", "fila_erros", "fila_devolvidos")
+                if isinstance(r.get(k), int) and r.get(k)}
+        if fila:   # spec 0064 (K-4, K-5): contagens da descoberta e da carga ficam na execução
+            detalhe["fila"] = fila
         try:
             self.sb.rpc("coleta_externa_finalizar", {
                 "p_id": self.id, "p_status": status,
@@ -1190,9 +1356,19 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dry-run", action="store_true", help="não grava; mostra vencedores e fornecedores consultados")
     ap.add_argument("--origem", choices=list(ORIGENS), default="manual",
                     help="origem da ingestão gravada em cada linha (spec 0023): cron ou manual (padrão)")
+    ap.add_argument("--etapa", choices=ETAPAS, default="completa",
+                    help="spec 0064: descoberta (mural -> fila), carga (fila -> hidratação) ou completa (as duas, "
+                         "padrão). Dry-run, --processo e --anos usam a coleta por termo, sem fila")
+    ap.add_argument("--orcamento-minutos", type=float, default=None,
+                    help="carga: para limpo depois de N minutos desde o início, devolvendo o lote à fila")
     args = ap.parse_args(argv)
     if args.paginas is not None and args.paginas < 1:
         ap.error("--paginas deve ser >= 1")
+    if args.orcamento_minutos is not None and args.orcamento_minutos <= 0:
+        ap.error("--orcamento-minutos deve ser > 0")
+    sem_fila = args.dry_run or bool(args.processo) or bool(args.anos)
+    if args.etapa != "completa" and sem_fila:
+        ap.error(f"--etapa {args.etapa} usa a fila: não combina com --dry-run, --processo nem --anos")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     fonte = FONTES[args.fonte]
@@ -1202,7 +1378,10 @@ def main(argv: list[str] | None = None) -> int:
     sb = None if args.dry_run else Supabase(env("SUPABASE_URL", obrigatorio=True),
                                             env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True),
                                             drenar_catmat=False)
-    termos = [t.strip() for t in args.termos.split(";")] if args.termos else TERMOS_SISTEMA_S
+    etapa = None if sem_fila else args.etapa
+    explicitos = [t.strip() for t in args.termos.split(";")] if args.termos else None
+    # Coleta em camadas: sem --termos, a descoberta lista o mural comum inteiro (termo vazio, decisão de 13/11/2026).
+    termos = explicitos or ([""] if etapa else TERMOS_SISTEMA_S)
     processos = None
     if args.processo:
         processos = [(int(p.split("/")[0]), int(p.split("/")[1]) if "/" in p else MODULO_PADRAO) for p in args.processo]
@@ -1210,7 +1389,9 @@ def main(argv: list[str] | None = None) -> int:
     # Só a coleta agendada (origem cron) entra em coleta_externa_run: é ela que a saúde acompanha
     # (coleta_externa_dias_sem_sucesso, pior fonte). Disparo manual de uma fonte fora do lote agendado deixaria a
     # métrica crítica para sempre. Fonte bloqueada no construtor do portal (ex.: fiemg) nem chega aqui.
-    registro = RegistroColeta(sb if args.origem == "cron" else None, fonte.slug, modo_registro(anos, processos), termos)
+    termos_registro = None if termos == [""] or etapa == "carga" else termos
+    registro = RegistroColeta(sb if args.origem == "cron" else None, fonte.slug,
+                              modo_registro(anos, processos, etapa), termos_registro)
     # Limite da etapa (timeout interno do workflow) manda SIGTERM: vira TempoEsgotado e o registro fecha como
     # `incompleta`, com os contadores do que já foi gravado, em vez de ficar aberto ou zerado como falha.
     parcial: dict = {}
@@ -1221,7 +1402,8 @@ def main(argv: list[str] | None = None) -> int:
     sigterm_anterior = signal.signal(signal.SIGTERM, _tempo_esgotado)
     try:
         try:
-            r = _executar(args, fonte, portal, sb, termos, processos, anos, CadastroFornecedores, resumo=parcial)
+            r = _executar(args, fonte, portal, sb, termos, processos, anos, CadastroFornecedores, resumo=parcial,
+                          etapa=etapa)
         except TempoEsgotado:
             registro.finalizar("incompleta", parcial, erro="interrompida por SIGTERM (limite da etapa)")
             raise SystemExit(143) from None
@@ -1242,11 +1424,13 @@ def main(argv: list[str] | None = None) -> int:
 
 def _executar(args, fonte: Fonte, portal: "PortalParadigma", sb, termos: list[str],
               processos: list[tuple[int, int]] | None, anos: list[int] | None, cadastro_fornecedores,
-              resumo: dict | None = None) -> dict:
+              resumo: dict | None = None, etapa: str | None = None) -> dict:
     from .destino import env
 
     produtos = None
-    if not args.sem_catalogo:
+    # A descoberta não classifica nada: catálogo, fornecedores e documentos só servem à carga.
+    so_descoberta = etapa == "descoberta"
+    if not args.sem_catalogo and not so_descoberta:
         cats = [c.strip() for c in args.categorias.split(";")] if args.categorias else None
         try:
             produtos = portal.produtos_escopo(cats, args.tipo)
@@ -1254,9 +1438,10 @@ def _executar(args, fonte: Fonte, portal: "PortalParadigma", sb, termos: list[st
                      cats or categorias_da_fonte(args.fonte))
         except requests.RequestException as e:  # tenant sem catálogo público: segue só com regras de texto
             log.warning("catálogo %s indisponível: %s", args.fonte, e)
-    forn = None if args.sem_fornecedores or args.sem_resultados else cadastro_fornecedores(sb, dry_run=args.dry_run)
+    forn = (None if args.sem_fornecedores or args.sem_resultados or so_descoberta
+            else cadastro_fornecedores(sb, dry_run=args.dry_run))
     docs = None
-    if not args.sem_documentos:
+    if not args.sem_documentos and not so_descoberta:
         from .destino import Armazenamento
         from .documentos_paradigma import DocumentosParadigma, VisitanteInstitucional
         arm = None if args.dry_run else Armazenamento.do_ambiente()
@@ -1269,7 +1454,8 @@ def _executar(args, fonte: Fonte, portal: "PortalParadigma", sb, termos: list[st
             log.warning("VISITANTE_* não configurado: documentos que exigem cadastro ficam registrados como pendentes")
         docs = DocumentosParadigma(portal, sb, arm, visitante, int(float(env("MAX_MB", "50")) * 1048576), args.dry_run)
     return coletar(portal, sb, termos, args.paginas, args.dry_run, not args.sem_resultados, produtos, forn, processos,
-                   anos, docs, origem=args.origem, resumo=resumo)
+                   anos, docs, origem=args.origem, resumo=resumo, etapa=etapa,
+                   orcamento_s=args.orcamento_minutos * 60 if args.orcamento_minutos else None)
 
 
 if __name__ == "__main__":

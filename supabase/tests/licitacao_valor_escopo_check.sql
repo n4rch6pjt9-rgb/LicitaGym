@@ -20,6 +20,7 @@ declare
   v_i_forte bigint; v_i_piso bigint;
   r record;
   v_div bigint;
+  v_cat text;
 begin
   -- A) tabela e ACL -------------------------------------------------------------------------------------------------
   if v_tab is null then
@@ -90,6 +91,28 @@ begin
     insert into public.licitacoes_externas (fonte, codigo_externo, orgao_cnpj, numero_processo, numero_edital, prioridade)
     values ('pncp', 'check-valor-escopo-00000000000952-1-000001/2099', '00000000000952', '0952/2099', 'PE 952/2099', 'leads')
     returning id into v_l2;
+
+    -- D0: cada uma das 6 categorias, sozinha, passa pelos quatro caminhos do trigger (insert, update saindo do
+    -- escopo, update voltando, delete). Pega cópia da regra sem alguma categoria.
+    foreach v_cat in array array['forte', 'catmat', 'borracha', 'piso', 'obra_piso', 'manutencao'] loop
+      insert into public.licitacao_itens (licitacao_id, numero_item, descricao, valor_total_estimado, categoria_escopo)
+      values (v_l2, 900, 'item ' || v_cat, 3.00, v_cat);
+      if not exists (select 1 from public.licitacao_valor_escopo where licitacao_id = v_l2 and valor = 3.00) then
+        raise exception 'licitacao_valor_escopo_check D0: insert de % não entrou', v_cat;
+      end if;
+      update public.licitacao_itens set categoria_escopo = 'fraco' where licitacao_id = v_l2 and numero_item = 900;
+      if exists (select 1 from public.licitacao_valor_escopo where licitacao_id = v_l2) then
+        raise exception 'licitacao_valor_escopo_check D0: update de % para fraco não saiu', v_cat;
+      end if;
+      update public.licitacao_itens set categoria_escopo = v_cat where licitacao_id = v_l2 and numero_item = 900;
+      if not exists (select 1 from public.licitacao_valor_escopo where licitacao_id = v_l2 and valor = 3.00) then
+        raise exception 'licitacao_valor_escopo_check D0: update de fraco para % não entrou', v_cat;
+      end if;
+      delete from public.licitacao_itens where licitacao_id = v_l2 and numero_item = 900;
+      if exists (select 1 from public.licitacao_valor_escopo where licitacao_id = v_l2) then
+        raise exception 'licitacao_valor_escopo_check D0: delete de % não saiu', v_cat;
+      end if;
+    end loop;
 
     -- D1: insert em lote; só forte e piso com valor contam (fraco, sem categoria e valor nulo ficam fora).
     insert into public.licitacao_itens (licitacao_id, numero_item, descricao, valor_total_estimado, categoria_escopo)

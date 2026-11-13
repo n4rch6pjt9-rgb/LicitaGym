@@ -2063,10 +2063,18 @@ Deno.test("0050 CA-5: categorias_valor da API são as mesmas que a última migra
   let ultima = "";
   for (const nome of nomes) {
     const sql = await Deno.readTextFile(new URL(nome, pasta));
-    if (/create or replace function public\.dashboard_resumo_executivo\(/i.test(sql)) ultima = sql;
+    // Desde 20261113140000 a regra mora nas funções de licitacao_valor_escopo (trigger) e o resumo lê a tabela.
+    const redefine =
+      /create or replace function public\.(dashboard_resumo_executivo|licitacao_valor_escopo_recalcular|licitacao_valor_escopo_trg)\(/i;
+    if (redefine.test(sql)) ultima = sql;
   }
-  const m = ultima.match(/categoria_escopo in \(([^)]*)\)/i);
-  if (!m) throw new Error("a última migration de dashboard_resumo_executivo não filtra categoria_escopo in (...)");
-  const doSql = m[1].split(",").map((s) => s.trim().replace(/^'|'$/g, "")).sort();
-  assertEquals(doSql, [...RESUMO_CATEGORIAS_VALOR].sort());
+  // Todas as cópias da regra na última migration (recálculo, trigger, carga), não só a primeira.
+  const ocorrencias = [...ultima.matchAll(/categoria_escopo in \(([^)]*)\)/gi)];
+  if (ocorrencias.length === 0) {
+    throw new Error("a última migration da regra do valor no escopo não filtra categoria_escopo in (...)");
+  }
+  for (const m of ocorrencias) {
+    const doSql = m[1].split(",").map((s) => s.trim().replace(/^'|'$/g, "")).sort();
+    assertEquals(doSql, [...RESUMO_CATEGORIAS_VALOR].sort());
+  }
 });

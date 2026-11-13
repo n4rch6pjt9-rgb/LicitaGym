@@ -21,16 +21,16 @@
 --   2. Triggers FOR EACH STATEMENT em licitacao_itens (insert, update, delete, truncate), no padrão de
 --      licitacao_match (20261002170000): recalculam só as licitações cujos itens entraram, saíram ou mudaram de
 --      categoria, valor ou licitação. Upsert do coletor que não muda esses campos não recalcula nada. O recálculo
---      usa o índice parcial licitacao_itens_escopo_valor_idx (por isso ele fica) e serializa por licitação com
---      advisory lock de transação, para dois coletores na mesma licitação não gravarem soma velha.
+--      usa o índice parcial licitacao_itens_escopo_valor_idx (por isso ele fica) e serializa os recálculos com um
+--      advisory lock de transação único, para dois coletores na mesma licitação não gravarem soma velha.
 --   3. Carga inicial a partir dos itens, depois dos triggers e na mesma transação (nenhuma escrita escapa).
 --   4. dashboard_resumo_executivo: mesma assinatura, mesmas colunas, mesma ACL; o CTE valor_itens lê a tabela nova.
 --
 -- Quem escreve: só os triggers (security definer, dono da migration). Quem lê: dashboard_resumo_executivo
 -- (security invoker, chamada por service_role via api-dashboard-oportunidades). anon/authenticated sem acesso; RLS
 -- ligada e sem policy (leitura só pela Edge Function).
--- Lock: create trigger pega SHARE ROW EXCLUSIVE em licitacao_itens até o commit (coletores esperam). A carga lê
--- ~16,5 mil itens pelo índice parcial (alguns segundos com cache frio). lock_timeout de 10 s limita a espera pelo
+-- Lock: create or replace trigger pega SHARE ROW EXCLUSIVE em licitacao_itens até o commit (coletores esperam;
+-- leituras seguem). A carga lê ~16,5 mil itens pelo índice parcial (alguns segundos com cache frio). lock_timeout de 10 s limita a espera pelo
 -- lock; se estourar, a migration falha inteira e precisa ser reaplicada. Preferir o merge fora do horário de coleta.
 -- Idempotente. Verificação: supabase/tests/licitacao_valor_escopo_check.sql.
 
@@ -63,17 +63,16 @@ set search_path = pg_catalog, public, pg_temp
 as $$
 declare
   v_ids bigint[];
-  v_id bigint;
 begin
-  select array_agg(distinct x order by x) into v_ids from unnest(p_ids) as x where x is not null;
+  select array_agg(distinct x) into v_ids from unnest(p_ids) as x where x is not null;
   if v_ids is null then
     return;
   end if;
-  -- Ordem crescente: duas transações com licitações em comum pegam os locks na mesma ordem (sem deadlock entre elas).
-  -- Depois do lock, a leitura abaixo (read committed: snapshot novo por comando) já vê o commit de quem segurava.
-  foreach v_id in array v_ids loop
-    perform pg_advisory_xact_lock(hashtextextended('licitacao_valor_escopo:' || v_id::text, 0));
-  end loop;
+  -- Um lock global (padrão de licitacao_match, 20261002170000): dois recálculos concorrentes nunca gravam soma velha
+  -- e uma reclassificação em massa não enche a tabela de locks (um advisory lock por licitação enchia). Depois do
+  -- lock, a leitura abaixo (read committed: snapshot novo por comando) já vê o commit de quem segurava. Só
+  -- recalcula quem mudou categoria, valor ou licitação de item no escopo, então a espera é curta.
+  perform pg_advisory_xact_lock(20261113140000);
 
   delete from public.licitacao_valor_escopo v
    where v.licitacao_id = any (v_ids)
@@ -109,6 +108,7 @@ declare
   v_ids bigint[];
 begin
   if tg_op = 'TRUNCATE' then
+    -- TRUNCATE já segura ACCESS EXCLUSIVE em licitacao_itens: nenhum recálculo concorre.
     delete from public.licitacao_valor_escopo;
     return null;
   elsif tg_op = 'INSERT' then
@@ -142,17 +142,13 @@ $$;
 
 revoke all on function public.licitacao_valor_escopo_trg() from public, anon, authenticated, service_role;
 
-drop trigger if exists licitacao_valor_escopo_ins on public.licitacao_itens;
-create trigger licitacao_valor_escopo_ins after insert on public.licitacao_itens
+create or replace trigger licitacao_valor_escopo_ins after insert on public.licitacao_itens
   referencing new table as novos for each statement execute function public.licitacao_valor_escopo_trg();
-drop trigger if exists licitacao_valor_escopo_upd on public.licitacao_itens;
-create trigger licitacao_valor_escopo_upd after update on public.licitacao_itens
+create or replace trigger licitacao_valor_escopo_upd after update on public.licitacao_itens
   referencing old table as antigos new table as novos for each statement execute function public.licitacao_valor_escopo_trg();
-drop trigger if exists licitacao_valor_escopo_del on public.licitacao_itens;
-create trigger licitacao_valor_escopo_del after delete on public.licitacao_itens
+create or replace trigger licitacao_valor_escopo_del after delete on public.licitacao_itens
   referencing old table as antigos for each statement execute function public.licitacao_valor_escopo_trg();
-drop trigger if exists licitacao_valor_escopo_trunc on public.licitacao_itens;
-create trigger licitacao_valor_escopo_trunc after truncate on public.licitacao_itens
+create or replace trigger licitacao_valor_escopo_trunc after truncate on public.licitacao_itens
   for each statement execute function public.licitacao_valor_escopo_trg();
 
 -- Carga inicial (e acerto, se a migration rodar de novo): a tabela fica igual à soma direta dos itens.

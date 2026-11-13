@@ -313,16 +313,21 @@ def processo_com_resultado(d: dict) -> bool:
     homologada). Medição do mural de 12/11/2026: o ranking e até o troféu aparecem antes da homologação ("Em
     andamento", "Análise dos lances", "Aguardando homologação"); a compra direta (módulo 19) não tem data de
     homologação e conclui como "Finalizado com contrato" ou "com pedido"; "Finalizado" sozinho não teve vencedor."""
-    s = normalizar(d.get("sDsSituacao") or "")
-    if status_normalizado(d.get("sDsSituacao")) == "homologada" and not s.startswith(("aguard", "em aprovac")):
+    # Situação fora deste mapa (ex.: "Encerrado", "Adjudicado", "Concluído", nenhuma no banco em 12/11) não grava:
+    # na dúvida, ranking não vira preço homologado.
+    if status_normalizado(d.get("sDsSituacao")) == "homologada":
         return True
+    s = normalizar(d.get("sDsSituacao") or "")
     return s.startswith("finalizado com contrato") or s.startswith("finalizado com pedido")
 
 
 def item_com_resultado(it: dict) -> bool:
-    """Item concluído com compra: "Homologado" ou "Encerrado" (sem "com requisições liberadas", que é o item que voltou
-    sem compra: cancelado, fracassado, revogado ou finalizado sem vencedor)."""
-    return normalizar((it.get("sStItem") or "").strip()) in ("homologado", "encerrado")
+    """Item concluído com compra: "Homologado…" (inclusive "com contrato") ou "Encerrado", nunca o que voltou "com
+    requisições liberadas" (cancelado, fracassado, revogado ou finalizado sem vencedor)."""
+    s = normalizar((it.get("sStItem") or "").strip())
+    if "requisic" in s:
+        return False
+    return s.startswith("homologado") or s == "encerrado"
 
 
 def status_normalizado(situacao: str | None) -> str:

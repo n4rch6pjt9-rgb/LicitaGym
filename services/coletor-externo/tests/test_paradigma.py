@@ -1099,7 +1099,7 @@ def test_resultado_so_de_processo_concluido_com_compra(situacao, grava):
 
 
 @pytest.mark.parametrize(("situacao_item", "grava"), [
-    ("Homologado", True), ("Encerrado", True), ("Aberto", False), ("Ativo", False), ("Em análise de lances", False),
+    ("Homologado", True), ("Homologado com contrato", True), ("Encerrado", True), ("Aberto", False), ("Ativo", False), ("Em análise de lances", False),
     ("Cancelado", False), ("Cancelado com requisições liberadas", False), ("Fracassado com requisições liberadas", False),
     ("Revogado com requisições liberadas", False), ("Encerrado com requisições liberadas", False), (None, False),
 ])

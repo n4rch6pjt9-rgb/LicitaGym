@@ -130,7 +130,12 @@ Deno.test("CA-9: coleta_externa_fila_pendente_horas sai na api-saude e está em 
   }))).json();
   assertEquals(body.verificacoes.map((x: Verificacao) => x.verificacao), ["coleta_externa_fila_pendente_horas"]);
 
+  // Decisão de 13/11/2026: o limiar fica desligado até a fila escoar (20261113200000) e, desligada, a verificação sai
+  // de SAUDE_VERIFICACOES_ESPERADAS (senão o resumo sem ela acusaria contrato incompleto). Religar anda junto.
+  const desliga = await Deno.readTextFile("./supabase/migrations/20261113200000_saude_fila_limiar_desligado.sql");
+  assertEquals(/set ativo = false\s+where verificacao = 'coleta_externa_fila_pendente_horas'/.test(desliga), true);
   const yml = await Deno.readTextFile("./.github/workflows/saude.yml");
   const esperadas = yml.match(/SAUDE_VERIFICACOES_ESPERADAS:\s*(\S+)/)?.[1].split(",") ?? [];
-  assertEquals(esperadas.includes("coleta_externa_fila_pendente_horas"), true);
+  assertEquals(esperadas.includes("coleta_externa_fila_pendente_horas"), false,
+    "desligada, a verificação não pode ser exigida pelo saude.yml");
 });

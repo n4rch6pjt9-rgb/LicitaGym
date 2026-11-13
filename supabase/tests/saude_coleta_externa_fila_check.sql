@@ -11,6 +11,16 @@ begin
   update public.fontes_externas set ativo = false;
   update public.fontes_externas set ativo = true where slug = 'fiesc';
 
+  -- 20261113200000 (decisão de 13/11/2026): limiar desligado até a fila escoar; desligada, a verificação não sai
+  if (select l.ativo from private.saude_limiares l where l.verificacao = 'coleta_externa_fila_pendente_horas') then
+    raise exception 'SAUDE FILA CHECK FALHOU: limiar coleta_externa_fila_pendente_horas devia estar desligado';
+  end if;
+  if exists (select 1 from private.saude_operacional_resumo() s where s.verificacao = 'coleta_externa_fila_pendente_horas') then
+    raise exception 'SAUDE FILA CHECK FALHOU: verificação desligada saiu no resumo';
+  end if;
+  -- religada (como ficará depois do escoamento), mede pelos limiares
+  update private.saude_limiares set ativo = true where verificacao = 'coleta_externa_fila_pendente_horas';
+
   -- fila vazia -> 0 e ok
   select * into r from private.saude_operacional_resumo() s where s.verificacao = 'coleta_externa_fila_pendente_horas';
   if r.verificacao is null then

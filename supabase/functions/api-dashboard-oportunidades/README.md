@@ -467,10 +467,13 @@ POST /functions/v1/api-dashboard-oportunidades
 ```
 
 - `abrir`: `aba` para PDF; `download` para os outros formatos (a URL já baixa com o `nome_original`).
-- **404**: documento inexistente, removido do portal, ainda não baixado (`status_processamento` diferente de
-  `baixado`), sem arquivo, ou fora do bucket `licitacao-documentos` (arquivo antigo no GCS, `gs://`).
-- **500** erro de banco; **502** falha ao assinar. Nenhuma resposta traz `storage_uri`, caminho do Storage ou
-  mensagem do PostgREST/Storage.
+- **404**: documento inexistente, removido do portal, sem arquivo confirmado (`sha256` nulo) ou fora do bucket
+  `licitacao-documentos` (arquivo antigo no GCS, `gs://`). A etapa do pipeline não importa: documento `indexado`,
+  `extraido`, `ignorado` ou com `erro` de extração continua abrindo, porque o arquivo segue no Storage.
+- `abrir = download`: o nome do arquivo baixado é o `nome_original`, com a extensão do arquivo no Storage quando o
+  original não tem (ex.: "Resumo do processo.html").
+- **500** erro de banco; **502** falha ao assinar. Nenhuma resposta traz o `storage_uri` nem mensagem do
+  PostgREST/Storage (a URL assinada contém, por natureza, o caminho do objeto no bucket).
 
 ## Tratamento de Erros
 

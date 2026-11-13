@@ -10,7 +10,7 @@ type Doc = Record<string, unknown>;
 const PDF: Doc = {
   id: 169096, nome_original: "Pedidos de Reconsiderações", mime_type: "application/pdf",
   storage_uri: "supabase://licitacao-documentos/paradigma/firjan/59/3800/processo/abc.pdf",
-  status_processamento: "baixado", removido_do_portal_em: null,
+  sha256: "a".repeat(64), status_processamento: "baixado", removido_do_portal_em: null,
 };
 const HTML: Doc = { ...PDF, id: 169095, nome_original: "Resumo do processo", mime_type: "text/html",
   storage_uri: "supabase://licitacao-documentos/paradigma/firjan/59/3800/processo/resumo.html" };
@@ -98,7 +98,7 @@ Deno.test("K-2: PDF devolve URL assinada de 10 minutos para abrir na aba, sem o 
 Deno.test("K-2: outro formato baixa com o nome original", async () => {
   const { res, json, assinadas } = await chamar([HTML], { action: "documento_url", documento_id: 169095 });
   assertEquals(res.status, 200);
-  assertEquals(assinadas[0].opcoes, { download: "Resumo do processo" });
+  assertEquals(assinadas[0].opcoes, { download: "Resumo do processo.html" });   // nome sem extensão ganha a do arquivo
   assertEquals(json.abrir, "download");
 });
 
@@ -107,7 +107,9 @@ Deno.test("K-2: 404 para inexistente, removido do portal, sem arquivo, não baix
     ["inexistente", []],
     ["removido", [{ ...PDF, removido_do_portal_em: "2026-11-01T00:00:00Z" }]],
     ["sem arquivo", [{ ...PDF, storage_uri: null }]],
-    ["pendente", [{ ...PDF, status_processamento: "pendente" }]],
+    ["pendente sem arquivo", [{ ...PDF, status_processamento: "pendente", sha256: null }]],
+    ["caminho com %", [{ ...PDF, storage_uri: "supabase://licitacao-documentos/a/%2e%2e/b.pdf" }]],
+    ["caminho com barra invertida", [{ ...PDF, storage_uri: "supabase://licitacao-documentos/a\\..\\b.pdf" }]],
     ["GCS antigo", [{ ...PDF, storage_uri: "gs://licitagym-documentos/x.pdf" }]],
     ["outro bucket", [{ ...PDF, storage_uri: "supabase://outro-bucket/x.pdf" }]],
     ["caminho com ..", [{ ...PDF, storage_uri: "supabase://licitacao-documentos/../segredo.pdf" }]],
@@ -140,4 +142,30 @@ Deno.test("K-2: erro do banco é 500 e falha ao assinar é 502, sem mensagem int
   const assinar = await chamar([PDF], { action: "documento_url", documento_id: 169096 }, { erroAssinar: true });
   assertEquals(assinar.res.status, 502);
   assert(!JSON.stringify(assinar.json).includes("Object not found"));
+});
+
+Deno.test("K-2 (revisor): documento indexado, ignorado ou com erro de extração continua abrindo", async () => {
+  for (const status of ["indexado", "extraido", "ignorado", "erro"]) {
+    const { res } = await chamar([{ ...PDF, status_processamento: status }], { action: "documento_url", documento_id: 169096 });
+    assertEquals(res.status, 200, status);
+  }
+});
+
+Deno.test("K-2 (revisor): PDF reconhecido com MIME com parâmetro ou sem MIME e caminho .pdf", async () => {
+  for (const mime of ["application/PDF; charset=binary", null]) {
+    const { json, assinadas } = await chamar([{ ...PDF, mime_type: mime }], { action: "documento_url", documento_id: 169096 });
+    assertEquals(json.abrir, "aba", String(mime));
+    assertEquals(assinadas[0].opcoes, undefined);
+  }
+});
+
+Deno.test("K-2 (revisor): erro de banco ao resolver a empresa é 500, não 403", async () => {
+  const f = fakeClient([PDF]);
+  const res = await handleRequest(req({ action: "documento_url", documento_id: 169096 }), {
+    getClient: () => f.client as never, requireAuth: () => null,
+    tenantDoUsuario: () => Promise.reject(new Error("banco fora")),
+  });
+  assertEquals(res.status, 500);
+  assertEquals(f.colunas.length, 0);
+  await res.body?.cancel();
 });

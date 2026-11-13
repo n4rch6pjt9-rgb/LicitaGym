@@ -21,6 +21,7 @@ declare
   r record;
   v_div bigint;
   v_cat text;
+  v_ctid tid;
 begin
   -- A) tabela e ACL -------------------------------------------------------------------------------------------------
   if v_tab is null then
@@ -75,7 +76,7 @@ begin
   select pg_get_functiondef(p.oid) into v_fn
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
    where n.nspname = 'public' and p.proname = 'dashboard_resumo_executivo';
-  if v_fn is null or v_fn !~ 'public\.licitacao_valor_escopo' or v_fn ~ 'public\.licitacao_itens' then
+  if v_fn is null or v_fn !~ 'public\.licitacao_valor_escopo' or v_fn ~ '\mlicitacao_itens\M' then
     raise exception 'licitacao_valor_escopo_check F: dashboard_resumo_executivo não lê licitacao_valor_escopo';
   end if;
 
@@ -158,6 +159,32 @@ begin
     if r.valor is distinct from 40.00::numeric or r.itens is distinct from 2 then
       raise exception 'licitacao_valor_escopo_check D5: upsert -> valor=% itens=% (esperado 40.00 e 2)', r.valor, r.itens;
     end if;
+
+    -- D5b: upsert sem mudança na regra (só descrição) não regrava a linha (custo no caminho do coletor). Na mesma
+    -- transação now() não muda, então a prova é o ctid: update gera tupla nova.
+    select ctid into v_ctid from public.licitacao_valor_escopo where licitacao_id = v_l1;
+    insert into public.licitacao_itens (licitacao_id, numero_item, descricao, valor_total_estimado, categoria_escopo)
+    values (v_l1, 4, 'item piso descrição nova', 25.00, 'borracha')
+    on conflict (licitacao_id, numero_item) do update
+      set descricao = excluded.descricao, valor_total_estimado = excluded.valor_total_estimado,
+          categoria_escopo = excluded.categoria_escopo;
+    if (select ctid from public.licitacao_valor_escopo where licitacao_id = v_l1) is distinct from v_ctid then
+      raise exception 'licitacao_valor_escopo_check D5b: upsert sem mudança na regra regravou a linha';
+    end if;
+
+    -- D5c: um UPDATE só mexe em itens de duas licitações (statement com várias licitações).
+    insert into public.licitacao_itens (licitacao_id, numero_item, descricao, valor_total_estimado, categoria_escopo)
+    values (v_l2, 50, 'item manutencao', 4.00, 'manutencao');
+    update public.licitacao_itens set valor_total_estimado = valor_total_estimado + 1
+     where (licitacao_id = v_l1 and numero_item = 1) or (licitacao_id = v_l2 and numero_item = 50);
+    if (select valor from public.licitacao_valor_escopo where licitacao_id = v_l1) is distinct from 41.00::numeric
+       or (select valor from public.licitacao_valor_escopo where licitacao_id = v_l2) is distinct from 5.00::numeric then
+      raise exception 'licitacao_valor_escopo_check D5c: update de duas licitações -> % e % (esperado 41.00 e 5.00)',
+        (select valor from public.licitacao_valor_escopo where licitacao_id = v_l1),
+        (select valor from public.licitacao_valor_escopo where licitacao_id = v_l2);
+    end if;
+    update public.licitacao_itens set valor_total_estimado = valor_total_estimado - 1 where licitacao_id = v_l1 and numero_item = 1;
+    delete from public.licitacao_itens where licitacao_id = v_l2 and numero_item = 50;
 
     -- D6: item muda de licitação (as duas recalculam).
     update public.licitacao_itens set licitacao_id = v_l2, numero_item = 2 where id = v_i_piso;

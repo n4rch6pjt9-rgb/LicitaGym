@@ -29,8 +29,8 @@
 -- Quem escreve: só os triggers (security definer, dono da migration). Quem lê: dashboard_resumo_executivo
 -- (security invoker, chamada por service_role via api-dashboard-oportunidades). anon/authenticated sem acesso; RLS
 -- ligada e sem policy (leitura só pela Edge Function).
--- Lock: create or replace trigger pega SHARE ROW EXCLUSIVE em licitacao_itens até o commit (coletores esperam;
--- leituras seguem). A carga lê ~16,5 mil itens pelo índice parcial (alguns segundos com cache frio). lock_timeout de 10 s limita a espera pelo
+-- Lock: create or replace trigger pega SHARE ROW EXCLUSIVE em licitacao_itens, e a FK da tabela nova pega o mesmo
+-- modo em licitacoes_externas, até o commit (upserts dos coletores nas duas esperam; leituras seguem). A carga lê ~16,5 mil itens pelo índice parcial (alguns segundos com cache frio). lock_timeout de 10 s limita a espera pelo
 -- lock; se estourar, a migration falha inteira e precisa ser reaplicada. Preferir o merge fora do horário de coleta.
 -- Idempotente. Verificação: supabase/tests/licitacao_valor_escopo_check.sql.
 
@@ -71,7 +71,8 @@ begin
   -- Um lock global (padrão de licitacao_match, 20261002170000): dois recálculos concorrentes nunca gravam soma velha
   -- e uma reclassificação em massa não enche a tabela de locks (um advisory lock por licitação enchia). Depois do
   -- lock, a leitura abaixo (read committed: snapshot novo por comando) já vê o commit de quem segurava. Só
-  -- recalcula quem mudou categoria, valor ou licitação de item no escopo, então a espera é curta.
+  -- recalcula quem mudou categoria, valor ou licitação de item no escopo, então a espera é curta. Supõe READ
+  -- COMMITTED (padrão do PostgREST e do psycopg): em REPEATABLE READ o snapshot seria o do início da transação.
   perform pg_advisory_xact_lock(20261113140000);
 
   delete from public.licitacao_valor_escopo v
@@ -123,7 +124,8 @@ begin
        and o.valor_total_estimado is not null;
   else
     -- UPDATE (inclui o on conflict do update do coletor): só linhas em que algum campo da regra mudou e que estavam
-    -- ou ficaram no escopo; as duas licitações quando o item muda de licitação.
+    -- ou ficaram no escopo; as duas licitações quando o item muda de licitação. O join é por id (ninguém reescreve
+    -- o id de licitacao_itens; se reescrever, a linha some do join e o recálculo não acontece).
     select array_agg(distinct x.licitacao_id) into v_ids
       from novos n
       join antigos o on o.id = n.id

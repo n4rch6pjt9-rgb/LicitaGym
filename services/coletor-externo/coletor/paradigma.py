@@ -1262,7 +1262,8 @@ def coletar(portal: "PortalParadigma", sb, termos: list[str], paginas: int | Non
             raise falha_descoberta
         if etapa == "completa" and resumo.pop("fila_incompleta", False):
             # Na completa (pequenas e médias), fila que sobra fica para o dia seguinte: a execução conta como sucesso
-            # (o atraso aparece em coleta_externa_fila_pendente_horas), senão coleta_externa_dias_sem_sucesso subiria
+            # (o atraso aparece em coleta_externa_fila_pendente_horas, desligada até a fila escoar pela migration
+            # 20261113200000), senão coleta_externa_dias_sem_sucesso subiria
             # sem falha real enquanto houver estoque.
             resumo["fila_restante"] = True
         return resumo

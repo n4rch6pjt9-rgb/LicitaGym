@@ -108,9 +108,10 @@ Deno.test("CA-6: coleta_externa_executando_horas sai na api-saude e está em SAU
   assertEquals(esperadas.includes("coleta_externa_dias_sem_sucesso"), true);
 });
 
-// Spec 0064, CA-9 (K-9): idade do pendente mais antigo da fila do Sistema S sai na api-saude e o workflow de saúde a
-// exige; limiares atenção 26 h e crítico 48 h na definição mais recente da função.
-Deno.test("CA-9: coleta_externa_fila_pendente_horas sai na api-saude e está em SAUDE_VERIFICACOES_ESPERADAS", async () => {
+// Spec 0064, CA-9 (K-9): idade do pendente mais antigo da fila do Sistema S sai na api-saude; limiares atenção 26 h e
+// crítico 48 h na definição mais recente da função. Enquanto o limiar estiver desligado (20261113200000), a verificação
+// fica fora de SAUDE_VERIFICACOES_ESPERADAS.
+Deno.test("CA-9: coleta_externa_fila_pendente_horas sai na api-saude e fica fora das esperadas enquanto desligada", async () => {
   const migrations = [...Deno.readDirSync("./supabase/migrations")]
     .map((e) => e.name)
     .filter((n) => /^\d{14}_.*\.sql$/.test(n))

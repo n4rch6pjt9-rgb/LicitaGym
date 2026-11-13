@@ -39,6 +39,11 @@ log = logging.getLogger("coletor.documentos")
 
 SECAO_PROCESSO = "processo"
 LOCAL_ANEXOS = "EditalAnexos"
+ARQUIVO_RESUMO = "resumo_processo.html"   # nome estável do documento "Resumo do processo" (PesquisarResumoEdital)
+MODULOS_SEM_CADASTRO = {20}               # o próprio mural ignora o cadastro de visitante nesse módulo
+# Data de geração da página do resumo (label_0, ao lado da cidade): é a hora da consulta, muda a cada chamada e faria
+# cada coleta gravar uma versão nova. As datas do processo (label_1, label_2) ficam como vieram.
+_DATA_GERACAO_RESUMO = re.compile(r"(#label_0'\)\.text\(kendo\.toString\(new Date\()\d+")
 TAMANHO_MINIMO_CHAVE_HASH = 32
 
 
@@ -175,7 +180,13 @@ class DocumentosParadigma:
         return [a for a in r if a.get("sNmArquivo") and a.get("sDsParametroCriptografado")]
 
     def _identificar(self, anexo: dict, d: dict) -> bool:
-        """True quando o portal libera o download (sem exigência, ou visitante institucional cadastrado)."""
+        """True quando o portal libera o download (sem exigência, ou visitante institucional cadastrado).
+
+        Como o mural (controle de anexos, HAR FIEB de 12/11/2026): o cadastro só é pedido quando a configuração do
+        portal exige (bFlCadastroParaEfetuarDownloadAnexoAreaPublica > 0) e o módulo não é dispensado. O
+        ValidarSalvarVisitante = 1 quer dizer "permite cadastro", não "exige"."""
+        if (d.get("nCdModulo") or 59) in MODULOS_SEM_CADASTRO or getattr(self.portal, "cadastro_download", None) == 0:
+            return True
         exige = self.portal._ws("ValidarSalvarVisitante", {"cwAnexoVisitante": {
             "nCdAnexo": anexo["nCdAnexo"], "nSqAnexo": anexo["nSqAnexo"],
             "nIdTipoOrigem": d.get("nCdModulo") or 59, "nCdOrigem": d.get("nCdOrigem") or d["nCdProcesso"]}})
@@ -244,15 +255,65 @@ class DocumentosParadigma:
             "raw": {k: v for k, v in anexo.items() if k != "sDsParametroCriptografado"},
         }
 
-    def sincronizar(self, lic_id: int | None, d: dict, caminho_base: str) -> dict:
-        """Registra todos os anexos do processo e baixa os que ainda não estão no LicitaGym."""
+    def resumo_html(self, d: dict) -> str:
+        """Resumo do processo como o mural mostra (PesquisarResumoEdital): HTML com objeto, itens, prazo de entrega,
+        pagamento e condições gerais. As datas vêm em milissegundos dentro do script da página: guardar o HTML
+        original, não o texto renderizado."""
+        origem = d.get("nCdOrigem") or d["nCdProcesso"]
+        r = self.portal._ws("PesquisarResumoEdital", {"dtoProcesso": {
+            "nCdProcesso": origem, "nCdOrigem": origem, "nCdModulo": d.get("nCdModulo") or 59,
+            "dtoIdioma": {"nCdIdioma": 1}, "sGMT": "-03:00"}})
+        if not isinstance(r, str) or "<" not in r or len(r.strip()) < 50:
+            raise RuntimeError("PesquisarResumoEdital inconclusivo: resposta vazia ou sem HTML")
+        return _DATA_GERACAO_RESUMO.sub(r"\g<1>0", r)
+
+    def _sincronizar_resumo(self, lic_id: int | None, d: dict, caminho_base: str, existentes: dict, agora: str,
+                            resumo: dict) -> None:
+        from .versionamento import processar_versao
+
+        doc = existentes.get(ARQUIVO_RESUMO)
+        anterior = doc or {}
+        confirmado = anterior.get("status_processamento") == "baixado" and bool(anterior.get("sha256"))
+        try:
+            conteudo = self.resumo_html(d).encode("utf-8")
+            if doc is None:
+                doc = self.sb.upsert("licitacao_documentos", [{
+                    "licitacao_id": lic_id, "secao": SECAO_PROCESSO, "nome_original": "Resumo do processo",
+                    "arquivo_origem": ARQUIVO_RESUMO, "data_documento": None, "origem_portal": "Resumo",
+                    "last_seen_at": agora, "raw": {"metodo": "PesquisarResumoEdital",
+                                                   "normalizacao": "data de geração da página (label_0) zerada"},
+                }], "licitacao_id,secao,arquivo_origem")[0]
+                resumo["novos"] += 1
+            digest = sha256(conteudo)
+            versao, _ = processar_versao(sb=self.sb, arm=self.arm, documento_id=doc["id"], caminho_base=caminho_base,
+                                         secao=SECAO_PROCESSO, conteudo=conteudo, mime_type="text/html")
+            if versao.get("sha256") != digest or not versao.get("storage_uri"):
+                raise RuntimeError("Versão do resumo registrada sem storage_uri ou com SHA-256 divergente")
+            if not confirmado or anterior.get("sha256") != digest:
+                self.sb.atualizar("licitacao_documentos", doc["id"], {
+                    "storage_uri": versao["storage_uri"], "mime_type": "text/html", "tamanho_bytes": len(conteudo),
+                    "sha256": digest, "baixado_em": datetime.now(timezone.utc).isoformat(),
+                    "status_processamento": "baixado", "erro": None})
+            resumo["resumos"] += 1
+        except Exception as e:
+            resumo["erros"] += 1
+            log.warning("%s resumo do processo %s: %s", self.portal.fonte.slug, d.get("nCdProcesso"), e)
+            if doc is not None and not confirmado:
+                self.sb.atualizar("licitacao_documentos", doc["id"], {"status_processamento": "erro",
+                                                                      "erro": str(e)[:500]})
+
+    def sincronizar(self, lic_id: int | None, d: dict, caminho_base: str, resumo_processo: bool = False) -> dict:
+        """Registra todos os anexos do processo e baixa os que ainda não estão no LicitaGym. Com resumo_processo,
+        guarda também o resumo do processo (edital encerrado com resultado) como documento."""
         resumo = {"documentos": 0, "novos": 0, "baixados": 0, "aguardando_cadastro": 0, "erros": 0, "ignorados": 0,
-                  "removidos_do_portal": 0}
+                  "removidos_do_portal": 0, "resumos": 0}
         anexos = self.listar(d)
         resumo["documentos"] = len(anexos)
         if self.dry_run:
             for a in anexos:
                 print(f"      doc | {parse_data(a.get('tDtAnexo')) or '':25.25} | {a.get('sDsAnexo')}")
+            if resumo_processo:
+                print("      doc | resumo do processo (PesquisarResumoEdital)")
             return resumo
         agora = datetime.now(timezone.utc).isoformat()
         existentes = {r["arquivo_origem"]: r for r in self.sb.selecionar(
@@ -357,4 +418,6 @@ class DocumentosParadigma:
                         "erro": str(e)[:500],
                     })
 
+        if resumo_processo:
+            self._sincronizar_resumo(lic_id, d, caminho_base, existentes, agora, resumo)
         return resumo

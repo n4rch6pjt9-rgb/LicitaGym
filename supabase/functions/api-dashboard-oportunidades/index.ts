@@ -21,6 +21,7 @@ import { parseActionFromBody, parseActionFromUrl } from "./validation.ts";
 import { applyLicitacaoFilters, applyOportunidadesScope, calculateRange } from "./query.ts";
 import { buildEditalUrl, buildPortalUrl, ehFonteSistemaS } from "../_shared/edital-url.ts";
 import { handleAcompanhamento } from "./acompanhamento.ts";
+import { handleDocumentoUrl } from "./documentoUrl.ts";
 import { anexarAlertaPortal, type TenantDoUsuario } from "./portal.ts";
 import { ErroTenantAcesso, lerTenantDoUsuario } from "../_shared/tenant.ts";
 import type { UnifiedHttpClient } from "../_shared/http-client/index.ts";
@@ -1064,6 +1065,8 @@ export async function handleRequest(
       return await handleObjetoCategorias(ctx);
     case "resumo_executivo":
       return await handleResumoExecutivo(actionParams, ctxTenant);
+    case "documento_url":
+      return await handleDocumentoUrl(actionParams, ctxTenant, getDefaultServiceClient);
     default:
       return jsonResponse({ error: "Ação não suportada" }, 400);
   }

@@ -88,6 +88,12 @@ export interface RecorteResumo {
   catalogo?: boolean;
 }
 
+/** Spec 0061, K-2: link assinado de um documento de licitacao_documentos. */
+export interface DocumentoUrlActionParams {
+  action: "documento_url";
+  documento_id: number;
+}
+
 export interface ResumoExecutivoActionParams {
   action: "resumo_executivo";
   recorte: RecorteResumo;
@@ -115,7 +121,8 @@ export type ActionParams =
   | GetActionParams
   | ReadinessActionParams
   | AcompanhamentoActionParams
-  | ResumoExecutivoActionParams;
+  | ResumoExecutivoActionParams
+  | DocumentoUrlActionParams;
 
 export interface CompraMetadata {
   situacao: string | null;

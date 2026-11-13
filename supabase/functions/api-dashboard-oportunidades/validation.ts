@@ -1,6 +1,7 @@
 import type {
   AcompanhamentoActionParams,
   ActionParams,
+  DocumentoUrlActionParams,
   GetActionParams,
   LicitacaoFiltros,
   ListActionParams,
@@ -452,6 +453,17 @@ export function parseResumoExecutivoParams(source: Record<string, unknown>): Res
   return { action: "resumo_executivo", recorte };
 }
 
+/** Spec 0061, K-2: `documento_id` inteiro positivo (número ou string só com dígitos, até 15 dígitos). */
+export function parseDocumentoUrlParams(raw: unknown): DocumentoUrlActionParams | { error: string } {
+  const erro = { error: "Parâmetro 'documento_id' inválido: informe um inteiro positivo." };
+  if (typeof raw === "number") {
+    return Number.isSafeInteger(raw) && raw > 0 ? { action: "documento_url", documento_id: raw } : erro;
+  }
+  if (typeof raw !== "string" || !/^[0-9]{1,15}$/.test(raw.trim())) return erro;
+  const n = Number(raw.trim());
+  return n > 0 ? { action: "documento_url", documento_id: n } : erro;
+}
+
 export function parseActionFromUrl(url: URL): ActionParams | { error: string } {
   const actionParam = url.searchParams.get("action") ?? "list";
 
@@ -487,6 +499,10 @@ export function parseActionFromUrl(url: URL): ActionParams | { error: string } {
     return { action: "objeto_categorias" };
   }
 
+  if (actionParam === "documento_url") {
+    return parseDocumentoUrlParams(url.searchParams.get("documento_id"));
+  }
+
   if (actionParam === "resumo_executivo") {
     const raw: Record<string, unknown> = {};
     for (const [key, value] of url.searchParams.entries()) {
@@ -495,7 +511,7 @@ export function parseActionFromUrl(url: URL): ActionParams | { error: string } {
     return parseResumoExecutivoParams(raw);
   }
 
-  return { error: `Ação inválida: '${actionParam}'. Use 'list', 'get', 'readiness', 'acompanhamento', 'objeto_categorias' ou 'resumo_executivo'.` };
+  return { error: `Ação inválida: '${actionParam}'. Use 'list', 'get', 'readiness', 'acompanhamento', 'objeto_categorias', 'resumo_executivo' ou 'documento_url'.` };
 }
 
 export function parseActionFromBody(
@@ -531,5 +547,9 @@ export function parseActionFromBody(
     return parseResumoExecutivoParams(body);
   }
 
-  return { error: `Ação inválida: '${action}'. Use 'list', 'get', 'readiness', 'acompanhamento', 'objeto_categorias' ou 'resumo_executivo'.` };
+  if (action === "documento_url") {
+    return parseDocumentoUrlParams(body.documento_id);
+  }
+
+  return { error: `Ação inválida: '${action}'. Use 'list', 'get', 'readiness', 'acompanhamento', 'objeto_categorias', 'resumo_executivo' ou 'documento_url'.` };
 }

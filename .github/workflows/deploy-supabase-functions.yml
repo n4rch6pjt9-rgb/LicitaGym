@@ -75,7 +75,6 @@ jobs:
           FUNCTIONS=(
             sync-pncp-pca
             import-catmat-curadoria
-            sync-pncp-legislation
             sync-pncp-contratacoes-editais
             sync-pncp-contratacoes-atas
             sync-pncp-contratacoes-contratos
@@ -89,7 +88,6 @@ jobs:
             #   discover-piso-pdm — external scrape prototype, no cron auth
             #   sync-comprasgov-consulta — placeholder TODO (77 endpoints not wired)
             api-pncp-pca
-            api-pncp-legislacao
             api-pncp-contratacoes
             api-pncp-irp
             api-dashboard-oportunidades

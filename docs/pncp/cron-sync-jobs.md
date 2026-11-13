@@ -12,7 +12,7 @@ Todas as `sync-*` e a `link-catmat-pca` autenticam com `validateCronAuth`: **`Au
 | `sync-pncp-pca` | `ano` (ano UTC corrente), `codigos_classificacao` (7830), `max_paginas` (100), `verificar_periodo`, `somente_verificacao`, `forcar`, `async` | p50 134 s; orçamento interno de 110 s, depois retoma | pncp.gov.br (consulta + search) | **agendar** com gate e `async` |
 | `link-catmat-pca` | `limite` (500, máx. 1000), `offset`, `classe_catmat`, `limiar_similaridade` | até 27 s por lote de 500 | nenhuma (só banco) | **agendar** em lotes |
 | `sync-pncp-orgaos` | nenhum | 21–27 s (191 CNPJs) | pncp.gov.br (integração) | **agendar** |
-| `sync-pncp-legislation` | nenhum | 2 s | www.gov.br | **agendar** (semanal) |
+| ~~`sync-pncp-legislation`~~ | — | — | — | removida (desagendada pela spec 0044, apagada do repositório pela 0043) |
 | `sync-pncp-catalogo` | nenhum | não medido (nunca rodou) | pncp.gov.br (integração) | **agendar** (mensal) |
 | coletor Python (`python -m coletor.pncp`) | `--origem cron\|manual`, `--termos-padrao` (rápido) | leads completo (~160 termos): 3h43 no cron de 15/10 (run 38746383473); rápido (12 termos): 31 min no disparo de 14/10 (run 38648833691) | pncp.gov.br | **agendado** no GitHub Actions (`.github/workflows/coletor-pncp.yml`, 06:00 BRT, completo; uma etapa por job, em sequência, cada uma com limite de 330 min; um disparo enquanto outro run espera cancela o que esperava); disparo manual pela tela de sincronizações (`api-syncs` → workflow_dispatch, `rapido=true`) |
 | `sync-portal-compras` | `limite` (40), `origem` (`cron` no job `licitagym-sync-portal-compras`, `0 11 * * *`; `manual` pela api-syncs; spec 0023). Só grava `portal_consulta`; não toca a proveniência de `licitacoes_externas` | não medido | portaldecompraspublicas.com.br | **agendado** diário (migration `20261008180000`, corpo com `origem` desde `20261014190000`) |
@@ -40,7 +40,7 @@ Janela fora de pico: 02:00–06:00 BRT. Os minutos quebrados espalham a carga. O
 | 6 | `licitagym-sync-pncp-orgaos` | `sync-pncp-orgaos` | diário 04:43 | `43 7 * * *` | `{}` | 150 s | Entidades e órgãos dos CNPJs dos planos PCA. Depende do PCA. Leva 21–27 s. |
 | 7 | `licitagym-orgaos-classificar` | SQL: `fn_orgaos_uasgs_classificar()` | diário 05:03 | `3 8 * * *` | — | `statement_timeout` de 10 min | Classifica órgãos e UASGs na transação própria. Não espera o refresh da MV. |
 | 7b | `licitagym-escopo-match` | SQL: `fn_escopo_match_atualizar()` | diário 05:18 | `18 8 * * *` | — | `statement_timeout` de 10 min | Sincroniza `escopo_item_calc` (só texto novo ou alterado), atualiza `mv_escopo_demanda` e grava `match_nivel`. Faixa livre 05:12–05:26, depois do pior caso da classificação. |
-| 8 | `licitagym-sync-pncp-legislation` | `sync-pncp-legislation` | seg 05:27 | `27 8 * * 1` | `{}` | 60 s | Página de legislação, muda raramente. Leva 2 s. |
+| 8 | ~~`licitagym-sync-pncp-legislation`~~ | — | — | — | — | — | Desagendado pela migration `20261109020000_legislacao_aposenta_sync` (spec 0044); a função saiu do repositório pela spec 0043. |
 | 9 | `licitagym-sync-pncp-catalogo` | `sync-pncp-catalogo` | dia 1, 05:37 | `37 8 1 * *` | `{}` | 150 s | Categorias de item do PCA (tabela de referência, nunca carregada). |
 | 10 | `licitagym-cron-respostas` | SQL: `private.cron_coletar_respostas()` | a cada hora, no minuto 11 | `11 * * * *` | — | — | Copia o status HTTP de `net._http_response`, que dura 6 h, para `private.cron_edge_chamadas`. |
 | 11 | `licitagym-cron-limpeza` | SQL | dom 05:51 | `51 8 * * 0` | — | — | Apaga `cron.job_run_details` com mais de 30 dias e `private.cron_edge_chamadas` com mais de 90. |
@@ -52,7 +52,7 @@ Sobre o job 5: o `pg_net` dispara os 7 lotes do `link-catmat-pca` quase ao mesmo
 ```
 dom: compras-catmat catálogo (02:07) → retomada do catálogo (02:27)
 diário: pca-fila (03:13) → pca-fila-continuacao (a cada 10 min até 04:50) → link-catmat-pca (04:23) → link-pca-edital em dry_run (04:33) → orgaos (04:43) → classificar (05:03) → escopo (05:18)
-independentes: pca-reconciliacao (dia 1 02:13), legislation (seg 05:27), catalogo (dia 1 05:37), respostas (:11), limpeza (dom 05:51)
+independentes: pca-reconciliacao (dia 1 02:13), catalogo (dia 1 05:37), respostas (:11), limpeza (dom 05:51)
 ```
 
 - `link-catmat-pca` precisa do catálogo CATMAT (domingo) e do PCA do dia. O vínculo e o sync de órgãos continuam na lista fixa de classes (7830 e 7220); o job de domingo não amplia esse escopo.
@@ -82,7 +82,6 @@ O valor do segredo não aparece na migration, no `cron.job.command` nem no log. 
 - **pg_net:**
   - 150 s nas funções síncronas: é o limite de parede da Edge, e passar disso vira 546/504 de qualquer jeito;
   - 120 s no `link-catmat-pca`;
-  - 60 s na `legislation`;
   - o PCA usa `async`, responde 202 em segundos e segue em background com orçamento interno de 110 s.
 - **pg_cron:** o job só enfileira a requisição (milissegundos). Os jobs SQL de classificação (05:03) e de escopo (05:18) rodam cada um com `set local statement_timeout = '10min'`, em transações separadas.
 - **Concorrência:** `max_running_jobs = 32` sobra. Os locks do `pncp_sync_run` impedem duas execuções do mesmo sync: a segunda responde `already_running`.
@@ -143,9 +142,9 @@ O valor do segredo não aparece na migration, no `cron.job.command` nem no log. 
    Para trocar o valor depois: `select vault.update_secret(id, '<novo>') from vault.secrets where name = 'sync_cron_secret';`.
 4. **Testar uma chamada** sem expor o valor, também no SQL Editor:
    ```sql
-   select private.cron_chamar_edge('teste-manual', 'sync-pncp-legislation', '{}'::jsonb, 60000);
+   select private.cron_chamar_edge('teste-manual', 'sync-pncp-orgaos', '{}'::jsonb, 150000);
    ```
-   O bigint devolvido é o `request_id` do pg_net, não o `id` da linha. Depois de uns segundos, `select status_code, left(content,200) from net._http_response order by created desc limit 1;` deve mostrar **200**. Se der 401, os valores dos passos 2 e 3 são diferentes.
+   Isso roda a sync de órgãos de verdade (idempotente, 21–27 s). O bigint devolvido é o `request_id` do pg_net, não o `id` da linha. Depois de uns segundos, `select status_code, left(content,200) from net._http_response order by created desc limit 1;` deve mostrar **200**. Se der 401, os valores dos passos 2 e 3 são diferentes.
 5. **Atualizar o script local do PowerShell** com o novo valor, porque o antigo deixa de valer.
 6. **Extensões:** não há nada a habilitar. `pg_cron`, `pg_net` e `supabase_vault` já estão instaladas.
 7. **Ordem com o merge:** os passos 1–3 podem ser feitos antes ou depois do merge. Enquanto o segredo não existir, os jobs falham de forma visível e não chamam nada. O primeiro job útil depois do merge é o `licitagym-sync-pncp-pca`, às 03:13.

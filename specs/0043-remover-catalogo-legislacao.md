@@ -1,6 +1,6 @@
 # 0043: Remover o catálogo de legislação (`api-pncp-legislacao`, tabelas `legislacao_*` e bucket `pncp-legislation`)
 
-- **Status:** aprovada (Marcelo, 08/11/2026)
+- **Status:** em implementação (aprovada pelo Marcelo em 08/11/2026; K-5 incluída em 13/11/2026). PR A = K-1 + K-5
 - **Alimenta:** spec-mãe 0032, fase 4, como limpeza da 0044 (que alimenta a fase 4). Tira do caminho um catálogo
   que ninguém lê e que confunde com a base usada pelo agente jurídico (`norma_dispositivos`) (decisão P-6).
 - **Repositório:** LicitaGym (o Dashboard não muda; ver "Impacto em dados")
@@ -79,10 +79,11 @@ Os passos 3 e 4 são **dois PRs** (decisão P-2): a migration só vai para merge
 
 | ID | Contrato | Entrada | Saída | Erros | Quem |
 |---|---|---|---|---|---|
-| K-1 | Remoção da `api-pncp-legislacao` do repositório: apaga `supabase/functions/api-pncp-legislacao/`; tira a entrada de `supabase/config.toml`, de `.github/workflows/deploy-supabase-functions.yml` e de `scripts/deploy-functions.ps1`; em `tests/supabase/functions/_shared/api_pncp_auth_order_sec_edge_test.ts` apaga o teste SEC-EDGE-004 e tira `api-pncp-legislacao/index.ts` da lista do SEC-EDGE-002 (que segue cobrindo `api-pncp-pca` e `api-pncp-contratacoes`); atualiza os quatro `docs/pncp/*.md` da leitura obrigatória | — | nenhum arquivo em `supabase/functions/`, `scripts/`, `.github/` ou `tests/` cita `api-pncp-legislacao` | CI (`deno-check-funcoes.sh`, Deno) falha se sobrar import ou entrada | desenvolvedor (PR) |
+| K-1 | Remoção da `api-pncp-legislacao` do repositório: apaga `supabase/functions/api-pncp-legislacao/`; tira a entrada de `supabase/config.toml`, de `.github/workflows/deploy-supabase-functions.yml` e de `scripts/deploy-functions.ps1`; em `tests/supabase/functions/_shared/api_pncp_auth_order_sec_edge_test.ts` apaga o teste SEC-EDGE-004 e tira `api-pncp-legislacao/index.ts` da lista do SEC-EDGE-002 (que segue cobrindo `api-pncp-pca` e `api-pncp-contratacoes`); atualiza os quatro `docs/pncp/*.md` da leitura obrigatória | — | nenhum arquivo em `supabase/functions/`, `scripts/` ou `.github/` cita `api-pncp-legislacao`; em `tests/`, só os testes que provam a ausência | CI (`deno-check-funcoes.sh`, Deno) falha se sobrar import ou entrada | desenvolvedor (PR) |
 | K-2 | Aposentadoria em produção (memória "Aposentar Edge Function"): o merge republica as funções presentes no repositório mas **não apaga** a que saiu. O Marcelo apaga no painel ou com `supabase functions delete api-pncp-legislacao --project-ref ifaiagegyicjzlpskafh` (o hook bloqueia o agente). Prova: `POST https://ifaiagegyicjzlpskafh.supabase.co/functions/v1/api-pncp-legislacao` sem token responde **404** `NOT_FOUND`; **401** = ainda viva. Conferir também `list_edge_functions` | `POST` sem token | `404` | `401` → função viva, repetir o delete | Marcelo apaga; agente verifica (somente leitura) |
 | K-3 | Migration `<timestamp>_legislacao_remove_catalogo.sql` (timestamp depois das migrations da 0044), destrutiva e idempotente: (a) **guarda**: `raise exception` se ainda existir `cron.job` com `jobname = 'licitagym-sync-pncp-legislation'` (prova de que a 0044 foi aplicada antes); (b) `drop policy if exists legislacao_storage_read` e `legislacao_storage_service_write` em `storage.objects`; (c) um único `drop table if exists ... restrict` com `legislacao_alertas`, `legislacao_relacoes`, `legislacao_versoes`, `legislacao_documentos`, `legislacao_fontes`, `compras_api_secao_legislacao` e `compras_api_secoes` (decisões P-3 e P-4). **Sem `cascade`**: dependente não previsto faz a migration falhar em vez de sumir em silêncio. Junto: `tabelas_acl_check.sql` e `supabase/sql/inventario_dados.sql` sem as tabelas removidas | — | tabelas e policies ausentes; segunda execução não falha | guarda dispara se a 0044 não está aplicada; `drop` falha se aparecer dependente novo | migration (deploy) |
 | K-4 | Bucket `pncp-legislation`: esvaziado e apagado pela API de Storage (o Supabase não deixa apagar `storage.objects`/`storage.buckets` por SQL), **pelo painel** do Supabase (decisão P-5). Nunca outro bucket | id do bucket fixo `pncp-legislation` | `storage.buckets` sem o id; `storage.objects` sem linha com esse `bucket_id` | bucket não vazio → API recusa o delete; esvaziar antes | Marcelo (painel); agente verifica (somente leitura) |
+| K-5 | Remoção da `sync-pncp-legislation` do repositório, no mesmo PR A (decisão de 13/11): apaga `supabase/functions/sync-pncp-legislation/` (que desde a 0044 só respondia 410) e `tests/supabase/functions/sync_pncp_legislation_aposentada_test.ts`; tira a entrada de `supabase/config.toml`, do workflow de deploy, de `scripts/deploy-functions.ps1` e das docs `docs/pncp/*.md`. Em produção vale a mesma regra da K-2: o Marcelo apaga a função e o agente confere `POST` sem token → **404** | — | nenhum arquivo em `supabase/functions/`, `scripts/` ou nos arquivos de deploy cita `sync-pncp-legislation` | `401` depois do delete → função viva | desenvolvedor (PR) + Marcelo (delete) |
 
 ## Critérios de aceite
 
@@ -95,6 +96,7 @@ Os passos 3 e 4 são **dois PRs** (decisão P-2): a migration só vai para merge
 | CA-5 | K-1 | **Dado** o teste SEC-EDGE-002 sem a legislação, **quando** roda, **então** continua exigindo `requireCronAuth` antes de `beginIdempotency` em `api-pncp-pca` e `api-pncp-contratacoes` (regressão: a cobertura de auth das outras APIs não cai junto). | Deno `tests/supabase/functions/_shared/api_pncp_auth_order_sec_edge_test.ts` |
 | CA-6 | K-2 | **Dado** a função apagada em produção, **quando** se faz `POST` sem token na URL dela, **então** a resposta é 404 `NOT_FOUND` (401 reprova). CA negativo de acesso: nem anon nem usuário logado alcançam mais o caminho que assinava URL do bucket. | verificação em produção (curl), com saída colada no PR; skill `verificar-producao` |
 | CA-7 | K-4 | **Dado** o bucket esvaziado e apagado, **quando** se consulta `storage.buckets` e `storage.objects`, **então** não há bucket `pncp-legislation` nem objeto com esse `bucket_id`, e a contagem dos outros buckets é a mesma de antes. | consulta somente leitura pelo MCP, antes e depois, colada no PR; skill `verificar-producao` |
+| CA-8 | K-5 | **Dado** o repositório, **quando** o teste roda, **então** não existe `supabase/functions/sync-pncp-legislation/` e nem os arquivos de deploy nem as Edge Functions citam o slug. Em produção, depois do delete, `POST` sem token responde 404 (401 reprova). | Deno `tests/supabase/legislacao_catalogo_removido_test.ts` + curl colado no PR |
 
 Não há CA de outro tenant: as tabelas são catálogo global, sem `tenant_id`, e nenhuma delas é lida por usuário.
 
@@ -106,12 +108,12 @@ Não há CA de outro tenant: as tabelas são catálogo global, sem `tenant_id`, 
 | K-2 | `/spec` | Marcelo (painel ou CLI) | curl sem token (CA-6) | — | skill `verificar-producao` + `list_edge_functions` |
 | K-3 | `/spec` | skill `nova-migration`, `/implement` | SQL `_check` (CA-1 a CA-3); skill `validar-migrations`; contagem antes/depois no PR | `revisor-migration` + `revisor-seguranca` (drop de policy de Storage e de tabelas com ACL) + `revisor-codigo` | skill `verificar-producao` + `get_advisors` (security) |
 | K-4 | `/spec` | Marcelo (painel) | consulta antes/depois (CA-7) | — | skill `verificar-producao` |
+| K-5 | `/spec` | `/implement` (TDD) + Marcelo (delete em produção) | Deno CA-8; `scripts/ci/deno-check-funcoes.sh` | `revisor-codigo` + `revisor-seguranca` | skill `verificar-producao` (POST sem token → 404) |
 
 ## Fora de escopo
 
 - `public.norma_dispositivos` (base do agente jurídico): intocada.
 - `public.legislacao` e `public.legislacao_embeddings` (RAG offline): intocadas.
-- `sync-pncp-legislation`: aposentada pela 0044 (410). Apagá-la de vez em produção é outra limpeza, depois desta.
 - O cron, a saúde e o catálogo da `api-syncs`: mudam na 0044.
 - Os arquivos em `.audit/` (registro histórico de auditoria): não mudam.
 - As telas `/juridico/legislacao` do Dashboard: são demo (fixtures) e não leem este catálogo; ligá-las a dado real é
@@ -130,8 +132,8 @@ Não há CA de outro tenant: as tabelas são catálogo global, sem `tenant_id`, 
   Nenhum grant novo.
 - **Storage:** bucket `pncp-legislation` apagado (27 objetos, 3.832.414 bytes em 08/11; recontar depois da 0044).
 - **Backfill/reprocessamento:** não. Contagem antes/depois no PR B (tabelas e bucket). Sem backup (P-1).
-- **Edge Functions republicadas no merge:** todas (regra do deploy); `api-pncp-legislacao` sai do repositório e é
-  apagada à mão (K-2).
+- **Edge Functions republicadas no merge:** todas (regra do deploy); `api-pncp-legislacao` e `sync-pncp-legislation`
+  saem do repositório e são apagadas à mão (K-2 e K-5).
 - **Contrato com o Dashboard:** inalterado (o Dashboard não chama a função e as telas jurídicas usam fixtures).
 - **Dado oficial x derivado:** as 13 normas do seed vêm de URLs oficiais (Planalto, gov.br) e continuam
   reproduzíveis pela migration `20260920142857`; o texto vigiado das normas passa a ser o `corpus.json` da 0044. Nada é
@@ -148,6 +150,7 @@ Não há CA de outro tenant: as tabelas são catálogo global, sem `tenant_id`, 
 - 08/11: bucket esvaziado e apagado **pelo painel** (P-5).
 - 08/11: a spec é **limpeza da 0044**, insumo da fase 4 da 0032 (P-6).
 - 08/11: spec **aprovada**.
+- 13/11: `sync-pncp-legislation` também sai, no mesmo PR A (K-5). A legislação será alimentada de outra forma.
 - 08/11 (verificado, não decisão): as telas `/juridico/legislacao` do Dashboard usam fixtures; nenhuma tabela daqui
   é lida pelo front (P-7).
 

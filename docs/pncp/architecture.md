@@ -30,7 +30,6 @@ Storage       → pncp-legislation (PDFs imutáveis por versão)
 
 | Função | Cron sugerido | Fonte |
 |--------|---------------|-------|
-| `sync-pncp-legislation` | `0 */6 * * *` | Scrape gov.br |
 | `sync-pncp-pca` | **1×/ano** + verificação | Probe segmentado `GET /v1/pca/?codigoClassificacaoSuperior=7830` (primário) + Search `pcaorgao` (secundário) — ver [`plano-probe-pca-incremental.md`](./plano-probe-pca-incremental.md) |
 | `import-catmat-curadoria` | manual | POST JSON exportado do catálogo HTML |
 | `sync-pncp-contratacoes-editais` | `0 */6 * * *` | GET `/v1/contratacoes/*` |
@@ -47,7 +46,6 @@ Storage       → pncp-legislation (PDFs imutáveis por versão)
 |--------|-----|------|
 | `api-pncp-pca` | Lista `pca_planos` | Dispara sync (Idempotency-Key) |
 | `api-pncp-contratacoes` | `?tipo=editais\|atas\|contratos` | Dispara sync por tipo |
-| `api-pncp-legislacao` | Lista documentos; `?signed_url=true` | Dispara sync legislação |
 
 Autenticação: JWT Supabase para leitura; sync manual exige `SYNC_CRON_SECRET` ou JWT válido.
 

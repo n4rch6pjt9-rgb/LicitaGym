@@ -1053,3 +1053,16 @@ def test_ws_registra_cada_nova_tentativa_no_log(monkeypatch, caplog):
     assert len(linhas) == 3
     assert all("fiesc" in ln and "PesquisarProcessos" in ln for ln in linhas)
     assert "HTTP 503" in linhas[0] and "ConnectionError" in linhas[1] and "HTTP 429" in linhas[2] and "9" in linhas[2]
+
+
+def test_aguardando_homologacao_nao_e_homologada():
+    """Regressão (12/11/2026): "Aguardando homologação" (nCdSituacao 23) caía em `homologada` por conter "homolog" e
+    mandava para `historico` 3 editais ainda sem homologação (sestsenat 766, firjan 693, fieb 77, todos módulo 18).
+    Status sem homologação nunca vira histórico: fica em julgamento, e a prioridade é `monitorar`."""
+    for situacao in ("Aguardando homologação", "AGUARDANDO HOMOLOGACAO", "Aguardando Homologação do Processo"):
+        assert P.status_normalizado(situacao) == "em_julgamento", situacao
+        assert P.prioridade_da_compra(P.status_normalizado(situacao), None)[0] == "monitorar", situacao
+    assert P.quer_resumo_do_processo({"sDsSituacao": "Aguardando homologação"}) is False
+    assert P.status_normalizado("Homologado") == "homologada"
+    assert P.status_normalizado("Homologado com contrato") == "homologada"
+    assert P.status_normalizado("Homologado parcialmente") == "homologada"

@@ -47,6 +47,7 @@ def _portal():
     p.itens = MagicMock(return_value=P.limpar(FX["itens"]))
     p.resultado_item = lambda d, it, ls=None: P.limpar(FX["lances"])
     p.lances = lambda d, it: P.limpar(FX["lances"])
+    p.forum = lambda d: []
     return p
 
 

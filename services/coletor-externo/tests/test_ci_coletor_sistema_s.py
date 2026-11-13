@@ -37,11 +37,39 @@ def test_coleta_termina_antes_do_limite_do_job_para_fechar_o_registro():
     assert int(m.group(2)) >= 60
 
 
-def test_sesc_senac_rs_fora_do_lote_agendado_mas_disponivel_a_mao():
+def _grupo(texto, variavel):
+    return re.search(rf"^\s*{variavel}='([^']*)'", texto, re.M).group(1)
+
+
+def test_k8_grupos_por_tamanho_e_grandes_em_camadas():
+    """Spec 0064, K-8 (substitui a regra de 12/11/2026 que tirava o sesc_senac_rs do lote): pequenas num job, em
+    sequência, cada uma com orçamento; médias um job cada; fieb e sesc_senac_rs com descoberta no lote diário e carga
+    a cada 2 h com 60 min. fiemg, fiergs e fiemt ficam fora do lote (bloqueio do host)."""
+    import json  # noqa: PLC0415
+
     texto = _texto()
-    todas = re.search(r"todas\|\"\"\)\s*\n\s*FONTES='(\[[^']*\])'", texto).group(1)
-    assert "sesc_senac_rs" not in todas
-    assert re.search(r"\|sesc_senac_rs\|", texto), "continua aceita no disparo manual"
+    pequenas = json.loads(_grupo(texto, "PEQUENAS"))
+    assert set(pequenas["fontes"].split()) == {"sescdn", "findes", "sescrj", "fiems", "sfiec", "sescsp", "sestsenat"}
+    assert pequenas["etapa"] == "completa" and pequenas["orcamento"]
+    limite = int(pequenas["limite"].rstrip("m"))
+    assert int(pequenas["orcamento"]) < limite and (limite + 1) * len(pequenas["fontes"].split()) < 75
+    medias = json.loads(f"[{_grupo(texto, 'MEDIAS')}]")
+    assert sorted(g["fontes"] for g in medias) == ["fiesc", "firjan", "sescba"]
+    assert all(g["etapa"] == "completa" and g["orcamento"] == "60" for g in medias)
+    desc = json.loads(f"[{_grupo(texto, 'GRANDES_DESC')}]")
+    carga = json.loads(f"[{_grupo(texto, 'GRANDES_CARGA')}]")
+    assert sorted(g["fontes"] for g in desc) == sorted(g["fontes"] for g in carga) == ["fieb", "sesc_senac_rs"]
+    assert all(g["etapa"] == "descoberta" for g in desc)
+    assert all(g["etapa"] == "carga" and g["orcamento"] == "60" for g in carga)
+    assert all(int(g["orcamento"] or 0) + 1 < int(g["limite"].rstrip("m")) < 75
+               for g in [pequenas, *medias, *desc, *carga])
+    assert re.search(r'cron:\s*"30 9 \* \* \*"', texto) and re.search(r'cron:\s*"15 \*/2 \* \* \*"', texto)
+    assert re.search(r'"\$\{AGENDA\}" = "15 \*/2 \* \* \*"', texto), "a agenda de 2 h roda só a carga das grandes"
+    todas = " ".join([pequenas["fontes"], *(g["fontes"] for g in medias + desc)])
+    for bloqueada in ("fiemg", "fiergs", "fiemt"):
+        assert bloqueada not in todas
+    assert re.search(r"\|fiergs\|", texto) and re.search(r"\|fiemt\|", texto), "continuam aceitas no disparo manual"
+    assert "uses:" not in texto
 
 
 def _blocos_run(texto):

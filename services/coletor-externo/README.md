@@ -189,6 +189,27 @@ saída inválida; 3 catálogo possivelmente cortado (página repetida ou limite 
 Em 08/11/2026 o Sesc DN tinha 52 produtos em
 `PT030 - EQUIP CONDICIONAMENTO FISICO` e 79 em `ES1205 - EQUIP E MAT ESPORTIVO`.
 
+## Coletor Sistema S — coleta em camadas (spec 0064, 13/11/2026)
+
+A coleta agendada tem duas etapas, ligadas pela fila `private.coleta_externa_fila` (só por RPC, `service_role`):
+
+```bash
+python3 -m coletor.paradigma --fonte fieb --etapa descoberta              # mural comum inteiro -> fila, sem hidratar
+python3 -m coletor.paradigma --fonte fieb --etapa carga --orcamento-minutos 60   # fila -> detalhe, itens, lances, fórum
+python3 -m coletor.paradigma --fonte fiesc                                # --etapa completa (padrão): as duas
+```
+
+- **Descoberta:** `PesquisarProcessos` sem termo (ou os `--termos` dados), página a página; entra na fila o processo
+  com início nos últimos 24 meses e situação "Em proposta", "Em andamento" ou "Finalizado…" quando a linha traz a
+  situação (medido em 13/11/2026: a listagem devolve `sDsSituacao` nulo; sem ela, não descarta). O hash da linha
+  (objeto, situação, datas, valores) decide: igual, o processo não volta a ser hidratado; mudou, volta à fila. Processo
+  em `leads`/`monitorar` volta à fila uma vez por dia. Erro de página = execução `falhou`, nunca lista vazia.
+- **Carga:** reserva lotes (`for update skip locked`) e hidrata cada um com a regra de escopo de sempre. No fim do
+  orçamento (ou no SIGTERM do limite do job) devolve o lote à fila sem contar tentativa e fecha `incompleta`; a
+  próxima execução continua de onde parou. Erro de um processo marca só aquele item (até 5 falhas; depois `erro`).
+- `--dry-run`, `--processo` e `--anos` seguem a coleta antiga por termo, sem fila.
+- Saúde: `coleta_externa_fila_pendente_horas` (pendente mais antigo, atenção 26 h, crítico 48 h).
+
 ## Coletor Sistema S — adaptador Paradigma (v15, 26/09/2026)
 
 Novidades sobre a v14 (validado ao vivo na SFIEC, PE000652022):

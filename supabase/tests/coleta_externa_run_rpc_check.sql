@@ -85,6 +85,15 @@ begin
     raise exception 'COLETA RUN CHECK FALHOU: fonte inexistente aceita';
   end if;
 
+  -- Spec 0064, CA-8 (K-7): modos 'descoberta' e 'carga' aceitos; modo inventado recusado pela CHECK (acima).
+  v_id := public.coleta_externa_iniciar('fiesc', 'carga', null);
+  perform public.coleta_externa_finalizar(v_id, 'incompleta');
+  v_id := public.coleta_externa_iniciar('fiesc', 'descoberta', null);
+  perform public.coleta_externa_finalizar(v_id, 'concluida');
+  if (select count(*) from private.coleta_externa_run where fonte = 'fiesc' and modo in ('carga', 'descoberta')) <> 2 then
+    raise exception 'COLETA RUN CHECK FALHOU: CA-8: modos carga/descoberta não gravados';
+  end if;
+
   -- contagem negativa vira 0; execução órfã (> 6 h em executando) vira incompleta ao abrir outra da mesma fonte
   v_id := public.coleta_externa_iniciar('fiesc', 'leads', null);
   perform public.coleta_externa_finalizar(v_id, 'concluida_com_erros', -5, 1, 0, 0, -1, null);

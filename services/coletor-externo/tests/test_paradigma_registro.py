@@ -71,9 +71,10 @@ def test_coleta_concluida_abre_e_fecha_registro(sb, monkeypatch):
         },
     )
     assert P.main(ARGS_BASE) == 0
+    # Spec 0064: o padrão (--etapa completa) descobre pelo mural comum, sem termo; a execução não registra termos.
     assert sb.rpcs[0] == (
         "coleta_externa_iniciar",
-        {"p_fonte": "fiesc", "p_modo": "leads", "p_termos": P.TERMOS_SISTEMA_S},
+        {"p_fonte": "fiesc", "p_modo": "leads", "p_termos": None},
     )
     fim = _finalizacao(sb)
     assert fim["p_id"] == 42 and fim["p_status"] == "concluida"

@@ -193,6 +193,13 @@ export interface ItemAcompanhamento {
    */
   unidadeSigla?: string | null;
   unidadeSiglaOrigem?: "normalizada_da_unidade_pncp" | null;
+  /**
+   * Só no Paradigma (spec 0061, K-1), do registro do item no mural (PesquisarProcessoDetalheItemProduto): melhor
+   * lance (moeda do vencedor; senão a do processo), marca e modelo do vencedor. null = o portal não publicou.
+   */
+  melhorLance?: number | null;
+  marcaVencedor?: string | null;
+  modeloVencedor?: string | null;
 }
 
 export interface AtaAcompanhamento {
@@ -314,3 +321,97 @@ export type AcompanhamentoResponse =
     } | null;
   };
 
+
+// -----------------------------------------------------------------------------
+// Spec 0061, K-1: acompanhamento do Paradigma (Sistema S) lido do banco
+// -----------------------------------------------------------------------------
+
+/**
+ * Seção lida do banco (formato do K-4 da spec 0029). `gravado_em`: quando o coletor gravou (ISO; null =
+ * desconhecido). Sem linha gravada ou falha de leitura: `dados: null` com `erro` explícito, nunca lista vazia.
+ */
+export interface SecaoBanco<T> {
+  dados: T | null;
+  total?: number;
+  erro: string | null;
+  origem: "banco";
+  gravado_em: string | null;
+}
+
+/** Datas do processo no mural (raw da licitação), em ISO UTC; null = o portal não publicou (data zerada). */
+export interface DatasProcessoParadigma {
+  inicio: string | null;
+  fim: string | null;
+  publicacao: string | null;
+  aberturaSessao: string | null;
+  homologacao: string | null;
+  finalizacao: string | null;
+}
+
+/** CompraMetadata (campos lidos pela tela do PNCP) + o que é só do Paradigma. */
+export interface CompraParadigma extends CompraMetadata {
+  fase: string | null;
+  numeroProcesso: string | null;
+  numeroEdital: string | null;
+  datasProcesso: DatasProcessoParadigma;
+}
+
+/** Linha de licitacao_resultados (só posições finais de processo concluído). */
+export interface ResultadoParadigma extends ItemResultado {
+  numeroItem: number;
+  ranking: number | null;
+  vencedor: boolean;
+  valorProposta: number | null;
+  marca: string | null;
+  modelo: string | null;
+  situacao: string | null;
+}
+
+/** Lance da disputa (licitacao_lances), como o portal publica. */
+export interface LanceHistorico {
+  numeroItem: number;
+  data: string | null;
+  valor: number | null;
+  moeda: string | null;
+  fornecedorNome: string | null;
+  fornecedorCnpj: string | null;
+  marca: string | null;
+  modelo: string | null;
+  /** Posição final no ranking; null = lance da disputa sem posição final. */
+  posicao: number | null;
+  vencedor: boolean;
+  origem: "portal_oficial";
+}
+
+/** Documento do processo (licitacao_documentos). Sem caminho do Storage: abrir usa a URL assinada (K-2). */
+export interface ArquivoParadigma {
+  documentoId: number | null;
+  titulo: string | null;
+  /** "resumo" = Resumo do processo (vem primeiro); "anexo" = anexo publicado no mural. */
+  tipo: "resumo" | "anexo";
+  url: null;
+  mimeType: string | null;
+  dataDocumento: string | null;
+  /** status_processamento do coletor (ex.: "baixado", "pendente"). */
+  status: string | null;
+}
+
+export interface AcompanhamentoParadigmaResponse {
+  disponivel: true;
+  id: number | string;
+  origem: "banco";
+  fonte: string;
+  /** Sem chave PNCP: campos nulos (objeto, não null, para a tela do PNCP publicada antes do K-3). */
+  pncp: { cnpj: null; ano: null; sequencial: null; numero_controle_pncp: null };
+  url_edital: string | null;
+  /** Mural público da fonte (o processo não tem URL própria no Paradigma). */
+  url_acompanhamento: string | null;
+  fase: string | null;
+  compra: SecaoBanco<CompraParadigma>;
+  itens: SecaoBanco<ItemAcompanhamento[]>;
+  resultados: SecaoBanco<ResultadoParadigma[]>;
+  /** Sempre em erro: o Paradigma não publica atas (mantida para a tela do PNCP não quebrar). */
+  atas: SecaoBanco<AtaAcompanhamento[]>;
+  historico: SecaoBanco<LanceHistorico[]>;
+  arquivos: SecaoBanco<ArquivoParadigma[]>;
+}

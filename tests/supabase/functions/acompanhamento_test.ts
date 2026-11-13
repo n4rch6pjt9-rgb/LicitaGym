@@ -476,7 +476,7 @@ Deno.test("acompanhamento: select não inclui linkSistemaOrigem e usa a lista ex
         selectedCols = cols;
         return {
           eq: (_col: string, _val: unknown) => ({
-            maybeSingle: () => Promise.resolve({ data: { id: 7, fonte: "sestsenat", id_externo: 1 }, error: null }),
+            maybeSingle: () => Promise.resolve({ data: { id: 7, fonte: "portal_desconhecido", id_externo: 1 }, error: null }),
           }),
         };
       },

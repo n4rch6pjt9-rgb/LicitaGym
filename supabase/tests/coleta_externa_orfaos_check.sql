@@ -31,6 +31,13 @@ begin
     raise exception 'ORFAOS CHECK FALHOU: função sem search_path fixo';
   end if;
 
+  -- O iniciar (security definer) chama a função como o próprio dono: os donos têm de ser o mesmo papel.
+  if (select pg_get_userbyid(p.proowner) from pg_proc p where p.oid = f) is distinct from
+     (select pg_get_userbyid(p.proowner) from pg_proc p
+       where p.oid = to_regprocedure('public.coleta_externa_iniciar(text, text, text[])')) then
+    raise exception 'ORFAOS CHECK FALHOU: dono de coleta_externa_fechar_orfaos difere do de coleta_externa_iniciar';
+  end if;
+
   -- CA-3: fecha a órfã, deixa a viva, e é idempotente
   update private.coleta_externa_run set status = 'incompleta', finished_at = now() where status = 'executando';
   insert into private.coleta_externa_run (fonte, modo, status, started_at)
@@ -54,6 +61,16 @@ begin
   v_n := private.coleta_externa_fechar_orfaos();
   if v_n is distinct from 0 then
     raise exception 'ORFAOS CHECK FALHOU: CA-3: segunda execução devia devolver 0, veio %', v_n;
+  end if;
+
+  -- Caminho real do coletor: service_role abre execução pelo iniciar, que fecha a órfã sem EXECUTE direto na função.
+  update private.coleta_externa_run set started_at = now() - interval '7 hours' where id = v_viva;
+  set local role service_role;
+  perform public.coleta_externa_iniciar('fiesc', 'leads', null);
+  reset role;
+  select * into r from private.coleta_externa_run where id = v_viva;
+  if r.status <> 'incompleta' then
+    raise exception 'ORFAOS CHECK FALHOU: iniciar como service_role não fechou a órfã: %', row_to_json(r);
   end if;
 
   -- CA-4: jobs do pg_cron

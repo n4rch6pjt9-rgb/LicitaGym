@@ -61,7 +61,7 @@ GitHub Actions):
 | K-6a | Edge Function `sync-disparar-coletor` (nome provisório): `requireCronAuth`; chama `POST /repos/{owner}/{repo}/actions/workflows/coletor-sistema-s.yml/dispatches` com `ref=main` e inputs fixos (`fonte=sesc_senac_rs`, `origem=cron`, `paginas` da pergunta 3); token do GitHub só em secret (`Deno.env.get`), nunca em log ou resposta | POST com secret de cron | 202 com o status HTTP do GitHub (sem corpo dele) | 401 sem secret; 502 se o GitHub recusar | `pg_cron` |
 | K-6b | Job `pg_cron` que chama a K-6a no horário da pergunta 3 (`net.http_post`, secret de cron do Vault, como os demais crons do repo) | — | linha em `cron.job` | — | `postgres` |
 | K-6c | `coletor-sistema-s.yml`: input `origem` (`manual` padrão, `cron` aceito) repassado ao `--origem`, para o disparo agendado registrar em `coleta_externa_run`; o job do RS termina dentro dos 70 min (`--paginas` menor) | input do `workflow_dispatch` | execução registrada e fechada | — | workflow |
-| K-7 | `coleta_externa_dias_sem_sucesso` considera toda fonte com `fontes_externas.ativo = true`; fonte ativa sem nenhuma conclusão = crítico, com o slug no detalhe | — | linha na `saude_operacional_resumo()` | — | quem já lê a saúde (inalterado) |
+| K-7 | `coleta_externa_dias_sem_sucesso` considera toda fonte com `fontes_externas.ativo = true` (na implementação: e `plataforma = 'paradigma'` e `modo_coleta <> 'bloqueado'`, ver "Cobertura na implementação"); fonte ativa sem nenhuma conclusão = crítico, com o slug no detalhe | — | linha na `saude_operacional_resumo()` | — | quem já lê a saúde (inalterado) |
 
 ## Critérios de aceite
 
@@ -75,9 +75,9 @@ GitHub Actions):
 | CA-6 | K-3, K-4 | **Dado** a resposta da `api-saude`, **quando** o teste lista as verificações, **então** `coleta_externa_executando_horas` está presente e está em `SAUDE_VERIFICACOES_ESPERADAS`. | Deno `tests/supabase/functions/api_saude_test.ts` |
 | CA-9 | K-7 | **Dado** uma fonte com `ativo = true` sem nenhuma execução concluída e outra concluída há 1 dia, **quando** se lê `saude_operacional_resumo()`, **então** `coleta_externa_dias_sem_sucesso` vem `critico` com o slug da primeira no detalhe; com a primeira `ativo = false`, vem `ok`. | SQL `supabase/tests/saude_coleta_externa_executando_check.sql` |
 | CA-7 | K-5 | **Dado** um portal falso com 3 processos, **quando** `coletar` roda, **então** o log tem 3 linhas `INFO` de progresso com o `nCdOrigem` de cada processo, sem chamada a API real. | pytest `services/coletor-externo/tests/test_paradigma.py` |
-| CA-8 | K-6c | **Dado** o disparo agendado do `sesc_senac_rs`, **quando** o job roda, **então** a execução fecha em `coleta_externa_run` com status final (nunca fica `executando`) antes dos 70 min. Prova: pytest do `--origem cron` e uma execução real registrada no PR (id da run e status). | pytest `services/coletor-externo/tests/test_paradigma.py` + evidência no PR |
-| CA-10 | K-6a | **Dado** uma chamada sem o secret de cron, ou com JWT de usuário, **quando** chega à `sync-disparar-coletor`, **então** responde 401 e não chama o GitHub (negativo de acesso). | Deno `tests/supabase/functions/sync_disparar_coletor_test.ts` |
-| CA-11 | K-6a | **Dado** o secret de cron válido e um `fetch` falso, **quando** a função roda, **então** faz um único POST ao endpoint `dispatches` com `ref=main` e os inputs fixos; com o GitHub respondendo 4xx, devolve 502 sem repassar o corpo nem o token. | Deno `tests/supabase/functions/sync_disparar_coletor_test.ts` |
+| CA-8 | K-6c (em espera) | **Dado** o disparo agendado do `sesc_senac_rs`, **quando** o job roda, **então** a execução fecha em `coleta_externa_run` com status final (nunca fica `executando`) antes dos 70 min. Prova: pytest do `--origem cron` e uma execução real registrada no PR (id da run e status). | pytest `services/coletor-externo/tests/test_paradigma.py` + evidência no PR |
+| CA-10 | K-6a (em espera) | **Dado** uma chamada sem o secret de cron, ou com JWT de usuário, **quando** chega à `sync-disparar-coletor`, **então** responde 401 e não chama o GitHub (negativo de acesso). | Deno `tests/supabase/functions/sync_disparar_coletor_test.ts` |
+| CA-11 | K-6a (em espera) | **Dado** o secret de cron válido e um `fetch` falso, **quando** a função roda, **então** faz um único POST ao endpoint `dispatches` com `ref=main` e os inputs fixos; com o GitHub respondendo 4xx, devolve 502 sem repassar o corpo nem o token. | Deno `tests/supabase/functions/sync_disparar_coletor_test.ts` |
 
 ### Cobertura na implementação (13/11/2026)
 
@@ -135,9 +135,9 @@ sessão de orquestração em 13/11/2026; confirmação do Marcelo pendente.
   `authenticated` e `service_role`. RLS da tabela inalterada.
 - **Backfill/reprocessamento:** não. A primeira execução do job fecha a linha do `sesc_senac_rs` aberta desde 12/11
   (contagem antes/depois no PR: linhas `executando` com mais de 6 h).
-- **Edge Functions republicadas no merge:** todas (regra do merge); `api-saude` muda de resposta (verificação nova) e
-  entra a função nova `sync-disparar-coletor` (K-6a), que precisa do secret do token do GitHub antes do primeiro
-  disparo do `pg_cron`.
+- **Edge Functions republicadas no merge:** todas (regra do merge); `api-saude` muda de resposta (verificação nova).
+  A função nova `sync-disparar-coletor` (K-6a) e o job do K-6b **não** entram neste PR: K-6 em espera desde 13/11/2026
+  (ver "Cobertura na implementação"). O secret `GITHUB_DISPATCH_TOKEN` já gravado fica sem uso até o K-6 voltar.
 - **Contrato com o Dashboard:** o bloco de saúde (só admin da plataforma) ganha uma linha; sem mudança de campo.
 - **Dado oficial x derivado:** nenhum dado oficial muda; status e horas são derivados de `coleta_externa_run`.
 - **Ordem com a 0062:** as duas recriam a função de métricas da saúde. A segunda a entrar parte da definição de

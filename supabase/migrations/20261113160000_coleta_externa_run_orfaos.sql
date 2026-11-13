@@ -22,7 +22,8 @@
 --   private.saude_operacional_resumo() é recriada a partir da definição de produção (20261111120000), mudando só o
 --   bloco da coleta externa.
 --
--- Escreve: private.coleta_externa_run (fechamento de órfãs), private.saude_limiares (1 linha nova, sem sobrescrever
+-- Escreve: private.coleta_externa_run (fechamento de órfãs, inclusive uma vez no próprio deploy; índice parcial
+-- coleta_externa_run_executando_idx), private.saude_limiares (1 linha nova, sem sobrescrever
 -- limiar editado), public.fontes_externas.ativo (3 linhas). Lê: saúde operacional (só service_role, api-saude).
 -- Verificação: supabase/tests/coleta_externa_run_rpc_check.sql, coleta_externa_orfaos_check.sql e
 -- saude_coleta_externa_executando_check.sql. Contagem antes/depois em produção (no PR):
@@ -35,6 +36,7 @@
 --   select cron.unschedule(jobid) from cron.job where jobname = 'licitagym-coleta-externa-orfaos';
 --   reaplicar public.coleta_externa_iniciar de 20261108170000 e private.saude_operacional_resumo de 20261111120000;
 --   drop function if exists private.coleta_externa_fechar_orfaos();
+--   drop index if exists private.coleta_externa_run_executando_idx;
 --   delete from private.saude_limiares where verificacao = 'coleta_externa_executando_horas';
 --   update public.fontes_externas set ativo = true where slug in ('fiergs', 'fiemt', 'sesc_senac_rs');
 
@@ -69,6 +71,14 @@ comment on function private.coleta_externa_fechar_orfaos() is
   'e public.coleta_externa_iniciar.';
 
 revoke all on function private.coleta_externa_fechar_orfaos() from public, anon, authenticated, service_role;
+
+-- Filtro do job, do iniciar e da saúde (status = 'executando'): índice parcial, pequeno (só execuções abertas).
+create index if not exists coleta_externa_run_executando_idx
+  on private.coleta_externa_run (started_at) where status = 'executando';
+
+-- Fecha já no deploy a órfã que existir (a do sesc_senac_rs, aberta desde 12/11): sem isso, a verificação nova do
+-- K-3 ficaria crítica até o primeiro minuto 23 e o saude.yml abriria um alerta falso. Idempotente (só 'executando').
+select private.coleta_externa_fechar_orfaos();
 
 -- K-1 ------------------------------------------------------------------------------------------------------------
 create or replace function public.coleta_externa_iniciar(p_fonte text, p_modo text, p_termos text[] default null)
@@ -300,7 +310,7 @@ begin
         or undefined_function
         or invalid_schema_name
         or feature_not_supported then
-      raise notice 'pg_cron indisponível (%): jobs da coleta externa não agendados neste Postgres.', sqlerrm;
+      raise notice 'pg_cron indisponível (%): job de órfãs da coleta externa não agendado neste Postgres.', sqlerrm;
       return;
     end;
   end if;

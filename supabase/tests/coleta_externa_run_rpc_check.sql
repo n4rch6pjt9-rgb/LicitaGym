@@ -119,7 +119,8 @@ begin
     raise exception 'COLETA RUN CHECK FALHOU: CA-2: execução viva foi fechada: %', row_to_json(r);
   end if;
 
-  -- Spec 0063 (K-7): a métrica cobra toda fonte ativa; aqui só a fiesc fica ativa, e ela já concluiu.
+  -- Spec 0063 (K-7): a métrica cobra toda fonte ativa; aqui só a fiesc fica ativa, e ela já concluiu no passo 2
+  -- (finalizar 'concluida') e no passo da contagem negativa ('concluida_com_erros'). Não mover este bloco para antes.
   update public.fontes_externas set ativo = false where slug <> 'fiesc';
   select s.valor into v_valor from private.saude_operacional_resumo() s
    where s.verificacao = 'coleta_externa_dias_sem_sucesso';

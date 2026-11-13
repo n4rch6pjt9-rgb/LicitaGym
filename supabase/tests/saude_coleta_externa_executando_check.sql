@@ -59,6 +59,14 @@ begin
     raise exception 'SAUDE COLETA CHECK FALHOU: CA-9: só firjan (1 dia) devia ser ok/1.0, veio %/%', r.status, r.valor;
   end if;
 
+  -- CA-9 / recorte do K-7: fonte ativa fora do coletor Paradigma (pncp) e Paradigma bloqueada (fiemg), ambas sem
+  -- conclusão, não são cobradas.
+  update public.fontes_externas set ativo = true where slug in ('pncp', 'fiemg');
+  select * into r from private.saude_operacional_resumo() s where s.verificacao = 'coleta_externa_dias_sem_sucesso';
+  if r.status <> 'ok' or r.detalhe::text like '%pncp%' or r.detalhe::text like '%fiemg%' then
+    raise exception 'SAUDE COLETA CHECK FALHOU: CA-9: pncp/fiemg não deviam ser cobradas: % %', r.status, r.detalhe;
+  end if;
+
   raise notice 'SUCESSO: saude_coleta_externa_executando_check (CA-5, CA-9)';
 end $$;
 

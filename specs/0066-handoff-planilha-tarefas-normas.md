@@ -1,9 +1,9 @@
 # 0066: Executar o handoff da planilha `nexor_spec.xlsx` (tarefas, normas, sessão e unidade da oportunidade) em 7 PRs
 
-- **Status:** rascunho
+- **Status:** aprovada (14/11/2026: respostas do Marcelo às 8 perguntas; PR-1 liberado)
 - **Alimenta:** módulo 2 de `docs/produto/ESCOPO.md` (Pipeline e tarefas) e a spec-mãe 0032, fases 3 e 4 (agentes
   com tarefa, norma e evidência). Regra de foco suspensa desde 11/11/2026.
-- **Repositório:** LicitaGym. O gerador de proposta (CHG-28) não existe no repositório (ver "Perguntas em aberto").
+- **Repositório:** LicitaGym. O gerador de proposta (CHG-28) sai para a spec do módulo 4 (Proposta).
 - **Issue:** nenhuma
 - **Área:** migrations | scripts (`scripts/import-spec.ts`) | edge-functions (`_shared/sessao_alertas.ts`) | coletor
 - **Depende do ok do Marcelo:** sim (migrations, ACL, regra de produto e dado de produção)
@@ -91,12 +91,12 @@ Um contrato por PR do handoff, na ordem da aba. Os CHGs de cada PR estão em `DB
 | ID | PR | CHGs | Objeto | Situação em 13/11/2026 |
 |---|---|---|---|---|
 | K-1 | PR-1 Estrutura aditiva | CHG-01, CHG-04, CHG-05 | check `^NX-[TNCP][0-9]{2}$`; `tarefas_catalogo.subetapa_codigo` e `nexor_subetapas`; `processo_fases.entrada_auto_pncp`, `entrada_auto_plataforma`, `fonte_gatilho`, `guardrail` | pode seguir |
-| K-2 | PR-2 import-spec | CHG-02, 03, 05, 06, 18, 24 | 26 modelos NX-N, NX-C e NX-P; ordem por `sequencia`; S08; leitura dos intervalos novos; ID `Origem.Regime.Etapa.Bloco.Seq-DV` | para no CHG-03 |
-| K-3 | PR-3 Normas e contexto | CHG-07, 08, 09, 16, 20, 21, 23, 25, 26, 27 | contexto v2; condição em jsonb; `licitacoes_externas.contexto_edital`; `nx_norma`, `nx_tarefa_norma`, `nx_regime_codigo`, `edital_norma`, `nx_vocabulario_tema`; JSON Schema versionado | para no CHG-26; reaproveitar o que o CHG-16 e o CHG-25 apontam |
+| K-2 | PR-2 import-spec | CHG-02, 03, 05, 06, 18, 24 | 26 modelos NX-N, NX-C e NX-P; `ordem = sequencia × 10` (mantém o formato de 10 em 10); S08; leitura dos intervalos novos; ID `Origem.Regime.Etapa.Bloco.Seq-DV` | liberado (CHG-03 decidido em 14/11) |
+| K-3 | PR-3 Normas e contexto | CHG-07, 08, 09, 16, 20, 21, 23, 25, 26, 27 | contexto v2; condição em jsonb; `licitacoes_externas.contexto_edital`; `nx_norma` (origem do corpus, ligada a `legislacao_corpus.json` e `norma_dispositivos` por `norma_id`), `nx_tarefa_norma`, `edital_norma`; crosswalk de regime como colunas novas em `public.regimes` (código do RAG, do Glossário e `norma_id`), sem `nx_regime_codigo`; `topic` acrescentado a `blocos_legais`, sem `nx_vocabulario_tema`; `licitacao_chunks.normas_citadas` (lista de `norma_id`) e `edital_norma.chunk_id` → `licitacao_chunks`; JSON Schema versionado | liberado (decisões de 14/11) |
 | K-4 | PR-4 Unidade | CHG-10, 11 | `oportunidade_unidade`; tarefa por unidade (`escopo`, `unidade_id`, índice com `coalesce(unidade_id, 0)`) | pode seguir depois do PR-2 |
-| K-5 | PR-5 Prazo e sessão | CHG-12, 13, 14, 29, 30 | prazo por evento; 6 tipos de alerta novos e `fase`; negociação vinda do pregoeiro; dias úteis em SQL; enum de eventos | para no CHG-12 e no CHG-29 |
-| K-6 | PR-6 Status por item e entrada automática | CHG-15, 17, 28 | status de `oportunidade_unidade` pelo chat e pelo PNCP; card movido por evento; proposta derivada do banco | CHG-28 sem consumidor |
-| K-7 | PR-7 Captação de normas | CHG-22 | `verificar_legislacao.py` lê `nx_norma` (url, formato, captação) | para no CHG-22 |
+| K-5 | PR-5 Prazo e sessão | CHG-12, 13, 14, 29, 30 | prazo por evento sobre o `tarefas_catalogo.prazo_evento` que já existe: acrescenta `prazo_evento_offset` (quantidade, unidade, sentido) e `tarefas_equipe.prazo_origem_ref`; eventos que faltam (convocação de anexo, intenção de recurso, convocação da ata) entram como linhas novas em `processo_eventos` (o vocabulário do CHG-30); 6 tipos de alerta novos e `fase`; negociação vinda do pregoeiro; versão SQL de `somarDiasUteis`/`contarDiasUteis` sobre `feriados_nacionais`, com o mesmo resultado dos testes de `dias-uteis.ts`; certame estadual ou municipal → prazo marcado "sem calendário local" | liberado (decisões de 14/11) |
+| K-6 | PR-6 Status por item e entrada automática | CHG-15, 17 | status de `oportunidade_unidade` pelo chat e pelo PNCP; card movido por evento. O CHG-28 sai para a spec do módulo 4; aqui fica só o critério e o benefício por unidade, que já estão no CHG-10 | liberado |
+| K-7 | PR-7 Captação de normas | CHG-22 | `verificar_legislacao.py` lê `nx_norma` (url, formato, captação) como origem; o texto e os dispositivos continuam em `legislacao_corpus.json` e `norma_dispositivos` | liberado (decisão de 14/11) |
 
 CHG-19 (tenant Konnen) vale em todo PR. CHG-31 (inteligência de órgão) está descartado.
 
@@ -109,13 +109,13 @@ pacote:
 | ID | Contrato | Dado / Quando / Então | Teste que prova |
 |---|---|---|---|
 | CA-1 | K-1 | **Dado** a migration, **quando** se insere o apelido NX-P01, NX-N01 ou NX-C01, **então** passa; NX-X01 falha com `check_violation`; os apelidos atuais continuam intactos (CHG-01). | SQL `supabase/tests/nexor_estrutura_aditiva_check.sql` |
-| CA-2 | K-1, K-3, K-4 | **Dado** as tabelas novas (`nexor_subetapas`, `nx_norma`, `nx_tarefa_norma`, `nx_regime_codigo`, `edital_norma`, `nx_vocabulario_tema`, `oportunidade_unidade`), **então** RLS ligada, `anon` e `authenticated` sem privilégio e só `service_role` com acesso (negativo de acesso). | SQL `supabase/tests/nexor_handoff_acl_check.sql` |
+| CA-2 | K-1, K-3, K-4 | **Dado** as tabelas novas (`nexor_subetapas`, `nx_norma`, `nx_tarefa_norma`, `edital_norma`, `oportunidade_unidade`), **então** RLS ligada, `anon` e `authenticated` sem privilégio e só `service_role` com acesso (negativo de acesso). | SQL `supabase/tests/nexor_handoff_acl_check.sql` |
 | CA-3 | K-2 | **Dado** a planilha nova, **quando** roda o import-spec, **então** `select count(*) from tarefas_catalogo where norma = 'NX'` = 49; cada NX-[NCP]## tem apelido; a etapa S08 recebe 3 tarefas; o bloco gerado bate com a planilha (CHG-02, 06, 18). | Deno `tests/supabase/scripts/import_spec_test.ts` + SQL `supabase/tests/nexor_import_spec_check.sql` |
 | CA-4 | K-3 | **Dado** a fixture de Iguaraçu, **então** `contexto_edital` traz `inversao_fases = true`, `garantia = 5` e `normas_citadas` com PR-DEC-4889-2005; PR-DEC-4889 ativa (citada) e PR-DEC-10086 não ativa (esfera municipal) (CHG-09, CHG-20). | SQL `supabase/tests/nexor_normas_contexto_check.sql` |
 | CA-5 | K-4 | **Dado** a fixture do PE 138, **então** `oportunidade_unidade` tem 29 linhas (28 homologadas e 1 fracassada); a NX-T16 nasce uma vez por item da empresa e a NX-T10 uma vez por edital (CHG-10, CHG-11). | SQL `supabase/tests/oportunidade_unidade_check.sql` |
 | CA-6 | K-4 | **Dado** um usuário do tenant A, **quando** lê `oportunidade_unidade` ou as tarefas por unidade do tenant B pela API, **então** 403 ou vazio, e nada do B aparece (negativo de tenant). | Deno `tests/supabase/functions/api_tarefas_unidade_test.ts` |
 | CA-7 | K-5 | **Dado** os textos do PE 138 em fixture, **então** cada um gera 1 alerta do tipo certo; uma mensagem de licitante com o mesmo texto da negociação não gera alerta (CHG-13, CHG-14). | Deno `tests/supabase/functions/_shared/sessao_alertas_test.ts` |
-| CA-8 | K-5 | **Dado** o calendário, **então** a impugnação de Iguaraçu cai em 18/11/2026 (feriado em 20/11) e a ata do PE 138 em 5 dias úteis depois de 28/10 = 04/11 (CHG-29). | SQL `supabase/tests/nexor_dias_uteis_check.sql` |
+| CA-8 | K-5 | **Dado** o calendário, **então** a impugnação de Iguaraçu cai em 18/11/2026 (feriado em 20/11) e a ata do PE 138 em 5 dias úteis depois de 28/10 = 04/11; a função SQL dá o mesmo resultado que `dias-uteis.ts` nos casos de teste dele; certame estadual ou municipal sai com a marca "sem calendário local" (CHG-29). | SQL `supabase/tests/nexor_dias_uteis_check.sql` |
 | CA-9 | todos | **Regressão (CHG-19):** **dado** o tenant Konnen, **quando** qualquer migration do pacote roda, **então** nenhuma linha da Konnen muda em `tarefas_equipe`, `pipeline_etapas` e `pipeline_etapa_tarefas`. | SQL `supabase/tests/nexor_konnen_intacto_check.sql` |
 
 ## Skills e agentes por contrato
@@ -140,8 +140,10 @@ pacote:
 
 - **Migration:** sim, uma ou mais por PR, todas aditivas e idempotentes, com `lock_timeout` curto.
 - **Tabelas/views/funções tocadas:**
-  - novas: `nexor_subetapas`, `oportunidade_unidade`, `nx_norma`, `nx_tarefa_norma`, `nx_regime_codigo`,
-    `edital_norma` e `nx_vocabulario_tema`;
+  - novas: `nexor_subetapas`, `oportunidade_unidade`, `nx_norma`, `nx_tarefa_norma` e `edital_norma`;
+  - colunas novas em tabelas que já existem: `public.regimes` (crosswalk), `blocos_legais.topic`,
+    `licitacao_chunks.normas_citadas`, `tarefas_catalogo.prazo_evento_offset`, `tarefas_equipe.prazo_origem_ref`;
+    linhas novas em `processo_eventos`;
   - alteradas: `processo_fases`, `tarefas_catalogo`, `tarefas_catalogo_apelidos`, `nexor_etapa_tarefas_padrao`,
     `tarefas_equipe`, `sessao_alertas` e `licitacoes_externas` (`contexto_edital`);
   - funções alteradas: `tarefas_contexto_certame()`, `pipeline_etapa_tarefas_criar()` e
@@ -164,26 +166,35 @@ pacote:
 
 ## Decisões do Marcelo
 
+- 14/11/2026, regra geral: aproveitar o que já existe e acrescentar só o que falta, sem tabela paralela.
+- 14/11/2026, CHG-03: corrigir a regra de hoje, não a planilha. O import-spec grava `ordem = sequencia × 10`.
+- 14/11/2026, CHG-12 e CHG-30: aproveitar `tarefas_catalogo.prazo_evento` (FK `processo_eventos`). Acrescentar só
+  `prazo_evento_offset` (quantidade, unidade, sentido) e `tarefas_equipe.prazo_origem_ref`. O vocabulário de eventos
+  é a própria `processo_eventos`, e os eventos que faltam entram como linhas novas.
+- 14/11/2026, CHG-29: aproveitar `feriados_nacionais` e escrever em SQL as funções de `dias-uteis.ts`, com o mesmo
+  resultado nos testes. Feriados estaduais e municipais ficam para depois (PRD 3.2). Até lá, o prazo de certame
+  estadual ou municipal leva a marca "sem calendário local", e a equipe confere. O 20/11 de Iguaraçu é nacional.
+- 14/11/2026, CHG-28: sai para a spec do módulo 4 (Proposta). Aqui fica só o critério e o benefício por unidade
+  (CHG-10).
+- 14/11/2026, CHG-22: `nx_norma` é a origem do corpus, não um substituto. `legislacao_corpus.json` e
+  `norma_dispositivos` continuam guardando o texto e os dispositivos, ligados pelo `norma_id`.
+- 14/11/2026, CHG-26: a referência é a tabela de chunks que a ingestão grava hoje, `public.licitacao_chunks`
+  (`coletor/indexador.py`). `normas_citadas` entra nela como coluna nova (lista de `norma_id`), e
+  `edital_norma.chunk_id` aponta para ela.
+- 14/11/2026, CHG-16 e CHG-25: o crosswalk de regime vira colunas novas em `public.regimes` (código do RAG, do
+  Glossário e `norma_id`); o vocabulário de temas parte de `blocos_legais` (`temas_rag` existe; entra `topic`). Não
+  se criam `nx_regime_codigo` nem `nx_vocabulario_tema`.
+- 14/11/2026, ordem com a 0065: correm em paralelo. A 0065 não mexe em `tarefas_catalogo`,
+  `pipeline_etapa_tarefas_criar`, `sessao_alertas` nem `import-spec.ts`; ela toca o coletor Paradigma e as tabelas
+  do catálogo do Sistema S.
+- 14/11/2026: o PR-1 (CHG-01, CHG-04, CHG-05) pode seguir já.
 - 13/11/2026: incluir o handoff da planilha (abas `DB_Dicionario`, `DB_Mudancas`, `Auditoria_Abas` e
   `Handoff_ClaudeCode`) no rascunho, com o prompt de execução da seção 4 e as regras da seção 2.
 - 12/11/2026 (registrado em `DB_Dicionario`): check NX-[TNCP]##; o tenant Konnen não muda.
 
 ## Perguntas em aberto
 
-1. **CHG-03:** a ordem deve passar a ser a `sequencia` da `Tarefas_Default`, trocando a regra de hoje (posição de 10
-   em 10)? Ou a linha da planilha deve ser corrigida para o estado atual real?
-2. **CHG-12:** `tarefas_catalogo.prazo_evento` já existe, com FK para `processo_eventos`. O CHG passa a ser só
-   `prazo_evento_offset`, `prazo_origem_ref` e a situação `evento`, reaproveitando a coluna e a tabela de eventos?
-   O CHG-30 (enum de eventos) vira a própria `processo_eventos`?
-3. **CHG-29:** reaproveitar `public.feriados_nacionais` e escrever em SQL o que `_shared/prazos/dias-uteis.ts` já faz,
-   em vez de criar a tabela `feriados`? Onde entram os feriados estadual e municipal (20/11 em Iguaraçu)?
-4. **CHG-28:** sem gerador de proposta no repositório, o CHG-28 sai do PR-6 e vai para a spec do módulo 4
-   (Proposta)?
-5. **CHG-22:** `nx_norma` substitui o `legislacao_corpus.json` e a `norma_dispositivos`, ou passa a ser a origem e
-   os dois continuam como estão?
-6. **CHG-26:** `normas_citadas` não existe e a migration citada é outra. Qual é a tabela de chunks de referência (a
-   `licitacao_chunks`)? `edital_norma.chunk_id` aponta para ela?
-7. **CHG-16 e CHG-25:** `nx_regime_codigo` estende `public.regimes` e `nx_vocabulario_tema` parte de `blocos_legais`,
-   para não haver duas implementações do mesmo conceito?
-8. **Ordem com a 0065 (Sistema S):** o pacote roda em paralelo à 0065? Os dois mexem em migrations diferentes; o
-   regime do Sistema S aparece no CHG-23.
+- Registro das decisões de 14/11 na planilha: acrescentar a coluna "decisão 0066" em `DB_Mudancas`, trocar
+  "estado atual" e "estado proposto" das 8 mudanças que divergiram ou tiveram ressalva, e atualizar as linhas
+  correspondentes de `DB_Dicionario` (por exemplo, `prazo_evento` passa de "Novo" para "Mantém" e o offset entra como
+  "Novo"). Até isso entrar na planilha, esta spec vence a planilha nas 8 linhas.

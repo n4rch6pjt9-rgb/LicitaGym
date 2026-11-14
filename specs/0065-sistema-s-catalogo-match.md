@@ -7,7 +7,7 @@
   depende da fila de `specs/0064-sistema-s-coleta-camadas.md`.
 - **Repositório:** LicitaGym (a tela de seleção fica fora; ver "Perguntas em aberto")
 - **Issue:** nenhuma
-- **Área:** migrations | coletor | catmat | workflow GitHub Actions | specs (planilha `specs/nexor_spec.xlsx`)
+- **Área:** migrations | coletor | catmat | workflow GitHub Actions | specs (planilha `specs/nexor_spec_v0.2.xlsx`)
 - **Depende do ok do Marcelo:** sim (migration, carga de dado em produção, mudança de classificação com
   reprocessamento, religar a coleta agendada)
 
@@ -86,7 +86,7 @@ Medido em 13/11/2026:
 | K-6 | Coletor: `classificar_item_detalhe` passa a receber os efetivos de K-3 (carregados uma vez por execução) e decide nesta ordem: (1) serviço → fora; (2) `nCdProduto` efetivo → `forte`/`manutencao`, método `catalogo`, com os vetos de texto mantidos; (3) `nCdProduto` conhecido no catálogo e fora da seleção → None; (4) sem `nCdProduto`, ou produto ausente do catálogo → texto ancorado nos produtos efetivos da fonte. `CATEGORIAS_POR_FONTE` e `produtos_escopo` saem do caminho da coleta. Grava `licitacao_itens.id_produto_externo` (o `nCdProduto`) | item, efetivos da fonte | `categoria_escopo`, `escopo_metodo` | falha ao ler K-3 → a execução falha; nunca segue com catálogo vazio calado | coletor |
 | K-7 | Coletor: fonte sem nenhum produto efetivo segue só por texto ancorado (sem `nCdProduto`), com aviso no log e em `coleta_externa_run.detalhe_erros`, e não marca nenhum item pelo catálogo | fonte | aviso | — | coletor |
 | K-8 | Reclassificação: `python -m coletor.reclassificar_escopo_sistema_s --dry-run` / `--gravar` recalcula `categoria_escopo` dos itens e das licitações do Sistema S já gravados, a partir de `raw`, sem chamar o portal. Mostra a contagem antes e depois por fonte e por categoria. A prioridade continua vindo do status, como hoje | fonte(s) | contagem; com `--gravar`, linhas atualizadas | — | operador |
-| K-9 | `specs/nexor_spec.xlsx`: substituir pela versão de 12/11/2026 15:33 (Downloads, 588.387 bytes; a do repo tem 410.373) e acrescentar a aba `SistemaS_Catalogo`: hierarquia, equivalência com o CATMAT, ordem do match, semente, regra de grupo por portal, pendências | — | planilha | — | `/spec` (esta spec) |
+| K-9 | `specs/nexor_spec_v0.2.xlsx`: a versão de 12/11/2026 15:33 (Downloads) com a aba `SistemaS_Catalogo` acrescentada. Fica ao lado da `specs/nexor_spec.xlsx`, que o `scripts/import-spec.ts` lê hoje (o cabeçalho de `Pipeline_Etapas` mudou na v0.2). A troca é o CHG-18, no PR-2 da 0066. A aba traz hierarquia, equivalência com o CATMAT, ordem do match, semente, regra de grupo por portal, pendências | — | planilha | — | `/spec` (esta spec) |
 
 ## Critérios de aceite
 
@@ -167,7 +167,8 @@ Medido em 13/11/2026:
 - 13/11/2026: a fase 5 da 0052 (de-para CATMAT) não é necessária para o Sesc BA, porque o preço do Sistema S tem
   rota própria pelo produto do portal.
 - 13/11/2026: workflow "Coletor Sistema S" desativado até corrigir o classificador e o match pelo catálogo.
-- 13/11/2026: complementar `specs/nexor_spec.xlsx` com a versão de 12/11 (Downloads) e uma aba do Sistema S.
+- 13/11/2026: complementar a planilha da spec com a versão de 12/11 (Downloads) e uma aba do Sistema S. Em 14/11 ela
+  ficou em `specs/nexor_spec_v0.2.xlsx`, porque o import-spec ainda lê o formato antigo.
 
 ## Perguntas em aberto
 

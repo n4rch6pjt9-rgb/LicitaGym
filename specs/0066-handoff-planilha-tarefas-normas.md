@@ -10,7 +10,9 @@
 
 ## Origem
 
-`specs/nexor_spec.xlsx`, versão de 12/11/2026 15:33, que entrou no repositório pelo PR da spec 0065. Abas usadas:
+`specs/nexor_spec_v0.2.xlsx`, versão de 12/11/2026 15:33, que entrou no repositório pelo PR da spec 0065. Ela fica ao
+lado da `specs/nexor_spec.xlsx` (a v0.1, que o `scripts/import-spec.ts` e o `import_spec_test.ts` leem hoje) até o
+PR-2, que renomeia a v0.2 para `nexor_spec.xlsx` junto com o import-spec novo (CHG-18). Abas usadas:
 
 - `Handoff_ClaudeCode`: a ordem dos PRs, a seção 2 "regras que não mudam", o que o `import-spec.ts` deve ler e o
   prompt de execução;
@@ -53,7 +55,7 @@ Itens 1 a 10 do template. Específicos desta spec:
 
 | # | Arquivo | Por quê |
 |---|---|---|
-| 5 | `specs/nexor_spec.xlsx` (abas acima) | a fonte do pacote |
+| 5 | `specs/nexor_spec_v0.2.xlsx` (abas acima) | a fonte do pacote |
 | 5 | `specs/0017-*`, `specs/0018-tarefas-padrao-por-etapa.md`, `specs/0019-tarefas-equipe-instancia-por-certame.md`, `specs/0036-grupos-certame-e-regras-edital.md`, `specs/0041-calendario-feriados-e-gates-do-tr.md`, `specs/0044-*` | tarefas, unidade da oportunidade, feriados e legislação curada já especificados |
 | 7 | `.claude/rules/database-migrations.md`, `.claude/rules/edge-functions.md`, `.claude/rules/tests.md` | convenções |
 | 8 | `supabase/migrations/20260927100000_catalogo_tarefas_licitacao.sql`, `20261011110000_tarefas_equipe.sql`, `20261107180000_*` (regimes, `feriados_nacionais`), `20261107220000_nexor_modelos_nx.sql`, `20261108230000_*` (`blocos_legais`), `20261109010000_nexor_tenant_novo.sql`, `20261109030000_sessao_alertas.sql`, `20261011100500_*` (`norma_dispositivos`) | o estado atual de cada CHG |
@@ -91,7 +93,7 @@ Um contrato por PR do handoff, na ordem da aba. Os CHGs de cada PR estão em `DB
 | ID | PR | CHGs | Objeto | Situação em 13/11/2026 |
 |---|---|---|---|---|
 | K-1 | PR-1 Estrutura aditiva | CHG-01, CHG-04, CHG-05 | check `^NX-[TNCP][0-9]{2}$`; `tarefas_catalogo.subetapa_codigo` e `nexor_subetapas`; `processo_fases.entrada_auto_pncp`, `entrada_auto_plataforma`, `fonte_gatilho`, `guardrail` | pode seguir |
-| K-2 | PR-2 import-spec | CHG-02, 03, 05, 06, 18, 24 | 26 modelos NX-N, NX-C e NX-P; `ordem = sequencia × 10` (mantém o formato de 10 em 10); S08; leitura dos intervalos novos; ID `Origem.Regime.Etapa.Bloco.Seq-DV` | liberado (CHG-03 decidido em 14/11) |
+| K-2 | PR-2 import-spec | CHG-02, 03, 05, 06, 18, 24 | `specs/nexor_spec_v0.2.xlsx` passa a ser `specs/nexor_spec.xlsx` (o cabeçalho novo de `Pipeline_Etapas` quebra o import-spec de hoje); 26 modelos NX-N, NX-C e NX-P; `ordem = sequencia × 10` (mantém o formato de 10 em 10); S08; leitura dos intervalos novos; ID `Origem.Regime.Etapa.Bloco.Seq-DV` | liberado (CHG-03 decidido em 14/11) |
 | K-3 | PR-3 Normas e contexto | CHG-07, 08, 09, 16, 20, 21, 23, 25, 26, 27 | contexto v2; condição em jsonb; `licitacoes_externas.contexto_edital`; `nx_norma` (origem do corpus, ligada a `legislacao_corpus.json` e `norma_dispositivos` por `norma_id`), `nx_tarefa_norma`, `edital_norma`; crosswalk de regime como colunas novas em `public.regimes` (código do RAG, do Glossário e `norma_id`), sem `nx_regime_codigo`; `topic` acrescentado a `blocos_legais`, sem `nx_vocabulario_tema`; `licitacao_chunks.normas_citadas` (lista de `norma_id`) e `edital_norma.chunk_id` → `licitacao_chunks`; JSON Schema versionado | liberado (decisões de 14/11) |
 | K-4 | PR-4 Unidade | CHG-10, 11 | `oportunidade_unidade`; tarefa por unidade (`escopo`, `unidade_id`, índice com `coalesce(unidade_id, 0)`) | pode seguir depois do PR-2 |
 | K-5 | PR-5 Prazo e sessão | CHG-12, 13, 14, 29, 30 | prazo por evento sobre o `tarefas_catalogo.prazo_evento` que já existe: acrescenta `prazo_evento_offset` (quantidade, unidade, sentido) e `tarefas_equipe.prazo_origem_ref`; eventos que faltam (convocação de anexo, intenção de recurso, convocação da ata) entram como linhas novas em `processo_eventos` (o vocabulário do CHG-30); 6 tipos de alerta novos e `fase`; negociação vinda do pregoeiro; versão SQL de `somarDiasUteis`/`contarDiasUteis` sobre `feriados_nacionais`, com o mesmo resultado dos testes de `dias-uteis.ts`; certame estadual ou municipal → prazo marcado "sem calendário local" | liberado (decisões de 14/11) |
